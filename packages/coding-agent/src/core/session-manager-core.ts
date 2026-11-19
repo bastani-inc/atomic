@@ -1368,6 +1368,70 @@ export class SessionManager {
 		return forkContextPath(await source.contextBranch(leafId));
 	}
 
+	/** Capture only the store positions of this launch's window. A child waiting to run never holds the parent's
+	 * conversation, and a later append or clear cannot make it branch from a different turn. */
+	captureFork(leafId: string): () => Promise<SessionManager> {
+		const path = this.getBranch(leafId);
+		if (path.at(-1)?.id !== leafId) throw new SessionEntryError(leafId, "missing");
+		const ranges: [number, number][] = [];
+		for (const entry of forkContextPath(path)) {
+			const seq = this.entrySeqs.get(entry.id);
+			if (seq === undefined) throw new SessionEntryError(entry.id, "missing");
+			const range = ranges.at(-1);
+			if (range && range[1] === seq - 1) range[1] = seq;
+			else ranges.push([seq, seq]);
+		}
+		return SessionManager.capturedFork(
+			this.store,
+			this.recordHeader(),
+			this.cwd,
+			this.sessionDir,
+			this.historyEpoch,
+			this.lastSeq,
+			ranges,
+		);
+	}
+
+	private static capturedFork(
+		store: SessionStore,
+		header: SessionRecordHeader,
+		cwd: string,
+		sessionDir: string,
+		epoch: string | undefined,
+		watermark: number,
+		ranges: readonly (readonly [number, number])[],
+	): () => Promise<SessionManager> {
+		return async () => {
+			const read = store.readRange;
+			if (!read)
+				throw new TypeError(
+					`Session store ${store.descriptor.adapter} must implement readRange to fork a captured window`,
+				);
+			const records: SessionEntry[] = [];
+			const pageSize = 64;
+			for (const [low, high] of ranges)
+				for (let start = low; start <= high; start += pageSize) {
+					const end = Math.min(high, start + pageSize - 1);
+					const page = await read.call(store, header.id, start, end);
+					if (
+						(epoch !== undefined && page.epoch !== epoch) ||
+						page.lastSeq < watermark ||
+						page.entries.length !== end - start + 1
+					)
+						throw new SessionConflictError(header.id, watermark, page.lastSeq);
+					records.push(...page.entries);
+					if (end < high) await new Promise<void>((resolve) => setImmediate(resolve));
+				}
+			const entries = forkContextPath(records);
+			const leaf = entries.at(-1);
+			if (!leaf) throw new Error("The captured fork window is empty");
+			const source = new SessionManager(store, cwd, sessionDir);
+			source.restore({ header, entries, lastSeq: entries.length });
+			await source.createBranchedSession(leaf.id, { history: "tail" });
+			return source;
+		};
+	}
+
 	private async fullBranch(leafId: string): Promise<SessionEntry[]> {
 		await this.loadFullHistory();
 		return this.getBranch(leafId);

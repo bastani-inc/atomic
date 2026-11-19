@@ -1,10 +1,10 @@
-import { createForkedSession, forkPointEntryId, SessionManager } from "@bastani/atomic";
+import { appendForkToolResults, forkPointEntryId, SessionManager } from "@bastani/atomic";
 import type { ToolCall } from "@bastani/atomic-ai/compat";
 
 type SubagentExecutionContext = "fresh" | "fork";
 type ForkableSessionManager = Pick<
 	SessionManager,
-	"getSessionId" | "getSessionStore" | "getLeafId" | "getCwd" | "getBranch"
+	"getSessionId" | "getSessionStore" | "getLeafId" | "getCwd" | "getBranch" | "captureFork"
 >;
 
 export class SubagentForkContextError extends Error {
@@ -100,6 +100,7 @@ export function createForkContextResolver(
 	const parentLeafId = sessionManager.getLeafId();
 	if (parentLeafId === null) throw new SubagentForkContextError(parentSessionId, "no_leaf");
 	const forkEntryId = forkPointEntryId(sessionManager.getBranch(), launch.toolCallIds ?? []) ?? parentLeafId;
+	const openFork = sessionManager.captureFork(forkEntryId);
 	const childLaunch =
 		launch.childLaunch ??
 		((index: number): ForkedChildLaunch => ({ toolCallId: launch.toolCallIds?.[0], ordinal: index + 1, count: 1 }));
@@ -118,9 +119,8 @@ export function createForkContextResolver(
 				try {
 					const source = saved
 						? await SessionManager.open(store, saved.id, cwd, { history: "tail" })
-						: await SessionManager.open(store, parentSessionId, cwd, { history: "tail", leafId: forkEntryId });
-					if (!saved)
-						await createForkedSession(source, forkEntryId, forkedChildToolCallAnswer(childLaunch(index)));
+						: await openFork();
+					if (!saved) await appendForkToolResults(source, forkedChildToolCallAnswer(childLaunch(index)));
 					children.set(index, { id: source.getSessionId(), manager: new WeakRef(source) });
 					return source;
 				} catch (cause) {

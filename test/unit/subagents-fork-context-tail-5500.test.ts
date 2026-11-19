@@ -15,6 +15,7 @@ import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import type { SqliteExecutor, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
@@ -112,12 +113,35 @@ async function longParent(store: SqlSessionStore): Promise<SessionManager> {
 	return SessionManager.open(store, sessionId, process.cwd(), { history: "tail" });
 }
 
-async function sqlStore(): Promise<SqlSessionStore> {
+async function sqlStore(readPayloads?: (count: number) => void): Promise<SqlSessionStore> {
 	const dir = await mkdtemp(join(tmpdir(), "fork-context-tail-"));
 	cleanups.push(() => rm(dir, { recursive: true, force: true, maxRetries: 10 }));
 	const db = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
 	cleanups.push(() => db.close());
-	const store = await SqlSessionStore.open(db);
+	const counted = (tx: SqliteExecutor): SqliteExecutor => ({
+		exec: (sql) => tx.exec(sql),
+		run: (sql, ...args) => tx.run(sql, ...args),
+		get: async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+			const row = await tx.get<T>(sql, ...args);
+			if (row && "entry_json" in row) readPayloads?.(1);
+			return row;
+		},
+		all: async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+			const rows = await tx.all<T>(sql, ...args);
+			readPayloads?.(rows.filter((row) => "entry_json" in row).length);
+			return rows;
+		},
+	});
+	const store = await SqlSessionStore.open(
+		readPayloads
+			? {
+					...counted(db),
+					descriptor: db.descriptor,
+					transaction: (body, options) => db.transaction((tx) => body(counted(tx)), options),
+					close: () => db.close(),
+				}
+			: db,
+	);
 	cleanups.push(() => store.close());
 	return store;
 }
@@ -233,6 +257,48 @@ test("a new child does not inherit the parent's deliveries or child ownership, e
 		);
 	}
 	assert.deepEqual(await store.load(parent.getSessionId()), before);
+});
+
+test("a child waiting for a slot reads only its captured launch window after the parent has moved on (#5594)", async () => {
+	let rows = 0;
+	const store = await sqlStore((count) => {
+		rows += count;
+	});
+	const parent = await longParent(store);
+	const expected = parent.buildSessionContext().messages;
+	const launch = createForkContextResolver(parent, "fork", { toolCallIds: [FORK_CALL_ID] });
+	await parent.appendMessage({ role: "user", content: "after launch", timestamp: 1 });
+	rows = 0;
+	const child = await launch.sessionManagerForIndex(0);
+	assert.ok(child);
+	assert.deepEqual(child.buildSessionContext().messages.slice(0, expected.length), expected);
+	assert.ok(
+		rows <= FORK_ENTRY_BUDGET * 3,
+		`the delayed fork decoded ${rows} stored payloads for a ${expected.length}-message window`,
+	);
+});
+
+test("forks retain edited tool content without copying the superseded payload (#5594)", async () => {
+	const store = await sqlStore();
+	const parent = await SessionManager.create(store, process.cwd());
+	await parent.appendMessage(assistant("call", FORK_CALL_ID));
+	const old = await parent.appendMessage({
+		role: "toolResult",
+		toolCallId: FORK_CALL_ID,
+		toolName: "subagent",
+		timestamp: 1,
+		isError: false,
+		content: [{ type: "text", text: "no-longer-visible".repeat(5000) }],
+	});
+	await parent.appendContextEdit(old, { content: "small replacement" });
+	const expected = JSON.stringify(convertToLlm(parent.buildSessionContext().messages));
+	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+	assert.ok(child);
+	assert.equal(JSON.stringify(convertToLlm(child.buildSessionContext().messages)), expected);
+	assert.ok(
+		!JSON.stringify((await store.load(child.getSessionId())).entries).includes("no-longer-visible"),
+		"fork persisted text superseded by an edit",
+	);
 });
 
 test("a workflow stage forked from a long stage session copies only the context it is built from (#5500)", async () => {
