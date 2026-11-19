@@ -184,6 +184,18 @@ const RESERVATION_FRAME_MAX = 500;
  */
 const latestReservations = new WeakMap<IntercomEventBus, Map<string, object>>();
 const reservationOwners = new WeakMap<IntercomEventBus, { sessionId: string }>();
+interface PendingConfirmation {
+	readonly taskId: string | undefined;
+	readonly order: bigint;
+	recovered: boolean;
+}
+// Suspended wakes can use the current bus from an earlier evaluation of the extension.
+const ledgerKey = Symbol.for("@bastani/subagents/pending-wake-confirmations@1");
+const processState = globalThis as {
+	[ledgerKey]?: { order: bigint; byBus: WeakMap<IntercomEventBus, Map<string, Set<PendingConfirmation>>> };
+};
+processState[ledgerKey] ??= { order: 0n, byBus: new WeakMap() };
+const ledger = processState[ledgerKey];
 
 /** An in-flight retry must not use a release, or an owner session, that ended while the broker answered. */
 export function bindReleasedChildReservationOwner(events: IntercomEventBus, sessionId: string): () => void {
@@ -218,17 +230,26 @@ async function reserveFrame(
 ): Promise<void> {
 	let asked = frame;
 	while (asked.length > 0) {
+		const order = ++ledger.order;
+		let confirmed = false;
 		let error: Error | undefined;
 		try {
 			// The task id stays in this process: the broker holds a child by name and ids.
 			const children = asked.map(({ taskId: _taskId, ...child }) => child);
-			await emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children });
+			const request: { children: typeof children; completion?: Promise<void> } = { children };
+			await emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, request);
+			confirmed = request.completion !== undefined;
 		} catch (caught) {
 			error = caught as Error;
 		}
 		if (error === undefined) {
 			const recovered = asked.filter(current);
 			if (recovered.length > 0) {
+				const pending = confirmed ? ledger.byBus.get(events) : undefined;
+				if (pending?.size)
+					for (const child of recovered)
+						for (const ack of pending.get(child.childName) ?? [])
+							if (ack.taskId === child.taskId && ack.order < order) ack.recovered = true;
 				const recovery: ReleasedChildHoldRecovery = { childNames: recovered.map((child) => child.childName) };
 				emitToOwner(events, SUBAGENT_HOLD_RECOVERED_EVENT, recovery);
 			}
@@ -311,22 +332,33 @@ export function dropReleasedChildren(
  * Tell the broker this owner is waking the child, so the sends held for it may wait longer. `taskId`: the run whose
  * release this wake ends, so a refusal is not reported once the child's latest record is another run's.
  */
-export function acknowledgeReleasedChildWake(
+export async function acknowledgeReleasedChildWake(
 	ownerEvents: IntercomEventBus,
 	childName: string,
 	taskId?: string,
 ): Promise<void> {
 	const events = subagentChildRequestEvents(ownerEvents);
-	if (!events) return Promise.resolve();
-	return emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName }).catch(
-		(error: Error) =>
+	if (!events) return;
+	const pending = ledger.byBus.get(events) ?? new Map<string, Set<PendingConfirmation>>();
+	ledger.byBus.set(events, pending);
+	const child = pending.get(childName) ?? new Set<PendingConfirmation>();
+	pending.set(childName, child);
+	const ack = { taskId, order: ++ledger.order, recovered: false };
+	child.add(ack);
+	try {
+		await emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName });
+	} catch (error) {
+		if (!ack.recovered)
 			recordHoldFailure(
 				events,
 				[childName],
-				error,
+				error as Error,
 				taskId === undefined ? undefined : new Map([[childName, taskId]]),
-			),
-	);
+			);
+	} finally {
+		child.delete(ack);
+		if (child.size === 0) pending.delete(childName);
+	}
 }
 
 /**
