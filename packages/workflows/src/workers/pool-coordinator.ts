@@ -96,6 +96,7 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import { missingSnapshotBlob } from "./dispatch-snapshot.js";
 import { EndedWatches } from "./ended-watches.js";
 import { FleetRateLimiter } from "./fleet-rate-limits.js";
+import { hasLiveStageSession, releaseWorkerStages } from "./open-stages.js";
 import {
 	type BoundWait,
 	boundWait,
@@ -303,15 +304,6 @@ function token(work: PoolWork): PoolWorkToken {
 	};
 }
 
-function isLiveStage(stage: StageSnapshot): boolean {
-	return (
-		(stage.sessionId !== undefined || stage.sessionFile !== undefined) &&
-		stage.status !== "completed" &&
-		stage.status !== "failed" &&
-		stage.status !== "skipped"
-	);
-}
-
 /** Whether a later incarnation of a root runs again a child an earlier one completed with this result. */
 function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
 	return failedOnPoolFault(result) || refusedAtChildStart(result);
@@ -326,6 +318,7 @@ function remoteStageSnapshot(stage: StageSnapshot): PooledStageChatSnapshot {
 	return {
 		sessionId: stage.sessionId,
 		status: stage.status,
+		publishedActivity: stage.chatActivity ?? "idle",
 		isStreaming: false,
 		messages: [],
 		pendingToolExecutionEvents: [],
@@ -376,7 +369,7 @@ interface Attempt {
  */
 class PooledRoutes {
 	readonly mirror: Store = createStore();
-	private readonly owners = new Map<string, string>();
+	private readonly owners = new Map<string, PoolWorkToken>();
 	private readonly attempts = new Map<string, Attempt>();
 	private activated = false;
 	private bridge?: Bridge;
@@ -428,6 +421,11 @@ class PooledRoutes {
 		this.mirror.recordRunStart({ ...rootRun, inputs: {}, toolNodes: [], rootRunId: this.root });
 	}
 
+	/** The attempt whose acknowledged snapshot is in the mirror for this run. */
+	ownerOf(runId: string): PoolWorkToken | undefined {
+		return this.owners.get(runId);
+	}
+
 	/** Applies publications the root accepted. */
 	accept(entries: readonly PoolActivityEntry[]): void {
 		this.mirror.batch(() => {
@@ -442,7 +440,7 @@ class PooledRoutes {
 				if (attempt.fenced) continue;
 				for (const run of runs) {
 					attempt.runs.add(run.id);
-					this.owners.set(run.id, work.id);
+					this.owners.set(run.id, work);
 					const { pendingStageMessages: _messages, ...published } = run;
 					this.mirror.recordRunStart({ ...published, rootRunId: this.root });
 					if (run.stages.some((stage) => stage.pendingStageDeliveryAvailable === true)) this.activated = true;
@@ -511,16 +509,7 @@ class PooledRoutes {
 		this.mirror.batch(() => {
 			for (const id of attempt.runs) {
 				rotateWorkflowPendingStageRouteCapability(this.mirror, id);
-				const run = this.mirror.run(id);
-				if (run?.stages.some(isLiveStage) !== true) continue;
-				this.mirror.recordRunStart({
-					...run,
-					stages: run.stages.map((stage) => {
-						if (!isLiveStage(stage)) return stage;
-						const { sessionId: _session, sessionFile: _file, ...rest } = stage;
-						return { ...rest, attachable: false, attached: false };
-					}),
-				});
+				releaseWorkerStages(this.mirror, id);
 			}
 		});
 	}
@@ -816,7 +805,7 @@ export class PoolCoordinator {
 	/** Which stages' next inputs this coordinator takes on a pass, by run and stage. */
 	private readonly inputScheduler = new StageInputScheduler(SHARED_POLL_MS, STAGE_INPUT_RETRY_MAX_MS);
 	/** Runs of attempts on other hosts, as their activity was relayed, and the root's views of their stages (#4391). */
-	private readonly remoteWatches = new RemoteStageWatches(isLiveStage);
+	private readonly remoteWatches = new RemoteStageWatches(hasLiveStageSession);
 	/** Warm worktrees by binding identity, as the host last answered, with when it answered. */
 	private readonly preferences = new Map<string, { readonly path: string | undefined; readonly at: number }>();
 	/** Set once a satellite stops taking new work, to finish what it holds and close. */
@@ -2115,7 +2104,8 @@ export class PoolCoordinator {
 	private remoteStageWatch(id: WatchId, runId: string, stageId: string): WatchResult | undefined {
 		const stage = this.routes?.mirror.run(runId)?.stages.find((candidate) => candidate.id === stageId);
 		if (stage === undefined) return undefined;
-		const work = this.remoteWatches.open(id, runId, stageId, stage);
+		const work = this.remoteWatches.open(id, runId, stage, this.routes?.ownerOf(runId));
+		if (work === "pending") return { ok: false, refusal: "AttemptChanging" };
 		if (work === undefined) return undefined;
 		return {
 			ok: true,

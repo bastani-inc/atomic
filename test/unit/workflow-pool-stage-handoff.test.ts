@@ -316,6 +316,34 @@ test.each([true, false])(
 	},
 );
 
+test("an open stage pane can still mark itself attached after its worker is fenced", async () => {
+	const { WorkflowAttachPane } = await import("../../packages/workflows/src/tui/workflow-attach-pane.js");
+	const { deriveGraphTheme } = await import("../../packages/workflows/src/tui/graph-theme.js");
+	const f = await fixture();
+	let pane: InstanceType<typeof WorkflowAttachPane> | undefined;
+	const runId = descriptor.childRunId;
+	const review = () => f.store.run(runId)?.stages.find((s) => s.id === "review");
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("review", { sessionId: "review-session" })])]);
+		pane = new WorkflowAttachPane({
+			store: f.store,
+			graphTheme: deriveGraphTheme({}),
+			runId,
+			initialAttachStageId: "review",
+			onClose() {},
+		});
+		await vi.waitFor(() => assert.equal(review()?.attached, true));
+		f.handoff.fence(f.first);
+		assert.equal(review()?.sessionId, undefined);
+		pane.setVisible(false);
+		pane.setVisible(true);
+		assert.equal(review()?.attached, true);
+	} finally {
+		pane?.dispose();
+		await f.close();
+	}
+});
+
 test("a published child subtree appears once under the root and keeps root-owned queued messages (#3869)", async () => {
 	const f = await fixture();
 	try {
@@ -541,12 +569,13 @@ test("a replaced worker cannot publish and the successor's capability replaces t
 	}
 });
 
-test("fencing a lost worker clears its live sessions so steering queues for the successor (#3869)", async () => {
+test("fencing a lost worker clears its stage activity and live sessions so steering queues for the successor (#3869, #5572)", async () => {
 	const f = await fixture();
 	try {
 		await f.handoff.publish(f.first, [
 			childRun([
-				stage("stage", { sessionId: "session-a", sessionFile: "/gone/a.jsonl" }),
+				stage("stage", { sessionId: "session-a", sessionFile: "/gone/a.jsonl", chatActivity: "retrying" }),
+				stage("starting", { chatActivity: "switching" }),
 				stage("done", { status: "completed", sessionId: "session-done" }),
 			]),
 		]);
@@ -555,6 +584,10 @@ test("fencing a lost worker clears its live sessions so steering queues for the 
 		const stages = f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages;
 		assert.equal(stages?.find((entry) => entry.id === "stage")?.sessionId, undefined);
 		assert.equal(stages?.find((entry) => entry.id === "stage")?.sessionFile, undefined);
+		assert.deepEqual(
+			stages?.map((entry) => entry.chatActivity),
+			[undefined, undefined, undefined],
+		);
 		assert.equal(stages?.find((entry) => entry.id === "done")?.sessionId, "session-done");
 		assert.notEqual(workflowPendingStageRouteCapability(f.store, descriptor.childRunId), stale);
 		await f.queueDirect("stage", "while-replacing");
