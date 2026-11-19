@@ -13,6 +13,7 @@ import { afterEach, beforeAll, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
+import type { MessageRenderer } from "../src/core/extensions/types.js";
 import type { CustomMessage } from "../src/core/messages.js";
 import {
 	supersedeBlockClicks,
@@ -33,7 +34,7 @@ import {
 	RemoteCustomMessageComponent,
 	RemoteToolExecutionComponent,
 } from "../src/modes/interactive-engine/remote-renderer.js";
-import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
+import { RecordingTerminal, transcriptSiblingReads } from "./helpers/interactive-fullscreen-layout.js";
 
 beforeAll(() => initTheme("dark", false));
 
@@ -53,7 +54,7 @@ const lines = (count: number, label: string) =>
  * `frames.hold()` keeps what the engine sends back from reaching the host, as a busy engine or a slow pipe does, until
  * `frames.release()`.
  */
-function isolatedEngine() {
+function isolatedEngine(renderers: Readonly<Record<string, MessageRenderer>> = {}) {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const ended = new Set<(event: { generation: number }) => void>();
 	let generation = 1;
@@ -81,7 +82,7 @@ function isolatedEngine() {
 						})
 					: customType === "intercom_message"
 						? renderIntercomCustomMessage
-						: undefined,
+						: renderers[customType],
 		},
 		getToolDefinition: () => undefined,
 		sessionManager: { getCwd: () => "/workspace" },
@@ -156,8 +157,8 @@ function intercomMessage(text: string): CustomMessage<unknown> {
 }
 
 /** The main chat of an isolated session: rows the engine draws, in a following transcript, under the real renderer. */
-async function mountIsolatedChat() {
-	const { runtime, frames } = isolatedEngine();
+async function mountIsolatedChat(renderers?: Readonly<Record<string, MessageRenderer>>) {
+	const { runtime, frames } = isolatedEngine(renderers);
 	const terminal = new RecordingTerminal();
 	terminal.columns = 100;
 	terminal.rows = 60;
@@ -224,6 +225,9 @@ async function mountIsolatedChat() {
 		await settle();
 	};
 	return {
+		chat,
+		terminal,
+		rowOf,
 		transcript,
 		frames,
 		bash,
@@ -239,6 +243,39 @@ async function mountIsolatedChat() {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("the isolated host displays an extension's own row data as text and does not send a button click (#5696)", async () => {
+	let clicks = 0;
+	class Badge extends Text {
+		children = [];
+		mouseLayout = { current: { column: 2 }, width: 40, children: [{ component: this, height: 1 }] };
+		handleMouse() {
+			clicks++;
+			return { handled: true };
+		}
+	}
+	const chat = await mountIsolatedChat({ badge: () => new Badge("Badge ready", 0, 0) });
+	chat.message({ ...intercomMessage("ready"), customType: "badge" });
+	await chat.waitFor(/Badge ready/);
+	await chat.click(/Badge ready/, "Badge");
+	assert.equal(clicks, 0);
+});
+
+test("Shift-clicking the last isolated message reads no transcript siblings (#5696)", async () => {
+	const { chat, terminal, message, waitFor, rowOf } = await mountIsolatedChat();
+	for (let i = 0; i < 32; i++) chat.addChild(new Text(`message ${i}`, 0, 0));
+	const target = message(intercomMessage("last remote message"));
+	await waitFor(/last remote message/);
+	const row = rowOf(/last remote message/) + 1;
+	assert.equal(
+		transcriptSiblingReads(chat, () => {
+			terminal.input(`\x1b[<4;2;${row}M`);
+			terminal.input(`\x1b[<4;2;${row}m`);
+		}),
+		0,
+	);
+	assert.equal(target.isExpanded(), false);
+});
 
 test("an isolated row not redrawn since a resize compares at the transcript's settlement width (#5562)", async () => {
 	const { runtime } = isolatedEngine();

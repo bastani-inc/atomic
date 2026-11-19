@@ -9,6 +9,7 @@ import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { mountRendererControls, rendererRows, unmountRendererControls } from "./renderer-click-area.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import {
 	completionNoticeFromDetails,
@@ -17,7 +18,7 @@ import {
 } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import type { RowRange } from "./transcript-block-clicks.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -95,8 +96,8 @@ export class CustomMessageComponent extends Container {
 
 	/** Every row of the card, under the blank row this message leads with. */
 	clickArea(width: number): RowRange | undefined {
-		if (this.spacer === undefined) return undefined;
-		return rowsFrom(this.spacer.render(width).length, this.render(width).length);
+		if (!this.spacer) return undefined;
+		return rendererRows(this, this.spacer.render(width).length, this.render(width));
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -114,6 +115,7 @@ export class CustomMessageComponent extends Container {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		unmountRendererControls(this);
 		disposeRenderer(this.customComponent);
 		this.customComponent = undefined;
 		this.completionOptions = undefined;
@@ -137,6 +139,7 @@ export class CustomMessageComponent extends Container {
 
 	private rebuild(): void {
 		if (this.disposed) return;
+		unmountRendererControls(this);
 		const previous = this.customComponent;
 		this.customComponent = undefined;
 		if (previous) this.removeChild(previous);
@@ -205,6 +208,7 @@ export class CustomMessageComponent extends Container {
 					this.addChild(this.spacer);
 					this.customComponent = component;
 					this.addChild(component);
+					mountRendererControls(this, this, [component]);
 					return;
 				}
 			} catch {

@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
+	Box,
 	Container,
 	getKeybindings,
+	HStack,
+	MouseRegion,
 	MULTI_CLICK_INTERVAL_MS,
 	matchesKey,
 	resetCapabilitiesCache,
@@ -16,8 +22,10 @@ import {
 	VStack,
 	WindowedContainer,
 } from "@bastani/atomic-tui";
+import { build } from "esbuild";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
+import type { ToolRenderers } from "../src/core/extensions/tool-types.js";
 import type { MessageRenderer } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionEntry } from "../src/core/session-manager.js";
@@ -25,9 +33,12 @@ import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
 import { CustomEntryComponent } from "../src/modes/interactive/components/custom-entry.js";
+import { CustomMessageComponent } from "../src/modes/interactive/components/custom-message.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import {
 	type ClickExpandableBlock,
 	clickableBlocksView,
+	supersedeBlockClicks,
 } from "../src/modes/interactive/components/transcript-block-clicks.js";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
@@ -37,7 +48,7 @@ import { ExpandableText } from "../src/modes/interactive/interactive-mode-helper
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
-import { getLayoutFrame, RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
+import { getLayoutFrame, RecordingTerminal, transcriptSiblingReads } from "./helpers/interactive-fullscreen-layout.js";
 
 const browser = vi.hoisted(() => ({ openBrowser: vi.fn<(url: string) => void>() }));
 vi.mock("../src/utils/open-browser.ts", () => browser);
@@ -57,6 +68,7 @@ function makeMode(
 	requestRender: () => void,
 	transcriptView: () => ScrollView | undefined,
 	messageRenderers: Readonly<Record<string, MessageRenderer>> = {},
+	toolRenderers: Readonly<Record<string, ToolRenderers>> = {},
 ) {
 	const chatContainer = new StartupChatContainer(isChatMessageComponent, transcriptView);
 	chatContainer.releaseStartupOutput();
@@ -107,7 +119,7 @@ function makeMode(
 		mermaidMarkdownTransformerMode: "streaming",
 		getMarkdownTransformers: proto("getMarkdownTransformers"),
 		getMarkdownThemeWithSettings: () => getMarkdownTheme(),
-		getRegisteredToolDefinition: () => undefined,
+		getRegisteredToolDefinition: (name: string) => toolRenderers[name],
 		maybeShowAssistantDiagnostics: vi.fn(),
 		maybeShowInstallChangeWarning: vi.fn(),
 		updatePendingMessagesDisplay: vi.fn(),
@@ -181,7 +193,11 @@ const lines = (count: number, label: string) =>
 async function mountChat(
 	columns: number,
 	rows: number,
-	outputs: { readonly second?: string; readonly messageRenderers?: Readonly<Record<string, MessageRenderer>> } = {},
+	outputs: {
+		readonly second?: string;
+		readonly messageRenderers?: Readonly<Record<string, MessageRenderer>>;
+		readonly toolRenderers?: Readonly<Record<string, ToolRenderers>>;
+	} = {},
 ) {
 	const terminal = new RecordingTerminal();
 	terminal.columns = columns;
@@ -199,6 +215,7 @@ async function mountChat(
 		() => tui.requestRender(),
 		() => transcript,
 		outputs.messageRenderers,
+		outputs.toolRenderers,
 	);
 	const document = new WindowedContainer();
 	document.addChild(mode.chatContainer);
@@ -294,6 +311,31 @@ async function mountChat(
 }
 
 describe("clicking transcript blocks in the main chat", () => {
+	test("a modified or superseded click on the last message reads no transcript siblings (#5696)", async () => {
+		const chat = await mountChat(100, 24);
+		try {
+			const container = chat.mode.chatContainer;
+			for (let i = 0; i < 32; i++) container.addChild(new Text(`message ${i}`, 0, 0));
+			chat.tui.renderNow();
+			const row = chat.rowOf(/message 31/) + 1;
+			assert.equal(
+				transcriptSiblingReads(container, () => {
+					chat.terminal.input(`\x1b[<4;2;${row}M`);
+					chat.terminal.input(`\x1b[<4;2;${row}m`);
+				}),
+				0,
+			);
+			chat.press(5, row - 1);
+			supersedeBlockClicks(container);
+			assert.equal(
+				transcriptSiblingReads(container, () => chat.release(5, row - 1)),
+				0,
+			);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("a click on a tool block's header expands it and a second click collapses it, leaving the other blocks alone", async () => {
 		const chat = await mountChat(100, 60);
 		try {
@@ -1142,6 +1184,726 @@ describe("clicking other blocks Ctrl+O expands in the main chat", () => {
 			assert.ok(shown(), screen().join("\n"));
 		} finally {
 			tui.stop();
+		}
+	});
+});
+
+/** A control an extension draws, such as a button, that takes its own clicks on its first row and counts them. */
+function extensionButton(lines: readonly string[]) {
+	const button = {
+		clicks: 0,
+		render: (width: number) => lines.map((line) => line.slice(0, width)),
+		invalidate() {},
+		handleMouse(event: { readonly type: string; readonly y: number }) {
+			if (event.type !== "click" || event.y !== 0) return undefined;
+			button.clicks += 1;
+			return { handled: true };
+		},
+	};
+	return button;
+}
+
+describe("controls an extension draws inside a block of the main chat (#5696)", () => {
+	test("a button in an extension's message gets the clicks it takes, and a click it leaves still opens the message (#5696)", async () => {
+		const button = extensionButton(["[ Approve ]"]);
+		const renderer: MessageRenderer = (_message, { expanded }) => {
+			const drawn = extensionButton(
+				expanded
+					? ["[ Approve ]", "Plan: rename the cache keys", "Step 2 detail"]
+					: ["[ Approve ]", "Plan: rename the cache keys"],
+			);
+			drawn.handleMouse = (event) => button.handleMouse(event);
+			return drawn as never;
+		};
+		const chat = await mountChat(100, 60, { messageRenderers: { approval: renderer } });
+		try {
+			const custom = { role: "custom", customType: "approval", content: "approve?", display: true, timestamp: 1 };
+			await emit(chat.mode, { type: "message_start", message: custom });
+			await emit(chat.mode, { type: "message_end", message: custom });
+			chat.tui.renderNow();
+			const opened = () => chat.screen().some((line) => line.includes("Step 2 detail"));
+
+			const row = chat.rowOf(/\[ Approve \]/);
+			chat.click(chat.columnOf(row, "Approve"), row);
+			assert.equal(button.clicks, 1, `the button took the click:\n${chat.screen().join("\n")}`);
+			assert.ok(!opened(), `a click the button took does not open the message:\n${chat.screen().join("\n")}`);
+			chat.click(chat.columnOf(row, "Approve"), row);
+			assert.equal(button.clicks, 2);
+
+			const plan = chat.rowOf(/Plan: rename the cache keys/);
+			chat.click(chat.columnOf(plan, "rename"), plan);
+			assert.equal(button.clicks, 2, "a row the button does not draw is not its click");
+			assert.ok(opened(), `a click nothing inside takes opens the message:\n${chat.screen().join("\n")}`);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("read-only text beside a button and the blank gap above a button do not activate either button (#5696)", async () => {
+		const left = extensionButton(["[ Cancel order ]"]);
+		const below = extensionButton(["[ Cancel delivery ]"]);
+		const panel = new Container();
+		panel.addChild(new HStack([{ component: left, basis: 20 }, new Text("Read-only reference", 0, 0)]));
+		panel.addChild(new VStack([new Text("Delivery summary", 0, 0), below], { gap: 1 }));
+		const chat = await mountChat(100, 60, { messageRenderers: { order: () => panel } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "order",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const ref = chat.rowOf(/Read-only reference/);
+			chat.click(chat.columnOf(ref, "reference"), ref);
+			const gap = chat.rowOf(/Delivery summary/) + 1;
+			assert.equal(chat.rowOf(/Cancel delivery/), gap + 1);
+			assert.equal(chat.screen()[gap]?.trim(), "");
+			chat.click(5, gap);
+			assert.deepEqual([left.clicks, below.clicks], [0, 0]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("read-only text beside a button in a bundled layout does not click the button (#5696)", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "atomic-bundled-layout-"));
+		const outfile = join(dir, "layout.mjs");
+		let BundledStack: typeof HStack;
+		try {
+			await build({
+				stdin: { contents: 'export { HStack } from "@bastani/atomic-tui"', resolveDir: import.meta.dirname },
+				bundle: true,
+				minify: true,
+				platform: "node",
+				format: "esm",
+				outfile,
+			});
+			({ HStack: BundledStack } = await import(pathToFileURL(outfile).href));
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+		const cancel = extensionButton(["[ Cancel order ]"]);
+		const stack = new BundledStack([{ component: cancel, basis: 26 }, new Text("Read-only reference", 0, 0)]);
+		const bound = new BundledStack([{ component: cancel, basis: 26 }, new Text("Read-only bound reference", 0, 0)]);
+		bound.handleMouse = bound.handleMouse.bind(bound);
+		const chat = await mountChat(100, 60, { messageRenderers: { order: () => stack, bound: () => bound } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "bound",
+				content: "review",
+				display: true,
+				timestamp: 0,
+			});
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "order",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			for (const label of [/Read-only reference/, /Read-only bound reference/]) {
+				const row = chat.rowOf(label);
+				chat.click(chat.columnOf(row, "reference"), row);
+				assert.equal(cancel.clicks, 0);
+			}
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a text renderer can refer to itself in its own row data (#5696)", async () => {
+		class Badge extends Text {
+			children = [];
+			mouseLayout = { current: { column: 2 }, width: 40, children: [{ component: this, height: 1 }] };
+		}
+		const chat = await mountChat(100, 60, { messageRenderers: { badge: () => new Badge("Badge ready", 0, 0) } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "badge",
+				content: "ready",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			assert.ok(chat.screen().some((line) => line.includes("Badge ready")));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a renderer's button class gets a click on its label but not on the margin beside it (#5696)", async () => {
+		class Button {
+			clicks = 0;
+			private readonly child = new Text("[ Save ]", 4, 0);
+			render(width: number) {
+				return this.child.render(width);
+			}
+			invalidate() {
+				this.child.invalidate();
+			}
+			handleMouse(event: { type: string }) {
+				if (event.type !== "click") return undefined;
+				this.clicks++;
+				return { handled: true };
+			}
+		}
+		const button = new Button();
+		const chat = await mountChat(100, 60, { messageRenderers: { save: () => button } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "save",
+				content: "save",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Save \]/);
+			chat.click(1, row);
+			chat.click(chat.columnOf(row, "Save") + 18, row);
+			assert.equal(button.clicks, 0);
+			chat.click(chat.columnOf(row, "Save"), row);
+			assert.equal(button.clicks, 1);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("zero-width direction marks leave a button's blank margin available to open its card (#5696)", async () => {
+		const label = "\u200e        [ Cancel ]   \u200e";
+		const cancel = extensionButton([label]);
+		const chat = await mountChat(100, 60, {
+			messageRenderers: {
+				order: (_message, { expanded }) => ({
+					...cancel,
+					render: () => (expanded ? [label, "Order details"] : [label]),
+				}),
+			},
+		});
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "order",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Cancel \]/);
+			chat.click(3, row);
+			assert.equal(cancel.clicks, 0);
+			assert.equal(chat.rowOf(/Order details/), row + 1);
+			chat.click(18, row);
+			assert.equal(cancel.clicks, 0);
+			chat.click(8, row);
+			assert.equal(cancel.clicks, 1);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a button returned by a custom entry renderer gets its click (#5696)", async () => {
+		const button = extensionButton(["[ Save entry ]"]);
+		const chat = await mountChat(100, 60);
+		try {
+			mode(chat).chatContainer.addChild(
+				new CustomEntryComponent(
+					{ type: "custom", customType: "save", data: {}, id: "save", parentId: null, timestamp: "" },
+					() => button,
+				),
+			);
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Save entry/);
+			chat.click(chat.columnOf(row, "Save"), row);
+			assert.equal(button.clicks, 1);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a renderer can keep its own mouse layout state and still take clicks (#5696)", async () => {
+		const button = Object.assign(extensionButton(["[ Save ]"]), { mouseLayout: { current: { column: 2 } } });
+		const chat = await mountChat(100, 60, { messageRenderers: { save: () => button } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "save",
+				content: "save",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Save \]/);
+			chat.click(chat.columnOf(row, "Save"), row);
+			assert.equal(button.clicks, 1);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	for (const wrapped of [false, true])
+		test(`shrinking an order summary ${wrapped ? "in a mouse region " : ""}between press and release does not click the button that moves up (#5696)`, async () => {
+			const summary = ["Review this order", "Order summary"];
+			const cancel = extensionButton(["[ Cancel order ]"]);
+			const panel = new Container();
+			panel.addChild({ render: () => summary, invalidate() {} });
+			panel.addChild(cancel);
+			const component = wrapped ? new MouseRegion(panel, () => undefined) : panel;
+			const chat = await mountChat(100, 60, { messageRenderers: { order: () => component } });
+			try {
+				mode(chat).addMessageToChat({
+					role: "custom",
+					customType: "order",
+					content: "review",
+					display: true,
+					timestamp: 1,
+				});
+				chat.tui.renderNow();
+				const row = chat.rowOf(/Order summary/);
+				const column = chat.columnOf(row, "Order");
+				chat.press(column, row);
+				summary.pop();
+				assert.match(chat.screen()[row]!, /Order summary/);
+				chat.release(column, row);
+				assert.equal(cancel.clicks, 0);
+				// Measuring the transcript does not repaint either. A second press still sees the summary.
+				chat.transcriptText();
+				const second = chat.columnOf(row, "summary");
+				chat.press(second, row);
+				chat.release(second, row);
+				chat.settle();
+				assert.equal(cancel.clicks, 0);
+			} finally {
+				chat.tui.stop();
+			}
+		});
+
+	test("repainting an identical button from a different instance cancels the old button's click (#5696)", async () => {
+		const original = extensionButton(["[ Approve ]"]);
+		const replacement = extensionButton(["[ Approve ]"]);
+		const box = new Box(2, 1);
+		box.addChild(original);
+		const chat = await mountChat(100, 60, { messageRenderers: { approval: () => box } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "approval",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Approve \]/);
+			const col = chat.columnOf(row, "Approve");
+			chat.press(col, row);
+			box.clear();
+			box.addChild(replacement);
+			chat.tui.renderNow();
+			box.clear();
+			box.addChild(original);
+			chat.release(col, row);
+			assert.deepEqual([original.clicks, replacement.clicks], [0, 0]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	for (const change of ["removed", "zero-height"] as const) {
+		test(`an extension's ${change} button gets no click before the next paint (#5696)`, async () => {
+			const label = ["[ Approve ]"];
+			const button = extensionButton(label);
+			const panel = new Container();
+			panel.addChild(new Text("Approval request", 0, 0));
+			panel.addChild(button);
+			const chat = await mountChat(100, 60, { messageRenderers: { approval: () => panel } });
+			try {
+				mode(chat).addMessageToChat({
+					role: "custom",
+					customType: "approval",
+					content: "approve?",
+					display: true,
+					timestamp: 1,
+				});
+				chat.tui.renderNow();
+				const row = chat.rowOf(/\[ Approve \]/);
+				const column = chat.columnOf(row, "Approve");
+				chat.press(column, row);
+				setTimeout(() => {
+					if (change === "removed") panel.removeChild(button);
+					else label.length = 0;
+					chat.tui.requestRender();
+				}, 1);
+				vi.advanceTimersByTime(1);
+				assert.match(chat.screen()[row]!, /\[ Approve \]/, "the requested repaint is still pending");
+				chat.release(column, row);
+				chat.settle();
+				assert.equal(button.clicks, 0);
+			} finally {
+				chat.tui.stop();
+			}
+		});
+	}
+
+	for (const cost of ["offscreen rows", "invisible suffix"] as const) {
+		test(`two clicks on a blank margin do not scan ${cost} (#5696)`, () => {
+			const label = `    [Save]${cost === "invisible suffix" ? "\u200e".repeat(50_000) : ""}`;
+			const rows = [label, ...Array.from({ length: cost === "offscreen rows" ? 2000 : 0 }, (_, i) => `report ${i}`)];
+			const widget = { ...extensionButton([label]), render: () => rows };
+			const block = new CustomMessageComponent(
+				{ role: "custom", customType: "report", content: "report", display: true, timestamp: 1 },
+				() => widget,
+			);
+			const chat = new StartupChatContainer();
+			chat.releaseStartupOutput();
+			chat.addChild(block);
+			let dispatching = false;
+			let oldReads = 0;
+			let maxSegmentInput = 0;
+			const render = block.render.bind(block);
+			block.render = (width) => {
+				const lines = render(width);
+				return dispatching
+					? lines
+					: new Proxy(lines, {
+							get(target, key, receiver) {
+								if (dispatching && typeof key === "string" && /^\d+$/.test(key)) oldReads++;
+								return Reflect.get(target, key, receiver);
+							},
+						});
+			};
+			const dispatch = chat.handleMouse.bind(chat);
+			const offers: boolean[] = [];
+			chat.handleMouse = (event) => {
+				if (event.type !== "click") return dispatch(event);
+				dispatching = true;
+				try {
+					const result = dispatch(event);
+					offers.push(!!result?.whenSingleClick);
+					return result;
+				} finally {
+					dispatching = false;
+				}
+			};
+			const segment = Intl.Segmenter.prototype.segment;
+			const spy = vi.spyOn(Intl.Segmenter.prototype, "segment").mockImplementation(function (
+				this: Intl.Segmenter,
+				text,
+			) {
+				if (dispatching) maxSegmentInput = Math.max(maxSegmentInput, text.length);
+				return segment.call(this, text);
+			});
+			const terminal = new RecordingTerminal();
+			const tui = createFullscreenTui({ terminal, showHardwareCursor: false, logDirectory: tmpdir() });
+			try {
+				tui.setLayoutRoot(new ScrollView(chat));
+				tui.start();
+				tui.renderNow();
+				const y = tui.getScreenLines().findIndex((line) => line.includes("[Save]"));
+				assert.notEqual(y, -1);
+				for (const x of [1, 2]) {
+					terminal.input(`\x1b[<0;${x + 1};${y + 1}M`);
+					terminal.input(`\x1b[<0;${x + 1};${y + 1}m`);
+					vi.advanceTimersByTime(MULTI_CLICK_INTERVAL_MS + 1);
+					tui.renderNow();
+				}
+				assert.deepEqual(offers, [true, true]);
+				if (cost === "offscreen rows") assert.equal(oldReads, 0);
+				else assert.ok(maxSegmentInput < 256, `segmented ${maxSegmentInput} input units during a margin click`);
+			} finally {
+				tui.stop();
+				spy.mockRestore();
+			}
+		});
+	}
+
+	test("a renderer's public click area contains geometry only (#5696)", () => {
+		const block = new CustomMessageComponent(
+			{ role: "custom", customType: "report", content: "report", display: true, timestamp: 1 },
+			() => extensionButton(["[ Save ]"]),
+		);
+		const area = block.clickArea(70)!;
+		block.dispose();
+		assert.deepEqual(Reflect.ownKeys(area).sort(), ["end", "start"]);
+		assert.deepEqual(area, { start: 1, end: 2 });
+	});
+
+	test("dispatching a click on a read-only scroll view renders its report only once (#5696)", () => {
+		const rows = Array.from({ length: 2000 }, (_, i) => `report item ${i + 1}`);
+		let draws = 0;
+		const list = new ScrollView({
+			render: () => {
+				draws++;
+				return rows;
+			},
+			invalidate() {},
+		});
+		const chat = new StartupChatContainer();
+		chat.releaseStartupOutput();
+		chat.addChild(
+			new CustomMessageComponent(
+				{ role: "custom", customType: "report", content: "report", display: true, timestamp: 1 },
+				() => list,
+			),
+		);
+		const frame = chat.layoutWindow({ width: 80, height: 24, top: 0, followEnd: false, requestRender() {} });
+		assert.equal(frame.at(2), "report item 2");
+		const cell = {
+			button: "left",
+			x: 2,
+			y: 2,
+			screenX: 2,
+			screenY: 2,
+			width: 80,
+			height: frame.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+		} as const;
+		chat.handleMouse({ ...cell, type: "press" });
+		chat.handleMouse({ ...cell, type: "release" });
+		draws = 0;
+		assert.ok(chat.handleMouse({ ...cell, type: "click" })?.whenSingleClick);
+		assert.equal(draws, 1);
+	});
+
+	test("a second widget's measurement cannot change which account was painted (#5696)", async () => {
+		let account = "A";
+		let measured = account;
+		const opened: string[] = [];
+		const widget = {
+			render() {
+				measured = account;
+				return ["Open account"];
+			},
+			invalidate() {},
+			paintedRowKey: () => measured,
+			handleMouse(event: { type: string }) {
+				if (event.type === "click") {
+					opened.push(measured);
+					return { handled: true };
+				}
+			},
+		};
+		const block = new CustomMessageComponent(
+			{ role: "custom", customType: "accounts", content: "accounts", display: true, timestamp: 1 },
+			() => widget,
+		);
+		const chat = await mountChat(100, 60);
+		try {
+			mode(chat).chatContainer.addChild(block);
+			let preview = false;
+			mode(chat).chatContainer.addChild({
+				render(width) {
+					if (preview) {
+						preview = false;
+						account = "B";
+						block.render(width);
+					}
+					return ["Account summary"];
+				},
+				invalidate() {},
+			});
+			chat.tui.renderNow();
+			preview = true;
+			chat.tui.renderNow();
+			const y = chat.rowOf(/Open account/);
+			chat.click(2, y);
+			assert.deepEqual(opened, []);
+			chat.click(2, y);
+			assert.deepEqual(opened, ["B"]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("identical order numbers cannot transfer a click from the summary to a result before paint (#5696)", async () => {
+		let moved = false;
+		const opened: string[] = [];
+		const orders = () => (moved ? ["Order 407", "Order 408"] : ["Order 408"]);
+		const chat = await mountChat(100, 60, {
+			toolRenderers: {
+				orders: {
+					renderShell: "self",
+					renderCall: () => ({
+						render: () => (moved ? ["Recent orders"] : ["Recent orders", "Order 407"]),
+						invalidate() {},
+					}),
+					renderResult: () => ({
+						render: orders,
+						invalidate() {},
+						handleMouse(event) {
+							if (event.type !== "click") return;
+							opened.push(orders()[event.y]!);
+							return { handled: true };
+						},
+					}),
+				},
+			},
+		});
+		try {
+			await toolTurn(
+				chat.mode,
+				fauxAssistantMessage([fauxToolCall("orders", {}, { id: "orders-1" })], { stopReason: "toolUse" }),
+				() => "ok",
+			);
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Order 407/);
+			moved = true;
+			chat.transcriptText();
+			chat.click(chat.columnOf(row, "Order"), row);
+			assert.deepEqual(opened, []);
+			chat.click(chat.columnOf(row, "Order"), row);
+			assert.deepEqual(opened, ["Order 407"]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	for (const keepHeight of [false, true]) {
+		test(`a tool summary that still appears above Cancel cannot invoke it before repaint (same height: ${keepHeight}) (#5696)`, async () => {
+			let short = false;
+			const cancel = extensionButton(["[ Cancel order ]"]);
+			const chat = await mountChat(100, 60, {
+				toolRenderers: {
+					order: {
+						renderShell: "self",
+						renderCall: () => ({
+							render: () => (short ? ["Order"] : ["Order", "Read-only summary"]),
+							invalidate() {},
+						}),
+						renderResult: () => ({
+							...cancel,
+							render: () => (short && keepHeight ? ["[ Cancel order ]", "Notes"] : ["[ Cancel order ]"]),
+						}),
+					},
+				},
+			});
+			try {
+				await toolTurn(
+					chat.mode,
+					fauxAssistantMessage([fauxToolCall("order", {}, { id: "order-1" })], { stopReason: "toolUse" }),
+					() => "ok",
+				);
+				chat.tui.renderNow();
+				const row = chat.rowOf(/Read-only summary/);
+				setTimeout(() => {
+					short = true;
+				}, 1);
+				vi.advanceTimersByTime(1);
+				assert.ok(!chat.transcriptText().includes("Read-only summary"));
+				assert.match(chat.screen()[row]!, /Read-only summary/);
+				chat.click(4, row);
+				assert.equal(cancel.clicks, 0);
+				const painted = chat.rowOf(/Cancel order/);
+				chat.click(chat.columnOf(painted, "Cancel"), painted);
+				assert.equal(cancel.clicks, 1);
+			} finally {
+				chat.tui.stop();
+			}
+		});
+	}
+
+	test("dispatching a click on passive tool output renders that output only once (#5696)", async () => {
+		const output = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`);
+		let rowsRendered = 0;
+		const chat = new StartupChatContainer();
+		chat.releaseStartupOutput();
+		const tool = new ToolExecutionComponent(
+			"report",
+			"report-1",
+			{},
+			{},
+			{
+				renderShell: "self",
+				renderCall: () => new Text("Report", 0, 0),
+				renderResult: () => ({
+					invalidate() {},
+					render: () => {
+						rowsRendered += output.length;
+						return output;
+					},
+				}),
+			},
+			{ requestRender() {} } as never,
+			"/workspace",
+		);
+		try {
+			tool.setArgsComplete();
+			tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+			chat.addChild(tool);
+			const frame = chat.layoutWindow({ width: 80, height: 24, top: 0, followEnd: false, requestRender() {} });
+			const y = 3;
+			assert.equal(frame.at(y), "line 2");
+			const cell = {
+				button: "left",
+				x: 2,
+				y,
+				screenX: 2,
+				screenY: y,
+				width: 80,
+				height: frame.length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			} as const;
+			chat.handleMouse({ ...cell, type: "press" });
+			chat.handleMouse({ ...cell, type: "release" });
+			rowsRendered = 0;
+			assert.ok(chat.handleMouse({ ...cell, type: "click" })?.whenSingleClick);
+			assert.equal(rowsRendered, output.length);
+		} finally {
+			tool.dispose();
+		}
+	});
+
+	test("a click on the title row of a tool block its renderer draws opens it, and a control below takes its own click (#5696)", async () => {
+		const call = extensionButton(["\u25cf Deploy(staging)"]);
+		const result = extensionButton(["[ Roll back ]"]);
+		const toolRenderers: Record<string, ToolRenderers> = {
+			// A tool whose renderers draw the whole block, so the components they return are the block's own rows.
+			deploy: {
+				renderShell: "self",
+				renderCall: () => call as never,
+				renderResult: (_result, { expanded }) => {
+					const drawn = extensionButton(
+						expanded
+							? ["[ Roll back ]", "deployed 3 services", "service list"]
+							: ["[ Roll back ]", "deployed 3 services"],
+					);
+					drawn.handleMouse = (event) => result.handleMouse(event);
+					return drawn as never;
+				},
+			},
+		};
+		const chat = await mountChat(100, 60, { toolRenderers });
+		try {
+			await toolTurn(
+				chat.mode,
+				fauxAssistantMessage([fauxToolCall("deploy", { target: "staging" }, { id: "deploy-1" })], {
+					stopReason: "toolUse",
+				}),
+				() => "ok",
+			);
+			chat.tui.renderNow();
+			const opened = () => chat.screen().some((line) => line.includes("service list"));
+			assert.ok(!opened(), chat.screen().join("\n"));
+
+			const title = chat.rowOf(/Deploy\(staging\)/);
+			chat.click(chat.columnOf(title, "Deploy"), title);
+			assert.equal(call.clicks, 0, "the title row opens the block before the control drawn on it sees the click");
+			assert.ok(opened(), `the title row opens the block:\n${chat.screen().join("\n")}`);
+
+			const rollBack = chat.rowOf(/\[ Roll back \]/);
+			chat.click(chat.columnOf(rollBack, "Roll"), rollBack);
+			assert.equal(result.clicks, 1, "a control below the title row takes its click");
+			assert.ok(opened(), `and the block stays open:\n${chat.screen().join("\n")}`);
+		} finally {
+			chat.tui.stop();
 		}
 	});
 });
