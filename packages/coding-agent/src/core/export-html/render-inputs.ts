@@ -1,10 +1,16 @@
 import type { ToolCall, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import type { SessionEntry } from "../session-manager.ts";
+import type { SessionToolUseSelection } from "../storage/session/types.js";
 import type { ToolHtmlRenderer } from "./index.ts";
 import { editsFor, type JsonSpan } from "./json-spans.js";
 import type { captureHtmlHistory } from "./session-data.js";
 
 const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"]);
+/**
+ * The entries this pass can read: tool results, and assistant messages with a call of a tool the template does not
+ * render, besides entries larger than a page. A store skips every other entry for this pass (#5571).
+ */
+export const RENDER_INPUT_SELECTION: SessionToolUseSelection = { exceptCalls: [...TEMPLATE_RENDERED_TOOLS] };
 
 type Call = { kind: "call"; seq: number; index: number; id: string; name: string; args: ToolCall["arguments"] };
 type Result = {
@@ -27,7 +33,7 @@ export async function renderHtmlInputs(
 	const events: (Call | Result)[] = [];
 	const lastUse = new Map<string, number>();
 	const oversized = new Map<number, Map<string, JsonSpan>>();
-	for await (const { items } of source.readHistory()) {
+	for await (const { items } of source.readHistory(RENDER_INPUT_SELECTION)) {
 		for (const item of items) {
 			if (!("entry" in item)) {
 				const { oversizedRenderInputs } = await import("./oversized-render-inputs.js");

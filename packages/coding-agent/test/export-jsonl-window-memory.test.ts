@@ -411,6 +411,11 @@ describe.each(["memory", "jsonl", "sqlite"] as const)("a JSONL export from a %s 
 		const readRange = store.readRange!.bind(store);
 		store.readRange = (sessionId, start, end, epoch) =>
 			start <= 7 && end >= 7 ? Promise.reject(failure) : readRange(sessionId, start, end, epoch);
+		// A SQL store reads a scan's pages in one read each (#5571).
+		const readScanPage = store.readScanPage?.bind(store);
+		if (readScanPage)
+			store.readScanPage = (sessionId, start, end, epoch, limit) =>
+				start <= 7 && end >= 7 ? Promise.reject(failure) : readScanPage(sessionId, start, end, epoch, limit);
 
 		await assert.rejects(exportManager(manager, target), (error) => error === failure);
 

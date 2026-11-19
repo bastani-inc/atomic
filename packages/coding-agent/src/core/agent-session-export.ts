@@ -23,6 +23,7 @@ import {
 import { inlineToolOutput, withoutCarriedToolOutput } from "./session-tool-output.ts";
 import { sessionSnapshotBlobs, snapshotBlobInliner } from "./session-worktree-snapshots.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
+import { readAhead } from "./storage/session/history-pages.js";
 import { worktreeSnapshotPages } from "./storage/session/snapshot-records.js";
 import {
 	type OversizedSessionEntry,
@@ -365,29 +366,6 @@ async function* withSnapshotContent(branch: CapturedBranch): AsyncGenerator<Sess
 }
 
 type ArchiveCut = ReturnType<SessionManager["captureArchive"]>;
-
-/**
- * `pages`, each read while the one before it is written: the store's read and the file's writes overlap instead of
- * waiting on each other. At most two pages are held. A read that fails is thrown where its page would have been.
- */
-async function* readAhead<T>(pages: AsyncGenerator<T, void>): AsyncGenerator<T, void> {
-	const ahead = () => {
-		const next = pages.next();
-		next.catch(() => {});
-		return next;
-	};
-	let next = ahead();
-	try {
-		for (;;) {
-			const page = await next;
-			if (page.done) return;
-			next = ahead();
-			yield page.value;
-		}
-	} finally {
-		await pages.return(undefined);
-	}
-}
 
 /** A stored entry too large for a history page, from its exact bytes. */
 async function entryOf(cut: ArchiveCut, item: OversizedSessionEntry): Promise<SessionEntry> {
