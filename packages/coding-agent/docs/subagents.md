@@ -309,7 +309,7 @@ When waking or keeping track of a released subagent fails, `status` and the noti
 | `child-record-unreadable` | The child's latest record is in a session that is not open in this process, such as a workflow stage's session after the stage closed. | Open the session that launched the child and try again from it. |
 | `child-unrestorable` | The child's session or agent cannot be restored, for example because its agent is no longer defined. | Fix what the reason names, then `resume` it, or launch a new subagent. |
 | `record-append-failed` | The child's record could not be saved to the session store. Retryable. | Check the session store. Until the record is saved, a restart would not know this state of the child. |
-| `hold-failed` | Sends to the released child could not be held at the Intercom broker. Retryable. | Check that Intercom is connected. Until the reservation exists, sends to the child are answered as not found. |
+| `hold-failed` | Sends to the released child could not be held at the Intercom broker, for example because another session holds that child. Retryable. The notice names only the children whose reservation failed, once for each release of a child, until a reservation of it succeeds. A retry skips a child that has since resumed or finished. | Check that Intercom is connected. Until the reservation exists, sends to the child are answered as not found. |
 | `completion-not-held` | A shell task finished after the child that started it ran again or ended. | Nothing: the notice waits for the child's next run. The session that launched the child never receives it. |
 | `wake-failed` | A wake failed for any other reason. Retryable. | The results are kept: `resume` the child to try again. |
 
@@ -377,6 +377,8 @@ For adversarial review or research, prefer fresh context so the specialist inspe
 For parallel implementation work, `worktree: true` can give each child an isolated git worktree so concurrent edits do not clobber each other.
 
 Observation yields do not release these worktrees. The batch's worktrees and branches are removed once every child that uses them has finished; Atomic first saves each worktree's changes as a patch under the run's `worktree-diffs/<run id>` artifact directory. When a child is paused or quit, or stays resumable because you closed or switched away from its session or its workflow stage paused, its worktree is kept only if it has uncommitted or untracked changes or commits that are not in the run's base; a clean worktree is removed with the others. Resuming the child continues in its kept worktree, or recreates a removed one from the run's base with its saved patch applied, so a resumed completed child starts with its earlier changes. A resumed child keeps its worktree until it finishes again, and then saves a new patch (`task-<n>-<agent>.<execution>.patch`) rather than overwriting the earlier one. Cancelling a child for good, including a queued one, or its workflow stage closing for good, lets its worktree be removed. If you never resume a stopped child that has unsaved changes, its worktree stays on disk under `.atomic/worktrees/`.
+
+If resume cannot restart a child, it waits for worktree cleanup before reporting the error. A sibling that is still running keeps the batch's worktrees; wait for it before removing them. If cleanup takes more than ten seconds, the reply says so. Don't remove the directory while cleanup continues in the background. If a git command times out, check the worktree for unsaved changes before removing it.
 
 ### Named worktrees
 
