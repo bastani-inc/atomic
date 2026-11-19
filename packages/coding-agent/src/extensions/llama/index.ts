@@ -42,7 +42,7 @@ async function configuredClient(ctx: ExtensionCommandContext): Promise<LlamaClie
 	return new LlamaClient(serverUrl, result.auth.apiKey);
 }
 
-export default function llamaExtension(pi: ExtensionAPI): Promise<void> {
+export default function llamaExtension(pi: ExtensionAPI): void {
 	const provider = createLlamaProvider();
 	const registration = pi.registerProvider(provider.provider);
 
@@ -233,9 +233,11 @@ export default function llamaExtension(pi: ExtensionAPI): Promise<void> {
 	try {
 		pi.registerCommand("llama", command);
 	} catch (error) {
-		// Preserve the synchronous command failure without leaving a second rejection unhandled during shutdown.
-		void Promise.resolve(registration).catch(() => {});
+		// On a stale API both registrations fail. Observe the abandoned provider promise without letting a
+		// host-supplied promise change the synchronous command error. A successful load never waits on it.
+		void Promise.resolve()
+			.then(() => registration)
+			.catch(() => {});
 		throw error;
 	}
-	return registration;
 }
