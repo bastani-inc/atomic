@@ -571,6 +571,9 @@ Paths in `~/.atomic/agent/settings.json` resolve relative to `~/.atomic/agent`. 
 | `themes` | string[] | `[]` | Local theme file paths or directories |
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands |
 
+<a id="workflow-storage" />
+<a id="local-worker-pools" />
+
 Old `workflows` settings no longer configure execution. You can leave them in place: Atomic uses the old path entries only to locate files the agent can read as recipes on request. Worker, journal, admission, and auto-advance options have no effect.
 
 Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+path` to force-include an exact path and `-path` to force-exclude an exact path.

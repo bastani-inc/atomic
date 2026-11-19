@@ -7,6 +7,7 @@ import { addResource } from "./package-manager-resource-accumulator.ts";
 import {
 	collectAncestorAgentsSkillDirs,
 	collectAutoExtensionEntries,
+	collectAutoLegacyWorkflowFiles,
 	collectAutoPromptEntries,
 	collectAutoSkillEntries,
 	collectAutoThemeEntries,
@@ -21,9 +22,6 @@ import type {
 	ResourceMap,
 } from "./package-manager-types.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import { coLocatesWorkflowStoreAsync } from "./storage/file-identity.js";
-
-const USER_WORKFLOW_STORE_DIRS: ReadonlySet<string> = new Set(["journal", "pool", "runs"]);
 
 export async function collectProjectLocalResources(
 	sourceRoot: string,
@@ -174,7 +172,7 @@ export async function addAutoDiscoveredResources(
 			);
 			addResources(
 				accumulator.legacyWorkflowFiles,
-				await collectResourceFiles(join(configDir, "workflows"), "legacyWorkflowFiles"),
+				await collectAutoLegacyWorkflowFiles(join(configDir, "workflows")),
 				metadata,
 				projectOverrides.legacyWorkflowFiles,
 				configDir,
@@ -230,14 +228,7 @@ export async function addAutoDiscoveredResources(
 		);
 		addResources(
 			accumulator.legacyWorkflowFiles,
-			await collectResourceFiles(
-				join(configDir, "workflows"),
-				"legacyWorkflowFiles",
-				metadata.configurationOrigin === "atomic" &&
-					(await coLocatesWorkflowStoreAsync(configDir, context.settingsManager.getSettings()))
-					? USER_WORKFLOW_STORE_DIRS
-					: undefined,
-			),
+			await collectAutoLegacyWorkflowFiles(join(configDir, "workflows")),
 			metadata,
 			userOverrides.legacyWorkflowFiles,
 			configDir,
