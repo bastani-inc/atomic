@@ -143,8 +143,6 @@ test("terminal-before-return is settled and cannot restart its runner", async ()
 		});
 		assert.equal(value(await h.supervisor.startAgentTask(h.owner, intent, op)), task);
 		assert.equal(h.contexts.length, 1);
-		const foreground = await h.supervisor.foregroundTask(task);
-		assert.equal(!foreground.ok && foreground.error.code, "TaskTerminal");
 	} finally {
 		value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
 	}
@@ -155,7 +153,7 @@ test("designation replacement, SDK yield and observer disposal leave the same ex
 	const h = harness();
 	try {
 		const task = value(await h.supervisor.startAgentTask(h.owner, intent, operation()));
-		const first = h.supervisor.foregroundTask(task);
+		const first = h.supervisor.waitForTask(task, undefined, h.host);
 		const w1 = designatedWait(h);
 		await h.supervisor.waitForTask(task, 0);
 		const snapshot = () => {
@@ -165,7 +163,7 @@ test("designation replacement, SDK yield and observer disposal leave the same ex
 			return state;
 		};
 		assert.deepEqual(snapshot().tasks[0].observation, { kind: "foreground", waitId: h.supervisor.waitId(w1) });
-		const third = h.supervisor.foregroundTask(task);
+		const third = h.supervisor.waitForTask(task, undefined, h.host);
 		const w3 = designatedWait(h);
 		value(h.supervisor.yieldTaskWait(w1, "intercom-coordination"));
 		assert.equal(value(await first).kind, "yielded");
@@ -640,7 +638,6 @@ test("watch reconnect accepts a cursor and exposes a stable opaque subscription 
 // RFC #2884: verify the real native registration budget without a >30s suite test.
 test("requested agent waits apply owner defaults, until-settled and highest-priority per-call budgets", async () => {
 	const waitDoor = vi.spyOn(native.TaskSupervisor.prototype, "waitForTask");
-	const foregroundDoor = vi.spyOn(native.TaskSupervisor.prototype, "foregroundTask");
 	try {
 		for (const [configuration, expected] of [
 			[undefined, 30000],
@@ -656,29 +653,22 @@ test("requested agent waits apply owner defaults, until-settled and highest-prio
 				assert.equal(waitDoor.mock.lastCall?.[1], expected);
 				pending.push(h.supervisor.waitForTaskId(h.owner, h.supervisor.taskReference(task).taskId));
 				assert.equal(waitDoor.mock.lastCall?.[1], expected);
-				const foreground = h.supervisor.foregroundTask(task);
-				assert.equal(foregroundDoor.mock.lastCall?.[2], expected);
 				pending.push(h.supervisor.initialObservation(task, { kind: "foreground" }));
 				assert.equal(waitDoor.mock.lastCall?.[1], expected);
 				pending.push(h.supervisor.waitForTask(task, 0));
 				assert.equal(waitDoor.mock.lastCall?.[1], 0);
-				const explicitForeground = h.supervisor.foregroundTask(task, 0);
-				assert.equal(foregroundDoor.mock.lastCall?.[2], 0);
 				pending.push(h.supervisor.initialObservation(task, { kind: "foreground", budgetMs: 0 }));
 				assert.equal(waitDoor.mock.lastCall?.[1], 0);
 				assert.equal(value(await h.supervisor.initialObservation(task)).kind, "yielded");
 				assert.equal(h.contexts[0].signal.aborted, false);
 				value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
 				for (const observed of await Promise.all(pending)) value(observed);
-				value(await foreground);
-				value(await explicitForeground);
 			} finally {
 				value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
 			}
 		}
 	} finally {
 		waitDoor.mockRestore();
-		foregroundDoor.mockRestore();
 	}
 });
 
@@ -870,7 +860,7 @@ test("Node and Bun accept NaN wait budgets without native panics and retain obse
 		const result = spawnSyncCollect([runtime, "--import", "jiti/register", "test/fixtures/task-s1-nan-budget.ts"]);
 		assert.equal(result.exitCode, 0, `${runtime}\n${result.stdout}\n${result.stderr}`);
 		assert.doesNotMatch(result.stderr.toString(), /panicked at|unhandled.*rejection/i, result.stderr.toString());
-		assert.match(result.stdout.toString(), /NAN BUDGET LIFECYCLE VERIFIED 2 native doors 6 facade configurations/);
+		assert.match(result.stdout.toString(), /NAN BUDGET LIFECYCLE VERIFIED 2 native doors 4 facade configurations/);
 	}
 });
 
