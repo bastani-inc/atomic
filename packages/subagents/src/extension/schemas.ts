@@ -60,7 +60,7 @@ function heartbeatSchema(scope: string) {
 
 const GroupSchema = Type.Union([Type.String(), Type.Boolean()], {
 	description:
-		"Intercom group for spawned children. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set. The names `true` and `auto` are reserved; use a different literal group name. Defaults to the current session's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
+		"Intercom group for spawned children. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set. The names `true` and `auto` are reserved; use a different literal group name. Defaults to the launching session's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
 });
 
 const NamedWorktreeSchema = Type.Object(
