@@ -86,6 +86,28 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		setKeybindings(new KeybindingsManager());
 	});
 
+	it("lists a backreference match and reports an invalid regex as no matches (#5554)", () => {
+		const selector = mount([
+			makeSession({ id: "twice", firstMessage: "say it twice", allMessagesText: "ship it ship it" }),
+			makeSession({ id: "once", firstMessage: "say it once", allMessagesText: "ship it now" }),
+		]);
+		for (const ch of String.raw`re:^(.+) \1$`) selector.handleInput(ch);
+		const matched = frame(selector);
+		assert.ok(
+			matched.some((line) => line.includes("say it twice")),
+			matched.join("\n"),
+		);
+		assert.ok(!matched.some((line) => line.includes("say it once")), matched.join("\n"));
+
+		const invalid = mount([makeSession({ id: "a" })]);
+		for (const ch of "re:(") invalid.handleInput(ch);
+		const lines = frame(invalid);
+		assert.ok(
+			lines.some((line) => line.includes('No matches for "re:("')),
+			lines.join("\n"),
+		);
+	});
+
 	it("titles the sessions picker and shows a search box", () => {
 		const lines = frame(mount([makeSession({ id: "a" })]));
 		assert.ok(
