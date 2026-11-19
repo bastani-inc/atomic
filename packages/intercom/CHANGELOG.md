@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.90-alpha.1] - 2026-11-19
+
 ### Added
 
 - In fullscreen mode, a click on a key in the intercom session list's and message dialog's hint rows, such as `Enter: Send` or `Escape: Close`, presses that key

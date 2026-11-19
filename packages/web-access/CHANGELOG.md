@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.90-alpha.1] - 2026-11-19
+
 ### Fixed
 
-- On Windows, an aborted or timed-out GitHub clone has its process tree terminated once. Atomic no longer terminates it again when the clone's exit arrives ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
-- On Windows, a GitHub clone aborted as it starts, when `gh` or `git` cannot be started, now ends without a clone as an aborted clone does, instead of failing with `kill EINVAL` ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
+- On Windows, an aborted or timed-out GitHub clone has its process tree terminated once. Atomic no longer terminates it again when the clone's exit arrives, and a clone aborted as it starts, when `gh` or `git` cannot be started, now ends without a clone as an aborted clone does, instead of failing with `kill EINVAL` ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 
 ## [0.9.89] - 2026-11-18
 
