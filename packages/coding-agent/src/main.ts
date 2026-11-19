@@ -44,9 +44,11 @@ import {
 	VERSION,
 } from "./config.js";
 import type { AgentSession } from "./core/agent-session.js";
+import { isSessionQuitting } from "./core/agent-session-events.ts";
 import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
+	type CreateAgentSessionServicesOptions,
 	createUnstartedAgentSessionFromServices,
 	prepareAgentSessionServices,
 } from "./core/agent-session-services.ts";
@@ -892,7 +894,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			if (parsed.name !== undefined) await sessionManager.appendSessionInfo(parsed.name.trim());
 			storageFinalized = true;
 		};
-		const completeServices = await prepareAgentSessionServices({
+		const serviceOptions: CreateAgentSessionServicesOptions = {
 			cwd,
 			agentDir,
 			settingsManager: runtimeSettingsManager,
@@ -978,7 +980,11 @@ export async function main(argv: string[], options?: MainOptions) {
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
 			},
-		});
+		};
+		const completeServices = await prepareAgentSessionServices(
+			serviceOptions,
+			deferStartupTrust ? () => startupSession !== undefined && isSessionQuitting(startupSession) : undefined,
+		);
 		return async () => {
 			if (migrateAfterTrust) await runMigrationsAsync(cwd, { projectTrusted: true });
 			const services = await completeServices();
