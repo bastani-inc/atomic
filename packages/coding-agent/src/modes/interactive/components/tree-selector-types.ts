@@ -45,6 +45,7 @@ export interface ToolCallInfo {
 }
 
 export interface TreeListState {
+	archive?: import("./stored-tree-view.js").StoredTreeView;
 	flatNodes: FlatNode[];
 	filteredNodes: FlatNode[];
 	selectedIndex: number;

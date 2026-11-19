@@ -496,7 +496,7 @@ async function startupThinkingRecord(
 		const thinkingEntries = [];
 		let cursor: string | undefined;
 		do {
-			const page = await client.getEntries({ cursor });
+			const page = await client.getHistoryPage({ cursor });
 			for (const item of page.items)
 				if ("entry" in item && item.entry.type === "thinking_level_change") thinkingEntries.push(item.entry);
 			cursor = page.nextCursor;

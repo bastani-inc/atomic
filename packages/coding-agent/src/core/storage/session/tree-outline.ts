@@ -20,7 +20,18 @@ export function treeOutlineEntry(seq: number, entry: SessionEntry): SessionTreeO
 		msg.role === "assistant" &&
 		(!msg.stopReason || msg.stopReason === "stop" || msg.stopReason === "toolUse") &&
 		!msg.content.some((block) => block?.type === "text" && block.text?.trim());
-	return { ...base, role: msg.role, ...(hidden ? { hideAssistant: true } : {}) };
+	const callIds =
+		msg.role === "assistant" && Array.isArray(msg.content)
+			? msg.content.flatMap((block) =>
+					block?.type === "toolCall" && typeof block.id === "string" ? [block.id] : [],
+				)
+			: [];
+	return {
+		...base,
+		role: msg.role,
+		...(hidden ? { hideAssistant: true } : {}),
+		...(callIds.length ? { callIds } : {}),
+	};
 }
 
 /** Snapshot adapters necessarily deliver whole objects; native stores project headers in SQL or stream the

@@ -10,7 +10,6 @@ import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
-import { isLeafMoveEntry } from "../../core/session-manager-history.ts";
 import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
@@ -38,12 +37,10 @@ import {
 } from "./rpc-responses.ts";
 import type {
 	RpcCommand,
-	RpcForkMessagePage,
 	RpcPersistedModelDefaults,
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
-	RpcTreePage,
 } from "./rpc-types.ts";
 import { type EngineTaskInspectorMount, engineTaskInspectorUi, showEngineTaskInspector } from "./task-ui-bridge.js";
 
@@ -123,6 +120,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "clear_queue":
 		case "get_entries":
 		case "get_context_window":
+		case "get_history_page":
 		case "get_history_chunk":
 		case "get_messages":
 		case "get_state":
@@ -753,48 +751,38 @@ export function createRpcCommandHandler({
 					...(end < command.reference.bytes ? { nextOffset: end } : {}),
 				});
 			}
-			case "get_entries":
-			case "get_fork_messages":
-			case "get_tree": {
+			case "get_history_page": {
+				const first = await session.sessionManager
+					.readHistory({ fromSeq: command.fromSeq, toSeq: command.toSeq, cursor: command.cursor })
+					.next();
+				return createRpcSuccessResponse(id, command.type, first.done ? { items: [] } : first.value);
+			}
+			case "get_entries": {
 				const manager = session.sessionManager;
 				const leafId = manager.getLeafId();
-				let fromSeq = command.type === "get_entries" ? command.fromSeq : undefined;
-				if (command.type === "get_entries" && command.since !== undefined) {
-					if (command.cursor !== undefined || fromSeq !== undefined)
-						return createRpcErrorResponse(id, command.type, "Use since, fromSeq or cursor, not a combination");
-					const at = await manager.findEntrySeq(command.since);
-					if (at === undefined)
-						return createRpcErrorResponse(id, command.type, `Entry not found: ${command.since}`);
-					fromSeq = at + 1;
+				let entries = manager.getEntries();
+				if (command.since !== undefined) {
+					const i = entries.findIndex((entry) => entry.id === command.since);
+					if (i < 0) {
+						const seqs = entries.map((e) => manager.getEntrySeq(e.id) ?? 0);
+						const seq = await manager.findEntrySeq(command.since);
+						if (seq === undefined)
+							return createRpcErrorResponse(id, command.type, `Entry not found: ${command.since}`);
+						entries = entries.filter((_e, k) => seqs[k]! > seq);
+					} else entries = entries.slice(i + 1);
 				}
-				const reader = manager.readHistory({
-					fromSeq,
-					toSeq: command.type === "get_entries" ? command.toSeq : undefined,
-					cursor: command.cursor,
+				return createRpcSuccessResponse(id, command.type, { entries, leafId });
+			}
+			case "get_tree":
+				return createRpcSuccessResponse(id, command.type, {
+					tree: session.sessionManager.getTree(),
+					leafId: session.sessionManager.getLeafId(),
 				});
-				const first = await reader.next();
-				const page = first.done ? { items: [] } : first.value;
-				if (command.type === "get_entries") return createRpcSuccessResponse(id, command.type, { ...page, leafId });
-				if (command.type === "get_tree") {
-					const items: RpcTreePage["items"][number][] = [];
-					for (const item of page.items) {
-						if (!("entry" in item)) items.push(item);
-						else if (!isLeafMoveEntry(item.entry))
-							items.push({
-								...item,
-								label: manager.getLabel(item.entry.id),
-								labelTimestamp: manager.getLabelTimestamp(item.entry.id),
-							});
-					}
-					return createRpcSuccessResponse(id, command.type, { ...page, items, leafId });
-				}
-				const items: RpcForkMessagePage["items"][number][] = [];
-				for (const item of page.items) {
-					if (!("entry" in item)) {
-						items.push(item);
-						continue;
-					}
-					const { entry, seq } = item;
+			case "get_fork_messages": {
+				if (session.sessionManager.hasFullHistory())
+					return createRpcSuccessResponse(id, command.type, { messages: session.getUserMessagesForForking() });
+				const messages: Array<{ entryId: string; text: string }> = [];
+				for (const entry of session.sessionManager.getEntries()) {
 					if (entry.type !== "message" || entry.message.role !== "user") continue;
 					const text =
 						typeof entry.message.content === "string"
@@ -803,9 +791,9 @@ export function createRpcCommandHandler({
 									.filter((block) => block.type === "text")
 									.map((block) => block.text)
 									.join("");
-					if (text) items.push({ entryId: entry.id, seq, text });
+					if (text) messages.push({ entryId: entry.id, text });
 				}
-				return createRpcSuccessResponse(id, command.type, { ...page, items });
+				return createRpcSuccessResponse(id, command.type, { messages });
 			}
 
 			case "get_last_assistant_text": {

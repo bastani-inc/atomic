@@ -39,9 +39,9 @@ lines.on("line", (line) => {
 		case "get_commands":
 			data = { commands: [] };
 			break;
+		case "get_history_page":
+			data={items:[]};break;
 		case "get_entries":
-			data = { items: [], leafId: null };
-			break;
 		case "get_context_window":
 			data = { entries: [], leafId: null };
 			break;

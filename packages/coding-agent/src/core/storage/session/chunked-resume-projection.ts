@@ -1,5 +1,5 @@
 import { jsonParser, type Token } from "stream-json/core/parser.js";
-import type { SessionEntry } from "../../session-manager-types.js";
+import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SqliteRow, SqliteValue } from "../database.js";
 import type { SessionTreeOutlineEntry } from "./types.js";
 
@@ -7,7 +7,8 @@ import type { SessionTreeOutlineEntry } from "./types.js";
 // strings or keys: even a single unselected JSON string (or property name) can span many chunks.
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Fields = { readonly [key: string]: Shape };
-type Shape =
+export type Shape =
+	| ((first: Token) => Reader<Json>)
 	| true
 	| Fields
 	| "child"
@@ -130,7 +131,8 @@ function* embedded(shape: Shape, tool = false): Reader<Json> {
 	return result ?? "not JSON";
 }
 
-function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
+export function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
+	if (typeof shape === "function") return yield* shape(first);
 	if (shape === "objectPresent") {
 		yield* skip(first);
 		return first.name === "startObject";
@@ -178,14 +180,15 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 		case "startArray": {
 			if (shape === "treeContent") {
 				let present = false;
+				const calls: string[] = [];
 				for (let token = yield; token.name !== "endArray"; token = yield) {
-					if (present) yield* skip(token);
-					else {
-						const block = object(yield* readValue(token, { type: "short", text: "nonBlank" }));
-						present = block.type === "text" && block.text === true;
-					}
+					const block = object(
+						yield* readValue(token, { type: "short", id: "string", ...(present ? {} : { text: "nonBlank" }) }),
+					);
+					present ||= block.type === "text" && block.text === true;
+					if (block.type === "toolCall" && typeof block.id === "string") calls.push(block.id);
 				}
-				return present;
+				return { present, calls };
 			}
 			if (shape === "answerText") {
 				let text = "";
@@ -484,6 +487,7 @@ export async function chunkedTreeOutline(
 		),
 	);
 	const m = object(e.message);
+	const content = object(m.content);
 	return {
 		seq,
 		id: String(e.id),
@@ -493,8 +497,11 @@ export async function chunkedTreeOutline(
 		...(e.type === "message"
 			? {
 					role: String(m.role),
+					...(m.role === "assistant" && Array.isArray(content.calls) && content.calls.length
+						? { callIds: content.calls as string[] }
+						: {}),
 					...(m.role === "assistant" &&
-					!m.content &&
+					!(m.content === true || content.present) &&
 					(!m.stopReason || m.stopReason === "stop" || m.stopReason === "toolUse")
 						? { hideAssistant: true }
 						: {}),

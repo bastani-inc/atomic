@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { SessionConflictError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { StoredTreeView } from "../src/modes/interactive/components/stored-tree-view.js";
 import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-session-routing.ts";
@@ -31,6 +32,41 @@ class LabelStore extends MemorySessionStore {
 }
 
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("a stored tree previews and searches an archived message without attaching it to the live session (#5554)", async () => {
+	initTheme("dark", false);
+	setKeybindings(new KeybindingsManager());
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, "/test");
+	const old = await manager.appendMessage({ role: "user", timestamp: 1, content: "archived needle" });
+	await manager.appendCompaction("clear", null, 10, { strategy: "verbatim-lines", backend: "summary" } as Parameters<
+		SessionManager["appendCompaction"]
+	>[3]);
+	await manager.appendMessage({ role: "user", timestamp: 2, content: "current" });
+	const { view, tree, leaf } = await StoredTreeView.open(manager);
+	try {
+		const selector = new TreeSelectorComponent(
+			tree,
+			leaf,
+			24,
+			() => {},
+			() => {},
+			undefined,
+			undefined,
+			"user-only",
+			view,
+		);
+		await vi.waitFor(() =>
+			assert.ok(stripVTControlCharacters(selector.render(80).join("\n")).includes("archived needle")),
+		);
+		selector.handleInput("needle");
+		await vi.waitFor(() => assert.equal(selector.getTreeList().getSelectedNode()?.entry.id, old));
+		assert.equal(manager.getEntry(old), undefined);
+	} finally {
+		view.dispose();
+		await store.close();
+	}
+});
 
 test("tree label keys await persistence, present the identical rejection and allow retry without ghost labels", async () => {
 	initTheme("dark", false);

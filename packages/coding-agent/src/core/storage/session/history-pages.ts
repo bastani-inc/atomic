@@ -1,5 +1,6 @@
 import { hash } from "fast-sha256";
 import { SessionConflictError } from "./errors.js";
+import { snapshotChunk, snapshotHead, snapshotPage } from "./snapshot-cut.js";
 import {
 	type OversizedSessionEntry,
 	SESSION_HISTORY_CHUNK_BYTES,
@@ -100,15 +101,7 @@ export async function* historyPages(
 		let page: SessionHistoryPage["items"];
 		let low: number, high: number;
 		if (snapshotOnly) {
-			const result = await (await import("./snapshot-history.js")).snapshotPage(
-				store,
-				sessionId,
-				from,
-				through,
-				reverse,
-				cut,
-				stamp,
-			);
+			const result = await snapshotPage(store, sessionId, from, through, reverse, cut, stamp);
 			options.signal?.throwIfAborted();
 			stamp = result.epoch;
 			scope = cursorScope(sessionId, stamp);
@@ -180,7 +173,7 @@ export async function* readSessionHistory(
 	const head =
 		store.readEntrySizes && store.readRange
 			? await store.readEntrySizes(sessionId, 1, 0)
-			: await (await import("./snapshot-history.js")).snapshotHead(store, sessionId);
+			: await snapshotHead(store, sessionId);
 	options.signal?.throwIfAborted();
 	yield* historyPages(store, sessionId, head.epoch, head.lastSeq, options);
 }
@@ -220,7 +213,7 @@ export async function* historyChunks(
 		const data =
 			store.readEntryChunk && store.readEntrySizes && store.readRange
 				? await store.readEntryChunk(reference, offset)
-				: await (await import("./snapshot-history.js")).snapshotChunk(store, reference, offset);
+				: await snapshotChunk(store, reference, offset);
 		options.signal?.throwIfAborted();
 		if (!data.length || data.length > SESSION_HISTORY_CHUNK_BYTES || offset + data.length > reference.bytes)
 			throw new Error(`Incomplete or invalid historical entry ${reference.seq}`);

@@ -4,8 +4,8 @@
 
 ### Breaking Changes
 
-- Sessions and extensions open at the current context window. Replace `history: "full"` and calls to `loadFullHistory()` with `for await (const page of manager.readHistory())` to visit older entries, or use `await manager.readEntry(id)` to look up one entry ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
-- RPC `get_entries`, `get_tree` and `get_fork_messages` now return pages (`items`, `nextCursor`) rather than complete entry, tree or prompt arrays. Read additional pages by passing `cursor: nextCursor`; use `get_history_chunk` for oversized items, or `get_context_window` for the entries resident in the engine. Update `RpcClient.getEntries()` consumers to use the paged result ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- Sessions and extensions open at the current context window. `getEntries()` and `getTree()` describe the resident entries. Use `for await (const page of manager.readHistory())` for older entries or `await manager.readEntry(id)` for one entry ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- RPC `get_entries`, `get_tree` and `get_fork_messages` still return `entries`, `tree` and `messages` respectively, but their contents are limited to the resident window. Use `get_history_page` and its `nextCursor` for the archive, and `get_history_chunk` to read an oversized item ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).

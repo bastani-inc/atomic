@@ -130,6 +130,8 @@ export interface SessionTreeOutlineEntry {
 	readonly type: SessionEntry["type"];
 	readonly role?: string;
 	readonly hideAssistant?: boolean;
+	/** Addresses only; the arguments for a visible result are read from its call on demand. */
+	readonly callIds?: readonly string[];
 	readonly leafMove?: boolean;
 	readonly labelTarget?: string;
 	readonly label?: string;

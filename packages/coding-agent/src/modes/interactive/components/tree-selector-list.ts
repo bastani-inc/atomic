@@ -21,10 +21,13 @@ export class TreeList implements Component {
 		maxVisibleLines: number,
 		initialSelectedId?: string,
 		initialFilterMode?: FilterMode,
+		archive?: TreeListState["archive"],
 	) {
 		const toolCallMap = new Map<string, ToolCallInfo>();
 		const flatNodes = flattenTree(tree, currentLeafId, toolCallMap);
+		archive?.indexCalls(flatNodes);
 		this.state = {
+			archive,
 			flatNodes,
 			filteredNodes: [],
 			selectedIndex: 0,
@@ -76,6 +79,7 @@ export class TreeList implements Component {
 	}
 
 	updateNodeLabel(entryId: string, label: string | undefined, labelTimestamp?: string): void {
+		this.state.archive?.labelChanged(entryId, label);
 		for (const flatNode of this.state.flatNodes) {
 			if (flatNode.node.entry.id === entryId) {
 				flatNode.node.label = label;
@@ -125,6 +129,10 @@ export class TreeList implements Component {
 		);
 		const endIndex = Math.min(startIndex + state.maxVisibleLines, state.filteredNodes.length);
 
+		state.archive?.show(
+			state.filteredNodes.slice(startIndex, endIndex).map((node) => node.node.entry.id),
+			width,
+		);
 		const renderedRows: HorizontalViewportRow[] = [];
 		for (let i = startIndex; i < endIndex; i++) {
 			const flatNode = state.filteredNodes[i];
@@ -183,12 +191,25 @@ export class TreeList implements Component {
 			const isOnActivePath = state.activePathIds.has(entry.id);
 			const pathMarker = isOnActivePath ? theme.fg("accent", "• ") : "";
 
-			const label = flatNode.node.label ? theme.fg("warning", `[${flatNode.node.label}] `) : "";
+			const preview = state.archive?.peek(entry.id);
+			const labelText = preview?.label ?? flatNode.node.label;
+			const label = labelText ? theme.fg("warning", `[${labelText}] `) : "";
 			const labelTimestamp =
 				state.showLabelTimestamps && flatNode.node.label && flatNode.node.labelTimestamp
 					? theme.fg("muted", `${formatLabelTimestamp(flatNode.node.labelTimestamp)} `)
 					: "";
-			const content = getEntryDisplayText(flatNode.node, isSelected, state.toolCallMap);
+			const content = !state.archive
+				? getEntryDisplayText(flatNode.node, isSelected, state.toolCallMap)
+				: preview
+					? getEntryDisplayText(
+							{ ...flatNode.node, entry: preview.entry },
+							isSelected,
+							new Map(preview.call ? [preview.call] : []),
+						)
+					: theme.fg(
+							"dim",
+							`[${state.archive.rows.get(entry.id)?.role ?? state.archive.rows.get(entry.id)?.type ?? "entry"}]`,
+						);
 			const prefixPart = theme.fg("dim", prefix) + foldMarker + pathMarker;
 			const anchorCol = visibleWidth(prefixPart);
 			let gutter = cursor;
