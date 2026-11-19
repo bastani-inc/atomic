@@ -17,8 +17,10 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/session-resume.js";
 import {
 	SESSION_ENTRY_CHUNK_BYTES,
+	SESSION_RESUME_REBUILD,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { seedLegacyResumeSession } from "../helpers/legacy-resume-session.js";
 import { refuseChunkProjection } from "../helpers/resume-projection-limit.js";
 import { makeTempDirectory } from "../helpers/runtime.js";
 
@@ -32,6 +34,7 @@ function tailContent<T extends { epoch?: string; seqs?: readonly number[]; lastE
 }
 const createdAt = "2026-11-16T00:00:00.000Z";
 const header = { id: "session", version: 4 as const, createdAt, cwd: "/project" };
+const checkpointEntries = SESSION_RESUME_REBUILD.pageEntries * SESSION_RESUME_REBUILD.checkpointPages;
 
 function entry(index: number, extra: Partial<SessionEntry> = {}): SessionEntry {
 	return {
@@ -44,9 +47,9 @@ function entry(index: number, extra: Partial<SessionEntry> = {}): SessionEntry {
 	} as SessionEntry;
 }
 
-function compactedEntries(history: number): SessionEntry[] {
+function compactedEntries(history: number, after = 0): SessionEntry[] {
 	const entries: SessionEntry[] = [];
-	for (let index = 1; index <= history; index++) {
+	for (let index = after + 1; index <= history; index++) {
 		entries.push(
 			index === 3
 				? ({
@@ -284,14 +287,20 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		});
 	});
 
-	it("reopens an interrupted old-index rebuild at its last completed page (#5590)", async () => {
+	it("reopens an interrupted old-index rebuild at its last saved checkpoint (#5590)", async () => {
 		const path = databasePath();
-		const entries = compactedEntries(520);
-		const interrupted = entries[512]!;
+		const savedThrough = 2 * checkpointEntries;
+		const interruptedAt = savedThrough + SESSION_RESUME_REBUILD.pageEntries;
+		const suffix = compactedEntries(interruptedAt + 1, interruptedAt);
+		const interrupted = suffix[0]!;
 		assert.ok(interrupted.type === "message" && interrupted.message.role === "user");
 		interrupted.message.content = "x".repeat(3 * 1024 * 1024);
-		await writeSession(path, entries);
-		await onDatabase(path, dropResumeIndex);
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			await seedLegacyResumeSession(db, store, header, interruptedAt);
+			await store.append(header.id, suffix, { expectSeq: interruptedAt });
+			await store.close();
+		});
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
 			refuseChunkProjection(db, interrupted.id);
@@ -309,14 +318,14 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
 			const all = db.all.bind(db);
-			let reread = false;
+			let firstProjected: SqliteValue | undefined;
 			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 				const rows = await all<T>(sql, ...args);
-				reread ||= rows.some((row) => row.entry_id === "e1");
+				firstProjected ??= rows.find((row) => "resume_type" in row)?.entry_id;
 				return rows;
 			};
-			assert.equal((await store.readResume(header.id)).lastSeq, entries.length);
-			assert.equal(reread, false, "already folded the first page before interruption");
+			assert.equal((await store.readResume(header.id)).lastSeq, interruptedAt + suffix.length);
+			assert.equal(firstProjected, `e${savedThrough + 1}`, "reread only the unsaved suffix");
 			assert.equal(await hasResumeIndex(db), true);
 			await store.close();
 		});
@@ -382,15 +391,13 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 
 	it("a slower reader cannot replace a peer's published index with its checkpoint (#5590)", async () => {
 		const path = databasePath();
-		const entries = compactedEntries(520);
-		await writeSession(path, entries);
-		await onDatabase(path, dropResumeIndex);
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
+			await seedLegacyResumeSession(db, store, header, checkpointEntries + 1);
 			const all = db.all.bind(db);
 			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 				const rows = await all<T>(sql, ...args);
-				if (rows.some((row) => row.entry_id === "e1")) {
+				if (rows.some((row) => row.entry_id === `e${checkpointEntries}`)) {
 					await onDatabase(path, async (other) => {
 						const peer = await SqlSessionStore.open(other);
 						try {
@@ -400,7 +407,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 						}
 					});
 				}
-				if (rows.some((row) => row.entry_id === "e513")) throw new Error("reader stopped after checkpoint");
+				if (rows.some((row) => row.entry_id === `e${checkpointEntries + 1}`))
+					throw new Error("reader stopped after checkpoint");
 				return rows;
 			};
 			try {
@@ -414,10 +422,12 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 
 	it("preserves overflowing usage totals across an interrupted page fold (#5590)", async () => {
 		const path = databasePath();
-		const entries = compactedEntries(513);
-		for (const seq of [1, 2, 513]) {
-			const input = seq === 513 ? 1 : Number.MAX_VALUE;
-			entries[seq - 1] = entry(seq, {
+		const prefix = checkpointEntries - 2;
+		const next = checkpointEntries + 1;
+		const suffix = compactedEntries(next, prefix);
+		for (const seq of [next - 2, next - 1, next]) {
+			const input = seq === next ? 1 : Number.MAX_VALUE;
+			suffix[seq - prefix - 1] = entry(seq, {
 				type: "usage",
 				kind: "auxiliary",
 				provider: "p",
@@ -432,14 +442,14 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 				},
 			});
 		}
-		await writeSession(path, entries);
-		await onDatabase(path, dropResumeIndex);
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
+			await seedLegacyResumeSession(db, store, header, prefix);
+			await store.append(header.id, suffix, { expectSeq: prefix });
 			const all = db.all.bind(db);
 			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 				const rows = await all<T>(sql, ...args);
-				if (rows.some((row) => row.entry_id === "e513")) throw new Error("lost page reader");
+				if (rows.some((row) => row.entry_id === `e${next}`)) throw new Error("lost page reader");
 				return rows;
 			};
 			await assert.rejects(() => store.readResume(header.id), /lost page reader/);

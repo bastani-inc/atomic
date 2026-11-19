@@ -94,6 +94,8 @@ export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
  * sqld's 10 MB response limit; a single row longer than this is a page of its own (#4954).
  */
 export const SESSION_READ_PAGE_CHARS = 1024 * 1024;
+/** Rows per metadata query and complete pages between durable resume checkpoints. */
+export const SESSION_RESUME_REBUILD = { pageEntries: 512, checkpointPages: 16 } as const;
 /** Bound each write transaction while reusing the bytes already supplied to putBlob. */
 const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
@@ -1541,7 +1543,7 @@ export class SqlSessionStore implements SessionStore {
 				.join(", ");
 			const page = `WITH page AS (
 				SELECT session_id,seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
-				WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT 512
+				WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ${SESSION_RESUME_REBUILD.pageEntries}
 			)`;
 			const parts = (source: string) => `FROM ${this.tables.entryChunks} WHERE session_id = ${source}.session_id
 				AND seq = ${source}.seq AND idx >= 0 AND idx < ${source}.chunks`;
@@ -1578,7 +1580,7 @@ export class SqlSessionStore implements SessionStore {
 			let expectedSummary = this.database.readOnly ? undefined : row.summary_state;
 			index = checkpoint?.index;
 			for (let pass = topology === undefined ? 0 : 1; pass < 2; pass++) {
-				for (let after = index?.seq ?? 0; after < Number(row.last_seq); ) {
+				for (let after = index?.seq ?? 0, pages = 0; after < Number(row.last_seq); ) {
 					type ProjectedRow = SqliteRow & { seq: number; entry_id: string; chunks: number };
 					const args = [sessionId, after, row.last_seq] as const;
 					let rows: ProjectedRow[] = [];
@@ -1697,7 +1699,14 @@ export class SqlSessionStore implements SessionStore {
 					if (toolCalls > 0)
 						index = { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + toolCalls } };
 					after = Number(rows.at(-1)!.seq);
-					if (expectedSummary !== undefined && after < Number(row.last_seq) && index.seq === after) {
+					pages++;
+					// Checkpoints contend with every other writer on SQLite. Short passes need only the final publication.
+					if (
+						expectedSummary !== undefined &&
+						pages % SESSION_RESUME_REBUILD.checkpointPages === 0 &&
+						after < Number(row.last_seq) &&
+						index.seq === after
+					) {
 						// Checkpoints feed another fold, unlike the final index. JSON null would silently turn an
 						// overflowing sum back into zero on the next addition. JSON.parse("1e999") preserves Infinity.
 						const next = JSON.stringify(

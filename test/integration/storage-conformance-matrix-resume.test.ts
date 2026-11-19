@@ -5,9 +5,11 @@ import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/cor
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import {
 	SESSION_ENTRY_CHUNK_BYTES,
+	SESSION_RESUME_REBUILD,
 	SESSION_TABLES,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { seedLegacyResumeSession } from "../helpers/legacy-resume-session.js";
 import { refuseChunkProjection } from "../helpers/resume-projection-limit.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -48,6 +50,63 @@ function transcript(padding: string): SessionEntry[] {
 
 for (const backend of storageBackends) {
 	const run = backend.skipReason === undefined ? test : test.skip;
+	if (backend.name === "libSQL server (sqld)") {
+		run(
+			"a short resume rebuild takes only the publication write while another session is writing (#5590)",
+			async () => {
+				const scope = await backend.openScope();
+				try {
+					const db = await scope.connect();
+					const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+					const page = SESSION_RESUME_REBUILD.pageEntries;
+					const count = 2 * page + Math.floor(page / 2);
+					const message = (i: number, parentId: string | null, content: string): SessionEntry => ({
+						type: "message",
+						id: `e${i}`,
+						parentId,
+						timestamp,
+						message: { role: "user", timestamp: i, content },
+					});
+					// The jump also exercises the active-branch refold. Neither pass should save a prefix.
+					await seedLegacyResumeSession(db, store, header, count, scope.prefix, page);
+					const otherId = "other-session";
+					await store.create({ ...header, id: otherId }, []);
+					const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
+					const conn = await scope.connect();
+					const reader = await SqlSessionStore.open(conn, { prefix: scope.prefix });
+					const execute = conn.run.bind(conn);
+					let readerWrites = 0;
+					conn.run = (sql, ...args) => {
+						readerWrites++;
+						return execute(sql, ...args);
+					};
+					// Count lock acquisitions, not milliseconds waiting for an unrelated writer or a CI worker.
+					const competingBody = "n".repeat(SESSION_ENTRY_CHUNK_BYTES + SESSION_ENTRY_CHUNK_BYTES / 2);
+					const competingAppends = 2 * Math.ceil(count / page);
+					const results = await Promise.allSettled([
+						reader.findLatestCompaction(header.id),
+						(async () => {
+							for (let i = 0; i < competingAppends; i++)
+								await store.append(otherId, [message(i, i ? `e${i - 1}` : null, competingBody)], {
+									expectSeq: i,
+								});
+						})(),
+					]);
+					for (const result of results) if (result.status === "rejected") throw result.reason;
+					const finalPublications = 1;
+					assert.equal(readerWrites, finalPublications, "only the completed index needs the server's write lock");
+					const row = await db.get<{ summary_state: string }>(
+						`SELECT summary_state FROM ${table} WHERE id = ?`,
+						header.id,
+					);
+					assert.equal(JSON.parse(row!.summary_state).resume.seq, count);
+				} finally {
+					await scope.close();
+				}
+			},
+			120_000,
+		);
+	}
 	run(
 		`builds byte-identical indexes from chunked and inline protocol metadata on ${backend.name} (#5590)`,
 		async () => {
