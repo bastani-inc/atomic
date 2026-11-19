@@ -24,6 +24,20 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	it("ignores removed workflow settings without erasing the user's recipe paths on save", async () => {
+		const path = join(agentDir, "settings.json");
+		const workflows = { paths: ["./recipes"], localWorkers: "no longer validated" };
+		writeFileSync(path, JSON.stringify({ workflows, theme: "light", intercom: { showUnknownTargetWarnings: true } }));
+		const manager = SettingsManager.create(projectDir, agentDir);
+		assert.deepEqual(manager.drainErrors(), []);
+		assert.equal(manager.getSettings().theme, "light");
+		assert.equal("workflows" in manager.getSettings(), false);
+		assert.equal("intercom" in manager.getSettings(), false);
+		manager.setTheme("dark");
+		await manager.flush();
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf-8")).workflows, workflows);
+	});
+
 	it("creates a global device ID and ignores project device IDs", async () => {
 		const settingsPath = join(agentDir, "settings.json");
 		writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));

@@ -33,7 +33,7 @@ describe("extension-source trust prompt branding", () => {
 		// The two compatibility directories the loader reads from that source are
 		// paths, not branding, and must survive the rename.
 		expect(prompt).toContain("project-local .atomic/.pi resources and .agents/skills");
-		expect(prompt).toContain("extensions and workflows that can execute code");
+		expect(prompt).toContain("extensions that can execute code");
 	});
 
 	it("keeps the prompt out of main.ts, where no branding constant is in scope", () => {

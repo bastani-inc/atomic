@@ -989,7 +989,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               return {
                 content: [{
                   type: "text",
-                  text: queuedSendText(to, result, pi.getSettings?.().intercom?.showUnknownTargetWarnings === true),
+                  text: queuedSendText(to, result, false),
                 }],
                 isError: false,
                 details: {

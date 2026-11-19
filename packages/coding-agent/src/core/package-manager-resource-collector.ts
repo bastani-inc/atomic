@@ -6,11 +6,11 @@ import { stripBom } from "../utils/text.ts";
 import {
 	conventionDirsForResource,
 	getManifestFromPackageJson,
-	manifestEntriesForResource,
+	legacyWorkflowFilePatterns,
 } from "./package-manager-manifest.ts";
 import { collectPackageMcpServers } from "./package-manager-mcp-servers.ts";
 import { resolvePathFromBase } from "./package-manager-paths.ts";
-import { addResource, getTargetMap } from "./package-manager-resource-accumulator.ts";
+import { addResource } from "./package-manager-resource-accumulator.ts";
 import { collectResourceFiles } from "./package-manager-resource-files.ts";
 import {
 	applyAutoloadDisabledPatterns,
@@ -20,12 +20,13 @@ import {
 	splitPatterns,
 } from "./package-manager-resource-patterns.ts";
 import type {
+	FileKind,
 	PackageFilter,
 	PathMetadata,
 	ResourceAccumulator,
 	ResourceMap,
-	ResourceType,
 } from "./package-manager-types.ts";
+import { FILE_KINDS } from "./package-manager-types.ts";
 
 async function readPiManifest(packageRoot: string): Promise<ReturnType<typeof getManifestFromPackageJson> | null> {
 	try {
@@ -44,44 +45,33 @@ export async function collectPackageResources(
 ): Promise<boolean> {
 	await collectPackageMcpServers(packageRoot, accumulator.mcpServers, filter, metadata);
 	if (filter) {
-		for (const resourceType of ["extensions", "skills", "prompts", "themes", "workflows"] as const) {
-			const patterns = filter[resourceType];
-			const target = getTargetMap(accumulator, resourceType);
+		for (const kind of FILE_KINDS) {
+			const patterns = kind === "legacyWorkflowFiles" ? legacyWorkflowFilePatterns(filter) : filter[kind];
+			const target = accumulator[kind];
 			if (filter.autoload === false) {
-				const { allFiles } = await collectManifestFiles(packageRoot, resourceType);
+				const { allFiles } = await collectManifestFiles(packageRoot, kind);
 				const selected = applyAutoloadDisabledPatterns(allFiles, patterns ?? [], packageRoot);
 				for (const [filePath, enabled] of selected) addResource(target, filePath, metadata, enabled);
-			} else if (patterns !== undefined)
-				await applyPackageFilter(packageRoot, patterns, resourceType, target, metadata);
-			else await collectDefaultResources(packageRoot, resourceType, target, metadata);
+			} else if (patterns !== undefined) await applyPackageFilter(packageRoot, patterns, kind, target, metadata);
+			else await collectDefaultResources(packageRoot, kind, target, metadata);
 		}
 		return true;
 	}
 	const manifest = await readPiManifest(packageRoot);
 	if (manifest) {
-		for (const resourceType of ["extensions", "skills", "prompts", "themes", "workflows"] as const) {
-			const entries = manifestEntriesForResource(manifest, resourceType);
-			if (entries !== undefined) {
-				await addManifestEntries(
-					entries,
-					packageRoot,
-					resourceType,
-					getTargetMap(accumulator, resourceType),
-					metadata,
-				);
-				continue;
-			}
-			if (resourceType === "workflows")
-				await collectDefaultResources(packageRoot, resourceType, getTargetMap(accumulator, resourceType), metadata);
+		for (const kind of FILE_KINDS) {
+			const entries = manifest[kind];
+			if (entries !== undefined) await addManifestEntries(entries, packageRoot, kind, accumulator[kind], metadata);
+			else if (kind === "legacyWorkflowFiles")
+				await collectDefaultResources(packageRoot, kind, accumulator[kind], metadata);
 		}
 		return true;
 	}
 	let hasAnyDir = false;
-	for (const resourceType of ["extensions", "skills", "prompts", "themes", "workflows"] as const) {
-		for (const dir of conventionDirsForResource(packageRoot, resourceType)) {
+	for (const kind of FILE_KINDS) {
+		for (const dir of conventionDirsForResource(packageRoot, kind)) {
 			if (!(await exists(dir))) continue;
-			for (const f of await collectResourceFiles(dir, resourceType))
-				addResource(getTargetMap(accumulator, resourceType), f, metadata, true);
+			for (const f of await collectResourceFiles(dir, kind)) addResource(accumulator[kind], f, metadata, true);
 			hasAnyDir = true;
 		}
 	}
@@ -90,12 +80,12 @@ export async function collectPackageResources(
 
 async function collectDefaultResources(
 	packageRoot: string,
-	resourceType: ResourceType,
+	resourceType: FileKind,
 	target: ResourceMap,
 	metadata: PathMetadata,
 ): Promise<void> {
 	const manifest = await readPiManifest(packageRoot);
-	const entries = manifestEntriesForResource(manifest, resourceType);
+	const entries = manifest?.[resourceType];
 	if (entries !== undefined) {
 		await addManifestEntries(entries, packageRoot, resourceType, target, metadata);
 		return;
@@ -109,7 +99,7 @@ async function collectDefaultResources(
 async function applyPackageFilter(
 	packageRoot: string,
 	userPatterns: string[],
-	resourceType: ResourceType,
+	resourceType: FileKind,
 	target: ResourceMap,
 	metadata: PathMetadata,
 ): Promise<void> {
@@ -124,10 +114,10 @@ async function applyPackageFilter(
 
 async function collectManifestFiles(
 	packageRoot: string,
-	resourceType: ResourceType,
+	resourceType: FileKind,
 ): Promise<{ allFiles: string[]; enabledByManifest: Set<string> }> {
 	const manifest = await readPiManifest(packageRoot);
-	const entries = manifestEntriesForResource(manifest, resourceType);
+	const entries = manifest?.[resourceType];
 	if (entries && entries.length > 0) {
 		const allFiles = await collectFilesFromManifestEntries(entries, packageRoot, resourceType);
 		const manifestPatterns = entries.filter(isOverridePattern);
@@ -145,7 +135,7 @@ async function collectManifestFiles(
 async function addManifestEntries(
 	entries: string[] | undefined,
 	root: string,
-	resourceType: ResourceType,
+	resourceType: FileKind,
 	target: ResourceMap,
 	metadata: PathMetadata,
 ): Promise<void> {
@@ -159,7 +149,7 @@ async function addManifestEntries(
 async function collectFilesFromManifestEntries(
 	entries: string[],
 	root: string,
-	resourceType: ResourceType,
+	resourceType: FileKind,
 ): Promise<string[]> {
 	const resolved: string[] = [];
 	for (const entry of entries.filter((entry) => !isOverridePattern(entry))) {
@@ -176,7 +166,7 @@ async function collectFilesFromManifestEntries(
 
 export async function resolveLocalEntries(
 	entries: string[],
-	resourceType: ResourceType,
+	resourceType: FileKind,
 	target: ResourceMap,
 	metadata: PathMetadata,
 	baseDir: string,
@@ -189,7 +179,7 @@ export async function resolveLocalEntries(
 	for (const f of allFiles) addResource(target, f, metadata, enabledPaths.has(f));
 }
 
-export async function collectFilesFromPaths(paths: string[], resourceType: ResourceType): Promise<string[]> {
+export async function collectFilesFromPaths(paths: string[], resourceType: FileKind): Promise<string[]> {
 	const files: string[] = [];
 	for (const p of paths) {
 		if (!(await exists(p))) continue;

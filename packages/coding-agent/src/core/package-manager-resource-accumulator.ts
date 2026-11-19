@@ -4,7 +4,6 @@ import type {
 	ResolvedResource,
 	ResourceAccumulator,
 	ResourceMap,
-	ResourceType,
 } from "./package-manager-types.ts";
 import { getResourcePathKeyAsync } from "./source-info.ts";
 
@@ -14,23 +13,6 @@ function resourcePrecedenceRank(m: PathMetadata): number {
 	if (m.borrowedProjectLocal) return 5;
 	const scopeBase = m.scope === "project" ? 0 : 2;
 	return scopeBase + (m.source === "local" ? 0 : 1);
-}
-
-export function getTargetMap(accumulator: ResourceAccumulator, resourceType: ResourceType): ResourceMap {
-	switch (resourceType) {
-		case "extensions":
-			return accumulator.extensions;
-		case "skills":
-			return accumulator.skills;
-		case "prompts":
-			return accumulator.prompts;
-		case "themes":
-			return accumulator.themes;
-		case "workflows":
-			return accumulator.workflows;
-		default:
-			throw new Error(`Unknown resource type: ${resourceType}`);
-	}
 }
 
 export function addResource(map: ResourceMap, path: string, metadata: PathMetadata, enabled: boolean): void {
@@ -46,7 +28,7 @@ export function createAccumulator(): ResourceAccumulator {
 		skills: new Map(),
 		prompts: new Map(),
 		themes: new Map(),
-		workflows: new Map(),
+		legacyWorkflowFiles: new Map(),
 		mcpServers: new Map(),
 	};
 }
@@ -70,12 +52,19 @@ export async function toResolvedPaths(accumulator: ResourceAccumulator): Promise
 		});
 	};
 
-	const [extensions, skills, prompts, themes, workflows] = await Promise.all([
+	const [extensions, skills, prompts, themes, legacyWorkflowFiles] = await Promise.all([
 		mapToResolved(accumulator.extensions),
 		mapToResolved(accumulator.skills),
 		mapToResolved(accumulator.prompts),
 		mapToResolved(accumulator.themes),
-		mapToResolved(accumulator.workflows),
+		mapToResolved(accumulator.legacyWorkflowFiles),
 	]);
-	return { extensions, skills, prompts, themes, workflows, mcpServers: [...accumulator.mcpServers.values()] };
+	return {
+		extensions,
+		skills,
+		prompts,
+		themes,
+		legacyWorkflowFiles,
+		mcpServers: [...accumulator.mcpServers.values()],
+	};
 }
