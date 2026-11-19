@@ -173,6 +173,7 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 	private readonly currentModel?: Model<Api>;
 	private readonly currentModelKey?: string;
 	private readonly thinkingContext: ModelSwitchThinkingContext;
+	private readonly catalogStillCurrent?: () => boolean;
 	private readonly defaultModelKey?: string;
 	private readonly modelRuntime: ModelRuntime;
 	private readonly tui: TUI;
@@ -197,6 +198,7 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 		 * saved level inherits from this one while the current model reasons.
 		 */
 		currentThinkingLevel?: ThinkingLevel,
+		startupView?: { isCurrent(): boolean; settings: ModelSwitchThinkingContext["settings"] },
 	) {
 		const holder: { self?: ModelSelectorComponent } = {};
 		const scope: ModelScope = scopedModels.length > 0 ? "scoped" : "all";
@@ -218,8 +220,10 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 				const validChosen =
 					chosen !== undefined && self.levelsFor(item.value).includes(chosen) ? chosen : undefined;
 				self.dispose();
-				if (validChosen === undefined) onSelect(item.value);
-				else onSelect(item.value, validChosen);
+				if (validChosen !== undefined) onSelect(item.value, validChosen);
+				else if (self.catalogStillCurrent && !self.catalogStillCurrent())
+					onSelect(item.value, self.levelOf(item.value));
+				else onSelect(item.value);
 			},
 			onCancel: () => {
 				const self = holder.self;
@@ -246,8 +250,9 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 		this.tui = tui;
 		this.currentModel = currentModel;
 		this.currentModelKey = currentModel ? modelKey(currentModel) : undefined;
+		this.catalogStillCurrent = startupView?.isCurrent;
 		this.thinkingContext = {
-			settings: settingsManager,
+			settings: startupView?.settings ?? settingsManager,
 			...(currentThinkingLevel === undefined
 				? {}
 				: { current: { model: currentModel, thinkingLevel: currentThinkingLevel } }),
@@ -421,8 +426,10 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 			notice = error ? { text: error, tone: "error" } : { text: "Model catalogs refreshed.", tone: "success" };
 		}
 		this.selector.setNotice(notice);
-		this.loadModelsFromSnapshot();
-		this.rebuild(this.currentModel ? modelKey(this.currentModel) : undefined);
+		if (!this.catalogStillCurrent || this.catalogStillCurrent()) {
+			this.loadModelsFromSnapshot();
+			this.rebuild(this.currentModel ? modelKey(this.currentModel) : undefined);
+		}
 		this.tui.requestRender();
 	}
 }

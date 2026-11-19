@@ -646,7 +646,11 @@ for (const reason of ["stage_finished", "pool_closed", "worker_exited", "attempt
 	test(`an open stage chat drops the retry at ${reason} without waiting for the store (#5572)`, async () => {
 		const store = createStore();
 		setupRun(store, "child", "agent");
-		const fake = singleWatch({ ...snapshot(), waitingToRetry: true });
+		const fake = singleWatch({
+			...snapshot(),
+			waitingToRetry: true,
+			turn: { startedAt: Date.now() - 3_000, running: false, pending: true, lastAnswerFailed: true },
+		});
 		const ref = { runId: "child", stageId: "agent" };
 		const opened = await openPooledStageHandle(fake.transport, ref, "agent");
 		assert.ok(opened.ok);
@@ -676,6 +680,7 @@ for (const reason of ["stage_finished", "pool_closed", "worker_exited", "attempt
 			assert.equal(line(view), "∀ retrying…");
 			const before = frames;
 			opened.handle.receive({ kind: "ended", reason });
+			assert.equal(opened.handle.turnStartedAt, undefined, "the retired attempt no longer owns a turn");
 			assert.equal(line(view), undefined);
 			assert.ok(frames > before, "the watch end invalidates the mounted chat");
 			fresh = new StageChatView(options);
@@ -737,6 +742,24 @@ test("the root handle says when its stage's session waits to retry, from its sna
 	} as AgentSessionEvent);
 	assert.equal(handle.isWaitingToRetry, false, "the retry's end");
 	handle.dispose();
+});
+
+test("the worker exposes a cancellable retry before backoff or fallback is announced, including on reopen (#5564)", async () => {
+	const fake = singleWatch({ ...snapshot(), isStreaming: false, retryPending: true });
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	try {
+		assert.equal(handle.isRetrying, true);
+		fake.event(1, { type: "agent_settled", aborted: true });
+		assert.equal(handle.isRetrying, false);
+		fake.event(2, { type: "agent_end", messages: [], retryPending: true });
+		assert.equal(handle.isRetrying, true);
+		await handle.pause();
+		assert.equal(handle.isRetrying, false);
+	} finally {
+		handle.dispose();
+	}
 });
 
 test("a message sent while the stage's session is still starting waits for it instead of being reported lost (#3996)", async () => {

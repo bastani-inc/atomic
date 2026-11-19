@@ -39,11 +39,29 @@ type PauseRejection = Error | DOMException | string;
 /** Serializes controlled pause, abort settlement, and one explicit resume. */
 export class StageSessionPause {
 	private request: PauseRequest | null = null;
+	private readonly retirementObservers = new Set<{ resume?: Promise<PauseResumeResolution> }>();
 
 	constructor(private readonly getSession: () => StageSessionRuntime | undefined) {}
 
 	currentResume(): Promise<PauseResumeResolution> | undefined {
 		return this.request?.deferred.promise;
+	}
+
+	/** Retiring a failed session may outlast several pauses and resumes. Only the latest objective may advance. */
+	async whileRetiring(retire: () => Promise<void>): Promise<PauseResumeResolution | undefined> {
+		const observer = { resume: this.currentResume() };
+		this.retirementObservers.add(observer);
+		try {
+			await retire();
+			while (observer.resume !== undefined) {
+				const latest = observer.resume;
+				const resolved = await latest;
+				if (latest === observer.resume) return resolved;
+			}
+			return undefined;
+		} finally {
+			this.retirementObservers.delete(observer);
+		}
 	}
 
 	isPaused(): boolean {
@@ -68,6 +86,7 @@ export class StageSessionPause {
 		void request.deferred.promise.catch(() => {});
 		void request.abortBoundary.promise.catch(() => {});
 		this.request = request;
+		for (const observer of this.retirementObservers) observer.resume = request.deferred.promise;
 		let failed = false;
 		try {
 			request.nativeQueuePause?.pauseQueuedMessages();

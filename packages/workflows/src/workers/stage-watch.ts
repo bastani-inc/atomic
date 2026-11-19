@@ -8,6 +8,7 @@ import {
 import {
 	type StageControlHandle,
 	type StageControlRegistry,
+	stageChatHistory,
 	stageWaitsToRetry,
 } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
@@ -739,11 +740,14 @@ export class WorkerStageWatches {
 		watch.tasks?.sync();
 		// Compaction replaced the session's messages: the watcher's copy follows first, so a chat that
 		// handles the compaction's end redraws from the compacted transcript, as an in-process chat does.
-		if (event.type === "compaction_end" && event.aborted !== true && event.result !== undefined)
+		if (event.type === "compaction_end" && event.aborted !== true && event.result !== undefined) {
+			const history = stageChatHistory(watch.handle);
 			this.append(id, watch, {
 				type: STAGE_MESSAGES_EVENT,
-				messages: [...watch.handle.messages],
+				...history,
+				messages: [...history.messages],
 			} as never as AgentSessionEvent);
+		}
 		this.append(id, watch, event);
 	}
 
@@ -814,14 +818,19 @@ function commandCatalog(handle: StageControlHandle): SessionCommandCatalog | und
 
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {
 	const streamingMessage = handle.agentSession?.agent?.state.streamingMessage;
+	const turn = handle.turnState?.();
 	const status = handle.agentSession?.retryStatus ?? handle.modelSwitch;
+	const history = stageChatHistory(handle);
 	return {
 		sessionId: handle.sessionId,
 		status: handle.status,
 		isStreaming: handle.isStreaming,
-		messages: [...handle.messages],
+		...history,
+		messages: [...history.messages],
 		...(streamingMessage === undefined ? {} : { streamingMessage }),
 		...(stageWaitsToRetry(handle) ? { waitingToRetry: true } : {}),
+		...(handle.agentSession?.isRetrying ? { retryPending: true } : {}),
+		...(turn === undefined ? {} : { turn }),
 		...(status?.type === "model_fallback_start" ? { modelSwitch: status } : {}),
 		pendingToolExecutionEvents: [...(handle.pendingToolExecutionEvents?.() ?? [])],
 		queued: handle.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES,

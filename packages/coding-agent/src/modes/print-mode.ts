@@ -13,6 +13,7 @@ import type { AgentSession, AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { ExtensionError } from "../core/extensions/index.js";
 import type { ToolDefinition } from "../core/extensions/types.ts";
+import { enablePrintModelSelection, hasPrintModelSelection } from "../core/first-prompt-model.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { formatModelLabel } from "../core/model-label.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
@@ -271,6 +272,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
 		});
+		enablePrintModelSelection(session);
 
 		unsubscribe?.();
 		unsubscribe = session.subscribe((event) => {
@@ -298,7 +300,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	});
 
 	try {
-		if (runtimeHost.modelFallbackReason === "configured-provider-unsupported") {
+		if (
+			runtimeHost.modelFallbackReason === "configured-provider-unsupported" &&
+			(!(initialMessage || messages.length) || !hasPrintModelSelection(session))
+		) {
 			if (runtimeHost.modelFallbackMessage) console.error(runtimeHost.modelFallbackMessage);
 			return 1;
 		}

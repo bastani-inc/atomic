@@ -1,9 +1,11 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { normalizeProviderId } from "@bastani/atomic-ai";
 import { clampThinkingLevel, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { thinkingLevelForModelSwitch } from "../../core/model-switch-thinking-level.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Api,
@@ -16,7 +18,30 @@ import {
 	UserMessageSelectorComponent,
 } from "./interactive-mode-deps.ts";
 import { ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, isAnthropicSubscriptionAuthKey } from "./interactive-mode-helpers.ts";
+import { onPreliminaryCatalogWithdrawn } from "./interactive-startup-trust.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
+
+/** A selector already showing a restricted catalog owns its rows and the effort offered for each row. */
+function pendingModelView(mode: InteractiveModeBase) {
+	const runtime = mode.runtimeHost;
+	const isCurrent =
+		runtime instanceof IsolatedInteractiveRuntime
+			? runtime.captureStartupCatalog()
+			: runtime?.isProjectTrustPending?.() && !runtime.pendingProjectResourcesTrusted?.()
+				? () => runtime.isProjectTrustPending() && !mode.settingsManager.isProjectTrusted()
+				: undefined;
+	if (!isCurrent) return undefined;
+	const levels = mode.settingsManager.getAllModelThinkingLevels();
+	const fallback = mode.settingsManager.getDefaultThinkingLevel();
+	return {
+		isCurrent,
+		settings: {
+			getModelThinkingLevel: (provider: string, modelId: string) =>
+				levels[`${normalizeProviderId(provider)}/${modelId}`],
+			getDefaultThinkingLevel: () => fallback,
+		},
+	};
+}
 
 export function resolveThinkingSelectorDefault(
 	rawDefault: ThinkingLevel | undefined,
@@ -161,9 +186,10 @@ InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async fu
 	}
 };
 
-InteractiveModeBase.prototype.showModelSelector = function (
+InteractiveModeBase.prototype.showModelSelector = function showModelSelector(
 	this: InteractiveModeBase,
 	initialSearchInput?: string,
+	previous?: ModelSelectorComponent,
 ): void {
 	this.showSelector((done) => {
 		let settled = false;
@@ -197,12 +223,27 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			},
 			initialSearchInput,
 			this.session.thinkingLevel,
+			pendingModelView(this),
 		);
-		return { component: selector, focus: selector, dispose: () => selector.dispose() };
+		if (previous) selector.selector.restoreNavigation(previous.selector, true);
+		const unsubscribe = onPreliminaryCatalogWithdrawn(this, () => showModelSelector.call(this, undefined, selector));
+		return {
+			component: selector,
+			focus: selector,
+			dispose: () => {
+				unsubscribe?.();
+				selector.dispose();
+			},
+		};
 	});
 };
 
-InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showModelsSelector = function showModelsSelector(
+	this: InteractiveModeBase,
+	previous?: ScopedModelsSelectorComponent,
+): void {
+	const view = pendingModelView(this);
+	const initial = view ? { model: this.session.model, thinkingLevel: this.session.thinkingLevel } : undefined;
 	let availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
 	let availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
 	const sessionScopedModels = this.session.scopedModels;
@@ -258,13 +299,16 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 				refreshStatus: "Refreshing model catalogs…",
 				// The level Ctrl+P cycling gives each model: its scoped level, else the level a switch to it applies.
 				thinkingLevelFor: (model) => {
-					if (modelsAreEqual(this.session.model, model)) return this.session.thinkingLevel;
-					const scoped = this.session.scopedModels.find((entry) => modelsAreEqual(entry.model, model));
+					const current = initial ?? { model: this.session.model, thinkingLevel: this.session.thinkingLevel };
+					if (modelsAreEqual(current.model, model)) return current.thinkingLevel;
+					const scoped = (view ? sessionScopedModels : this.session.scopedModels).find((entry) =>
+						modelsAreEqual(entry.model, model),
+					);
 					return scoped?.thinkingLevel !== undefined
 						? clampThinkingLevel(model, scoped.thinkingLevel)
 						: thinkingLevelForModelSwitch(model, {
-								settings: this.settingsManager,
-								current: { model: this.session.model, thinkingLevel: this.session.thinkingLevel },
+								settings: view?.settings ?? this.settingsManager,
+								current,
 							});
 				},
 			},
@@ -285,6 +329,8 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 				},
 			},
 		);
+		if (previous) selector.selector.restoreNavigation(previous.selector, true);
+		const unsubscribe = onPreliminaryCatalogWithdrawn(this, () => showModelsSelector.call(this, selector));
 		void boundedInteractiveModelRefresh(
 			(options) => refreshModelCatalogs(this.session.modelRuntime, options),
 			{ allowNetwork: !isOfflineModeEnabled() },
@@ -292,17 +338,19 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 		)
 			.then((outcome) => {
 				if (disposed) return;
-				availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
-				availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
-				if (!selectionChanged) {
-					const refreshedConfiguredScope = getConfiguredScope(availableModels);
-					currentEnabledIds =
-						sessionScopedIds.length > 0
-							? [...sessionScopedIds, ...(refreshedConfiguredScope?.unavailableIds ?? [])]
-							: (refreshedConfiguredScope?.enabledIds ?? null);
-					selector.updateModels(availableModels, currentEnabledIds);
-				} else {
-					selector.updateModels(availableModels);
+				if (!view || view.isCurrent()) {
+					availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
+					availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
+					if (!selectionChanged) {
+						const refreshedConfiguredScope = getConfiguredScope(availableModels);
+						currentEnabledIds =
+							sessionScopedIds.length > 0
+								? [...sessionScopedIds, ...(refreshedConfiguredScope?.unavailableIds ?? [])]
+								: (refreshedConfiguredScope?.enabledIds ?? null);
+						selector.updateModels(availableModels, currentEnabledIds);
+					} else {
+						selector.updateModels(availableModels);
+					}
 				}
 				if (outcome.status === "timed-out") {
 					selector.setRefreshStatus("Model refresh timed out; showing cached models.", "warning");
@@ -337,6 +385,7 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 			focus: selector,
 			dispose: () => {
 				disposed = true;
+				unsubscribe?.();
 				refreshAbortController.abort();
 			},
 		};

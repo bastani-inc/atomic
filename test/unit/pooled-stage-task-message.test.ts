@@ -145,6 +145,27 @@ test("the worker answers a message action with nothing, or with the task's typed
 	assert.equal(unsupported.kind === "message" ? unsupported.error?.code : undefined, "messages-unsupported");
 });
 
+test("forwarding an ordinary worker transcript doesn't consume its page before serialization (#5651)", async () => {
+	let reads = 0;
+	const reply = await runStageTaskAction(
+		workerSource({
+			readTaskTranscript: () => ({
+				ok: true,
+				get value() {
+					if (++reads > 1) throw new Error("transcript already read");
+					return { messages: [{ role: "user" as const, content: "from the worker", timestamp: 0 }] };
+				},
+			}),
+			followTaskTranscript: () => undefined,
+		}),
+		TASK,
+		{ kind: "transcript" },
+	);
+	assert.equal(reads, 0);
+	assert.match(JSON.stringify(reply), /from the worker/);
+	assert.equal(reads, 1);
+});
+
 test("a worker stage's latest transcript page carries the streaming reply with its thinking (#4521)", async () => {
 	const streaming = {
 		role: "assistant",

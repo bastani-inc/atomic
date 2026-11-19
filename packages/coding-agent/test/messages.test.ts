@@ -35,6 +35,17 @@ function toolResult(toolCallId: string): ToolResultMessage {
 }
 
 describe("convertToLlm", () => {
+	test("converts batches of legacy redacted thinking when used as a map callback (#5481)", () => {
+		const raw = {
+			...assistantWithToolCalls([]),
+			content: [{ type: "redacted_thinking", data: "opaque" }],
+		} as unknown as AssistantMessage;
+		const batches = [[raw]].map(convertToLlm);
+		expect(batches[0][0].content).toEqual([
+			{ type: "thinking", thinking: "", thinkingSignature: "opaque", redacted: true },
+		]);
+	});
+
 	test("keeps legacy compaction summaries out of active LLM context", () => {
 		const legacySummary = { role: "compactionSummary", summary: "older work", tokensBefore: 10, timestamp: 1 };
 		const converted = convertToLlm([

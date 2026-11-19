@@ -208,14 +208,18 @@ class AgentSessionBase {
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
 	protected _retryStatus?: import("./session-retry-status.js").SessionRetryStatus;
+	protected _turnStartedAt?: number;
 	/** Retries made after an attempt whose stream was cut after a long run, for the current model and turn. */
 	protected _longStreamCutRetries = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
 	protected _retryResolve: (() => void) | undefined = undefined;
-	/** {@link abortRetry} cancelled the pending retry: no further attempt starts until another failure opens a retry. */
-	protected _retryCancelled = false;
+	/** Deferred retries capture this generation; an interrupt retires them even if a new turn starts. */
+	protected _retryGeneration = 0;
+	/** A provider may report a retryable failure after its run was aborted. That failure belongs to the old turn. */
+	protected _agentRunRetryGeneration = 0;
 	protected _bashAbortControllers = new Map<string | symbol, Set<AbortController>>();
 	protected _pendingBashMessages: BashExecutionMessage[] = [];
+	protected _runOnlyBashMessages?: WeakSet<object>;
 	protected _extensionRunner!: ExtensionRunner;
 	protected _turnIndex = 0;
 	/** Source entry IDs for projected messages, so boundaries and omissions resolve provenance. */
@@ -224,6 +228,7 @@ class AgentSessionBase {
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	/** Messages whose message_end processing, including their save, has not settled yet. */
 	protected readonly _messagesAwaitingPersistence = new WeakMap<object, Promise<void>>();
+	protected _transcriptAppend: { message: AgentMessage; previousLeaf: string | null } | undefined;
 	protected readonly _messagesWithFailedPersistence = new WeakSet<object>();
 	/** The reported cause once a message of the current run could not be saved; the run stops (#4226). */
 	protected _persistenceFailure: string | undefined = undefined;

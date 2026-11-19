@@ -211,6 +211,22 @@ The search index is about as large as the rendered text it indexes (messages, to
 
 By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes every run of the project that the agent started, including finished runs that recorded no checkpoints and cancelled runs. `history://` is read-only.
 
+### Searching a stored session in the background
+
+From the session's project directory, `atomic storage search-session <sqlite-file> <session-id> <pattern> [cursor]` searches **one session in the SQLite file you name**, read-only. It prints the ordinary first page, including its cursor, before following any advancing entry-budget, byte-budget or time-budget link. It leaves `+N more` links for you to follow. To start at a printed entry cursor instead of the beginning, pass just its numeric value (for example `6` or `6.2`) as the last argument.
+
+The search scans the stored entries without building or updating a search index or joining the writer queue. It leaves the database and Atomic's lock files alone. On a cleanly closed database it writes no files: no `-wal` or `-shm` is needed, even in a read-only directory. On a live database it reads the existing WAL and shared-memory index without updating their contents. If the last writer closes just as SQLite opens the WAL, SQLite can leave an empty `-wal` file. For an unchanged directory, start the search after the writer has closed. If the WAL and its index are incomplete, retry against a cleanly closed database; do not delete the WAL. The usual CLI settings startup still runs. A closed output pipe stops the search quietly.
+
+For example, to work on something else while the search runs, use the usual shell tool:
+
+```json
+{"command":"atomic storage search-session ./sessions.sqlite my-session 'connection refused'","wait":{"kind":"background"}}
+```
+
+Use `bash({ action: "wait", id })` with the returned shell task ID, or `kill({ id })` to stop it. A refused command does not invalidate a page or cursor you already obtained from `search`.
+
+Use the path of an existing local Atomic session database with the standard (unprefixed) tables, not a workflow journal or a server URL. The session ID must contain only ASCII letters, digits, hyphens or underscores. The command does not guess the store from an SDK session or open a session from another project. If the transcript's stored write revision changes during the scan, the command stops rather than printing a page from another revision. A migrated session with no write revision returns its first page and leaves the cursor for manual use. For all other selectors and stores, including JSONL, memory, remote stores, session listings and workflow runs, keep following the URLs with the original `read` or `search` tool. Neither those tools nor manual cursor follows start a background task.
+
 ## Naming Sessions
 
 Use `/name <name>` to set a human-readable session name:

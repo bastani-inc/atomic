@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, it, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, it } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
 	SqliteDatabase,
@@ -10,7 +12,10 @@ import type {
 	SqliteRow,
 	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	openNodeSqliteDatabase,
+	wrapNodeSqliteDatabase,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	sessionTailOf as rawSessionTailOf,
 	sessionCompactionOf,
@@ -36,20 +41,6 @@ function tailContent<T extends { epoch?: string; seqs?: readonly number[]; lastE
 const createdAt = "2026-11-16T00:00:00.000Z";
 const header = { id: "session", version: 4 as const, createdAt, cwd: "/project" };
 const pageEntries = SESSION_RESUME_REBUILD.pageEntries;
-
-/** Let a complete checkpoint interval elapse while reading each of the given pages. */
-function advanceRebuildClockAt(db: SqliteDatabase, ...pageEnds: number[]): void {
-	let now = performance.now();
-	vi.spyOn(performance, "now").mockImplementation(() => now);
-	const all = db.all.bind(db);
-	db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
-		const rows = await all<T>(sql, ...args);
-		const last = rows.at(-1);
-		if (last && "resume_type" in last && pageEnds.includes(Number(last.seq)))
-			now += SESSION_RESUME_REBUILD.checkpointIntervalMs;
-		return rows;
-	};
-}
 
 function entry(index: number, extra: Partial<SessionEntry> = {}): SessionEntry {
 	return {
@@ -124,7 +115,6 @@ function countingRows(database: SqliteDatabase): { database: SqliteDatabase; row
 
 const directories: string[] = [];
 afterEach(() => {
-	vi.restoreAllMocks();
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true, maxRetries: 10 });
 });
 
@@ -244,6 +234,54 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		}
 	});
 
+	it("rebuilds tool counts with SQLite's original JSON functions (#5590)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(5);
+		// The first assistant records a model transition and the last is retained. The middle call is omitted.
+		for (const n of [1, 2, 5]) {
+			entries[n - 1] = entry(n, {
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: `c${n}`, name: "edit", arguments: {} }],
+					timestamp: n,
+					api: "openai-completions",
+					provider: "p",
+					model: "m",
+					stopReason: "toolUse",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			});
+		}
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		const connection = new DatabaseSync(path);
+		// Run unmodified on pre-3.45 SQLite. On newer engines make the optional function fail at prepare,
+		// as it does when Bun loads an older system SQLite on macOS.
+		if (connection.prepare("SELECT 1 FROM pragma_function_list WHERE name='jsonb_extract'").get()) {
+			const prepare = connection.prepare.bind(connection);
+			connection.prepare = (sql) => prepare(sql.replace(/\bjsonb_extract\b/gi, "missing_jsonb_extract"));
+		}
+		const db = wrapNodeSqliteDatabase(connection);
+		try {
+			const store = await SqlSessionStore.open(db);
+			try {
+				assert.equal((await store.readResume(header.id)).omitted.toolCalls, 1);
+			} finally {
+				await store.close();
+			}
+		} finally {
+			await db.close();
+			connection.close();
+		}
+	});
+
 	it("remembers the index of a session it cannot save it for, while the session is unchanged (#5249)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(40);
@@ -291,6 +329,80 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		}
 	});
 
+	it("reads inline pages while an unrelated SQLite blob chunk is write-locked (#5590)", async () => {
+		const uri = `${pathToFileURL(databasePath()).href}?cache=shared`;
+		await onDatabase(uri, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const writer = new DatabaseSync(uri);
+			let held = false;
+			try {
+				await seedLegacyResumeSession(db, store, header, pageEntries + 1);
+				await store.create({ ...header, id: "other" }, []);
+				await store.putBlob("other", Buffer.from("other session's data"));
+				writer.exec("BEGIN IMMEDIATE");
+				held = true;
+				writer.prepare("UPDATE session_blob_chunks SET data=data WHERE session_id=?").run("other");
+				const all = db.all.bind(db);
+				db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+					try {
+						return await all<T>(sql, ...args);
+					} finally {
+						if (held) {
+							writer.exec("ROLLBACK");
+							held = false;
+						}
+					}
+				};
+				assert.equal(await store.findLatestCompaction(header.id), undefined);
+				assert.equal(await hasResumeIndex(db), true);
+			} finally {
+				if (held) writer.exec("ROLLBACK");
+				writer.close();
+				await store.close();
+			}
+		});
+	});
+
+	it("does not enumerate table layouts to open an indexed SQLite session (#5590)", async () => {
+		const path = databasePath();
+		await writeSession(path, compactedEntries(5));
+		await onDatabase(path, async (db) => {
+			const get = db.get.bind(db);
+			const scanned: string[] = [];
+			db.get = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (/pragma_table_list/i.test(sql)) scanned.push(sql);
+				return get<T>(sql, ...args);
+			};
+			const store = await SqlSessionStore.open(db);
+			try {
+				assert.equal((await store.findLatestCompaction(header.id))?.entry.id, "e6");
+				assert.deepEqual(scanned, []);
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
+	it("rebuilds using a SQLite adapter that accepts only positional parameters (#5590)", async () => {
+		await onDatabase(databasePath(), async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const all = db.all.bind(db);
+			db.all = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (/\?\d/.test(sql)) throw new TypeError("numbered parameters require named bindings");
+				return all<T>(sql, ...args);
+			};
+			try {
+				for (const id of [header.id, "wide".repeat(1024)]) {
+					await store.create({ ...header, id }, compactedEntries(5));
+					await db.run("UPDATE session_sessions SET summary_state = '{}' WHERE id = ?", id);
+					assert.equal((await store.findLatestCompaction(id))?.entry.id, "e6");
+				}
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
 	it("yields between chunk pages and does not publish an index for an intervening replacement (#5590)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(5);
@@ -323,10 +435,9 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		});
 	});
 
-	it("reopens an interrupted old-index rebuild at its last saved checkpoint (#5590)", async () => {
+	it("rebuilds from the transcript after interruption inside a later chunked entry (#5590)", async () => {
 		const path = databasePath();
-		const savedThrough = 2 * pageEntries;
-		const interruptedAt = savedThrough + pageEntries;
+		const interruptedAt = pageEntries;
 		const suffix = compactedEntries(interruptedAt + 1, interruptedAt);
 		const interrupted = suffix[0]!;
 		assert.ok(interrupted.type === "message" && interrupted.message.role === "user");
@@ -340,7 +451,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
 			refuseChunkProjection(db, interrupted.id);
-			advanceRebuildClockAt(db, pageEntries, savedThrough);
+			const summary = () => db.get("SELECT summary_state FROM session_sessions WHERE id = ?", header.id);
+			const before = await summary();
 			const get = db.get.bind(db);
 			let chunks = 0;
 			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
@@ -349,6 +461,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 				return row;
 			};
 			await assert.rejects(() => store.readResume(header.id), /interrupted chunk read/);
+			// An older reader publishes by spreading this entire object into its final summary.
+			assert.deepEqual(await summary(), before, "an interrupted rebuild must not enlarge the shared summary");
 			assert.equal(await hasResumeIndex(db), false);
 			await store.close();
 		});
@@ -362,7 +476,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 				return rows;
 			};
 			assert.equal((await store.readResume(header.id)).lastSeq, interruptedAt + suffix.length);
-			assert.equal(firstProjected, `e${savedThrough + 1}`, "reread only the unsaved suffix");
+			assert.equal(firstProjected, "e1");
 			assert.equal(await hasResumeIndex(db), true);
 			await store.close();
 		});
@@ -451,12 +565,11 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		120_000,
 	);
 
-	it("a slower reader cannot replace a peer's published index with its checkpoint (#5590)", async () => {
+	it("interrupting a slower reader keeps a peer's published index (#5590)", async () => {
 		const path = databasePath();
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
 			await seedLegacyResumeSession(db, store, header, pageEntries + 1);
-			advanceRebuildClockAt(db, pageEntries);
 			const all = db.all.bind(db);
 			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 				const rows = await all<T>(sql, ...args);
@@ -471,11 +584,11 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 					});
 				}
 				if (rows.some((row) => row.entry_id === `e${pageEntries + 1}`))
-					throw new Error("reader stopped after checkpoint");
+					throw new Error("reader stopped on the next page");
 				return rows;
 			};
 			try {
-				await assert.rejects(() => store.findLatestCompaction(header.id), /reader stopped after checkpoint/);
+				await assert.rejects(() => store.findLatestCompaction(header.id), /reader stopped on the next page/);
 				assert.ok(await hasResumeIndex(db), "the completed index must still be published");
 			} finally {
 				await store.close();
@@ -509,7 +622,6 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 			const store = await SqlSessionStore.open(db);
 			await seedLegacyResumeSession(db, store, header, prefix);
 			await store.append(header.id, suffix, { expectSeq: prefix });
-			advanceRebuildClockAt(db, pageEntries);
 			const all = db.all.bind(db);
 			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 				const rows = await all<T>(sql, ...args);
