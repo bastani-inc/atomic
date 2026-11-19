@@ -301,6 +301,51 @@ test("a message to a child recorded as gone names it and says how to relaunch it
 	assert.equal(await awaitSubagentChildRestoration("owner", entries, "someone-else", 0), undefined);
 });
 
+test("a message to a gone child whose records a clear moved out of the window is refused as before (#5554)", async () => {
+	const manager = SessionManager.inMemory("/repo");
+	const owner = manager.getSessionId();
+	const record = lostRecord({
+		owner: { kind: "session", sessionId: owner },
+		state: "terminal",
+		terminalStatus: SUBAGENT_CHILD_GONE_STATUS,
+		launch: undefined,
+		task: "Implement the auth refactor",
+	});
+	await manager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+	const before = await awaitSubagentChildRestoration(owner, manager.getEntries(), "impl-auth", 0, manager);
+	assert.ok(before?.includes("task: Implement the auth refactor"), before);
+
+	await manager.appendCompaction("clear", null, 10, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "clear" },
+		form: "cleared",
+		stats: {
+			linesBefore: 1,
+			linesDeleted: 1,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 10,
+			tokensAfter: 5,
+			percentReduction: 50,
+		},
+	});
+	assert.equal(
+		manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === SUBAGENT_CHILD_RECORD_TYPE),
+		false,
+	);
+	for (const target of ["impl-auth", "child-session-id"])
+		assert.equal(
+			await awaitSubagentChildRestoration(owner, manager.getEntries(), target, 0, manager),
+			before,
+			target,
+		);
+	assert.equal(
+		await awaitSubagentChildRestoration(owner, manager.getEntries(), "someone-else", 0, manager),
+		undefined,
+	);
+});
+
 test("a lost child with no record keeps the plain notice (#4660)", () => {
 	assert.deepEqual(subagentChildRestoreNotices([{ kind: "unrestorable", childId: "run-1:0", reason: "no record" }]), [
 		"Subagent run-1:0 did not survive the restart and could not be restored: no record. It is gone: do not send it Intercom messages or wait for its result. Launch a fresh subagent if its work is still needed.",

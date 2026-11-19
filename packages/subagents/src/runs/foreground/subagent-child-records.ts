@@ -25,6 +25,7 @@ import {
 	findAppendedSubagentChildRecord,
 	isSubagentChildRecord,
 	isUnsavedSubagentChildRecord,
+	loadSubagentChildRecord,
 	observeSubagentChildRecord,
 	pendingSubagentChildWrites,
 	registerSubagentChildRecordReader,
@@ -34,7 +35,9 @@ import {
 	settleSubagentChildRecord,
 	subagentChildIdsOf,
 	subagentChildIndexEntry,
+	subagentChildRecordNeedsRead,
 	subagentChildRecordOf,
+	subagentChildRecordsMerging,
 	unsavedSubagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
 
@@ -235,7 +238,9 @@ export interface SubagentChildWakeFailure {
 	readonly reported?: true;
 }
 
-export function currentWakeFailure(record: SubagentChildRecord): SubagentChildWakeFailure | undefined {
+export function currentWakeFailure(
+	record: Pick<SubagentChildRecord, "taskId" | "wakeFailure">,
+): SubagentChildWakeFailure | undefined {
 	return record.wakeFailure?.taskId === record.taskId ? record.wakeFailure : undefined;
 }
 
@@ -512,6 +517,17 @@ export function takeChildRecordFailure(ownerSessionId: string, childId?: string)
 	return failure;
 }
 
+/**
+ * Make a child's latest record readable in this step of its owner's order: one that left its session's window is read
+ * from that session, and stays in memory until the child's next observation merges over it. Undefined when there is
+ * nothing to read, so the step goes on at once. Read the record right after this, so no observation made while it was
+ * read is written over.
+ */
+function recordReadable(ownerSessionId: string, childId: string): Promise<unknown> | undefined {
+	if (!subagentChildRecordNeedsRead(ownerSessionId, childId)) return undefined;
+	return loadSubagentChildRecord(ownerSessionId, childId, { keep: true });
+}
+
 /** Run `step` after every earlier step of this owner. The result rejects when `step` does; later steps still run. */
 function inOrder(ownerSessionId: string, step: () => Promise<void>): Promise<void> {
 	const run = (appendChains.get(ownerSessionId) ?? Promise.resolve()).then(step);
@@ -591,6 +607,9 @@ export async function saveUnsavedSubagentChildRecords(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 ): Promise<void> {
+	// Newer records of a child whose earlier ones left the window are saved whole, merged over those.
+	const merging = subagentChildRecordsMerging(ownerSessionId);
+	if (merging !== undefined) await merging;
 	for (const record of unsavedSubagentChildRecordsOf(ownerSessionId)) {
 		if (pendingSubagentChildWrites.has(record)) continue;
 		void inOrder(ownerSessionId, async () => {
@@ -838,6 +857,8 @@ export async function holdSubagentChildMessages(
 ): Promise<HeldMessagesOutcome> {
 	let outcome: HeldMessagesOutcome = "not-held";
 	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest?.state !== "terminal") return;
 		const kind =
@@ -890,6 +911,8 @@ export async function recordSubagentChildStatus(
 	terminalStatus: string,
 ): Promise<void> {
 	await inOrder(record.owner.sessionId, async () => {
+		const reading = recordReadable(record.owner.sessionId, record.childId);
+		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
 		await appendObserved(pi, observeSubagentChildRecord({ ...latest, state: "terminal", terminalStatus }));
 	});
@@ -907,6 +930,8 @@ export async function recordSubagentChildStop(
 ): Promise<SubagentChildRecord> {
 	let result = record;
 	await inOrder(record.owner.sessionId, async () => {
+		const reading = recordReadable(record.owner.sessionId, record.childId);
+		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
 		result = latest;
 		if (latest.state !== "terminal") return;
@@ -933,6 +958,8 @@ export async function recordSubagentChildHeldToolResults(
 ): Promise<SubagentChildRecord> {
 	let next: SubagentChildRecord | undefined;
 	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
 		const record = observeSubagentChildRecord({
@@ -952,6 +979,8 @@ export async function clearSubagentChildHeldToolResults(
 	toolCallIds: readonly string[],
 ): Promise<void> {
 	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		const held = latest?.heldToolResults ?? [];
 		const kept = held.filter((result) => !toolCallIds.includes(result.toolCallId));
@@ -1026,6 +1055,8 @@ export async function recordSubagentChildReply(
 ): Promise<boolean> {
 	let accepted = false;
 	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		const call = latest?.waitingOn?.find(
 			(item) => item.toolCallId === result.toolCallId && item.replyWait?.questionId === questionId,
@@ -1063,6 +1094,8 @@ async function appendInTurn(
 ): Promise<SubagentChildRecord | undefined> {
 	let written: SubagentChildRecord | undefined;
 	await inOrder(ownerSessionId, async () => {
+		const reading = recordReadable(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
 		const update = next(latest);
