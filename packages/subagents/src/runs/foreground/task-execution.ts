@@ -720,7 +720,13 @@ export async function runAgentTask(input: {
 								? { releaseWhenWaiting: subagentReleasePolicy() }
 								: {}),
 							onBeforeRelease: () =>
-								reserveReleasedChildTargets(input.options, childSession.childSessionId, undefined, false),
+								reserveReleasedChildTargets(
+									input.options,
+									childSession.childSessionId,
+									undefined,
+									false,
+									context.ref.taskId,
+								),
 							signal: context.signal,
 							taskExecution: {
 								taskId: context.ref.taskId,
@@ -817,6 +823,8 @@ export async function runAgentTask(input: {
 								input.options,
 								childSession.childSessionId,
 								child.released.intercomId,
+								true,
+								context.ref.taskId,
 							);
 							const holdMessages = input.recordChild?.holdMessages;
 							if (ownerSessionId !== undefined && holdMessages !== undefined)

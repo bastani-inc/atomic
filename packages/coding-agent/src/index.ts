@@ -208,15 +208,20 @@ export {
 	type HeartbeatRow,
 } from "./modes/interactive/components/heartbeat-block.ts";
 export {
+	clickableHintText,
+	clickableKeyTextHint,
+	hintKeyParts,
 	isNavHelpKey,
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
 	type NavKeybindings,
 	type NavKeyStyle,
+	navEntryKeyParts,
 	navEntryKeys,
 	renderAutocompleteHintLine,
 	renderNavHintLine,
 	renderNavKeyOverlay,
+	slashCommandHint,
 	TwoPressConfirm,
 } from "./modes/interactive/components/nav-keys.ts";
 export {

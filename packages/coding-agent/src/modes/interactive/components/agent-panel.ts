@@ -20,6 +20,7 @@ import {
 import { getGlobalTheme } from "../theme/global-theme.ts";
 import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
 import {
+	clickableKeyTextHint,
 	type NavKey,
 	type NavKeybindings,
 	type NavKeyStyle,
@@ -844,13 +845,21 @@ export function renderAgentPanelHint(
 	if (finished !== undefined) {
 		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
 		return style.warning(
-			truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to ${focus.finishedAction()}`, width),
+			truncateToWidth(
+				`  ${panelText(finished.name)} finished · ${clickableKeyTextHint(key, ` to ${focus.finishedAction()}`)}`,
+				width,
+			),
 		);
 	}
 	const pending = focus.pendingStop();
 	if (pending !== undefined) {
 		const key = filtered?.getKeys?.("app.list.stop")?.[0] ?? "x";
-		return style.warning(truncateToWidth(`  Press ${key} again within 3s to stop ${panelText(pending.name)}`, width));
+		return style.warning(
+			truncateToWidth(
+				`  Press ${clickableKeyTextHint(key, " again")} within 3s to stop ${panelText(pending.name)}`,
+				width,
+			),
+		);
 	}
 	return renderNavHintLine(agentPanelKeys(selected, keybindings), width, style, filtered);
 }

@@ -10,6 +10,7 @@ import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
+import { slashCommandHint } from "./nav-keys.ts";
 import { WAITING_MARKER } from "./notice-line.ts";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
@@ -256,7 +257,7 @@ export class TaskRow implements Component {
 							: "    No retained activity",
 					),
 				);
-			lines.push(theme.fg("dim", "  /tasks to inspect transcript and task details"));
+			lines.push(theme.fg("dim", `  ${slashCommandHint("/tasks to inspect transcript and task details")}`));
 			if (task.execution.kind === "settled" && task.execution.result.kind === "failed")
 				lines.push(truncateToWidth(`    ${taskDisplayText(task.execution.result.message)}`, width));
 		}

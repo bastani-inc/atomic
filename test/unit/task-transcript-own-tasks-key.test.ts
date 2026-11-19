@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -9,6 +8,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 test("shell output hints and help omit unavailable tool expansion and interruption (#5224)", async () => {
 	initTheme("dark");

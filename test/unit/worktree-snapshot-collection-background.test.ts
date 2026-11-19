@@ -10,6 +10,7 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import {
 	BackgroundCollectionPace,
 	SNAPSHOT_COLLECTION_BATCH,
+	SNAPSHOT_COLLECTION_DELETE_BATCH,
 	SNAPSHOT_COLLECTION_LEASE_SECONDS,
 	SNAPSHOT_COLLECTION_LOCK_RETRY_FIRST_MS,
 	SNAPSHOT_COLLECTION_LOCK_RETRY_MAX_MS,
@@ -100,7 +101,7 @@ describe("the pace of a background collection (#4355)", () => {
 		assert.equal(timers.length, 2);
 	});
 
-	test("a background backfill and sweep wait on their pace between batches, and only between batches", async () => {
+	test("a background backfill waits on its pace after every batch, and a sweep between its batches only", async () => {
 		const other = await openSharedSnapshotDatabase(join(directory, "backfill.sqlite"));
 		const lease = await startRun(other.journal, "run");
 		await other.journal.append(lease, statusEvent("run", { status: "running" }, "RunStarted"));
@@ -110,7 +111,7 @@ describe("the pace of a background collection (#4355)", () => {
 			lease.epoch,
 		);
 		await other.journal.snapshotBlobs.putBlobs(
-			Array.from({ length: SNAPSHOT_COLLECTION_BATCH * 2 + 1 }, (_, index) => textBlob(`orphan ${index}`)),
+			Array.from({ length: SNAPSHOT_COLLECTION_DELETE_BATCH * 2 + 1 }, (_, index) => textBlob(`orphan ${index}`)),
 		);
 		await ageBlobs(other.database, "snapshot_blobs", 10_000);
 		await other.journal.close();
@@ -121,19 +122,23 @@ describe("the pace of a background collection (#4355)", () => {
 			const pace = new RecordedPace();
 
 			await store.completeIndex({ pace });
-			assert.deepEqual(pace.waits, [0, 0], "three backfill batches of the events, two waits between them");
+			assert.deepEqual(
+				pace.waits,
+				[0, 0, 0, 0],
+				"three backfill batches of the events and one of the runs, a wait after each, before the sweep's first batch too (#5530)",
+			);
 			pace.waits.length = 0;
 			const deleted = await store.sweep({ graceSeconds: 0, pace });
 
-			assert.equal(deleted.length, SNAPSHOT_COLLECTION_BATCH * 2 + 1);
-			assert.deepEqual(pace.waits, [0, 0], "three sweep batches, two waits between them");
+			assert.equal(deleted.length, SNAPSHOT_COLLECTION_DELETE_BATCH * 2 + 1);
+			assert.deepEqual(pace.waits, [0, 0], "three delete batches, two waits between them");
 		} finally {
 			await other.database.close();
 		}
 	});
 
 	test("waiting on a real pace returns to the event loop, so a callback queued by one batch runs before the next", async () => {
-		await agedOrphans(SNAPSHOT_COLLECTION_BATCH * 2 + 1);
+		await agedOrphans(SNAPSHOT_COLLECTION_DELETE_BATCH * 2 + 1);
 		let ticked = false;
 		const tickedBeforeBatch: boolean[] = [];
 
@@ -170,7 +175,7 @@ describe("a background collection stops when it is aborted (#4355)", () => {
 	});
 
 	test("a sweep stops at the batch boundary with the abort reason, keeping what earlier batches deleted", async () => {
-		await agedOrphans(SNAPSHOT_COLLECTION_BATCH * 3);
+		await agedOrphans(SNAPSHOT_COLLECTION_DELETE_BATCH * 3);
 		const controller = new AbortController();
 		const pace = new BackgroundCollectionPace(controller.signal);
 		let batches = 0;
@@ -188,7 +193,7 @@ describe("a background collection stops when it is aborted (#4355)", () => {
 		);
 
 		assert.equal(batches, 1);
-		assert.equal((await blobs().listBlobHashes()).length, SNAPSHOT_COLLECTION_BATCH * 2);
+		assert.equal((await blobs().listBlobHashes()).length, SNAPSHOT_COLLECTION_DELETE_BATCH * 2);
 	});
 
 	test("a write waiting for a held lock stops when aborted, with the abort reason", async () => {

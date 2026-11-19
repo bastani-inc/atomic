@@ -1,5 +1,6 @@
 import {
 	getKeybindings,
+	isHintActivation,
 	matchesKey,
 	Text,
 	type KeybindingsManager as TuiKeybindingsManager,
@@ -36,7 +37,7 @@ import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-h
 import { ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
-import { navActionText } from "./nav-keys.ts";
+import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
@@ -228,7 +229,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (task === undefined || waitingOn === undefined) return undefined;
 		const shells = waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks);
 		const openKey = navActionText(getKeybindings(), "app.tasks.openWaited");
-		const opens = openKey ? `${openKey} opens` : "/tasks opens";
+		const opens = openKey ? clickableKeyTextHint(openKey, " opens") : "/tasks opens";
 		const shellNote =
 			shells.length === 0
 				? ""
@@ -451,7 +452,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return handled;
 		}
-		if (!this.chat.hasTaskInspector && keybindings.matches(data, "app.agents.focus") && !this.hasDraft()) {
+		if (
+			!this.chat.hasTaskInspector &&
+			keybindings.matches(data, "app.agents.focus") &&
+			(!this.hasDraft() || isHintActivation())
+		) {
 			return this.hasTasks() ? this.chat.openTasks() : true;
 		}
 		// The host owns thinking display; only its default physical key leaves the composer, as in a stage chat.
