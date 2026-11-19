@@ -9,7 +9,7 @@ import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import { SessionManager } from "../session-manager.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
 import { renderHtmlInputs } from "./render-inputs.js";
-import { type SavedAgentCard, savedAgentCards } from "./saved-agent-cards.js";
+import { type SavedAgentCard, savedFileCards } from "./saved-agent-cards.js";
 import { captureHtmlHistory, encodeSessionData, sessionDataBytes } from "./session-data.js";
 
 /**
@@ -206,7 +206,7 @@ async function writeSessionHtml(
 	sm: SessionManager,
 	state: AgentState | undefined,
 	opts: ExportOptions,
-	cards?: SavedAgentCard[],
+	standalone = false,
 ) {
 	const sessionFile = sm.getSessionFile();
 	const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
@@ -214,6 +214,7 @@ async function writeSessionHtml(
 		if (error instanceof SessionNotFoundError) throw new Error("Nothing to export yet - start a conversation first");
 		throw error;
 	});
+	const cards = standalone ? await savedFileCards(source) : undefined;
 	const inputs = opts.toolRenderer ? await renderHtmlInputs(source.readHistory(), opts.toolRenderer) : undefined;
 	const presentation = {
 		systemPrompt: state?.systemPrompt,
@@ -279,7 +280,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	}
 
 	try {
-		return await writeSessionHtml(sm, undefined, { ...opts, outputPath }, savedAgentCards(sm, sm.getEntries()));
+		return await writeSessionHtml(sm, undefined, { ...opts, outputPath }, true);
 	} finally {
 		await sm.getSessionStore().close();
 	}
