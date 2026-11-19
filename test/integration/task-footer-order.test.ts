@@ -6,7 +6,10 @@ import { test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
-import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import {
+	AGENT_PANEL_REFRESH_WINDOW_MS,
+	bindAgentPanel,
+} from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
@@ -24,7 +27,7 @@ import {
 } from "../unit/stage-chat-view-helpers.js";
 
 test.each(["stage", "engine"] as const)(
-	"%s chat lists its active tasks below MCP and drops them once they finish (#5224)",
+	"%s chat lists its active tasks below MCP and drops them once they finish (#5224, #5723)",
 	async (surface) => {
 		const tasks = taskFixture();
 		const emptyTasks = taskFixture();
@@ -54,14 +57,21 @@ test.each(["stage", "engine"] as const)(
 						onDetach() {},
 					})
 				: undefined;
+		let panelAgents = 0;
 		let removeTasks = () => {};
 		if (main) {
 			main.context.footerContainer.clear();
 			main.context.footerContainer.addChild(new FooterComponent(fakeFooterAgentSession(), footerData));
-			removeTasks = bindAgentPanel(session, {
-				setWidget: main.context.setExtensionWidget.bind(main.context),
-				requestRender: () => main.tui.requestRender(),
-			} as ExtensionUIContext);
+			removeTasks = bindAgentPanel(
+				session,
+				{
+					setWidget: main.context.setExtensionWidget.bind(main.context),
+					requestRender: () => main.tui.requestRender(),
+				} as ExtensionUIContext,
+				(counts) => {
+					panelAgents = counts.total;
+				},
+			);
 		}
 		const render = () => {
 			if (stage) return stripTerminalSequences(stage.render(100).join("\n"));
@@ -70,7 +80,13 @@ test.each(["stage", "engine"] as const)(
 			return stripTerminalSequences(getLayoutFrame(main.tui).lines.join("\n"));
 		};
 		const taskRows = (screen: string) => screen.split("\n").filter((row) => /^ {2}[∀✓✗] worker /.test(row));
-		const assertOrder = (expected: readonly RegExp[]) => {
+		const assertOrder = async (expected: readonly RegExp[]) => {
+			// A store drain can finish one refresh window before the engine panel publishes its new rows.
+			if (main)
+				await vi.waitFor(() => assert.equal(panelAgents, expected.length), {
+					interval: AGENT_PANEL_REFRESH_WINDOW_MS,
+					timeout: 3 * AGENT_PANEL_REFRESH_WINDOW_MS,
+				});
 			const screen = render();
 			const rows = screen.split("\n");
 			const mcp = rows.findIndex((row) => row.includes("MCP "));
@@ -78,7 +94,7 @@ test.each(["stage", "engine"] as const)(
 			assert.ok(mcp >= 0, screen);
 			assert.equal(shown.length, expected.length, screen);
 			for (const [index, row] of shown.entries()) assert.match(row, expected[index]!);
-			assert.ok(rows.indexOf(shown[0]!) > mcp, `Task rows must follow MCP:\n${screen}`);
+			if (shown.length > 0) assert.ok(rows.indexOf(shown[0]!) > mcp, `Task rows must follow MCP:\n${screen}`);
 		};
 		try {
 			await new Promise<void>((resolve) => setImmediate(resolve));
@@ -86,14 +102,14 @@ test.each(["stage", "engine"] as const)(
 			assert.deepEqual(taskRows(render()), []);
 			await tasks.start("will fail");
 			await tasks.start("keeps running");
-			assertOrder([/keeps running/, /will fail/]);
+			await assertOrder([/keeps running/, /will fail/]);
 			tasks.runners[0].result.resolve({ kind: "failed", code: "fixture", message: "Retained failure" });
 			await vi.waitFor(() => {
 				tasks.store.drain();
 				assert.equal(tasks.store.tasks[0]?.execution.kind, "settled");
 			});
 			// A finished subagent leaves the main panel and a stage chat's task list at once.
-			assertOrder([/keeps running/]);
+			await assertOrder([/keeps running/]);
 			if (stage) {
 				const narrow = stripTerminalSequences(stage.render(40).join("\n"));
 				assert.match(narrow, /∀ worker/);
@@ -103,8 +119,7 @@ test.each(["stage", "engine"] as const)(
 			if (stage) assert.deepEqual(taskRows(render()), []);
 			assert.equal(tasks.store.backgroundTasks.length, 2, "terminal history remains inspectable");
 			bindOwnerTaskStore(session, emptyTasks.store);
-			assert.match(render(), /MCP /);
-			assert.deepEqual(taskRows(render()), []);
+			await assertOrder([]);
 		} finally {
 			removeTasks();
 			stage?.dispose();
