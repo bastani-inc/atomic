@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { copyFileSync, renameSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
@@ -446,6 +447,7 @@ function rewriteSavedReply(file: string, rename: boolean): void {
 const savedHistoryCases = [
 	"file",
 	"replaced file",
+	"file replaced with identical bytes",
 	"file rewritten in place",
 	"file rewritten during projection",
 	"file replaced during projection",
@@ -561,6 +563,11 @@ test.each(savedHistoryCases)(
 			host.inspector.handleInput(CTRL_HOME);
 			host.frame();
 			if (replace && !duringRead) rewriteSavedReply(child.sessionFile!, rename);
+			if (backend === "file replaced with identical bytes") {
+				const file = child.sessionFile!;
+				copyFileSync(file, `${file}.new`);
+				renameSync(`${file}.new`, file);
+			}
 			gate.resolve();
 			await earlier.promise;
 			await flush();

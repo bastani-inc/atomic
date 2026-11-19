@@ -1115,18 +1115,12 @@ function withArchivedPages(
 		return project(
 			entries,
 			records.length,
-			async () => {
-				const identity = await stat(file, { bigint: true }).catch(() => undefined);
-				if (!identity?.isFile() || !identity.ino || !identity.birthtimeNs) return undefined;
-				const { dev, ino, birthtimeNs, ctimeNs, mtimeNs, size } = identity;
-				return createHash("sha256")
-					.update(`${dev}:${ino}:${birthtimeNs}:${ctimeNs}:${mtimeNs}:${size}`)
-					.digest("base64url");
-			},
-			(generation, row) => {
-				// The file may already have changed by the time we stat it. Use the record this page actually read.
+			// A projector that only understands file generations must not equate two independent reads.
+			async () => randomUUID(),
+			(_generation, row) => {
+				// Identify only the selected, captured row. Reopening its path here can block a rename on Windows.
 				try {
-					return createHash("sha256").update(generation).update(JSON.stringify(records[row])).digest("base64url");
+					return createHash("sha256").update(JSON.stringify(records[row])).digest("base64url");
 				} catch {
 					return undefined;
 				}
