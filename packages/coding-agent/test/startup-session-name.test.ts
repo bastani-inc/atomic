@@ -60,7 +60,7 @@ function readSessionInfoNames(sessionFile: string): string[] {
 		.map((entry) => entry.name ?? "");
 }
 
-async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
+async function runCli(args: string[], dirs: CliDirs, env: NodeJS.ProcessEnv = {}): Promise<CliResult> {
 	const result = await runCliProcess(["--session-dir", resolve(dirs.sessionFile, ".."), ...args], {
 		cwd: dirs.projectDir,
 		env: {
@@ -68,6 +68,7 @@ async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 			[ENV_AGENT_DIR]: dirs.agentDir,
 			ATOMIC_OFFLINE: "1",
 			TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
+			...env,
 		},
 	});
 	return { code: result.code, signal: result.signal, stderr: result.stderr };
@@ -87,16 +88,20 @@ function setup(): CliDirs {
 }
 
 describe("startup session name", () => {
-	it("sets --name on the selected session before runtime model validation", async () => {
+	it("sets --name before model validation without hiding the session when a 0.9.x environment is inherited", async () => {
 		const dirs = setup();
 		const result = await runCli(
 			["--session", "existing-session", "--name", "  CLI Named Session  ", "--model", "missing-model", "-p", "hi"],
 			dirs,
+			{ ATOMIC_WORKFLOW_SESSION_METADATA: JSON.stringify({ runId: "r", stageId: "s", stageName: "build" }) },
 		);
 
 		expect(result.code).toBe(1);
 		expect(result.signal).toBeNull();
 		expect(readSessionInfoNames(dirs.sessionFile)).toEqual(["CLI Named Session"]);
+		const header = JSON.parse(readFileSync(dirs.sessionFile, "utf8").split("\n")[0]!);
+		expect(header).not.toHaveProperty("internal");
+		expect(header).not.toHaveProperty("workflow");
 	});
 
 	it("rejects empty --name values without appending session metadata", async () => {

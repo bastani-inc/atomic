@@ -43,10 +43,7 @@ afterEach(() => {
 describe("isDebugEnabled (#4360)", () => {
 	test("names each area's own variable", () => {
 		assert.deepEqual(DEBUG_AREA_VARIABLES, {
-			workflow: "ATOMIC_WORKFLOW_DEBUG",
 			decision: undefined,
-			"pooled-watch": "ATOMIC_DEBUG_POOLED_WATCH",
-			pool: undefined,
 			storage: undefined,
 			engine: undefined,
 		});
@@ -66,19 +63,6 @@ describe("isDebugEnabled (#4360)", () => {
 		assert.equal(isDebugEnabled(area, {}), false);
 	});
 
-	test.each(AREAS.filter((area) => DEBUG_AREA_VARIABLES[area] !== undefined))(
-		"%s is on from its own variable alone",
-		(area) => {
-			const own = DEBUG_AREA_VARIABLES[area]!;
-			assert.equal(isDebugEnabled(area, { [own]: "1" }), true);
-			assert.equal(isDebugEnabled(area, { [own]: "" }), false);
-			assert.equal(isDebugEnabled(area, { [own]: "0" }), false);
-			assert.equal(isDebugEnabled(undefined, { [own]: "1" }), false, "an area variable is not debug mode");
-			for (const other of AREAS.filter((candidate) => candidate !== area))
-				assert.equal(isDebugEnabled(other, { [own]: "1" }), false, `${own} does not turn on ${other}`);
-		},
-	);
-
 	test("tests start with every variable that turns debug output on cleared", () => {
 		const names = [
 			...Object.values(DEBUG_AREA_VARIABLES).filter((name) => name !== undefined),
@@ -91,9 +75,10 @@ describe("isDebugEnabled (#4360)", () => {
 		);
 	});
 
-	test("the pool and storage areas have no variable of their own, whatever the environment holds", () => {
-		assert.equal(isDebugEnabled("pool", { undefined: "1", "": "1" }), false);
-		assert.equal(isDebugEnabled("storage", { undefined: "1", "": "1" }), false);
+	test("retired workflow variables do not enable debug mode", () => {
+		const env = { ATOMIC_WORKFLOW_DEBUG: "1", ATOMIC_DEBUG_POOLED_WATCH: "/tmp/trace.jsonl" };
+		for (const area of AREAS) assert.equal(isDebugEnabled(area, env), false);
+		assert.equal(isDebugEnabled(undefined, env), false);
 	});
 
 	test("a process starts with the setting its parent passed down", async () => {
@@ -108,15 +93,8 @@ describe("isDebugEnabled (#4360)", () => {
 		}
 	});
 
-	test("the pooled-watch variable also takes a trace file path, while the others need exactly 1", () => {
-		assert.equal(isDebugEnabled("pooled-watch", { ATOMIC_DEBUG_POOLED_WATCH: "/tmp/trace.jsonl" }), true);
-		assert.equal(isDebugEnabled("workflow", { ATOMIC_WORKFLOW_DEBUG: "yes" }), false);
-	});
-
 	test("reads process.env at call time, so a variable set later counts", () => {
-		assert.equal(isDebugEnabled("workflow"), false);
-		vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
-		assert.equal(isDebugEnabled("workflow"), true);
+		assert.equal(isDebugEnabled(), false);
 		vi.stubEnv("ATOMIC_DEBUG", "1");
 		assert.equal(isDebugEnabled(), true);
 	});
