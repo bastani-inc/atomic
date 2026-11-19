@@ -39,6 +39,8 @@ export interface DurableWorkflowDefinitionSource {
  * (a run id); internal nested workflow ids are abstracted away from users.
  */
 export interface DurableWorkflowHandle {
+	/** Inspection evidence from this root's terminal write. Never consumed by replay. */
+	readonly pooledDispatchRefusals?: import("./pooled-dispatch-refusals.js").PooledDispatchRefusals;
 	/** Latest pause or block occurrence of this run, preserved when its executor changes. */
 	readonly runGeneration?: number;
 	/** Top-level workflow id used by `/workflow resume <id>`. */
@@ -161,6 +163,8 @@ export interface DurableToolTopology {
 
 /** A `ctx.tool(...)` result cached durably. */
 export interface DurableToolCheckpoint {
+	/** Only on a root's run-end checkpoint, outside its replayable output. */
+	readonly pooledDispatchRefusals?: import("./pooled-dispatch-refusals.js").PooledDispatchRefusals;
 	readonly kind: "tool";
 	readonly workflowId: string;
 	/** Unique checkpoint id within the workflow (monotonic). */

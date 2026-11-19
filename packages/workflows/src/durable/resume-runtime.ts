@@ -373,7 +373,9 @@ async function resumeDurableWorkflowClaimed(
 		(handle.failedToolNodeId !== undefined ||
 			/^atomic-workflows: ctx\.tool .* aborted by node abort$/s.test(handle.error ?? ""))
 	) {
-		const source = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId);
+		const source = durableWorkflowRunSnapshots(backend, handle, undefined, "replay").find(
+			(run) => run.id === handle.workflowId,
+		);
 		// The run's failure says the store refused every record of its failed tool's failure: the tool never completed,
 		// so the run resumes from its records and runs it again, unless a record says it completed (#5027).
 		const unrecorded =

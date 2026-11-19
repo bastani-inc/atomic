@@ -22,6 +22,7 @@ import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
+import { pooledDispatchRefusals, releasePooledDispatchRefusals } from "../durable/pooled-dispatch-refusals.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import {
@@ -1871,10 +1872,11 @@ async function executeRun(
 		}
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.
+		const refusals = pooledDispatchRefusals(runSnapshot, durableBackend);
 		if (opts.parentRun === undefined) {
 			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
 			await recordRunResultCheckpointAsync(durableBackend, runSnapshot);
-			if (returned.status === "completed") await recordRunCompletedCheckpointAsync(durableBackend, runId);
+			if (returned.status === "completed") await recordRunCompletedCheckpointAsync(durableBackend, runId, refusals);
 		}
 		await durableBackend.commitWorkflowStatus(
 			runId,
@@ -1884,6 +1886,7 @@ async function executeRun(
 			undefined,
 			runSnapshot.runGeneration,
 			runSnapshot.finishSequence,
+			...(returned.status !== "completed" && refusals ? [refusals] : []),
 		);
 		terminalStatusCommitted = true;
 		await appendRunEndWhenRecorded(opts.persistence, recorded, runSnapshot, {
@@ -2073,6 +2076,7 @@ async function executeRun(
 				});
 			}
 		} finally {
+			releasePooledDispatchRefusals(runSnapshot);
 			try {
 				await gitWorktreeSetupCacheOwner.release(() => {
 					if (ownsCancellationRegistration) opts.cancellation?.unregister(runId, ownController);

@@ -133,6 +133,8 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			if ((stage.status === "failed" || stage.status === "skipped") && stage.startedChildRunId !== undefined)
 				existing.startedChildRunId = stage.startedChildRunId;
 			else delete existing.startedChildRunId;
+			if (stage.status === "failed" && stage.pooledDispatchRefused) existing.pooledDispatchRefused = true;
+			else delete existing.pooledDispatchRefused;
 			if (stage.status === "completed") {
 				if (stage.workflowChildRun !== undefined) existing.workflowChildRun = { ...stage.workflowChildRun };
 				if (stage.workflowChild !== undefined) existing.workflowChild = structuredClone(stage.workflowChild);

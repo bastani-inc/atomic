@@ -57,6 +57,7 @@ import type {
 	WorkflowUIAdapter,
 } from "../shared/types.js";
 import {
+	isRefusedPoolEnqueue,
 	PoolNotInitializedError,
 	PublicationRejectedError,
 	StaleWorkLeaseError,
@@ -1386,10 +1387,20 @@ export class LocalWorkerPool {
 		this.rootSignature = signature;
 		this.notice({ kind: "root", rootRun });
 	}
-	async run(definition: WorkflowDefinition, inputs: ResolvedInputs, options: RunOpts): Promise<RunResult> {
+	async run(
+		definition: WorkflowDefinition,
+		inputs: ResolvedInputs,
+		options: RunOpts,
+		refusedBeforeEnqueue?: () => void,
+	): Promise<RunResult> {
+		let sends = 0;
 		try {
-			return await this.dispatch(definition, inputs, options);
+			return await this.dispatch(definition, inputs, options, () => {
+				sends++;
+			});
 		} catch (error) {
+			// An unanswered earlier send could have run or reused the child. Only a definitive first refusal suffices.
+			if (sends === 0 || (sends === 1 && isRefusedPoolEnqueue(error))) refusedBeforeEnqueue?.();
 			// One child's failure, whatever it was, is that child's: the pool and its other children keep running, and
 			// nothing the pool's shutdown reports becomes their failure. Only a pool that failed itself (its coordinator
 			// lost, or a fault it reported as the pool's) stops here; otherwise the root's own end closes it, and reports
@@ -1402,6 +1413,7 @@ export class LocalWorkerPool {
 		definition: WorkflowDefinition,
 		inputs: ResolvedInputs,
 		options: RunOpts,
+		onSubmit: () => void,
 	): Promise<RunResult> {
 		if (options.budget !== undefined) throw new Error("Local workers refuse process-bound override: budget");
 		if (this.closed) throw this.closedError(options.parentRun?.rootRunId);
@@ -1482,13 +1494,16 @@ export class LocalWorkerPool {
 		};
 		const enqueued = (await retryWithinLease(
 			() =>
-				this.command({
-					kind: "enqueue",
-					descriptor,
-					boundary,
-					...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
-					...claims,
-				}),
+				this.command(
+					{
+						kind: "enqueue",
+						descriptor,
+						boundary,
+						...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
+						...claims,
+					},
+					onSubmit,
+				),
 			() => !this.closed && this.failure === undefined && options.signal?.aborted !== true,
 		)) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
 		const work = enqueued.work;
@@ -1667,7 +1682,7 @@ export class LocalWorkerPool {
 		this.commands.clear();
 		this.signalChange();
 	}
-	private command(body: CoordinatorCommandBody): Promise<unknown> {
+	private command(body: CoordinatorCommandBody, onSend?: () => void): Promise<unknown> {
 		const coordinator = this.connect();
 		if (this.coordinatorLost !== undefined) return Promise.reject(this.coordinatorLost);
 		// A closed pool's coordinator may already be gone without telling: work sent to it now would wait forever (#4768).
@@ -1675,6 +1690,7 @@ export class LocalWorkerPool {
 		const id = ++this.commandSequence;
 		return new Promise((resolve, reject) => {
 			this.commands.set(id, { resolve, reject });
+			onSend?.();
 			coordinator.port.send({ ...body, id });
 		});
 	}

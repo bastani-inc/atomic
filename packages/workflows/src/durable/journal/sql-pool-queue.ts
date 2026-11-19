@@ -25,6 +25,7 @@ import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
 import {
 	PoolNotInitializedError,
+	refusedPoolEnqueue,
 	StaleWorkLeaseError,
 	type StaleWorkLeaseReason,
 } from "../../shared/worker-pool-errors.js";
@@ -1190,7 +1191,7 @@ export class SqlPoolQueue {
 			boundary.replayKey !== descriptor.scope ||
 			topology.boundary.replayScope !== descriptor.scope
 		)
-			throw new Error("Pool boundary identity mismatch");
+			throw refusedPoolEnqueue(new Error("Pool boundary identity mismatch"));
 		for (const value of [
 			descriptor.boundaryId,
 			descriptor.childRunId,
@@ -1259,7 +1260,7 @@ export class SqlPoolQueue {
 				lease.runId,
 			);
 			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
-				throw new Error("Pool work scopes overlap");
+				throw refusedPoolEnqueue(new Error("Pool work scopes overlap"));
 			const id = randomUUID();
 			const whole = await this.keepsWhole(tx, json, payload);
 			const stored = storedDescriptor(json, whole);
@@ -1283,7 +1284,8 @@ export class SqlPoolQueue {
 					lease.runId,
 				);
 				const existing = await this.eventPayload(tx, lease.runId, key);
-				if (existing !== undefined && existing !== payload) throw new Error("Pool boundary identity conflict");
+				if (existing !== undefined && existing !== payload)
+					throw refusedPoolEnqueue(new Error("Pool boundary identity conflict"));
 				if (existing === undefined)
 					for (const write of this.eventWrites(
 						lease.runId,
@@ -1346,14 +1348,15 @@ export class SqlPoolQueue {
 				root,
 			);
 			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
-				throw new Error("Pool work scopes overlap");
+				throw refusedPoolEnqueue(new Error("Pool work scopes overlap"));
 			const withSnapshot = await this.withStoredSnapshot(read, descriptor);
 			const json = serializeJson({ ...withSnapshot });
 			const whole = await this.keepsWhole(read, json, payload);
 			const stored = storedDescriptor(json, whole);
 			if (stored.chunks.length > 0) return { done: handled };
 			const existing = await this.eventPayload(read, root, key);
-			if (existing !== undefined && existing !== payload) throw new Error("Pool boundary identity conflict");
+			if (existing !== undefined && existing !== payload)
+				throw refusedPoolEnqueue(new Error("Pool boundary identity conflict"));
 			const head = await read.get<SqliteRow & { seq: number }>(
 				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
 				root,
@@ -1497,12 +1500,12 @@ export class SqlPoolQueue {
 		const existing = await remote.entry(lease.runId, key);
 		if (existing) {
 			if (!isSameCheckpointValue(existing.event.payload, boundary))
-				throw new Error("Pool boundary identity conflict");
+				throw refusedPoolEnqueue(new Error("Pool boundary identity conflict"));
 			return;
 		}
 		const outcome = await remote.append(lease, key, boundary);
 		if (outcome.status === "exists" && !isSameCheckpointValue(outcome.entry.event.payload, boundary))
-			throw new Error("Pool boundary identity conflict");
+			throw refusedPoolEnqueue(new Error("Pool boundary identity conflict"));
 	}
 	/**
 	 * Gives work an earlier incarnation of this root queued the descriptor `json` this incarnation enqueues it with, when
@@ -1535,8 +1538,10 @@ export class SqlPoolQueue {
 			digest: queued.digest,
 			execution: queuedMode === undefined ? execution : { ...execution, executionMode: queuedMode },
 		};
-		if (workFingerprint(asQueued, boundary) !== previous.fingerprint)
-			throw new Error("Pool boundary identity conflict");
+		if (workFingerprint(asQueued, boundary) !== previous.fingerprint) {
+			const error = new Error("Pool boundary identity conflict");
+			throw previous.epoch < lease.epoch ? refusedPoolEnqueue(error) : error;
+		}
 		const entryEdited = queued.digest !== requested.digest;
 		if (previous.epoch >= lease.epoch) {
 			const changes = [
@@ -1550,8 +1555,10 @@ export class SqlPoolQueue {
 			);
 		}
 		if (entryEdited && options.acceptEntryChanges !== true)
-			throw new Error(
-				`Pool boundary identity conflict: child ${requested.childRunId} was queued by an earlier run of root ${lease.runId} with the entry module of worker definition ${requested.definition} at sha256 ${short(queued.digest)}, and the root now runs that module at sha256 ${short(requested.digest)}. Resume root ${lease.runId} from /resume and confirm the edited module, or pass acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.`,
+			throw refusedPoolEnqueue(
+				new Error(
+					`Pool boundary identity conflict: child ${requested.childRunId} was queued by an earlier run of root ${lease.runId} with the entry module of worker definition ${requested.definition} at sha256 ${short(queued.digest)}, and the root now runs that module at sha256 ${short(requested.digest)}. Resume root ${lease.runId} from /resume and confirm the edited module, or pass acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.`,
+				),
 			);
 		const stored = storedDescriptor(json, await this.keepsWhole(tx, json));
 		await tx.run(

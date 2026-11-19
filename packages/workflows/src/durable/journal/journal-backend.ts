@@ -1293,9 +1293,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
 		finishSequence?: number,
+		refusals?: DurableWorkflowHandle["pooledDispatchRefusals"],
 	): Promise<void> {
 		return this.serialize(runId, () =>
-			this.setStatus(runId, status, pendingPrompts, resumable, failure, runGeneration, finishSequence),
+			this.setStatus(runId, status, pendingPrompts, resumable, failure, runGeneration, finishSequence, refusals),
 		);
 	}
 	private *setStatus(
@@ -1306,11 +1307,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
 		finishSequence?: number,
+		refusals?: DurableWorkflowHandle["pooledDispatchRefusals"],
 	): Operation<void> {
 		const draft = yield* this.draft(runId);
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure, runGeneration, finishSequence);
 		const handle = draft.getWorkflow(runId);
-		if (handle) yield* this.snapshot(handle);
+		if (handle)
+			yield* this.snapshot(refusals === undefined ? handle : { ...handle, pooledDispatchRefusals: refusals });
 	}
 	async commitWorkflowStatusTransition(
 		runId: string,
@@ -1646,6 +1649,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	workflowAttempt(runId: string): number {
 		return this.projection.workflowAttempt(runId);
+	}
+	pooledDispatchRefusals(runId: string): DurableWorkflowHandle["pooledDispatchRefusals"] {
+		return this.projection.pooledDispatchRefusals(runId);
 	}
 	/** A checkpoint as this backend commits it, stamped with its run's attempt (#4874). */
 	stampAttempt(checkpoint: DurableCheckpoint): DurableCheckpoint {

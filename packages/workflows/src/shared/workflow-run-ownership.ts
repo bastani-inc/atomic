@@ -70,8 +70,10 @@ export function failedBoundaryChildRuns(
 	runs: readonly RunSnapshot[],
 	parent: string,
 	stage: string,
-	startedChildRunId: string | undefined,
+	boundary: Pick<StageSnapshot, "startedChildRunId" | "pooledDispatchRefused">,
 ): readonly RunSnapshot[] {
+	if (boundary.pooledDispatchRefused) return [];
+	const { startedChildRunId } = boundary;
 	if (startedChildRunId === undefined) return childRunsInSource(runs, parent, stage);
 	const child = findSnapshotRun(runs, startedChildRunId);
 	return child?.parentRunId === parent &&

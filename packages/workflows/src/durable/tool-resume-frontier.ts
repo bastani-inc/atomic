@@ -32,7 +32,9 @@ export function resolveToolResumeFrontier(source: RunSnapshot, backend: DurableW
 	// only absent nodes from typed checkpoints; never replace local graph evidence.
 	const handle = backend.getWorkflow(source.id);
 	if (handle !== undefined) {
-		const persisted = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === source.id);
+		const persisted = durableWorkflowRunSnapshots(backend, handle, undefined, "replay").find(
+			(run) => run.id === source.id,
+		);
 		if (persisted === undefined) return fail("invalid persisted tool frontier topology");
 		const localIds = new Set(tools.map((node) => node.id));
 		tools.push(...persisted.toolNodes.filter((node) => !localIds.has(node.id)));

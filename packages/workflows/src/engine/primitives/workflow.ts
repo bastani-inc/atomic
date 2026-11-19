@@ -122,6 +122,7 @@ export function createChildWorkflowRunner(input: {
 						await boundary.skipForWorkflowExit(exit.reason);
 						throw exit;
 					}
+					if (pooledChildDispatcher(runtime)) boundary.refusedBeforeEnqueue();
 					await boundary.fail(err);
 					throw err;
 				}
@@ -133,6 +134,7 @@ export function createChildWorkflowRunner(input: {
 			} catch (err) {
 				// The attempt fails at this boundary, so a resume starts from it, and the run's records show it failed when the
 				// store takes them now (#5027).
+				if (boundary.replayedChild === undefined && pooledChildDispatcher(runtime)) boundary.refusedBeforeEnqueue();
 				await boundary.fail(err);
 				await durableInvocation
 					?.recordStart(boundary.parentIds, boundary.sourceOrder)
@@ -140,6 +142,7 @@ export function createChildWorkflowRunner(input: {
 					.catch(() => {});
 				throw err;
 			}
+			let enteredChildRunner = false;
 			let childRunId: string | undefined;
 			let detachParentAbort: (() => void) | undefined;
 			let childControllerForCleanup: AbortController | undefined;
@@ -190,12 +193,8 @@ export function createChildWorkflowRunner(input: {
 				// Ordering is intentional: linkChildRun happens before launch so parent
 				// cleanup can abort the child; observeChildRun happens immediately after
 				// promise creation, with no await in between, so cleanup can await teardown.
-				const dispatcher =
-					runtime.parentRootRunId === undefined && runtime.childRunOptions.durableRootBackend
-						? childWorkerDispatcher(runtime.childRunOptions.durableRootBackend, runtime.runId)
-						: undefined;
-				const runChild = dispatcher === undefined ? input.runWorkflow : dispatcher.run.bind(dispatcher);
-				const childRunPromise = runChild(child, childInputs, {
+				const dispatcher = pooledChildDispatcher(runtime);
+				const runOptions: RunOpts = {
 					...runtime.childRunOptions,
 					runId: childRunId,
 					cwd: workspace?.worktree ?? input.resolveWorkflowCwd(),
@@ -211,7 +210,12 @@ export function createChildWorkflowRunner(input: {
 					rootBudget: runtime.rootBudget,
 					deferWorkflowStart: false,
 					...(durableInvocation !== undefined ? { durableScope: durableInvocation.scope } : {}),
-				});
+				};
+				enteredChildRunner = true;
+				const childRunPromise =
+					dispatcher === undefined
+						? input.runWorkflow(child, childInputs, runOptions)
+						: dispatcher.run(child, childInputs, runOptions, boundary.refusedBeforeEnqueue);
 				boundary.observeChildRun(childRunPromise);
 				const childRun = await childRunPromise;
 				if (runtime.budget.enabled) await runtime.budget.stopAtBoundaryAsync(boundaryName);
@@ -308,6 +312,8 @@ export function createChildWorkflowRunner(input: {
 					await durableInvocation?.recordTerminal("skipped", undefined, boundary.startedChildStatus);
 					throw exit;
 				}
+				if (!enteredChildRunner && boundary.replayedChild === undefined && pooledChildDispatcher(runtime))
+					boundary.refusedBeforeEnqueue();
 				await boundary.fail(err);
 				await durableInvocation?.recordTerminal("failed", undefined, boundary.startedChildStatus);
 				throw err;
@@ -322,6 +328,12 @@ export function createChildWorkflowRunner(input: {
 			bindingTurn?.done();
 		}
 	};
+}
+
+function pooledChildDispatcher(runtime: EngineRuntime) {
+	return runtime.parentRootRunId === undefined && runtime.childRunOptions.durableRootBackend
+		? childWorkerDispatcher(runtime.childRunOptions.durableRootBackend, runtime.runId)
+		: undefined;
 }
 
 const workspaceBindingTails = new WeakMap<object, Map<string, Promise<void>>>();

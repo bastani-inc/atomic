@@ -10,7 +10,12 @@ export interface ChildWorkerDispatcher {
 	prepare?(root: string, store?: Store): Promise<void>;
 	control?(state: PoolControl["state"]): Promise<void>;
 	usage?(): PoolUsage | undefined;
-	run(definition: WorkflowDefinition, inputs: ResolvedInputs, options: RunOpts): Promise<RunResult>;
+	run(
+		definition: WorkflowDefinition,
+		inputs: ResolvedInputs,
+		options: RunOpts,
+		refusedBeforeEnqueue?: () => void,
+	): Promise<RunResult>;
 }
 
 export const childWorkerDispatchers = new WeakMap<DurableWorkflowBackend, ChildWorkerDispatcher>();

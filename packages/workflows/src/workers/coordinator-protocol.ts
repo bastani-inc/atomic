@@ -6,6 +6,7 @@ import type { DurableStageCheckpoint } from "../durable/types.js";
 import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
 import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
+import { isRefusedPoolEnqueue, refusedPoolEnqueue } from "../shared/worker-pool-errors.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { FleetRateLimits } from "./fleet-rate-types.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
@@ -219,6 +220,8 @@ export type CoordinatorNotice =
 	  };
 
 export interface CoordinatorReply {
+	/** Only a queue decision that rejected the work, not a missing or failed acknowledgement. */
+	readonly enqueueRefused?: true;
 	readonly kind: "reply";
 	readonly id: number;
 	readonly value?: unknown;
@@ -227,12 +230,18 @@ export interface CoordinatorReply {
 
 /** The reply to a command that failed: its error on the pool's one envelope, so the root rejects with the same class. */
 export function failedCoordinatorReply(id: number, error: unknown): CoordinatorReply {
-	return { kind: "reply", id, error: serializeError(error) };
+	return {
+		kind: "reply",
+		id,
+		error: serializeError(error),
+		...(isRefusedPoolEnqueue(error) ? { enqueueRefused: true } : {}),
+	};
 }
 
 /** The error a failed reply stands for on the root, as the class the coordinator threw. */
-export function coordinatorReplyError(reply: Pick<CoordinatorReply, "error">): Error {
-	return rehydrateError(reply.error);
+export function coordinatorReplyError(reply: Pick<CoordinatorReply, "error" | "enqueueRefused">): Error {
+	const error = rehydrateError(reply.error);
+	return reply.enqueueRefused === true ? refusedPoolEnqueue(error) : error;
 }
 
 /** An attempt's latest publication as its worker sent it: every run it holds, in full. */

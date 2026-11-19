@@ -1,5 +1,6 @@
 import type { DurableBoundaryRuntimeIdentity } from "../../durable/boundary-topology.js";
 import { DurableNestedTopologyError } from "../../durable/boundary-topology.js";
+import { recordPooledDispatchRefusal } from "../../durable/pooled-dispatch-refusals.js";
 import { parseWorkflowChildResult } from "../../durable/workflow-child-result.js";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineWorkflowBoundaryOptions } from "../../engine/options.js";
@@ -37,6 +38,7 @@ export interface WorkflowBoundaryStage {
 	finalizeReplay(): Promise<void>;
 	linkChildRun(ref: WorkflowChildRunRef, childController: AbortController): Promise<void>;
 	observeChildRun(promise: Promise<unknown>): void;
+	refusedBeforeEnqueue(): void;
 	complete(summary: string, workflowChild: WorkflowChildReplaySnapshot): Promise<void>;
 	skipForWorkflowExit(reason?: string): Promise<void>;
 	fail(error: unknown): Promise<void>;
@@ -127,6 +129,7 @@ export function createWorkflowBoundaryFactory(input: {
 					}
 				: {}),
 		};
+		let refusedBeforeEnqueue = false;
 		let finalized = false;
 		let unregisterWorkflowExitCleanup = (): void => {};
 		let linkedChild: LinkedChildWorkflowExitState | undefined;
@@ -172,6 +175,7 @@ export function createWorkflowBoundaryFactory(input: {
 					? { summary: stageSnapshot.result }
 					: {}),
 				...stageReplayFields(stageSnapshot),
+				...(stageSnapshot.pooledDispatchRefused ? { pooledDispatchRefused: true } : {}),
 				...(stageSnapshot.startedChildRunId !== undefined
 					? { startedChildRunId: stageSnapshot.startedChildRunId }
 					: {}),
@@ -214,6 +218,10 @@ export function createWorkflowBoundaryFactory(input: {
 					if (workflowChild !== undefined) stageSnapshot.workflowChild = workflowChild;
 				} else {
 					endChildLink();
+					if (status === "failed" && refusedBeforeEnqueue) {
+						stageSnapshot.pooledDispatchRefused = true;
+						recordPooledDispatchRefusal(input.runSnapshot, stageId);
+					}
 					if (status === "skipped") stageSnapshot.skippedReason = summaryOrError;
 					else applyFailureToStage(stageSnapshot, input.classifyExecutorFailure(failureError));
 				}
@@ -277,6 +285,9 @@ export function createWorkflowBoundaryFactory(input: {
 				};
 				stageSnapshot.workflowChildRun = { ...ref };
 				input.activeStore.recordStageWorkflowChildRun(input.runId, stageId, ref);
+			},
+			refusedBeforeEnqueue(): void {
+				refusedBeforeEnqueue = true;
 			},
 			observeChildRun(promise: Promise<unknown>): void {
 				if (linkedChild === undefined || finalized) return;

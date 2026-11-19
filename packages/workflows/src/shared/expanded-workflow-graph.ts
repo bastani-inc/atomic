@@ -368,6 +368,7 @@ function expandIndexedWorkflowGraph(
 		const boundaryExpansions = new Map<string, ExpandedRunResult | null>();
 
 		const validChildRunFor = (stage: StageSnapshot): RunSnapshot | undefined => {
+			if (stage.pooledDispatchRefused) return undefined;
 			const childRunId = authoritativeWorkflowChildRunId(stage);
 			if (childRunId === undefined) return undefined;
 			const childRun = runById.get(childRunId);
@@ -573,6 +574,7 @@ export function sameExpandedWorkflowTopology(left: StoreSnapshot, right: StoreSn
 				x.executionOrder !== y.executionOrder ||
 				x.nodeKind !== y.nodeKind ||
 				xChildRunId !== yChildRunId ||
+				(xChildRunId !== undefined && x.pooledDispatchRefused !== y.pooledDispatchRefused) ||
 				!sameIds(x.parentIds, y.parentIds)
 			)
 				return false;

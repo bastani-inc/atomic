@@ -1,5 +1,15 @@
 import { causeChain, failureMessage, hasIdentity } from "./error-cause-chain.js";
 
+// Transport-only evidence. Keep the error's public class, message and serialized failure unchanged.
+const refusedEnqueues = new WeakSet<Error>();
+export function refusedPoolEnqueue<E extends Error>(error: E): E {
+	refusedEnqueues.add(error);
+	return error;
+}
+export function isRefusedPoolEnqueue(error: unknown): boolean {
+	return error instanceof Error && refusedEnqueues.has(error);
+}
+
 /** Where a local worker setting came from: `RunOpts.localWorkers`, or `workflows.localWorkers` in settings. */
 export type LocalWorkerOptionsSource = "sdk" | "settings";
 

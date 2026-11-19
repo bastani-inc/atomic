@@ -444,6 +444,8 @@ export interface DurableWorkflowBackend {
 	 * run's backend answers for its root.
 	 */
 	workflowAttempt?(workflowId: string): number;
+	/** The matching attempt's inspection-only receipt, omitted by older backends. */
+	pooledDispatchRefusals?(workflowId: string): DurableWorkflowHandle["pooledDispatchRefusals"];
 
 	/**
 	 * What `listCheckpoints` lists for the run plus the checkpoints recorded under its child boundary scope `scope`
@@ -482,6 +484,7 @@ export interface DurableWorkflowBackend {
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
 		finishSequence?: number,
+		refusals?: DurableWorkflowHandle["pooledDispatchRefusals"],
 	): Promise<void>;
 	/**
 	 * Atomically update status only when the authoritative status is expected.
@@ -693,6 +696,7 @@ function stageIdentity(checkpoint: DurableStageCheckpoint): string {
 
 interface JournalWorkflowRecord {
 	handle: DurableWorkflowHandle;
+	pooledDispatchRefusals?: DurableWorkflowHandle["pooledDispatchRefusals"];
 	checkpoints: Map<string, DurableCheckpoint>;
 	sortedCheckpoints?: readonly DurableCheckpoint[];
 	toolByHash: Map<string, DurableToolCheckpoint>;
@@ -886,6 +890,13 @@ class JournalProjection {
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
 		if (!this.workflows.has(handle.workflowId)) this.registerWorkflow(handle, true);
 		const record = this.workflows.get(handle.workflowId)!;
+		// Keep inspection evidence separately: a status-only writer can omit it, and summaries and prompt writes need
+		// not carry the same list again. A new execution gets its own attempt before it can dispatch a child.
+		if (handle.pooledDispatchRefusals !== undefined) {
+			const { pooledDispatchRefusals, ...ordinary } = handle;
+			record.pooledDispatchRefusals = pooledDispatchRefusals;
+			handle = ordinary;
+		}
 		record.handle = {
 			...handle,
 			completedCheckpoints: Math.max(handle.completedCheckpoints, record.checkpoints.size + record.released),
@@ -1066,6 +1077,10 @@ class JournalProjection {
 		// A run still `running` that recorded its definition completed in its current attempt is completed: the store
 		// refused its terminal status write (#5133).
 		const completed = rec.handle.status === "running" && completedRunAttempt(checkpoint) === rec.attempt;
+		if (completed && checkpoint.kind === "tool" && checkpoint.pooledDispatchRefusals !== undefined)
+			rec.pooledDispatchRefusals = checkpoint.pooledDispatchRefusals;
+		else if (rec.pooledDispatchRefusals && rec.pooledDispatchRefusals.attempt !== rec.attempt)
+			delete rec.pooledDispatchRefusals;
 		rec.handle = {
 			...rec.handle,
 			completedCheckpoints: rec.checkpoints.size + rec.released,
@@ -1264,6 +1279,12 @@ class JournalProjection {
 
 	workflowAttempt(workflowId: string): number {
 		return this.workflows.get(workflowId)?.attempt ?? 0;
+	}
+
+	pooledDispatchRefusals(workflowId: string): DurableWorkflowHandle["pooledDispatchRefusals"] {
+		const run = this.workflows.get(workflowId);
+		const receipt = run?.pooledDispatchRefusals;
+		return receipt?.runId === workflowId && receipt.attempt === run?.attempt ? receipt : undefined;
 	}
 
 	/**

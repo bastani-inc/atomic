@@ -489,6 +489,8 @@ export interface StageSnapshot {
 	workflowChildRun?: WorkflowChildRunRef;
 	/** The child that actually started under a failed or skipped boundary. Not a replayable result. */
 	startedChildRunId?: string;
+	/** The pool refused this invocation before submitting it. An older child is not its chat. */
+	pooledDispatchRefused?: true;
 	/** Snapshot-safe child workflow result metadata for continuation replay of import boundaries. */
 	workflowChild?: WorkflowChildReplaySnapshot;
 	readonly toolEvents: ToolEvent[];

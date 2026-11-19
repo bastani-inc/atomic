@@ -58,7 +58,9 @@ export function _buildStageSnapshots(
 			const parentIds = entry.payload.parentIds;
 			const ts = entry.payload.ts;
 			if (typeof stageId !== "string" || typeof name !== "string") continue;
-			if (!stageMap.has(stageId)) {
+			const existing = stageMap.get(stageId);
+			if (existing !== undefined) delete existing.pooledDispatchRefused;
+			else {
 				stageMap.set(stageId, {
 					id: stageId,
 					name,
@@ -101,6 +103,8 @@ export function _buildStageSnapshots(
 				if ((status === "failed" || status === "skipped") && typeof entry.payload.startedChildRunId === "string")
 					snap.startedChildRunId = entry.payload.startedChildRunId;
 				else delete snap.startedChildRunId;
+				if (status === "failed" && entry.payload.pooledDispatchRefused === true) snap.pooledDispatchRefused = true;
+				else delete snap.pooledDispatchRefused;
 				if (typeof durationMs === "number") snap.durationMs = durationMs;
 				if (typeof entry.payload.endedAt === "number") snap.endedAt = entry.payload.endedAt;
 				if (typeof summary === "string") snap.result = summary;

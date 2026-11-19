@@ -385,6 +385,7 @@ export function completedRunAttempt(checkpoint: DurableCheckpoint): number | und
 export async function recordRunCompletedCheckpointAsync(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
+	refusals?: DurableToolCheckpoint["pooledDispatchRefusals"],
 ): Promise<void> {
 	const attempt = backend.workflowAttempt?.(workflowId) ?? 0;
 	const timing = backend.getToolOutput(workflowId, RUN_TIMING_CHECKPOINT_NAME) as {
@@ -398,6 +399,7 @@ export async function recordRunCompletedCheckpointAsync(
 		name: RUN_TIMING_CHECKPOINT_NAME,
 		argsHash: RUN_TIMING_CHECKPOINT_NAME,
 		output: { ...(elapsedMs === undefined ? {} : { elapsedMs }), completedAttempt: attempt },
+		...(refusals === undefined ? {} : { pooledDispatchRefusals: refusals }),
 		completedAt: Date.now(),
 	} satisfies DurableToolCheckpoint);
 }

@@ -13,6 +13,7 @@
 
 import { checkpointAttempt, durableWorkflowAttempt } from "../durable/attempt-identity.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { pooledDispatchRefusals } from "../durable/pooled-dispatch-refusals.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
 import { recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import type { DurableWorkflowStatus } from "../durable/types.js";
@@ -104,6 +105,7 @@ async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput):
 						...(failedToolUnrecorded(input) ? { failedToolUnrecorded: true as const } : {}),
 					}
 				: undefined;
+		const refusals = pooledDispatchRefusals(input.runSnapshot, input.durableBackend);
 		await input.durableBackend.commitWorkflowStatus(
 			input.runId,
 			durableStatus,
@@ -112,6 +114,7 @@ async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput):
 			failure,
 			input.runSnapshot.runGeneration,
 			input.runSnapshot.finishSequence,
+			...(refusals ? [refusals] : []),
 		);
 	}
 }

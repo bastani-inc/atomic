@@ -27,6 +27,7 @@ import {
 	validStageGroup,
 	workflowChildFromDraft,
 } from "./completed-catalog-stage-groups.js";
+import { refusedStagesForInspection } from "./pooled-dispatch-refusals.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
 import { durableRunResult, RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
@@ -156,6 +157,8 @@ export async function completedWorkflowRunSnapshots(
 				handle.name,
 				handle.updatedAt,
 				COMPLETED_RECONSTRUCTION,
+				undefined,
+				refusedStagesForInspection(backend, handle.workflowId),
 			).map(async (run) => ({
 				...run,
 				stages: await Promise.all(
@@ -203,6 +206,7 @@ export function durableWorkflowRunSnapshots(
 	handle: import("./types.js").DurableWorkflowHandle,
 	/** Every checkpoint of the root, when its backend leaves some in storage (`readDurableCheckpoints`). */
 	checkpoints: readonly DurableCheckpoint[] = backend.listCheckpoints(handle.workflowId),
+	purpose: "inspection" | "replay" = "inspection",
 ): readonly RunSnapshot[] {
 	if (checkpoints.length === 0) {
 		return [rootSnapshot(backend, handle, { stages: [], toolNodes: [] })];
@@ -214,6 +218,8 @@ export function durableWorkflowRunSnapshots(
 		handle.name,
 		handle.updatedAt,
 		requiresTerminalTopology ? COMPLETED_RECONSTRUCTION : ACTIVE_INSPECTION_RECONSTRUCTION,
+		undefined,
+		purpose === "inspection" ? refusedStagesForInspection(backend, handle.workflowId) : undefined,
 	);
 	const rootIndex = runs.findIndex((run) => run.id === handle.workflowId);
 	if (rootIndex < 0) return [];
@@ -558,6 +564,7 @@ function runSnapshotsFromCheckpoints(
 	policy: ReconstructionPolicy = COMPLETED_RECONSTRUCTION,
 	/** Whether the records of the root child boundary scope `scope` are left out of `checkpoints` on purpose. */
 	releasedChildScope?: (scope: string) => boolean,
+	refusedStages?: ReadonlySet<string>,
 ): RunSnapshot[] {
 	// Each run as the attempt it was last executed in left it; a history without attempts as it is (#4874).
 	const checkpoints = attemptReachedCheckpoints(recorded, rootRunId, { rootReach: policy.rootReach });
@@ -734,6 +741,7 @@ function runSnapshotsFromCheckpoints(
 				draft,
 				ids.get(draft.topology!.stageId)!,
 				draft.topology!.parentIds.map((parentId) => ids.get(parentId)!),
+				runId === rootRunId ? refusedStages : undefined,
 			),
 		);
 		const toolNodes = completedToolNodes(ownedTools, ids);
@@ -836,7 +844,12 @@ function runSnapshotsFromCheckpoints(
 	return runs;
 }
 
-function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readonly string[]): StageSnapshot {
+function stageSnapshotFromDraft(
+	draft: StageDraft,
+	id: string,
+	parentIds: readonly string[],
+	refusedStages: ReadonlySet<string> | undefined,
+): StageSnapshot {
 	const status = stageStatusFromRecord(draft.topology?.status ?? "completed");
 	const startedAt = draft.startedAt ?? draft.firstCompletedAt;
 	const endedAt =
@@ -872,6 +885,9 @@ function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readon
 		toolEvents: [],
 		attachable: false,
 		...(workflowChild !== undefined ? { workflowChild } : {}),
+		...(boundary !== undefined && status === "failed" && refusedStages?.has(id)
+			? { pooledDispatchRefused: true }
+			: {}),
 		...(boundary !== undefined && startedChildStatus(draft) !== undefined
 			? { startedChildRunId: boundary.child.runId }
 			: {}),
