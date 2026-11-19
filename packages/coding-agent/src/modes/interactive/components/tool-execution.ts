@@ -25,7 +25,7 @@ import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
-import { rendererRows } from "./renderer-click-area.ts";
+import { mountRendererControls, rendererRows, unmountRendererControls } from "./renderer-click-area.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
@@ -37,7 +37,7 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
-import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRenderTime, type RowRange } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -297,18 +297,7 @@ export class ToolExecutionComponent extends Container {
 
 	/** Every row of the block, below the blank row it leads with. */
 	clickArea(width: number): RowRange | undefined {
-		const rows = this.render(width);
-		if (!this.toolDefinition || (!this.expanded && this.groupRole.kind === "head")) return rowsFrom(1, rows.length);
-		return rendererRows(
-			1,
-			rows,
-			this.contentContainer,
-			[
-				this.toolDefinition.renderCall && this.callRendererComponent,
-				this.toolDefinition.renderResult && this.resultRendererComponent,
-			],
-			{ top: 1, title: 1 },
-		);
+		return rendererRows(this, 1, this.render(width));
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -365,6 +354,7 @@ export class ToolExecutionComponent extends Container {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		unmountRendererControls(this);
 		this.stopWorkingClock?.();
 		this.stopWorkingClock = undefined;
 		this.disposeRendererComponent(this.callRendererComponent);
@@ -496,6 +486,7 @@ export class ToolExecutionComponent extends Container {
 
 	private updateDisplay(): void {
 		if (this.disposed) return;
+		unmountRendererControls(this);
 		this.argsPending = false;
 		this.hideComponent = false;
 		this.contentContainer.clear();
@@ -581,6 +572,21 @@ export class ToolExecutionComponent extends Container {
 		else if (selfRendered) {
 			this.contentContainer.addChild(call);
 			if (details) this.contentContainer.addChild(details);
+			if (this.toolDefinition)
+				mountRendererControls(
+					this,
+					this.contentContainer,
+					[
+						!canonicalCall && callRenderer && !isBuiltinToolCallRenderer(callRenderer)
+							? this.callRendererComponent
+							: undefined,
+						!canonicalResult && resultRenderer && !isBuiltinToolResultRenderer(resultRenderer)
+							? this.resultRendererComponent
+							: undefined,
+					],
+					1,
+					1,
+				);
 		} else if (isToolBlock(call)) {
 			if (this.result === undefined) this.contentContainer.addChild(call);
 			else {

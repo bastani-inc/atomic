@@ -413,12 +413,8 @@ export class Container implements Component {
 	/**
 	 * The child drawn at `row` of this container at `width`, with the row inside that child and the child's height.
 	 * Reads the row heights of the last render at `width`; another width renders the children to measure them.
-	 * A window layout may also return the directly drawn child's `windowRows`, without measuring it again.
 	 */
-	childAtRow(
-		width: number,
-		row: number,
-	): { component: Component; row: number; height: number; readonly windowRows?: readonly string[] } | undefined {
+	childAtRow(width: number, row: number): { component: Component; row: number; height: number } | undefined {
 		if (row < 0) return undefined;
 		const mouseChildren =
 			this.mouseLayout?.width === width

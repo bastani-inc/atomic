@@ -430,7 +430,9 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 
 In fullscreen mode a click on the message toggles `expanded` for that message alone, as Ctrl+O does for every block. If the renderer draws the same rows either way, the message stays as it is.
 
-When the session runs in the same process as the terminal UI (for example, in a folder you have not trusted), the component your renderer returns can take the click instead. Implement `handleMouse` on that component, check the click's local `x` and `y`, and return `{ handled: true }` to keep the message from toggling. The chat does not search for buttons inside layout containers. Blank margins still belong to the card. If the rows change before the screen repaints, the new control cannot take a click on the old rows. In a separate engine process, the renderer sends rows, not interactive components, so clicks there still act on the message.
+When the session runs in the terminal UI process (for example, in a folder you have not trusted), the component your renderer returns can take the click instead. Implement `handleMouse` on the returned object or directly on its class, check the click's local `x` and `y`, and return `{ handled: true }` to keep the message from toggling. The click arrives after the mouse button is up; it does not start a drag or move keyboard focus.
+
+The chat offers this click to the control that drew the label, not to proxies, nested buttons in a layout, or blank margins. If an item can change without changing its label or row, supply a short, stable `paintedRowKey(row)` so the replacement cannot take the old item's click. In a separate engine process, renderers send rows, not mouse callbacks, so clicks there still act on the message.
 
 Messages are sent via `pi.sendMessage()`:
 

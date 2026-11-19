@@ -69,6 +69,23 @@ async function settle(): Promise<void> {
 }
 
 describe("WindowedContainer in a scroll view", () => {
+	it("returns hit geometry without exposing the renderer’s rows (#5696)", () => {
+		const lines = ["Pending"];
+		const child = { render: () => lines, invalidate() {} };
+		const window = new WindowedContainer();
+		window.addChild(child);
+		const request = { width: COLUMNS, top: 0, height: ROWS, followEnd: false, requestRender() {} };
+		window.layoutWindow(request);
+		const hit = window.childAtRow(COLUMNS, 0);
+		assert.ok(hit);
+		assert.deepEqual(Reflect.ownKeys(hit).sort(), ["component", "height", "row"]);
+		const { component, ...geometry } = hit;
+		assert.equal(component, child);
+		assert.deepEqual(geometry, { row: 0, height: 1 });
+		for (const value of Object.values(geometry)) Object.freeze(value);
+		lines.push("Delivered");
+		assert.equal(window.layoutWindow(request).at(1), "Delivered");
+	});
 	it("scrolls to the requested row after offscreen heights replace their estimates", () => {
 		const content = new WindowedContainer();
 		for (const child of entries(200)) content.addChild(child);

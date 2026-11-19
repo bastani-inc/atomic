@@ -1,4 +1,4 @@
-import { type Component, Container } from "../tui.ts";
+import { type Component, Container, type TuiMouseEvent } from "../tui.ts";
 
 export interface WindowRows {
 	readonly length: number;
@@ -32,6 +32,61 @@ interface Entry {
 	height: number;
 	index: number;
 	renderedIn: number;
+}
+
+/** Internal to fullscreen paint and dispatch. Public hit geometry does not own screen content. */
+export const captureWindowRow = Symbol("captureWindowRow");
+type ReadRow = (row: number, line: string) => object | undefined;
+type PrepareRows = (child: Component, width: number, height: number, first: number, end: number) => ReadRow | undefined;
+export type WindowMouseFrame = Map<
+	WindowedContainer,
+	Map<number, { x: number; width: number; data: object; capture: PrepareRows }>
+>;
+export interface WindowMousePaint {
+	staged?: WeakMap<Entry, { lines: readonly string[]; capture: PrepareRows; read: ReadRow }>;
+	rows?: WindowMouseFrame;
+}
+let dispatchedFrame: WindowMouseFrame | undefined;
+let preparing: { request: WindowRequest; paint: WindowMousePaint } | undefined;
+const rowCaptures = new WeakMap<WindowedContainer, PrepareRows>();
+
+export function layoutWindowForPaint(
+	window: WindowedContainer,
+	request: WindowRequest,
+	paint?: WindowMousePaint,
+): WindowLayout {
+	if (!paint) return window.layoutWindow(request);
+	const previous = preparing;
+	preparing = { request, paint };
+	try {
+		return window.layoutWindow(request);
+	} finally {
+		preparing = previous;
+	}
+}
+
+/** Opt in to private row data for this window's clipped fullscreen paint. No widget properties are inspected. */
+export function observeWindowMouseRows<T extends object>(
+	window: WindowedContainer,
+	capture: (...args: Parameters<PrepareRows>) => ((row: number, line: string) => T | undefined) | undefined,
+): (event: TuiMouseEvent) => T | undefined {
+	rowCaptures.set(window, capture);
+	return (event) => {
+		const hit = dispatchedFrame?.get(window)?.get(event.screenY);
+		return hit?.capture === capture && hit.x === event.screenX - event.x && hit.width === event.width
+			? (hit.data as T)
+			: undefined;
+	};
+}
+
+export function withWindowMouseFrame<T>(frame: WindowMouseFrame, dispatch: () => T): T {
+	const previous = dispatchedFrame;
+	dispatchedFrame = frame;
+	try {
+		return dispatch();
+	} finally {
+		dispatchedFrame = previous;
+	}
 }
 
 const entries = new WeakMap<Component, Entry>();
@@ -70,6 +125,24 @@ export class WindowedContainer extends Container {
 		return this.windowHost?.width || this.width || undefined;
 	}
 
+	[captureWindowRow](paint: WindowMousePaint, row: number, line: string, x: number, y: number): void {
+		// paintBox just read this row. Use the ownership of *that draw*, not a child's latest measurement.
+		const entry = this.laidOut[this.lastRowIndex];
+		const owner = entry?.owner;
+		const staged = entry && paint.staged?.get(entry);
+		if (!owner || !staged || !entry.current || entry.lines !== staged.lines || entry.renderedIn !== this.layouts)
+			return;
+		const data = staged.read(row - (this.offsets[this.lastRowIndex] ?? 0), line);
+		if (!data) return;
+		paint.rows ??= new Map();
+		let rows = paint.rows.get(owner);
+		if (!rows) {
+			rows = new Map();
+			paint.rows.set(owner, rows);
+		}
+		rows.set(y, { x, width: this.width, data, capture: staged.capture });
+	}
+
 	protected windowChildren(): readonly Component[] {
 		return this.children;
 	}
@@ -99,8 +172,9 @@ export class WindowedContainer extends Container {
 		this.updateOffsets();
 		const layout = ++this.layouts;
 		let top = this.topFor(request, anchor, height);
+		const paint = preparing?.request === request ? preparing.paint : undefined;
 		for (let pass = 0; pass < MAX_WINDOW_PASSES; pass++) {
-			if (!this.renderRows(top - height, top + 2 * height, width, layout)) break;
+			if (!this.renderRows(top, height, width, layout, paint)) break;
 			this.updateOffsets();
 			top = this.topFor(request, anchor, height);
 		}
@@ -162,9 +236,7 @@ export class WindowedContainer extends Container {
 		const start = host.offsets[span.first] ?? 0;
 		const stop = host.offsets[span.end] ?? start;
 		if (absolute < start || absolute >= stop) return undefined;
-		// Only a directly drawn entry has rows from this window. A later off-screen measurement is not a paint.
-		const windowRows = child === entry.component && entry.renderedIn === host.layouts ? entry.lines : undefined;
-		return { component: child, row: absolute - start, height: stop - start, windowRows };
+		return { component: child, row: absolute - start, height: stop - start };
 	}
 
 	private windowAt(width: number): { host: WindowedContainer; first: number; end: number } | undefined {
@@ -301,8 +373,10 @@ export class WindowedContainer extends Container {
 		this.staleOffsetsFrom = Number.POSITIVE_INFINITY;
 	}
 
-	private renderRows(start: number, end: number, width: number, layout: number): boolean {
+	private renderRows(top: number, height: number, width: number, layout: number, paint?: WindowMousePaint): boolean {
 		if (this.laidOut.length === 0) return false;
+		const start = top - height;
+		const end = top + 2 * height;
 		let changed = false;
 		let first = this.indexAt(Math.max(0, start));
 		while (first > 0 && this.offsets[first - 1] === this.offsets[first]) first--;
@@ -311,6 +385,21 @@ export class WindowedContainer extends Container {
 			const entry = this.laidOut[index];
 			if (!entry || entry.renderedIn === layout) continue;
 			if (this.renderEntry(entry, width, layout)) changed = true;
+			if (!paint || !entry.owner || !entry.height) continue;
+			const capture = rowCaptures.get(entry.owner);
+			if (!capture) continue;
+			const first = top - (this.offsets[index] ?? 0);
+			const read = capture(
+				entry.component,
+				width,
+				entry.height,
+				Math.max(0, first),
+				Math.min(entry.height, first + height),
+			);
+			if (read) {
+				paint.staged ??= new WeakMap();
+				paint.staged.set(entry, { lines: entry.lines, capture, read });
+			}
 		}
 		this.windowStart = first;
 		this.windowEnd = index;

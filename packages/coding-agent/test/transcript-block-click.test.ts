@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
 	Box,
@@ -1286,8 +1287,17 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		}
 		const cancel = extensionButton(["[ Cancel order ]"]);
 		const stack = new BundledStack([{ component: cancel, basis: 26 }, new Text("Read-only reference", 0, 0)]);
-		const chat = await mountChat(100, 60, { messageRenderers: { order: () => stack } });
+		const bound = new BundledStack([{ component: cancel, basis: 26 }, new Text("Read-only bound reference", 0, 0)]);
+		bound.handleMouse = bound.handleMouse.bind(bound);
+		const chat = await mountChat(100, 60, { messageRenderers: { order: () => stack, bound: () => bound } });
 		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "bound",
+				content: "review",
+				display: true,
+				timestamp: 0,
+			});
 			mode(chat).addMessageToChat({
 				role: "custom",
 				customType: "order",
@@ -1296,9 +1306,11 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 				timestamp: 1,
 			});
 			chat.tui.renderNow();
-			const row = chat.rowOf(/Read-only reference/);
-			chat.click(chat.columnOf(row, "reference"), row);
-			assert.equal(cancel.clicks, 0);
+			for (const label of [/Read-only reference/, /Read-only bound reference/]) {
+				const row = chat.rowOf(label);
+				chat.click(chat.columnOf(row, "reference"), row);
+				assert.equal(cancel.clicks, 0);
+			}
 		} finally {
 			chat.tui.stop();
 		}
@@ -1538,6 +1550,100 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		});
 	}
 
+	for (const [scenario, behavior] of [
+		["import", "importing rowsFrom without a TUI allocates no click segmenter"],
+		["pending", "a pending passive toggle releases the replaced painted rows"],
+	]) {
+		test(`${behavior} (#5696)`, () => {
+			const fixture = fileURLToPath(new URL("./fixtures/transcript-click-resources.mjs", import.meta.url));
+			const result = spawnSync(process.execPath, ["--expose-gc", fixture, scenario!], { encoding: "utf8" });
+			assert.equal(result.status, 0, `${result.error ?? ""}${result.stdout}${result.stderr}`);
+		});
+	}
+
+	for (const cost of ["offscreen rows", "invisible suffix"] as const) {
+		test(`two clicks on a blank margin do not scan ${cost} (#5696)`, () => {
+			const label = `    [Save]${cost === "invisible suffix" ? "\u200e".repeat(50_000) : ""}`;
+			const rows = [label, ...Array.from({ length: cost === "offscreen rows" ? 2000 : 0 }, (_, i) => `report ${i}`)];
+			const widget = { ...extensionButton([label]), render: () => rows };
+			const block = new CustomMessageComponent(
+				{ role: "custom", customType: "report", content: "report", display: true, timestamp: 1 },
+				() => widget,
+			);
+			const chat = new StartupChatContainer();
+			chat.releaseStartupOutput();
+			chat.addChild(block);
+			let dispatching = false;
+			let oldReads = 0;
+			let maxSegmentInput = 0;
+			const render = block.render.bind(block);
+			block.render = (width) => {
+				const lines = render(width);
+				return dispatching
+					? lines
+					: new Proxy(lines, {
+							get(target, key, receiver) {
+								if (dispatching && typeof key === "string" && /^\d+$/.test(key)) oldReads++;
+								return Reflect.get(target, key, receiver);
+							},
+						});
+			};
+			const dispatch = chat.handleMouse.bind(chat);
+			const offers: boolean[] = [];
+			chat.handleMouse = (event) => {
+				if (event.type !== "click") return dispatch(event);
+				dispatching = true;
+				try {
+					const result = dispatch(event);
+					offers.push(!!result?.whenSingleClick);
+					return result;
+				} finally {
+					dispatching = false;
+				}
+			};
+			const segment = Intl.Segmenter.prototype.segment;
+			const spy = vi.spyOn(Intl.Segmenter.prototype, "segment").mockImplementation(function (
+				this: Intl.Segmenter,
+				text,
+			) {
+				if (dispatching) maxSegmentInput = Math.max(maxSegmentInput, text.length);
+				return segment.call(this, text);
+			});
+			const terminal = new RecordingTerminal();
+			const tui = createFullscreenTui({ terminal, showHardwareCursor: false, logDirectory: tmpdir() });
+			try {
+				tui.setLayoutRoot(new ScrollView(chat));
+				tui.start();
+				tui.renderNow();
+				const y = tui.getScreenLines().findIndex((line) => line.includes("[Save]"));
+				assert.notEqual(y, -1);
+				for (const x of [1, 2]) {
+					terminal.input(`\x1b[<0;${x + 1};${y + 1}M`);
+					terminal.input(`\x1b[<0;${x + 1};${y + 1}m`);
+					vi.advanceTimersByTime(MULTI_CLICK_INTERVAL_MS + 1);
+					tui.renderNow();
+				}
+				assert.deepEqual(offers, [true, true]);
+				if (cost === "offscreen rows") assert.equal(oldReads, 0);
+				else assert.ok(maxSegmentInput < 256, `segmented ${maxSegmentInput} input units during a margin click`);
+			} finally {
+				tui.stop();
+				spy.mockRestore();
+			}
+		});
+	}
+
+	test("a renderer's public click area contains geometry only (#5696)", () => {
+		const block = new CustomMessageComponent(
+			{ role: "custom", customType: "report", content: "report", display: true, timestamp: 1 },
+			() => extensionButton(["[ Save ]"]),
+		);
+		const area = block.clickArea(70)!;
+		block.dispose();
+		assert.deepEqual(Reflect.ownKeys(area).sort(), ["end", "start"]);
+		assert.deepEqual(area, { start: 1, end: 2 });
+	});
+
 	test("dispatching a click on a read-only scroll view renders its report only once (#5696)", () => {
 		const rows = Array.from({ length: 2000 }, (_, i) => `report item ${i + 1}`);
 		let draws = 0;
@@ -1575,6 +1681,99 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		draws = 0;
 		assert.ok(chat.handleMouse({ ...cell, type: "click" })?.whenSingleClick);
 		assert.equal(draws, 1);
+	});
+
+	test("a second widget's measurement cannot change which account was painted (#5696)", async () => {
+		let account = "A";
+		let measured = account;
+		const opened: string[] = [];
+		const widget = {
+			render() {
+				measured = account;
+				return ["Open account"];
+			},
+			invalidate() {},
+			paintedRowKey: () => measured,
+			handleMouse(event: { type: string }) {
+				if (event.type === "click") {
+					opened.push(measured);
+					return { handled: true };
+				}
+			},
+		};
+		const block = new CustomMessageComponent(
+			{ role: "custom", customType: "accounts", content: "accounts", display: true, timestamp: 1 },
+			() => widget,
+		);
+		const chat = await mountChat(100, 60);
+		try {
+			mode(chat).chatContainer.addChild(block);
+			let preview = false;
+			mode(chat).chatContainer.addChild({
+				render(width) {
+					if (preview) {
+						preview = false;
+						account = "B";
+						block.render(width);
+					}
+					return ["Account summary"];
+				},
+				invalidate() {},
+			});
+			chat.tui.renderNow();
+			preview = true;
+			chat.tui.renderNow();
+			const y = chat.rowOf(/Open account/);
+			chat.click(2, y);
+			assert.deepEqual(opened, []);
+			chat.click(2, y);
+			assert.deepEqual(opened, ["B"]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("identical order numbers cannot transfer a click from the summary to a result before paint (#5696)", async () => {
+		let moved = false;
+		const opened: string[] = [];
+		const orders = () => (moved ? ["Order 407", "Order 408"] : ["Order 408"]);
+		const chat = await mountChat(100, 60, {
+			toolRenderers: {
+				orders: {
+					renderShell: "self",
+					renderCall: () => ({
+						render: () => (moved ? ["Recent orders"] : ["Recent orders", "Order 407"]),
+						invalidate() {},
+					}),
+					renderResult: () => ({
+						render: orders,
+						invalidate() {},
+						handleMouse(event) {
+							if (event.type !== "click") return;
+							opened.push(orders()[event.y]!);
+							return { handled: true };
+						},
+					}),
+				},
+			},
+		});
+		try {
+			await toolTurn(
+				chat.mode,
+				fauxAssistantMessage([fauxToolCall("orders", {}, { id: "orders-1" })], { stopReason: "toolUse" }),
+				() => "ok",
+			);
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Order 407/);
+			moved = true;
+			chat.transcriptText();
+			chat.click(chat.columnOf(row, "Order"), row);
+			assert.deepEqual(opened, []);
+			chat.click(chat.columnOf(row, "Order"), row);
+			assert.deepEqual(opened, ["Order 407"]);
+		} finally {
+			chat.tui.stop();
+		}
 	});
 
 	for (const keepHeight of [false, true]) {

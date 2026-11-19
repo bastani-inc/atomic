@@ -9,8 +9,6 @@ export type ContainerMouseResult = ReturnType<Container["handleMouse"]>;
 export interface RowRange {
 	readonly start: number;
 	readonly end: number;
-	/** A local renderer may take a click before this block toggles. */
-	readonly clickRenderer?: (event: TuiMouseEvent, windowRows: readonly string[]) => ContainerMouseResult;
 }
 
 /**
@@ -172,24 +170,44 @@ export function toggleClickedBlocks(
  * The blocks a click on row `row` of `container`, drawn at `width`, expands or collapses: among its children or, for a
  * child that is a plain container of blocks, among that child's children.
  */
+type RendererOffer = (
+	block: ClickExpandableBlock,
+	row: number,
+	height: number,
+	attached: (settling?: boolean) => boolean,
+) => { area?: RowRange; handled?: ContainerMouseResult } | undefined;
+
 function clickUnitAt(
 	container: Container,
 	width: number,
 	row: number,
-	event?: TuiMouseEvent,
+	offer?: RendererOffer,
+	parentAttached?: (settling?: boolean) => boolean,
 ): (() => readonly ClickExpandableBlock[] | undefined) | ContainerMouseResult {
 	const hit = container.childAtRow(width, row);
-	if (!hit || !container.children.includes(hit.component)) return undefined;
-	if (isClickExpandableBlock(hit.component)) {
-		const area = hit.component.clickArea(width);
+	if (!hit) return undefined;
+	const component = hit.component;
+	let attached: ((settling?: boolean) => boolean) | undefined;
+	if (offer) {
+		// Use one membership pass, as for a passive block. After a renderer call, recheck its slot in constant time.
+		const siblings = container.children;
+		let index = 0;
+		const end = siblings.length;
+		while (index < end && siblings[index] !== component) index++;
+		if (index === end) return undefined;
+		attached = (settling) =>
+			(container.children[index] === component || (!!settling && container.children.includes(component))) &&
+			(parentAttached?.(settling) ?? true);
+	} else if (!container.children.includes(component)) return undefined;
+	if (isClickExpandableBlock(component)) {
+		const measured = attached && offer?.(component, hit.row, hit.height, attached);
+		const area = measured ? measured.area : component.clickArea(width);
 		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
-		const handled =
-			event && hit.windowRows && area.clickRenderer?.({ ...event, y: hit.row, height: hit.height }, hit.windowRows);
-		return handled ?? (() => clickUnit(container.children, container.children.indexOf(hit.component)));
+		return measured?.handled ?? (() => clickUnit(container.children, container.children.indexOf(component)));
 	}
-	const nested = hit.component as Container;
+	const nested = component as Container;
 	if (!nested.children || !nested.childAtRow) return undefined;
-	const unit = clickUnitAt(nested, width, hit.row, event);
+	const unit = clickUnitAt(nested, width, hit.row, offer, attached);
 	return typeof unit === "function" ? () => (container.children.includes(nested) ? unit() : undefined) : unit;
 }
 
@@ -209,7 +227,7 @@ export function handleTranscriptBlockClick(
 	event: TuiMouseEvent,
 	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
-	allowRendererClick = false,
+	prepareOffer?: () => RendererOffer | undefined,
 ): ContainerMouseResult {
 	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
 	let scope = clickScopes.get(container);
@@ -225,7 +243,7 @@ export function handleTranscriptBlockClick(
 	pressedScopes.delete(container);
 	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
-	const unit = clickUnitAt(container, event.width, event.y, allowRendererClick ? event : undefined);
+	const unit = clickUnitAt(container, event.width, event.y, prepareOffer?.());
 	if (typeof unit !== "function") return unit;
 	return {
 		handled: true,

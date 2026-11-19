@@ -7,7 +7,13 @@ import {
 import { type HintAction, type HintSpan, hintActionAt, readHintSpans } from "./clickable-hints.ts";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
-import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
+import {
+	WindowedContainer,
+	type WindowMouseFrame,
+	type WindowMousePaint,
+	type WindowRows,
+	withWindowMouseFrame,
+} from "./components/windowed-container.ts";
 import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease } from "./keys.ts";
 import {
@@ -337,6 +343,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	/** The last layout drawn had image lines, which an overlay does not cover. */
 	private coveredLayoutHasImages = false;
 	private layoutRoot: Component | undefined;
+	#paintedWindowRows?: WindowMouseFrame;
 	private currentLayout: LayoutFrame | undefined;
 	private readonly implicitDocument: Component;
 	private readonly implicitScrollView: ScrollView;
@@ -471,6 +478,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	setLayoutRoot(component: Component | undefined): void {
 		if (this.layoutRoot === component) return;
 		this.layoutRoot = component;
+		this.#paintedWindowRows = undefined;
 		this.currentLayout = undefined;
 		this.requestRender();
 	}
@@ -707,6 +715,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override resetRenderState(): void {
+		this.#paintedWindowRows = undefined;
 		this.previousScreen = [];
 		this.previousScreenWidth = 0;
 		this.previousScreenHeight = 0;
@@ -1077,13 +1086,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (visited.has(box.component)) continue;
 			if (getLayoutNode(box.component) && box.component.handleMouse === Container.prototype.handleMouse) continue;
 			visited.add(box.component);
-			const result = dispatchMouseEvent(box.component, {
+			const local = {
 				...event,
 				x: event.screenX - box.rect.x,
 				y: event.screenY - box.rect.y,
 				width: box.rect.width,
 				height: box.rect.height,
-			});
+			};
+			const result =
+				this.#paintedWindowRows && (event.type === "press" || event.type === "click")
+					? withWindowMouseFrame(this.#paintedWindowRows, () => dispatchMouseEvent(box.component, local))
+					: dispatchMouseEvent(box.component, local);
 			if (result) return result;
 		}
 		return undefined;
@@ -2079,7 +2092,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	 * full-screen view's frames cost only the view. A layout with images is always drawn, because an image line
 	 * shows through an overlay.
 	 */
-	private renderScreen(width: number, height: number): { layout: LayoutFrame; screen: string[] } {
+	private renderScreen(
+		width: number,
+		height: number,
+		mouseFrame?: WindowMousePaint,
+	): { layout: LayoutFrame; screen: string[] } {
 		const covered = this.currentLayout;
 		if (
 			covered !== undefined &&
@@ -2096,15 +2113,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			// An overlay that shrank or hid in this frame shows the layout after all.
 			if (this.overlaysCoverScreen(width, height)) return { layout: covered, screen };
 		}
-		const layout = this.renderLayout(width, height);
+		const layout = this.renderLayout(width, height, mouseFrame);
 		return { layout, screen: this.compositeOverlays(this.composeLayout(layout, width), width, height) };
 	}
 
-	private renderLayout(width: number, height: number): LayoutFrame {
+	private renderLayout(width: number, height: number, mouseFrame?: WindowMousePaint): LayoutFrame {
 		if (this.activeSearch?.query.trim()) this.settleScrollContent(this.getPrimaryScrollView());
 		const root = this.layoutRoot ?? this.implicitScrollView;
-		let layout = renderLayoutFrame(root, width, height, () => this.requestRender());
-		if (this.refreshSearch(layout)) layout = renderLayoutFrame(root, width, height, () => this.requestRender());
+		let layout = renderLayoutFrame(root, width, height, () => this.requestRender(), mouseFrame);
+		if (this.refreshSearch(layout)) {
+			if (mouseFrame) {
+				mouseFrame.rows = undefined;
+				mouseFrame.staged = undefined;
+			}
+			layout = renderLayoutFrame(root, width, height, () => this.requestRender(), mouseFrame);
+		}
 		this.coveredLayoutHasImages = layout.lines.some(isImageLine);
 		return layout;
 	}
@@ -2163,7 +2186,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
-		const rendered = this.renderScreen(width, height);
+		const mouseFrame: WindowMousePaint | undefined = this.mouseEnabled ? {} : undefined;
+		const rendered = this.renderScreen(width, height, mouseFrame);
 		const nextLayout = rendered.layout;
 		let screen = rendered.screen;
 		if (screen.length > height) screen = screen.slice(screen.length - height);
@@ -2260,6 +2284,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		buffer += END_SYNCHRONIZED_OUTPUT;
 		this.terminal.write(buffer);
 
+		// Unpublished layout and offscreen measurement cannot authorize a click on the display.
+		this.#paintedWindowRows = mouseFrame?.rows;
 		this.previousScreen = screen;
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;
