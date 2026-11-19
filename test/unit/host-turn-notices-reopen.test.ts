@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeAll, test, vi } from "vitest";
@@ -13,7 +14,10 @@ import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.js";
-import { releaseStartupChatOutput } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.js";
+import {
+	releaseStartupChatOutput,
+	StartupChatContainer,
+} from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createEngineHostPair } from "../../packages/coding-agent/test/helpers/in-process-engine-pair.js";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.js";
@@ -53,6 +57,156 @@ const rows = (mode: InteractiveMode) =>
 		.map((line) => stripVTControlCharacters(line).trim())
 		.filter(Boolean);
 
+test.each(["in-process", "isolated"])(
+	"the %s host attributes a live miss and thinking drop to the published reply's own predecessor (#5681)",
+	async (host) => {
+		const pair = await createEngineHostPair({ settings: { showCacheMissNotices: true } });
+		pair.hostHarness.settingsManager.setShowCacheMissNotices(true);
+		cleanups.push(() => pair.cleanup());
+		const session = host === "isolated" ? pair.runtime.session : pair.engine.session;
+		const mode = chat(session);
+		cleanups.push(session.subscribe((e) => void mode.handleEvent(e as never)));
+		let call = 0;
+		pair.engine.session.agent.streamFunction = () => {
+			const stream = createAssistantMessageEventStream();
+			const second = ++call === 2;
+			const m = fauxAssistantMessage(second ? "switched reply" : "warm reply");
+			m.model = second ? "model-b" : "model-a";
+			m.usage = { ...m.usage, input: second ? 25_000 : 0, cacheRead: second ? 0 : 25_000 };
+			if (second)
+				m.diagnostics = [
+					{ type: "anthropic_input_transformations", timestamp: m.timestamp, details: { droppedBlockCount: 2 } },
+				];
+			stream.push({ type: "done", reason: "stop", message: m });
+			stream.end();
+			return stream;
+		};
+		await pair.engine.session.prompt("warm");
+		await pair.drain();
+		if (host === "isolated")
+			await vi.waitFor(() =>
+				assert.ok(
+					session.sessionManager
+						.getEntries()
+						.some((e) => e.type === "message" && e.message.role === "assistant" && e.message.model === "model-a"),
+				),
+			);
+		await pair.engine.session.prompt("switch");
+		await pair.drain();
+		const notices = rows(mode).filter((l) => l.includes("Prompt cache miss") || l.includes("Anthropic dropped"));
+		assert.equal(notices.length, 2);
+		assert.match(notices[0]!, /Anthropic dropped 2 thinking blocks/);
+		assert.match(notices[1]!, /Prompt cache miss after model switch: 25,000 tokens re-billed/);
+	},
+);
+
+test("a refused display reader never masks the ordinary synchronous chat render (#5649)", async () => {
+	const h = await createHarness({});
+	cleanups.push(() => h.cleanup());
+	await h.sessionManager.appendMessage({ role: "user", content: "An ordinary saved prompt", timestamp: 1 });
+	const scope = h.sessionManager.chatRecordScope();
+	assert.ok(scope);
+	const refused = vi.spyOn(scope.store, "has").mockImplementation(() => {
+		throw new Error("display read refused");
+	});
+	const mode = chat(h.session);
+	mode.renderInitialMessages();
+	assert.ok(rows(mode).some((line) => line.includes("An ordinary saved prompt")));
+	mode.rebuildChatFromMessages();
+	assert.equal(refused.mock.calls.length, 1);
+});
+
+test("a fullscreen chat reads repeated diagnostics only at painted anchors (#5649)", async () => {
+	const h = await createHarness({});
+	cleanups.push(() => h.cleanup());
+	const manager = h.sessionManager;
+	const first = await manager.appendMessage({ role: "user", content: "offscreen prompt", timestamp: 1 });
+	for (let i = 0; i < 80; i++)
+		await manager.appendMessage({ role: "user", content: `middle prompt ${i}`, timestamp: i + 2 });
+	const last = await manager.appendMessage({ role: "user", content: "last prompt", timestamp: 100 });
+	const scope = manager.chatRecordScope();
+	assert.ok(scope);
+	for (const id of [first, last])
+		for (let n = 0; n < 40; n++)
+			await scope.store.append(scope.owner, id, { kind: "line", level: "error", text: `diagnostic-${id}-${n}` });
+	const read = vi.spyOn(scope.store, "read");
+	const mode = chat(h.session);
+	mode.renderInitialMessages();
+	const chatContainer = mode.chatContainer;
+	assert.ok(chatContainer instanceof StartupChatContainer);
+	const window = () => {
+		const win = chatContainer.layoutWindow({
+			width: 140,
+			top: 0,
+			height: 8,
+			followEnd: true,
+			requestRender: () => {},
+		});
+		return Array.from({ length: 8 }, (_, n) => stripVTControlCharacters(win.at(win.top + n) ?? "")).join("\n");
+	};
+	await vi.waitFor(() => assert.ok(window().includes(`diagnostic-${last}-39`)));
+	assert.ok(read.mock.calls.some(([, ids]) => ids.includes(last)));
+	assert.ok(!read.mock.calls.some(([, ids]) => ids.includes(first)));
+	const seen = read.mock.calls.length;
+	window();
+	await new Promise<void>((r) => setImmediate(r));
+	assert.equal(read.mock.calls.length, seen);
+});
+
+test("the visible end of a long overtaking group does not leave its prompt below that group (#5668)", async () => {
+	const h = await createHarness({});
+	cleanups.push(() => h.cleanup());
+	const manager = h.sessionManager;
+	let first = "";
+	for (let i = 0; i < 60; i++) {
+		const id = await manager.appendCustomMessageEntry("note", `Saved notice number ${i}`, true, undefined, true);
+		first ||= id;
+	}
+	const p = await manager.appendMessage({ role: "user", content: "ADMITTED PROMPT", timestamp: 1 });
+	const scope = manager.chatRecordScope();
+	assert.ok(scope);
+	await scope.store.append(scope.owner, first, { kind: "promptBefore", promptId: p });
+	const mode = chat(h.session);
+	mode.renderInitialMessages();
+	const container = mode.chatContainer;
+	assert.ok(container instanceof StartupChatContainer);
+	const viewport = () => {
+		const win = container.layoutWindow({ width: 140, top: 0, height: 8, followEnd: true, requestRender: () => {} });
+		return Array.from({ length: 8 }, (_, n) => stripVTControlCharacters(win.at(win.top + n) ?? "")).join("\n");
+	};
+	await vi.waitFor(() => {
+		const end = viewport();
+		assert.match(end, /Saved notice number 59/);
+		assert.doesNotMatch(end, /ADMITTED PROMPT/);
+	});
+});
+
+test("a refused second cancellation record never hides the earlier saved line at the same anchor (#5649)", async () => {
+	const h = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("session_before_compact", () => ({ cancel: true }));
+			},
+		],
+	});
+	cleanups.push(() => h.cleanup());
+	h.setResponses([fauxAssistantMessage("seed")]);
+	await h.session.prompt("original conversation");
+	await assert.rejects(h.session.compact(), /cancel/i);
+	const mode = chat(h.session);
+	cleanups.push(h.session.subscribe((e) => void mode.handleEvent(e as never)));
+	mode.renderInitialMessages();
+	const count = () => rows(mode).filter((l) => l.includes("Compaction cancelled")).length;
+	await vi.waitFor(() => assert.equal(count(), 1));
+	const scope = h.sessionManager.chatRecordScope();
+	assert.ok(scope);
+	vi.spyOn(scope.store, "append").mockRejectedValue(new Error("refused"));
+	await assert.rejects(h.session.compact(), /cancel/i);
+	assert.equal(count(), 2);
+	mode.rebuildChatFromMessages();
+	await vi.waitFor(() => assert.equal(count(), 1));
+});
+
 test("a main chat reopened after a notice overtakes its admitted prompt keeps live order (#5668)", async () => {
 	const h = await createHarness({ settings: { retry: { enabled: false } } });
 	cleanups.push(() => h.cleanup());
@@ -89,6 +243,53 @@ test("a main chat reopened after a notice overtakes its admitted prompt keeps li
 		const resumed = chat(other.session);
 		resumed.renderInitialMessages();
 		await vi.waitFor(() => assert.deepEqual(order(resumed), [promptText, notice]));
+	} finally {
+		release.resolve();
+		await turn;
+	}
+});
+
+test("a prompt admitted in the original chat never moves ahead of a notice belonging only to a fork (#5668)", async () => {
+	const h = await createHarness({ settings: { retry: { enabled: false } } });
+	cleanups.push(() => h.cleanup());
+	const manager = h.sessionManager;
+	h.setResponses([fauxAssistantMessage("seed")]);
+	await h.session.prompt("original conversation");
+	const entered = Promise.withResolvers<void>(),
+		release = Promise.withResolvers<void>();
+	const append = manager.appendMessage.bind(manager);
+	manager.appendMessage = async (m) => {
+		if (m.role === "user") {
+			entered.resolve();
+			await release.promise;
+		}
+		return append(m);
+	};
+	h.setResponses([fauxAssistantMessage("done")]);
+	const turn = h.session.prompt("Admitted in original");
+	try {
+		await entered.promise;
+		const root = manager.getLeafId();
+		assert.ok(root);
+		await manager.createBranchedSession(root);
+		await h.session.sendCustomMessage(
+			{ display: true, customType: "note", content: "Only in fork" },
+			{ excludeFromContext: true },
+		);
+		release.resolve();
+		await turn;
+		const other = await createHarness({
+			sessionManager: await SessionManager.open(manager.getSessionStore(), manager.getSessionId()),
+		});
+		cleanups.push(() => other.cleanup());
+		const mode = chat(other.session);
+		mode.renderInitialMessages();
+		await vi.waitFor(() =>
+			assert.deepEqual(
+				rows(mode).flatMap((l) => ["Only in fork", "Admitted in original"].filter((x) => l.includes(x))),
+				["Only in fork", "Admitted in original"],
+			),
+		);
 	} finally {
 		release.resolve();
 		await turn;
