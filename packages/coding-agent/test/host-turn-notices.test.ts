@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
-import { type HostNotice, hostNoticeForEvent } from "../src/core/host-notices.ts";
+import { exportFromFile } from "../src/core/export-html/index.ts";
+import { HOST_NOTICE_TYPE, type HostNotice, hostNoticeForEvent } from "../src/core/host-notices.ts";
 import { convertToLlm } from "../src/core/messages.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -62,6 +63,39 @@ function liveRows(harness: Harness): string[] {
 		),
 	);
 }
+
+test("standalone HTML, interactive HTML and JSONL exports contain each complete stored outcome (#5649)", async () => {
+	const { manager } = await persistedSession();
+	const harness = await harnessFor(manager, {});
+	const texts = Array.from({ length: 3 }, (_, i) => `Compaction failed: ${"path/".repeat(500)}ENOSPC ${i}`);
+	for (const text of texts) await manager.appendCustomEntry(HOST_NOTICE_TYPE, { level: "error", text });
+	const input = manager.getSessionFile()!;
+	for (const path of [
+		await exportFromFile(input, `${input}.standalone.html`),
+		await harness.session.exportToHtml(`${input}.html`),
+		await harness.session.exportToJsonl(`${input}.export.jsonl`),
+	]) {
+		const file = readFileSync(path, "utf8");
+		const entries = path.endsWith(".html")
+			? JSON.parse(
+					Buffer.from(
+						/<script id="session-data" type="application\/json">([^<]+)/.exec(file)![1]!,
+						"base64",
+					).toString(),
+				).entries
+			: file
+					.trim()
+					.split("\n")
+					.map((line) => JSON.parse(line));
+		assert.deepEqual(
+			entries
+				.filter((entry: { customType?: string }) => entry.customType === HOST_NOTICE_TYPE)
+				.map((entry: { data: HostNotice }) => entry.data.text),
+			texts,
+			path,
+		);
+	}
+});
 
 const overloaded = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" });
 
@@ -126,6 +160,40 @@ test("the next prompt follows the saved line, and its request leaves the line ou
 	]);
 });
 
+test("a healthy turn with boundary drafts never reads archived outcome bodies (#5649)", async () => {
+	const { manager } = await persistedSession();
+	for (let i = 0; i < 40; ++i) {
+		await manager.appendCustomEntry(HOST_NOTICE_TYPE, {
+			level: "error",
+			text: `Compaction ${i}: ${"x".repeat(2500)}`,
+		});
+	}
+	const harness = await createHarness({
+		sessionManager: manager,
+		extensionFactories: [
+			(pi) => {
+				pi.on("turn_end", () => ({ entries: [{ type: "custom", customType: "marker", data: { marked: true } }] }));
+			},
+			(pi) => {
+				pi.on("turn_end", () => {});
+			},
+		],
+	});
+	cleanups.push(() => harness.cleanup());
+	const store = manager.getSessionStore();
+	const read = store.readRange!.bind(store);
+	let bodies = 0;
+	store.readRange = async (...args) => {
+		const page = await read(...args);
+		bodies += page.entries.filter((e) => e.type === "custom" && e.customType === HOST_NOTICE_TYPE).length;
+		return page;
+	};
+	harness.setResponses([fauxAssistantMessage("ok")]);
+	await harness.session.prompt("healthy follow-up");
+	assert.ok(manager.getEntries().some((e) => e.type === "custom" && e.customType === "marker"));
+	assert.equal(bodies, 0);
+});
+
 test("a provider error longer than the notice bound is saved cut at a whole character (#5649)", async () => {
 	const { manager, reopen } = await persistedSession();
 	const harness = await harnessFor(manager, { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } });
@@ -162,7 +230,7 @@ test("a chat that reads the transcript while the line is still being saved shows
 	}) as typeof manager.appendCustomEntry;
 	const shown = Promise.withResolvers<void>();
 	harness.session.subscribe((event) => {
-		if (event.type === "message_end" && event.message.role === "custom") shown.resolve();
+		if (event.type === "message_start" && event.message.role === "custom") shown.resolve();
 	});
 	harness.setResponses([overloaded(), overloaded()]);
 	const notices = () =>

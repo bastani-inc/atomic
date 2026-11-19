@@ -296,7 +296,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					.loadHistory()
 					.then((history) =>
 						history.unavailable === undefined
-							? transcriptView(session, taskId, history.entries, cursor)
+							? transcriptView(session, taskId, history.entries, cursor, history.hasEntryLookup)
 							: { ok: false, error: { message: history.unavailable } },
 					);
 			if (session.loadFullHistory)
@@ -443,6 +443,7 @@ function transcriptView(
 	taskId: string,
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
+	hasEntryLookup = false,
 ): TaskViewResult<TaskTranscriptView> {
 	const sessionId = session.getSessionId();
 	const page = taskTranscriptPage(taskId, sessionId, entries, cursor);
@@ -453,7 +454,9 @@ function transcriptView(
 	const messages = entries.flatMap<AgentMessage>((entry) => {
 		if (!entryIds.has(entry.id)) return [];
 		if (entry.type !== "message")
-			return sessionEntryToTranscriptMessages(entry, sessionId).map((message) => retainTurnOutcome(page, message));
+			return sessionEntryToTranscriptMessages(entry, hasEntryLookup ? sessionId : undefined).map((message) =>
+				retainTurnOutcome(page, message),
+			);
 		const message = entry.message;
 		if (message.role === "assistant")
 			return [

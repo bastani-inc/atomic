@@ -5,7 +5,13 @@ import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-
 import { getAgentDir } from "../config.js";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
-import { HostNoticeWindow, isResidentNotice, residentNotice, storedNotices } from "./host-notice-window.ts";
+import {
+	checkNoticeReadback,
+	HostNoticeWindow,
+	isResidentNotice,
+	residentNotice,
+	storedNotices,
+} from "./host-notice-window.ts";
 import { isHostNoticeEntry, reservedNoticeId } from "./host-notices.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
@@ -714,19 +720,19 @@ export class SessionManager {
 		return this._appendEntries([entry]);
 	}
 
-	private async _appendEntries(entries: readonly SessionEntry[]): Promise<void> {
+	private async _appendEntries(entries: readonly SessionEntry[], notice?: SessionEntry): Promise<void> {
 		if (this.appendHalt !== undefined) throw this.appendHalt;
 		// #4971: the session was deleted from its store; that was reported once, and nothing more is saved.
 		if (this.deletedFromStore) return this.applyAppended(entries);
 		for (let attempt = 1; ; attempt++) {
 			const expectSeq = this.lastSeq;
 			try {
-				this.lastSeq = (
-					await this.store.append(this.sessionId, entries, {
-						expectSeq,
-						...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-					})
-				).lastSeq;
+				const write = await this.store.append(this.sessionId, entries, {
+					expectSeq,
+					...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+				});
+				if (notice) await checkNoticeReadback(this.store, this.sessionId, notice);
+				this.lastSeq = write.lastSeq;
 			} catch (error) {
 				if (error instanceof SessionNotFoundError) {
 					this.deletedFromStore = true;
@@ -734,7 +740,7 @@ export class SessionManager {
 				}
 				if (appendFailureWroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
 				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
-				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
+				if (await this.reconcileAppend(entries, error, unknown, expectSeq, notice)) return;
 				continue;
 			}
 			this.applyAppended(entries);
@@ -743,6 +749,7 @@ export class SessionManager {
 	}
 
 	private holdNotice(entry: SessionEntry, seq: number): SessionEntry {
+		if (this.deletedFromStore) return entry;
 		return residentNotice(entry, { store: this.store, sessionId: this.sessionId, seq }, this.noticeWindow);
 	}
 
@@ -784,6 +791,7 @@ export class SessionManager {
 		error: unknown,
 		unknown: boolean,
 		expectSeq: number,
+		notice?: SessionEntry,
 	): Promise<boolean> {
 		// Entries of an append that failed for certain are never in the store, so marking them too changes nothing.
 		for (const entry of entries) this.unconfirmed.add(entry.id);
@@ -804,6 +812,7 @@ export class SessionManager {
 		const own = new Map(entries.map((entry) => [entry.id, entry]));
 		const tail = (stored.slice(1) as SessionEntry[]).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
+		if (saved && notice) await checkNoticeReadback(this.store, this.sessionId, notice);
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
 		for (const [i, entry] of tail.entries()) this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
@@ -1030,7 +1039,7 @@ export class SessionManager {
 			if (this.byId.has(reservedId)) throw new Error("Custom entry ID already in use");
 			entry.id = reservedId;
 		}
-		await this._appendEntry(entry);
+		await this._appendEntries([entry], isHostNoticeEntry(entry) ? entry : undefined);
 		return entry.id;
 	}
 
@@ -1629,10 +1638,16 @@ export class SessionManager {
 		});
 	}
 
-	inMemoryBranch(cwd: string): SessionManager {
+	inMemoryBranch(cwd: string, purpose?: "boundary-preview"): SessionManager {
 		const header = this.getHeader();
 		if (!header) throw new Error("Session header is missing");
-		const manager = SessionManager.inMemory(cwd, undefined, [header, ...this.getBranch()]);
+		const branch = this.getBranch();
+		// A model preview needs the entry IDs and parent links, not display-only diagnostics from storage.
+		const entries =
+			purpose === "boundary-preview" && this.hostNotices > 0
+				? branch.map((entry) => (isHostNoticeEntry(entry) ? { ...entry, data: undefined } : entry))
+				: branch;
+		const manager = SessionManager.inMemory(cwd, undefined, [header, ...entries]);
 		manager.branchLinks = this.branchLinks;
 		return manager;
 	}

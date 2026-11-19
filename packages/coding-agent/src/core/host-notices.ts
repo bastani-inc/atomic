@@ -19,6 +19,9 @@ export interface HostNotice {
 	readonly text: string;
 	readonly label?: string;
 	readonly location?: string;
+	/** Live message identity until its save finishes; not part of the stored entry. */
+	readonly pendingId?: string;
+	readonly settlesId?: string;
 }
 
 /** The most UTF-8 bytes a notice keeps; a longer one, such as a provider's error page, is cut and ends with `…`. */

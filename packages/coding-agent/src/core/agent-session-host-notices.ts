@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { AgentSessionEvent } from "./agent-session-types.js";
-import { noticePreview } from "./host-notice-window.ts";
+
 import {
 	boundHostNoticeText,
 	HOST_NOTICE_TYPE,
 	type HostNotice,
 	hostNoticeForEvent,
+	hostNoticeFromEntry,
 	hostNoticeMessage,
 	reserveNoticeId,
 } from "./host-notices.ts";
@@ -38,10 +39,10 @@ export function recordHostNotice(session: AgentSession, event: AgentSessionEvent
 					? "Checkout snapshot unavailable"
 					: "Continuation failed";
 	const notice: HostNotice = { level: found.level, text: boundHostNoticeText(found.text), label };
-	const message = hostNoticeMessage(
-		{ ...noticePreview(notice), location: `history://sessions/${manager.getSessionId()}?notice=${key}` },
-		Date.now(),
-	);
+	const timestamp = Date.now();
+	// A fixed label is already the complete row, even if its save fails. It never needs a preview.
+	const fixed = found.text === label;
+	const message = hostNoticeMessage({ ...found, label, ...(!fixed && { pendingId: key }) }, timestamp);
 	let saved: Promise<string> | undefined;
 	try {
 		reserveNoticeId(notice, key);
@@ -50,19 +51,20 @@ export function recordHostNotice(session: AgentSession, event: AgentSessionEvent
 		// A session that can no longer be written still shows the line; it is lost with the session's other unsaved work.
 	}
 	const pending = unsaved.get(session) ?? new Map<string, CustomMessage<HostNotice>>();
+	const finish = (entry?: SessionEntry) => {
+		pending.delete(key);
+		const stored = entry && hostNoticeFromEntry(entry);
+		// Until there is a readable history location, the open chat keeps the entire diagnostic.
+		const final = stored?.location ? stored : found;
+		if (!fixed)
+			session._emit({ type: "message_end", message: hostNoticeMessage({ ...final, settlesId: key }, timestamp) });
+		if (entry !== undefined && session.sessionManager === manager) session._emit({ type: "entry_appended", entry });
+	};
 	if (saved !== undefined) {
 		unsaved.set(session, pending);
 		const announced = saved.then(
-			(id) => {
-				pending.delete(key);
-				const entry = manager.getEntry(id);
-				// A host that reads the session from its store learns the entry exists.
-				if (entry !== undefined && session.sessionManager === manager)
-					session._emit({ type: "entry_appended", entry });
-			},
-			() => {
-				pending.delete(key);
-			},
+			(id) => finish(manager.getEntry(id)),
+			() => finish(),
 		);
 		// Whatever waits for the session's events to settle, such as the prompt that ended this way or the next model
 		// request, also waits for the line to be saved. A failure already in the queue stays there for them to see.
@@ -78,7 +80,8 @@ export function recordHostNotice(session: AgentSession, event: AgentSessionEvent
 		// A redraw inside the outcome's listener precedes the line, just as it precedes its live message.
 		if (saved !== undefined) pending.set(key, message);
 		session._emit({ type: "message_start", message });
-		session._emit({ type: "message_end", message });
+		if (fixed) session._emit({ type: "message_end", message });
+		if (saved === undefined) finish();
 	};
 }
 

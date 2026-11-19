@@ -2,14 +2,15 @@ import type { AgentState } from "@bastani/atomic-agent-core";
 import type { ToolCall } from "@bastani/atomic-ai/compat";
 import { existsSync, writeFileSync } from "fs";
 import { readFile, writeFile } from "fs/promises";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import { APP_NAME, getExportTemplateDirAsync } from "../../config.js";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.js";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import type { SessionEntry } from "../session-manager.ts";
-import { SessionManager } from "../session-manager.ts";
+import type { SessionEntry, SessionManager } from "../session-manager.ts";
+import { buildSessionIndex } from "../session-manager-history.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
+import { JsonlSessionStore } from "../storage/session/jsonl-session-store.js";
 
 /**
  * Interface for rendering custom tools to HTML.
@@ -308,12 +309,16 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		throw new Error(`File not found: ${resolvedInputPath}`);
 	}
 
-	const sm = await SessionManager.open(resolvedInputPath);
-
+	const store = await JsonlSessionStore.open(dirname(resolvedInputPath), {
+		exactDirectory: true,
+		scanExisting: false,
+	});
+	const snapshot = await store.loadFile(resolvedInputPath).finally(() => store.close());
+	const entries = [...snapshot.entries];
 	const sessionData: SessionData = {
-		header: sm.getHeader(),
-		entries: sm.getEntries(),
-		leafId: sm.getLeafId(),
+		header: { type: "session", ...snapshot.header },
+		entries,
+		leafId: buildSessionIndex(entries).leafId,
 		systemPrompt: undefined,
 		tools: undefined,
 	};

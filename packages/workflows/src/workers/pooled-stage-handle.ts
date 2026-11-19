@@ -6,7 +6,7 @@ import type {
 	SessionCommandCatalog,
 	TaskViewSource,
 } from "@bastani/atomic";
-import { retainTurnOutcome } from "@bastani/atomic";
+import { retainTurnOutcome, settleTurnOutcome } from "@bastani/atomic";
 import {
 	type AgentSessionEventListener,
 	type StageControlHandle,
@@ -883,9 +883,18 @@ export class PooledStageHandle implements StageControlHandle {
 			case "message_start":
 			case "message_update":
 				if (event.message.role === "assistant") this.streaming = event.message as StreamingMessage;
+				else if (
+					event.type === "message_start" &&
+					event.message.role === "custom" &&
+					(event.message.details as { pendingId?: string } | undefined)?.pendingId
+				) {
+					const copy = retainTurnOutcome(this, event.message);
+					if (copy !== event.message) this.settled.push(copy);
+				}
 				return;
 			case "message_end":
-				this.settled.push(retainTurnOutcome(this, event.message));
+				if (event.message.role !== "custom" || !settleTurnOutcome(this, event.message))
+					this.settled.push(retainTurnOutcome(this, event.message));
 				if (event.message.role === "assistant") this.streaming = undefined;
 				return;
 		}

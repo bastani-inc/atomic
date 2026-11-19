@@ -3,7 +3,7 @@ import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/com
 import { type Component, Container, type MarkdownTheme, Text, type TUI } from "@bastani/atomic-tui";
 import { parseSkillBlock } from "../../../core/agent-session.js";
 import type { MarkdownTransformer, MessageRenderer, ToolRenderers } from "../../../core/extensions/types.ts";
-import { retainTurnOutcome } from "../../../core/host-notice-window.ts";
+import { retainTurnOutcome, settleTurnOutcome } from "../../../core/host-notice-window.ts";
 import {
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
@@ -547,7 +547,9 @@ export class LiveChatEntriesController {
 		return this.updateAssistantMessage(message);
 	}
 	private handleMessageEnd(message: unknown): boolean {
-		if (!isAgentMessageLike(message) || message.role !== "assistant") return false;
+		if (!isAgentMessageLike(message)) return false;
+		if (message.role === "custom") return settleTurnOutcome(this, message as CustomMessage);
+		if (message.role !== "assistant") return false;
 		const stopReason = typeof message.stopReason === "string" ? message.stopReason : "";
 		const failed = stopReason === "aborted" || stopReason === "error";
 		const changed = this.updateAssistantMessage(message as AssistantMessage, !failed);

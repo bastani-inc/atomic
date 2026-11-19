@@ -35,6 +35,19 @@ export class HostNoticeWindow {
 }
 
 const windows = new WeakMap<object, HostNoticeWindow>();
+const pending = new WeakMap<object, Map<string, (notice: HostNotice) => void>>();
+
+/** Finish the same live row that started before the outcome was saved, including across RPC. */
+export function settleTurnOutcome(owner: object, message: AgentMessage | CustomMessage): boolean {
+	const notice = hostNoticeFromMessage(message);
+	if (!notice?.settlesId) return false;
+	const held = pending.get(owner);
+	const update = held?.get(notice.settlesId);
+	if (!update) return false;
+	held!.delete(notice.settlesId);
+	update(notice);
+	return true;
+}
 
 /** A view owns its copy: collapsing an older row must not mutate a session event or another view. */
 export function retainTurnOutcome<T extends AgentMessage | CustomMessage>(
@@ -44,24 +57,40 @@ export function retainTurnOutcome<T extends AgentMessage | CustomMessage>(
 	earlier = false,
 ): T {
 	const notice = hostNoticeFromMessage(message);
-	if (!notice?.location || notice.text === notice.label) return message;
-	let window = windows.get(owner);
-	if (!window) {
-		window = new HostNoticeWindow();
-		windows.set(owner, window);
-	}
-	const preview = noticePreview(notice);
-	const copy = { ...message, content: preview.text, details: preview };
-	window.keep(
-		preview.text,
-		() => {
-			const text = preview.label ?? "Turn outcome";
-			copy.details = { ...preview, text };
-			copy.content = text;
+	if (!notice || (!notice.pendingId && (!notice.location || notice.text === notice.label))) return message;
+	const copy = { ...message, content: notice.text, details: notice };
+	const update = (complete: HostNotice) => {
+		const preview = complete.location ? noticePreview(complete) : complete;
+		copy.content = preview.text;
+		copy.details = preview;
+		if (!preview.location || preview.text === preview.label) return;
+		let window = windows.get(owner);
+		if (!window) {
+			window = new HostNoticeWindow();
+			windows.set(owner, window);
+		}
+		window.keep(
+			preview.text,
+			() => {
+				const text = preview.label ?? "Turn outcome";
+				copy.details = { ...preview, text };
+				copy.content = text;
+				changed?.();
+			},
+			earlier,
+		);
+	};
+	if (notice.pendingId) {
+		let held = pending.get(owner);
+		if (!held) {
+			held = new Map();
+			pending.set(owner, held);
+		}
+		held.set(notice.pendingId, (final) => {
+			update(final);
 			changed?.();
-		},
-		earlier,
-	);
+		});
+	} else update(notice);
 	return copy as T;
 }
 
@@ -75,10 +104,34 @@ interface NoticeSource {
 	seq: number;
 }
 const sources = new WeakMap<SessionEntry, NoticeSource>();
+const unlocatable = new WeakSet<SessionEntry>();
+
+/** Confirm a just-written outcome with the same point lookup its history link uses, before exposing a preview. */
+export async function checkNoticeReadback(store: SessionStore, sessionId: string, entry: SessionEntry): Promise<void> {
+	try {
+		if (store.findEntrySeq && store.readEntryRange) {
+			const seq = await store.findEntrySeq(sessionId, entry.id);
+			if (seq !== undefined) {
+				const page = await store.readEntryRange(sessionId, { fromSeq: seq, toSeq: seq });
+				const row = page.entries[0]?.entry;
+				if (row?.id === entry.id && hostNoticeFromEntry(row)) return;
+			}
+		}
+	} catch {
+		// Saving the entry succeeded. A lookup failure only changes how the chat displays it.
+	}
+	unlocatable.add(entry);
+}
 
 /** Store writes keep the full record. The manager's tree, branch and projections share this small, private copy. */
 export function residentNotice(entry: SessionEntry, source: NoticeSource, window: HostNoticeWindow): SessionEntry {
-	if (!isHostNoticeEntry(entry)) return entry;
+	if (
+		!isHostNoticeEntry(entry) ||
+		!source.store.findEntrySeq ||
+		!source.store.readEntryRange ||
+		unlocatable.has(entry)
+	)
+		return entry;
 	const notice = hostNoticeFromEntry(entry);
 	if (!notice) return entry;
 	const data = { ...noticePreview(notice), location: `history://sessions/${source.sessionId}?notice=${entry.id}` };

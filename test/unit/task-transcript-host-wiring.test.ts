@@ -261,9 +261,16 @@ test("a task page from storage returns a bounded preview window and a location f
 			level: "error",
 			text: `failure ${i}: ${"x".repeat(4000)}`,
 		});
-	const { entries } = await session.getSessionStore().load(session.getSessionId());
+	const store = session.getSessionStore();
 	await withTaskView(
-		{ getSessionId: () => session.getSessionId(), getEntries: () => [...entries] },
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			loadHistory: async () => ({
+				entries: [...(await store.load(session.getSessionId())).entries],
+				hasEntryLookup: Boolean(store.findEntrySeq && store.readEntryRange),
+			}),
+		},
 		async (view, taskId) => {
 			const page = await view.readTaskTranscript(taskId);
 			assert.ok(page.ok);
@@ -276,6 +283,24 @@ test("a task page from storage returns a bounded preview window and a location f
 					0,
 				) <= 384,
 			);
+		},
+	);
+});
+
+test("a task transcript with no history locator keeps the stored diagnostic inline (#5649)", async () => {
+	const session = SessionManager.inMemory();
+	const text = `Compaction failed: ${"long/path/".repeat(200)} ENOSPC`;
+	await session.appendCustomEntry("atomic.turn-outcome.v1", { level: "error", text });
+	const { entries } = await session.getSessionStore().load(session.getSessionId());
+	await withTaskView(
+		{ getSessionId: () => session.getSessionId(), getEntries: () => [...entries] },
+		async (view, taskId) => {
+			const page = await view.readTaskTranscript(taskId);
+			assert.ok(page.ok);
+			const message = page.value.messages[0];
+			assert.ok(message?.role === "custom");
+			assert.equal(message.content, text);
+			assert.equal((message.details as { location?: string }).location, undefined);
 		},
 	);
 });

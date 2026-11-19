@@ -19,6 +19,7 @@ import { ChatSessionHost } from "../../packages/coding-agent/src/index.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { releaseStartupChatOutput } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { createEngineHostPair } from "../../packages/coding-agent/test/helpers/in-process-engine-pair.ts";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
 import { createHarnessWithExtensions } from "../../packages/coding-agent/test/test-harness.ts";
@@ -249,6 +250,78 @@ test("an attached chat shows a long compaction failure once (#5649)", async () =
 	assert.equal(count(visibleRows(chat.renderBody(WIDTH, 200)), "Storage failed"), 1);
 });
 
+test.each([
+	["in-process", "write refused"],
+	["isolated", "write refused"],
+	["in-process", "no entry lookup"],
+	["isolated", "no entry lookup"],
+	["in-process", "lookup misses"],
+	["isolated", "lookup finds another entry"],
+] as const)(
+	"the %s attached chat shows the entire storage error without a dead link: %s (#5649)",
+	async (host, fault) => {
+		const root = mkdtempSync(join(tmpdir(), "host-notice-save-"));
+		cleanups.push(() => rmSync(root, { force: true, recursive: true }));
+		const manager = await SessionManager.create(root, join(root, "sessions"));
+		const pair = await createEngineHostPair({
+			sessionManager: manager,
+			hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
+			engineExtensions: [
+				(pi) => {
+					pi.on("session_before_compact", () => ({ compactedText: "retained" }));
+				},
+			],
+		});
+		cleanups.push(() => pair.cleanup());
+		pair.engine.setResponses([fauxAssistantMessage("ok")]);
+		await pair.engine.session.prompt("hello");
+		await pair.drain();
+		const chat = new ChatSessionHost({
+			style: plainStyle,
+			editorTheme,
+			getChatRenderSettings: () => ({ toolOutputExpanded: true }),
+		});
+		cleanups.push(() => chat.dispose());
+		const session = host === "isolated" ? pair.runtime.session : pair.engine.session;
+		cleanups.push(
+			session.subscribe((e) => {
+				chat.applyAgentEvent(e);
+			}),
+		);
+		const store = manager.getSessionStore();
+		const append = store.append;
+		const lookup = store.findEntrySeq;
+		cleanups.push(() => {
+			store.append = append;
+			store.findEntrySeq = lookup;
+		});
+		const refused = fault === "write refused";
+		const error = `Write refused: ${"long-directory/".repeat(refused ? 310 : 165)} ENOSPC`;
+		if (fault === "no entry lookup") store.findEntrySeq = undefined;
+		else if (fault === "lookup misses") store.findEntrySeq = async () => undefined;
+		else if (fault === "lookup finds another entry") store.findEntrySeq = async () => 1;
+		store.append = async (...args) => {
+			if (refused || args[1].some((entry) => entry.type === "compaction")) throw new Error(error);
+			return append.apply(store, args);
+		};
+		await assert.rejects(pair.engine.session.compact(), /ENOSPC/);
+		await manager.branch(manager.getLeafId()!);
+		await pair.drain();
+		const drawn = visibleRows(chat.renderBody(160, 200)).join("\n");
+		assert.equal(count(drawn.split("\n"), "Write refused:"), 1);
+		assert.match(drawn, /ENOSPC/);
+		assert.doesNotMatch(drawn, /history:\/\/sessions/);
+		const rows = chat
+			.entries()
+			.flatMap((e) => (e.kind === "custom" && e.message.customType === HOST_NOTICE_TYPE ? [e.message.content] : []));
+		assert.deepEqual(rows, [`Compaction failed: ${error}`]);
+		const saved = (await store.load(manager.getSessionId())).entries.flatMap((e) =>
+			e.type === "custom" && e.customType === HOST_NOTICE_TYPE ? [(e.data as { text: string }).text] : [],
+		);
+		assert.deepEqual(saved, refused ? [] : rows);
+	},
+);
+
 test("a notice and a source-only shell result both survive a stage redraw, in order (#5649)", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "host-notice-shell-"));
 	cleanups.push(() => rmSync(cwd, { force: true, recursive: true }));
@@ -404,7 +477,7 @@ test("a main chat redrawn while the line is still being saved keeps it once (#56
 	const shown = Promise.withResolvers<void>();
 	harness.session.subscribe((event) => {
 		void live.handleEvent(event as never);
-		if (event.type === "message_end" && event.message.role === "custom") shown.resolve();
+		if (event.type === "message_start" && event.message.role === "custom") shown.resolve();
 	});
 
 	const prompt = harness.session.prompt("hello");

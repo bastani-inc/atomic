@@ -46,7 +46,7 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
-export { retainTurnOutcome } from "./core/host-notice-window.ts";
+export { retainTurnOutcome, settleTurnOutcome } from "./core/host-notice-window.ts";
 export {
 	type AsyncTakeoverMutex,
 	type TakeoverMutex,

@@ -1,5 +1,6 @@
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import { settleTurnOutcome } from "../../core/host-notice-window.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -404,6 +405,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 		case "message_end":
 			if (event.message.role === "user") break;
+			if (event.message.role === "custom") settleTurnOutcome(this, event.message);
 			this.workingRunMeter.settled(event.message);
 			if (this.streamingComponent && event.message.role === "assistant") {
 				this.streamingMessage = event.message;

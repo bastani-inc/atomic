@@ -250,7 +250,11 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	if (isSharedLiveChatEvent(type)) {
 		// The line the session saves about how a turn ended takes over from the status line that said the same (#5649).
 		const notice = type === "message_start" ? hostNoticeOf((event as { message?: unknown }).message) : undefined;
-		if (notice !== undefined && boundHostNoticeText(state.statusMessage, HOST_NOTICE_PREVIEW_BYTES) === notice.text)
+		if (
+			notice !== undefined &&
+			(state.statusMessage === notice.text ||
+				boundHostNoticeText(state.statusMessage, HOST_NOTICE_PREVIEW_BYTES) === notice.text)
+		)
 			state.statusMessage = "";
 		const changed = state.liveChat.applyEvent(event);
 		if (type === "message_start" && state.firstUserEntry === undefined && state.seenFirstRawUser) {
