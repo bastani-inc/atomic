@@ -470,7 +470,8 @@ export function registerSessionStoreConformance(
 							page.length === 1 ||
 								page.reduce((sum, item) => sum + bytes(item), 0) <= SESSION_HISTORY_PAGE_BYTES,
 						);
-					assert.ok(scanned.length < pages.length);
+					// A store that sizes its pages reads a scan in fewer of them; one that only loads its snapshot pages it alike.
+					if (store.readEntrySizes && store.readRange) assert.ok(scanned.length < pages.length);
 					if (!store.readScanPage || !store.readEntrySizes) return;
 					const { epoch } = await store.readEntrySizes("session", 1, 0);
 					// No entry for an empty range, only the watermark.
