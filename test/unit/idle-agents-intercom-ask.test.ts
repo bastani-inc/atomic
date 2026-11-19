@@ -147,7 +147,7 @@ test(
 					getChildSessionOptions: (options) => ({
 						...resolver(options),
 						customTools: [askTool],
-						builtins: { intercom: false, workflows: false, subagents: false, mcp: false, "web-access": false },
+						builtins: { intercom: false, subagents: false, mcp: false, "web-access": false },
 					}),
 				},
 				wakeDispatcher: dispatcher,

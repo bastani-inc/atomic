@@ -374,7 +374,7 @@ test("workflow stages accept legacy Azure model strings and saved session refere
 					agentDir: root,
 					modelRuntime: runtime,
 					settingsManager: SettingsManager.inMemory(),
-					builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+					builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 					tools: [],
 					...options,
 				}),

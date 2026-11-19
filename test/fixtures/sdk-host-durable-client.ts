@@ -45,7 +45,7 @@ const options = {
 	cwd: home,
 	agentDir: join(home, "agent"),
 	settingsManager: SettingsManager.inMemory(),
-	builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+	builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 };
 const { session: cli } = await createAgentSession({
 	...options,

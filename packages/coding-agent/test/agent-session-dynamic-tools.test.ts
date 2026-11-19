@@ -10,7 +10,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { isSyntheticPath } from "../src/core/source-info.ts";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 function packageExtensionPaths(extensionsResult: { extensions: ReadonlyArray<{ path: string }> }): string[] {
 	return extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path));

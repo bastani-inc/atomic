@@ -89,7 +89,7 @@ test(
 					settingsManager,
 					resourceLoader,
 					sessionManager: SessionManager.inMemory(root),
-					builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+					builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 					...(options.tools === undefined ? {} : { tools: options.tools }),
 					...(options.customTools === undefined ? {} : { customTools: options.customTools }),
 				});

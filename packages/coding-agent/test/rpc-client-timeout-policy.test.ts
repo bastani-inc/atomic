@@ -168,44 +168,44 @@ describe("RpcClient request timeout policy", () => {
 		}
 	});
 
-	test.each([
-		{ command: { type: "resume_workflow_from_picker", target: "wf-123" } },
-		{ command: { type: "delete_workflow_from_picker", runId: "wf-123" } },
-	] as const)("keeps $command.type pending until completion or engine exit (#5256)", async ({ command }) => {
-		const heldClient = new RpcClient({
-			cliPath: writeChildScript(HELD_OPEN_CHILD),
-			requestTimeoutMs: 20,
-		});
-		await heldClient.start();
-		try {
-			let settled: "resolved" | "rejected" | "pending" = "pending";
-			const pending = heldClient
-				.requestInternal(command)
-				.then(() => {
-					settled = "resolved";
-				})
-				.catch(() => {
-					settled = "rejected";
-				});
+	test.each([] as const)(
+		"keeps $command.type pending until completion or engine exit (#5256)",
+		async ({ command }) => {
+			const heldClient = new RpcClient({
+				cliPath: writeChildScript(HELD_OPEN_CHILD),
+				requestTimeoutMs: 20,
+			});
+			await heldClient.start();
+			try {
+				let settled: "resolved" | "rejected" | "pending" = "pending";
+				const pending = heldClient
+					.requestInternal(command)
+					.then(() => {
+						settled = "resolved";
+					})
+					.catch(() => {
+						settled = "rejected";
+					});
 
-			await new Promise((resolve) => setTimeout(resolve, 300));
-			expect(settled).toBe("pending");
-			void pending;
-		} finally {
-			await heldClient.stop();
-		}
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				expect(settled).toBe("pending");
+				void pending;
+			} finally {
+				await heldClient.stop();
+			}
 
-		const exitClient = new RpcClient({
-			cliPath: writeChildScript(EXIT_ON_REQUEST_CHILD),
-			requestTimeoutMs: 5,
-		});
-		await exitClient.start();
-		try {
-			await expect(exitClient.requestInternal(command)).rejects.toThrow(
-				/Agent process exited \(code=37 signal=null\)/,
-			);
-		} finally {
-			await exitClient.stop();
-		}
-	});
+			const exitClient = new RpcClient({
+				cliPath: writeChildScript(EXIT_ON_REQUEST_CHILD),
+				requestTimeoutMs: 5,
+			});
+			await exitClient.start();
+			try {
+				await expect(exitClient.requestInternal(command)).rejects.toThrow(
+					/Agent process exited \(code=37 signal=null\)/,
+				);
+			} finally {
+				await exitClient.stop();
+			}
+		},
+	);
 });

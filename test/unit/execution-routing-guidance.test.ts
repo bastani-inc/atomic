@@ -39,7 +39,6 @@ describe("agent-decided workflow execution guidance", () => {
 	// elsewhere can mask an obsolete opening. Keep authoring/lifecycle checks below.
 	const callerSections = [
 		["packages/workflows/README.md", "", "### Custom workflow directories"],
-		["packages/coding-agent/docs/getting-started/first-session.md", "## First session", "## Verify the session"],
 		["docs/workflow-playbook.md", "## The core loop", "## Prompt anatomy"],
 		["packages/coding-agent/docs/workflows/reliable-design.md", "", "## Choosing an Execution Shape"],
 		["packages/coding-agent/docs/workflows.md", "## When to Use Workflows", "| User need | Use |"],
