@@ -8,8 +8,8 @@ const HOLDING_RECORD_CHARS = 8 * 1024 * 1024;
 if (mode === "debug") {
 	const { reportDebugAsync } = await import("../../packages/coding-agent/src/core/debug.js");
 	// The writer thread is still writing this when the process exits, with the records after it queued behind it.
-	void reportDebugAsync("pool", "hold", { padding: "x".repeat(HOLDING_RECORD_CHARS) });
-	for (const event of ["first", "second", "third"]) void reportDebugAsync("pool", event, {});
+	void reportDebugAsync("storage", "hold", { padding: "x".repeat(HOLDING_RECORD_CHARS) });
+	for (const event of ["first", "second", "third"]) void reportDebugAsync("storage", event, {});
 	process.exit(0);
 } else if (mode === "lifecycle") {
 	const { installLifecycleTraceFromEnv, markLifecycleTiming } = await import(

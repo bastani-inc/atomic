@@ -11,15 +11,7 @@ import {
 import { snapshotBlobHashes } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { snapshotBlob } from "../../packages/coding-agent/src/core/worktree-snapshot/env-hash.ts";
 import type { SnapshotBlob, WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import {
-	type Lease,
-	RUN_EVENT_TYPES,
-	type RunEvent,
-	type RunJournal,
-} from "../../packages/workflows/src/durable/journal/types.js";
-import type { DurableResumeCandidate } from "../../packages/workflows/src/durable/resume-eligibility.js";
-import { isDurableWorkflowResumable } from "../../packages/workflows/src/durable/resume-eligibility.js";
+import { type LegacyEvent, type LegacyRunKey, LegacySnapshotRows } from "./legacy-snapshot-rows.js";
 
 /** A blob whose bytes are `text`. */
 export function textBlob(text: string): SnapshotBlob {
@@ -55,7 +47,7 @@ export function syntheticSnapshot(
 export interface SharedSnapshotDatabase {
 	readonly database: SqliteDatabase;
 	readonly sessions: SqlSessionStore;
-	readonly journal: SqlRunJournal;
+	readonly journal: LegacySnapshotRows;
 	close(): Promise<void>;
 }
 
@@ -65,13 +57,12 @@ export async function openSharedSnapshotDatabase(
 ): Promise<SharedSnapshotDatabase> {
 	const database = options.database ?? (await openNodeSqliteDatabase(path));
 	const sessions = await SqlSessionStore.open(database, { prefix: options.prefix });
-	const journal = await SqlRunJournal.open(database, { prefix: options.prefix });
+	const journal = await LegacySnapshotRows.open(database, { prefix: options.prefix });
 	return {
 		database,
 		sessions,
 		journal,
 		async close() {
-			await journal.close();
 			await sessions.close();
 			await database.close();
 		},
@@ -95,29 +86,26 @@ export function statusEvent(
 	runId: string,
 	payload: RunStatusPayload,
 	type: "RunStarted" | "StatusChanged" = "StatusChanged",
-): RunEvent {
+): LegacyEvent {
 	return {
 		type,
 		payload: { workflowId: runId, completedCheckpoints: 1, pendingPrompts: 0, ...payload },
-	} as unknown as RunEvent;
+	} as LegacyEvent;
 }
 
 export function checkpointEvent(
 	snapshots: readonly WorktreeSnapshot[],
 	kind: "tool" | "stage" | "ui" | "task" | "boundary" = "tool",
-): RunEvent {
+): LegacyEvent {
 	return {
-		type: RUN_EVENT_TYPES.checkpointRecorded,
+		type: "CheckpointRecorded",
 		payload: { kind, checkpointId: `cp-${Math.random().toString(36).slice(2)}`, worktreeSnapshots: snapshots },
-	} as unknown as RunEvent;
+	} as LegacyEvent;
 }
 
 /** Creates `runId` and holds its lease, so events can be appended to it. */
-export async function startRun(journal: SqlRunJournal, runId: string, status = "running"): Promise<Lease> {
-	await journal.createRun({ runId, name: "synthetic", cwd: "/repo", createdAt: 1, status });
-	const outcome = await journal.acquire(runId, `holder-${runId}`);
-	if (outcome.status !== "acquired") throw new Error(`lease for ${runId} is held`);
-	return outcome.lease;
+export async function startRun(journal: LegacySnapshotRows, runId: string, status = "running"): Promise<LegacyRunKey> {
+	return journal.start(runId, status);
 }
 
 let entryCounter = 0;
@@ -180,24 +168,35 @@ export async function createSession(
  * latest snapshot of each checkout on the leaf's branch, read entry by entry as retention first did (the rule resume
  * itself follows). The reference index keeps these and, for a checkout reached under two roots, possibly one more.
  */
-export async function fullScanRetainedHashes(journal: RunJournal, sessions: SessionStore): Promise<Set<string>> {
+export async function fullScanRetainedHashes(
+	journal: LegacySnapshotRows,
+	sessions: SessionStore,
+): Promise<Set<string>> {
 	const retained = new Set<string>();
 	for (const run of await journal.listRuns()) {
-		let candidate: DurableResumeCandidate | undefined;
+		let candidate:
+			| (RunStatusPayload & { workflowId: string; completedCheckpoints: number; pendingPrompts: number })
+			| undefined;
 		let checkpointCount = 0;
 		const snapshots: WorktreeSnapshot[] = [];
 		for await (const entry of journal.read(run.runId)) {
-			if (entry.event.type === RUN_EVENT_TYPES.runStarted || entry.event.type === RUN_EVENT_TYPES.statusChanged) {
-				const payload = entry.event.payload as unknown as Partial<DurableResumeCandidate>;
+			if (entry.event.type === "RunStarted" || entry.event.type === "StatusChanged") {
+				const payload = entry.event.payload as unknown as Partial<
+					RunStatusPayload & { workflowId: string; completedCheckpoints: number; pendingPrompts: number }
+				>;
 				if (
 					typeof payload.workflowId === "string" &&
 					typeof payload.status === "string" &&
 					typeof payload.completedCheckpoints === "number" &&
 					typeof payload.pendingPrompts === "number"
 				)
-					candidate = payload as DurableResumeCandidate;
+					candidate = payload as RunStatusPayload & {
+						workflowId: string;
+						completedCheckpoints: number;
+						pendingPrompts: number;
+					};
 			}
-			if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded) continue;
+			if (entry.event.type !== "CheckpointRecorded") continue;
 			checkpointCount++;
 			const checkpoint = entry.event.payload as unknown as {
 				kind: string;
@@ -208,10 +207,12 @@ export async function fullScanRetainedHashes(journal: RunJournal, sessions: Sess
 		}
 		const keep =
 			candidate !== undefined
-				? isDurableWorkflowResumable({
-						...candidate,
-						completedCheckpoints: Math.max(candidate.completedCheckpoints, checkpointCount),
-					})
+				? (candidate.rootWorkflowId === undefined || candidate.rootWorkflowId === candidate.workflowId) &&
+					candidate.resumable !== false &&
+					(candidate.status === "failed" ||
+						candidate.status === "blocked" ||
+						((candidate.status === "running" || candidate.status === "paused") &&
+							(checkpointCount > 0 || candidate.completedCheckpoints > 0 || candidate.pendingPrompts > 0)))
 				: run.status !== "completed" && run.status !== "cancelled";
 		if (keep) for (const snapshot of snapshots) for (const hash of snapshotBlobHashes(snapshot)) retained.add(hash);
 	}

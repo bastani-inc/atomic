@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test, vi } from "vitest";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.js";
 import * as sessionPicker from "../../packages/coding-agent/src/cli/session-picker.js";
@@ -20,8 +20,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { createSessionManager, refreshSessionStorage } from "../../packages/coding-agent/src/main-session.js";
-import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
-import { stageSessionStore } from "../../packages/workflows/src/shared/stage-session-store.js";
+
 import {
 	fileExists,
 	makeTempDirectory,
@@ -187,33 +186,16 @@ test("invalid selected session configuration raises StorageConfigError with its 
 	}
 });
 
-test("the default sessions file and the default journal store keep separate files and records (#4325)", async () => {
+test("sessions open, fork and resume in the default database (#4325)", async () => {
 	const root = makeTempDirectory("session-shared-");
 	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 	process.env.ATOMIC_CODING_AGENT_DIR = join(root, "agent");
 	const managers: SessionManager[] = [];
-	const journal = await resolveRunJournal();
 	try {
 		const first = await SessionManager.create(root);
 		managers.push(first);
 		await first.appendSessionInfo("persistent session");
-		await journal.createRun({
-			runId: first.getSessionId(),
-			name: "journal only",
-			cwd: root,
-			createdAt: 1,
-			status: "running",
-		});
-		const stored = (await journal.getRun(first.getSessionId()))?.storage;
-		assert.equal(stored?.adapter, "node-sqlite");
-		assert.equal(dirname(stored!.location), join(root, "agent", "workflows", "journal"));
-		assert.notEqual(stored?.location, first.getSessionStore().descriptor.location);
-		assert.equal((await journal.getRun(first.getSessionId()))?.name, "journal only");
 		assert.equal((await first.getSessionStore().load(first.getSessionId())).entries.length, 1);
-		const stageStore = await stageSessionStore({ cwd: root });
-		assert.deepEqual(stageStore.descriptor, first.getSessionStore().descriptor);
-		assert.equal((await stageStore.load(first.getSessionId())).header.id, first.getSessionId());
-		await stageStore.close();
 		assert.equal((await SessionManager.list(root))[0]?.name, "persistent session");
 		assert.equal((await SessionManager.listAll())[0]?.id, first.getSessionId());
 		assert.equal(await SessionManager.findById(root, first.getSessionId()), first.getSessionId());
@@ -236,18 +218,15 @@ test("the default sessions file and the default journal store keep separate file
 		const [foreignInfo] = await SessionManager.list(join(root, "other"));
 		assert.equal(Object.hasOwn(foreignInfo, "parentSessionPath"), false);
 		await first.getSessionStore().close();
-		await journal.createRun({ runId: "still-open", name: "journal", cwd: root, createdAt: 2, status: "running" });
-		assert.equal((await journal.getRun("still-open"))?.name, "journal");
 	} finally {
 		for (const manager of managers) await manager.getSessionStore().close();
-		await journal.close();
 		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 		else process.env.ATOMIC_CODING_AGENT_DIR = previous;
 		removeTempDirectory(root);
 	}
 });
 
-test("configured session adapters share their database with the journal", async () => {
+test("configured session adapters share their database across session-store acquisitions", async () => {
 	const root = makeTempDirectory("session-adapter-");
 	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
 	process.env.ATOMIC_CODING_AGENT_DIR = join(root, "agent");
@@ -260,11 +239,11 @@ test("configured session adapters share their database with the journal", async 
 	};
 	try {
 		const sessions = await resolveSessionStore(root, { settings });
-		const journal = await resolveRunJournal({ settings });
+		const second = await resolveSessionStore(root, { settings });
 		assert.equal(await readText(lifecycle), "open\n");
 		await sessions.close();
 		assert.equal(await readText(lifecycle), "open\n");
-		await journal.close();
+		await second.close();
 		assert.equal(await readText(lifecycle), "open\nclose\n");
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;

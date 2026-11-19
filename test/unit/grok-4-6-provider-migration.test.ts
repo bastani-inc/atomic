@@ -6,7 +6,7 @@ import { defaultModelPerProvider } from "../../packages/coding-agent/src/core/mo
 import { moduleDir } from "../helpers/runtime.js";
 
 const root = resolve(moduleDir(import.meta.url), "../..");
-const shippedModelSources = ["packages/workflows/builtin", "packages/subagents/agents"];
+const shippedModelSources = ["packages/subagents/agents"];
 
 function recursivelyListFiles(directory: string): string[] {
 	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -27,8 +26,6 @@ import {
 	bindAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { answerPanelRun, panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -344,42 +341,4 @@ test("/tasks keeps a started reply bound to its original prompt, ignores unbound
 		inspector.dispose();
 		await fixture.dispose();
 	}
-});
-
-test("answerPanelRun rejects an answer carrying a replaced promptId even when the question and choices are identical (#5224)", async () => {
-	const runId = randomUUID();
-	const wfStore = createStore();
-	wfStore.recordRunStart({
-		id: runId,
-		name: "deploy-wf",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [{ id: "gate", name: "gate", status: "running", parentIds: [], toolEvents: [] }],
-		startedAt: 1_000,
-	} as never);
-	const makePrompt = (id: string) =>
-		({ id, kind: "select", message: "Continue?", choices: ["yes", "no"], createdAt: 1_000 }) as never;
-	wfStore.recordStagePendingPrompt(runId, "gate", makePrompt("prompt-1"));
-	const owner = {
-		store: wfStore,
-		stageUiBroker: { peekStagePrompt: () => undefined, wasStagePromptResolved: () => false },
-	} as unknown as Parameters<typeof answerPanelRun>[2];
-	const first = panelItemsFromSnapshot(wfStore.graphSnapshot().runs, 2_000, wfStore).find(
-		(candidate) => candidate.id === `run:${runId}`,
-	)!;
-	assert.ok(first.promptId);
-	wfStore.resolveStagePendingPrompt(runId, "gate", "prompt-1", "yes");
-	wfStore.recordStagePendingPrompt(runId, "gate", makePrompt("prompt-2"));
-	const second = panelItemsFromSnapshot(wfStore.graphSnapshot().runs, 2_000, wfStore).find(
-		(candidate) => candidate.id === `run:${runId}`,
-	)!;
-	assert.notEqual(second.promptId, first.promptId);
-	const stale = await answerPanelRun(`run:${runId}`, "yes", owner, {
-		promptId: first.promptId,
-		question: first.question,
-		choices: first.choices ? [...first.choices] : undefined,
-	});
-	assert.equal(stale.ok, false);
-	assert.equal(wfStore.graphSnapshot().runs.find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, "prompt-2");
 });

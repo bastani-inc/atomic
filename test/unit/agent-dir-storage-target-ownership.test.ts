@@ -48,8 +48,6 @@ for (const source of ["settings", "env", "cli"] as const) {
 						resolve("test/fixtures/agent-dir-storage-process-child.ts"),
 						agent,
 						JSON.stringify(source === "settings" ? { sessions: { storage: selection } } : {}),
-						"select-session",
-						"",
 						...(source === "cli" ? [JSON.stringify(selection)] : []),
 					],
 					{

@@ -475,7 +475,6 @@ const brokenBeforeMigration = new Set(historicalChangelogAnchors);
 const promptSources = [
 	"packages/coding-agent/src/core/system-prompt.ts",
 	"packages/subagents/src/extension/prompt-guidance.ts",
-	"packages/workflows/src/extension/workflow-prompts.ts",
 ] as const;
 
 /** Reader-visible anchors, including explicit HTML IDs outside fenced examples. */

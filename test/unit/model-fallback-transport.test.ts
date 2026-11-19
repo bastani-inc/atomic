@@ -3,9 +3,9 @@ import { describe, test } from "vitest";
 import {
 	isRetryableModelFailure,
 	normalizeModelFailureSignal,
-} from "../../packages/workflows/src/runs/shared/model-fallback.js";
+} from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 
-describe("workflow model fallback transport failures", () => {
+describe("model fallback transport failures", () => {
 	test("classifies generic connection failures as transport errors for provider-aware fallback", () => {
 		const assistantFailure = {
 			role: "assistant",

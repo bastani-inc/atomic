@@ -21,7 +21,7 @@ import {
 	rehydrateDecisionError,
 	serializeDecisionError,
 } from "../../packages/coding-agent/src/core/decision/errors.js";
-import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
+
 import legacyRenamedSetting from "../fixtures/decision/legacy-renamed-setting.json";
 
 const ERRORS = {
@@ -332,8 +332,8 @@ test("a host without decision support is a model-unavailable error that keeps it
 });
 
 // Captured with origin/main's DecisionConfigError and serializer before the routerModel migration.
-test("the pool decodes an older build's renamed-setting error without losing its class or advice", () => {
-	const restored = rehydrateError({ ...legacyRenamedSetting, family: "decision" });
+test("an older build's renamed-setting error decodes without losing its class or advice", () => {
+	const restored = rehydrateDecisionError(parseSerializedDecisionError(legacyRenamedSetting)!);
 	assert.ok(restored instanceof DecisionConfigError);
 	assert.ok(isDecisionConfigError(legacyRenamedSetting));
 	assert.deepEqual(serializeDecisionError(restored), legacyRenamedSetting);
@@ -443,15 +443,11 @@ test("valid concrete error variants and future names retain their transport fiel
 	assert.deepEqual(parseSerializedDecisionError(future), future);
 });
 
-test("the public SDK and workflow entry points expose the untrusted-error parser (#4358)", async () => {
+test("the public SDK exposes the untrusted-error parser (#4358)", async () => {
 	const sdk = await import("@bastani/atomic");
-	const workflows = await import("../../packages/workflows/src/sdk-surface.js");
-	const authoring = await import("../../packages/workflows/src/authoring.js");
-	for (const entry of [sdk, workflows, authoring]) {
-		assert.equal(entry.parseSerializedDecisionError, parseSerializedDecisionError);
-		assert.deepEqual(
-			entry.parseSerializedDecisionError(serializeDecisionError(ERRORS.config)),
-			serializeDecisionError(ERRORS.config),
-		);
-	}
+	assert.equal(sdk.parseSerializedDecisionError, parseSerializedDecisionError);
+	assert.deepEqual(
+		sdk.parseSerializedDecisionError(serializeDecisionError(ERRORS.config)),
+		serializeDecisionError(ERRORS.config),
+	);
 });
