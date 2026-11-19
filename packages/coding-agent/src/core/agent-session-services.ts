@@ -59,6 +59,8 @@ export interface CreateAgentSessionServicesOptions {
 	modelRuntime?: ModelRuntime;
 	/** `allowModelNetwork` for the model runtime created when `modelRuntime` is omitted; see `ModelRuntime.create`. */
 	allowModelNetwork?: boolean;
+	/** Standalone RPC's existing eager refresh supplies any list needed during selection. */
+	standaloneRpc?: boolean;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -199,8 +201,9 @@ async function prepareOwnedAgentSessionServices(
 		(await ModelRuntime.create({
 			authPath: join(agentDir, "auth.json"),
 			modelsPath: join(agentDir, "models.json"),
-			allowModelNetwork: options.allowModelNetwork,
+			allowModelNetwork: options.standaloneRpc ? false : options.allowModelNetwork,
 		}));
+	if (options.standaloneRpc) await modelRuntime.refreshRpcStartupCatalog("before-selection");
 	endTimingSpan(modelRuntimeSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));

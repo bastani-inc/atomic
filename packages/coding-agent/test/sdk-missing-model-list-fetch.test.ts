@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { Credential } from "@bastani/atomic-ai";
 import { GITHUB_COPILOT_MODELS } from "@bastani/atomic-ai/providers/github-copilot.models";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
@@ -12,6 +16,7 @@ import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { startupModelNetwork } from "../src/main-app-mode.ts";
+import { bunExecutable } from "./cli-test-helpers.ts";
 
 const PROVIDER = "github-copilot";
 const API_KEY: Credential = { type: "api_key", key: "github_pat_example_token" };
@@ -75,6 +80,19 @@ function stubNetwork(modelList: (signal: AbortSignal | undefined) => Response | 
 		}
 		throw new Error(`Unexpected request: ${request.url}`);
 	});
+}
+
+async function withEndpoint(run: (url: string) => Promise<void>, listener: RequestListener) {
+	const server = createServer(listener);
+	await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+	const address = server.address();
+	assert.ok(address && typeof address !== "string");
+	try {
+		await run(`http://127.0.0.1:${address.port}`);
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((done) => server.close(() => done()));
+	}
 }
 
 const serveAccountList = () => stubNetwork(() => Response.json(ACCOUNT_LIST));
@@ -177,6 +195,17 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assert.equal(fetchSpy.mock.calls.length, 0);
 	});
 
+	it("restores cached models even when an explicit network refresh is cancelled (#5685)", async () => {
+		const credentials = AuthStorage.inMemory({ [PROVIDER]: API_KEY });
+		serveAccountList();
+		const options = { ...runtimePaths(), credentials, allowModelNetwork: true };
+		await ModelRuntime.create(options);
+		assert.ok(storedModelIds().includes(ACCOUNT_MODEL_ID));
+		const restored = await ModelRuntime.create({ ...options, signal: AbortSignal.abort() });
+		assert.equal(restored.getModel(PROVIDER, ACCOUNT_MODEL_ID)?.id, ACCOUNT_MODEL_ID);
+		assert.equal(modelListRequests, 1);
+	});
+
 	it("makes no request when a list is cached, even one without the model, and keeps the refresh hint (#5685)", async () => {
 		saveCredential(API_KEY);
 		writeFileSync(
@@ -221,6 +250,43 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 			for (const id of CATALOG_IDS) assert.ok(available.includes(id), id);
 		},
 	);
+
+	it.each(["deadline", "abort"])("stops waiting for a stalled cache probe on %s (#5685)", async (end) => {
+		const controller = new AbortController();
+		const started = Promise.withResolvers<void>();
+		const held = Promise.withResolvers<undefined>();
+		const modelRuntime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
+			modelsPath: null,
+			modelsStore: {
+				read: () => {
+					started.resolve();
+					return held.promise;
+				},
+				write: async () => {},
+				delete: async () => {},
+			},
+			refreshOnCreate: false,
+			modelRefreshTimeoutMs: end === "deadline" ? 40 : 10_000,
+		});
+		const fetchSpy = blockNetwork();
+		const listing = modelRuntime.getAvailable(PROVIDER, { signal: controller.signal }).then(
+			(models) => models.some((model) => model.id === CATALOG_MODEL_ID),
+			() => "aborted",
+		);
+		await started.promise;
+		if (end === "abort") controller.abort();
+		try {
+			assert.equal(
+				await Promise.race([listing, new Promise((resolve) => setTimeout(() => resolve("pending"), 500))]),
+				end === "deadline" ? true : "aborted",
+			);
+		} finally {
+			held.resolve(undefined);
+		}
+		await listing;
+		assert.equal(fetchSpy.mock.calls.length, 0);
+	});
 
 	it("stops reading a list that never arrives at the create-time deadline (#5685)", async () => {
 		saveCredential(API_KEY);
@@ -314,6 +380,103 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assert.equal(second.getModel(PROVIDER, ACCOUNT_MODEL_ID)?.id, ACCOUNT_MODEL_ID);
 	});
 
+	it("does not give a different account a previous reader's hint for a cached list (#5685)", async () => {
+		serveAccountList();
+		const open = (key: string) =>
+			ModelRuntime.create({
+				...runtimePaths(),
+				credentials: AuthStorage.inMemory({ [PROVIDER]: { type: "api_key", key } }),
+			});
+		await open("github_pat_fixture_A");
+		writeFileSync(join(agentDir, "models-store.json"), JSON.stringify({ [PROVIDER]: { models: [], checkedAt: 1 } }));
+		const modelRuntime = await open("github_pat_fixture_B");
+		assertMentions(
+			(
+				await findInitialModel({
+					scopedModels: [],
+					isContinuing: false,
+					defaultProvider: PROVIDER,
+					defaultModelId: ACCOUNT_MODEL_ID,
+					modelRuntime,
+				})
+			).fallbackMessage,
+			"update --models",
+		);
+		assert.equal(modelListRequests, 1);
+	});
+
+	it("reads and lists each concurrent OpenRouter key's own models (#5685)", async () => {
+		const ids = ["openai/gpt-4o", "openai/gpt-4o-mini"];
+		const requests: string[] = [];
+		await withEndpoint(
+			async (url) => {
+				writeFileSync(runtimePaths().modelsPath, JSON.stringify({ providers: { openrouter: { baseUrl: url } } }));
+				const runtimes = await Promise.all(
+					ids.map((_, i) =>
+						ModelRuntime.create({
+							...runtimePaths(),
+							catalogBaseUrl: url,
+							credentials: AuthStorage.inMemory({ openrouter: { type: "api_key", key: `fixture-${i}` } }),
+						}),
+					),
+				);
+				for (const [i, runtime] of runtimes.entries())
+					assert.deepEqual(
+						(await runtime.getAvailable("openrouter")).map((m) => m.id),
+						[ids[i]],
+					);
+				assert.deepEqual(requests.sort(), ["Bearer fixture-0", "Bearer fixture-1"]);
+			},
+			(req, res) => {
+				if (req.url !== "/models/user") {
+					res.writeHead(404).end();
+					return;
+				}
+				const auth = req.headers.authorization ?? "";
+				requests.push(auth);
+				res.end(JSON.stringify({ data: [{ id: ids[auth.endsWith("0") ? 0 : 1] }] }));
+			},
+		);
+	});
+
+	it("does not inspect another provider's credentials during scoped discovery (#5685)", async () => {
+		const credentials = AuthStorage.inMemory({ openrouter: { type: "api_key", key: "fixture" } });
+		const runtime = await ModelRuntime.create({ modelsPath: null, credentials, refreshOnCreate: false });
+		blockNetwork();
+		const peek = vi.spyOn(credentials, "peek");
+		await runtime.getAvailable("openrouter");
+		assert.ok(peek.mock.calls.every(([provider]) => provider === "openrouter"));
+	});
+
+	it("does not retry the catalog after the last caller cancels (#5685)", async () => {
+		const started = Promise.withResolvers<void>();
+		const reply = Promise.withResolvers<void>();
+		let requests = 0;
+		await withEndpoint(
+			async (url) => {
+				const runtime = await ModelRuntime.create({
+					modelsPath: null,
+					credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
+					catalogBaseUrl: url,
+					refreshOnCreate: false,
+				});
+				const controller = new AbortController();
+				const result = runtime.getAvailable(PROVIDER, { signal: controller.signal }).catch(() => undefined);
+				await started.promise;
+				controller.abort();
+				await result;
+				reply.resolve();
+				await new Promise((resolve) => setTimeout(resolve, 250));
+				assert.equal(requests, 1);
+			},
+			(_req, res) => {
+				requests++;
+				started.resolve();
+				void reply.promise.then(() => res.writeHead(503).end());
+			},
+		);
+	});
+
 	it("asks for a refresh again once the credential that read the list changes (#5685)", async () => {
 		saveCredential(API_KEY);
 		serveAccountList();
@@ -338,6 +501,47 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		const afterSwitch = await defaultModel();
 		assertMentions(afterSwitch.fallbackMessage, "update --models");
 	});
+
+	it("releases file-store bookkeeping when the last runtime is collected (#5685)", async () => {
+		const fixture = fileURLToPath(new URL("./fixtures/model-list-path-retention.ts", import.meta.url));
+		const { stdout } = await promisify(execFile)(bunExecutable(), ["--no-env-file", fixture, agentDir], {
+			env: { ...process.env, HOME: agentDir, ATOMIC_CODING_AGENT_DIR: agentDir },
+		});
+		assert.equal(stdout.trim(), "0");
+	});
+
+	it.each([false, true])(
+		"uses one RPC catalog refresh across selection and background startup (cached: %s) (#5685)",
+		async (cached) => {
+			await withEndpoint(
+				async (url) => {
+					vi.stubEnv("GITHUB_COPILOT_BASE_URL", url);
+					if (cached)
+						writeFileSync(
+							join(agentDir, "models-store.json"),
+							JSON.stringify({ [PROVIDER]: { models: [], checkedAt: 1 } }),
+						);
+					const runtime = await ModelRuntime.create({
+						...runtimePaths(),
+						credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
+						allowModelNetwork: false,
+						catalogBaseUrl: url,
+					});
+					await runtime.refreshRpcStartupCatalog("before-selection");
+					assert.equal(!!runtime.getModel(PROVIDER, ACCOUNT_MODEL_ID), !cached);
+					await runtime.refreshRpcStartupCatalog("background");
+					assert.ok(runtime.getModel(PROVIDER, ACCOUNT_MODEL_ID));
+					assert.equal(modelListRequests, 1);
+				},
+				(req, res) => {
+					if (req.url === "/models") {
+						modelListRequests++;
+						res.end(JSON.stringify(ACCOUNT_LIST));
+					} else res.writeHead(404).end();
+				},
+			);
+		},
+	);
 
 	it("leaves interactive startup to its background refresh and reads missing lists in every other CLI mode (#5685)", () => {
 		const session = { help: false, listModels: undefined };

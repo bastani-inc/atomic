@@ -899,6 +899,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			agentDir,
 			settingsManager: runtimeSettingsManager,
 			allowModelNetwork: startupModelNetwork(parsed, appMode, engineEnv.child === "1"),
+			standaloneRpc: appMode === "rpc" && shouldStartRpcCatalogRefresh(offlineMode, engineEnv.child === "1"),
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions: deferExtensions
 				? { deferExtensions: true, deferResources: true }
@@ -1330,7 +1331,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		// eager unbounded refresh can hold credential locks and lend its in-flight
 		// promise to later cache-only or timed refreshes.
 		if (shouldStartRpcCatalogRefresh(offlineMode, isInteractiveEngineChild())) {
-			void modelRuntime.refresh().catch(() => {});
+			void modelRuntime.refreshRpcStartupCatalog("background").catch(() => {});
 		}
 		printTimings();
 		await runRpcMode(runtime, {

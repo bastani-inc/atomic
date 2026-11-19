@@ -126,7 +126,7 @@ the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_
 
 `allowModelNetwork` decides what the runtime fetches by itself:
 
-- Omitted (the default): when a configured provider whose model list depends on your account (GitHub Copilot's account list, OpenRouter's per-key list) has no cached list yet, the runtime reads that list once, before models are resolved or listed, and caches it as a normal refresh does. `ModelRuntime.create()`, `getAvailable()`, `getAllAvailable()`, `getAvailableOfType()` and `createAgentSession()` all wait for it, so a model only your account offers resolves without running `atomic update --models` first. A provider with a cached list, even an old one, makes no request. Every runtime on one models store in a process shares one read, and a read that fails is not repeated in that process.
+- Omitted (the default): when a configured provider whose model list depends on your account (GitHub Copilot's account list, OpenRouter's per-key list) has no cached list yet, the runtime reads that list once, before models are resolved or listed, and caches it as a normal refresh does. `ModelRuntime.create()`, `getAvailable()`, `getAllAvailable()`, `getAvailableOfType()` and `createAgentSession()` all wait for it, so a model only your account offers resolves without running `atomic update --models` first. A provider with a cached list, even an old one, makes no request. Live runtimes using the same store and credential share one read, including a failed attempt. A different credential never inherits that account's result or refresh hint.
 - `true`: create() refreshes every catalog over the network.
 - `false`: the runtime never fetches a model catalog by itself.
 

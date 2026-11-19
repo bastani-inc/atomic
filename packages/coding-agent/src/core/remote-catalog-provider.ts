@@ -94,7 +94,12 @@ interface RemoteCatalog {
  * Downloads `<catalogBaseUrl>/api.json` once for every provider that refreshes together: providers refresh in
  * parallel, and they share the download while it is in flight, so a refresh of every provider costs one request.
  */
-const inflightCatalogs = new Map<string, Promise<RemoteCatalog>>();
+interface CatalogDownload {
+	promise: Promise<RemoteCatalog>;
+	controller: AbortController;
+	waiters: number;
+}
+const inflightCatalogs = new Map<string, CatalogDownload>();
 
 /**
  * The models.dev catalog, mapped with the same transform the build uses for the bundled catalog. With `etag`, the
@@ -106,19 +111,25 @@ export async function loadRemoteCatalog(
 	etag?: string,
 ): Promise<RemoteCatalog> {
 	const key = `${catalogBaseUrl}\n${etag ?? ""}`;
+	signal.throwIfAborted();
 	let download = inflightCatalogs.get(key);
-	if (!download) {
-		// The download is shared, so it is bounded by its own deadline, not by one caller's signal.
-		download = downloadRemoteCatalog(catalogBaseUrl, etag);
+	if (!download || download.controller.signal.aborted) {
+		const controller = new AbortController();
+		download = { controller, promise: downloadRemoteCatalog(catalogBaseUrl, etag, controller.signal), waiters: 0 };
 		inflightCatalogs.set(key, download);
-		const settled = download;
-		void settled
+		const current = download;
+		void download.promise
 			.catch(() => undefined)
 			.finally(() => {
-				if (inflightCatalogs.get(key) === settled) inflightCatalogs.delete(key);
+				if (inflightCatalogs.get(key) === current) inflightCatalogs.delete(key);
 			});
 	}
-	return untilAborted(download, signal);
+	download.waiters++;
+	try {
+		return await untilAborted(download.promise, signal);
+	} finally {
+		if (--download.waiters === 0 && signal.aborted) download.controller.abort();
+	}
 }
 
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -144,13 +155,17 @@ export function clearRemoteCatalogCache(): void {
 	inflightCatalogs.clear();
 }
 
-async function downloadRemoteCatalog(catalogBaseUrl: string, etag: string | undefined): Promise<RemoteCatalog> {
+async function downloadRemoteCatalog(
+	catalogBaseUrl: string,
+	etag: string | undefined,
+	signal: AbortSignal,
+): Promise<RemoteCatalog> {
 	const url = new URL("api.json", catalogBaseUrl.endsWith("/") ? catalogBaseUrl : `${catalogBaseUrl}/`);
 	const headers: Record<string, string> = { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) };
 	if (etag) headers["if-none-match"] = etag;
 	const response = await fetchWithRetry(
 		url,
-		{ headers },
+		{ headers, signal },
 		{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS, timeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS * 3 },
 	);
 	// A server without the catalog (404, 501) means no overlay, not a failed refresh: the bundled catalog stays.
