@@ -91,9 +91,6 @@ import {
 	takeStoppedQueuedSubagentChild,
 } from "./task-execution.js";
 
-const reloadRefusalsKey = Symbol.for("atomic.tasks/stage-reload-refusals@1");
-const taskHostRegistry = globalThis as { [reloadRefusalsKey]?: WeakMap<object, (wakeId: string) => Promise<void>> };
-
 /** Prompt a restored child receives after its own interrupted session is reopened (#3760). */
 export const SUBAGENT_RESUME_CONTINUATION_PROMPT =
 	"Atomic restarted while you were working, and your session has been restored. Continue where you left off. If the restart interrupted a command or step you were running, redo or continue that step as needed. If you believe you are finished with your original task, stop.";
@@ -1092,29 +1089,7 @@ export async function restoreSubagentChild(
 		// outside any work, so neither is in scope here.
 		return withWorktreeRootMappings(
 			ctx.sessionManager.getWorktreeRootMappings(),
-			async () => {
-				for (;;) {
-					let wait: Promise<void>;
-					try {
-						return await relaunchChild(deps, ctx, record, hold, release, onReopened, resume, refuseRelaunch);
-					} catch (error) {
-						// Only a wake refused before admission waits. Do not retain the failed launch for its retry.
-						const waitForReload =
-							typeof error === "object" && error !== null
-								? taskHostRegistry[reloadRefusalsKey]?.get(error)
-								: undefined;
-						if (!refuseRelaunch || !waitForReload) throw error;
-						wait = waitForReload(key);
-					}
-					if (resume?.outsideWakeSlot) await resume.outsideWakeSlot(wait);
-					else await wait;
-					const stopped = refuseRelaunch();
-					if (stopped) {
-						await hold?.release();
-						return { kind: "terminal" as const, record: stopped };
-					}
-				}
-			},
+			() => relaunchChild(deps, ctx, record, hold, release, onReopened, resume, refuseRelaunch),
 			recordedWorktreeRootMappings(record),
 		);
 	})().then(

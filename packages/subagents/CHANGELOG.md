@@ -28,7 +28,6 @@
 - A child waking as its owner reloads now saves its running task once. It no longer appears finished or reports a stale-context error while the task is live ([#5609](https://github.com/bastani-inc/atomic/issues/5609)).
 - The tmux skill's `wait-for-text.sh` now times out even if checking the timer, validating the pattern, or capturing the pane stalls. It rejects late matches, reports the last complete pane capture, and stops its own worker when interrupted. `-T 0` does not inspect the pane ([#5566](https://github.com/bastani-inc/atomic/issues/5566)).
 - Subagent task views, notices, heartbeats and results count the same time from dispatch through release, stop or completion, including session startup. Launch cards count silent waits and show the new run after a wake. SDK results and records include startup failures and time spent running after an Intercom handoff ([#5570](https://github.com/bastani-inc/atomic/issues/5570)).
-- A subagent wake refused while its workflow stage reloads retries when the stage can accept it again, without starting a second task ([#5629](https://github.com/bastani-inc/atomic/issues/5629)).
 - A delayed wake confirmation no longer reports `hold-failed` after reconnect has reserved the same release. A refusal for a child that still has no reservation is reported as before ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
 
 ## [0.9.89] - 2026-11-18

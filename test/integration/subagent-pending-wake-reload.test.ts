@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import {
 	type AgentWakeDispatcher,
@@ -19,11 +19,42 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 /** A real stage session loads the editable subagents extension twice. */
 const STAGE_RELOAD_TIMEOUT_MS = 120_000;
 
-test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as const)(
-	"a wake admitted across workflow stage reload %s saves the live task once (#5609, #5629)",
-	async (reload) => {
+type Receipt = "whenIdle" | "deliver";
+type Reload =
+	| "commit"
+	| "rollback"
+	| "preparing"
+	| "refused"
+	| "refused-rollback"
+	| `peer-${Receipt}`
+	| `hook-${Receipt}`;
+
+describe("workflow stage reload", () => {
+	test.each(["commit", "rollback", "preparing"] as const)(
+		"an admitted wake saves the live task once across %s (#5609)",
+		runReload,
+		STAGE_RELOAD_TIMEOUT_MS,
+	);
+	test.each(["refused", "refused-rollback"] as const)(
+		"%s reports the refusal and keeps its result for resume (#5629)",
+		runReload,
+		STAGE_RELOAD_TIMEOUT_MS,
+	);
+	test.each(["whenIdle", "deliver"] as const)(
+		"an admitted extension callback awaiting %s does not block reload (#5629)",
+		(receipt) => runReload(`peer-${receipt}`),
+		STAGE_RELOAD_TIMEOUT_MS,
+	);
+	test.each(["whenIdle", "deliver"] as const)(
+		"beforeSessionStart can await %s after the native refusal (#5629)",
+		(receipt) => runReload(`hook-${receipt}`),
+		STAGE_RELOAD_TIMEOUT_MS,
+	);
+
+	async function runReload(reload: Reload): Promise<void> {
+		const observer = reload.startsWith("peer-") || reload.startsWith("hook-");
 		const fenced = reload === "refused" || reload === "refused-rollback";
-		const builtin = reload === "preparing" || fenced;
+		const builtin = reload === "preparing" || fenced || observer;
 		const cwd = makeTempDirectory("atomic-stage-wake-");
 		const agentDir = join(cwd, "profile");
 		const entry = join(cwd, "subagents.ts");
@@ -45,7 +76,7 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 		);
 		await writeFile(
 			entry,
-			`import subagents from ${JSON.stringify(extension)};\nimport { agentWakeDispatcher } from "@bastani/atomic";\nexport default pi => { ${builtin ? "" : "subagents(pi);"} pi.events.on("test:dispatcher", request => { request.value = agentWakeDispatcher(); request.privateWriter = Reflect.has(pi, Symbol.for("atomic.subagents/acquire-child-record-writer@1")); }); };\n`,
+			`import subagents from ${JSON.stringify(extension)};\nimport { agentWakeDispatcher } from "@bastani/atomic";\nexport default pi => { ${builtin ? "" : "subagents(pi);"} pi.events.on("test:observe-wake", observe => observe(agentWakeDispatcher())); pi.events.on("test:dispatcher", request => { request.value = agentWakeDispatcher(); request.privateWriter = Reflect.has(pi, Symbol.for("atomic.subagents/acquire-child-record-writer@1")); }); };\n`,
 		);
 		await child.appendMessage({ role: "user", content: "original task", timestamp: Date.now() });
 		await manager.appendCustomEntry("subagent-child", {
@@ -120,6 +151,8 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 		});
 		const wakeKey = `subagents/${manager.getSessionId()}:${id}`;
 		let wake: Promise<void> | undefined;
+		const releaseObserver = Promise.withResolvers<void>();
+		let observedReload: Promise<void> | undefined;
 		try {
 			const request: { value?: AgentWakeDispatcher; privateWriter?: boolean } = {};
 			bus.emit("test:dispatcher", request);
@@ -129,16 +162,70 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 			);
 			assert.ok(request.value);
 			assert.equal(request.privateWriter, false, "a third-party extension has no private record writer");
-			wake = request.value.deliver(wakeKey, {
-				id: "result",
-				kind: "tool-result",
-				toolResult: {
-					toolCallId: "call",
-					toolName: "bash",
-					result: { content: [{ type: "text", text: "checks finished" }], details: undefined },
-					isError: false,
-				},
-			});
+			const deliver = (dispatcher: AgentWakeDispatcher) =>
+				dispatcher.deliver(wakeKey, {
+					id: "result",
+					kind: "tool-result",
+					toolResult: {
+						toolCallId: "call",
+						toolName: "bash",
+						result: { content: [{ type: "text", text: "checks finished" }], details: undefined },
+						isError: false,
+					},
+				});
+			if (observer) {
+				const dispatcher = request.value;
+				const returned = Promise.withResolvers<void>();
+				let callbackError: unknown;
+				const observe = async (sdk: AgentWakeDispatcher) => {
+					wake ??= deliver(sdk);
+					const receipt = reload.endsWith("whenIdle") ? sdk.whenIdle() : wake;
+					try {
+						await Promise.race([receipt, releaseObserver.promise]);
+					} catch (error) {
+						callbackError = error;
+					} finally {
+						returned.resolve();
+					}
+				};
+				if (reload !== "peer-deliver") wake = deliver(dispatcher);
+				else bus.emit("test:observe-wake", observe);
+				assert.ok(wake);
+				void wake.catch(() => {});
+				await reached.promise;
+				if (reload === "peer-whenIdle") bus.emit("test:observe-wake", observe);
+				const previous = session.extensionRunner;
+				observedReload = session.reload({
+					beforeSessionStart: async () => {
+						if (!reload.startsWith("hook-")) return;
+						gate.resolve();
+						await refused.promise;
+						await observe(dispatcher);
+					},
+				});
+				finish.resolve();
+				if (reload.startsWith("peer-")) gate.resolve();
+				assert.match(await refused.promise, /Task owner is closed/);
+				// Rescue only the callback if it is stuck. Neither the reload nor the wake waits on the test.
+				let rescued = false;
+				const watchdog = setTimeout(() => {
+					rescued = true;
+					releaseObserver.resolve();
+				}, 10_000);
+				await returned.promise.finally(() => clearTimeout(watchdog));
+				assert.equal(rescued, false, "the callback must return without being released by the test");
+				await observedReload;
+				assert.notEqual(session.extensionRunner, previous);
+				await assert.rejects(wake, (error: Error) => {
+					assert.ok("code" in error && error.code === "wake-failed");
+					assert.match(String(error.cause), /Task owner is closed/);
+					assert.equal(callbackError, reload.endsWith("whenIdle") ? undefined : error);
+					return true;
+				});
+				assert.equal(tasks.length, 1, "a refused wake must not be retried behind its own observer");
+				return;
+			}
+			wake = deliver(request.value);
 			void wake.catch(() => {});
 			await Promise.race([reached.promise, wake.then(() => assert.fail("wake ended before admission"))]);
 			await appendFile(entry, "\n// Reload this extension while the owner is admitting the wake.\n");
@@ -168,7 +255,7 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 						assert.match(await refused.promise, /Task owner is closed/);
 						assert.ok(attemptedRunner);
 						await collectGarbage(5);
-						assert.equal(attemptedRunner.deref(), undefined, "the waiting wake does not need its refused runner");
+						assert.equal(attemptedRunner.deref(), undefined, "the reload does not retain the refused runner");
 						if (reload === "refused-rollback") throw new Error("reject candidate before session_start");
 					},
 				});
@@ -196,10 +283,12 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 				runner.createToolContext("competing-resume", undefined),
 			);
 			gate.resolve();
-			await Promise.race([
-				releasedChildWakeDecided(wakeKey),
-				wake.then(() => assert.fail("wake did not wait for its live task")),
-			]);
+			if (!fenced) {
+				await Promise.race([
+					releasedChildWakeDecided(wakeKey),
+					wake.then(() => assert.fail("wake did not wait for its live task")),
+				]);
+			}
 			const answer = await resume;
 			const records = async () =>
 				(await manager.getSessionStore().load(manager.getSessionId())).entries
@@ -207,21 +296,27 @@ test.each(["commit", "rollback", "preparing", "refused", "refused-rollback"] as 
 					.flatMap((entry) => (entry.data?.childId === id && entry.data.state === "running" ? [entry.data] : []));
 			const running = await records();
 			assert.equal(running.length, 1);
-			assert.ok(answer.isError, JSON.stringify(answer.content));
-			assert.match(JSON.stringify(answer.content), new RegExp(`already running as task ${running[0]?.taskId}`));
+			if (fenced) {
+				assert.match(JSON.stringify(answer.content), /Resumed wake-worker/);
+				await assert.rejects(wake, { code: "wake-failed" });
+			} else {
+				assert.ok(answer.isError, JSON.stringify(answer.content));
+				assert.match(JSON.stringify(answer.content), new RegExp(`already running as task ${running[0]?.taskId}`));
+			}
 			assert.equal(tasks.length, fenced ? 2 : 1);
 			assert.equal(tasks.at(-1)?.match(/checks finished/g)?.length, 1);
 			finish.resolve();
-			await wake;
+			if (!fenced) await wake;
 			assert.equal((await records()).length, 1);
 		} finally {
+			releaseObserver.resolve();
 			gate.resolve();
 			finish.resolve();
+			await observedReload?.catch(() => undefined);
 			await wake?.catch(() => undefined);
 			await session.dispose();
 			vi.unstubAllEnvs();
 			removeTempDirectory(cwd);
 		}
-	},
-	STAGE_RELOAD_TIMEOUT_MS,
-);
+	}
+});
