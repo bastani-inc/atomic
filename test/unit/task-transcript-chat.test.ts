@@ -431,10 +431,35 @@ test("repainting a split reply restores the earlier failure when the later block
 	}
 });
 
-test.each(["file", "replaced file", "file rewritten in place", "memory", "sqlite"] as const)(
+function rewriteSavedReply(file: string, rename: boolean): void {
+	execFileSync(process.execPath, [
+		"-e",
+		`const fs = require('node:fs');
+		const [file, target] = process.argv.slice(1);
+		fs.writeFileSync(target, fs.readFileSync(file, 'utf8').replaceAll('original-', 'restored-'));
+		if (target !== file) fs.renameSync(target, file);`,
+		file,
+		rename ? `${file}.new` : file,
+	]);
+}
+
+const savedHistoryCases = [
+	"file",
+	"replaced file",
+	"file rewritten in place",
+	"file rewritten during projection",
+	"file replaced during projection",
+	"memory",
+	"sqlite",
+] as const;
+
+test.each(savedHistoryCases)(
 	"paging a settled child's %s history keeps failures attributed to its record (#5651)",
 	async (backend) => {
-		const replace = backend === "replaced file" || backend === "file rewritten in place";
+		const duringRead =
+			backend === "file rewritten during projection" || backend === "file replaced during projection";
+		const replace = duringRead || backend === "replaced file" || backend === "file rewritten in place";
+		const rename = backend === "replaced file" || backend === "file replaced during projection";
 		const root = makeTempDirectory("task-chat-archive-");
 		const gate = Promise.withResolvers<void>();
 		let host: Awaited<ReturnType<typeof openTranscript>> | undefined;
@@ -501,12 +526,22 @@ test.each(["file", "replaced file", "file rewritten in place", "memory", "sqlite
 			const queries: number[] = [];
 			const first = Promise.withResolvers<void>();
 			const earlier = Promise.withResolvers<void>();
-			host = await openTranscript(retained, {
+			const transcript = retained;
+			host = await openTranscript(transcript, {
 				height: 40,
 				source: (owner) =>
 					Object.assign(Object.create(owner) as TaskViewSource, {
 						async readTaskTranscript(id: TaskId, cursor?: string) {
 							if (cursor) await gate.promise;
+							if (!cursor && duringRead) {
+								// The page asks for its session ID after capturing the stored entries.
+								const getId = transcript.getSessionId.bind(transcript);
+								transcript.getSessionId = () => {
+									transcript.getSessionId = getId;
+									rewriteSavedReply(child.sessionFile!, rename);
+									return getId();
+								};
+							}
 							calls.push(cursor);
 							const before = database?.statements.length ?? 0;
 							const beforeLoads = loadReads;
@@ -525,16 +560,7 @@ test.each(["file", "replaced file", "file rewritten in place", "memory", "sqlite
 			assert.match(host.text(), /original-100/);
 			host.inspector.handleInput(CTRL_HOME);
 			host.frame();
-			if (replace)
-				execFileSync(process.execPath, [
-					"-e",
-					`const fs = require('node:fs');
-					const [file, target] = process.argv.slice(1);
-					fs.writeFileSync(target, fs.readFileSync(file, 'utf8').replaceAll('original-', 'restored-'));
-					if (target !== file) fs.renameSync(target, file);`,
-					child.sessionFile!,
-					backend === "replaced file" ? `${child.sessionFile}.new` : child.sessionFile!,
-				]);
+			if (replace && !duringRead) rewriteSavedReply(child.sessionFile!, rename);
 			gate.resolve();
 			await earlier.promise;
 			await flush();

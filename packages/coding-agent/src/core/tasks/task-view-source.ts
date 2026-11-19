@@ -59,6 +59,7 @@ type ArchiveReader = (
 		entries: Entries,
 		storedRows: number,
 		generation: () => Promise<string | undefined>,
+		identifyRow?: (generation: string, row: number) => string | undefined,
 	) => PageResult | Promise<PageResult>,
 	loadSnapshot: typeof loadArchiveSnapshot,
 ) => Promise<PageResult>;
@@ -74,7 +75,7 @@ function archiveReader(source: TaskTranscriptSource): ArchiveReader | undefined 
 		: undefined;
 }
 
-/** @internal Only a reader holding the open archive can identify its records across two reads of the same path. */
+/** @internal A first-party archive reader supplies the identity of the records it returned. */
 export function withTaskTranscriptArchive<T extends TaskTranscriptSource>(
 	source: T,
 	reader: ArchiveReader | TaskTranscriptSource,
@@ -513,7 +514,7 @@ function readArchivedPage(
 	cursor: string | undefined,
 	read: ArchiveReader,
 ): Promise<PageResult> {
-	return read((entries, storedRows, generation) => {
+	return read((entries, storedRows, generation, identifyRow) => {
 		const records: { row: number; notice: NoticePosition }[] = [];
 		const page = transcriptView(session, taskId, entries, cursor, {
 			storedRows,
@@ -521,9 +522,16 @@ function readArchivedPage(
 		});
 		if (!records.length) return page;
 		return generation().then((key) => {
-			if (key !== undefined) for (const { row, notice } of records) notice.occurrence = `${key}:${row}`;
-			else {
-				// Without a file identity keep both failures. An unsaved final answer still has its live identity.
+			let missing = key === undefined;
+			if (key !== undefined) {
+				for (const { row, notice } of records) {
+					const record = identifyRow ? identifyRow(key, row) : key;
+					if (record === undefined) missing = true;
+					else notice.occurrence = `${record}:${row}`;
+				}
+			}
+			if (missing) {
+				// Without a record identity keep both failures. An unsaved final answer still has its live identity.
 				const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
 				if (notices.length) bindTaskTranscriptFragments(page, { notices });
 				else fragmentsByResult.delete(page);

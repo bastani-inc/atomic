@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, type FileHandle, mkdir, open, readFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -1035,10 +1035,10 @@ async function historyUnavailable(sessionFile: string | undefined, cause?: unkno
  * file's directory, which every child of a run saving there shares, so a task view reading a finished child's history
  * would make them wait. The file is append-only JSON lines; a last line its writer has not finished is left out.
  */
-async function readSessionFileEntries(file: string, sessionId: string, opened?: FileHandle): Promise<SessionEntry[]> {
+async function readSessionFileEntries(file: string, sessionId: string): Promise<SessionEntry[]> {
 	let text: string;
 	try {
-		text = await (opened ? opened.readFile("utf8") : readFile(file, "utf8"));
+		text = await readFile(file, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(await historyUnavailable(file));
 		throw error;
@@ -1060,7 +1060,7 @@ async function readSessionFileEntries(file: string, sessionId: string, opened?: 
 	return entries;
 }
 
-/** A page can ask which file it came from while that file is still open, even if its path has since been replaced. */
+/** Only a split failure needs to identify the saved reply from which the page took its blocks. */
 function withArchivedPages(
 	source: TranscriptSource,
 	file: string | undefined,
@@ -1097,28 +1097,12 @@ function withArchivedPages(
 		});
 	if (file === undefined) return source;
 	return withTaskTranscriptArchive(source, async (project) => {
-		let projectionError: unknown;
+		let records: SessionEntry[];
+		let entries: SessionEntry[];
 		try {
-			const handle = await open(file, "r");
-			try {
-				const records = await readSessionFileEntries(file, sessionId, handle);
-				const entries = withUnsavedAnswer(records, unsaved);
-				try {
-					return await project(entries, records.length, async () => {
-						const identity = await handle.stat({ bigint: true }).catch(() => undefined);
-						if (!identity?.isFile() || !identity.ino || !identity.birthtimeNs) return undefined;
-						// A rollback or in-place rewrite can reuse a row in the same file for a different reply.
-						const { dev, ino, birthtimeNs, ctimeNs, mtimeNs, size } = identity;
-						return createHash("sha256")
-							.update(`${dev}:${ino}:${birthtimeNs}:${ctimeNs}:${mtimeNs}:${size}`)
-							.digest("base64url");
-					});
-				} catch (error) {
-					projectionError = error;
-				}
-			} finally {
-				await handle.close();
-			}
+			// Release the file before projecting the page: a writer may need to rename over it on Windows.
+			records = await readSessionFileEntries(file, sessionId);
+			entries = withUnsavedAnswer(records, unsaved);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return {
@@ -1128,8 +1112,26 @@ function withArchivedPages(
 				},
 			};
 		}
-		// An SDK/rendering failure is not an unavailable archive.
-		throw projectionError;
+		return project(
+			entries,
+			records.length,
+			async () => {
+				const identity = await stat(file, { bigint: true }).catch(() => undefined);
+				if (!identity?.isFile() || !identity.ino || !identity.birthtimeNs) return undefined;
+				const { dev, ino, birthtimeNs, ctimeNs, mtimeNs, size } = identity;
+				return createHash("sha256")
+					.update(`${dev}:${ino}:${birthtimeNs}:${ctimeNs}:${mtimeNs}:${size}`)
+					.digest("base64url");
+			},
+			(generation, row) => {
+				// The file may already have changed by the time we stat it. Use the record this page actually read.
+				try {
+					return createHash("sha256").update(generation).update(JSON.stringify(records[row])).digest("base64url");
+				} catch {
+					return undefined;
+				}
+			},
+		);
 	});
 }
 
