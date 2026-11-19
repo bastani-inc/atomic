@@ -306,6 +306,15 @@ test("a host that never registers within bootTimeoutMs is removed and replaced o
 	assert.equal(state.bootFailures, 0);
 });
 
+test("retrying a failed host's removal does not restart boot backoff, but a new failure does (#5673)", () => {
+	const policy = { ...POLICY, scaleUpDelayMs: 0 };
+	const failed = host("p1", { state: "failed", registered: false });
+	const listed = (now: number, since: number) => observe(now, [root(8)], [{ ...failed, since }]);
+	const plans = ticks(policy, [listed(0, 0), listed(1, 0), listed(2, 2), listed(2 + BOOT_BACKOFF.firstMs, 2)]);
+	for (const plan of plans) assert.deepEqual(removed(plan), ["p1"]);
+	assert.deepEqual(plans.map(scaleTargets), [[4], [4], [], [4]]);
+});
+
 test("boot backoff doubles with each failure in a row and stops at BOOT_BACKOFF.maxMs (#4768)", () => {
 	const policy = { ...POLICY, minHosts: 1, maxHosts: 1, bootTimeoutMs: 1 };
 	let state = INITIAL_FLEET_STATE;

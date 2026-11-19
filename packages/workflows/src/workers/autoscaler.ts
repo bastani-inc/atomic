@@ -60,10 +60,7 @@ export interface FleetRootDemand {
 }
 
 /** A provider's host, joined with what the shared journal knows of it. */
-export interface FleetHostView {
-	readonly id: string;
-	readonly state: ProvisionedHost["state"];
-	readonly since: number;
+export interface FleetHostView extends ProvisionedHost {
 	/** It reports itself in the journal's host registry. */
 	readonly registered: boolean;
 	/** Children it holds. */
@@ -98,6 +95,8 @@ export interface FleetPolicyState {
 	readonly idleSince: Readonly<Record<string, number>>;
 	/** Since when each host has been seen not registered, by provider id. */
 	readonly unregisteredSince: Readonly<Record<string, number>>;
+	/** Still-listed failures already counted, keyed by provider id. A slot can be reused by a different host. */
+	readonly failedHosts?: ReadonlyMap<string, ProvisionedHost>;
 	/** Hosts that failed to boot in a row; a host that registers resets it. */
 	readonly bootFailures: number;
 	/** No host is added before this time, after repeated boot failures. */
@@ -174,6 +173,7 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	const idleSince: Record<string, number> = {};
 	const unregisteredSince: Record<string, number> = {};
 	const removedIds = new Set<string>();
+	let failedHosts: Map<string, ProvisionedHost> | undefined;
 	// A host that booted since the last tick forgets the failures before it, whether or not it took work at once.
 	const booted = hosts.some((host) => host.registered && state.unregisteredSince[host.id] !== undefined);
 	let bootFailures = booted ? 0 : state.bootFailures;
@@ -192,13 +192,21 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	let pending = 0;
 	for (const host of hosts) {
 		const draining = host.draining || host.state === "draining";
+		if (host.state === "failed") {
+			const previous = state.failedHosts?.get(host.id);
+			const counted = previous !== undefined && previous.hostId === host.hostId && previous.since === host.since;
+			if (counted || (host.leased === 0 && !draining)) {
+				failedHosts ??= new Map();
+				failedHosts.set(host.id, host);
+				if (!counted) fail();
+			}
+		}
 		if (host.leased > 0) {
 			// Busy: never touched. It counts as serving unless it is on its way out.
 			if (!draining && host.state !== "stopped" && host.state !== "failed") live++;
 			continue;
 		}
 		if (host.state === "stopped" || host.state === "failed") {
-			if (host.state === "failed" && !draining) fail();
 			remove(host.id, draining ? "drained" : host.state);
 			continue;
 		}
@@ -234,8 +242,8 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 		now >= holdUntil &&
 		(serving < policy.minHosts || (overSince !== undefined && now - overSince >= policy.scaleUpDelayMs))
 	) {
-		// The provider counts every host it lists until `drain` removes it: those that do not serve (draining, or busy
-		// and failed or stopped) stay in the count, so the new count only ever adds hosts.
+		// Include non-serving hosts the provider keeps. If growth requires a planned removal to finish, the
+		// controller checks the provider's count after the drain calls before it sends this target.
 		const kept = hosts.filter((host) => !removedIds.has(host.id)).length;
 		actions.push({ kind: "scale-up", target, desired: target + kept - serving });
 	} else if (serving > target) {
@@ -257,6 +265,7 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 			...(overSince === undefined ? {} : { overSince }),
 			idleSince,
 			unregisteredSince,
+			...(failedHosts === undefined ? {} : { failedHosts }),
 			bootFailures,
 			holdUntil,
 		},

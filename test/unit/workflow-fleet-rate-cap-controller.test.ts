@@ -31,6 +31,7 @@ vi.mock("../../packages/workflows/src/durable/journal/sql-rate-buckets.js", asyn
 
 const libsql = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
 const TICK_MS = 100;
+const SCALE_UP_DELAY_MS = 10 * TICK_MS;
 const STEP_MS = 30_000;
 const LIMIT_PER_MINUTE = 600;
 
@@ -161,7 +162,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a fleet controller adds no host the fleet-wide rate limits cannot feed, records why, and grows once they can (#4768)",
+	"a fleet controller adds no host the fleet-wide rate limits cannot feed, records why, and grows once they can (#4768, #5673)",
 	async () => {
 		const journal = await resolveRunJournal({ journal: selection(), agentDir: join(directory, "agent") });
 		journals.push(journal);
@@ -204,8 +205,7 @@ test.skipIf(process.platform === "win32")(
 		if (!seeded.held) assert.fail("seed controller lease was not acquired");
 		await store.carryDrain({ holder: "seed", epoch: seeded.epoch }, "h-draining", "vm-draining");
 		await store.release({ holder: "seed", epoch: seeded.epoch });
-		let saturated = true;
-		usage.next = bucketReadings(() => (saturated ? LIMIT_PER_MINUTE / 2 : LIMIT_PER_MINUTE / 20));
+		usage.next = bucketReadings(() => LIMIT_PER_MINUTE / 2);
 		const hosts: ProvisionedHost[] = [
 			{ id: "vm-1", state: "running", since: 0 },
 			{ id: "vm-draining", state: "running", since: 0 },
@@ -214,9 +214,12 @@ test.skipIf(process.platform === "win32")(
 			{ id: "vm-stopped", state: "stopped", since: 0 },
 		];
 		const targets: number[] = [];
+		let listings = 0;
+		let failedRemovalRequested = false;
 		const provisioner: WorkerHostProvisioner = {
 			kind: "fake",
 			async list() {
+				listings++;
 				return [...hosts];
 			},
 			async scaleTo(target) {
@@ -225,6 +228,11 @@ test.skipIf(process.platform === "win32")(
 					hosts.push({ id: `vm-${hosts.length + 1}`, state: "pending", since: Date.now() });
 			},
 			async drain(id) {
+				// The next listing still sees this failure while its first removal is in flight.
+				if (id === "vm-failed" && !failedRemovalRequested) {
+					failedRemovalRequested = true;
+					return;
+				}
 				const index = hosts.findIndex((host) => host.id === id);
 				if (index >= 0) hosts.splice(index, 1);
 			},
@@ -236,11 +244,18 @@ test.skipIf(process.platform === "win32")(
 			tickMs: TICK_MS,
 			workersPerHost: 4,
 			scaleUpQueueDepth: 0,
-			scaleUpDelayMs: 10 * TICK_MS,
+			scaleUpDelayMs: SCALE_UP_DELAY_MS,
 		});
 		controllers.push(running);
 		await until("the rate cap", () => running.status().rateCapHosts !== undefined);
-		await sleep(20 * TICK_MS);
+		// The next listing starts only after the previous pass finishes and a full tick elapses.
+		const pastGrowthDelay = listings + Math.ceil(SCALE_UP_DELAY_MS / TICK_MS) + 1;
+		await until(
+			"a saturated pass past the growth delay",
+			async () =>
+				listings >= pastGrowthDelay &&
+				(await store.recent(20)).filter((event) => event.kind === "rate-cap").length >= 2,
+		);
 		assert.deepEqual(targets, [], "a saturated limit holds the fleet at the hosts it feeds");
 		assert.deepEqual([running.status().target, running.status().rateCapHosts], [1, 1]);
 		const capped = (await store.recent(20)).filter((event) => event.kind === "rate-cap");
@@ -261,7 +276,6 @@ test.skipIf(process.platform === "win32")(
 			capped[1]!.reason,
 		);
 
-		saturated = false;
 		usage.next = bucketReadings(() => LIMIT_PER_MINUTE / 20);
 		await until("a scale-up once the limit feeds more hosts", () => targets.length > 0);
 		assert.deepEqual(targets, [6]);

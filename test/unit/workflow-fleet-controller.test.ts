@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -20,6 +21,7 @@ import {
 	type WorkflowFleetEvent,
 } from "../../packages/workflows/src/workers/fleet-controller.js";
 import { isWorkerPlacementConfigError } from "../../packages/workflows/src/workers/placement-errors.js";
+import { createCommandProvisioner } from "../../packages/workflows/src/workers/provisioners/command.js";
 import {
 	startWorkflowWorkerHost,
 	type WorkflowWorkerHostEvent,
@@ -208,26 +210,31 @@ test.skipIf(process.platform === "win32")(
 	},
 );
 
+async function rootWithThreeChildren() {
+	const journal = await openJournal();
+	await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+	const lease = ((await journal.acquire("root", "coordinator")) as { lease: Lease }).lease;
+	const queue = await openSqlPoolQueue(journal);
+	await queue.initialize(lease, 60_000);
+	const shared = await SqlSharedPool.open(journal, queue);
+	await shared.publishConfig(lease, {
+		definitions: [],
+		leaseMs: 60_000,
+		heartbeatMs: 15_000,
+		startupTimeoutMs: 60_000,
+		claimWindowMs: 60_000,
+	});
+	for (const name of ["a", "b", "c"]) {
+		const { work, boundary } = poolWorkFixture(name);
+		await queue.enqueue(lease, work, boundary);
+	}
+	return { journal, lease, queue, shared };
+}
+
 test.skipIf(process.platform === "win32")(
 	"the controller scales up to the demand of a shared root's queue once, and records why (#4768)",
 	async () => {
-		const journal = await openJournal();
-		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
-		const lease = ((await journal.acquire("root", "coordinator")) as { lease: Lease }).lease;
-		const queue = await openSqlPoolQueue(journal);
-		await queue.initialize(lease, 60_000);
-		const shared = await SqlSharedPool.open(journal, queue);
-		await shared.publishConfig(lease, {
-			definitions: [],
-			leaseMs: 60_000,
-			heartbeatMs: 15_000,
-			startupTimeoutMs: 60_000,
-			claimWindowMs: 60_000,
-		});
-		for (const name of ["a", "b", "c"]) {
-			const { work, boundary } = poolWorkFixture(name);
-			await queue.enqueue(lease, work, boundary);
-		}
+		const { journal } = await rootWithThreeChildren();
 		const hosts: ProvisionedHost[] = [];
 		const targets: number[] = [];
 		const provisioner: WorkerHostProvisioner = {
@@ -265,6 +272,57 @@ test.skipIf(process.platform === "win32")(
 		);
 	},
 );
+
+test("a scale-up waits for outstanding removals rather than letting the provider remove a busy host (#5673)", async () => {
+	const { lease, queue, shared } = await rootWithThreeChildren();
+	const child = await queue.claim(lease, "h/worker", [poolWorkFixture().work], 60_000);
+	assert.ok(child);
+	await queue.heartbeat(lease, child, 60_000, async () => {});
+	await shared.reportHost({
+		host: "h",
+		providerId: "busy",
+		labels: {},
+		git: "unavailable",
+		restore: false,
+		workers: 2,
+		maxWorkers: 2,
+		roots: ["root"],
+		busy: 1,
+	});
+	let listed: ProvisionedHost[] = [
+		{ id: "failed", state: "failed", since: 0 },
+		{ id: "stopped", state: "stopped", since: 0 },
+		{ id: "busy", state: "running", since: 0 },
+	];
+	let polls = 0;
+	const drains: string[] = [];
+	const scales: { from: number; to: number }[] = [];
+	const provider: WorkerHostProvisioner = {
+		kind: "no-wait",
+		async list() {
+			// The provider accepted each deletion but still counts its host until poll six.
+			if (++polls === 6) listed = listed.filter(({ id }) => !drains.includes(id));
+			return [...listed];
+		},
+		async drain(id) {
+			drains.push(id);
+		},
+		async scaleTo(target) {
+			scales.push({ from: listed.length, to: target });
+			listed.splice(target); // On a reduction the provider chooses its own victim, here the busy host.
+			while (listed.length < target) listed.push({ id: `new-${listed.length}`, state: "pending", since: 0 });
+		},
+	};
+	const running = await controller(provider, [], { workersPerHost: 2, scaleUpQueueDepth: 0, scaleUpDelayMs: 100 });
+	await until("growth after the deletions finish", () => polls >= 6 && scales.some(({ from, to }) => from < to));
+	await running.stop();
+	assert.ok(
+		listed.some(({ id }) => id === "busy"),
+		JSON.stringify(scales),
+	);
+	assert.deepEqual(scales, [{ from: 1, to: 2 }]);
+	for (const id of ["failed", "stopped"]) assert.ok(drains.filter((removed) => removed === id).length >= 2);
+});
 
 test.skipIf(process.platform === "win32")(
 	"the controller drains an idle worker host matched by its provider id, then removes it from the provider (#4768)",
@@ -584,11 +642,46 @@ test("checkFleetOptions refuses each part of a provisioner that is missing, and 
 	);
 });
 
+test("a second failed host in the same command provisioner slot holds growth for 30 seconds (#5673)", async () => {
+	const file = join(directory, "hosts.json");
+	const command = (script: string) => [process.execPath, "-e", script, file];
+	const cloud = createCommandProvisioner({
+		kind: "command",
+		list: command("process.stdout.write(require('node:fs').readFileSync(process.argv[1]))"),
+		down: command("require('node:fs').writeFileSync(process.argv[1], '[]')"),
+		up: command(""),
+	});
+	const policy = resolveFleetPolicy({ workersPerHost: 1, scaleUpQueueDepth: 0, scaleUpDelayMs: 100 });
+	const roots = [{ ready: 1, leased: 0, blocked: false }];
+	const signal = new AbortController().signal;
+	let state = INITIAL_FLEET_STATE;
+	const reconcile = async (now: number) => {
+		const listed = await cloud.list(signal);
+		const hosts = joinHosts(listed, { roots: [], hosts: [], leased: new Map(), drains: [] }).map(({ view }) => view);
+		const plan = planFleet(policy, { now, roots, hosts }, state);
+		state = plan.state;
+		for (const action of plan.actions) if (action.kind === "remove") await cloud.drain(action.id, signal);
+		return plan.actions.filter((action) => action.kind === "scale-up").map((action) => action.desired);
+	};
+	// The list command omits `since`. The first boot is deleted, but the slot is reused before the next list.
+	const failBoot = (hostId: string) => writeFile(file, JSON.stringify([{ id: "slot", hostId, state: "failed" }]));
+	await failBoot("boot-A");
+	assert.deepEqual(await reconcile(0), []);
+	assert.equal(await readFile(file, "utf8"), "[]");
+	await failBoot("boot-B");
+	assert.deepEqual(await reconcile(100), []);
+	assert.equal(await readFile(file, "utf8"), "[]");
+	assert.deepEqual(await reconcile(30_099), []);
+	assert.deepEqual(await reconcile(30_100), [1]);
+});
+
 test("joinHosts matches provider hosts to registered hosts by provider id or host id, with their leases and drains (#4768)", () => {
+	// A custom provider can expose the reported fields through its host object's prototype.
+	const vm2: ProvisionedHost = Object.create({ id: "vm-2", hostId: "h2", state: "running", since: 2 });
 	const joined = joinHosts(
 		[
 			{ id: "vm-1", state: "running", since: 1 },
-			{ id: "vm-2", hostId: "h2", state: "running", since: 2 },
+			vm2,
 			{ id: "vm-3", state: "pending", since: 3 },
 			{ id: "vm-4", hostId: "h4", state: "running", since: 4 },
 		],
@@ -618,7 +711,16 @@ test("joinHosts matches provider hosts to registered hosts by provider id or hos
 			drainHosts: ["h1"],
 		},
 		{
-			view: { id: "vm-2", state: "running", since: 2, registered: true, leased: 0, draining: true, drained: false },
+			view: {
+				id: "vm-2",
+				hostId: "h2",
+				state: "running",
+				since: 2,
+				registered: true,
+				leased: 0,
+				draining: true,
+				drained: false,
+			},
 			hostId: "h2",
 			drainHosts: ["h2"],
 		},
@@ -629,6 +731,7 @@ test("joinHosts matches provider hosts to registered hosts by provider id or hos
 		{
 			view: {
 				id: "vm-4",
+				hostId: "h4",
 				state: "running",
 				since: 4,
 				registered: false,
@@ -674,6 +777,7 @@ test("joinHosts takes the live host of an instance whose worker restarted under 
 		{
 			view: {
 				id: "pod-5",
+				hostId: "h5",
 				state: "running",
 				since: 5,
 				registered: false,
