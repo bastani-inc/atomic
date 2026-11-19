@@ -5255,6 +5255,54 @@ test("a concurrent direct restoration preserves the later resume message and too
 	);
 });
 
+test("an SDK wake reopening during reload saves through its replacement owner (#5609)", async () => {
+	const h = harness({ ownerless: true });
+	const dispatcher = await releasedWithWakes(h, "sdk-reload");
+	const id = "sdk-reload:0";
+	let retired = false;
+	const old = new Proxy(h.ctx, {
+		get(target, key) {
+			assert.ok(!retired, `access to retired owner: ${String(key)}`);
+			return Reflect.get(target, key);
+		},
+	});
+	const staleWrites: string[] = [];
+	const first = {
+		...h.deps,
+		pi: {
+			...h.deps.pi,
+			appendEntry: async (type: string, data?: unknown) => {
+				if (retired) staleWrites.push(type);
+				await h.deps.pi.appendEntry(type, data);
+			},
+		},
+	};
+	const unbind = bindReleasedChildWakes(first, old, first.pi.events, dispatcher);
+	const opening = gateRestoreOf(h, "subagent-worker-sdk-reload");
+	const finish = Promise.withResolvers<void>();
+	const wake = wakeWithResult(h, dispatcher, id, finish);
+	try {
+		await opening.reached;
+		const successor = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+		cleanups.push(async () => successor());
+		unbind();
+		retired = true;
+		opening.gate.resolve();
+		await wake;
+		const running = h.latest(id);
+		assert.equal(running?.state, "running");
+		assert.ok(running.taskId);
+		const refused = await h.call({ action: "resume", id });
+		assert.match(text(refused), new RegExp(`already running as task ${running.taskId}`));
+		assert.equal(h.runs.filter((run) => run.task.includes("CI green")).length, 1);
+		assert.deepEqual(staleWrites, []);
+	} finally {
+		opening.gate.resolve();
+		finish.resolve();
+		unbind();
+	}
+});
+
 test("disposing an older extension generation leaves the newer resume handler bound (#4326)", async () => {
 	const h = harness();
 	const dispatcher = await releasedWithWakes(h, "reload-resume");
