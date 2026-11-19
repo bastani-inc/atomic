@@ -5,7 +5,7 @@ import { createEventBus, type EventBus } from "../event-bus.js";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "../mandatory-runtime-tools.ts";
 import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
 import { endTimingSpan, startTimingSpan } from "../timings.ts";
-import { getBuiltinExtensionEntryLabel } from "./builtin-extension-entry-labels.js";
+import { getBuiltinExtensionEntryLabel } from "./builtin-extension-entry-labels.ts";
 import { installBuiltinChildRecordWriter } from "./builtin-subagent-record-writer.js";
 import { createExtensionAPI } from "./loader-api.ts";
 import {

@@ -1,6 +1,6 @@
-import { appendOwnedSubagentChildRecord, type SessionManager } from "../session-manager-core.js";
-import { extensionWorkOpen } from "./extension-work.js";
-import type { ExtensionAPI, ExtensionRuntime } from "./types.js";
+import { appendOwnedSubagentChildRecord, type SessionManager } from "../session-manager-core.ts";
+import { extensionWorkOpen } from "./extension-work.ts";
+import type { ExtensionAPI, ExtensionRuntime } from "./types.ts";
 
 type Session = { readonly sessionManager: SessionManager; readonly _disposed: boolean };
 const sessions = new WeakMap<ExtensionRuntime, WeakRef<Session>>();

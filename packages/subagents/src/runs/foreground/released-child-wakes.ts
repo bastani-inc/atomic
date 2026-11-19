@@ -106,6 +106,8 @@ export function bindReleasedChildWakes(
 	start: (work: () => void) => void = (work) => work(),
 ): () => void {
 	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	// A bound owner's notices follow its live generation; without a binding they go to `events`, as the caller passed.
+	const ownerEvents = owner.pi === deps.pi ? events : owner.pi.events;
 	ctx = owner.ctx;
 	deps = { ...deps, pi: owner.pi };
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
@@ -199,7 +201,7 @@ export function bindReleasedChildWakes(
 				if (unsaved.length > 0) await holdResults(record, unsaved);
 				if (refuseRelaunch(record)() !== undefined) return;
 				if (record.intercomTarget !== undefined)
-					void acknowledgeReleasedChildWake(deps.pi.events, record.intercomTarget);
+					void acknowledgeReleasedChildWake(ownerEvents, record.intercomTarget);
 				await restore(
 					record,
 					{
@@ -240,7 +242,7 @@ export function bindReleasedChildWakes(
 				const notice = record === undefined ? undefined : noticeOf(record);
 				if (notice === undefined) return;
 				await deliverLocalCompletionNotification(
-					deps.pi.events,
+					ownerEvents,
 					notice,
 					`released-wake-failure-${childId}-${record?.taskId ?? "none"}`,
 				);
