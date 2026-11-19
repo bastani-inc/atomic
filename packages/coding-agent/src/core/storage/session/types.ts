@@ -336,6 +336,24 @@ export interface SessionSearchIndex {
 	): Promise<readonly number[] | undefined>;
 }
 
+export interface SessionForkRow {
+	/** Metadata for the listing and the resume index; the exact bytes come from the reference when present. */
+	readonly entry: SessionEntry;
+	readonly reference?: OversizedSessionEntry;
+	readonly edits?: Readonly<Record<string, string | null>>;
+	readonly extraToolCalls?: number;
+	readonly inlineSnapshot?: true;
+}
+export interface SessionForkStream {
+	/** The reader is bound to the writing transaction when both sides use the same SQL connection. */
+	read(
+		reader: SessionStore,
+		hasWritten: (id: string) => Promise<boolean>,
+		inlineSnapshot?: (ref: OversizedSessionEntry) => Promise<SessionEntry | undefined>,
+	): AsyncIterable<SessionForkRow>;
+}
+export type SessionForkSeed = readonly SessionEntry[] | SessionForkStream;
+
 export interface ForkArchiveSource {
 	readonly store: SessionStore;
 	readonly sessionId: string;
@@ -351,7 +369,7 @@ export interface SessionStore {
 	 * Return undefined, without publishing anything, when this source or destination is not supported. */
 	createFork?(
 		header: SessionRecordHeader,
-		entries: readonly SessionEntry[],
+		entries: SessionForkSeed,
 		source: ForkArchiveSource,
 		location?: string,
 	): Promise<(SessionWriteResult & { readonly remainingBlobs?: readonly string[] }) | undefined>;

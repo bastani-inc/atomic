@@ -36,7 +36,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { readSessionHistoryChunks, type SessionHistorySource } from "./history-pages.js";
+import type { SessionHistorySource } from "./history-pages.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -77,6 +77,8 @@ import type {
 	SessionEntryAt,
 	SessionEntryRange,
 	SessionEntrySizes,
+	SessionForkRow,
+	SessionForkSeed,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -632,36 +634,53 @@ export class JsonlSessionStore implements SessionStore {
 
 	async createFork(
 		header: SessionRecordHeader,
-		entries: readonly SessionEntry[],
+		entries: SessionForkSeed,
 		source: ForkArchiveSource,
 		location?: string,
-	): Promise<SessionWriteResult> {
+	): Promise<SessionWriteResult | undefined> {
+		if (this.create !== JsonlSessionStore.prototype.create) return undefined;
 		validateSessionHeader(header);
-		validateSessionEntries(entries);
+		if (!("read" in entries)) validateSessionEntries(entries);
 		const path = location === undefined ? this.locationFor(header) : resolve(location);
 		await mkdir(dirname(path), { recursive: true });
 		const temporary = `${path}.${randomUUID()}.tmp`;
 		const handle = await open(temporary, "wx+");
 		try {
-			const spans: number[] = [];
+			const spans: number[] = [],
+				ids: number[] = [];
+			const { encodedForkRow } = await import("./fork-row-bytes.js");
+			const { foldForkRow, findForkRow } = await import("./fork-row-index.js");
+			const lookup = (id: string) =>
+				findForkRow(id, ids, async function* (seq) {
+					const end = spans[2 * seq - 1]!;
+					for (let i = spans[2 * seq - 2]!; i < end; i += SESSION_HISTORY_CHUNK_BYTES)
+						yield await readFrom(handle, i, Math.min(end - i, SESSION_HISTORY_CHUNK_BYTES));
+				});
+			const stream = "read" in entries;
+			let summary = applySessionSummaryEntries(undefined, stream ? [] : entries).state;
+			let index = foldSessionResume(undefined, stream ? [] : entries);
+			let lastId: string | undefined;
+			const rows: AsyncIterable<SessionForkRow> | Iterable<SessionForkRow> = stream
+				? entries.read(source.store, async (id) => (await lookup(id)) !== undefined)
+				: entries.map((entry) => ({ entry, reference: source.receipts.get(entry.id) }));
 			const line = this.encode(header, []);
 			let size = Buffer.byteLength(line);
 			let witness: Buffer;
 			try {
 				await handle.writeFile(line);
-				for (const entry of entries) {
+				for await (const row of rows) {
 					const start = size;
-					const ref = source.receipts.get(entry.id);
-					if (ref) {
-						for await (const part of readSessionHistoryChunks(source.store, ref)) {
-							await handle.writeFile(part);
-							size += part.byteLength;
-						}
-					} else {
-						const text = JSON.stringify(entry);
-						await handle.writeFile(text);
-						size += Buffer.byteLength(text);
+					const encoded = await encodedForkRow(source.store, row);
+					for await (const part of encoded.chunks()) {
+						await handle.writeFile(part);
+						size += part.byteLength;
 					}
+					if (stream) {
+						summary = applySessionSummaryEntries(summary, [row.entry]).state;
+						index = await foldForkRow(index, row, lookup);
+					}
+					lastId = row.entry.id;
+					ids.push(idHash(lastId));
 					spans.push(start, size);
 					await handle.writeFile("\n");
 					size++;
@@ -683,12 +702,12 @@ export class JsonlSessionStore implements SessionStore {
 				const stats = await this.remember(path, {
 					headerStamp,
 					headerId: header.id,
-					lastSeq: entries.length,
-					lastEntryId: entries.at(-1)?.id,
+					lastSeq: ids.length,
+					lastEntryId: lastId,
 					terminated: true,
 					torn: false,
 					witness,
-					summaryState: applySessionSummaryEntries(undefined, entries).state,
+					summaryState: summary,
 				});
 				const epoch = epochOf(stats, headerStamp);
 				await this.keepIndex(path, {
@@ -702,11 +721,11 @@ export class JsonlSessionStore implements SessionStore {
 					terminated: true,
 					torn: false,
 					spans,
-					ids: entries.map((e) => idHash(e.id)),
-					index: { ...foldSessionResume(undefined, entries), epoch },
+					ids,
+					index: { ...index, epoch },
 					sidecarSize: 0,
 				});
-				return { lastSeq: entries.length, epoch };
+				return { lastSeq: ids.length, epoch };
 			}, true);
 		} finally {
 			await unlink(temporary);

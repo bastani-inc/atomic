@@ -18,6 +18,7 @@ type Shape =
 	| "truth"
 	| "short"
 	| "answerText"
+	| "searchText"
 	| "string"
 	| "stringPresent"
 	| "objectPresent"
@@ -174,6 +175,23 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			return out;
 		}
 		case "startArray": {
+			if (shape === "searchText") {
+				let text = "",
+					seen = false;
+				for (let part = yield; part.name !== "endArray"; part = yield) {
+					if (text.length >= 65537) {
+						yield* skip(part);
+						continue;
+					}
+					const b = object(yield* readValue(part, { type: "short", text: "searchText" }));
+					if (b.type === "text" && typeof b.text === "string") {
+						if (seen) text += " ";
+						text += b.text.slice(0, 65537 - text.length);
+						seen = true;
+					}
+				}
+				return text;
+			}
 			if (shape === "answerText") {
 				let text = "";
 				for (let token = yield; token.name !== "endArray"; token = yield) {
@@ -209,7 +227,9 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			if (shape === "owner" || shape === "tasks" || shape === "groups" || shape === "usage")
 				return JSON.stringify(yield* embedded(shape));
 			if (shape === "truth") return (yield* stringValue(1)) === "" ? "" : "x";
-			return yield* stringValue(shape === "short" ? 64 : shape === "hash" ? 65 : Infinity);
+			return yield* stringValue(
+				shape === "short" ? 64 : shape === "hash" ? 65 : shape === "searchText" ? 65537 : Infinity,
+			);
 		case "numberValue":
 			return Number(first.value);
 		case "trueValue":
@@ -574,6 +594,44 @@ export async function chunkedAnswerContent(
 	if (edit && entry.replacement === null) return null;
 	const text = object(entry[field]).content;
 	return typeof text === "string" ? text.trim() || undefined : undefined;
+}
+
+/** The bounded listing contribution and index fields of a raw backup row. The original bytes, not
+ * these fields, are written into the child. Model usage/tool counts remain from the resume projection. */
+export async function forkSeedFields(chunks: () => AsyncIterable<Uint8Array>) {
+	const { entry, toolCalls } = await chunkedPrefixFields(chunks);
+	const extra = object(
+		await read(
+			chunks(),
+			(function* (): Reader<Json> {
+				return yield* readValue(
+					yield,
+					entry.type === "message"
+						? { message: { timestamp: "number", content: "searchText" } }
+						: entry.type === "session_info"
+							? { name: "string" }
+							: entry.type === "session_summary"
+								? { summary: "string", summarizedThroughId: "string" }
+								: entry.type === "custom" && entry.customType === "atomic.tool-output"
+									? { data: { hash: "hash" } }
+									: {},
+				);
+			})(),
+		),
+	);
+	if (entry.type === "message") {
+		const fields = object(extra.message);
+		Object.assign(entry.message, {
+			timestamp: fields.timestamp,
+			content:
+				typeof fields.content === "string"
+					? entry.message.role === "assistant"
+						? [{ type: "text", text: fields.content }]
+						: fields.content
+					: [],
+		});
+	} else Object.assign(entry, extra);
+	return { entry, extraToolCalls: toolCalls };
 }
 
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */

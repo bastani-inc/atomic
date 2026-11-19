@@ -47,6 +47,7 @@ import type {
 	SessionEntryAt,
 	SessionEntryRange,
 	SessionEntrySizes,
+	SessionForkSeed,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -289,9 +290,61 @@ export class MemorySessionStore implements SessionStore {
 
 	async createFork(
 		header: SessionRecordHeader,
-		entries: readonly SessionEntry[],
+		entries: SessionForkSeed,
 		source: ForkArchiveSource,
-	): Promise<SessionWriteResult & { remainingBlobs?: readonly string[] }> {
+	): Promise<(SessionWriteResult & { remainingBlobs?: readonly string[] }) | undefined> {
+		if (this.create !== MemorySessionStore.prototype.create) return undefined;
+		if ("read" in entries) {
+			this.assertOpen();
+			validateSessionHeader(header);
+			if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+			const record = this.encodeSession(header, []);
+			const { encodedForkRow } = await import("./fork-row-bytes.js");
+			const { foldForkRow, findForkRow, forkIdHash } = await import("./fork-row-index.js");
+			const ids: number[] = [];
+			const lookup = (id: string) =>
+				findForkRow(id, ids, async function* (seq) {
+					const data = record.entries[seq - 1]!;
+					for (let i = 0; i < data.length; i += SESSION_HISTORY_CHUNK_BYTES)
+						yield data.subarray(i, i + SESSION_HISTORY_CHUNK_BYTES);
+				});
+			const blobs = new Map<string, Uint8Array>();
+			const remainingBlobs = new Set<string>();
+			for await (const row of entries.read(source.store, async (id) => (await lookup(id)) !== undefined)) {
+				const encoded = await encodedForkRow(source.store, row);
+				const bytes = new Uint8Array(encoded.size);
+				let at = 0;
+				for await (const part of encoded.chunks()) {
+					bytes.set(part, at);
+					at += part.length;
+				}
+				record.index = await foldForkRow(record.index, row, lookup);
+				record.summaryState = applySessionSummaryEntries(record.summaryState, [row.entry]).state;
+				record.starts.push(record.totalBytes + (record.lastSeq ? 1 : 0));
+				record.lastSeq++;
+				record.totalBytes = record.starts.at(-1)! + encoded.size;
+				record.entries.push(bytes);
+				ids.push(forkIdHash(row.entry.id));
+				if (row.entry.type === "custom" && row.entry.customType === "atomic.tool-output" && source.store.getBlob) {
+					const hash = (row.entry.data as { hash?: string })?.hash;
+					if (typeof hash === "string" && !blobs.has(hash)) {
+						const data =
+							source.store instanceof MemorySessionStore &&
+							source.store.getBlob === MemorySessionStore.prototype.getBlob &&
+							this.putBlob === MemorySessionStore.prototype.putBlob
+								? source.store.blobs.get(source.sessionId)?.get(hash)
+								: undefined;
+						if (data) blobs.set(hash, data);
+						else remainingBlobs.add(hash);
+					}
+				}
+			}
+			this.assertOpen();
+			if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+			if (blobs.size) this.blobs.set(header.id, blobs);
+			this.records.set(header.id, record);
+			return { lastSeq: record.lastSeq, epoch: record.index.epoch, remainingBlobs: [...remainingBlobs] };
+		}
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);

@@ -1877,16 +1877,61 @@ export class SessionManager {
 	 * through `leafId`, with the settings kept from before the boundary, so its context is the branch's context (#5500).
 	 * A session opened at `leafId` with `history: "tail"` already holds exactly that, and nothing more is read.
 	 */
-	createBranchedSession(
-		leafId: string,
-		options?: { readonly history?: "full" | "tail" },
-	): Promise<string | undefined> {
+	createBranchedSession(leafId: string, options?: { readonly history?: "tail" }): Promise<string | undefined> {
 		return this.runMutation(async () => {
-			const path =
-				options?.history === "tail"
-					? await this.forkWindow(await this.contextBranch(leafId), leafId)
-					: await this.fullBranch(leafId);
-			return this.installFork(leafId, path);
+			if (options?.history !== undefined && options.history !== "tail")
+				throw new TypeError(
+					'Session history: "full" has been removed. Use sessionManager.readHistory() to iterate older entries.',
+				);
+			if (options?.history === "tail") {
+				const receipts = new Map<string, OversizedSessionEntry>();
+				return this.installFork(
+					leafId,
+					await this.forkWindow(await this.contextBranch(leafId), leafId, "branch", receipts),
+					receipts,
+				);
+			}
+			const leaf = await this.findEntrySeq(leafId);
+			if (leaf === undefined) throw new SessionEntryError(leafId, "missing");
+			const { humanForkStream } = await import("./storage/session/branch-fork-source.js");
+			const seed = humanForkStream(
+				this.sessionId,
+				this.historyEpoch,
+				this.lastSeq,
+				leaf,
+				leafId,
+				this.labelsById,
+				this.labelTimestampsById,
+			);
+			const workflow = classifiedWorkflowMetadata(this.getHeader());
+			const record = this.recordHeader(
+				createSessionHeader(
+					createSessionId(),
+					this.cwd,
+					new Date().toISOString(),
+					this.sessionId,
+					workflow !== undefined,
+					workflow,
+				),
+			);
+			const store = await this.storeForNewSession();
+			const location =
+				store instanceof JsonlSessionStore
+					? this.sessionDir
+						? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
+						: store.locationFor(record)
+					: undefined;
+			await createForkArchive(
+				store,
+				record,
+				seed,
+				{ store: this.store, sessionId: this.sessionId, epoch: this.historyEpoch, receipts: new Map(), hashes: [] },
+				location,
+			);
+			const opened = await readStoredSession(store, record.id, undefined);
+			this.store = store;
+			this.restoreOpened(opened, location);
+			return this.sessionFile;
 		});
 	}
 
@@ -2029,19 +2074,12 @@ export class SessionManager {
 		);
 	}
 
-	private async fullBranch(leafId: string): Promise<SessionEntry[]> {
-		await this.loadFullHistory();
-		return this.getBranch(leafId);
-	}
-
-	/** The entries a resume of this session at `leafId` loads, on the branch to `leafId`, in order. */
+	/** Resolve the selected stored branch even when an earlier clear has retired its first kept span. */
 	private async contextBranch(leafId: string): Promise<SessionEntry[]> {
-		if (!this.hasFullHistory() && this.leafId === leafId) return this.getBranch(leafId);
-		await this.loadFullHistory();
-		const header = this.getHeader();
-		if (header === null) return this.getBranch(leafId);
-		const resume = sessionResumeOf(this.recordHeader(header), this.getEntries(), leafId);
-		if (resume.leafId !== leafId) return this.getBranch(leafId);
+		const { resume } = await readStoredSession(this.store, this.sessionId, { leafId });
+		if (this.historyEpoch !== undefined && resume.epoch !== this.historyEpoch)
+			throw new SessionConflictError(this.sessionId, this.lastSeq, resume.lastSeq);
+		if (resume.leafId !== leafId) throw new SessionEntryError(leafId, "missing");
 		return [...resume.state.filter((held) => held.onBranch), ...resume.branch]
 			.sort((left, right) => left.seq - right.seq)
 			.map((held) => held.entry);
