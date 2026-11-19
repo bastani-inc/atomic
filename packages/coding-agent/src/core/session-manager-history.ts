@@ -106,12 +106,17 @@ function projectContextEntry(
 	entry: SessionEntry,
 	edit: ContextEditEntry | undefined,
 	purpose: "model" | "transcript",
+	onTranscriptEdit?: () => void,
 ): AgentMessage[] {
 	const messages =
 		purpose === "transcript" ? sessionEntryToTranscriptMessages(entry) : sessionEntryToContextMessages(entry);
 	// Context edits change what the next request sees, not the rows the reader already saw. A row no reader sees
 	// follows the model, so a transcript never carries hidden content the model no longer has.
-	if (!edit || (purpose === "transcript" && messages.some(isShownToReader))) return messages;
+	if (!edit) return messages;
+	if (messages.some(isShownToReader)) {
+		onTranscriptEdit?.();
+		if (purpose === "transcript") return messages;
+	}
 	return applyContextEdit(messages, edit);
 }
 
@@ -242,6 +247,7 @@ export function buildSessionProjection(
 	sessionId?: string,
 	branch?: readonly SessionEntry[],
 	purpose: "model" | "transcript" = "model",
+	onTranscriptEdit?: () => void,
 ): SessionProjection {
 	// Build uuid index if not available
 	if (!byId) {
@@ -286,7 +292,7 @@ export function buildSessionProjection(
 				messages:
 					boundary && sourceEntry.type === "compaction" && sourceEntry.id !== boundary.id
 						? []
-						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose),
+						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose, onTranscriptEdit),
 			}),
 		);
 		return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
@@ -321,7 +327,7 @@ export function buildSessionProjection(
 					? boundaryMessages
 					: keptTailIds.has(sourceEntry.id) || sourceEntry.type === "compaction"
 						? []
-						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose),
+						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose, onTranscriptEdit),
 		}),
 	);
 	return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };

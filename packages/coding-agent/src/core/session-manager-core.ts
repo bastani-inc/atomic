@@ -169,6 +169,8 @@ export class SessionManager {
 	private contextEdits = 0;
 	private hostNotices = 0;
 	private noticeBranch?: { leaf: string | null; present: boolean };
+	/** Whether a retained row at this leaf differs between the transcript and model projections. */
+	private projectedEdits: { leafId: string | null; visible: boolean } | undefined;
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
 
@@ -551,6 +553,7 @@ export class SessionManager {
 		this.contextEdits = index.contextEdits;
 		this.hostNotices = index.hostNotices;
 		this.noticeBranch = undefined;
+		this.projectedEdits = undefined;
 		this.leafId = index.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
@@ -712,6 +715,8 @@ export class SessionManager {
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
 			if (entry.type === "context_edit") this.contextEdits++;
+			else if (entry.type !== "compaction" && this.projectedEdits?.leafId === entry.parentId)
+				this.projectedEdits.leafId = entry.id;
 			const notice = isHostNoticeEntry(entry);
 			if (notice) this.hostNotices++;
 			if (this.noticeBranch?.leaf === entry.parentId) {
@@ -1213,19 +1218,27 @@ export class SessionManager {
 	/** Project the current leaf and its compaction boundary. Transcript rows keep the content shown before model-only edits. */
 	buildSessionProjection(purpose: "model" | "transcript" = "model", leafId = this.leafId): SessionProjection {
 		if (leafId === this.leafId && this.hostNotices > 0) this.hasHostNotices();
-		return buildSessionProjection(
+		let visible = false;
+		const projection = buildSessionProjection(
 			this.getEntries(),
 			leafId,
 			this.byId,
 			this.sessionId,
 			leafId === this.leafId ? this.activeBranch() : leafId === null ? undefined : this.getBranch(leafId),
 			purpose,
+			() => {
+				visible = true;
+			},
 		);
+		if (leafId === this.leafId) this.projectedEdits = { leafId, visible };
+		return projection;
 	}
 
-	/** Whether any entry, on any branch, edits the model context. Without one the transcript is the model context. */
+	/** Whether an edit on the active branch changes a row still shown in its transcript. */
 	hasContextEdits(): boolean {
-		return this.contextEdits > 0;
+		if (this.contextEdits === 0 || this.leafId === null) return false;
+		if (this.projectedEdits?.leafId !== this.leafId) this.buildSessionProjection();
+		return this.projectedEdits!.visible;
 	}
 
 	/** A notice on another branch does not set this transcript apart from the resident context. */
