@@ -337,14 +337,17 @@ export function durableNestedRunCatalog(
 		return cached.catalog;
 	}
 	const checkpoints = backend.listCheckpoints(rootWorkflowId);
-	const runs = runSnapshotsFromCheckpoints(
-		checkpoints,
+	const runs = replayableNestedRuns(
+		runSnapshotsFromCheckpoints(
+			checkpoints,
+			rootWorkflowId,
+			handle.name,
+			handle.updatedAt,
+			NESTED_CATALOG_RECONSTRUCTION,
+			(scope) => backend.checkpointScopeReleased?.(rootWorkflowId, scope) === true,
+		),
 		rootWorkflowId,
-		handle.name,
-		handle.updatedAt,
-		NESTED_CATALOG_RECONSTRUCTION,
-		(scope) => backend.checkpointScopeReleased?.(rootWorkflowId, scope) === true,
-	).filter((run) => run.id !== rootWorkflowId);
+	);
 	const catalog = nestedRunCatalog(runs, checkpoints);
 	if (version !== undefined) {
 		const byRoot = nestedRunCatalogs.get(backend) ?? new Map<string, CachedNestedRunCatalog>();
@@ -359,6 +362,33 @@ export function durableNestedRunCatalog(
 		if (byRoot.size > MAX_CACHED_ROOTS_PER_BACKEND) byRoot.delete(byRoot.keys().next().value!);
 	}
 	return catalog;
+}
+
+/**
+ * The nested runs replay may restore, without the root. A child that a failed or skipped boundary started runs again
+ * on resume, so it is left out with everything under it. Under a completed nested run it is a failure that run
+ * handled, and it is restored with that run (#5616).
+ */
+function replayableNestedRuns(runs: readonly RunSnapshot[], rootRunId: string): RunSnapshot[] {
+	const byId = new Map<string, RunSnapshot>();
+	for (const run of runs) if (!byId.has(run.id)) byId.set(run.id, run);
+	const nestedAncestry = (run: RunSnapshot): RunSnapshot[] => {
+		const chain: RunSnapshot[] = [];
+		for (let current: RunSnapshot | undefined = run; current !== undefined && current.id !== rootRunId; ) {
+			if (chain.includes(current)) break;
+			chain.push(current);
+			current = current.parentRunId === undefined ? undefined : byId.get(current.parentRunId);
+		}
+		return chain;
+	};
+	const rerun = new Set<string>();
+	for (const run of runs) {
+		if (nestedAncestry(run).some((ancestor) => ancestor.status === "completed")) continue;
+		for (const stage of run.stages)
+			if ((stage.status === "failed" || stage.status === "skipped") && stage.startedChildRunId !== undefined)
+				rerun.add(stage.startedChildRunId);
+	}
+	return runs.filter((run) => run.id !== rootRunId && !nestedAncestry(run).some((ancestor) => rerun.has(ancestor.id)));
 }
 
 function nestedRunCatalog(
