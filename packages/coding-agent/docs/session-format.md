@@ -325,6 +325,12 @@ Atomic records one of its own: when the oversized result of an agent released wh
 {"type":"custom","id":"j0k1l2m3","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:22:00.000Z","customType":"atomic.leaf"}
 ```
 
+Atomic also records the lines it writes into a chat about how a turn ended, in a `custom` entry with `customType: "atomic.notice"`: a retry that failed or was cancelled (`Retry failed after N attempts: …`), a compaction that failed or was cancelled, a continuation after compaction that could not start, and a checkout snapshot that could not be recorded. `data.level` is `error` (shown as `Error: …`), `warning` (`Warning: …`) or `status` (the dimmed text alone), and `data.text` is the line, at most 4096 UTF-8 bytes; a longer one is cut at a whole character and ends with `…`. The entry is written where the line was shown. Chats show it in that place when the session is resumed or a stage or subagent chat is reopened; it is never part of model context or compaction. While a chat is open, the session shows the line as a display-only `custom` message of the same `customType`, which JSON and RPC event streams also carry. Older Atomic versions load it as an ordinary custom entry and do not show it.
+
+```json
+{"type":"custom","id":"l2m3n4o5","parentId":"k1l2m3n4","timestamp":"2024-12-03T14:24:00.000Z","customType":"atomic.notice","data":{"level":"error","text":"Retry failed after 3 attempts: 529 overloaded"}}
+```
+
 A resume that restored a checkout or ran a blueprint step records where its time went in a `custom` entry with `customType: "resume_timings"`. Durations are whole milliseconds; `phases` holds only the phases that ran (`fetch`, `reconstruct`, `materialize`, `lfs`, `verify`, `publish`, `seed`), `mode` is `fresh`, `claimed`, `in-place` or `degraded`, `fetch` is `none`, `shallow`, `full` or `bundle`, and `exit` is `ok`, `failed` or `timed-out`. `latestResumeTimings(sessionManager)` returns the latest one and `formatResumeTimings()` the lines `/session snapshot` shows.
 
 ```json

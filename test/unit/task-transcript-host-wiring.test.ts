@@ -252,3 +252,27 @@ test("the worker names the task when messages are unsupported or the failure is 
 	assert.equal(untyped.error?.fields.taskId, TASK);
 	assert.deepEqual(untyped.error?.cause, { name: "Error", message: "relay crashed" });
 });
+
+test("a reopened task shows the lines Atomic wrote about how its turns ended, in place (#5649)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+	await session.appendCustomEntry("atomic.notice", {
+		level: "error",
+		text: "Retry failed after 1 attempts: overloaded_error",
+	});
+	await session.appendCustomEntry("an-extension", { kept: "out of the chat" });
+	await session.appendMessage({ role: "user", content: "again", timestamp: 2 });
+	await withTaskView(
+		{ getSessionId: () => session.getSessionId(), getEntries: () => session.getEntries() },
+		async (view, taskId) => {
+			const page = await view.readTaskTranscript(taskId);
+			assert.ok(page.ok);
+			assert.deepEqual(
+				page.value.messages.map((message) =>
+					message.role === "custom" ? `${message.customType}: ${message.content}` : message.role,
+				),
+				["user", "atomic.notice: Retry failed after 1 attempts: overloaded_error", "user"],
+			);
+		},
+	);
+});

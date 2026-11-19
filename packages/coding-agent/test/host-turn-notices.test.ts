@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
+import { type HostNotice, hostNoticeForEvent } from "../src/core/host-notices.ts";
 import { convertToLlm } from "../src/core/messages.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -173,4 +174,98 @@ test("a chat that reads the transcript while the line is still being saved shows
 	saving.resolve();
 	await prompt;
 	assert.deepEqual(notices(), expected, "once it is saved");
+});
+
+test("a cancelled manual compaction reopens as the line the chat showed (#5649)", async () => {
+	const { manager, reopen } = await persistedSession();
+	const started = Promise.withResolvers<void>();
+	const harness = await createHarness({
+		sessionManager: manager,
+		extensionFactories: [
+			(pi) => {
+				pi.on("session_before_compact", async (event) => {
+					started.resolve();
+					await new Promise<void>((resolve) =>
+						event.signal.addEventListener("abort", () => resolve(), { once: true }),
+					);
+					return { cancel: true };
+				});
+			},
+		],
+	});
+	cleanups.push(() => harness.cleanup());
+	harness.setResponses([fauxAssistantMessage("hi")]);
+	await harness.session.prompt("hello");
+
+	const compaction = harness.session.compact().catch((error: Error) => error);
+	await started.promise;
+	harness.session.abortCompaction();
+	assert.match(String(await compaction), /Compaction cancelled/);
+
+	const live = liveRows(harness);
+	assert.deepEqual(live, ["reply: hi", "atomic.notice error: Compaction cancelled"]);
+	await vi.waitFor(async () =>
+		assert.deepEqual(rows((await reopen()).buildSessionProjection("transcript").messages), live),
+	);
+});
+
+test("which session events leave a line in the chat, and which say nothing (#5649)", () => {
+	const snapshot = (code: string) =>
+		({
+			type: "worktree_snapshot_unavailable",
+			reason: { name: "WorkspaceSnapshotError", code, message: `${code} reason` },
+		}) as never;
+	const cases: Array<[unknown, string | undefined, HostNotice | undefined]> = [
+		[{ type: "auto_retry_end", success: true, attempt: 2 }, undefined, undefined],
+		[
+			{ type: "auto_retry_end", success: false, attempt: 2 },
+			undefined,
+			{ level: "error", text: "Retry failed after 2 attempts: Unknown error" },
+		],
+		[
+			{ type: "agent_continue_error", source: "post_compaction", errorMessage: "provider failed" },
+			undefined,
+			{ level: "error", text: "provider failed" },
+		],
+		[
+			{ type: "agent_continue_error", source: "post_compaction", errorMessage: "held", queuedMessage: true },
+			undefined,
+			undefined,
+		],
+		[
+			{ type: "compaction_end", reason: "manual", aborted: true, willRetry: false },
+			undefined,
+			{ level: "error", text: "Compaction cancelled" },
+		],
+		[
+			{ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false },
+			undefined,
+			{ level: "status", text: "Auto-compaction cancelled" },
+		],
+		[
+			{ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false, manualTakeoverPending: true },
+			undefined,
+			undefined,
+		],
+		[
+			{ type: "compaction_end", reason: "threshold", aborted: false, willRetry: false, errorMessage: "failed" },
+			"manual",
+			undefined,
+		],
+		[
+			{ type: "compaction_end", reason: "overflow", aborted: false, willRetry: false, errorMessage: "failed" },
+			"overflow",
+			{ level: "error", text: "failed" },
+		],
+		[
+			{ type: "compaction_end", reason: "manual", aborted: false, willRetry: false, result: {} },
+			undefined,
+			undefined,
+		],
+		[snapshot("not-a-repository"), undefined, undefined],
+		[snapshot("blob-store-unsupported"), undefined, { level: "warning", text: "blob-store-unsupported reason" }],
+		[{ type: "agent_end", messages: [] }, undefined, undefined],
+	];
+	for (const [event, compactionReason, expected] of cases)
+		assert.deepEqual(hostNoticeForEvent(event as never, compactionReason), expected, JSON.stringify(event));
 });
