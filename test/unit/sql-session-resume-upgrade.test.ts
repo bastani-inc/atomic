@@ -165,6 +165,59 @@ describe("first resume after an upgrade from a version-5 index (#5554)", () => {
 		});
 	}
 
+	it("publishes no upgrade of a cut another writer extended while it read", async () => {
+		const directory = makeTempDirectory("atomic-resume-upgrade-");
+		directories.push(directory);
+		const path = join(directory, "sessions.sqlite");
+		const opened: SqliteDatabase[] = [];
+		const open = async () => {
+			const database = await openNodeSqliteDatabase(path);
+			opened.push(database);
+			return database;
+		};
+		try {
+			const setup = await open();
+			const created = await SqlSessionStore.open(setup);
+			await created.create(header, entries);
+			await created.close();
+			await keepOnly(setup, fixture.rebuilt);
+			const extra = {
+				type: "message",
+				id: "appended",
+				parentId: entries.at(-1)!.id,
+				timestamp: header.createdAt,
+				message: { role: "user", content: "appended while the upgrade read", timestamp: 1 },
+			} as SessionEntry;
+			const writer = await SqlSessionStore.open(await open());
+			const reader = await open();
+			const all = reader.all.bind(reader);
+			let appended = false;
+			reader.all = async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+				const rows = await all<T>(sql, ...params);
+				if (!appended && rows.some((row) => "resume_type" in row)) {
+					appended = true;
+					await writer.append(header.id, [extra], { expectSeq: entries.length });
+				}
+				return rows;
+			};
+			const store = await SqlSessionStore.open(reader);
+			const resume = await store.readResume(header.id, undefined, { deferChildRecords: true });
+			await store.close();
+			await writer.close();
+			assert.ok(appended);
+			assert.equal(resume.lastSeq, entries.length + 1);
+			assert.equal(resume.lastEntryId, extra.id);
+			const state = await summaryState(setup);
+			assert.equal((state.windowResume ?? state.resume)?.seq, entries.length + 1);
+
+			await keepOnly(setup, undefined);
+			const rebuilt = await firstResume(open);
+			assert.deepEqual(resume, rebuilt.resume);
+		} finally {
+			for (const database of opened) await database.close();
+		}
+	});
+
 	it.skipIf(postgresSkipReason !== undefined)("upgrades the same way on Postgres", async () => {
 		await withPostgresDatabase(({ open }) => upgradeMatchesRebuild(() => open(), fixture.rebuilt));
 	});
