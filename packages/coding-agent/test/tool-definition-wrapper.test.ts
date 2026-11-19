@@ -1,10 +1,10 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
-import { getAllTools } from "../src/core/agent-session-state.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createToolDefinitionFromAgentTool, wrapToolDefinition } from "../src/core/tools/tool-definition-wrapper.ts";
 import type { ExtensionContext, ToolDefinition } from "../src/index.ts";
+import { createHarness } from "./suite/harness.js";
 
 const parameters = Type.Object({ value: Type.Number() });
 const result = (value: number) => ({ content: [{ type: "text" as const, text: String(value) }], details: { value } });
@@ -117,18 +117,7 @@ describe("tool definition wrappers", () => {
 		expect(Object.keys(grammarSampling.variants)).toEqual(["openai_lark", "openai_regex"]);
 	});
 
-	test("preserves optional-property state through session inspection and a bundled tool", () => {
-		const sourceInfo = {
-			path: "<test>",
-			source: "test",
-			scope: "user" as const,
-			origin: "top-level" as const,
-			configurationOrigin: "atomic" as const,
-		};
-		const inspect = (definition: ToolDefinition) =>
-			getAllTools.call({
-				_toolDefinitions: new Map([[definition.name, { definition, sourceInfo }]]),
-			} as never)[0]!;
+	test("preserves optional-property state through session inspection and a bundled tool", async () => {
 		const base: ToolDefinition = {
 			name: "inspect",
 			label: "Inspect",
@@ -142,21 +131,26 @@ describe("tool definition wrappers", () => {
 			{ ...base, constrainedSampling: false as const },
 			{ ...base, constrainedSampling: grammarSampling },
 		];
-		for (const [index, definition] of definitions.entries()) {
-			const inspected = inspect(definition);
-			expect(Object.hasOwn(inspected, "constrainedSampling")).toBe(index !== 0);
-			expect(inspected.constrainedSampling).toBe(definition.constrainedSampling);
-		}
-
+		const probes = definitions.map((definition, index) => ({ ...definition, name: `inspect${index}` }));
 		// PR #2939 makes bundled read prefer strict JSON-schema sampling.
 		const definition = createReadToolDefinition(process.cwd());
 		expect(definition.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
 		const wrapped = wrapToolDefinition(definition);
 		const synthesized = createToolDefinitionFromAgentTool(wrapped);
-		const bundledRead = inspect(synthesized);
-		for (const tool of [wrapped, synthesized, bundledRead]) {
-			expect(Object.hasOwn(tool, "constrainedSampling")).toBe(true);
-			expect(tool.constrainedSampling).toBe(definition.constrainedSampling);
+		const h = await createHarness({ customTools: [...probes, synthesized] });
+		try {
+			const inspected = new Map(h.session.getAllTools().map((tool) => [tool.name, tool]));
+			for (const [index, probe] of probes.entries()) {
+				const tool = inspected.get(probe.name)!;
+				expect(Object.hasOwn(tool, "constrainedSampling")).toBe(index !== 0);
+				expect(tool.constrainedSampling).toBe(probe.constrainedSampling);
+			}
+			for (const tool of [wrapped, synthesized, inspected.get(synthesized.name)!]) {
+				expect(Object.hasOwn(tool, "constrainedSampling")).toBe(true);
+				expect(tool.constrainedSampling).toBe(definition.constrainedSampling);
+			}
+		} finally {
+			await h.cleanup();
 		}
 	});
 
