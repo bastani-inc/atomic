@@ -7,6 +7,30 @@ description: "Seven ways to split work, keep track of the children, and verify w
 
 Give each child one question or deliverable, its inputs, its edit permissions, and a check for success. Assign conflicting edits to separate worktrees. Let the parent make decisions and run checks; a child saying “done” isn't proof. Each example below is a **short codemode call in the parent chat**, not a script that stays alive until every phase finishes. On returning to the session, use `status` and the [saved receipts](/orchestration#what-survives-interruption) before starting more children.
 
+## Prompt anatomy
+
+A child should be able to act on its assignment without knowing the parent's whole plan. Give it the objective, the reason it matters, the inputs it can actually read, what it may change, and what is out of scope. Specify the deliverable: a verdict with file and line references, a named result file, or a tested commit. For example:
+
+> Check the Windows install instructions in `docs/install.md` against the CLI flags in this checkout. Report each discrepancy as a command, its documented behavior, and the behavior you observed. Return “no discrepancies” if all the commands agree. Don't edit files or install software.
+
+### Done criteria
+
+State what must be true of the result, not just what the worker should attempt. For a fix, name the changed behavior, a nearby behavior that must stay unchanged, and the checks that demonstrate both. For a review, decide how to tell “checked and found nothing” from “couldn't check.” Have the parent inspect the output or rerun a check against the same candidate before using it. See [Verification and evidence](/verification) for repeatable scenarios and reporting a gap.
+
+### Stop conditions
+
+Agree when **not** to take the next step: an attempt limit, a missing prerequisite, contradictory inputs, or an action outside the user's authorization. If a repair would change a public API, migrate data, or publish something the user didn't request, stop and ask. If a check fails within the agreed scope, give the next attempt the observed failure rather than a broader assignment.
+
+## Design checklist
+
+Before launching a batch, check the few decisions that would change how you run it:
+
+- **Fit:** Is the result clear? Would a single direct check answer the question more cheaply than delegation?
+- **Assignments:** Which tasks are independent? Give each writer a distinct worktree or set of files; launch a dependent task only after its prerequisite is verified.
+- **Handoffs:** What input or artifact does each child need? Name who produces it, where to find it, and how the parent will validate its format. Pass file paths instead of entire transcripts.
+- **Recovery:** Record child IDs, the candidate revision, and the next check. On restart, reconcile them with current task state before repeating an external action.
+- **Acceptance:** Which observable result means success? What bounds repairs or requires a human decision? Keep permission to publish separate from permission to implement.
+
 ## Classify-and-act
 
 Use this when the next action depends on the kind of input. For example, have a read-only child classify a report as `bug`, `docs`, or `unclear`. Save its receipt. After its notice, validate the label before dispatching. In this example the parent has saved the reviewed label and report:
@@ -46,7 +70,7 @@ store("date:review", r.tasks);
 return r.tasks;
 ```
 
-Run the relevant test in the parent, check the tool's actual exit code, and send an observed failure back for repair. After interruption, check that the reviewed revision still matches. For an interface, [exercise the real UI](/computer-use) rather than accepting a screenshot of a different environment.
+Run the relevant test in the parent, check the tool's actual exit code, and send an observed failure back for repair. After interruption, check that the reviewed revision still matches. If using several reviewers, have each record an independent verdict before one bounded round of exchanging evidence via Intercom. A majority vote does not invalidate a reproducible counterexample. For an interface, [exercise the real UI](/computer-use) rather than accepting a screenshot of a different environment.
 
 ## Generate-and-filter
 

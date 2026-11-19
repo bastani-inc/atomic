@@ -1,6 +1,6 @@
 ---
 title: Build with Atomic
-description: Extend Atomic with skills, subagents, intercom, workflows, extensions, prompt templates, themes, packages, custom models and providers, and programmatic integrations.
+description: Extend Atomic with skills, subagents, Intercom, codemode, extensions, prompt templates, themes, packages, custom models and providers, and programmatic integrations.
 ---
 
 # Build with Atomic
@@ -17,7 +17,7 @@ Work down this list and stop at the first mechanism that solves your problem.
 2. [Skills](/skills) — on-demand instructions the agent loads when a task matches. Markdown plus optional scripts.
 3. [Subagents](/subagents) — delegate a focused, bounded task to a child agent.
 4. [Intercom](/intercom) — coordinate several sessions on one machine.
-5. [Workflows](/workflows) — multi-stage, resumable engineering loops with gates and artifacts.
+5. [Orchestration](/orchestration) — use codemode to launch children, check results, and pick up after an interruption.
 6. [Extensions](/extensions) — TypeScript that adds tools, commands, events, and custom UI when nothing lighter fits.
 7. [Atomic packages](/packages) — bundle and distribute the result.
 
