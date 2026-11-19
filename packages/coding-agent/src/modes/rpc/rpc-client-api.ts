@@ -15,12 +15,17 @@ import type { SessionRecoveryReason } from "../../core/extensions/index.js";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
 import type { SessionEntry, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { OversizedSessionEntry } from "../../core/storage/session/types.js";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type {
 	RpcAutocompleteItem,
 	RpcCommand,
+	RpcContextWindow,
+	RpcHistoryChunk,
+	RpcHistoryPage,
 	RpcLoginProviderResult,
 	RpcLogoutProviderResult,
+	RpcMirrorPosition,
 	RpcModelCatalog,
 	RpcModelRefreshResult,
 	RpcPersistedModelDefaults,
@@ -263,11 +268,38 @@ export abstract class RpcClientApi {
 			await this.request({ type: "get_fork_messages" }),
 		).messages;
 	}
-	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
-		return this.data(await this.request({ type: "get_entries", since }));
+	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }>;
+	async getEntries(options: {
+		readonly windowOnly: true;
+		readonly mirror?: RpcMirrorPosition;
+	}): Promise<RpcContextWindow>;
+	async getEntries(
+		options?: string | { readonly windowOnly: true; readonly mirror?: RpcMirrorPosition },
+	): Promise<RpcContextWindow> {
+		return this.data(
+			await this.request(
+				typeof options === "object"
+					? { type: "get_context_window", ...(options.mirror && { mirror: options.mirror }) }
+					: { type: "get_entries", since: options },
+			),
+		);
+	}
+	async getHistoryPage(
+		options: {
+			readonly cursor?: string;
+			readonly fromSeq?: number;
+			readonly toSeq?: number;
+			readonly pageEntries?: number;
+			readonly privateCut?: import("../../core/storage/session/memory-session-store.js").PrivateMirrorCut;
+		} = {},
+	): Promise<RpcHistoryPage> {
+		return this.data(await this.request({ type: "get_history_page", ...options }));
 	}
 	async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
 		return this.data(await this.request({ type: "get_tree" }));
+	}
+	async getHistoryChunk(reference: OversizedSessionEntry, offset = 0): Promise<RpcHistoryChunk> {
+		return this.data(await this.request({ type: "get_history_chunk", reference, offset }));
 	}
 	async getLastAssistantText(): Promise<string | null> {
 		return this.data<{ text: string | null }>(await this.request({ type: "get_last_assistant_text" })).text;

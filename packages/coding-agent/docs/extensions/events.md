@@ -266,6 +266,8 @@ pi.on("session_compact_failed", async (event) => {
 
 #### session_before_tree / session_tree
 
+When a user navigates with `/tree`, `session_before_tree` receives the real entries of the abandoned branch segment in `event.preparation.entriesToSummarize`, even if the user did not request a summary. This is a temporary exception to the context-window limit for an explicit navigation with a handler or summarizer. Without either, Atomic does not load that segment. The manager does not retain those entries after navigation; if your extension keeps the array, it owns that memory.
+
 Fired on `/tree` navigation. See [Sessions](/sessions) for tree navigation concepts.
 
 ```typescript

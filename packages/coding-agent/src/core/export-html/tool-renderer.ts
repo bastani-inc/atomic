@@ -25,6 +25,7 @@ export interface ToolHtmlRendererDeps {
 }
 
 export interface ToolHtmlRenderer {
+	releaseCall?(toolCallId: string): void;
 	/** Render a tool call to HTML. Returns undefined if tool has no custom renderer. */
 	renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined;
 	/** Render a tool result to collapsed/expanded HTML. Returns undefined if tool has no custom renderer. */
@@ -101,6 +102,13 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	};
 
 	return {
+		releaseCall(id) {
+			renderedCallComponents.delete(id);
+			renderedResultComponents.delete(id);
+			canonicalResultCallHtml.delete(id);
+			renderedStates.delete(id);
+			renderedArgs.delete(id);
+		},
 		renderCall(toolCallId: string, toolName: string, args: unknown): string | undefined {
 			renderedArgs.set(toolCallId, args);
 			const canonicalCallHtml = canonicalResultCallHtml.get(toolCallId);

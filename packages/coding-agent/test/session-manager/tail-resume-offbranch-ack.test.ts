@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { buildSessionProjection, getSessionLeafId, SessionManager } from "../../src/core/session-manager.ts";
 import type { SqliteDatabase } from "../../src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.ts";
 import { JsonlSessionStore } from "../../src/core/storage/session/jsonl-session-store.ts";
@@ -125,13 +125,15 @@ async function restoredAdmissions(manager: SessionManager): Promise<string[]> {
 }
 
 async function assertTailMatchesWhole(store: SessionStore, id: string): Promise<void> {
-	const whole = await SessionManager.open(store, id, undefined, { history: "full" });
+	const entries = [...(await store.load(id)).entries];
+	const leaf = getSessionLeafId(entries);
+	const pending = pendingTaskCompletionIntents({ getEntries: () => entries });
 	const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
 	assert.equal(tail.hasFullHistory(), false);
-	assert.deepEqual(pendingTaskCompletionIntents(whole), []);
-	assert.deepEqual(pendingTaskCompletionIntents(tail), pendingTaskCompletionIntents(whole));
-	assert.deepEqual(tail.buildSessionContext(), whole.buildSessionContext());
-	assert.equal(tail.getLeafId(), whole.getLeafId());
+	assert.deepEqual(pending, []);
+	assert.deepEqual(pendingTaskCompletionIntents(tail), pending);
+	assert.deepEqual(tail.buildSessionProjection(), buildSessionProjection(entries, leaf, undefined, id));
+	assert.equal(tail.getLeafId(), leaf);
 	assert.deepEqual(await restoredAdmissions(tail), []);
 }
 

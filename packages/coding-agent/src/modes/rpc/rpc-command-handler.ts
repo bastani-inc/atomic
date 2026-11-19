@@ -12,8 +12,11 @@ import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
+import { firstHistoryCursor } from "../../core/storage/session/history-pages.js";
+import { SESSION_HISTORY_SCAN_ENTRIES } from "../../core/storage/session/types.js";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
+import { sliceTail } from "../../core/tools/truncate.ts";
 import { isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
 import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
@@ -114,6 +117,9 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "cancel_login_provider":
 		case "clear_queue":
 		case "get_entries":
+		case "get_context_window":
+		case "get_history_page":
+		case "get_history_chunk":
 		case "get_messages":
 		case "get_state":
 		case "pause_queued_messages":
@@ -691,33 +697,128 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "clone", { cancelled: result.cancelled });
 			}
 
-			case "get_fork_messages": {
-				await session.sessionManager.loadFullHistory?.();
-				const messages = session.getUserMessagesForForking();
-				return createRpcSuccessResponse(id, "get_fork_messages", { messages });
-			}
-
-			case "get_entries": {
-				const sessionManager = session.sessionManager;
-				await sessionManager.loadFullHistory?.();
-				let entries = sessionManager.getEntries();
-				if (command.since !== undefined) {
-					const sinceIndex = entries.findIndex((e) => e.id === command.since);
-					if (sinceIndex === -1) {
-						return createRpcErrorResponse(id, "get_entries", `Entry not found: ${command.since}`);
+			case "get_context_window": {
+				const manager = session.sessionManager;
+				const entries = manager.getEntries();
+				const privateArchive = manager.getPrivateMirrorArchive(entries, command.mirror);
+				const leafId = manager.getLeafId();
+				// A small append and its pinned store bytes reach the host in one round trip. Capture live
+				// objects before waiting for that read; an extension can change them across the await.
+				const hasDelta = privateArchive?.fromSeq !== undefined && privateArchive.fromSeq <= privateArchive.lastSeq!;
+				const overrides =
+					command.mirror && privateArchive
+						? manager.getPrivateMirrorChanges(entries, privateArchive.seqs)
+						: undefined;
+				const send = overrides ? [...overrides.values()] : entries;
+				const window = hasDelta && send.length ? (JSON.parse(JSON.stringify(send)) as typeof entries) : send;
+				const preview: string[] = [];
+				if (hasDelta && command.mirror?.preview && privateArchive.fromSeq === 1) {
+					// Use the *effective* window so edited/omitted assistant text cannot reappear in the preliminary frame.
+					const messages = manager.buildSessionContext().messages;
+					for (let i = messages.length - 1; i >= 0 && preview.length < 3; i--) {
+						const m = messages[i]!;
+						if (m.role !== "user" && m.role !== "assistant") continue;
+						const text =
+							typeof m.content === "string" ? m.content : m.content.findLast((b) => b.type === "text")?.text;
+						if (text) preview.unshift(sliceTail(text, 2048));
 					}
-					entries = entries.slice(sinceIndex + 1);
 				}
-				return createRpcSuccessResponse(id, "get_entries", { entries, leafId: sessionManager.getLeafId() });
+				const bytes =
+					hasDelta &&
+					privateArchive.fromSeq === 1 &&
+					privateArchive.epoch !== undefined &&
+					privateArchive.lastSeq !== undefined
+						? manager.readPrivateMirrorBytes({
+								sessionId: privateArchive.sessionId,
+								epoch: privateArchive.epoch,
+								fromSeq: 1,
+								lastSeq: privateArchive.lastSeq,
+							})
+						: undefined;
+				const first = bytes
+					? { done: false, value: { items: [], privateBytes: bytes } }
+					: hasDelta
+						? await manager
+								.readHistory({ cursor: privateArchive.cursor, pageEntries: SESSION_HISTORY_SCAN_ENTRIES })
+								.next()
+						: undefined;
+				return createRpcSuccessResponse(id, command.type, {
+					entries: window,
+					leafId,
+					...(privateArchive && {
+						privateArchive: {
+							...privateArchive,
+							...(overrides && { seqs: [...overrides.keys()], overridesOnly: true }),
+							...(privateArchive.fromSeq === 1 &&
+								entries.length === privateArchive.lastSeq && { completeWindow: true }),
+							...(preview.length && { preview }),
+							...(first && !first.done && { firstPage: first.value }),
+						},
+					}),
+				});
 			}
 
-			case "get_tree": {
-				const sessionManager = session.sessionManager;
-				await sessionManager.loadFullHistory?.();
-				return createRpcSuccessResponse(id, "get_tree", {
-					tree: sessionManager.getTree(),
-					leafId: sessionManager.getLeafId(),
+			case "get_history_chunk": {
+				const next = await session.sessionManager
+					.readHistoryChunks(command.reference, { offset: command.offset })
+					.next();
+				const bytes = next.done ? new Uint8Array() : next.value;
+				const end = command.offset + bytes.byteLength;
+				return createRpcSuccessResponse(id, command.type, {
+					data: Buffer.from(bytes).toString("base64"),
+					...(end < command.reference.bytes ? { nextOffset: end } : {}),
 				});
+			}
+			case "get_history_page": {
+				const cut = command.privateCut;
+				const bytes = cut ? session.sessionManager.readPrivateMirrorBytes(cut) : undefined;
+				if (bytes) return createRpcSuccessResponse(id, command.type, { items: [], privateBytes: bytes });
+				const cursor = cut
+					? firstHistoryCursor(cut.sessionId, cut.epoch, cut.lastSeq, cut.fromSeq)
+					: command.cursor;
+				const first = await session.sessionManager
+					.readHistory({
+						fromSeq: command.fromSeq,
+						toSeq: command.toSeq,
+						cursor,
+						pageEntries: command.pageEntries,
+					})
+					.next();
+				return createRpcSuccessResponse(id, command.type, first.done ? { items: [] } : first.value);
+			}
+			case "get_entries": {
+				const manager = session.sessionManager;
+				const leafId = manager.getLeafId();
+				let entries = manager.getEntries();
+				if (command.since !== undefined) {
+					const i = entries.findIndex((entry) => entry.id === command.since);
+					if (i < 0) {
+						const seqs = entries.map((e) => manager.getEntrySeq(e.id) ?? 0);
+						const seq = await manager.findEntrySeq(command.since);
+						if (seq === undefined)
+							return createRpcErrorResponse(id, command.type, `Entry not found: ${command.since}`);
+						entries = entries.filter((_e, k) => seqs[k]! > seq);
+					} else entries = entries.slice(i + 1);
+				}
+				return createRpcSuccessResponse(id, command.type, { entries, leafId });
+			}
+			case "get_tree":
+				return createRpcSuccessResponse(id, command.type, {
+					tree: session.sessionManager.getTree(),
+					leafId: session.sessionManager.getLeafId(),
+				});
+			case "get_fork_messages": {
+				if (session.sessionManager.hasFullHistory())
+					return createRpcSuccessResponse(id, command.type, { messages: session.getUserMessagesForForking() });
+				const { ForkPromptArchive } = await import("../interactive/components/user-message-selector-archive.js");
+				const { archive, prompts } = await ForkPromptArchive.open(session.sessionManager);
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						messages: prompts.map(({ entryId, text }) => ({ entryId, text })),
+					});
+				} finally {
+					archive.dispose();
+				}
 			}
 
 			case "get_last_assistant_text": {

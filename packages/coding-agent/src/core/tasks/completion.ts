@@ -702,7 +702,7 @@ export class TaskCompletionOutbox {
 
 	/** Whether the notice of a completion is in this session, as when a process ended before acknowledging it. */
 	private noticeSaved(completionId: string): boolean {
-		if (this.session.getSessionRecoveryState?.().admissionKeys.includes(completionId)) return true;
+		if (this.session.getAdmissionKeys?.().has(completionId)) return true;
 		return this.session.getEntries().some(
 			(entry) =>
 				entry.type === "custom_message" &&

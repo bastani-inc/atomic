@@ -8,7 +8,12 @@ import {
 	newerRelease,
 	observeRelease,
 } from "./released-child-receipts.js";
-import { childReleaseKey, reservationRecordLookup, subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import {
+	childReleaseKey,
+	reservationRecordLookup,
+	subagentChildRecordsOf,
+	subagentChildStandingsOf,
+} from "./subagent-child-card-state.js";
 import { subagentChildRequestEvents } from "./subagent-child-owner.js";
 import { SUBAGENT_CHILD_RELEASED_STATUS, type SubagentChildRecord } from "./subagent-child-records.js";
 
@@ -435,10 +440,13 @@ export function markEndedChildren(events: IntercomEventBus, children: readonly E
 	});
 }
 
-/** Report every ended child of `ownerSessionId` at once, as after a restart or a reconnect. */
+/**
+ * Report every ended child of `ownerSessionId` at once, as after a restart or a reconnect: also those whose records left
+ * the owner's window, as they stand, without reading them.
+ */
 export function markEndedChildrenOf(events: IntercomEventBus, ownerSessionId: string): Promise<void> {
 	const marks: EndedChildMark[] = [];
-	for (const record of subagentChildRecordsOf(ownerSessionId)) {
+	for (const record of subagentChildStandingsOf(ownerSessionId)) {
 		const mark = endedChildMark(record);
 		if (mark !== undefined) marks.push(mark);
 	}

@@ -60,7 +60,9 @@ test("a forked subagent writes the captured context and settings, not the pre-cl
 	assert.deepEqual(saved.buildSessionContext(), expected);
 	assert.equal(saved.getHeader()?.parentSessionId, parent.getSessionId());
 	assert.equal(saved.getEntry(retired), undefined, "the retired conversation was copied into the child's session");
-	assert.ok((await SessionManager.open(store, parent.getSessionId())).getEntry(retired));
+	const original = await SessionManager.open(store, parent.getSessionId());
+	assert.equal(await original.findEntrySeq(retired), 3, "the retired source remains in the parent's archive");
+	assert.equal(await saved.findEntrySeq(retired), undefined, "the child archive did not copy the retired turn");
 });
 
 test("a store without a fork-window reader keeps its original child entries byte for byte (#5500)", async () => {
@@ -90,6 +92,13 @@ test("an uncovered turn survives without copying the payload of the entry the cl
 });
 
 const tool = (name: string) => ({ name, description: name, parameters: { type: "object" as const, properties: {} } });
+
+/**
+ * Whether every reopened session holds the extension entries and system messages its branch recorded before the
+ * latest boundary as resident state. Until #5598 makes them resident, a compacted session reopens at its context
+ * window without them, so the reopened-child checks of #5979 below run only once this is true.
+ */
+const REOPENED_SESSIONS_KEEP_PRE_BOUNDARY_STATE = true;
 
 for (const backend of ["memory", "sqlite", "jsonl"] as const)
 	test(`a ${backend} fork keeps the settings, tool history and extension state its branch recorded before a clear (#5500)`, async () => {
@@ -136,11 +145,30 @@ for (const backend of ["memory", "sqlite", "jsonl"] as const)
 			assert.equal(state(full).recorded.length, 4);
 			const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
 			assert.ok(child);
-			for (const manager of [child, await SessionManager.open(store, child.getSessionId())]) {
+			for (const manager of [
+				child,
+				...(REOPENED_SESSIONS_KEEP_PRE_BOUNDARY_STATE
+					? [await SessionManager.open(store, child.getSessionId())]
+					: []),
+			]) {
 				assert.deepEqual(state(manager), state(full));
 				assert.equal(manager.buildSessionContext().thinkingLevel, "high");
 				assert.equal(manager.getEntry(retired), undefined, "the retired conversation was copied into the child");
 			}
+			// Reopened, the child holds what the reopened complete-branch copy holds, and it saved what that copy recorded.
+			const reopened = await SessionManager.open(store, child.getSessionId());
+			assert.deepEqual(state(reopened), state(await SessionManager.open(store, full.getSessionId())));
+			assert.equal(reopened.getEntry(retired), undefined, "the retired conversation was copied into the child");
+			assert.deepEqual(
+				(await store.load(child.getSessionId())).entries.flatMap((e) =>
+					e.type === "message" && e.message.role === "system"
+						? [e.message]
+						: e.type === "custom" && e.customType === "todo-extension"
+							? [e.data]
+							: [],
+				),
+				state(full).recorded,
+			);
 		} finally {
 			await store.close();
 			await db?.close();
@@ -592,7 +620,7 @@ for (const setup of ["current", "rebranched", "no-acknowledgement", "nonmatching
 		}
 	});
 
-test("a mentioned pre-clear tool output keeps the original branch and opaque receipt bytes (#5500)", async () => {
+test("a mentioned pre-clear tool output keeps its original opaque receipt bytes without copying unrelated messages (#5500, #5594)", async () => {
 	const store = new MemorySessionStore();
 	const parent = await SessionManager.create(store, process.cwd());
 	const bytes = Buffer.from("saved tool output");
@@ -609,7 +637,14 @@ test("a mentioned pre-clear tool output keeps the original branch and opaque rec
 	const original = (await store.load(parent.getSessionId())).entries;
 	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
 	assert.ok(child);
-	assert.equal(JSON.stringify((await store.load(child.getSessionId())).entries), JSON.stringify(original));
+	const copied = (await store.load(child.getSessionId())).entries;
+	const receipt = original.find((e) => e.type === "custom" && e.customType === "atomic.tool-output")!;
+	assert.deepEqual(
+		copied.find((e) => e.id === receipt.id),
+		receipt,
+	);
+	assert.ok(!copied.some((e) => e.type === "message" && e.message.role === "user" && e.message.content === "retired"));
+	assert.deepEqual(child.buildSessionContext(), parent.buildSessionContext());
 	await store.delete(parent.getSessionId());
 	assert.deepEqual(Buffer.from((await store.getBlob(child.getSessionId(), hash))!), bytes);
 });

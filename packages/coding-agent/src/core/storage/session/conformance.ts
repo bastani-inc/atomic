@@ -13,9 +13,12 @@ import {
 	type SessionTextField,
 	StoreClosedError,
 } from "./errors.js";
+import { readSessionHistory, readSessionHistoryChunks } from "./history-pages.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
 import {
 	SESSION_FORMAT_VERSION,
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
 	type SessionHistoryTotals,
 	type SessionRecordHeader,
 	type SessionStore,
@@ -72,7 +75,7 @@ function notFound(sessionId: string): (error: Error) => boolean {
 
 function conflict(sessionId: string, expectedSeq: number, actualSeq: number): (error: Error) => boolean {
 	return (error) => {
-		assert.ok(error instanceof SessionConflictError);
+		assert.ok(error instanceof SessionConflictError, `${error.name}: ${error.message}`);
 		assert.equal(error.sessionId, sessionId);
 		assert.equal(error.expectedSeq, expectedSeq);
 		assert.equal(error.actualSeq, actualSeq);
@@ -298,6 +301,20 @@ export function registerSessionStoreConformance(
 				assert.deepEqual(await store.load("session"), before);
 			});
 
+			check(
+				"round-trips long Unicode IDs on create and append without changing the links (#5554)",
+				async (store, reload) => {
+					const id = "漢".repeat(1500);
+					const first = message(id + "a", "first");
+					const next = { ...message(id + "b", "next"), parentId: first.id };
+					await store.create(header(id), [first]);
+					await store.append(id, [next], { expectSeq: 1 });
+					store = await reload(store);
+					assert.equal((await store.readHeader(id))?.id, id);
+					assert.deepEqual((await store.readRange!(id, 1, 2)).entries, [first, next]);
+				},
+			);
+
 			check("admits only one of two writers using the same sequence", async (store, reload) => {
 				await store.create(header(), []);
 				const attempts = await Promise.allSettled([
@@ -312,6 +329,65 @@ export function registerSessionStoreConformance(
 				store = await reload(store);
 				assert.equal((await store.load("session")).lastSeq, 1);
 			});
+
+			check(
+				"a header-only change preserves every entry and fences earlier writers (#5554)",
+				async (store, reload) => {
+					const entries = [message("first", "一\u2028\u2029"), message("last", "e\u0301")];
+					const original = await store.create(header(), entries);
+					store = await reload(store);
+					const updated = {
+						...header(),
+						internal: true,
+						workflow: { runId: "run", stageId: "stage", stageName: "Stage" },
+					} as const;
+					const options = { expectSeq: 2, ...(original.epoch === undefined ? {} : { epoch: original.epoch }) };
+					const result = await (await import("./snapshot-history.js")).updateStoredHeader(store, updated, options);
+					assert.equal(result.lastSeq, 2);
+					if (result.epoch !== undefined && original.epoch !== undefined) {
+						assert.notEqual(result.epoch, original.epoch);
+						await assert.rejects(
+							store.append("session", [message("stale", "no")], { expectSeq: 2, epoch: original.epoch }),
+							conflict("session", 2, 2),
+						);
+					}
+					store = await reload(store);
+					assert.deepEqual((await store.load("session")).entries, entries);
+					assert.deepEqual(await store.readHeader("session"), updated);
+				},
+			);
+
+			check(
+				"streams exact bytes of an oversized historical entry and rejects its reference after replacement (#5554)",
+				async (store, reload) => {
+					const entry = message("u", "abc漢😀\u0301".repeat(Math.ceil(SESSION_HISTORY_PAGE_BYTES / 10)));
+					const bytes = Buffer.from(JSON.stringify(entry));
+					assert.ok(bytes.length > SESSION_HISTORY_PAGE_BYTES);
+					const created = await store.create(header(), [entry]);
+					store = await reload(store);
+					const first = await readSessionHistory(store, "session").next();
+					const ref = !first.done && first.value.items[0];
+					assert.ok(ref && "kind" in ref && ref.kind === "oversized");
+					assert.equal(ref.bytes, bytes.length);
+					assert.equal(ref.seq, 1);
+					const digest = createHash("sha256");
+					for await (const part of readSessionHistoryChunks(store, ref)) {
+						assert.ok(part.byteLength > 0 && part.byteLength <= SESSION_HISTORY_CHUNK_BYTES);
+						digest.update(part);
+					}
+					assert.equal(digest.digest("hex"), createHash("sha256").update(bytes).digest("hex"));
+					await store.replace("session", header(), [message("other", "replacement")], {
+						expectSeq: 1,
+						...(created.epoch === undefined ? {} : { epoch: created.epoch }),
+					});
+					await assert.rejects(
+						readSessionHistoryChunks(store, ref, { offset: 1 }).next(),
+						conflict("session", 1, 1),
+					);
+					if (store.readEntrySizes && store.readEntryChunk && store.readRange && created.epoch !== undefined)
+						await assert.rejects(store.readRange("session", 1, 1, created.epoch), conflict("session", 1, 1));
+				},
+			);
 
 			check("replaces header and entries including parent and workflow metadata", async (store, reload) => {
 				await store.create(header(), [message("old", "old")]);
@@ -1354,6 +1430,102 @@ export function registerSessionStoreConformance(
 					],
 				);
 			});
+
+			check(
+				"locates snapshot entries by its index and reads them in selected pages (#5554)",
+				async (store, reload) => {
+					const record = (id: string, head: string) => ({
+						version: 1,
+						id,
+						root: "/r",
+						head,
+						tree: `t-${id}`,
+						chain: [],
+					});
+					const snapshot = (
+						id: string,
+						root: string,
+						snapshotId: string,
+						fields: Record<string, unknown> = {},
+					) => ({
+						type: "worktree_snapshot" as const,
+						id,
+						root,
+						snapshotId,
+						...fields,
+					});
+					const restore = { from: "/r", to: "/moved", snapshotId: "a", tree: "t-a", restoredAt: createdAt };
+					const entries = chained([
+						tailEntry.user("u1"),
+						snapshot("s1", "/r", "a", { snapshot: record("a", "1") }),
+						tailEntry.user("u2"),
+						snapshot("s2", "/r", "b", { snapshot: record("b", "2") }),
+						snapshot("s3", "/r", "a"),
+						snapshot("s4", "/moved", "a", { restore }),
+						tailEntry.user("u3", "u3", "u2"),
+						snapshot("s5", "/r", "a", { snapshot: record("a", "3") }),
+						snapshot("s6", "/moved", "c", { snapshot: record("c", "4"), degradedFrom: "b" }),
+						...Array.from({ length: 70 }, (_, index) => tailEntry.user(`f${index}`)),
+						tailEntry.user("large", "x".repeat(SESSION_HISTORY_PAGE_BYTES + 1)),
+					]);
+					await store.create(header(), entries);
+					store = await reload(store);
+					if (store.readSnapshotCut === undefined) return;
+					assert.ok(store.readSelectedPage && store.readRange);
+					const epoch = (await store.readRange("session", 1, 0)).epoch;
+					assert.ok(epoch);
+					const seqsOf = (ids: readonly string[]) =>
+						ids.map((id) => entries.findIndex((entry) => entry.id === id) + 1);
+					const includes = (seqs: readonly number[], ids: readonly string[], expected: boolean) => {
+						for (const seq of seqsOf(ids)) assert.equal(seqs.includes(seq), expected, `entry ${seq}`);
+						assert.deepEqual(
+							seqs,
+							[...seqs].sort((left, right) => left - right),
+						);
+					};
+
+					const cut = await store.readSnapshotCut("session");
+					assert.ok(cut);
+					assert.deepEqual({ epoch: cut.epoch, lastSeq: cut.lastSeq }, { epoch, lastSeq: entries.length });
+					assert.deepEqual({ ...cut.records }, { a: 8, b: 4, c: 9 });
+					includes(cut.seqs, ["s1", "s2", "s3", "s4", "s5", "s6"], true);
+					const active = await store.readSnapshotCut("session", { leafSeq: entries.length });
+					includes(active!.seqs, ["s1", "s5", "s6"], true);
+					includes(active!.seqs, ["s2", "s3", "s4"], false);
+					const abandoned = await store.readSnapshotCut("session", { leafSeq: 6 });
+					includes(abandoned!.seqs, ["s1", "s2", "s3", "s4"], true);
+					includes(abandoned!.seqs, ["s5", "s6"], false);
+
+					const read = async (seqs: readonly number[], options?: { limit?: number; backward?: boolean }) =>
+						(await store.readSelectedPage!("session", seqs, epoch, options)).items.map((item) =>
+							"entry" in item ? item.entry : item,
+						);
+					const snapshots = seqsOf(["s1", "s2", "s3", "s4", "s5", "s6"]);
+					assert.deepEqual(
+						await read(snapshots),
+						entries.slice(0, 9).filter((entry) => entry.id.startsWith("s")),
+					);
+					assert.deepEqual(await read(snapshots, { limit: 2 }), [entries[1], entries[3]]);
+					assert.deepEqual(await read(snapshots, { limit: 2, backward: true }), [entries[7], entries[8]]);
+					const small = Array.from({ length: entries.length - 1 }, (_, index) => index + 1);
+					assert.deepEqual(await read(small), entries.slice(0, 64));
+					assert.deepEqual(await read(small, { backward: true }), entries.slice(-65, -1));
+					assert.deepEqual(await read(small, { limit: 4096 }), entries.slice(0, -1));
+					const large = entries.length;
+					const bytes = Buffer.byteLength(JSON.stringify(entries.at(-1)));
+					const reference = { kind: "oversized", sessionId: "session", epoch, seq: large, bytes };
+					assert.deepEqual(await read([large - 1, large]), [entries.at(-2)]);
+					assert.deepEqual(await read([large - 1, large], { backward: true }), [reference]);
+					assert.deepEqual(await read([large]), [reference]);
+					assert.deepEqual(await read([]), []);
+					for (const [seqs, other] of [
+						[[2], "another generation"],
+						[[5, 4], epoch],
+						[[2, large + 1], epoch],
+					] as const)
+						await assert.rejects(store.readSelectedPage("session", seqs, other), SessionConflictError);
+				},
+			);
 
 			check(
 				"resumes one branch consistently and changes generation only on replacement (#5249)",

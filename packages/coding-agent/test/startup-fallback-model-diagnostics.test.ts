@@ -493,8 +493,14 @@ async function startupThinkingRecord(
 			await client.waitForInteractiveEngineResources();
 		}
 		const state = await client.getState();
-		const { entries } = await client.getEntries();
-		const thinkingEntries = entries.filter((entry) => entry.type === "thinking_level_change");
+		const thinkingEntries = [];
+		let cursor: string | undefined;
+		do {
+			const page = await client.getHistoryPage({ cursor });
+			for (const item of page.items)
+				if ("entry" in item && item.entry.type === "thinking_level_change") thinkingEntries.push(item.entry);
+			cursor = page.nextCursor;
+		} while (cursor);
 		return {
 			thinkingLevel: state.thinkingLevel,
 			latestThinkingEntry: thinkingEntries.at(-1)?.thinkingLevel,

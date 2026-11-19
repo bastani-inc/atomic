@@ -9,6 +9,14 @@ import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
 
+/** Yield between archive pages, including in browser-backed custom stores. */
+export function yieldSessionTurn(): Promise<void> {
+	return new Promise((resolve) => {
+		if (typeof setImmediate === "function") setImmediate(resolve);
+		else setTimeout(resolve, 0);
+	});
+}
+
 /** @internal Platform-owned stores inject filesystem identity without coupling portable adapters to it. */
 export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean | Promise<boolean>;
 
@@ -25,6 +33,8 @@ export interface SessionRecordHeader {
 	readonly createdAt: string;
 	readonly cwd: string;
 	readonly parentSessionId?: string;
+	/** The parent ID refers to the source store, not necessarily a session that can be opened in this store. */
+	readonly parentInOtherStore?: true;
 	readonly internal?: true;
 	readonly workflow?: SessionWorkflowMetadata;
 }
@@ -65,6 +75,112 @@ export interface SessionHistoryTotals {
 export interface SessionStoredEntry {
 	readonly seq: number;
 	readonly entry: SessionEntry;
+}
+
+export const SESSION_HISTORY_PAGE_BYTES = 1024 * 1024;
+export const SESSION_HISTORY_CHUNK_BYTES = 64 * 1024;
+export const SESSION_HISTORY_PAGE_ENTRIES = 64;
+/** The most entries a scan that consumes every page at once, such as an export, may ask for in one page. */
+export const SESSION_HISTORY_SCAN_ENTRIES = 4096;
+
+/** How many sizes one `readEntrySizes` call returns: `SESSION_HISTORY_PAGE_ENTRIES` unless a scan asks for more. */
+export function entrySizeLimit(limit: number | undefined): number {
+	return limit === undefined || !Number.isSafeInteger(limit)
+		? SESSION_HISTORY_PAGE_ENTRIES
+		: Math.min(SESSION_HISTORY_SCAN_ENTRIES, Math.max(1, limit));
+}
+
+/** A stored entry too large for a history page. Its exact bytes are available in chunks, not a truncated entry. */
+export interface OversizedSessionEntry {
+	readonly kind: "oversized";
+	readonly sessionId: string;
+	readonly epoch: string;
+	readonly seq: number;
+	readonly bytes: number;
+}
+
+export type SessionHistoryItem = SessionStoredEntry | OversizedSessionEntry;
+
+export interface SessionHistoryPage {
+	readonly items: readonly SessionHistoryItem[];
+	readonly nextCursor?: string;
+	/** Adjacent ranges in the original snapshot, when the read requested them. */
+	readonly adjacent?: { readonly older?: string; readonly newer?: string };
+}
+
+export interface SessionHistoryReadOptions {
+	/** Order in which pages are visited. The entries within each page always remain chronological. */
+	readonly direction?: "forward" | "backward";
+	/** Include cursors to read in either direction without keeping earlier pages or a cursor stack. */
+	readonly adjacent?: boolean;
+	/** Only entries on the path from this stored sequence to the root, including history before compaction. */
+	readonly branchLeafSeq?: number;
+	readonly fromSeq?: number;
+	readonly toSeq?: number;
+	readonly cursor?: string;
+	readonly signal?: AbortSignal;
+	/**
+	 * For a scan that consumes every page at once, such as an export: up to this many entries a page, at most
+	 * `SESSION_HISTORY_SCAN_ENTRIES`, still within `SESSION_HISTORY_PAGE_BYTES`, and one branch span read for each
+	 * contiguous run of the branch. The pages hold the same entries in the same order. Default
+	 * `SESSION_HISTORY_PAGE_ENTRIES`.
+	 */
+	readonly pageEntries?: number;
+}
+
+export interface SessionBranchPageCut {
+	readonly leaf: number;
+	readonly first: number;
+	readonly last: number;
+	readonly pivot: number;
+	readonly backward: boolean;
+	readonly epoch?: string;
+}
+
+export interface SessionBranchSpan {
+	readonly start: number;
+	readonly end: number;
+	readonly older: boolean;
+	readonly newer: boolean;
+}
+
+/** Body-free navigation record. The original entry and any long label stay at their sequence in the store. */
+export interface ChildDisplayLaunch {
+	readonly launchLeafId?: string | null;
+	readonly launchLeafSeq?: number;
+	readonly forked?: boolean;
+}
+export interface ChildDisplayCut {
+	readonly epoch: string;
+	readonly through: number;
+	readonly leaf: number;
+	readonly from: number;
+	readonly earlier: readonly number[];
+	readonly model?: true;
+	readonly boundary?: number;
+	readonly covered?: number;
+}
+
+export interface SessionTreeOutlineEntry {
+	readonly seq: number;
+	readonly id: string;
+	readonly parentId: string | null;
+	readonly timestamp: string;
+	readonly type: SessionEntry["type"];
+	readonly role?: string;
+	readonly hideAssistant?: boolean;
+	/** Addresses only; the arguments for a visible result are read from its call on demand. */
+	readonly callIds?: readonly string[];
+	readonly leafMove?: boolean;
+	readonly childRecord?: boolean;
+	readonly labelTarget?: string;
+	readonly label?: string;
+}
+
+export interface SessionEntrySizes {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	readonly sizes: readonly { readonly seq: number; readonly bytes: number }[];
 }
 
 export interface SessionStateEntry extends SessionStoredEntry {
@@ -110,8 +226,38 @@ export interface SessionCompactionPoint {
 	readonly lastSeq: number;
 }
 
+/** Body-free child state for launch cards and explicit action lookup. Full launch, held messages and results
+ * are fetched from the saved observation only if the child is explicitly opened or continued. */
+export interface ArchivedChildCatalogEntry {
+	readonly firstSeq: number;
+	readonly entryId: string;
+	/** A later resident observation already covers every field of the archived record. Preserve historical task aliases, but do not reread the earlier payload. */
+	readonly coveredBy?: string;
+	readonly childId: string;
+	readonly ownerSessionId: string;
+	readonly runId: string;
+	readonly index: number;
+	readonly agent: string;
+	readonly cwd: string;
+	readonly state: "running" | "terminal";
+	readonly terminalStatus?: string;
+	readonly taskId?: string;
+	readonly taskIds: readonly string[];
+	readonly releasedTaskIds?: readonly string[];
+	readonly childSessionId?: string;
+	readonly childSessionFile?: string;
+	readonly intercomTarget?: string;
+	readonly intercomGroup?: string;
+	readonly releasedIntercomId?: string;
+	readonly managedWorktree?: boolean;
+	readonly elapsedMs?: number;
+	readonly elapsedSpan?: { dispatchedAt: number; endedAt?: number } | null;
+}
+
 export interface SessionRecoveryState {
-	readonly admissionKeys: readonly string[];
+	readonly workflowStarts?: Readonly<Record<string, number>>;
+	/** Sorted, packed 128-bit admission-key digests, encoded as base64. Does not expose original keys. */
+	readonly admissionDigests: string;
 	readonly intercomDeliveredIds: readonly string[];
 	readonly deliveryOpIds?: readonly string[];
 }
@@ -124,6 +270,31 @@ export interface SessionForkWindow {
 	readonly epoch?: string;
 }
 
+export interface SessionChildAliases {
+	readonly taskIds: readonly string[];
+	readonly releasedTaskIds: readonly string[];
+	readonly lastTask?: string;
+	readonly lastStatus?: string;
+}
+export interface SessionChildReadCut {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	readonly seqs: readonly number[];
+	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+}
+
+/** Where a session's `worktree_snapshot` entries are, as the store's index of its history locates them (#5554). */
+export interface SessionSnapshotCut {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	/** The latest entry carrying each snapshot record, by snapshot id, on any branch. */
+	readonly records: Readonly<Record<string, number>>;
+	/**
+	 * In ascending order, every entry that can be a `worktree_snapshot` entry, on the requested branch when one was: a
+	 * superset, so a reader keeps the entries whose type is.
+	 */
+	readonly seqs: readonly number[];
+}
 export interface SessionResume {
 	readonly header: SessionRecordHeader;
 	readonly lastSeq: number;
@@ -135,6 +306,12 @@ export interface SessionResume {
 	readonly state: readonly SessionStateEntry[];
 	readonly omitted: SessionHistoryTotals;
 	readonly recovery: SessionRecoveryState;
+	/** Returned only on a manager's opt-in metadata read. Inspect these child headings before fetching a
+	 * historical payload; an active child may need it on resume, a completed one does not. */
+	readonly deferredChildren?: {
+		readonly positions: readonly { seq: number; onBranch: boolean }[];
+		readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+	};
 }
 
 export interface SessionSummary {
@@ -275,8 +452,47 @@ export interface SessionSearchIndex {
 	): Promise<readonly number[] | undefined>;
 }
 
+export interface SessionForkRow {
+	/** Metadata for the listing and the resume index; the exact bytes come from the reference when present. */
+	readonly entry: SessionEntry;
+	readonly reference?: OversizedSessionEntry;
+	readonly edits?: Readonly<Record<string, string | null>>;
+	readonly extraToolCalls?: number;
+	readonly inlineSnapshot?: true;
+}
+export interface SessionForkStream {
+	/** A whole saved session in append order, with sibling branches and labels unchanged. */
+	readonly kind?: "complete-session";
+	/** The reader is bound to the writing transaction when both sides use the same SQL connection. */
+	read(
+		reader: SessionStore,
+		hasWritten: (id: string) => Promise<boolean>,
+		inlineSnapshot?: (ref: OversizedSessionEntry) => Promise<SessionEntry | undefined>,
+	): AsyncIterable<SessionForkRow>;
+}
+export type SessionForkSeed = readonly SessionEntry[] | SessionForkStream;
+
+export interface ForkArchiveSource {
+	readonly store: SessionStore;
+	readonly sessionId: string;
+	readonly epoch?: string;
+	readonly hashes: readonly string[];
+	/** Source positions of archived receipts. The entries supplied to createFork contain only their identifying fields. */
+	readonly receipts: ReadonlyMap<string, OversizedSessionEntry>;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
+	/** Resolve an expanded child card's saved branch and launch boundary without opening its runtime. */
+	readChildDisplayCut?(sessionId: string, launch: ChildDisplayLaunch): Promise<ChildDisplayCut>;
+	/** Create a new child, substituting the original encoded receipt bytes at the marked entry positions.
+	 * Return undefined, without publishing anything, when this source or destination is not supported. */
+	createFork?(
+		header: SessionRecordHeader,
+		entries: SessionForkSeed,
+		source: ForkArchiveSource,
+		location?: string,
+	): Promise<(SessionWriteResult & { readonly remainingBlobs?: readonly string[] }) | undefined>;
 	/** Optional reader-only chat data, owned by a particular incarnation of a session, outside its conversation tree. */
 	readonly chatRecords?: import("./chat-records.js").SessionChatRecords;
 	/**
@@ -309,18 +525,71 @@ export interface SessionStore {
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
 	): Promise<SessionWriteResult>;
+	/** Change the header without materializing its existing entries. Existing readers see a new epoch. */
+	updateHeader?(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult>;
 	load(sessionId: string): Promise<SessionSnapshot>;
 	readEntryRange?(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
 
 	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
 
-	readRange?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange>;
+	readRange?(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange>;
+	/** Project structural metadata for tree navigation; never return a message body or tool arguments. */
+	readTreeOutline?(
+		sessionId: string,
+		fromSeq: number,
+		toSeq: number,
+		epoch?: string,
+	): Promise<readonly (SessionTreeOutlineEntry | { readonly seq: number; readonly streamed: true })[]>;
+	/** Locate a contiguous range on the requested branch without reading neighboring conversation bodies. */
+	readBranchSpan?(sessionId: string, cut: SessionBranchPageCut): Promise<SessionBranchSpan | undefined>;
+	/**
+	 * Metadata only; a historical page is sized before any entry is decoded. Returns at most
+	 * `SESSION_HISTORY_PAGE_ENTRIES` sizes, or up to `limit` (at most `SESSION_HISTORY_SCAN_ENTRIES`) for a scan.
+	 */
+	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes>;
+	/** Read at most SESSION_HISTORY_CHUNK_BYTES, rejecting a reference to a replaced generation. */
+	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
-	readResume?(sessionId: string, leafId?: string): Promise<SessionResume>;
+	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
+	readChildCatalogCut?(sessionId: string): Promise<SessionChildReadCut>;
+	/**
+	 * Where the session's snapshot entries are, from the index the store keeps of its history, without reading an entry:
+	 * with `leafSeq`, only those on the branch from that sequence to the root. Undefined when that index does not cover
+	 * the session's history as it stands; a reader then reads the history itself. A store with it reads
+	 * `readSelectedPage` with its `limit` and `backward` options.
+	 */
+	readSnapshotCut?(
+		sessionId: string,
+		options?: { readonly leafSeq?: number },
+	): Promise<SessionSnapshotCut | undefined>;
+	/**
+	 * The entries at `seqs`, ascending, of generation `epoch`, in ascending order: the longest prefix of them (with
+	 * `backward`, suffix) of at most `SESSION_HISTORY_PAGE_ENTRIES` entries (or `limit`, up to
+	 * `SESSION_HISTORY_SCAN_ENTRIES`) and `SESSION_HISTORY_PAGE_BYTES` bytes, or its first (last) entry alone as an
+	 * oversized reference when that is larger. Rejects with `SessionConflictError` when the session is of another
+	 * generation or holds no entry at one of them.
+	 */
+	readSelectedPage?(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options?: { readonly limit?: number; readonly backward?: boolean },
+	): Promise<SessionHistoryPage>;
+	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
 	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
-	readForkWindow?(sessionId: string, entryId: string): Promise<SessionForkWindow | undefined>;
+	readForkWindow?(
+		sessionId: string,
+		entryId: string,
+		options?: { readonly archivedReceipts: true },
+	): Promise<SessionForkWindow | undefined>;
+	readResumeAt?(
+		sessionId: string,
+		leafId: string,
+		throughSeq: number,
+		options?: { deferChildRecords: true },
+	): Promise<SessionResume>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;

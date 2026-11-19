@@ -67,7 +67,8 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	if (this._agentTaskHost) return this._agentTaskHost;
 	const admission = MessageAdmissionBoundary.restore(
 		this.sessionManager.getEntries(),
-		this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+		undefined,
+		this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 	);
 	this._taskAdmission = admission;
 	/** A settled task's notice, read from the owner's snapshot; undefined for a foreground shell, which has none. */

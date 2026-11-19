@@ -8,6 +8,15 @@ import {
 } from "../src/core/compaction/index.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
+it("a clear does not turn an archived ancestor into an inactive edit target (#5554)", async () => {
+	const sm = SessionManager.inMemory();
+	const old = await sm.appendMessage({ role: "user", content: "old", timestamp: 1 });
+	await sm.appendCompaction("cleared", null, 10, verbatimDetails);
+	const edit = await sm.appendContextEdit(old, { content: "replaced" });
+	expect(sm.getEntry(edit)).toMatchObject({ type: "context_edit", targetId: old });
+	expect(sm.getEntry(old)).toBeUndefined();
+});
+
 function assistant(text: string): AssistantMessage {
 	return {
 		role: "assistant",
@@ -61,6 +70,45 @@ function projectedTexts(session: SessionManager): string[] {
 }
 
 describe("session context edits", () => {
+	it("keeps edited raw entries and their identity until they leave the active window (#5554)", async () => {
+		const session = SessionManager.inMemory();
+		const make = async () => {
+			const block = { type: "text" as const, text: "old-output ".repeat(8192) };
+			const id = await session.appendMessage({
+				role: "toolResult",
+				toolCallId: "saved",
+				toolName: "read",
+				timestamp: 1,
+				isError: false,
+				content: [block],
+			});
+			const entry = session.getEntry(id)!;
+			await session.appendContextEdit(id, { content: "reduced" });
+			expect(session.getEntry(id)).toBe(entry);
+			expect(session.getEntries()[0]).toBe(entry);
+			expect(session.getBranch()[0]).toBe(entry);
+			return { id, weak: new WeakRef(block) };
+		};
+		const { id, weak } = await make();
+		expect(projectedTexts(session)).toEqual(["reduced"]);
+		const mirror = await session.inMemoryBranch("/project");
+		expect(projectedTexts(mirror)).toEqual(["reduced"]);
+		await mirror.branch(id);
+		expect(projectedTexts(mirror)).toEqual(["old-output ".repeat(8192)]);
+		await mirror.getSessionStore().close();
+		await session.appendCompaction("cleared", null, 100, verbatimDetails);
+		const { collectGarbage } = await import("../../../test/helpers/collect-garbage.js");
+		await collectGarbage();
+		expect(weak.deref() === undefined).toBe(true);
+		const raw = await session.readEntry(id);
+		expect(raw).toMatchObject({
+			type: "message",
+			message: { content: [{ type: "text", text: "old-output ".repeat(8192) }] },
+		});
+		await session.branch(id);
+		expect(projectedTexts(session)).toEqual(["old-output ".repeat(8192)]);
+	});
+
 	it("omits a target only from model projection", async () => {
 		const session = SessionManager.inMemory();
 		await session.appendMessage({ role: "user", content: "request", timestamp: Date.now() });

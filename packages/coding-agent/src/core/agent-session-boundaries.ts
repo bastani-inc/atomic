@@ -270,7 +270,7 @@ export async function _createBoundaryPreviewManager(
 	this: AgentSession,
 	drafts: SessionBoundaryDraft[],
 ): Promise<SessionManager> {
-	const manager = this.sessionManager.inMemoryBranch(this._cwd);
+	const manager = await this.sessionManager.inMemoryBranch(this._cwd);
 	await this._applyBoundaryDrafts(manager, drafts);
 	return manager;
 }

@@ -367,7 +367,22 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// animation frame remains the external benchmark's startup-complete mark.
 	recordTimeSinceReset("time-to-first-frame");
 
-	await waitForInteractiveEngineBound(this.runtimeHost);
+	// A host attaching to an already populated, unsaved engine must own its archive before it
+	// can bind. Paint recent visible text while its private pages arrive, without binding a partial session.
+	let bootstrapPreview: Text | undefined;
+	try {
+		await waitForInteractiveEngineBound(this.runtimeHost, (lines) => {
+			if (this.isShuttingDown) return;
+			bootstrapPreview = new Text(lines.map(replaceControlCharacters).join("\n\n"), 1, 0);
+			this.chatContainer.addChild(bootstrapPreview);
+			this.ui.requestRender();
+		});
+	} finally {
+		if (bootstrapPreview) {
+			this.chatContainer.removeChild(bootstrapPreview);
+			this.ui.requestRender();
+		}
+	}
 	if (this.isShuttingDown) return;
 	this.isInitialized = true;
 	// The isolated engine may have replaced the preliminary model/provider view.

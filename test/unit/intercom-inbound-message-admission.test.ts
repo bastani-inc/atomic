@@ -36,6 +36,25 @@ test("duplicate broker delivery cannot enqueue a second reply turn context", () 
 	assert.throws(() => tracker.resolveReplyTarget({}), /No active intercom context/);
 });
 
+test("incoming admission keeps a lone surrogate distinct from its replacement character (#5554)", () => {
+	const accepted = { ...message, id: "x\uD800" };
+	const replacement = { ...message, id: "x\uFFFD" };
+	const live = new InboundMessageAdmission();
+	assert.equal(live.accept(sender, accepted), true);
+	const reopened = new InboundMessageAdmission();
+	reopened.restore([
+		{
+			customType: "intercom_message",
+			stageAdmissionKey: `intercom:${accepted.id}`,
+			details: { from: sender, message: accepted },
+		},
+	]);
+	for (const admission of [live, reopened]) {
+		assert.equal(admission.admit(sender, accepted).kind, "duplicate");
+		assert.equal(admission.admit(sender, replacement).kind, "reserved");
+	}
+});
+
 test("durable custom-message receipt suppresses delivery after process restart", () => {
 	const restored = new InboundMessageAdmission();
 	restored.restore([

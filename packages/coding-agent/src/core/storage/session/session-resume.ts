@@ -1,4 +1,5 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
+import { hash } from "fast-sha256";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
 import {
 	type CompletionProxyCheck,
@@ -6,18 +7,25 @@ import {
 	legacyCompletionTarget,
 	rememberEarlierCompletion,
 } from "../../tasks/reopened-completion.js";
+import { SessionConflictError } from "./errors.js";
+import { SessionKeyDigests } from "./key-digests.js";
 import type {
+	SessionBranchPageCut,
+	SessionBranchSpan,
+	SessionChildAliases,
 	SessionCompactionPoint,
 	SessionEntryRange,
 	SessionHistoryTotals,
 	SessionRecordHeader,
 	SessionResume,
+	SessionSnapshotCut,
 	SessionStateEntry,
 	SessionStore,
 	SessionStoredEntry,
 	SessionTail,
 	SessionUsageTotals,
 } from "./types.js";
+import { SESSION_HISTORY_PAGE_BYTES } from "./types.js";
 import { validateSessionText } from "./validation.js";
 import { yieldTurn } from "./yield-turn.js";
 
@@ -28,8 +36,21 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
-/** Version 5 added `acks`; an index saved by an earlier build fails `isSessionResumeIndex` and is rebuilt. */
-const RESUME_INDEX_VERSION = 5;
+/** Rebuild older projections once to recover prior task aliases and the exact records named by active checkouts. */
+const RESUME_INDEX_VERSION = 11;
+
+type SnapshotHead = readonly [seq: number, snapshotId: string];
+/**
+ * The plain snapshot entries (no restore, unrestored or degraded record) a resume keeps of one checkout root on the
+ * active branch: the first, which keeps the order roots appear in; the latest, which is what the checkout holds; and
+ * the latest naming another snapshot than the latest, which ends a restore notice of that root as every one between
+ * them would. Restore history entries are kept whole. Earlier entries are read from the archive on demand.
+ */
+export interface SnapshotHeads {
+	readonly first: SnapshotHead;
+	readonly latest: SnapshotHead;
+	readonly other?: SnapshotHead;
+}
 
 export interface SessionResumeIndex {
 	readonly version: typeof RESUME_INDEX_VERSION;
@@ -38,9 +59,11 @@ export interface SessionResumeIndex {
 	readonly latest: Readonly<Record<string, readonly number[]>>;
 	readonly fields: Readonly<Record<string, readonly (readonly [number, readonly string[]])[]>>;
 	readonly firstChildren: Readonly<Record<string, number>>;
+	readonly childAliases: Readonly<Record<string, SessionChildAliases>>;
+	readonly workflowStarts: Readonly<Record<string, number>>;
 	readonly models: readonly (readonly [number, string])[];
 	readonly assistants: readonly number[];
-	readonly admissions: readonly string[];
+	readonly admissions: string;
 	readonly delivered: readonly string[];
 	readonly deliveryOps: readonly string[];
 	readonly settled: readonly string[];
@@ -67,6 +90,17 @@ export interface SessionResumeIndex {
 	readonly state: string;
 	readonly universal: readonly number[];
 	readonly lastStateSeq: number;
+	readonly settingsHistory: string;
+	readonly lastSettingSeq: number;
+	/** Every plain snapshot entry (no restore, unrestored or degraded record), as deltas. */
+	readonly snapshotRefs: string;
+	readonly lastSnapshotRef: number;
+	/** By checkout root, the plain snapshot entries of the active branch a resume keeps. */
+	readonly snapshotHeads: Readonly<Record<string, SnapshotHeads>>;
+	/** The snapshot ids the active branch's restore history names: its own and the ones it is degraded from. */
+	readonly snapshotPins: readonly string[];
+	/** The latest entry carrying each snapshot record, by snapshot id, on any branch. */
+	readonly snapshotRecords: Readonly<Record<string, number>>;
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
 	/**
@@ -300,6 +334,8 @@ type ResumeProtocolIndex = Pick<
 	| "latest"
 	| "fields"
 	| "firstChildren"
+	| "childAliases"
+	| "workflowStarts"
 	| "admissions"
 	| "delivered"
 	| "deliveryOps"
@@ -308,12 +344,16 @@ type ResumeProtocolIndex = Pick<
 	| "parks"
 	| "intents"
 	| "acks"
+	| "snapshotHeads"
+	| "snapshotPins"
 >;
 class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
 	readonly fields: Record<string, readonly (readonly [number, readonly string[]])[]>;
 	readonly firstChildren: Record<string, number>;
-	readonly admissions: Set<string>;
+	readonly childAliases: Record<string, SessionChildAliases>;
+	readonly workflowStarts: Record<string, number>;
+	readonly admissions: SessionKeyDigests;
 	readonly delivered: Set<string>;
 	readonly deliveryOps: Set<string>;
 	readonly settled: Set<string>;
@@ -321,11 +361,15 @@ class ResumeProtocols {
 	readonly parks: Record<string, { seq: number; remaining: readonly string[]; notified: readonly number[] }>;
 	readonly intents: Map<string, number>;
 	readonly acks: (readonly [number, number])[];
+	readonly snapshotHeads: Record<string, SnapshotHeads>;
+	readonly snapshotPins: Set<string>;
 	constructor(previous?: ResumeProtocolIndex) {
 		this.latest = { ...previous?.latest };
 		this.fields = { ...previous?.fields };
 		this.firstChildren = { ...previous?.firstChildren };
-		this.admissions = new Set(previous?.admissions ?? []);
+		this.childAliases = { ...previous?.childAliases };
+		this.workflowStarts = { ...previous?.workflowStarts };
+		this.admissions = new SessionKeyDigests(previous?.admissions);
 		this.delivered = new Set(previous?.delivered ?? []);
 		this.deliveryOps = new Set(previous?.deliveryOps ?? []);
 		this.settled = new Set(previous?.settled ?? []);
@@ -333,9 +377,35 @@ class ResumeProtocols {
 		this.parks = { ...previous?.parks };
 		this.intents = new Map(previous?.intents ?? []);
 		this.acks = [...(previous?.acks ?? [])];
+		this.snapshotHeads = { ...previous?.snapshotHeads };
+		this.snapshotPins = new Set(previous?.snapshotPins ?? []);
 	}
 	keepLatest(key: string, seq: number): void {
 		this.latest[key] = [seq];
+	}
+	/** A snapshot entry on the active branch. Restore history is kept whole; of the plain entries only the heads. */
+	snapshot(entry: Extract<SessionEntry, { type: "worktree_snapshot" }>, seq: number): void {
+		if (entry.restore || entry.unrestored || entry.degradedFrom) {
+			this.snapshotPins.add(entry.snapshotId);
+			// Chunked projections carry only whether an entry names one.
+			if (typeof entry.degradedFrom === "string") this.snapshotPins.add(entry.degradedFrom);
+			return;
+		}
+		const head: SnapshotHead = [seq, entry.snapshotId];
+		const heads = this.snapshotHeads[entry.root];
+		this.snapshotHeads[entry.root] =
+			heads === undefined
+				? { first: head, latest: head }
+				: {
+						first: heads.first,
+						latest: head,
+						...(heads.latest[1] !== entry.snapshotId
+							? { other: heads.latest }
+							: heads.other
+								? { other: heads.other }
+								: {}),
+					};
+		if (entry.captureMs != null) this.keepLatest(`snapshot-capture:${entry.root}`, seq);
 	}
 	private keepPending(key: string, seq: number): void {
 		if (this.settled.has(key)) return;
@@ -402,14 +472,7 @@ class ResumeProtocols {
 		}
 		if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
 			this.settle(`inbound:${record(data.message).replyTo}`);
-		if (
-			(kind === "workflow.run.start" || kind === "workflow.stage.start" || kind === "workflow.stage.end") &&
-			typeof data.runId === "string"
-		) {
-			const key = `run:${data.runId}`;
-			this.latest[key] = [...(this.latest[key] ?? []), seq];
-		}
-		if (kind === "workflow.run.end" && typeof data.runId === "string") delete this.latest[`run:${data.runId}`];
+		updateWorkflowStarts(this.workflowStarts, entry, seq);
 		if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
 			this.keepPending(`wait:${data.toolCallId}`, seq);
 		if (kind === "workflow-stage-parked-tasks" && Array.isArray(data.tasks)) {
@@ -423,6 +486,24 @@ class ResumeProtocols {
 	private child(data: Record<string, unknown>, seq: number): void {
 		const key = `${text(record(data.owner).sessionId) ?? ""}:${data.childId}`;
 		if (this.firstChildren[key] === undefined) this.firstChildren[key] = seq;
+		const aliasKey = JSON.stringify([text(record(data.owner).sessionId) ?? "", data.childId]);
+		const prev = this.childAliases[aliasKey];
+		const lastTask = Object.hasOwn(data, "taskId") ? text(data.taskId) : prev?.lastTask;
+		const lastStatus = Object.hasOwn(data, "terminalStatus") ? text(data.terminalStatus) : prev?.lastStatus;
+		if (lastTask !== undefined || lastStatus !== undefined) {
+			const ids = prev?.taskIds ?? [],
+				released = new Set(prev?.releasedTaskIds);
+			if (lastTask !== undefined) {
+				if (data.state === "terminal" && lastStatus === "released") released.add(lastTask);
+				else released.delete(lastTask);
+			}
+			this.childAliases[aliasKey] = {
+				taskIds: lastTask !== undefined && !ids.includes(lastTask) ? [...ids, lastTask] : ids,
+				releasedTaskIds: [...released],
+				lastTask,
+				lastStatus,
+			};
+		}
 		const seen = new Set(Object.keys(data));
 		const kept: (readonly [number, readonly string[]])[] = [[seq, [...seen]]];
 		for (const [at, keys] of [...(this.fields[key] ?? [])].reverse()) {
@@ -439,7 +520,8 @@ class ResumeProtocols {
 		data: Record<string, unknown>,
 		branchActive: boolean,
 	): void {
-		if (branchActive && entry.stageAdmissionKey) this.admissions.add(entry.stageAdmissionKey);
+		if (branchActive && typeof entry.stageAdmissionKey === "string" && entry.stageAdmissionKey.length)
+			this.admissions.add(entry.stageAdmissionKey);
 		const reconciled = text(data.protectedReconciliationOf);
 		if (branchActive && reconciled) this.settle(`protected:${reconciled}`);
 		if (branchActive && entry.protectedReconciliation) this.keepPending(`protected:${entry.id}`, seq);
@@ -476,7 +558,9 @@ class ResumeProtocols {
 			latest: this.latest,
 			fields: this.fields,
 			firstChildren: this.firstChildren,
-			admissions: [...this.admissions],
+			childAliases: this.childAliases,
+			workflowStarts: this.workflowStarts,
+			admissions: this.admissions.serialize(),
 			delivered: [...this.delivered],
 			deliveryOps: [...this.deliveryOps],
 			settled: [...this.settled],
@@ -484,7 +568,116 @@ class ResumeProtocols {
 			parks: this.parks,
 			intents: [...this.intents],
 			acks: this.acks,
+			snapshotHeads: this.snapshotHeads,
+			snapshotPins: [...this.snapshotPins],
 		};
+	}
+}
+
+/** Positions of the latest valid starts which have no subsequent end. Workflow recovery only needs these
+ * positions before it consults the run journal, not copies of stage output and run input records. */
+export function updateWorkflowStarts(open: Record<string, number>, entry: SessionEntry, seq: number): void {
+	if (
+		entry.type !== "custom" ||
+		(entry.customType !== "workflow.run.start" && entry.customType !== "workflow.run.end")
+	)
+		return;
+	const data = record(entry.data);
+	if (typeof data.runId !== "string") return;
+	const key = Buffer.from(hash(Buffer.from(data.runId, "utf16le")).subarray(0, 16)).toString("hex");
+	if (entry.customType === "workflow.run.end") delete open[key];
+	else if (typeof data.name === "string" && typeof data.ts === "number") open[key] = seq;
+}
+
+function applyBranchState(
+	protocols: ResumeProtocols,
+	assistants: number[],
+	entry: SessionEntry,
+	seq: number,
+	active: boolean,
+	modelTransition: boolean,
+): void {
+	if (active && (entry.type === "model_change" || entry.type === "thinking_level_change"))
+		protocols.keepLatest(`setting:${entry.type}`, seq);
+	if (entry.type === "message" && entry.message?.role === "assistant") {
+		if (modelTransition) protocols.keepLatest(`model-transition:${seq}`, seq);
+		if (active) assistants.splice(0, assistants.length, seq);
+	}
+	protocols.apply(entry, seq, active);
+	if (entry.type === "worktree_snapshot" && active) protocols.snapshot(entry, seq);
+}
+
+/** Select another leaf without changing the saved index. Topology and billing do not depend on the selected
+ * branch. Fold only recovery state again; the supplied pages never collect the prior conversation. */
+export async function selectResumeLeaf(
+	index: SessionResumeIndex,
+	leafSeq: number,
+	pages: AsyncIterable<readonly SessionStoredEntry[]>,
+): Promise<SessionResumeIndex> {
+	const protocols = new ResumeProtocols();
+	const assistants: number[] = [];
+	const ranges = branchRanges(index, leafSeq);
+	const transitions = new Set(index.models.map(([seq]) => seq));
+	for await (const page of pages) {
+		for (const { entry, seq } of page)
+			applyBranchState(protocols, assistants, entry, seq, onBranch(ranges, seq), transitions.has(seq));
+	}
+	return { ...index, ...protocols.serialize(), leafSeq, assistants };
+}
+
+/** Where the entries outside the conversation are, by kind, and the latest entry carrying each snapshot record. */
+interface StatePositions {
+	state: string;
+	readonly universal: number[];
+	lastStateSeq: number;
+	settingsHistory: string;
+	lastSettingSeq: number;
+	snapshotRefs: string;
+	lastSnapshotRef: number;
+	readonly snapshotRecords: Record<string, number>;
+}
+
+function statePositions(previous?: Pick<SessionResumeIndex, keyof StatePositions>): StatePositions {
+	return {
+		state: previous?.state ?? "",
+		universal: [...(previous?.universal ?? [])],
+		lastStateSeq: previous?.lastStateSeq ?? 0,
+		settingsHistory: previous?.settingsHistory ?? "",
+		lastSettingSeq: previous?.lastSettingSeq ?? 0,
+		snapshotRefs: previous?.snapshotRefs ?? "",
+		lastSnapshotRef: previous?.lastSnapshotRef ?? 0,
+		snapshotRecords: { ...previous?.snapshotRecords },
+	};
+}
+
+function addStatePosition(positions: StatePositions, entry: SessionEntry, seq: number): void {
+	const plainSnapshot =
+		entry.type === "worktree_snapshot" && !entry.restore && !entry.unrestored && !entry.degradedFrom;
+	if (entry.type === "worktree_snapshot" && entry.snapshot !== undefined)
+		positions.snapshotRecords[entry.snapshotId] = seq;
+	if (isSessionHistoryEntry(entry)) return;
+	if (entry.type === "custom" && entry.customType.startsWith("event_subscription")) positions.universal.push(seq);
+	// Model/effort history can be compacted to its effective settings. Every system loadout change
+	// stays branch state: extensions synchronously restore their tool inventory from it on open.
+	if (
+		entry.type === "model_change" ||
+		entry.type === "thinking_level_change" ||
+		(entry.type === "message" &&
+			entry.message.role === "system" &&
+			!entry.message.toolsAdded &&
+			!entry.message.toolsRemoved)
+	) {
+		const delta = (seq - positions.lastSettingSeq).toString(36);
+		positions.settingsHistory = positions.settingsHistory === "" ? delta : `${positions.settingsHistory}.${delta}`;
+		positions.lastSettingSeq = seq;
+	} else if (plainSnapshot) {
+		const delta = (seq - positions.lastSnapshotRef).toString(36);
+		positions.snapshotRefs = positions.snapshotRefs === "" ? delta : `${positions.snapshotRefs}.${delta}`;
+		positions.lastSnapshotRef = seq;
+	} else {
+		const delta = (seq - positions.lastStateSeq).toString(36);
+		positions.state = positions.state === "" ? delta : `${positions.state}.${delta}`;
+		positions.lastStateSeq = seq;
 	}
 }
 
@@ -517,9 +710,7 @@ export function foldSessionResume(
 	const compactions = [...(previous?.compactions ?? [])];
 	let nameSeq = previous?.nameSeq;
 	let summarySeq = previous?.summarySeq;
-	const universal = [...(previous?.universal ?? [])];
-	let state = previous?.state ?? "";
-	let lastStateSeq = previous?.lastStateSeq ?? 0;
+	const positions = statePositions(previous);
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
 	// An index an earlier build saved does not list extension state, so extending it cannot either.
@@ -551,27 +742,18 @@ export function foldSessionResume(
 		else if (entry.type === "branch_summary") summarySeq = undefined;
 		const branchActive = activeSeq?.(seq) ?? true;
 		if (entry.type === "model_change") models.push([seq, `${entry.provider}/${entry.modelId}`]);
+		let modelTransition = false;
 		if (entry.type === "message" && entry.message?.role === "assistant") {
 			const key = `${entry.message.provider}/${entry.message.model}`;
 			const ranges = branchRanges({ jumps }, parentSeq);
 			const effective = models.findLast(([at]) => onBranch(ranges, at));
 			if (effective?.[1] !== key) {
 				models.push([seq, key]);
-				protocols.keepLatest(`model-transition:${seq}`, seq);
+				modelTransition = true;
 			}
-			if (branchActive) assistants.splice(0, assistants.length, seq);
 		}
-		protocols.apply(entry, seq, branchActive);
-		if (!isSessionHistoryEntry(entry)) {
-			if (
-				(entry.type === "worktree_snapshot" && entry.snapshot !== undefined) ||
-				(entry.type === "custom" && entry.customType.startsWith("event_subscription"))
-			)
-				universal.push(seq);
-			const delta = (seq - lastStateSeq).toString(36);
-			state = state === "" ? delta : `${state}.${delta}`;
-			lastStateSeq = seq;
-		}
+		applyBranchState(protocols, assistants, entry, seq, branchActive, modelTransition);
+		addStatePosition(positions, entry, seq);
 		if (entry.type === "custom" && isExtensionCustomState(entry.customType)) extensionState?.push(seq);
 		totals = addEntryToHistoryTotals(totals, entry);
 		if (entry.type === "message" && entry.message?.role === "assistant" && countedUsage(entry.message.usage)) {
@@ -594,12 +776,152 @@ export function foldSessionResume(
 		compactions,
 		...(nameSeq !== undefined ? { nameSeq } : {}),
 		...(summarySeq !== undefined ? { summarySeq } : {}),
-		state,
-		universal,
-		lastStateSeq,
+		...positions,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
 		...(extensionState ? { extensionState } : {}),
+	};
+}
+
+/** The index format the 0.9 releases save. Its successor is converted, never folded from every entry again. */
+const UPGRADABLE_RESUME_INDEX_VERSION = 5;
+/**
+ * The format `sessionResumeUpgrade` produces. Any other current version disables the upgrade (a full rebuild
+ * follows) until the upgrade is checked against that version's fold.
+ */
+const UPGRADED_RESUME_INDEX_VERSION = 11;
+
+/** A version-5 index: admissions are keys, and the fields an upgrade derives are absent or in an older form. */
+export type UpgradableSessionResumeIndex = Omit<
+	SessionResumeIndex,
+	| "version"
+	| "admissions"
+	| "childAliases"
+	| "workflowStarts"
+	| "settingsHistory"
+	| "lastSettingSeq"
+	| "snapshotRefs"
+	| "lastSnapshotRef"
+	| "snapshotHeads"
+	| "snapshotPins"
+	| "snapshotRecords"
+> & { readonly version: typeof UPGRADABLE_RESUME_INDEX_VERSION; readonly admissions: readonly string[] };
+
+const isObject = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The version-5 validity check, and the shape of each field an upgrade carries over. */
+export function isUpgradableSessionResumeIndex(value: unknown, lastSeq: number): value is UpgradableSessionResumeIndex {
+	if (!isObject(value) || RESUME_INDEX_VERSION !== UPGRADED_RESUME_INDEX_VERSION) return false;
+	const index = value as Partial<UpgradableSessionResumeIndex>;
+	return (
+		index.version === UPGRADABLE_RESUME_INDEX_VERSION &&
+		!index.needsBranchRebuild &&
+		typeof index.epoch === "string" &&
+		index.seq === lastSeq &&
+		typeof index.leafSeq === "number" &&
+		Array.isArray(index.jumps) &&
+		Array.isArray(index.compactions) &&
+		Array.isArray(index.intents) &&
+		Array.isArray(index.acks) &&
+		typeof index.state === "string" &&
+		typeof index.lastStateSeq === "number" &&
+		isObject(index.totals) &&
+		isObject(index.latest) &&
+		Array.isArray(index.admissions) &&
+		index.admissions.every((key) => typeof key === "string") &&
+		Array.isArray(index.delivered) &&
+		Array.isArray(index.deliveryOps) &&
+		Array.isArray(index.settled) &&
+		isObject(index.pending) &&
+		isObject(index.parks) &&
+		Array.isArray(index.models) &&
+		Array.isArray(index.assistants)
+	);
+}
+
+/** Custom entries outside the branch state whose positions or records the upgrade derives again. */
+const UPGRADED_CUSTOM_TYPES = new Set(["subagent-child", "workflow.run.start", "workflow.run.end"]);
+
+/**
+ * The entries a version-5 upgrade reads: every entry outside the conversation (`!isSessionHistoryEntry`: these
+ * types, system messages, and the custom types of branch state), the child and workflow-run records, which are
+ * the other custom types here, and the extension state: every custom type outside `atomicCustomTypes`. A store may
+ * select a superset; the upgrade ignores the rest.
+ */
+export const RESUME_UPGRADE_SOURCES = {
+	types: [...SESSION_STATE_TYPES],
+	customTypes: [...BRANCH_CUSTOM_STATE_TYPES, ...UPGRADED_CUSTOM_TYPES],
+	atomicCustomTypes: [...ATOMIC_CUSTOM_TYPES],
+} as const;
+
+function upgradeSource(entry: SessionEntry): boolean {
+	return !isSessionHistoryEntry(entry) || (entry.type === "custom" && UPGRADED_CUSTOM_TYPES.has(entry.customType));
+}
+
+/**
+ * Convert a version-5 index to this format from its sources (`RESUME_UPGRADE_SOURCES`) alone, as the first resume
+ * after an upgrade; the result equals the index a fold of every entry builds. The conversation fields (topology,
+ * totals, models, assistants, compactions) and the recovery protocols this version folds as version 5 did carry
+ * over, and admission keys become digests. The rest is derived again from the sources: the child records and
+ * aliases, open workflow runs, the active branch's settings and checkout snapshots, the state positions, and the
+ * extension state, which an index from a build before that field does not list. Add the sources in sequence order,
+ * on any branch.
+ */
+export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
+	add(entry: SessionEntry, seq: number): void;
+	finish(): SessionResumeIndex;
+} {
+	// A rebuild folds again with the final topology whenever the session has branched, as here.
+	const ranges = previous.jumps.length === 0 ? undefined : branchRanges(previous, previous.leafSeq);
+	const admissions = new SessionKeyDigests();
+	for (const key of previous.admissions) admissions.add(key);
+	const protocols = new ResumeProtocols({
+		...previous,
+		latest: Object.fromEntries(
+			Object.entries(previous.latest).filter(([key]) => !/^(run|setting|snapshot-capture):/.test(key)),
+		),
+		fields: {},
+		firstChildren: {},
+		childAliases: {},
+		workflowStarts: {},
+		admissions: admissions.serialize(),
+		snapshotHeads: {},
+		snapshotPins: [],
+	});
+	const positions = statePositions();
+	// Derived rather than carried: an index from a build before the field does not list it.
+	const extensionState: number[] = [];
+	let lastSeq = 0;
+	return {
+		add(entry, seq) {
+			if (seq <= lastSeq || seq > previous.seq) throw new RangeError(`Resume upgrade source ${seq} out of order`);
+			lastSeq = seq;
+			if (entry.type === "custom" && isExtensionCustomState(entry.customType)) extensionState.push(seq);
+			if (!upgradeSource(entry)) return;
+			// None of the sources is an assistant message or a protocol record the carried fields fold.
+			applyBranchState(protocols, [], entry, seq, ranges === undefined || onBranch(ranges, seq), false);
+			addStatePosition(positions, entry, seq);
+		},
+		finish() {
+			return {
+				version: RESUME_INDEX_VERSION,
+				epoch: previous.epoch,
+				...protocols.serialize(),
+				models: previous.models,
+				assistants: previous.assistants,
+				seq: previous.seq,
+				lastId: previous.lastId,
+				leafSeq: previous.leafSeq,
+				jumps: previous.jumps,
+				compactions: previous.compactions,
+				...(previous.nameSeq !== undefined ? { nameSeq: previous.nameSeq } : {}),
+				...(previous.summarySeq !== undefined ? { summarySeq: previous.summarySeq } : {}),
+				...positions,
+				totals: previous.totals,
+				...(previous.latestAssistantSeq !== undefined ? { latestAssistantSeq: previous.latestAssistantSeq } : {}),
+				extensionState,
+			};
+		},
 	};
 }
 
@@ -608,7 +930,10 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	const index = value as Partial<SessionResumeIndex>;
 	return (
 		index.version === RESUME_INDEX_VERSION &&
+		index.childAliases != null &&
+		typeof index.childAliases === "object" &&
 		!index.needsBranchRebuild &&
+		typeof index.admissions === "string" &&
 		Array.isArray(index.deliveryOps) &&
 		typeof index.epoch === "string" &&
 		index.seq === lastSeq &&
@@ -619,12 +944,68 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		Array.isArray(index.acks) &&
 		typeof index.state === "string" &&
 		typeof index.lastStateSeq === "number" &&
+		typeof index.settingsHistory === "string" &&
+		typeof index.lastSettingSeq === "number" &&
+		typeof index.snapshotRefs === "string" &&
+		typeof index.lastSnapshotRef === "number" &&
+		typeof index.snapshotHeads === "object" &&
+		index.snapshotHeads !== null &&
+		Array.isArray(index.snapshotPins) &&
+		typeof index.snapshotRecords === "object" &&
+		index.snapshotRecords !== null &&
 		typeof index.totals === "object" &&
 		index.totals !== null &&
-		(index.extensionState === undefined ||
-			(Array.isArray(index.extensionState) &&
-				index.extensionState.every((seq) => Number.isSafeInteger(seq) && seq > 0 && seq <= lastSeq)))
+		Array.isArray(index.extensionState) &&
+		index.extensionState.every((seq) => Number.isSafeInteger(seq) && seq > 0 && seq <= lastSeq)
 	);
+}
+
+function branchJump(jumps: readonly ResumeJump[], high: number): number {
+	let lowest = 0;
+	let found = -1;
+	for (let top = jumps.length - 1; lowest <= top; ) {
+		const middle = (lowest + top) >> 1;
+		if (jumps[middle]![0] <= high) {
+			found = middle;
+			lowest = middle + 1;
+		} else top = middle - 1;
+	}
+	return found;
+}
+
+/** Find the contiguous run nearest the cursor. Only indices, never a stack of visited pages or message bodies,
+ * cross a branch jump. Appends after the pinned leaf cannot become part of this walk. */
+export function transcriptBranchSpan(
+	sessionId: string,
+	index: SessionResumeIndex,
+	cut: SessionBranchPageCut,
+): SessionBranchSpan | undefined {
+	if ((cut.epoch !== undefined && cut.epoch !== index.epoch) || cut.leaf > index.seq)
+		throw new SessionConflictError(sessionId, cut.leaf, index.seq);
+	let newer = false;
+	let candidate: SessionBranchSpan | undefined;
+	for (let high = cut.leaf; high >= cut.first; ) {
+		const jump = index.jumps[branchJump(index.jumps, high)];
+		const low = !jump ? 1 : high > jump[1] ? jump[1] + 1 : high;
+		const from = Math.max(cut.first, low),
+			to = Math.min(cut.last, high);
+		if (from <= to) {
+			if (cut.backward) {
+				if (candidate) return { ...candidate, older: true };
+				if (from <= cut.pivot)
+					candidate = { start: from, end: Math.min(to, cut.pivot), older: false, newer: newer || to > cut.pivot };
+			} else {
+				if (to < cut.pivot) return candidate && { ...candidate, older: true };
+				candidate = { start: Math.max(from, cut.pivot), end: to, older: from < cut.pivot, newer };
+				if (from < cut.pivot) return candidate;
+			}
+			newer = true;
+		}
+		const next = !jump ? 0 : high > jump[1] ? jump[1] : jump[2];
+		if (next >= high) break;
+		high = next;
+	}
+	return candidate;
 }
 
 export function branchRanges(index: Pick<SessionResumeIndex, "jumps">, leafSeq: number): (readonly [number, number])[] {
@@ -632,15 +1013,7 @@ export function branchRanges(index: Pick<SessionResumeIndex, "jumps">, leafSeq: 
 	const jumps = index.jumps;
 	let high = leafSeq;
 	while (high > 0) {
-		let lowest = 0;
-		let found = -1;
-		for (let top = jumps.length - 1; lowest <= top; ) {
-			const middle = (lowest + top) >> 1;
-			if (jumps[middle]![0] <= high) {
-				found = middle;
-				lowest = middle + 1;
-			} else top = middle - 1;
-		}
+		const found = branchJump(jumps, high);
 		if (found < 0) {
 			ranges.push([1, high]);
 			break;
@@ -695,23 +1068,46 @@ export function latestCompactionOf(
 	return undefined;
 }
 
-export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): number[] {
+/** Compatibility for the synchronous workflow resume scan: an in-flight run launched on an abandoned
+ * branch still belongs to this session. Its end removes the position. Remove with the workflow extension. */
+function legacyOffBranchWorkflowStarts(
+	index: SessionResumeIndex,
+	ranges: readonly (readonly [number, number])[],
+): number[] {
+	return Object.values(index.workflowStarts).filter((seq) => !onBranch(ranges, seq));
+}
+
+export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, windowOnly = false): number[] {
 	const ranges = branchRanges(index, index.leafSeq);
 	const lastAssistant = index.assistants.findLast((at) => onBranch(ranges, at));
+	// Older senders put an empty replyTo on ordinary sends. Such a delivery can settle only an ask whose
+	// actual ID was the empty string. Preserve that case, and any independently pending inbox/protected row.
+	const omitEmptyReply = windowOnly && !Object.hasOwn(index.pending, "ask:");
 	const retained = [
 		index.nameSeq,
 		index.summarySeq,
+		...legacyOffBranchWorkflowStarts(index, ranges),
 		lastAssistant,
 		...index.intents.map(([, seq]) => seq),
-		...Object.entries(index.latest).flatMap(([key, seqs]) =>
-			key.startsWith("model-transition:") ? seqs.filter((seq) => onBranch(ranges, seq)) : seqs,
-		),
+		...Object.entries(index.latest).flatMap(([key, seqs]) => {
+			if (omitEmptyReply && key === "pending:reply:") return [];
+			return key.startsWith("model-transition:")
+				? windowOnly
+					? []
+					: seqs.filter((seq) => onBranch(ranges, seq))
+				: seqs;
+		}),
 		...Object.values(index.fields).flatMap((items) => items.map(([at]) => at)),
 		...Object.values(index.firstChildren),
-		...Object.values(index.pending),
+		...Object.entries(index.pending).flatMap(([key, seq]) => (omitEmptyReply && key === "reply:" ? [] : [seq])),
 		...Object.values(index.parks).flatMap((park) => [park.seq, ...park.notified]),
+		...snapshotSeqs(index),
 	];
 	const seqs = new Set(retained.filter((seq): seq is number => seq !== undefined && seq < fromSeq));
+	for (const at of index.extensionState ?? []) {
+		if (at >= fromSeq) break;
+		if (onBranch(ranges, at)) seqs.add(at);
+	}
 	let seq = 0;
 	if (index.state !== "") {
 		for (const delta of index.state.split(".")) {
@@ -720,8 +1116,34 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): num
 			if (onBranch(ranges, seq) || index.universal.includes(seq)) seqs.add(seq);
 		}
 	}
+	const includeHistory = (deltas: string) => {
+		if (!deltas) return;
+		let at = 0;
+		for (const delta of deltas.split(".")) {
+			at += Number.parseInt(delta, 36);
+			if (at >= fromSeq) break;
+			if (onBranch(ranges, at)) seqs.add(at);
+		}
+	};
+	if (!windowOnly) includeHistory(index.settingsHistory);
+	if (!windowOnly) includeHistory(index.snapshotRefs);
 	for (const [intentSeq, ackSeq] of index.acks) if (seqs.has(intentSeq) && ackSeq < fromSeq) seqs.add(ackSeq);
 	return [...seqs].sort((left, right) => left - right);
+}
+
+/** The plain snapshot entries each checkout root keeps, and the entries holding the records they and the restore
+ * history name. Every other snapshot record stays in the store, read on demand (#5554). */
+function snapshotSeqs(index: SessionResumeIndex): number[] {
+	const seqs: number[] = [];
+	const ids = new Set(index.snapshotPins);
+	for (const { first, latest, other } of Object.values(index.snapshotHeads)) {
+		for (const [seq, id] of other ? [first, latest, other] : [first, latest]) {
+			seqs.push(seq);
+			ids.add(id);
+		}
+	}
+	for (const id of ids) if (Object.hasOwn(index.snapshotRecords, id)) seqs.push(index.snapshotRecords[id]!);
+	return seqs;
 }
 
 export function omittedTotals(
@@ -820,9 +1242,9 @@ export function sessionCompactionOf(
 }
 
 export async function readSessionTail(store: SessionStore, sessionId: string, fromSeq: number): Promise<SessionTail> {
-	if (store.readTail !== undefined) return store.readTail(sessionId, fromSeq);
-	const { header, entries } = await store.load(sessionId);
-	return sessionTailOf(header, entries, fromSeq);
+	if (store.readTail) return store.readTail(sessionId, fromSeq);
+	const { header, entries, epoch } = await store.load(sessionId);
+	return { ...sessionTailOf(header, entries, fromSeq), epoch };
 }
 
 export async function readSessionRange(
@@ -830,9 +1252,16 @@ export async function readSessionRange(
 	sessionId: string,
 	startSeq: number,
 	endSeq: number,
+	expectedEpoch?: string,
 ): Promise<SessionEntryRange> {
-	if (store.readRange !== undefined) return store.readRange(sessionId, startSeq, endSeq);
-	return sessionRangeOf((await store.load(sessionId)).entries, startSeq, endSeq);
+	if (store.readRange)
+		return expectedEpoch === undefined
+			? store.readRange(sessionId, startSeq, endSeq)
+			: store.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+	const snapshot = await store.load(sessionId);
+	const { assertSnapshotCut } = await import("./snapshot-history.js");
+	assertSnapshotCut(snapshot, expectedEpoch, Math.min(endSeq, snapshot.lastSeq));
+	return { ...sessionRangeOf(snapshot.entries, startSeq, endSeq), epoch: expectedEpoch ?? snapshot.epoch };
 }
 
 export async function findSessionCompaction(
@@ -840,12 +1269,82 @@ export async function findSessionCompaction(
 	sessionId: string,
 	leafId?: string,
 ): Promise<SessionCompactionPoint | undefined> {
-	if (store.findLatestCompaction !== undefined) return store.findLatestCompaction(sessionId, leafId);
+	if (store.findLatestCompaction) return store.findLatestCompaction(sessionId, leafId);
 	if (leafId !== undefined) validateSessionText("entry.id", leafId);
-	return sessionCompactionOf((await store.load(sessionId)).entries, leafId);
+	const snapshot = await store.load(sessionId);
+	return sessionCompactionOf(snapshot.entries, leafId);
 }
 
-export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq) {
+export function childCatalogCut(index: SessionResumeIndex) {
+	return {
+		epoch: index.epoch,
+		lastSeq: index.seq,
+		aliases: index.childAliases,
+		seqs: [
+			...new Set([
+				...Object.values(index.firstChildren),
+				...Object.values(index.fields).flatMap((rows) => rows.map(([seq]) => seq)),
+			]),
+		].sort((a, b) => a - b),
+	};
+}
+
+/**
+ * Where the index locates the session's snapshot entries (#5554): its plain snapshot entries and its state entries, among
+ * them every restore, unrestored or degraded snapshot entry, on the branch from `leafSeq` when one is given.
+ */
+export function snapshotCutOf(index: SessionResumeIndex, leafSeq?: number): SessionSnapshotCut {
+	const ranges = leafSeq === undefined ? undefined : branchRanges(index, leafSeq);
+	const positions = (deltas: string): number[] => {
+		const seqs: number[] = [];
+		let at = 0;
+		if (deltas !== "")
+			for (const delta of deltas.split(".")) {
+				at += Number.parseInt(delta, 36);
+				if (ranges === undefined || onBranch(ranges, at)) seqs.push(at);
+			}
+		return seqs;
+	};
+	const plain = positions(index.snapshotRefs);
+	const state = positions(index.state);
+	const seqs: number[] = [];
+	for (let p = 0, s = 0; p < plain.length || s < state.length; ) {
+		if (s === state.length || (p < plain.length && plain[p]! < state[s]!)) seqs.push(plain[p++]!);
+		else seqs.push(state[s++]!);
+	}
+	return { epoch: index.epoch, lastSeq: index.seq, records: index.snapshotRecords, seqs };
+}
+
+/**
+ * Which of `seqs` one `readSelectedPage` reads: the longest prefix (with `backward`, suffix) within
+ * {@link SESSION_HISTORY_PAGE_BYTES}, or its first (last) entry alone, by reference, when that is larger. Rejects with
+ * `SessionConflictError` when `seqs` are not ascending or name an entry past `lastSeq`, as a store finds when it holds
+ * no entry there.
+ */
+export function selectedPagePlan(
+	sessionId: string,
+	seqs: readonly number[],
+	lastSeq: number,
+	bytesOf: (seq: number) => number,
+	backward = false,
+): { readonly seqs: readonly number[] } | { readonly oversized: { readonly seq: number; readonly bytes: number } } {
+	for (const [position, seq] of seqs.entries())
+		if (!Number.isSafeInteger(seq) || seq < 1 || seq > lastSeq || (position > 0 && seq <= seqs[position - 1]!))
+			throw new SessionConflictError(sessionId, seqs.at(-1)!, lastSeq);
+	const selected: number[] = [];
+	let total = 0;
+	for (let step = 0; step < seqs.length; step++) {
+		const seq = seqs[backward ? seqs.length - 1 - step : step]!;
+		const bytes = bytesOf(seq);
+		if (selected.length === 0 && bytes > SESSION_HISTORY_PAGE_BYTES) return { oversized: { seq, bytes } };
+		if (total + bytes > SESSION_HISTORY_PAGE_BYTES) break;
+		total += bytes;
+		selected.push(seq);
+	}
+	return { seqs: backward ? selected.reverse() : selected };
+}
+
+export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq, deferChildren = false) {
 	const compaction = latestCompactionOf(index, leafSeq);
 	const from =
 		compaction === undefined
@@ -861,11 +1360,19 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 	const acks = index.acks.filter(([intentSeq, ackSeq]) => inTail(intentSeq) && !inTail(ackSeq));
 	const state = [
 		...new Set([
-			...stateSeqsBefore(index, Number.MAX_SAFE_INTEGER).filter((seq) => !inTail(seq)),
+			...stateSeqsBefore(index, Number.MAX_SAFE_INTEGER, true).filter((seq) => !inTail(seq)),
 			...acks.map(([, ackSeq]) => ackSeq),
 		]),
 	].sort((left, right) => left - right);
-	return { leafSeq, compaction, branch, state };
+	const candidates = deferChildren ? new Set(childCatalogCut(index).seqs) : undefined;
+	const children = candidates ? state.filter((seq) => candidates.has(seq)) : [];
+	return {
+		leafSeq,
+		compaction,
+		branch,
+		state: children.length ? state.filter((seq) => !candidates!.has(seq)) : state,
+		children,
+	};
 }
 
 /** The resume fold appends these pairs in acknowledgement sequence order. */
@@ -963,6 +1470,7 @@ export function sessionResumeFrom(
 	branch: readonly SessionStoredEntry[],
 	state: readonly SessionStoredEntry[],
 	leafId: string | null,
+	deferred: readonly number[] = [],
 ): SessionResume {
 	const ranges = branchRanges(index, index.leafSeq);
 	const plan = sessionResumePlan(index);
@@ -980,6 +1488,14 @@ export function sessionResumeFrom(
 			: {}),
 		branch,
 		state: state.map((held) => ({ ...held, onBranch: onBranch(ranges, held.seq) })),
+		...(deferred.length
+			? {
+					deferredChildren: {
+						positions: deferred.map((seq) => ({ seq, onBranch: onBranch(ranges, seq) })),
+						aliases: index.childAliases,
+					},
+				}
+			: {}),
 		omitted: omittedTotals(
 			index,
 			branch[0]?.seq ?? index.seq + 1,
@@ -987,7 +1503,8 @@ export function sessionResumeFrom(
 			returned.some((held) => held.seq === index.latestAssistantSeq),
 		),
 		recovery: {
-			admissionKeys: index.admissions,
+			workflowStarts: index.workflowStarts,
+			admissionDigests: index.admissions,
 			intercomDeliveredIds: index.delivered,
 			deliveryOpIds: index.deliveryOps,
 		},

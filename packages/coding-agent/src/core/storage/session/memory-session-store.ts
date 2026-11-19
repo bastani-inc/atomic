@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { getErrnoCode } from "../../tools/errno.ts";
 import { SessionSpillError, type SessionSpillErrorCode, type SessionSpillErrorFields } from "../errors.js";
 import { sha256Hex } from "./blob-hash.js";
+import { branchStatePages } from "./branch-state-pages.js";
 import {
 	bindChatEpoch,
 	boundedChatRecord,
@@ -19,20 +20,25 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { registerForkScope } from "./fork-store-scope.js";
+import { readSessionHistoryChunks } from "./history-pages.js";
 import {
+	childCatalogCut,
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
 	latestCompactionOf,
 	readEarlierCompletionIntents,
-	refoldSessionResume,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
+	selectedPagePlan,
+	selectResumeLeaf,
 	sessionResumeFrom,
-	sessionResumeOf,
 	sessionResumePlan,
 	sessionTailFrom,
+	snapshotCutOf,
 	stateSeqsBefore,
+	transcriptBranchSpan,
 } from "./session-resume.js";
 import {
 	applySessionSummaryEntries,
@@ -42,17 +48,25 @@ import {
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
+	ChildDisplayLaunch,
+	ForkArchiveSource,
+	OversizedSessionEntry,
 	SessionBlob,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
+	SessionForkSeed,
+	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
 	SessionSnapshot,
+	SessionSnapshotCut,
 	SessionStore,
 	SessionStoredEntry,
 	SessionSummary,
@@ -61,7 +75,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
@@ -81,8 +95,20 @@ const STUB_ENTRY: SessionEntry = {
 	customType: "",
 };
 
+export interface PrivateMirrorCut {
+	sessionId: string;
+	epoch: string;
+	lastSeq: number;
+	fromSeq: number;
+}
+export interface PrivateMirrorPage {
+	seq: number;
+	lengths: number[];
+	data: string;
+}
+
 interface StoredSession {
-	readonly header: Uint8Array;
+	header: Uint8Array;
 	chat?: Map<string, ChatRecord[]>;
 	spilledChat?: Map<string, { directory: SessionHistoryDirectory; files: number[] }>;
 	/** Each move of `chat` to files, so a read that overlapped one reads again rather than missing its lines. */
@@ -103,7 +129,7 @@ interface StoredSession {
 	spilledChecksum: number;
 	/** The release writing its entries to its file now; a load, a delete or another release waits for it. */
 	spilling: Promise<void> | undefined;
-	readonly starts: number[];
+	starts: number[];
 	totalBytes: number;
 	index: SessionResumeIndex;
 	blocks: number[];
@@ -278,6 +304,7 @@ export class MemorySessionStore implements SessionStore {
 
 	constructor(cwdMatcher?: SessionCwdMatcher, historyFiles?: SessionHistoryFiles) {
 		this.cwdMatcher = cwdMatcher;
+		registerForkScope(this, () => ({ kind: "memory", backing: this.records }));
 		if (historyFiles !== undefined) this.spill = new SpillDirectory(historyFiles);
 	}
 
@@ -347,6 +374,116 @@ export class MemorySessionStore implements SessionStore {
 		return { lastSeq: entries.length, epoch: record.index.epoch };
 	}
 
+	async createFork(
+		header: SessionRecordHeader,
+		entries: SessionForkSeed,
+		source: ForkArchiveSource,
+	): Promise<(SessionWriteResult & { remainingBlobs?: readonly string[] }) | undefined> {
+		if (this.create !== MemorySessionStore.prototype.create) return undefined;
+		if ("read" in entries) {
+			this.assertOpen();
+			validateSessionHeader(header);
+			if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+			const record = this.encodeSession(header, []);
+			const { encodedForkRow } = await import("./fork-row-bytes.js");
+			const { foldForkRow, findForkRow, forkIdHash } = await import("./fork-row-index.js");
+			const ids: number[] = [];
+			const lookup = (id: string) =>
+				findForkRow(id, ids, async function* (seq) {
+					const data = record.entries[seq - 1]!;
+					for (let i = 0; i < data.length; i += SESSION_HISTORY_CHUNK_BYTES)
+						yield data.subarray(i, i + SESSION_HISTORY_CHUNK_BYTES);
+				});
+			const blobs = new Map<string, Uint8Array>();
+			const remainingBlobs = new Set<string>();
+			for await (const row of entries.read(source.store, async (id) => (await lookup(id)) !== undefined)) {
+				const encoded = await encodedForkRow(source.store, row);
+				const bytes = new Uint8Array(encoded.size);
+				let at = 0;
+				for await (const part of encoded.chunks()) {
+					bytes.set(part, at);
+					at += part.length;
+				}
+				record.index = await foldForkRow(record.index, row, lookup);
+				record.summaryState = applySessionSummaryEntries(record.summaryState, [row.entry]).state;
+				record.starts.push(record.totalBytes + (record.lastSeq ? 1 : 0));
+				record.lastSeq++;
+				record.totalBytes = record.starts.at(-1)! + encoded.size;
+				record.entries.push(bytes);
+				ids.push(forkIdHash(row.entry.id));
+				if (row.entry.type === "custom" && row.entry.customType === "atomic.tool-output" && source.store.getBlob) {
+					const hash = (row.entry.data as { hash?: string })?.hash;
+					if (typeof hash === "string" && !blobs.has(hash)) {
+						const data =
+							source.store instanceof MemorySessionStore &&
+							source.store.getBlob === MemorySessionStore.prototype.getBlob &&
+							this.putBlob === MemorySessionStore.prototype.putBlob
+								? source.store.blobs.get(source.sessionId)?.get(hash)
+								: undefined;
+						if (data) blobs.set(hash, data);
+						else remainingBlobs.add(hash);
+					}
+				}
+			}
+			this.assertOpen();
+			if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+			if (blobs.size) this.blobs.set(header.id, blobs);
+			this.records.set(header.id, record);
+			return { lastSeq: record.lastSeq, epoch: record.index.epoch, remainingBlobs: [...remainingBlobs] };
+		}
+		this.assertOpen();
+		validateSessionHeader(header);
+		validateSessionEntries(entries);
+		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+		const record = this.encodeSession(header, entries);
+		const projected = record.entries[0]!;
+		const chunks: Uint8Array[] = [];
+		let size = 0;
+		for (const [i, entry] of entries.entries()) {
+			const ref = source.receipts.get(entry.id);
+			const start = record.starts[i]!;
+			const end = record.starts[i + 1] === undefined ? record.totalBytes : record.starts[i + 1]! - 1;
+			let bytes: Uint8Array;
+			if (ref) {
+				// This is the memory store's final owned backing, not a decoded or concatenated second copy.
+				bytes = new Uint8Array(ref.bytes);
+				let offset = 0;
+				for await (const part of readSessionHistoryChunks(source.store, ref)) {
+					bytes.set(part, offset);
+					offset += part.length;
+				}
+			} else bytes = projected.subarray(start, end);
+			chunks.push(bytes);
+			record.starts[i] = size;
+			size += bytes.length + 1;
+		}
+		record.entries = chunks;
+		record.totalBytes = Math.max(0, size - 1);
+		this.assertOpen();
+		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+		let remainingBlobs: string[] | undefined;
+		if (
+			source.store instanceof MemorySessionStore &&
+			source.store.getBlob === MemorySessionStore.prototype.getBlob &&
+			this.putBlob === MemorySessionStore.prototype.putBlob
+		) {
+			const donor = source.store.stored(source.sessionId);
+			if (!donor || (source.epoch !== undefined && donor.index.epoch !== source.epoch))
+				throw new SessionConflictError(source.sessionId, 0, donor?.lastSeq ?? 0);
+			remainingBlobs = [];
+			const owned = new Map<string, Uint8Array>();
+			for (const hash of source.hashes) {
+				// Store-owned bytes are immutable; public reads always return copies.
+				const data = source.store.blobs.get(source.sessionId)?.get(hash);
+				if (data) owned.set(hash, data);
+				else remainingBlobs.push(hash);
+			}
+			if (owned.size) this.blobs.set(header.id, owned);
+		}
+		this.records.set(header.id, record);
+		return { lastSeq: entries.length, epoch: record.index.epoch, remainingBlobs };
+	}
+
 	async append(
 		sessionId: string,
 		entries: readonly SessionEntry[],
@@ -357,6 +494,16 @@ export class MemorySessionStore implements SessionStore {
 		if (entries.length === 0) return { lastSeq: record.lastSeq };
 		const index = this.appendedIndex(record, entries);
 		const encoded = this.encodeEntries(entries);
+		this.appendEncoded(record, encoded);
+		record.index = index;
+		record.summaryState = applySessionSummaryEntries(record.summaryState, entries).state;
+		return { lastSeq: record.lastSeq };
+	}
+
+	private appendEncoded(record: StoredSession, encoded: { bytes: Uint8Array; lengths: readonly number[] }) {
+		// Two private mirror snapshots share their immutable offset prefix. A divergent writer copies
+		// offsets only, never historical bodies; a linear sequence of refreshes just extends the prefix.
+		if (record.starts.length !== record.lastSeq) record.starts = record.starts.slice(0, record.lastSeq);
 		this.addChunk(record.entries, encoded.bytes);
 		let position = record.totalBytes === 0 ? 0 : record.totalBytes + 1;
 		for (const length of encoded.lengths) {
@@ -364,10 +511,248 @@ export class MemorySessionStore implements SessionStore {
 			position += length + 1;
 		}
 		record.totalBytes = position - 1;
-		record.lastSeq += entries.length;
-		record.index = index;
-		record.summaryState = applySessionSummaryEntries(record.summaryState, entries).state;
-		return { lastSeq: record.lastSeq };
+		record.lastSeq += encoded.lengths.length;
+	}
+
+	/** @internal Snapshot of the unsaved host's private bytes, writable after an engine disconnect.
+	 * The encoded chunks and append-only offset prefix are immutable at the captured cut. */
+	copyPrivateMirror(id: string, independent = false): MemorySessionStore {
+		const record = this.privateMirrorRecord(id);
+		const copy = markPrivateMemorySessionStore(new MemorySessionStore(this.cwdMatcher));
+		copy.records.set(id, {
+			...record,
+			index: independent ? { ...record.index, epoch: crypto.randomUUID() } : record.index,
+			entries: [...record.entries],
+		});
+		return copy;
+	}
+
+	/** @internal A never-branched, uncompacted session's entire history IS its displayed window.
+	 * Decode that window just once rather than deriving two sets of positions for identical ranges.
+	 * When applying direct SDK edits, keep unchanged pages' bytes; only edited pages are re-encoded. */
+	async readPrivateLinearWindow(id: string, overrides: ReadonlyMap<number, SessionEntry>, decoded?: SessionEntry[]) {
+		const record = this.privateMirrorRecord(id);
+		if (
+			record.index.compactions.length ||
+			record.index.jumps.length ||
+			record.index.needsBranchRebuild ||
+			record.index.leafSeq !== record.lastSeq
+		)
+			return undefined;
+		const held = this.held(record),
+			entries: SessionEntry[] = !overrides.size && decoded?.length === record.lastSeq ? decoded : [],
+			chunks: Uint8Array[] = [],
+			starts: number[] = [];
+		let totalBytes = 0;
+		for (let first = entries.length + 1; first <= held.lastSeq; ) {
+			let last = first;
+			const start = record.starts[first - 1]!;
+			while (
+				last < held.lastSeq &&
+				last - first < 4095 &&
+				this.spanOf(held, last + 1, last + 1)[1] - start <= SCAN_WINDOW_BYTES
+			)
+				last++;
+			const end = this.spanOf(held, last, last)[1],
+				raw = heldSlice(held.chunks, start, end),
+				page = parseEntries(raw);
+			let changed = false;
+			for (let seq = first; seq <= last; seq++) {
+				const replacement = overrides.get(seq);
+				if (!replacement) continue;
+				const original = page[seq - first]!;
+				// Changing the topology or entry kind needs the ordinary resume planner.
+				if (
+					replacement.id !== original.id ||
+					replacement.parentId !== original.parentId ||
+					replacement.type !== original.type ||
+					replacement.type === "compaction" ||
+					replacement.type === "custom"
+				)
+					return undefined;
+				page[seq - first] = replacement;
+				changed = true;
+			}
+			if (overrides.size) {
+				if (changed) {
+					validateSessionEntries(page);
+					const encoded = this.encodeEntries(page);
+					chunks.push(encoded.bytes);
+					for (const length of encoded.lengths) {
+						starts.push(totalBytes);
+						totalBytes += length + 1;
+					}
+				} else {
+					chunks.push(raw);
+					const delta = totalBytes - start;
+					for (let seq = first; seq <= last; seq++) starts.push(record.starts[seq - 1]! + delta);
+					totalBytes += raw.length + 1;
+				}
+			}
+			entries.push(...page);
+			first = last + 1;
+			if (first <= held.lastSeq) await nextTurn();
+		}
+		if (overrides.size) {
+			record.entries = chunks;
+			record.starts = starts;
+			record.totalBytes = Math.max(0, totalBytes - 1);
+			record.index = foldSessionResume(undefined, entries);
+			record.summaryState = applySessionSummaryEntries(undefined, entries).state;
+		}
+		const i = record.index;
+		return {
+			snapshot: { header: decodeHeader(record), entries, lastSeq: i.seq, epoch: i.epoch },
+			recovery: {
+				workflowStarts: i.workflowStarts,
+				admissionDigests: i.admissions,
+				intercomDeliveredIds: i.delivered,
+				deliveryOpIds: i.deliveryOps,
+			},
+		};
+	}
+
+	/** @internal Resolve a branched cut once on the canonical private store. Its writable views
+	 * share the resulting immutable index, so a later linear append never re-walks the same archive. */
+	async preparePrivateMirror(id: string): Promise<void> {
+		const record = this.privateMirrorRecord(id);
+		if (record.index.needsBranchRebuild) await this.resumeIndex(id, record);
+	}
+
+	private privateMirrorRecord(id: string) {
+		const r = this.stored(id);
+		if (!r) throw new SessionNotFoundError(id);
+		if (this.spill || !isPrivateMemorySessionStore(this)) throw new TypeError("Expected a private in-memory mirror");
+		return r;
+	}
+
+	/** @internal Mutable SDK objects can differ from their committed bytes. Only those exceptional
+	 * rows need to be reapplied to the independent host snapshot; the canonical archive stays intact. */
+	privateMirrorOverrides(id: string, rows: ReadonlyMap<number, SessionEntry>) {
+		return this.changedMirrorRows(this.privateMirrorRecord(id), rows);
+	}
+
+	/** @internal When the engine still owns the captured in-memory cut, only live overrides need
+	 * cross the pipe; every unchanged row is already in the incremental private archive. */
+	liveMirrorOverrides(id: string, epoch: string, lastSeq: number, rows: Iterable<readonly [number, SessionEntry]>) {
+		const r = this.stored(id);
+		return r?.index.epoch === epoch && r.lastSeq === lastSeq && !r.spilling && !r.directory
+			? this.changedMirrorRows(r, rows)
+			: undefined;
+	}
+
+	private changedMirrorRows(record: StoredSession, rows: Iterable<readonly [number, SessionEntry]>) {
+		const held = this.held(record);
+		const changed = new Map<number, SessionEntry>();
+		for (const [seq, entry] of rows) {
+			const [start, end] = this.spanOf(held, seq, seq);
+			const committed = heldSlice(held.chunks, start, end),
+				current = Buffer.from(JSON.stringify(entry));
+			if (!current.equals(committed)) changed.set(seq, entry);
+		}
+		return changed;
+	}
+
+	/** @internal A fresh private mirror transports the existing encoded bytes, not a decoded array
+	 * re-serialized through the RPC pipe. An oversized singleton stays on the ordinary chunk reader. */
+	readMirrorBytes(cut: PrivateMirrorCut): PrivateMirrorPage | undefined {
+		const r = this.stored(cut.sessionId),
+			from = cut.fromSeq;
+		if (
+			!r ||
+			r.spilling ||
+			r.directory ||
+			r.index.epoch !== cut.epoch ||
+			cut.lastSeq > r.lastSeq ||
+			!Number.isSafeInteger(from) ||
+			from < 1 ||
+			from > cut.lastSeq
+		)
+			return undefined;
+		const held = this.held(r),
+			start = r.starts[from - 1]!;
+		const lengths: number[] = [];
+		let end = start;
+		for (let seq = from; seq <= cut.lastSeq && lengths.length < 4096; seq++) {
+			const stop = this.spanOf(held, seq, seq)[1];
+			if (stop - start > SCAN_WINDOW_BYTES) break;
+			lengths.push(stop - r.starts[seq - 1]!);
+			end = stop;
+		}
+		if (!lengths.length) return undefined;
+		const bytes = heldSlice(held.chunks, start, end);
+		return {
+			seq: from,
+			lengths,
+			data: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+		};
+	}
+
+	/** @internal The staged store owns each page as one immutable buffer. The decoded objects are
+	 * needed to fold its index; only a caller with a complete *current window* may reuse them. */
+	appendPrivateMirrorBytes(id: string, p: PrivateMirrorPage) {
+		const r = this.privateMirrorRecord(id),
+			bytes = Buffer.from(p.data, "base64");
+		if (
+			p.seq !== r.lastSeq + 1 ||
+			!p.lengths.length ||
+			p.lengths.length > 4096 ||
+			bytes.length > SCAN_WINDOW_BYTES ||
+			p.lengths.some((n) => !Number.isSafeInteger(n) || n < 1) ||
+			p.lengths.reduce((a, b) => a + b, p.lengths.length - 1) !== bytes.length
+		)
+			throw new Error("Incomplete unsaved engine history");
+		const page = parseEntries(bytes);
+		if (page.length !== p.lengths.length) throw new Error("Incomplete unsaved engine history");
+		const index = this.appendedIndex(r, page);
+		if (r.starts.length !== r.lastSeq) r.starts = r.starts.slice(0, r.lastSeq);
+		r.entries.push(bytes);
+		let pos = r.lastSeq ? r.totalBytes + 1 : 0;
+		for (const n of p.lengths) {
+			r.starts.push(pos);
+			pos += n + 1;
+		}
+		r.totalBytes = pos - 1;
+		r.lastSeq += page.length;
+		r.index = index;
+		r.summaryState = applySessionSummaryEntries(r.summaryState, page).state;
+		return page;
+	}
+
+	/** @internal The host already has to own these encoded bytes. Decode only the metadata that
+	 * drives its resume index, not a second, giant JavaScript representation of an archived row. */
+	async appendPrivateMirrorChunks(id: string, seq: number, size: number, chunks: AsyncIterable<Uint8Array>) {
+		const record = this.privateMirrorRecord(id);
+		if (record.lastSeq + 1 !== seq) throw new SessionConflictError(id, seq - 1, record.lastSeq);
+		const bytes = new Uint8Array(size),
+			{ entryProjector } = await import("./jsonl-entry-projection.js");
+		const project = entryProjector();
+		let at = 0;
+		for await (const chunk of chunks) {
+			if (!chunk.length || at + chunk.length > size) throw new RangeError("Incomplete private mirror entry");
+			bytes.set(chunk, at);
+			at += chunk.length;
+			project.feed(chunk);
+		}
+		const result = project.finish();
+		if (at !== size || !result) throw new Error("Incomplete private mirror entry");
+		const entry = result.entry;
+		const index = this.appendedIndex(record, [entry]);
+		this.appendEncoded(record, { bytes, lengths: [size] });
+		record.index = result.toolCalls
+			? { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + result.toolCalls } }
+			: index;
+		record.summaryState = applySessionSummaryEntries(record.summaryState, [entry]).state;
+	}
+
+	/** @internal The native per-session catalog summary includes text from giant archived messages.
+	 * Transfer its bounded metadata instead of parsing those message bodies on the host. */
+	mirrorSummary(id: string, epoch: string, lastSeq: number) {
+		const r = this.stored(id);
+		return r?.index.epoch === epoch && r.lastSeq === lastSeq ? r.summaryState : undefined;
+	}
+	setPrivateMirrorSummary(id: string, summary: SessionSummaryState) {
+		this.privateMirrorRecord(id).summaryState = summary;
 	}
 
 	private appendedIndex(record: StoredSession, entries: readonly SessionEntry[]): SessionResumeIndex {
@@ -385,12 +770,41 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	private async resumeIndex(sessionId: string, record: StoredSession): Promise<SessionResumeIndex | undefined> {
-		if (isSessionResumeIndex(record.index, record.lastSeq)) return record.index;
-		const snapshot = await this.decode(sessionId, record);
-		if (snapshot === undefined || this.records.get(sessionId) !== record || record.lastSeq !== snapshot.lastSeq)
-			return undefined;
-		record.index = refoldSessionResume(record.index, snapshot.entries);
-		return record.index;
+		const previous = record.index;
+		if (isSessionResumeIndex(previous, record.lastSeq)) return previous;
+		const held = this.held(record),
+			epoch = record.index.epoch;
+		const rebuilt = await this.whileHeld(sessionId, record, held, async () => {
+			const source = this.resumeFields(sessionId, held);
+			let index = foldSessionResume(undefined, []),
+				extra = 0;
+			const positions = new Map<string, number>();
+			for await (const page of branchStatePages(held.lastSeq, source, (count) => {
+				extra += count;
+			})) {
+				index = foldSessionResume(
+					index,
+					page.map((row) => row.entry),
+					(id) => positions.get(id),
+					() => true,
+				);
+				for (const { seq, entry } of page) positions.set(entry.id, seq);
+			}
+			positions.clear();
+			if (index.jumps.length)
+				index = await selectResumeLeaf(index, index.leafSeq, branchStatePages(held.lastSeq, source));
+			return { ...index, epoch, totals: { ...index.totals, toolCalls: index.totals.toolCalls + extra } };
+		});
+		if (
+			!rebuilt ||
+			this.records.get(sessionId) !== record ||
+			record.lastSeq !== held.lastSeq ||
+			record.file !== held.file ||
+			record.index.epoch !== epoch
+		)
+			return;
+		record.index = rebuilt;
+		return rebuilt;
 	}
 
 	/** Add an append's chunk to the session's buffers. A merge that fails leaves them as they were. */
@@ -416,6 +830,14 @@ export class MemorySessionStore implements SessionStore {
 		this.records.set(sessionId, record);
 		await this.removeSpillFile(sessionId, previous);
 		return { lastSeq: entries.length, epoch: record.index.epoch };
+	}
+
+	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		validateSessionHeader(header);
+		const record = this.forWrite(header.id, options);
+		record.header = this.encode(() => JSON.stringify(header));
+		record.index = { ...record.index, epoch: crypto.randomUUID() };
+		return { lastSeq: record.lastSeq, epoch: record.index.epoch };
 	}
 
 	async load(sessionId: string): Promise<SessionSnapshot> {
@@ -445,11 +867,82 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
-	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	async readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
+		const { childDisplayCut } = await import("./card-view.js");
 		for (;;) {
 			const record = await this.settledRecord(sessionId);
 			const index = await this.resumeIndex(sessionId, record);
-			if (index === undefined) continue;
+			if (!index) continue;
+			const found =
+				typeof launch.launchLeafId === "string"
+					? await this.seqOfEntry(sessionId, record, launch.launchLeafId)
+					: undefined;
+			if (this.records.get(sessionId) === record && record.lastSeq === index.seq)
+				return childDisplayCut(index, launch, found);
+		}
+	}
+
+	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		const record = await this.settledRecord(sessionId);
+		const index = await this.resumeIndex(sessionId, record);
+		if (!index) throw new SessionConflictError(sessionId, cut.leaf, record.lastSeq);
+		return transcriptBranchSpan(sessionId, index, cut);
+	}
+
+	async readEntrySizes(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		limit?: number,
+	): Promise<SessionEntrySizes> {
+		const record = await this.settledRecord(sessionId);
+		const held = this.held(record);
+		const start = Math.max(1, startSeq);
+		const seqs = seqRange(start, Math.min(endSeq, held.lastSeq, start + entrySizeLimit(limit) - 1));
+		return {
+			epoch: record.index.epoch,
+			lastSeq: held.lastSeq,
+			sizes: seqs.map((seq) => {
+				const [from, to] = this.spanOf(held, seq, seq);
+				return { seq, bytes: to - from };
+			}),
+		};
+	}
+
+	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		for (;;) {
+			const record = await this.settledRecord(reference.sessionId);
+			if (record.index.epoch !== reference.epoch)
+				throw new SessionConflictError(reference.sessionId, reference.seq, record.lastSeq);
+			const held = this.held(record);
+			const [start, end] = this.spanOf(held, reference.seq, reference.seq);
+			if (held.directory && start < held.spilledBytes && !held.directory.readRange)
+				throw new TypeError("Session spill storage must implement readRange to read historical bytes");
+			const result = await this.whileHeld(reference.sessionId, record, held, () =>
+				this.bytesOf(
+					reference.sessionId,
+					held,
+					start + offset,
+					Math.min(end, start + offset + SESSION_HISTORY_CHUNK_BYTES),
+				),
+			);
+			if (result) return Uint8Array.from(result);
+		}
+	}
+
+	async readRange(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		expectedEpoch?: string,
+	): Promise<SessionEntryRange> {
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			if (expectedEpoch !== undefined && expectedEpoch !== record.index.epoch)
+				throw new SessionConflictError(sessionId, endSeq, record.lastSeq);
+			// These are physical positions. A branch move invalidates its resume projection, not the
+			// append watermark, generation or byte spans of the committed records.
+			const index = record.index;
 			const start = Math.max(1, startSeq);
 			const seqs = seqRange(start, Math.min(endSeq, index.seq));
 			const read = await this.entriesAt(sessionId, record, seqs);
@@ -484,7 +977,7 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
-	async readForkWindow(sessionId: string, entryId: string) {
+	async readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
 		const { indexedForkWindow, rangedForkMetadata, scanForkRecords, locateFork, fullForkWindow } = await import(
 			"./fork-window.js"
 		);
@@ -517,6 +1010,7 @@ export class MemorySessionStore implements SessionStore {
 					many,
 					metadata,
 					scanForkRecords(metadata),
+					options,
 				);
 				if (!invalid && this.records.get(sessionId) === record) return window;
 			} catch (error) {
@@ -525,20 +1019,102 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
-	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
-		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+	private resumeFields(sessionId: string, held: HeldBytes): Parameters<typeof branchStatePages>[1] {
+		return {
+			bytes: (seq) => {
+				const [start, end] = this.spanOf(held, seq, seq);
+				return end - start;
+			},
+			read: async (seqs) => {
+				const [start, end] = this.spanOf(held, seqs[0]!, seqs.at(-1)!);
+				return this.parseRun(sessionId, held, await this.bytesOf(sessionId, held, start, end)).map((entry, i) => ({
+					seq: seqs[i]!,
+					entry,
+				}));
+			},
+			chunk: (seq, offset, length) => {
+				const start = this.spanOf(held, seq, seq)[0] + offset;
+				return this.bytesOf(sessionId, held, start, start + length);
+			},
+		};
+	}
+
+	async readChildCatalogCut(sessionId: string) {
 		for (;;) {
 			const record = await this.settledRecord(sessionId);
 			const index = await this.resumeIndex(sessionId, record);
+			if (index) return childCatalogCut(index);
+		}
+	}
+	async readSnapshotCut(
+		sessionId: string,
+		options: { readonly leafSeq?: number } = {},
+	): Promise<SessionSnapshotCut | undefined> {
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (!index) continue;
+			if (options.leafSeq !== undefined && options.leafSeq > index.seq) return undefined;
+			return snapshotCutOf(index, options.leafSeq);
+		}
+	}
+	async readSelectedPage(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options: { readonly limit?: number; readonly backward?: boolean } = {},
+	): Promise<SessionHistoryPage> {
+		const limit = entrySizeLimit(options.limit);
+		const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
+		if (!wanted.length) return { items: [] };
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			if (record.index.epoch !== epoch) throw new SessionConflictError(sessionId, wanted.at(-1)!, record.lastSeq);
+			const held = this.held(record);
+			const plan = selectedPagePlan(
+				sessionId,
+				wanted,
+				held.lastSeq,
+				(seq) => {
+					const [start, end] = this.spanOf(held, seq, seq);
+					return end - start;
+				},
+				options.backward,
+			);
+			if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+			const read = await this.entriesAt(sessionId, record, plan.seqs);
+			if (read !== undefined) return { items: read };
+		}
+	}
+	async readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
+		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			let index = await this.resumeIndex(sessionId, record);
 			if (index === undefined) continue;
 			const leafSeq =
 				leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(sessionId, record, leafId)) ?? 0);
 			if (leafSeq !== index.leafSeq) {
-				const snapshot = await this.decode(sessionId, record);
-				if (snapshot === undefined) continue;
-				return { ...sessionResumeOf(snapshot.header, snapshot.entries, leafId), epoch: index.epoch };
+				const held = this.held(record);
+				if (held.directory && !held.directory.readRange)
+					throw new TypeError(
+						"A released session history directory must implement readRange to resume a historical branch",
+					);
+				const pages = branchStatePages(index.seq, this.resumeFields(sessionId, held));
+				const base = index;
+				const selected = await this.whileHeld(sessionId, record, held, () =>
+					selectResumeLeaf(base, leafSeq, pages),
+				);
+				if (
+					!selected ||
+					this.records.get(sessionId) !== record ||
+					record.lastSeq !== base.seq ||
+					record.file !== held.file
+				)
+					continue;
+				index = selected;
 			}
-			const plan = sessionResumePlan(index);
+			const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
 			const read = await this.entriesAt(sessionId, record, [...new Set([...branchSeqs, ...plan.state])].sort(bySeq));
 			if (read === undefined) continue;
@@ -546,7 +1122,7 @@ export class MemorySessionStore implements SessionStore {
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
 			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			const resume = sessionResumeFrom(index, decodeHeader(record), branch, state, leaf);
+			const resume = sessionResumeFrom(index, decodeHeader(record), branch, state, leaf, plan.children);
 			if (
 				resume.compaction &&
 				!(await readEarlierCompletionIntents(index, resume, (seqs) => this.entriesAt(sessionId, record, seqs)))
@@ -810,6 +1386,18 @@ export class MemorySessionStore implements SessionStore {
 		let last = held.lastSeq;
 		let window = SPILL_BLOCK_BYTES;
 		while (last >= 1) {
+			const [low, high] = this.spanOf(held, last, last);
+			if (high - low > SCAN_WINDOW_BYTES && (!held.directory || held.directory.readRange)) {
+				const { chunkedEntryHasId } = await import("./chunked-resume-projection.js");
+				const read = (start: number, end: number) => this.bytesOf(sessionId, held, start, end);
+				async function* parts() {
+					for (let start = low; start < high; start += SESSION_HISTORY_CHUNK_BYTES)
+						yield await read(start, Math.min(high, start + SESSION_HISTORY_CHUNK_BYTES));
+				}
+				if (await chunkedEntryHasId(parts(), entryId)) return last;
+				last--;
+				continue;
+			}
 			let first = last;
 			while (first > 1) {
 				const [start] = this.spanOf(held, first - 1, last);

@@ -154,14 +154,14 @@ describe("RPC bash ownership across session replacement", () => {
 			rebindSession: async () => {},
 			output: () => {},
 		});
-		const sourceEntries = (await sourceReader({ id: "source-entries", type: "get_entries" })) as {
-			data: { entries: Array<{ type: string; message?: { role?: string } }> };
-		};
-		const targetEntries = (await context.handle({ id: "target-entries", type: "get_entries" })) as {
-			data: { entries: Array<{ type: string; message?: { role?: string } }> };
-		};
-		expect(sourceEntries.data.entries.some((entry) => entry.message?.role === "bashExecution")).toBe(true);
-		expect(targetEntries.data.entries.some((entry) => entry.message?.role === "bashExecution")).toBe(false);
+		const sourceEntries = await sourceReader({ id: "source-entries", type: "get_entries" });
+		const targetEntries = await context.handle({ id: "target-entries", type: "get_entries" });
+		const hasBash = (response: typeof sourceEntries) =>
+			response?.success &&
+			response.command === "get_entries" &&
+			response.data.entries.some((entry) => entry.type === "message" && entry.message.role === "bashExecution");
+		expect(hasBash(sourceEntries)).toBe(true);
+		expect(hasBash(targetEntries)).toBe(false);
 		expect(context.first.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(1);
 		expect(context.second.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(0);
 		context.cleanup();

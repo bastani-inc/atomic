@@ -1,8 +1,10 @@
-import { type CustomEntry, type ExtensionContext, type SessionEntry, sliceHead } from "@bastani/atomic";
-import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
+import type { CustomEntry, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import { type ArchivedChildCatalogEntry, readSessionChildCatalog } from "@bastani/atomic/storage";
+import { pathExists } from "../../shared/path-exists.js";
+import { ReleasedChildError } from "./released-child-errors.js";
 import { visibleWorktreeRecord } from "./run-worktrees.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
-import { reopenChildSession, type SessionStoreSource } from "./subagent-child-session.js";
+import type { SessionStoreSource } from "./subagent-child-session.js";
 
 /** Session entry type that durably records each background child a session launched (#3760). */
 export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
@@ -62,10 +64,14 @@ export interface SubagentChildRecordLocation {
 	readonly sessionId: string;
 }
 
-type RecordReader = Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntry" | "getLeafEntry">;
+/**
+ * An open session the index reads child records from. A session that keeps the children whose records left its window
+ * out of its entries names them in its catalog and reads their records on demand; a session interface without them
+ * holds every record in its entries.
+ */
+type RecordReader = Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntry" | "getLeafEntry"> &
+	Partial<Pick<ExtensionContext["sessionManager"], "getArchivedChildCatalog" | "readArchivedChildRecord">>;
 
-const TRANSCRIPT_LINES = 12;
-const TRANSCRIPT_LINE_CHARS = 200;
 /** How often an expanded card of a running child, which keeps saving messages, reads its transcript again. */
 const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
 /** How far up from a session's leaf an entry this process just appended is looked for. */
@@ -88,13 +94,40 @@ function newChildIndex() {
 			cards.delete(ref);
 			if (cards.size === 0) watchers.delete(key);
 		}),
+		// Full records read on demand for children whose records left their session's window, by the index entry they
+		// were read for: a later observation of the child replaces that entry, and the record goes with it. A record only
+		// actions held (`holds`) goes as soon as the last of them lets it go; one a reader keeps (`kept`) stays until then.
+		hydrated: new WeakMap<SubagentChildIndexEntry, SubagentChildRecord>(),
+		// How many actions on the child hold the record read for an index entry until they are done with it.
+		holds: new WeakMap<SubagentChildIndexEntry, number>(),
+		// Index entries whose read record stays until the child's next observation, as wakes and record steps keep it.
+		kept: new WeakSet<SubagentChildIndexEntry>(),
+		// Tasks of such children their cards show, read once per index entry.
+		archivedTasks: new WeakMap<SubagentChildIndexEntry, { task?: string }>(),
 	};
 }
 const INDEX = Symbol.for("@bastani/subagents/child-record-index@1");
 const processIndex = globalThis as { [INDEX]?: ReturnType<typeof newChildIndex> };
 processIndex[INDEX] ??= newChildIndex();
-const { entries, unsavedRecords, pendingWrites, readers, childIdsByTaskId, watchers, invalidators, collectedCards } =
-	processIndex[INDEX];
+// An index an earlier generation of this extension made may not keep these yet.
+processIndex[INDEX].hydrated ??= new WeakMap();
+processIndex[INDEX].holds ??= new WeakMap();
+processIndex[INDEX].kept ??= new WeakSet();
+processIndex[INDEX].archivedTasks ??= new WeakMap();
+const {
+	entries,
+	unsavedRecords,
+	pendingWrites,
+	readers,
+	childIdsByTaskId,
+	watchers,
+	invalidators,
+	collectedCards,
+	hydrated,
+	holds,
+	kept,
+	archivedTasks,
+} = processIndex[INDEX];
 
 // A saved record can be replaced while its task remains released. Keep an interested wake's identity across
 // those writes, without retaining its receipt or keeping a per-name table of abandoned confirmations.
@@ -170,6 +203,7 @@ export interface SubagentChildTranscriptDetails {
 
 interface TranscriptCache {
 	readonly key: string;
+	readonly cancel: AbortController;
 	lines?: readonly string[];
 	details?: SubagentChildTranscriptDetails;
 }
@@ -181,7 +215,16 @@ const loadedOwners = new Set<string>();
  * The session store cards read owners' records and children's transcripts from: the latest bound session's, never that
  * session itself, which ends while the process and its cards go on.
  */
-let source: SessionStoreSource | undefined;
+type CardSource = SessionStoreSource & { readonly expanded: Set<WeakRef<object>> };
+let source: CardSource | undefined;
+const boundCards = new WeakMap<object, { owner: CardSource; ref: WeakRef<object> }>();
+const removedCards = new FinalizationRegistry<{ owner: WeakRef<CardSource>; ref: WeakRef<object> }>(({ owner, ref }) =>
+	owner.deref()?.expanded.delete(ref),
+);
+const releaseSections = new WeakMap<object, (card: object) => void>();
+export function onSubagentCardDiscard(card: object, release: (card: object) => void) {
+	releaseSections.set(card, release);
+}
 
 interface WatchedCard {
 	readonly key: string;
@@ -256,17 +299,32 @@ function projectionOf(
 	};
 }
 
-function savedRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
+/** The index entry of a child that `sessionId` keeps only in its catalog, as that catalog names it. */
+function archivedProjectionOf(child: ArchivedChildCatalogEntry, sessionId: string): SubagentChildIndexEntry {
+	const copied = child.ownerSessionId !== sessionId;
+	return {
+		childId: child.childId,
+		runId: child.runId,
+		index: child.index,
+		agent: child.agent,
+		ownerSessionId: child.ownerSessionId,
+		state: child.state,
+		...(child.elapsedMs === undefined ? {} : { elapsedMs: child.elapsedMs }),
+		...(child.elapsedSpan === undefined ? {} : { elapsedSpan: child.elapsedSpan }),
+		cwd: child.cwd,
+		...(child.taskId === undefined ? {} : { taskId: child.taskId }),
+		...(child.terminalStatus === undefined ? {} : { terminalStatus: child.terminalStatus }),
+		...(child.childSessionId === undefined ? {} : { childSessionId: child.childSessionId }),
+		...(child.childSessionFile === undefined ? {} : { childSessionFile: child.childSessionFile }),
+		...(child.intercomTarget === undefined ? {} : { intercomTarget: child.intercomTarget }),
+		entryId: child.entryId,
+		...(copied ? { recordedIn: sessionId, copied: true as const } : {}),
+	};
+}
+
+function unreadableRecordError(entry: SubagentChildIndexEntry): ReleasedChildError {
 	const sessionId = entry.recordedIn ?? entry.ownerSessionId;
-	const entryId = entry.entryId;
-	if (sessionId !== undefined && entryId !== undefined) {
-		for (const reader of readersOf(sessionId)) {
-			const saved = reader.getEntry(entryId);
-			const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
-			if (data?.childId === entry.childId) return data;
-		}
-	}
-	throw new ReleasedChildError("child-record-unreadable", {
+	return new ReleasedChildError("child-record-unreadable", {
 		childId: entry.childId,
 		...(entry.ownerSessionId === undefined ? {} : { ownerSessionId: entry.ownerSessionId }),
 		...(sessionId === undefined ? {} : { sessionId }),
@@ -274,22 +332,134 @@ function savedRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
 	});
 }
 
+/**
+ * The child's latest saved record when this process holds it: in an open copy of its session's window, or read for an
+ * action on the child after it left that window.
+ */
+function residentRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord | undefined {
+	const read = hydrated.get(entry);
+	if (read !== undefined) return read;
+	const sessionId = entry.recordedIn ?? entry.ownerSessionId;
+	const entryId = entry.entryId;
+	if (sessionId === undefined || entryId === undefined) return undefined;
+	for (const reader of readersOf(sessionId)) {
+		const saved = reader.getEntry(entryId);
+		const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
+		if (data?.childId === entry.childId) return data;
+	}
+	return undefined;
+}
+
 function fullRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
-	return unsavedRecords.get(entry.childId) ?? savedRecordOf(entry);
+	const record = readableRecordOf(entry);
+	if (record === undefined) throw unreadableRecordError(entry);
+	return record;
 }
 
 /**
- * The child's full latest record, or undefined when the session holding it is not open in this process: a newer
- * observation of the child is then indexed as written, which is what a fold of that session's own history gives.
+ * The child's full latest record, or undefined when this process does not hold it: the session holding it is not open
+ * here, or the record left that session's window and is read only on demand (see {@link loadSubagentChildRecord}). A
+ * newer observation of the child is then indexed as written, which is what a fold of that session's own history gives.
  */
 function readableRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord | undefined {
-	try {
-		return fullRecordOf(entry);
-	} catch (error) {
-		if (isReleasedChildError(error as Error) && (error as ReleasedChildError).code === "child-record-unreadable")
-			return undefined;
-		throw error;
+	return unsavedRecords.get(entry.childId) ?? residentRecordOf(entry);
+}
+
+/** Each catalog a session published, by its entries: a session publishes a new catalog when it changes. */
+const catalogIndexes = new WeakMap<
+	readonly ArchivedChildCatalogEntry[],
+	ReadonlyMap<string, ArchivedChildCatalogEntry>
+>();
+
+/** What `reader`'s session keeps in its catalog of the record in entry `entryId`, if that record left its window. */
+function archivedChildOf(reader: RecordReader, entryId: string): ArchivedChildCatalogEntry | undefined {
+	if (typeof reader.getArchivedChildCatalog !== "function" || typeof reader.readArchivedChildRecord !== "function")
+		return undefined;
+	const catalog = reader.getArchivedChildCatalog();
+	let byEntry = catalogIndexes.get(catalog);
+	if (byEntry === undefined) {
+		byEntry = new Map(catalog.map((child) => [child.entryId, child]));
+		catalogIndexes.set(catalog, byEntry);
 	}
+	return byEntry.get(entryId);
+}
+
+/**
+ * The open copies of the session holding `entry`'s record whose catalog names that record, which left their window,
+ * with what the catalog keeps of it.
+ */
+function archiveReadersOf(
+	entry: SubagentChildIndexEntry,
+): { readonly reader: RecordReader; readonly child: ArchivedChildCatalogEntry }[] {
+	const sessionId = entry.recordedIn ?? entry.ownerSessionId;
+	const entryId = entry.entryId;
+	if (sessionId === undefined || entryId === undefined) return [];
+	return readersOf(sessionId).flatMap((reader) => {
+		const child = archivedChildOf(reader, entryId);
+		return child?.childId === entry.childId ? [{ reader, child }] : [];
+	});
+}
+
+/**
+ * How a record read for a child whose records left its session's window stays in memory: until the child's next
+ * observation replaces its index entry, which then merges over it, or held by an action until that action lets it go.
+ */
+type KeepRead = "until-observed" | "held";
+
+/** Keep the record read for `entry` as `keep` says; false when `entry`'s record was not read so. */
+function keepRead(entry: SubagentChildIndexEntry, keep: KeepRead | undefined): boolean {
+	if (keep === undefined || unsavedRecords.has(entry.childId) || !hydrated.has(entry)) return false;
+	if (keep === "until-observed") kept.add(entry);
+	else holds.set(entry, (holds.get(entry) ?? 0) + 1);
+	return true;
+}
+
+/** An action is done with the record it held for `entry`: the record goes once no action holds it and none keeps it. */
+function releaseRead(entry: SubagentChildIndexEntry): void {
+	const count = (holds.get(entry) ?? 0) - 1;
+	if (count > 0) {
+		holds.set(entry, count);
+		return;
+	}
+	holds.delete(entry);
+	if (!kept.has(entry)) hydrated.delete(entry);
+}
+
+/**
+ * The child's full latest record, read from its session when it left that session's window, and the index entry it is
+ * the record of. With `keep` it stays in memory as {@link KeepRead} says; `kept` tells whether it was kept so. A
+ * resumed child's records name only what changed, so they merge over it. Throws a {@link ReleasedChildError}
+ * `child-record-unreadable` when no open session holds it.
+ */
+async function loadRecordOf(
+	entry: SubagentChildIndexEntry,
+	keep: KeepRead | undefined,
+): Promise<{ readonly record: SubagentChildRecord; readonly entry: SubagentChildIndexEntry; readonly kept: boolean }> {
+	for (;;) {
+		const ready = readableRecordOf(entry);
+		if (ready !== undefined) return { record: ready, entry, kept: keepRead(entry, keep) };
+		const merge = mergingEntries.get(entry);
+		const read = merge === undefined ? await readArchivedRecordOf(entry) : await merge.then(() => undefined);
+		// A newer observation of the child arrived meanwhile: it is the latest record.
+		const latest = entries.get(entry.childId);
+		if (latest !== undefined && latest !== entry) {
+			entry = latest;
+			continue;
+		}
+		if (read === undefined) throw unreadableRecordError(entry);
+		if (keep !== undefined && latest === entry) hydrated.set(entry, read);
+		return { record: read, entry, kept: keepRead(entry, keep) };
+	}
+}
+
+/** The record `entry` names, read from an open copy of its session after it left that session's window. */
+async function readArchivedRecordOf(entry: SubagentChildIndexEntry): Promise<SubagentChildRecord | undefined> {
+	for (const { reader } of archiveReadersOf(entry)) {
+		const saved = await reader.readArchivedChildRecord?.(entry.entryId as string);
+		const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
+		if (data?.childId === entry.childId) return data;
+	}
+	return undefined;
 }
 
 function acceptsObservation(existing: SubagentChildIndexEntry | undefined, copied: boolean): boolean {
@@ -329,10 +499,18 @@ export function observeSubagentChildRecord(
 /** A card finds a child by any task id it ran as; a released child's task is no longer one. */
 function indexTaskId(record: SubagentChildRecord): void {
 	if (record.taskId === undefined) return;
-	if (record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) {
-		if (childIdsByTaskId.get(record.taskId) === record.childId) childIdsByTaskId.delete(record.taskId);
-	} else if (!childIdsByTaskId.has(record.taskId)) childIdsByTaskId.set(record.taskId, record.childId);
-	notify(record.taskId);
+	indexChildTask(
+		record.childId,
+		record.taskId,
+		record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+	);
+}
+
+function indexChildTask(childId: string, taskId: string, released: boolean): void {
+	if (released) {
+		if (childIdsByTaskId.get(taskId) === childId) childIdsByTaskId.delete(taskId);
+	} else if (!childIdsByTaskId.has(taskId)) childIdsByTaskId.set(taskId, childId);
+	notify(taskId);
 }
 
 /**
@@ -392,9 +570,14 @@ function copiedInto(record: SubagentChildRecord, sessionId: string): boolean {
 
 /**
  * Fold a session's records per child, then index each child once from its latest entry. Every task id a child ran as
- * is indexed on the way, so its card finds it by any of them.
+ * is indexed on the way, so its card finds it by any of them. `archived` are the children whose earlier records left
+ * the session's window: the records the window still holds of one of them are merged over its catalog's.
  */
-function observeEntries(sessionEntries: readonly SessionEntry[], sessionId: string): void {
+function observeEntries(
+	sessionEntries: readonly SessionEntry[],
+	sessionId: string,
+	archived: ReadonlyMap<string, SubagentChildIndexEntry> = new Map(),
+): void {
 	const folded = new Map<string, FoldedRecord>();
 	for (const entry of sessionEntries) {
 		if (!isSubagentChildRecord(entry)) continue;
@@ -409,18 +592,127 @@ function observeEntries(sessionEntries: readonly SessionEntry[], sessionId: stri
 		const pending = unsavedRecords.get(record.childId);
 		if (pending !== undefined && pendingWrites.has(pending)) continue;
 		const copied = copiedInto(record, sessionId);
-		if (hasEveryKeyOf(latest, record)) observeSubagentChildRecord(latest, copied, { entryId, sessionId });
+		const earlier = archived.get(record.childId);
+		if (earlier !== undefined && entries.get(record.childId) === earlier)
+			mergeOverArchived(earlier, record, latest, { entryId, sessionId }, copied);
+		else if (hasEveryKeyOf(latest, record)) observeSubagentChildRecord(latest, copied, { entryId, sessionId });
 		else observeSubagentChildRecord(record, copied);
 	}
 }
 
+/**
+ * Index what `sessionId` keeps of children whose records left its window, before the records the window still holds,
+ * which are newer. Returns the entries indexed from it, by child id.
+ */
+function observeArchivedChildren(
+	children: readonly ArchivedChildCatalogEntry[],
+	sessionId: string,
+): Map<string, SubagentChildIndexEntry> {
+	const indexed = new Map<string, SubagentChildIndexEntry>();
+	for (const child of children) {
+		const copied = child.ownerSessionId !== sessionId;
+		const existing = entries.get(child.childId);
+		if (!acceptsObservation(existing, copied)) continue;
+		const released = new Set(child.releasedTaskIds ?? []);
+		for (const taskId of child.taskIds) indexChildTask(child.childId, taskId, released.has(taskId));
+		// This process observed a newer record of it, which is not saved yet or waits to be appended: that one stands.
+		if (unsavedRecords.has(child.childId)) continue;
+		const projection = archivedProjectionOf(child, sessionId);
+		// Indexed from this entry already, as before its window was cleared: what was read of it stays.
+		if (
+			existing !== undefined &&
+			existing.entryId === projection.entryId &&
+			existing.recordedIn === projection.recordedIn &&
+			existing.copied === projection.copied
+		) {
+			indexed.set(child.childId, existing);
+			continue;
+		}
+		entries.set(child.childId, projection);
+		indexed.set(child.childId, projection);
+		notify(child.childId);
+	}
+	return indexed;
+}
+
+/** Merges of window records over records that left the window, by owner, while they read the earlier records. */
+const merging = new Map<string, Promise<void>>();
+/** The merge an index entry waits for before its full record can be read. */
+const mergingEntries = new WeakMap<SubagentChildIndexEntry, Promise<void>>();
+
+/**
+ * The window holds newer records of a child whose earlier ones left it, and they do not name everything its record has
+ * (as an Atomic before #4395 wrote them): its record is theirs merged over the earlier one, read before anything reads
+ * the child's record. Until then the index says where the child stands as those newer records do.
+ */
+function mergeOverArchived(
+	earlier: SubagentChildIndexEntry,
+	fold: SubagentChildRecord,
+	latest: SubagentChildRecord,
+	saved: SubagentChildRecordLocation,
+	copied: boolean,
+): void {
+	const { entryId: _location, recordedIn: _recordedIn, copied: _copied, ...known } = projectionOf(fold, copied, saved);
+	const standing: SubagentChildIndexEntry = { ...earlier, ...known };
+	entries.set(fold.childId, standing);
+	notify(fold.childId);
+	const owner = fold.owner?.sessionId ?? saved.sessionId;
+	const merged = readArchivedRecordOf(earlier)
+		.catch(() => undefined)
+		.then((record) => {
+			if (entries.get(fold.childId) !== standing) return;
+			// The earlier record cannot be read: the child's record is what the window holds, as a fold of it gives.
+			if (record === undefined) {
+				observeSubagentChildRecord(fold, copied);
+				return;
+			}
+			const full = { ...record, ...fold };
+			if (hasEveryKeyOf(latest, full)) observeSubagentChildRecord(latest, copied, saved);
+			else observeSubagentChildRecord(full, copied);
+		});
+	mergingEntries.set(standing, merged);
+	const all = Promise.all([merging.get(owner), merged]).then(() => undefined);
+	merging.set(owner, all);
+	void all.then(() => {
+		if (merging.get(owner) === all) merging.delete(owner);
+	});
+}
+
+/**
+ * Settles once the records of `ownerSessionId`'s children that left its window are merged with the newer ones the
+ * window holds; undefined when none are being merged.
+ */
+export function subagentChildRecordsMerging(ownerSessionId: string): Promise<void> | undefined {
+	return merging.get(ownerSessionId);
+}
+
+/** Index a session: its catalog of children whose records left its window, then the records the window holds. */
+function observeSession(sessionManager: RecordReader & { getEntries(): SessionEntry[] }): void {
+	const sessionId = sessionManager.getSessionId();
+	const catalog =
+		typeof sessionManager.getArchivedChildCatalog === "function" ? sessionManager.getArchivedChildCatalog() : [];
+	const earlier = observeArchivedChildren(catalog, sessionId);
+	for (const child of catalog)
+		if (child.coveredBy && sessionManager.getEntry(child.coveredBy)) earlier.delete(child.childId);
+	observeEntries(sessionManager.getEntries(), sessionId, earlier);
+}
+
 /** Read the child records of the session a card is shown in, and keep its store for records and transcripts. */
-export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManager">): void {
+export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManager">): () => void {
 	const store = ctx.sessionManager.getSessionStore();
-	source = { sessionManager: { getSessionStore: () => store } };
+	const bound: CardSource = { sessionManager: { getSessionStore: () => store }, expanded: new Set() };
+	source = bound;
 	registerSubagentChildRecordReader(ctx.sessionManager, true);
 	loadedOwners.add(ctx.sessionManager.getSessionId());
-	observeEntries(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId());
+	observeSession(ctx.sessionManager);
+	return () => {
+		for (const weak of bound.expanded) {
+			const card = weak.deref();
+			if (card) clearSubagentChildTranscriptCache(card);
+		}
+		bound.expanded.clear();
+		if (source === bound) source = undefined;
+	};
 }
 
 /**
@@ -432,7 +724,7 @@ export function indexSubagentChildOwner(ctx: Pick<ExtensionContext, "sessionMana
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	if (loadedOwners.has(ownerSessionId)) return;
 	loadedOwners.add(ownerSessionId);
-	observeEntries(ctx.sessionManager.getEntries(), ownerSessionId);
+	observeSession(ctx.sessionManager);
 }
 
 function ownEntry(ownerSessionId: string, childId: string): SubagentChildIndexEntry | undefined {
@@ -468,11 +760,159 @@ export function subagentChildRecordForTarget(
 	ownerSessionId: string,
 	intercomTarget: string,
 ): SubagentChildRecord | undefined {
+	const found = entryForTarget(ownerSessionId, intercomTarget);
+	return found === undefined ? undefined : fullRecordOf(found);
+}
+
+function entryForTarget(ownerSessionId: string, intercomTarget: string): SubagentChildIndexEntry | undefined {
 	if (typeof intercomTarget !== "string") return undefined;
 	let found: SubagentChildIndexEntry | undefined;
 	for (const entry of entries.values())
 		if (entry.intercomTarget === intercomTarget && entry.ownerSessionId === ownerSessionId) found = entry;
-	return found === undefined ? undefined : fullRecordOf(found);
+	return found;
+}
+
+/**
+ * The id of the child of `ownerSessionId` that was launched with this Intercom name, read from the index alone: a
+ * child whose record left its session's window is found without reading it. Throws as
+ * {@link subagentChildRecordForTarget} does when the session holding that child's record is not open in this process.
+ */
+export function subagentChildIdForTarget(ownerSessionId: string, intercomTarget: string): string | undefined {
+	const found = entryForTarget(ownerSessionId, intercomTarget);
+	if (found === undefined || readableRecordOf(found) !== undefined || isArchivedEntry(found)) return found?.childId;
+	throw unreadableRecordError(found);
+}
+
+/**
+ * The latest record of one of `ownerSessionId`'s children, as {@link subagentChildRecordOf} gives it, read from its
+ * session when it left that session's window. With `keep`, a record read so stays in memory until the child's next
+ * observation, which merges over it: for work that records the child again, as a wake does.
+ */
+export async function loadSubagentChildRecord(
+	ownerSessionId: string,
+	childId: string,
+	options: { readonly keep?: boolean } = {},
+): Promise<SubagentChildRecord | undefined> {
+	const entry = ownEntry(ownerSessionId, childId);
+	if (entry === undefined) return undefined;
+	return (await loadRecordOf(entry, options.keep === true ? "until-observed" : undefined)).record;
+}
+
+/**
+ * Keep this child's latest record in memory until its next observation, as {@link loadSubagentChildRecord} keeps it,
+ * also when an action read it first and holds it: that action letting it go does not take it from the caller. Returns
+ * the read to wait for when the record left its session's window and is not in memory; undefined when nothing needs
+ * reading, so the caller goes on at once.
+ */
+export function keepSubagentChildRecord(ownerSessionId: string, childId: string): Promise<unknown> | undefined {
+	const entry = ownEntry(ownerSessionId, childId);
+	if (entry === undefined || keepRead(entry, "until-observed") || !isArchivedEntry(entry)) return undefined;
+	return loadRecordOf(entry, "until-observed");
+}
+
+/** A child's latest record an action on it holds, and how the action lets it go. */
+export interface SubagentChildRecordHold {
+	readonly record: SubagentChildRecord;
+	/** The action is done with the child: a record read from its session is no longer kept for it. Called once. */
+	release(): void;
+}
+
+/**
+ * The latest record of one of `ownerSessionId`'s children for an explicit action on it, read as
+ * {@link loadSubagentChildRecord} reads it. A record read from its session stays in memory while the action holds it:
+ * the action lets it go once it is done with the child, or the child's next observation, when the action records the
+ * child again, merges over it and replaces it. Undefined for a child this owner did not launch.
+ */
+export async function holdSubagentChildRecord(
+	ownerSessionId: string,
+	childId: string,
+): Promise<SubagentChildRecordHold | undefined> {
+	const entry = ownEntry(ownerSessionId, childId);
+	if (entry === undefined) return undefined;
+	const read = await loadRecordOf(entry, "held");
+	let held = read.kept;
+	return {
+		record: read.record,
+		release: () => {
+			if (!held) return;
+			held = false;
+			releaseRead(read.entry);
+		},
+	};
+}
+
+/**
+ * Whether the latest record of this child of `ownerSessionId` is read only on demand, by
+ * {@link loadSubagentChildRecord}: it left its session's window.
+ */
+export function subagentChildRecordNeedsRead(ownerSessionId: string, childId: string): boolean {
+	const entry = ownEntry(ownerSessionId, childId);
+	return (
+		entry !== undefined &&
+		readableRecordOf(entry) === undefined &&
+		(mergingEntries.has(entry) || archiveReadersOf(entry).length > 0)
+	);
+}
+
+/** Whether `entry`'s record left its session's window, which an open copy of that session reads on demand. */
+function isArchivedEntry(entry: SubagentChildIndexEntry): boolean {
+	return readableRecordOf(entry) === undefined && (mergingEntries.has(entry) || archiveReadersOf(entry).length > 0);
+}
+
+/** Where a child stands, as its index entry keeps it: no task, held messages or held results. */
+export type SubagentChildStanding = Pick<
+	SubagentChildRecord,
+	| "childId"
+	| "runId"
+	| "index"
+	| "agent"
+	| "cwd"
+	| "state"
+	| "terminalStatus"
+	| "taskId"
+	| "childSessionId"
+	| "childSessionFile"
+	| "intercomTarget"
+	| "intercomGroup"
+	| "releasedIntercomId"
+	| "elapsedMs"
+	| "elapsedSpan"
+>;
+
+function standingOf(entry: SubagentChildIndexEntry): SubagentChildStanding {
+	const { ownerSessionId: _owner, entryId: _entryId, recordedIn: _recordedIn, copied: _copied, ...standing } = entry;
+	return standing;
+}
+
+/**
+ * Every child of `ownerSessionId` in the index, as {@link subagentChildRecordsOf} lists them, and with them the ones
+ * whose records left their session's window, as they stand: settled children that hold nothing for later, which a
+ * reconnect still reports ended. A child whose record is in a session not open in this process is left out.
+ */
+export function subagentChildStandingsOf(ownerSessionId: string): (SubagentChildRecord | SubagentChildStanding)[] {
+	const found: (SubagentChildRecord | SubagentChildStanding)[] = [];
+	for (const entry of entries.values()) {
+		if (entry.ownerSessionId !== ownerSessionId) continue;
+		const record = readableRecordOf(entry);
+		const archived = record === undefined ? archiveReadersOf(entry)[0]?.child : undefined;
+		if (record !== undefined) found.push(record);
+		else if (archived !== undefined)
+			found.push({
+				...standingOf(entry),
+				...(archived.intercomGroup === undefined ? {} : { intercomGroup: archived.intercomGroup }),
+				...(archived.releasedIntercomId === undefined ? {} : { releasedIntercomId: archived.releasedIntercomId }),
+			});
+	}
+	return found;
+}
+
+/** The Intercom name of the child of `ownerSessionId` that runs or ran as task `taskId`, read from the index alone. */
+export function subagentChildIntercomTargetOfTask(ownerSessionId: string, taskId: string): string | undefined {
+	for (const entry of entries.values()) {
+		if (entry.ownerSessionId !== ownerSessionId || entry.taskId !== taskId) continue;
+		if (readableRecordOf(entry) !== undefined || archiveReadersOf(entry).length > 0) return entry.intercomTarget;
+	}
+	return undefined;
 }
 
 /**
@@ -490,8 +930,13 @@ export function subagentChildRecordsOf(ownerSessionId: string): SubagentChildRec
 	return records;
 }
 
-/** Look up the latest records for one reservation batch: index names once, on demand, but never cache a child's state. */
-export function reservationRecordLookup(ownerSessionId: string): (name: string) => SubagentChildRecord | undefined {
+/**
+ * Look up where children stand for one reservation batch: index names once, on demand, but never cache a child's state.
+ * A child whose record left its session's window is found as it stands: settled, holding nothing.
+ */
+export function reservationRecordLookup(
+	ownerSessionId: string,
+): (name: string) => SubagentChildRecord | SubagentChildStanding | undefined {
 	let ids: Map<string, string> | undefined;
 	return (name) => {
 		if (ids === undefined) {
@@ -503,7 +948,9 @@ export function reservationRecordLookup(ownerSessionId: string): (name: string) 
 			}
 		}
 		const id = ids.get(name);
-		const record = id === undefined ? undefined : readableSubagentChildRecordOf(ownerSessionId, id);
+		const entry = id === undefined ? undefined : ownEntry(ownerSessionId, id);
+		if (entry === undefined) return undefined;
+		const record = readableRecordOf(entry) ?? (archiveReadersOf(entry).length > 0 ? standingOf(entry) : undefined);
 		return record?.intercomTarget === name ? record : undefined;
 	};
 }
@@ -565,30 +1012,14 @@ export function watchSubagentChildCard(
 	if (ownerSessionId === undefined || loadedOwners.has(ownerSessionId) || !source) return;
 	loadedOwners.add(ownerSessionId);
 	const from = source;
+	// Where the owner's children stand, never the owner's history: a card reads a child's details only when expanded.
 	void (async () => {
-		const snapshot = await from.sessionManager.getSessionStore().load(ownerSessionId);
-		observeEntries(snapshot.entries, ownerSessionId);
+		observeArchivedChildren(
+			await readSessionChildCatalog(from.sessionManager.getSessionStore(), ownerSessionId),
+			ownerSessionId,
+		);
 	})().catch(() => undefined);
 }
-
-type TranscriptPart = {
-	readonly type: string;
-	readonly text?: string;
-	readonly data?: string;
-	readonly mimeType?: string;
-	readonly id?: string;
-	readonly name?: string;
-	readonly arguments?: unknown;
-};
-type TranscriptMessage = {
-	readonly role: string;
-	readonly content?: string | readonly TranscriptPart[];
-	readonly details?: unknown;
-	readonly toolCallId?: string;
-	readonly toolName?: string;
-	readonly isError?: boolean;
-	readonly durationMs?: number;
-};
 
 function unwrapPrompt(task: string): string {
 	let text = task;
@@ -605,166 +1036,48 @@ function unwrapPrompt(task: string): string {
 	return text.trim();
 }
 
-function messageText(content: string | readonly TranscriptPart[] | undefined): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter(
-			(part): part is TranscriptPart & { text: string } => part.type === "text" && typeof part.text === "string",
-		)
-		.map((part) => part.text)
-		.join("\n");
-}
-
-function transcriptLines(messages: readonly TranscriptMessage[]): string[] {
-	const lines: string[] = [];
-	for (const message of messages) {
-		const parts =
-			typeof message.content === "string" ? [{ type: "text", text: message.content }] : (message.content ?? []);
-		for (const part of parts) {
-			const text =
-				part.type === "text" && part.text?.trim()
-					? `${message.role === "user" ? "› " : ""}${part.text.trim().replace(/\s+/g, " ")}`
-					: part.type === "toolCall" && part.name
-						? `→ ${part.name}`
-						: undefined;
-			if (text && (message.role === "user" || message.role === "assistant"))
-				lines.push(text.length > TRANSCRIPT_LINE_CHARS ? `${sliceHead(text, TRANSCRIPT_LINE_CHARS - 1)}…` : text);
-		}
-	}
-	return lines.slice(-TRANSCRIPT_LINES);
-}
-
-function extractTranscriptDetails(messages: readonly TranscriptMessage[]): SubagentChildTranscriptDetails {
-	let prompt: string | undefined;
-	let result: string | undefined;
-	const resultsById = new Map<
-		string,
-		{
-			readonly content: readonly TranscriptPart[];
-			readonly details?: unknown;
-			readonly text: string;
-			readonly isError: boolean;
-			readonly durationMs?: number;
-		}
-	>();
-	for (const message of messages) {
-		if (message.role === "user" && prompt === undefined) {
-			const raw = messageText(message.content);
-			if (raw.trim()) prompt = unwrapPrompt(raw);
-		} else if (message.role === "toolResult" && typeof message.toolCallId === "string") {
-			const content = Array.isArray(message.content) ? message.content : [];
-			resultsById.set(message.toolCallId, {
-				content,
-				...(message.details !== undefined ? { details: message.details } : {}),
-				text: messageText(message.content),
-				isError: message.isError === true,
-				...(typeof message.durationMs === "number" ? { durationMs: message.durationMs } : {}),
-			});
-		} else if (message.role === "assistant") {
-			const text = messageText(message.content).trim();
-			if (text) result = text;
-		}
-	}
-	const toolCalls: SubagentChildToolCallEntry[] = [];
-	for (const message of messages) {
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const part of message.content) {
-			if (part.type !== "toolCall" || !part.name) continue;
-			const id = typeof part.id === "string" ? part.id : "";
-			const args =
-				typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
-					? (part.arguments as Record<string, unknown>)
-					: {};
-			const matched = id ? resultsById.get(id) : undefined;
-			toolCalls.push({
-				id,
-				name: part.name,
-				args,
-				...(matched
-					? {
-							resultContent: matched.content,
-							...(matched.details !== undefined ? { resultDetails: matched.details } : {}),
-							resultText: matched.text,
-							isError: matched.isError,
-							...(matched.durationMs !== undefined ? { durationMs: matched.durationMs } : {}),
-							completed: true,
-						}
-					: { completed: false }),
-			});
-		}
-	}
-	return {
-		...(prompt !== undefined ? { prompt } : {}),
-		toolCalls,
-		...(result !== undefined ? { result } : {}),
-		lines: transcriptLines(messages),
-	};
-}
-
-async function resolveSavedRecord(
+async function readCard(
 	from: SessionStoreSource,
 	entry: SubagentChildIndexEntry,
-): Promise<SubagentChildRecord | undefined> {
-	const memory = readableRecordOf(entry);
-	if (memory !== undefined) return memory;
-	const sessionId = entry.recordedIn ?? entry.ownerSessionId;
-	if (!sessionId || !entry.entryId) return undefined;
+	signal: AbortSignal,
+): Promise<SubagentChildTranscriptDetails> {
+	const { readExpandedChildDetails, readSavedChildLaunch } = await import("@bastani/atomic/storage");
+	const { JsonlSessionStore } = await import("@bastani/atomic");
+	const owner = from.sessionManager.getSessionStore();
+	const parentId = entry.recordedIn ?? entry.ownerSessionId;
+	const launch = async () =>
+		readableRecordOf(entry) ??
+		(parentId !== undefined && entry.entryId
+			? await readSavedChildLaunch(owner, parentId, entry.entryId, entry.childId, signal).catch(() => {
+					signal.throwIfAborted();
+					return undefined;
+				})
+			: undefined);
+	const unavailable = (reason: string) => ({
+		toolCalls: [],
+		lines: [],
+		unavailable: `Transcript unavailable · ${reason}`,
+	});
 	try {
-		const snapshot = await from.sessionManager.getSessionStore().load(sessionId);
-		const found = snapshot.entries.find((item) => item.id === entry.entryId);
-		return found && isSubagentChildRecord(found) ? found.data : undefined;
-	} catch {
-		return undefined;
+		const file = entry.childSessionFile;
+		if (file && !(await pathExists(file))) return unavailable(`its session file is missing: ${file}`);
+		const details = file
+			? await JsonlSessionStore.withFileReader(file, async (store, id) =>
+					entry.childSessionId !== undefined && entry.childSessionId !== id
+						? unavailable("its session file now belongs to a different session")
+						: readExpandedChildDetails(store, id, await launch(), { signal }),
+				)
+			: entry.childSessionId === undefined
+				? unavailable("no session was recorded for it")
+				: await readExpandedChildDetails(owner, entry.childSessionId, await launch(), { signal });
+		if ("prompt" in details && details.prompt !== undefined)
+			return { ...details, prompt: unwrapPrompt(details.prompt) };
+		return details;
+	} catch (error) {
+		if (error instanceof Error && error.name === "SessionNotFoundError")
+			return unavailable("its session no longer exists in the session store");
+		throw error;
 	}
-}
-
-async function postLaunchMessages(
-	from: SessionStoreSource,
-	entry: SubagentChildIndexEntry,
-	sessionManager: NonNullable<
-		Extract<Awaited<ReturnType<typeof reopenChildSession>>, { sessionManager: unknown }>["sessionManager"]
-	>,
-): Promise<readonly TranscriptMessage[]> {
-	const full = await resolveSavedRecord(from, entry);
-	const launchLeafId = full?.launchLeafId;
-	const launchLeafSeq = full?.launchLeafSeq;
-	let branch = sessionManager.getBranch();
-	if (typeof launchLeafId === "string") {
-		let idx = branch.findIndex((item) => item.id === launchLeafId);
-		if (idx === -1 && typeof sessionManager.loadFullHistory === "function") {
-			await sessionManager.loadFullHistory();
-			branch = sessionManager.getBranch();
-			idx = branch.findIndex((item) => item.id === launchLeafId);
-		}
-		if (idx !== -1) {
-			return branch
-				.slice(idx + 1)
-				.flatMap((item) => (item.type === "message" ? [item.message as unknown as TranscriptMessage] : []));
-		}
-		if (launchLeafSeq !== undefined && typeof sessionManager.getEntrySeq === "function") {
-			const seqs = branch.map((item) => sessionManager.getEntrySeq(item.id));
-			if (seqs.some((seq) => seq !== undefined && seq <= launchLeafSeq)) {
-				return branch
-					.filter((_, index) => (seqs[index] ?? 0) > launchLeafSeq)
-					.flatMap((item) => (item.type === "message" ? [item.message as unknown as TranscriptMessage] : []));
-			}
-		}
-		return [];
-	}
-	if (launchLeafSeq !== undefined && typeof sessionManager.getEntrySeq === "function") {
-		return branch
-			.filter((item) => (sessionManager.getEntrySeq(item.id) ?? 0) > launchLeafSeq)
-			.flatMap((item) => (item.type === "message" ? [item.message as unknown as TranscriptMessage] : []));
-	}
-	const messages = (sessionManager.buildSessionContext().messages ?? []) as readonly TranscriptMessage[];
-	if (full?.forked === true) {
-		const forkIdx = messages.findIndex(
-			(msg) => msg.role === "user" && messageText(msg.content).includes("\n\nTask:\n"),
-		);
-		return forkIdx >= 0 ? messages.slice(forkIdx) : [];
-	}
-	return messages;
 }
 
 function sameLines(left: readonly string[] | undefined, right: readonly string[]): boolean {
@@ -789,10 +1102,37 @@ function sameDetails(left: SubagentChildTranscriptDetails | undefined, right: Su
 }
 
 export function subagentChildCardTask(record: SubagentChildIndexEntry): string | undefined {
-	return readableRecordOf(record)?.task;
+	const readable = readableRecordOf(record);
+	if (readable !== undefined || archiveReadersOf(record).length === 0) return readable?.task;
+	// Its record left its session's window: read once, and the card is drawn again with its task.
+	const known = archivedTasks.get(record);
+	if (known !== undefined) return known.task;
+	const read: { task?: string } = {};
+	archivedTasks.set(record, read);
+	void readArchivedRecordOf(record).then(
+		(full) => {
+			if (full?.task === undefined) return;
+			read.task = full.task;
+			notify(record.childId);
+		},
+		() => undefined,
+	);
+	return undefined;
 }
 
 export function clearSubagentChildTranscriptCache(card: object): void {
+	for (const entry of transcripts.get(card)?.values() ?? []) {
+		entry.cancel.abort();
+		entry.details = undefined;
+		entry.lines = undefined;
+	}
+	const binding = boundCards.get(card);
+	if (binding) {
+		binding.owner.expanded.delete(binding.ref);
+		removedCards.unregister(binding.ref);
+		boundCards.delete(card);
+	}
+	releaseSections.get(card)?.(card);
 	transcripts.delete(card);
 	transcriptGenerations.set(card, (transcriptGenerations.get(card) ?? 0) + 1);
 }
@@ -812,44 +1152,41 @@ export function subagentChildTranscriptDetails(
 	const from = source;
 	if (!from) return cached?.details;
 	const gen = transcriptGenerations.get(card) ?? 0;
+	if (!boundCards.has(card)) {
+		const ref = new WeakRef(card);
+		from.expanded.add(ref);
+		boundCards.set(card, { owner: from, ref });
+		removedCards.register(card, { owner: new WeakRef(from), ref }, ref);
+	}
+	cached?.cancel.abort();
 	const entry: TranscriptCache = {
 		key,
+		cancel: new AbortController(),
 		...(cached?.lines ? { lines: cached.lines } : {}),
 		...(cached?.details ? { details: cached.details } : {}),
 	};
 	cache.set(record.childId, entry);
-	void (async () => {
-		const reopened = await reopenChildSession(from, record);
-		if ("reason" in reopened) {
-			if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
+	const weak = new WeakRef(card);
+	void readCard(from, record, entry.cancel.signal)
+		.then((details) => {
+			const live = weak.deref();
+			if (
+				!live ||
+				entry.cancel.signal.aborted ||
+				(transcriptGenerations.get(live) ?? 0) !== gen ||
+				transcripts.get(live)?.get(record.childId) !== entry
+			)
 				return;
-			}
-			const details: SubagentChildTranscriptDetails = {
-				toolCalls: [],
-				lines: [],
-				unavailable: `Transcript unavailable · ${reopened.reason}`,
-			};
 			const changed = !sameDetails(entry.details, details);
 			entry.lines = details.lines;
 			entry.details = details;
 			if (changed) notify(record.childId);
-			return;
-		}
-		const messages = await postLaunchMessages(from, record, reopened.sessionManager);
-		if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
-			return;
-		}
-		const details = extractTranscriptDetails(messages);
-		const changed = !sameDetails(entry.details, details);
-		entry.lines = details.lines;
-		entry.details = details;
-		if (changed) notify(record.childId);
-		if (running) {
-			setTimeout(() => {
-				if ((transcriptGenerations.get(card) ?? 0) === gen) notify(record.childId);
-			}, RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
-		}
-	})().catch(() => undefined);
+			if (running)
+				setTimeout(() => {
+					if (!entry.cancel.signal.aborted && weak.deref()) notify(record.childId);
+				}, RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
+		})
+		.catch(() => undefined);
 	return entry.details;
 }
 
