@@ -347,11 +347,16 @@ for (const scenario of ["saved trust approved by a hook", "no trust inputs"] as 
 				writeFileSync(join(cwd, ".atomic", "settings.json"), "{}");
 				writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [realpathSync(cwd)]: true }));
 				const project = [cwd, realpathSync(cwd)];
+				// The policy approves the project once the test releases it, and leaves every other path to its own question.
 				writeFileSync(
 					join(agentDir, "extensions", "policy.ts"),
 					`
 					export default function(pi) {
-						pi.on('project_trust', (event) => ({ trusted: ${JSON.stringify(project)}.includes(event.cwd) ? 'yes' : 'undecided' }));
+						pi.on('project_trust', async (event, ctx) => {
+							if (!${JSON.stringify(project)}.includes(event.cwd)) return { trusted: 'undecided' };
+							await ctx.ui.confirm('Policy check', 'Continue?');
+							return { trusted: 'yes' };
+						});
 					}
 				`,
 				);
@@ -368,6 +373,7 @@ for (const scenario of ["saved trust approved by a hook", "no trust inputs"] as 
 				env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
 				interactiveEngine: { onDiagnostic: () => {} },
 			});
+			const policy = holdTrustQuestion(client, (request) => request.method === "confirm");
 			const holding = holdTrustQuestion(client, (request) => request.title.startsWith("Trust extension source?"));
 			const harness = await createHarness({ cwd, sessionManager: SessionManager.inMemory(cwd) });
 			const { modelRuntime, settingsManager, resourceLoader } = harness.session;
@@ -385,20 +391,37 @@ for (const scenario of ["saved trust approved by a hook", "no trust inputs"] as 
 			const runtime = new IsolatedInteractiveRuntime(local, unusedFactory, client);
 			try {
 				await client.start();
+				let reloadsBeforeDecision = 0;
+				if (scenario === "saved trust approved by a hook") {
+					// The host binds while the policy still decides: the project waits, as it may still be declined.
+					const check = await policy;
+					await runtime.initializeFromEngine();
+					assert.equal(settingsManager.isProjectTrusted(), false);
+					reloadsBeforeDecision = reload.mock.calls.length;
+					await client.respondExtensionUI({ type: "extension_ui_response", id: check.id, confirmed: true });
+				} else {
+					await runtime.initializeFromEngine();
+				}
+				// While the source is asked about, the engine's other requests wait for its resources, so only the project's
+				// own decision can bring the host up to date: it must not wait for the source's answer.
 				const request = await holding;
-				const pending = await client.getState();
-				assert.equal(pending.projectTrusted, true);
-				assert.equal(pending.projectTrustPending, true);
-				await runtime.initializeFromEngine();
-				assert.equal(settingsManager.isProjectTrusted(), true, "the host unloaded the decided project's resources");
-				assert.equal(reload.mock.calls.length, 0, "the host reloaded the decided project's resources");
+				await vi.waitFor(
+					() => assert.equal(settingsManager.isProjectTrusted(), true, "the host held back the decided project"),
+					{ timeout: 10_000 },
+				);
+				assert.equal(
+					reload.mock.calls.length,
+					scenario === "no trust inputs" ? 0 : reloadsBeforeDecision + 1,
+					"the host reloaded the project's resources more than its decision needs",
+				);
 				assert.equal(runtime.isProjectTrustPending(), true);
 
+				const reloadsWhilePending = reload.mock.calls.length;
 				await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, value: "Do not trust" });
 				await client.waitForInteractiveEngineResources();
 				await runtime.initializeFromEngine();
 				assert.equal(settingsManager.isProjectTrusted(), true);
-				assert.equal(reload.mock.calls.length, 0);
+				assert.equal(reload.mock.calls.length, reloadsWhilePending);
 				assert.equal(runtime.isProjectTrustPending(), false);
 			} finally {
 				await runtime.dispose();

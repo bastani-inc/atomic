@@ -300,6 +300,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, {
 					[message.scope]: { [message.path]: message.trusted },
 				});
+				if (message.scope === "projects" && !this.engineProjectTrustReported)
+					this.applyProjectDecisionWhilePending(message.path, message.trusted);
 				return;
 			}
 			if (message.type === "engine_deprecation_warning") {
@@ -390,6 +392,38 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	private async settleEngineResync(): Promise<void> {
 		await this.initializationTail;
+	}
+
+	/**
+	 * The project's own decision, made while startup still decides other trust (an `-e` source's question, which also
+	 * keeps the engine's other requests waiting for its resources). Each source follows its own decision, so the
+	 * project's resources load, or stay out, now instead of when startup has decided. It is no startup decision: the
+	 * warning still waits for that (#5693).
+	 */
+	private applyProjectDecisionWhilePending(path: string, trusted: boolean): void {
+		const generation = this.client.getGeneration?.();
+		const apply = async () => {
+			const session = super.session;
+			if (this.disposed || this.engineProjectTrustReported) return;
+			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
+			const [decided, current] = await Promise.all([
+				canonicalizePathAsync(path),
+				canonicalizePathAsync(session.sessionManager.getCwd()),
+			]);
+			if (decided !== current || session !== super.session || this.engineProjectTrustReported) return;
+			if (session.settingsManager.isProjectTrusted() === trusted) return;
+			await session.settingsManager.setProjectTrustedAsync(trusted);
+			await session.settingsManager.reload();
+			await session.resourceLoader.reload();
+			for (const listener of [...this.projectTrustListeners]) listener();
+		};
+		// After any synchronization in flight, so an earlier report cannot undo the decision.
+		const run = (this.initializationTail ?? Promise.resolve()).then(apply);
+		const tail = run.catch(() => {});
+		this.initializationTail = tail;
+		void tail.then(() => {
+			if (this.initializationTail === tail) this.initializationTail = undefined;
+		});
 	}
 
 	/** Keep a live engine's report as soon as it arrives, before the caller waits on other engine or session work. */
