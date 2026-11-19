@@ -158,7 +158,7 @@ The sender chooses `delivery` for each message; override the default by urgency.
 
 For example, `intercom({ action: "send", to: "worker", message: "Stop; the spec changed", delivery: "interrupt" })` stops the worker's current tool call. With `"interrupt"`, tools that ignore cancellation finish first, and completed side effects are not undone or replayed.
 
-This works for foreground and background children. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Messages from one sender always reach the recipient in the order they arrived, whichever way each is admitted: at once, after the recipient goes idle, on resume, or relayed by a closed workflow stage. A message admitted at once is written after any earlier message from the same sender that was still waiting for the recipient to go idle. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children or closed stages take precedence over later input. Use an exact child name or full session ID from `intercom list`, not a workflow-stage path.
+This works for every child. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Messages from one sender always reach the recipient in the order they arrived, whichever way each is admitted: at once, after the recipient goes idle, on resume, or relayed by a closed workflow stage. A message admitted at once is written after any earlier message from the same sender that was still waiting for the recipient to go idle. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children or closed stages take precedence over later input. Use an exact child name or full session ID from `intercom list`, not a workflow-stage path.
 
 A busy non-interactive recipient that is neither an admitted subagent nor a workflow stage can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
 
@@ -271,7 +271,7 @@ When Atomic's [subagent runtime](/subagents) admits a delegated child, the child
 
 The tool appears only in a delegated child whose parent granted supervisor coordination. Otherwise the child receives only ordinary `intercom`. Supervisor identity is supplied by the runtime, not environment variables.
 
-In parallel runs, a parent-targeted `contact_supervisor` request waits in its original child execution; an `intercom` ask to the parent returns at delivery and its reply arrives as a message. Foreground observations may yield so the parent can reply, but active and queued siblings retain their identities and execution capacity. Sends and progress updates never wait for a reply. A single-child launch retains the terminal fresh-child handoff when its exact live owner claims a blocking parent request.
+A parent-targeted `contact_supervisor` request waits in its original child execution; an `intercom` ask to the parent returns at delivery and its reply arrives as a message. A parent's `subagent({ action: "wait" })` may end so the parent can reply, but active and queued siblings retain their identities and execution capacity. Sends and progress updates never wait for a reply. Only a single child that an SDK session without a task host runs directly ends with a fresh-child handoff when its blocking parent request is claimed.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -404,7 +404,7 @@ Moved to [Intercom operations](/intercom/operations#limitations).
 
 ## Related Docs
 
-- [Subagents](/subagents) for delegated child runs, foreground coordination, and result delivery.
+- [Subagents](/subagents) for delegated child runs, supervisor coordination, and result delivery.
 - [Workflows](/workflows) for multi-stage automation and run notifications.
 - [Skills](/skills) for reusable instructions like `/skill:intercom`.
 - [Usage](/usage) for environment variables and the bundled-extension overview.

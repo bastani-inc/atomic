@@ -1626,22 +1626,6 @@ export class TaskSupervisor {
 		onRegistered?.(registered.value);
 		return this.observeTaskWait(registered.value);
 	}
-	async foregroundTask(task: TaskLease, budgetMs?: number): Promise<C.Result<C.WaitOutcome, C.ForegroundError>> {
-		const state = this.#task(task);
-		const errors = ["TaskTerminal", "OwnerClosing", "UnknownTask", "TaskEvicted", "ObserverCancelled"] as const;
-		const registered = mapped(
-			this.#native.foregroundTask(
-				state.native,
-				state.owner.host.native,
-				this.#agentBudget(state.owner, budgetMs, state.kind === "command"),
-			),
-			(lease) => this.#register(lease, state.owner.launches),
-			errors,
-		);
-		return registered.ok
-			? mapped(await this.observeTaskWait(registered.value), (outcome) => outcome, errors)
-			: explainEviction(registered, state.ref.taskId);
-	}
 	waitId(wait: WaitLease): C.WaitId {
 		return this.#wait(wait).native.waitId as C.WaitId;
 	}

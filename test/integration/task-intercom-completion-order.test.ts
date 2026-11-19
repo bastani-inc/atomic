@@ -147,7 +147,6 @@ test("subagent task bridge binds its actual run and Intercom target, not its SDK
 			agent: "fake",
 			task: "Inspect",
 			options: { runId: "actual-run", intercomSessionName: "actual-intercom-target" },
-			wait: { kind: "background" },
 			runtime: {
 				async runSync(_cwd, _agents, _agent, _task, options) {
 					options.taskExecution!.bindTranscript!(child);
