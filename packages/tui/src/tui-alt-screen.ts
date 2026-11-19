@@ -229,6 +229,12 @@ interface SgrMouseEvent {
 	release: boolean;
 }
 
+/** Some terminals report no button (3) on release. The click keeps the button that went down and any
+ * modifier held at either end of the gesture. */
+function clickButton(press: number, release: number): number {
+	return ((release & 3) === 3 ? press & 3 : release & 3) | ((press | release) & (4 | 8 | 16));
+}
+
 interface WheelEvent {
 	direction: -1 | 1;
 	x: number;
@@ -344,6 +350,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private pressedUrl?: string;
 	/** What the screen showed under the pointer when the left button went down. */
 	private pressFrame?: PointerFrame;
+	private selectionPressButton = 0;
 	/** The dialog that held focus when the left button went down: one shown or closed before the release takes the click. */
 	private pressFocus?: PointerFocus;
 	/** Rows of the primary transcript that a drawn-over row covers: the pinned prompt and the jump-to-latest row. */
@@ -351,7 +358,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private selectionDragged = false;
 	private mouseCapture?: TuiMouseDispatchTarget;
 	private mousePressTarget?: TuiMouseDispatchTarget;
-	private mousePressPoint?: { x: number; y: number };
+	private mousePressPoint?: { x: number; y: number; button: number };
 	/** What the screen showed at a press a component took: its click needs the same geometry at the release. */
 	private mousePressFrame?: PointerFrame;
 	/** The dialog that held focus at that press: a dialog shown before the release takes the click away. */
@@ -1260,12 +1267,19 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					!this.mousePressMoved &&
 					this.mousePressPoint?.x === raw.x &&
 					this.mousePressPoint.y === raw.y &&
+					((raw.button & 3) === 3 || (raw.button & 3) === (this.mousePressPoint.button & 3)) &&
 					this.getPointerFocus() === this.mousePressFocus &&
 					sameDrawnAtPointer(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
 				) {
-					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
-						clickCount: this.getComponentClickCount(target, raw.x, raw.y),
-					});
+					const clickEvent = this.createMouseEvent(
+						"click",
+						clickButton(this.mousePressPoint.button, raw.button),
+						raw.x,
+						raw.y,
+						{
+							clickCount: this.getComponentClickCount(target, raw.x, raw.y),
+						},
+					);
 					const clickFocus = this.focusForClick(clickEvent, this.mousePressFrame!, this.getPointerFocus());
 					const clickResult =
 						clickFocus === this.getPointerFocus() ? this.dispatchMouseToTarget(clickEvent, target) : undefined;
@@ -1306,7 +1320,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (type === "press") {
 				this.clearTextSelection();
 				this.mousePressTarget = result.target;
-				this.mousePressPoint = { x: raw.x, y: raw.y };
+				this.mousePressPoint = { x: raw.x, y: raw.y, button: raw.button };
 				this.mousePressFrame = this.pointerFrame(raw.x, raw.y);
 				this.mousePressFocus = takesFocus
 					? this.focusAfterClaim(focus, result.focusTarget ?? result.target.component)
@@ -1769,9 +1783,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				return;
 			}
 			if (isClick && samePaint && !releaseFrame.decorated) {
-				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
-					clickCount: this.lastClick?.count ?? 1,
-				});
+				const clickEvent = this.createMouseEvent(
+					"click",
+					clickButton(this.selectionPressButton, event.button),
+					event.x,
+					event.y,
+					{
+						clickCount: this.lastClick?.count ?? 1,
+					},
+				);
 				const clickFocus = this.focusForClick(clickEvent, releaseFrame, focus);
 				if (clickFocus !== this.getPointerFocus()) {
 					this.clearTextSelection();
@@ -1827,6 +1847,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionFocus = range?.end ?? anchor;
 		this.selectionDragged = false;
 		this.pressFrame = pressFrame;
+		this.selectionPressButton = event.button;
 		this.pressFocus = focus;
 		this.pressedUrl =
 			range || (focus.owner && !this.modalContainsPoint(focus.owner, event.x, event.y))

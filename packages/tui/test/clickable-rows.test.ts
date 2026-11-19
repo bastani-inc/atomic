@@ -82,6 +82,26 @@ describe("clickable list rows", () => {
 		view.tui.stop();
 	});
 
+	it("a generic terminal release activates the row of a left press, but not a modified press", async () => {
+		const list = letters();
+		const chosen: string[] = [];
+		list.onSelect = (item) => chosen.push(item.value);
+		const view = await mount(list);
+		try {
+			for (const [label, button] of [
+				["bravo", 0],
+				["delta", 16],
+			] as const) {
+				const row = view.rowOf(label);
+				view.terminal.sendInput(`\x1b[<${button};4;${row + 1}M`);
+				view.terminal.sendInput(`\x1b[<3;4;${row + 1}m`);
+			}
+			assert.deepStrictEqual(chosen, ["bravo"]);
+		} finally {
+			view.tui.stop();
+		}
+	});
+
 	it("a double-click on a select-list row runs it once", async () => {
 		const list = letters();
 		const chosen: string[] = [];
@@ -523,7 +543,8 @@ describe("clickable list rows", () => {
 				handleMouse(event) {
 					if (event.type === "press") return { handled: true, capture: true, focus: claim === "press" };
 					if (event.type === "release" && claim === "release") return { handled: true, focus: true };
-					if (event.type === "click" && tui.getFocusedComponent() === pane) received.push("picked");
+					if (event.type === "click" && event.button === "left" && tui.getFocusedComponent() === pane)
+						received.push("picked");
 					return undefined;
 				},
 			};
@@ -535,7 +556,7 @@ describe("clickable list rows", () => {
 				handle.unfocus({ target: composer });
 				await terminal.waitForRender();
 				terminal.sendInput(press(34, 11));
-				terminal.sendInput(release(34, 11));
+				terminal.sendInput(claim === "press" ? release(34, 11) : "\x1b[<3;35;12m");
 				assert.deepStrictEqual(received, ["picked"]);
 			} finally {
 				tui.stop();
