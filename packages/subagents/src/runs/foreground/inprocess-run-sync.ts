@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+	type Cleanup,
 	formatNoUsableModelMessage,
 	isSessionStartTimeoutError,
 	parseSessionStartTimeoutMs,
@@ -7,8 +8,9 @@ import {
 	type SkippedModel,
 	serializeSessionStartError,
 	sessionStartStepText,
+	spanElapsedMs,
+	type TaskElapsedSpan,
 } from "@bastani/atomic";
-import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
@@ -29,6 +31,7 @@ import { getOrCreateSubagentControl, unregisterSubagentControl } from "../inproc
 import type { AttemptOutcome, ChildSpec, ParentContext, SubagentControlRuntime } from "../inprocess/runner.js";
 import type { SessionStartProgress } from "../inprocess/session-start-budget.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
+import { finishElapsedSpan } from "../shared/elapsed.js";
 import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates, launchRequestedModel, resolveModelCandidate } from "../shared/model-fallback.js";
 import {
@@ -85,7 +88,13 @@ function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["o
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
 	};
 }
-function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, startedAt: number): AgentProgress {
+function progressFor(
+	agent: AgentConfig,
+	task: string,
+	outcome: AttemptOutcome,
+	durationMs: number,
+	index: number,
+): AgentProgress {
 	const status =
 		outcome.status === "ok"
 			? "completed"
@@ -95,7 +104,7 @@ function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, 
 					? "interrupted"
 					: "failed";
 	return {
-		index: 0,
+		index,
 		agent: agent.name,
 		status,
 		task,
@@ -106,7 +115,7 @@ function progressFor(agent: AgentConfig, task: string, outcome: AttemptOutcome, 
 		toolCount: outcome.stats.toolCalls,
 		turnCount: outcome.stats.assistantMessages,
 		tokens: outcome.stats.tokens.total,
-		durationMs: Math.max(0, Date.now() - startedAt),
+		durationMs,
 		lastActivityAt: Date.now(),
 		...(outcome.status === "error" ? { error: outcome.cause } : {}),
 		...(outcome.status === "interrupted" && isParentCancellation(outcome.cause) ? { cause: outcome.cause } : {}),
@@ -117,8 +126,9 @@ function resultFromOutcome(
 	agent: AgentConfig,
 	task: string,
 	outcome: AttemptOutcome,
-	startedAt: number,
+	durationMs: number,
 	artifactPaths: ArtifactPaths | undefined,
+	index: number,
 	requestedModel?: string,
 ): SingleResult {
 	const status = outcome.status;
@@ -166,20 +176,24 @@ function resultFromOutcome(
 		...(outcome.skillsWarning ? { skillsWarning: outcome.skillsWarning } : {}),
 		finalOutput: output,
 		sessionFile: outcome.sessionFile,
-		progress: progressFor(agent, task, outcome, startedAt),
+		progress: progressFor(agent, task, outcome, durationMs, index),
 		progressSummary: {
 			toolCount: outcome.stats.toolCalls,
 			tokens: outcome.stats.tokens.total,
-			durationMs: Math.max(0, Date.now() - startedAt),
+			durationMs,
 		},
 		...(artifactPaths ? { artifactPaths } : {}),
 	};
 	return result;
 }
 
-function refusedResult(agent: AgentConfig, task: string, reason: string): SingleResult {
+function refusedResult(agent: string, task: string, reason: string, options: RunSyncOptions): SingleResult {
+	// Only a refusal after dispatch has an execution span. No attempt exists to finish it for us.
+	const span = options.elapsedSpan;
+	if (span) finishElapsedSpan(span, options.taskExecution);
 	return {
-		agent: agent.name,
+		agent,
+		...(span ? { progressSummary: { durationMs: spanElapsedMs(span), tokens: 0, toolCount: 0 } } : {}),
 		task,
 		status: "error",
 		cause: reason,
@@ -202,38 +216,21 @@ function refusedResult(agent: AgentConfig, task: string, reason: string): Single
 	};
 }
 
-function noSpawnableCandidatesResult(
-	agent: AgentConfig,
-	task: string,
-	skippedAttempts: ModelAttempt[],
-	skippedModels: readonly SkippedModel[],
-): SingleResult {
-	const reason = `No spawnable subagent model candidates after pre-spawn filtering. ${
+function noSpawnableCandidatesMessage(skippedModels: readonly SkippedModel[]): string {
+	return `No spawnable subagent model candidates after pre-spawn filtering. ${
 		skippedModels.length > 0 ? formatNoUsableModelMessage(skippedModels) : ""
 	}`.trim();
-	return { ...refusedResult(agent, task, reason), modelAttempts: skippedAttempts };
 }
 
 /** A launch that named a model none of whose candidates, the model and its agent's fallbacks, is available (#4188). */
-function namedModelUnavailableResult(agent: AgentConfig, task: string, namedModel: string, skipped: ModelAttempt[]) {
+function namedModelUnavailableMessage(namedModel: string, skipped: ModelAttempt[]): string {
 	const reasons = skipped.map((attempt) => attempt.error).filter((reason): reason is string => reason !== undefined);
-	return {
-		...refusedResult(
-			agent,
-			task,
-			`Model ${namedModel} is not available${reasons.length ? ` (${reasons.join(" ")})` : ""}. No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels.`,
-		),
-		modelAttempts: skipped,
-	};
+	return `Model ${namedModel} is not available${reasons.length ? ` (${reasons.join(" ")})` : ""}. No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels.`;
 }
 
 /** A launch of `provider/model:word` whose word names no thinking level, and whose model does not resolve either. */
-function unknownModelResult(agent: AgentConfig, task: string, candidate: string, effort: string, baseModel: string) {
-	return refusedResult(
-		agent,
-		task,
-		`Unknown model "${candidate}": "${effort}" is not an effort level (${THINKING_LEVELS.join(", ")}), and no available model is "${baseModel}".`,
-	);
+function unknownModelMessage(candidate: string, effort: string, baseModel: string): string {
+	return `Unknown model "${candidate}": "${effort}" is not an effort level (${THINKING_LEVELS.join(", ")}), and no available model is "${baseModel}".`;
 }
 
 interface AdmissionTurn {
@@ -284,15 +281,20 @@ async function launchSingleInProcess(
 	options: RunSyncOptions,
 	turn: AdmissionTurn,
 ): Promise<SingleResult> {
+	const elapsedSpan: TaskElapsedSpan = options.elapsedSpan ?? { dispatchedAt: Date.now() };
 	const sessionStartTimeoutMs = parseSessionStartTimeoutMs(
 		options.sessionStartTimeoutMs,
 		"sdk",
 		"sessionStartTimeoutMs",
 	);
+	const refuse = (reason: string, modelAttempts?: ModelAttempt[]): SingleResult => ({
+		...refusedResult(agent.name, task, reason, options),
+		...(modelAttempts ? { modelAttempts } : {}),
+	});
 	const cwd = options.cwd ?? runtimeCwd;
 	const cwdVerdict = options.cwdVerdict?.path === cwd ? options.cwdVerdict : await checkLaunchCwd(cwd);
-	if (cwdVerdict.state === "missing") return refusedResult(agent, task, missingCwdMessage(cwd));
-	if (cwdVerdict.state === "not-directory") return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
+	if (cwdVerdict.state === "missing") return refuse(missingCwdMessage(cwd));
+	if (cwdVerdict.state === "not-directory") return refuse(`cwd is not a directory: ${cwd}`);
 	const agentModel = agent.model === "auto" ? undefined : agent.model;
 	const launchModel = options.modelOverride ?? agentModel ?? "";
 	// #4188: a launch that names a concrete model, in its call or its agent, runs that model and the fallbackModels its
@@ -329,7 +331,7 @@ async function launchSingleInProcess(
 		const named = continuesOnOther ? undefined : rawCandidates[0];
 		const namedWord = named ? splitUnknownThinkingSuffix(named) : undefined;
 		if (named && namedWord && !resolveCandidate(named))
-			return unknownModelResult(agent, task, named, namedWord.effort, namedWord.baseModel);
+			return refuse(unknownModelMessage(named, namedWord.effort, namedWord.baseModel));
 		const unavailable = filteredCandidates.candidates.filter((entry) => resolveCandidate(entry) === undefined);
 		filteredCandidates = {
 			candidates: filteredCandidates.candidates.filter((entry) => !unavailable.includes(entry)),
@@ -342,15 +344,13 @@ async function launchSingleInProcess(
 			skippedModels: filteredCandidates.skippedModels,
 		};
 		if (filteredCandidates.candidates.length === 0)
-			return namedModelUnavailableResult(agent, task, namedModel ?? launchModel, filteredCandidates.skippedAttempts);
+			return refuse(
+				namedModelUnavailableMessage(namedModel ?? launchModel, filteredCandidates.skippedAttempts),
+				filteredCandidates.skippedAttempts,
+			);
 	}
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
-		return noSpawnableCandidatesResult(
-			agent,
-			task,
-			filteredCandidates.skippedAttempts,
-			filteredCandidates.skippedModels,
-		);
+		return refuse(noSpawnableCandidatesMessage(filteredCandidates.skippedModels), filteredCandidates.skippedAttempts);
 	const listedCandidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	// Upstream pi #7897: a subagent that pins no model of its own inherits the
@@ -374,7 +374,7 @@ async function launchSingleInProcess(
 	// lacks, and is reported without the word; when its model does not resolve either, it never runs another model.
 	const unknownEffort = listedCandidate ? splitUnknownThinkingSuffix(listedCandidate) : undefined;
 	if (listedCandidate && unknownEffort && options.resolveCandidateModel && !resolvedCandidate)
-		return unknownModelResult(agent, task, listedCandidate, unknownEffort.effort, unknownEffort.baseModel);
+		return refuse(unknownModelMessage(listedCandidate, unknownEffort.effort, unknownEffort.baseModel));
 	const candidate =
 		resolvedCandidate?.unknownEffort !== undefined && unknownEffort ? unknownEffort.baseModel : listedCandidate;
 	// The effort a `provider/model:effort` launch asked for explicitly, a level or a word that names none.
@@ -418,7 +418,7 @@ async function launchSingleInProcess(
 	}
 	const testSession = options.testSession ?? defaultTestSession();
 	// Where the child is in its start, across its attempts, until its first turn starts: never merely "running".
-	const launchedAt = Date.now();
+	const launchedAt = elapsedSpan.dispatchedAt;
 	let startAttempt = 1;
 	let stalledStart: SubagentStartProgress["stalled"];
 	const reportStart = (progress: SessionStartProgress | undefined, awaitingRelease = false) =>
@@ -434,6 +434,8 @@ async function launchSingleInProcess(
 					},
 		);
 	const spec: ChildSpec = {
+		elapsedSpan,
+		onElapsedSpanChanged: options.onElapsedSpanChanged,
 		taskName: agent.name,
 		childId: `${options.runId}:${options.index ?? 0}`,
 		task,
@@ -494,7 +496,12 @@ async function launchSingleInProcess(
 		...(requestedModel ? { requestedModel } : {}),
 		onProgress: options.onUpdate
 			? (progress) => {
-					const liveProgress = { ...progress, index: options.index ?? 0 };
+					const liveProgress = {
+						...progress,
+						elapsedSpan: { ...elapsedSpan },
+						taskId: options.taskExecution?.taskId,
+						index: options.index ?? 0,
+					};
 					const liveModel = liveProgress.model ?? candidate;
 					const liveThinking = liveProgress.thinking;
 					const liveResult: SingleResult = {
@@ -522,8 +529,7 @@ async function launchSingleInProcess(
 	if (turn.ahead) await turn.ahead;
 	const admission = control.admitCheckedChildSession(spec, cwdVerdict, parent);
 	turn.release();
-	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
-	const startedAt = Date.now();
+	if (!admission.admitted) return refuse(admission.refusal?.reason ?? "child admission refused");
 	const neverAbort = new AbortController().signal;
 	const attemptCandidate = { model: resolvedCandidate?.model, modelId: candidate, thinkingLevel: spec.thinkingLevel };
 	const attemptSignals = {
@@ -582,7 +588,7 @@ async function launchSingleInProcess(
 		const cause =
 			`Subagent did not start: its start stalled ${sessionStartStepText(stall.step)} after ${Math.round(stall.elapsedMs / 1000)}s and was retried once; the retry stalled ${sessionStartStepText(retryStall.step)} after ${Math.round(retryStall.elapsedMs / 1000)}s. ${retryStall.hint ?? ""}`.trim();
 		return { ...second, cause, envelope: cause };
-	})();
+	})().finally(() => finishElapsedSpan(elapsedSpan, options.taskExecution));
 	if (options.onUpdate) {
 		const launchModel = running.currentModel ?? candidate;
 		spec.onProgress?.({
@@ -596,7 +602,7 @@ async function launchSingleInProcess(
 			recentOutput: [],
 			toolCount: 0,
 			tokens: 0,
-			durationMs: Math.max(0, Date.now() - startedAt),
+			durationMs: spanElapsedMs(elapsedSpan),
 			lastActivityAt: Date.now(),
 		});
 	}
@@ -630,42 +636,59 @@ async function launchSingleInProcess(
 		detachCleanup();
 		parentAskCleanup();
 		void settled
-			.then(async (continuedOutcome) => {
-				const recovered = resultFromOutcome(
-					agent,
-					task,
-					continuedOutcome,
-					startedAt,
-					artifactPaths,
-					requestedModel,
-				);
-				const deliveredOutput = await control.deliverChildResult(
-					{
-						path: continuedOutcome.path,
-						status: continuedOutcome.status,
-						...(continuedOutcome.status === "error" ||
-						(continuedOutcome.status === "interrupted" && continuedOutcome.cause)
-							? { cause: continuedOutcome.cause }
-							: {}),
-						stats: continuedOutcome.stats,
-						envelope: continuedOutcome.envelope,
-						...(recovered.model === undefined ? {} : { model: recovered.model }),
-						...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
-						...(requestedModel ? { requestedModel } : {}),
-						sessionFile: continuedOutcome.sessionFile,
-						timestamp: Date.now(),
-						artifactsDir: options.artifactsDir,
-					},
-					{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
-				);
-				if (deliveredOutput !== undefined) {
-					recovered.envelope = deliveredOutput;
-					recovered.finalOutput = deliveredOutput;
-				}
-				forgetIfReleased(control, continuedOutcome);
-				await persistRequestedOutput(recovered, options, outputSnapshot);
-				options.onDetachedExit?.(recovered);
-			})
+			.then(
+				async (continuedOutcome) => {
+					const recovered = resultFromOutcome(
+						agent,
+						task,
+						continuedOutcome,
+						spanElapsedMs(elapsedSpan),
+						artifactPaths,
+						options.index ?? 0,
+						requestedModel,
+					);
+					try {
+						const deliveredOutput = await control.deliverChildResult(
+							{
+								path: continuedOutcome.path,
+								status: continuedOutcome.status,
+								...(continuedOutcome.status === "error" ||
+								(continuedOutcome.status === "interrupted" && continuedOutcome.cause)
+									? { cause: continuedOutcome.cause }
+									: {}),
+								stats: continuedOutcome.stats,
+								envelope: continuedOutcome.envelope,
+								durationMs: recovered.progressSummary?.durationMs,
+								...(recovered.model === undefined ? {} : { model: recovered.model }),
+								...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
+								...(requestedModel ? { requestedModel } : {}),
+								sessionFile: continuedOutcome.sessionFile,
+								timestamp: Date.now(),
+								artifactsDir: options.artifactsDir,
+							},
+							{
+								artifactsDir: options.artifactsDir,
+								artifactPaths,
+								artifactsDisabled,
+								maxOutput: options.maxOutput,
+							},
+						);
+						if (deliveredOutput !== undefined) {
+							recovered.envelope = deliveredOutput;
+							recovered.finalOutput = deliveredOutput;
+						}
+						await persistRequestedOutput(recovered, options, outputSnapshot);
+					} finally {
+						// Failed output delivery cannot leave a finished child registered as live.
+						forgetIfReleased(control, continuedOutcome);
+						options.onDetachedExit?.(recovered);
+					}
+				},
+				(error: unknown) => {
+					options.onDetachedExit?.(refusedResult(agent.name, task, String(error), { ...options, elapsedSpan }));
+					throw error;
+				},
+			)
 			.catch((error: unknown) => {
 				// #3981: nothing awaits a detached child's exit, and a run's async scope fails on any unhandled rejection.
 				console.error("atomic-subagents: detached child exit handling failed", error);
@@ -696,7 +719,7 @@ async function launchSingleInProcess(
 				recentOutput: [],
 				toolCount: 0,
 				tokens: 0,
-				durationMs: Math.max(0, Date.now() - startedAt),
+				durationMs: spanElapsedMs(elapsedSpan),
 				lastActivityAt: Date.now(),
 			},
 		};
@@ -709,7 +732,15 @@ async function launchSingleInProcess(
 	detachCleanup();
 	parentAskCleanup();
 	const outcome = winner.value;
-	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, requestedModel);
+	const result = resultFromOutcome(
+		agent,
+		task,
+		outcome,
+		spanElapsedMs(elapsedSpan),
+		artifactPaths,
+		options.index ?? 0,
+		requestedModel,
+	);
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
 	const deliveredOutput = await control.deliverChildResult(
@@ -721,6 +752,7 @@ async function launchSingleInProcess(
 				: {}),
 			stats: outcome.stats,
 			envelope: outcome.envelope,
+			durationMs: result.progressSummary?.durationMs,
 			...(result.model === undefined ? {} : { model: result.model }),
 			...(result.thinking === undefined ? {} : { thinking: result.thinking }),
 			...(requestedModel ? { requestedModel } : {}),
@@ -815,20 +847,6 @@ export async function runSync(
 	options: RunSyncOptions,
 ): Promise<SingleResult> {
 	const agent = agents.find((candidate) => candidate.name === agentName);
-	if (!agent)
-		return refusedResult(
-			{
-				name: agentName,
-				description: "",
-				systemPrompt: "",
-				systemPromptMode: "replace",
-				inheritProjectContext: false,
-				inheritSkills: false,
-				source: "user",
-				filePath: "",
-			},
-			task,
-			`Unknown agent: ${agentName}`,
-		);
+	if (!agent) return refusedResult(agentName, task, `Unknown agent: ${agentName}`, options);
 	return runSingleInProcess(runtimeCwd, agent, task, options);
 }
