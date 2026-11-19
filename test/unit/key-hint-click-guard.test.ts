@@ -196,13 +196,17 @@ const SHIPPED_SOURCES = ["coding-agent/src", "subagents/src", "tui/src", "interc
 );
 
 /** A key, or alternatives of keys, as hints name them. */
-
+const KEY = String.raw`(?:esc|enter|tab|space|pgup|pgdn|↵|↑↓|↑|↓|←|→|ctrl\+\S|alt\+\S|shift\+tab)`;
 /** Text that reads as a key hint: a key followed by what it does, or a slash command followed by `to ...`. */
-
+const HINT_TEXT = new RegExp(
+	String.raw`(?:^|·\s|\(|\s{2})(?:${KEY}(?:/${KEY})*\s+(?:to\s+)?[a-z]{3,}|/(?:tasks|agents)\s+to\s+[a-z])`,
+	"iu",
+);
 /** Calls that draw a hint with its click: a line holding one of these, or near one, draws through it. */
 const BUILDERS =
-	/\b(?:clickableHintText|clickableKeyTextHint|clickableKeysHint|clickableHint|slashCommandHint|rawKeyHint|keyHint|keyHintIfBound|keyTextHint|parenthesizedKeyHint|renderNavHintLine|localKeyHint|graphRawKeyHint|graphKeyHint)\(/;
+	/\b(?:clickableHintText|clickableKeyTextHint|clickableKeysHint|clickableHint|slashCommandHint|rawKeyHint|keyHint|keyHintIfBound|keyTextHint|parenthesizedKeyHint|renderNavHintLine)\(/;
 /** A `NavKey` entry: hint lines and the `?` overlay draw these through the builders. */
+const NAV_KEY_ENTRY = /\b(?:keys|label|action)\s*:/;
 
 /**
  * Text that reads like a hint but is not one a click can run, by file and the text it holds, with why.
@@ -277,16 +281,6 @@ const NOT_HINTS: ReadonlyArray<{ readonly file: string; readonly text: RegExp; r
 		file: "packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts",
 		text: /Esc interrupt · Ctrl\+C terminate/,
 		why: "part of a diagnostic message that is also written to the log, which must stay plain text",
-	},
-	{
-		file: "packages/workflows/src/tui/tool-detail.ts",
-		text: /\$\{expandKey\} Expand\)$/,
-		why: "the unstyled text of a tool's detail, which carries no escape sequences; the graph draws it with its theme, through clickableKeysHint",
-	},
-	{
-		file: "packages/workflows/src/tui/stage-chat-view-footer-status.ts",
-		text: /^ ?(?:· )?\$\{backKey\} graph$/,
-		why: "the plain text of the return-to-graph hint, used to find and measure it; it is drawn through clickableKeysHint",
 	},
 ];
 
