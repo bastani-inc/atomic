@@ -38,6 +38,8 @@ export interface DurableWorkflowDefinitionSource {
  * (a run id); internal nested workflow ids are abstracted away from users.
  */
 export interface DurableWorkflowHandle {
+	/** Latest pause or block occurrence of this run, preserved when its executor changes. */
+	readonly runGeneration?: number;
 	/** Top-level workflow id used by `/workflow resume <id>`. */
 	readonly workflowId: string;
 	/** Workflow definition name. */
@@ -375,6 +377,7 @@ export type WorkflowSerializableObject = Readonly<Record<string, WorkflowSeriali
 
 /** Current workflow metadata. */
 export interface DurableWorkflowMetadata {
+	readonly runGeneration?: number;
 	readonly workflowId: string;
 	readonly name: string;
 	readonly inputs: WorkflowSerializableObject;
