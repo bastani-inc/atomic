@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import { SessionSpillError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	readSessionHistory,
+	readSessionHistoryChunks,
+} from "../../packages/coding-agent/src/core/storage/session/history-pages.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { LegacySessionStore } from "../../packages/coding-agent/src/core/storage/session/legacy-session-store.js";
 import {
@@ -170,6 +174,32 @@ it("a legacy-store wrapper names a missing bounded reader instead of loading the
 		await assert.rejects(store.findLatestCompaction(header.id), /must implement findLatestCompaction/);
 		await assert.rejects(store.findEntrySeq(header.id, "kept"), /must implement findEntrySeq/);
 	} finally {
+		await store.close();
+	}
+});
+
+it("a read-only transcript can follow bounded pages and exact entry chunks without opening a session (#5554)", async () => {
+	const store = new MemorySessionStore();
+	const first = user("old", null, "保存".repeat(250_000), 1),
+		last = user("last", "old", "current", 2);
+	await store.create(header, [first, last]);
+	const resume = vi.spyOn(store, "readResume").mockRejectedValue(new Error("opened live recovery"));
+	const full = vi.spyOn(store, "load").mockRejectedValue(new Error("loaded whole transcript"));
+	try {
+		const end = await readSessionHistory(store, header.id, { direction: "backward" }).next();
+		assert.ok(!end.done && end.value.nextCursor);
+		assert.deepEqual(end.value.items, [{ seq: 2, entry: last }]);
+		const head = await readSessionHistory(store, header.id, { cursor: end.value.nextCursor }).next();
+		const item = head.value?.items[0];
+		assert.ok(item && "kind" in item);
+		const chunks = [];
+		for await (const chunk of readSessionHistoryChunks(store, item)) chunks.push(chunk);
+		assert.ok(Buffer.concat(chunks).equals(Buffer.from(JSON.stringify(first))));
+		assert.equal(resume.mock.calls.length, 0);
+		assert.equal(full.mock.calls.length, 0);
+	} finally {
+		resume.mockRestore();
+		full.mockRestore();
 		await store.close();
 	}
 });
