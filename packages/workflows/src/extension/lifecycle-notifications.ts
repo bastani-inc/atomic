@@ -4,7 +4,6 @@ import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
-	hasRecordedRunBlock,
 	isReturnedBlockedWorkflowStatus,
 	normalizeReturnedWorkflowStatus,
 	structuredRecoverableWorkflowFailureText,
@@ -584,10 +583,7 @@ function terminalNoticeKind(run: RunSnapshot): "completed" | "failed" | "blocked
 }
 
 function isActiveRecoverableBlockedRun(run: RunSnapshot): boolean {
-	return (
-		hasRecordedRunBlock(run) ||
-		(run.blockedAt !== undefined && structuredRecoverableWorkflowFailureText(run) !== undefined)
-	);
+	return run.blockedAt !== undefined && structuredRecoverableWorkflowFailureText(run) !== undefined;
 }
 
 function lifecycleOccurrenceAt(run: RunSnapshot, kind: "completed" | "failed" | "blocked"): number | undefined {
@@ -608,10 +604,8 @@ function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "b
 }
 
 function terminalRunKey(kind: "completed" | "failed" | "blocked", run: RunSnapshot): string {
-	if (kind !== "blocked") return `${kind}:${run.id}:`;
-	// Block generations restart when a different workflow is registered under the same id.
-	const occurrence = run.runGeneration ?? lifecycleOccurrenceAt(run, kind);
-	return `${kind}:${run.id}:${run.startedAt}:${occurrence ?? ""}`;
+	const occurrence = kind === "blocked" ? (run.runGeneration ?? lifecycleOccurrenceAt(run, kind)) : "";
+	return occurrence === undefined ? `${kind}:${run.id}` : `${kind}:${run.id}:${occurrence}`;
 }
 function budgetWarningKey(run: RunSnapshot, dimension: BudgetDimension): string {
 	return `budget_warning:${run.id}:${dimension}`;

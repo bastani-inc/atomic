@@ -241,16 +241,21 @@ describe("renderStatusList — populated", () => {
 		assert.match(plain, /single\s+\[●\]/);
 	});
 
-	test("a saved card puts a recorded block ahead of working runs even with its former running indicator (#5534)", () => {
-		const blocked = { ...makeRun({ id: "blocked-run", startedAt: 0 }), blockedAt: 10 };
-		const working = makeRun({ id: "working", startedAt: 20 });
-		const card = renderStatusList([working, blocked], {
-			indicatorStatuses: { [blocked.id]: "running", [working.id]: "running" },
-			width: 120,
-			now: 30,
-		});
-		const rows = [...card.matchAll(/[↑●] {2}(?:working|blocked-run)/gu)].map((match) => match[0]);
-		assert.deepEqual(rows, ["↑  blocked-run", "●  working"]);
+	test("a live card reads a recorded block once and keeps the execution status when the field is unavailable (#5534)", () => {
+		for (const available of [false, true]) {
+			const target = makeRun({ id: "waiting-stage" });
+			let reads = 0;
+			Object.defineProperty(target, "blockedAt", {
+				get() {
+					reads++;
+					if (!available) throw new Error("field not loaded");
+					return 0;
+				},
+			});
+			const card = renderStatusList([target], { width: 120, now: 30 });
+			assert.ok(card.includes(available ? "↑ blocked" : "● running"));
+			assert.equal(reads, 1);
+		}
 	});
 
 	test("precomputed indicatorStatuses drive the indicator without the full run collection (restored payloads)", () => {

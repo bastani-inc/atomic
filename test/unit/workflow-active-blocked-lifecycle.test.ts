@@ -81,32 +81,6 @@ describe("active recoverable blocked lifecycle notices", () => {
 		assert.equal(sent[0]?.details?.error, "No API key for provider: github-copilot");
 	});
 
-	test("the first provider block of a replacement run has its own notice", () => {
-		const store = createStore();
-		const { sent, unsubscribe } = install(store);
-		const id = "reused-id";
-		for (const [name, startedAt, kind] of [
-			["original", 1, "unknown"],
-			["replacement", 10, "provider"],
-		] as const) {
-			store.recordRunStart({ id, name, startedAt, inputs: {}, status: "running", stages: [], toolNodes: [] });
-			store.recordRunBlocked(id, "offline", {
-				failureKind: kind,
-				failureRecoverability: "recoverable",
-				failureDisposition: "active_blocked",
-				resumable: true,
-				blockedAt: startedAt + 1,
-			});
-			store.recordNotice({ id: name, level: "info", message: "tick", createdAt: startedAt + 2 });
-			assert.ok(store.removeRun(id));
-		}
-		unsubscribe();
-		assert.deepEqual(
-			sent.map((message) => message.details?.workflowName),
-			["original", "replacement"],
-		);
-	});
-
 	test("re-notifies when the same runId blocks again at a new blockedAt occurrence", () => {
 		const store = createStore();
 		const { sent } = install(store);
@@ -232,8 +206,7 @@ describe("active recoverable blocked lifecycle notices", () => {
 		});
 
 		startRecoverableRun(store, "retry-blocked");
-		const [key] = state.pendingTerminalRuns.keys();
-		assert.ok(key);
+		const key = `blocked:retry-blocked:${store.run("retry-blocked")!.runGeneration}`;
 		assert.equal(state.deliveredTerminalRuns.has(key), false);
 		await new Promise((resolve) => setTimeout(resolve, 60));
 
@@ -323,8 +296,7 @@ describe("active recoverable blocked lifecycle notices", () => {
 			},
 		});
 		startRecoverableRun(store, "reinstall-blocked");
-		const [key] = state.pendingTerminalRuns.keys();
-		assert.ok(key);
+		const key = `blocked:reinstall-blocked:${store.run("reinstall-blocked")!.runGeneration}`;
 		await new Promise((resolve) => setTimeout(resolve, 40));
 		rejected();
 
@@ -361,8 +333,7 @@ describe("active recoverable blocked lifecycle notices", () => {
 			},
 		});
 		startRecoverableRun(store, "pending-reinstall");
-		const [key] = state.pendingTerminalRuns.keys();
-		assert.ok(key);
+		const key = `blocked:pending-reinstall:${store.run("pending-reinstall")!.runGeneration}`;
 		await Promise.resolve();
 		disposed();
 

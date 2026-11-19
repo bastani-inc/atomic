@@ -1,6 +1,6 @@
 import { sliceHead, sliceTail } from "@bastani/atomic";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
-import { effectiveRunStatus, hasRecordedRunBlock } from "../shared/returned-run-status.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { Store } from "../shared/store-public-types.js";
@@ -31,12 +31,9 @@ export function ensureWorkflowSummaryService(store: Store, context: WorkflowSumm
 		service: createWorkflowSummaryService({
 			store,
 			resolveContext: () => services.get(store)?.context ?? context,
-			persist: async (runId, summary, summarizedThrough, startedAt) => {
-				const backend = availableStoreDurableBackend(store, runId);
-				const saved = await backend?.persistSummary?.(runId, summary, summarizedThrough, startedAt);
-				// Store-only runs have no journal row. A rejected write to an existing row is not ours to publish.
-				if (saved === false && backend?.getWorkflow(runId) !== undefined) return;
-				if (store.run(runId)?.startedAt === startedAt) store.recordRunSummary?.(runId, summary, summarizedThrough);
+			persist: async (runId, summary, summarizedThrough) => {
+				await availableStoreDurableBackend(store, runId)?.persistSummary?.(runId, summary, summarizedThrough);
+				store.recordRunSummary?.(runId, summary, summarizedThrough);
 			},
 		}),
 	};
@@ -55,7 +52,7 @@ export function requestWorkflowSummary(store: Store, runId: string): void {
 export function createWorkflowSummaryService(options: {
 	store: Store;
 	resolveContext: () => WorkflowSummaryContext | undefined;
-	persist: (runId: string, summary: string, summarizedThrough: number, startedAt: number) => Promise<void>;
+	persist: (runId: string, summary: string, summarizedThrough: number) => Promise<void>;
 }) {
 	const contexts = new Map<string, WorkflowSummaryContext>();
 	const pending = new Map<string, AbortController>();
@@ -72,31 +69,15 @@ export function createWorkflowSummaryService(options: {
 			pending.has(runId)
 		)
 			return;
-		if (
-			hasRecordedRunBlock(run) &&
-			"summary" in run &&
-			run.summary !== undefined &&
-			"summarizedThrough" in run &&
-			run.summarizedThrough !== undefined &&
-			run.summarizedThrough >= run.blockedAt!
-		)
-			return;
 		contexts.set(runId, context);
 		const controller = new AbortController();
 		pending.set(runId, controller);
 		const through = Date.now();
-		const startedAt = run.startedAt;
 		const text = workflowSummaryInput(run);
 		void (async () => {
 			const summary = await context.generateWorkflowSummary!(text, controller.signal, { terminal: terminal(run) });
-			if (
-				summary &&
-				!controller.signal.aborted &&
-				!disposed &&
-				context.isSessionSummaryEnabled?.() !== false &&
-				options.store.run(runId)?.startedAt === startedAt
-			) {
-				await options.persist(runId, summary, through, startedAt);
+			if (summary && !controller.signal.aborted && !disposed && context.isSessionSummaryEnabled?.() !== false) {
+				await options.persist(runId, summary, through);
 			}
 		})()
 			.catch(() => {})

@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import {
 	createWorkflowSummaryService,
-	disposeWorkflowSummaryService,
-	ensureWorkflowSummaryService,
 	workflowSummaryInput,
 } from "../../packages/workflows/src/extension/workflow-summary.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -94,48 +91,6 @@ test("terminal workflow summaries run without heartbeat scheduling and persist i
 	service.dispose();
 });
 
-for (const refreshStore of [true, false]) {
-	test(`a late blocked summary cannot overwrite a reused run id (store refreshed: ${refreshStore})`, async () => {
-		const store = fixture();
-		const backend = await createMemoryTestBackend();
-		bindStoreDurableBackend(store, backend);
-		const id = "summary-run";
-		const register = (name: string, createdAt: number) =>
-			backend.commitWorkflowRegistration({ workflowId: id, name, createdAt, inputs: {}, status: "running" });
-		await register("build", 1);
-		const response = Promise.withResolvers<string>();
-		let asked = false;
-		ensureWorkflowSummaryService(store, {
-			generateWorkflowSummary: async () => {
-				asked = true;
-				return response.promise;
-			},
-		});
-		try {
-			store.recordRunBlocked(id, "session unavailable", {
-				failureKind: "unknown",
-				failureRecoverability: "recoverable",
-				resumable: true,
-				blockedAt: 2,
-			});
-			assert.ok(asked);
-			await backend.deleteWorkflow(id);
-			await register("replacement", 10);
-			if (refreshStore) {
-				const original = store.run(id)!;
-				store.removeRun(id);
-				store.recordRunStart({ ...original, name: "replacement", startedAt: 10, blockedAt: undefined });
-			}
-			response.resolve("summary of the original build");
-			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.equal(backend.getWorkflow(id)?.summary, undefined);
-			assert.equal(store.run(id)?.summary, undefined);
-		} finally {
-			disposeWorkflowSummaryService(store);
-		}
-	});
-}
-
 test("disabled, failed, and cancelled workflow summary requests remain silent", async () => {
 	const store = fixture();
 	let calls = 0;
@@ -166,31 +121,6 @@ test("disabled, failed, and cancelled workflow summary requests remain silent", 
 	service.dispose();
 	await settle();
 	assert.equal(signal?.aborted, true);
-});
-
-test("reopening a blocked run requests a summary only when its saved summary predates the block", async () => {
-	for (const through of [1, 2, 3]) {
-		const store = fixture();
-		store.recordRunBlocked("summary-run", "offline", {
-			failureRecoverability: "recoverable",
-			resumable: true,
-			blockedAt: 2,
-		});
-		store.recordRunSummary!("summary-run", "Previous summary", through);
-		let calls = 0;
-		for (let mount = 0; mount < 3; mount++) {
-			ensureWorkflowSummaryService(store, {
-				generateWorkflowSummary: async () => {
-					calls++;
-					return "Blocked summary";
-				},
-			});
-			await settle();
-			disposeWorkflowSummaryService(store);
-		}
-		assert.equal(calls, through < 2 ? 1 : 0);
-		assert.equal(store.run("summary-run")?.summary, through < 2 ? "Blocked summary" : "Previous summary");
-	}
 });
 
 test("workflow summary input is bounded and includes latest stage outputs", () => {

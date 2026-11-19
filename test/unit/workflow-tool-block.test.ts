@@ -21,10 +21,6 @@ import type { WorkflowToolArgs } from "../../packages/workflows/src/extension/pu
 import { renderCall, workflowCallLabel } from "../../packages/workflows/src/extension/render-call.js";
 import type { WorkflowRegisteredToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import {
-	buildWorkflowStatusListing,
-	summarizeRunSnapshot,
-} from "../../packages/workflows/src/extension/workflow-status-summary.js";
-import {
 	callComponent,
 	parseDefinitionError,
 	shortReason,
@@ -35,7 +31,6 @@ import {
 } from "../../packages/workflows/src/extension/workflow-tool-block.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import { registerWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool-registration.js";
-import { runIndicatorStatus } from "../../packages/workflows/src/shared/run-indicator-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { Store, StoreInvalidationListener } from "../../packages/workflows/src/shared/store-public-types.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -906,85 +901,6 @@ describe("the workflow tool's result line (#5224)", () => {
 
 describe("every workflow action reads as one line collapsed and unboxed when expanded (#5224)", () => {
 	const now = START;
-	test("a status receipt keeps the running row for old readers and displays the captured block to the model", () => {
-		const store = runningStore();
-		store.recordRunBlocked(RUN_ID, "session offline", {
-			failureRecoverability: "recoverable",
-			resumable: true,
-			blockedAt: START,
-		});
-		const captured = store.runs();
-		const receipt = { action: "status" as const, ...buildWorkflowStatusListing(captured, "blocked", now) };
-		const decoded = JSON.parse(JSON.stringify(receipt)) as typeof receipt;
-		assert.equal(decoded.runs[0]?.status, "running");
-		assert.equal(decoded.snapshots[0]?.blockedAt, START);
-		assert.equal(buildWorkflowStatusListing(captured, "running", now).runs.length, 0);
-		assert.match(renderWorkflowToolContent(decoded, { action: "status" }), /ralph {2}blocked/);
-		assert.equal(summarizeWorkflowResult(decoded, { now }).text, "1 run · 1 blocked");
-	});
-
-	test("ordinary saved status rows and failed indicators render with only their recorded fields", () => {
-		const store = runningStore();
-		const strict = () =>
-			new Proxy(JSON.parse(JSON.stringify(store.run(RUN_ID))) as NonNullable<ReturnType<Store["run"]>>, {
-				get(target, key, receiver) {
-					if (typeof key === "string" && !(key in target)) throw new Error(`Unsupported snapshot field: ${key}`);
-					return Reflect.get(target, key, receiver);
-				},
-			});
-		const summary = summarizeRunSnapshot(store.run(RUN_ID)!, now);
-		assert.equal(
-			summarizeWorkflowResult({ action: "status", filter: "all", runs: [summary], snapshots: [strict()] }, { now })
-				.text,
-			"1 run · 1 running",
-		);
-		store.recordRunEnd(RUN_ID, "failed", { status: "failed" });
-		assert.equal(runIndicatorStatus(strict()), "failed");
-	});
-
-	test("repainting the same collapsed status receipt does not reopen its captured rows", () => {
-		const store = runningStore();
-		const snapshot = store.run(RUN_ID)!;
-		let reads = 0;
-		const snapshots = new Proxy([snapshot], {
-			get(target, key, receiver) {
-				if (key === "0") reads++;
-				return Reflect.get(target, key, receiver);
-			},
-		});
-		const receipt = {
-			action: "status",
-			filter: "all",
-			runs: [summarizeRunSnapshot(snapshot, now)],
-			snapshots,
-		} satisfies WorkflowRegisteredToolResult;
-		const view = { expanded: false, isError: false };
-		const row = new WorkflowToolResultBlock(undefined, workflowBlockTheme(undefined)).update(receipt, view);
-		assert.match(plain(row.render(160))[0]!, /1 running/);
-		const initialReads = reads;
-		for (const width of [80, 160, 40]) assert.match(plain(row.update(receipt, view).render(width))[0]!, /1 running/);
-		assert.equal(reads, initialReads);
-		const next = { ...receipt, snapshots: [{ ...snapshot, blockedAt: 1 }] };
-		assert.match(plain(row.update(next, view).render(160))[0]!, /1 blocked/);
-		row.dispose();
-	});
-
-	test("a saved status tally honors a block recorded on its own run (#5534)", () => {
-		const store = runningStore();
-		store.recordRunBlocked(RUN_ID, "session store unavailable", {
-			failureKind: "unknown",
-			failureRecoverability: "recoverable",
-			resumable: true,
-			blockedAt: START,
-		});
-		const marked = store.run(RUN_ID)!;
-		const row = { ...summarizeRunSnapshot(marked, now), status: "running" as const };
-		const tally = (snapshots: (typeof marked)[]) =>
-			summarizeWorkflowResult({ action: "status", filter: "all", runs: [row], snapshots }, { now }).text;
-		assert.equal(tally([marked]), "1 run · 1 blocked");
-		assert.equal(tally([{ ...marked, id: "other-run" }]), "1 run · 1 running");
-		assert.equal(tally([]), "1 run · 1 running");
-	});
 	const cases: Array<[string, WorkflowRegisteredToolResult, RegExp]> = [
 		[
 			"list",

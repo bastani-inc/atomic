@@ -30,7 +30,6 @@ import {
 } from "./render-call.js";
 import type { WorkflowRegisteredToolResult } from "./render-result.js";
 import { renderResult } from "./render-result.js";
-import { statusListRowStatus } from "./workflow-status-summary.js";
 
 export interface WorkflowBlockTheme {
 	fg(color: ThemeColor, text: string): string;
@@ -523,13 +522,9 @@ function summarizeRunResult(
 	}
 }
 
-function countBy<T>(items: readonly T[], key: (item: T, index: number) => string): string {
+function countBy<T>(items: readonly T[], key: (item: T) => string): string {
 	const counts = new Map<string, number>();
-	let index = 0;
-	for (const item of items) {
-		const name = key(item, index++);
-		counts.set(name, (counts.get(name) ?? 0) + 1);
-	}
+	for (const item of items) counts.set(key(item), (counts.get(key(item)) ?? 0) + 1);
 	return [...counts].map(([name, count]) => `${count} ${name.replaceAll("_", " ")}`).join(" · ");
 }
 
@@ -587,9 +582,7 @@ export function summarizeWorkflowResult(
 						tone: "info",
 						text: join(
 							plural(result.runs.length, "run"),
-							countBy(result.runs, (run, index) =>
-								run.status === "running" ? statusListRowStatus(run, result.snapshots?.[index]) : run.status,
-							),
+							countBy(result.runs, (run) => run.status),
 						),
 					};
 		case "statusSummary":
@@ -804,7 +797,6 @@ export class WorkflowToolResultBlock extends ToolBlockRecords implements PiRende
 	private lastRun: RunSnapshot | undefined;
 	private trackedRunIds = new Set<string>();
 	private shown: string | undefined;
-	private statusReceiptSummary: WorkflowResultSummary | undefined;
 	private working = false;
 	private disposed = false;
 
@@ -818,7 +810,6 @@ export class WorkflowToolResultBlock extends ToolBlockRecords implements PiRende
 
 	update(result: WorkflowRegisteredToolResult | null | undefined, view: WorkflowBlockView): this {
 		this.disposed = false;
-		if (this.result !== result) this.statusReceiptSummary = undefined;
 		this.result = result;
 		this.view = view;
 		const runId = result?.action === "run" && "runId" in result && result.runId ? result.runId : undefined;
@@ -937,11 +928,6 @@ export class WorkflowToolResultBlock extends ToolBlockRecords implements PiRende
 	private summary(manage = this.renderOptions.agentPanel !== false): WorkflowResultSummary {
 		if (this.view.partial === true && (this.result === null || this.result === undefined)) {
 			return { tone: "running", text: "Starting" };
-		}
-		if (this.result?.action === "status") {
-			// A captured list does not follow live runs or change with width, expansion, or the clock.
-			this.statusReceiptSummary ??= summarizeWorkflowResult(this.result, { now: this.now() });
-			return this.statusReceiptSummary;
 		}
 		const now = this.now();
 		const run = this.lastRun;

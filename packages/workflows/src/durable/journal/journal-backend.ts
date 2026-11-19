@@ -1019,13 +1019,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (!this.leases.has(runId)) return yield* this.rebuild(runId);
 		for (const entry of yield* this.entries(runId, (this.sequences.get(runId) ?? 0) + 1)) this.fold(entry);
 	}
-	private *current(runId: string, expectedCreatedAt?: number): Operation<DurableWorkflowHandle | undefined> {
+	private *current(runId: string): Operation<DurableWorkflowHandle | undefined> {
 		this.ensureOpen();
 		this.assertExecutionActive(true);
 		yield* this.refresh(runId);
-		const observed = this.projection.getWorkflow(runId);
-		if (!observed || (expectedCreatedAt !== undefined && observed.createdAt !== expectedCreatedAt)) return undefined;
-		const acquiringForSummary = expectedCreatedAt !== undefined && !this.leases.has(runId);
+		if (this.projection.getWorkflow(runId) === undefined) return undefined;
 		try {
 			yield* this.ownership(runId);
 		} catch (error) {
@@ -1034,13 +1032,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			return undefined;
 		}
 		yield* this.refresh(runId);
-		const owned = this.projection.getWorkflow(runId);
-		if (expectedCreatedAt !== undefined && owned?.createdAt !== expectedCreatedAt) {
-			// A replacement may have been registered between our read and taking the lease. Leave it available.
-			if (acquiringForSummary) yield* this.release(runId);
-			return undefined;
-		}
-		return owned;
+		return this.projection.getWorkflow(runId);
 	}
 	private ensureOpen(): void {
 		if (this.state === "closed" || (this.state === "closing" && !this.mutationContext.getStore()))
@@ -1467,21 +1459,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			this.promptChange(runId, E.promptReleased, (state) => state.release(reservationId, token)),
 		);
 	}
-	async persistSummary(
-		runId: string,
-		summary: string,
-		summarizedThrough: number,
-		expectedCreatedAt?: number,
-	): Promise<boolean> {
-		return await this.serialize(runId, () => this.summary(runId, summary, summarizedThrough, expectedCreatedAt));
+	async persistSummary(runId: string, summary: string, summarizedThrough: number): Promise<boolean> {
+		return await this.serialize(runId, () => this.summary(runId, summary, summarizedThrough));
 	}
-	private *summary(
-		runId: string,
-		summary: string,
-		summarizedThrough: number,
-		expectedCreatedAt?: number,
-	): Operation<boolean> {
-		const handle = yield* this.current(runId, expectedCreatedAt);
+	private *summary(runId: string, summary: string, summarizedThrough: number): Operation<boolean> {
+		const handle = yield* this.current(runId);
 		if (!handle || (handle.summarizedThrough ?? -Infinity) > summarizedThrough) return false;
 		yield* this.snapshot({ ...handle, summary, summarizedThrough }, E.summaryRecorded);
 		return true;
