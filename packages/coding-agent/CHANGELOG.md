@@ -10,13 +10,21 @@
 - The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- `SessionManager.getWorktreeSnapshotRecords()` returns only the snapshot records the session holds: all of them while `hasFullHistory()` is true, otherwise the ones its resume needs (the latest snapshot of each checkout on the active branch and the snapshots its restores name) and those recorded in its window. Replace a lookup of an older record with `await manager.loadWorktreeSnapshotRecords(ids)`, or read every snapshot entry with `for await (const page of manager.readWorktreeSnapshotPages())`; both reject with the store's error instead of returning an empty map. `getLatestWorktreeSnapshots()` is unchanged ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - The `subagents` builtin now ships the 11 general-purpose skills previously bundled with `workflows`. Default `/skill:` names and contents are unchanged. SDK hosts that disable `subagents` also disable those skills; to keep the skills without allowing delegation, leave `subagents` enabled and set `excludedTools: ["subagent"]`.
+- A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
+- Task cancellation receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Added
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
 - Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
+- Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
+
+### Changed
+
+- Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Fixed
 

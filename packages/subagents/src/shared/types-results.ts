@@ -187,6 +187,8 @@ export interface SingleResult {
 	task: string;
 	/** Typed terminal outcome; this is the only result discriminator. */
 	status: SubagentAttemptStatus;
+	/** Cleanup is deferred or timed out; accompanies the result without changing its outcome. */
+	worktreeNote?: string;
 	cause?: string;
 	stats?: SessionStats;
 	path?: string;
@@ -260,7 +262,7 @@ export interface SubagentRunControlChild {
 	readonly index: number;
 	readonly agent: string;
 	/** The child's state once the action returned. */
-	readonly state: "paused" | "quit" | "running";
+	readonly state: "paused" | "quit" | "running" | "finishing";
 	/** The task now running the child (`resume`), or the task that was stopped (`pause`, `quit`). */
 	readonly taskId?: string;
 	readonly intercomTarget?: string;
@@ -271,6 +273,7 @@ export interface SubagentRunControlChild {
 export interface SubagentRunControlDetails {
 	readonly action: "pause" | "resume" | "quit";
 	readonly children: readonly SubagentRunControlChild[];
+	readonly worktreeNotes?: readonly string[];
 	/** The steer `resume` delivered to the child as its next prompt. */
 	readonly message?: string;
 }
@@ -280,6 +283,8 @@ export interface Details {
 		| import("../../../coding-agent/src/core/tasks/contracts.js").ModelSingleResponse
 		| import("../../../coding-agent/src/core/tasks/contracts.js").ModelParallelResponse;
 	taskRecords?: import("../../../coding-agent/src/core/tasks/contracts.js").TaskRecord[];
+	/** Rejected slots have no task id. Keep their worktree identities, not a snapshot of a sibling's hold. */
+	rejectedWorktrees?: readonly ({ readonly runId: string; readonly index: number } | null)[];
 	/** The session that launched these children and holds their records, so a replayed card can find them. */
 	ownerSessionId?: string;
 	taskError?: string;

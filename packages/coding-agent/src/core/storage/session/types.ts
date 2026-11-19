@@ -156,6 +156,7 @@ export interface SessionTreeOutlineEntry {
 	/** Addresses only; the arguments for a visible result are read from its call on demand. */
 	readonly callIds?: readonly string[];
 	readonly leafMove?: boolean;
+	readonly childRecord?: boolean;
 	readonly labelTarget?: string;
 	readonly label?: string;
 }
@@ -209,6 +210,32 @@ export interface SessionCompactionPoint {
 	readonly lastSeq: number;
 }
 
+/** Body-free child state for launch cards and explicit action lookup. Full launch, held messages and results
+ * are fetched from the saved observation only if the child is explicitly opened or continued. */
+export interface ArchivedChildCatalogEntry {
+	readonly firstSeq: number;
+	readonly entryId: string;
+	readonly childId: string;
+	readonly ownerSessionId: string;
+	readonly runId: string;
+	readonly index: number;
+	readonly agent: string;
+	readonly cwd: string;
+	readonly state: "running" | "terminal";
+	readonly terminalStatus?: string;
+	readonly taskId?: string;
+	readonly taskIds: readonly string[];
+	readonly releasedTaskIds?: readonly string[];
+	readonly childSessionId?: string;
+	readonly childSessionFile?: string;
+	readonly intercomTarget?: string;
+	readonly intercomGroup?: string;
+	readonly releasedIntercomId?: string;
+	readonly managedWorktree?: boolean;
+	readonly elapsedMs?: number;
+	readonly elapsedSpan?: { dispatchedAt: number; endedAt?: number } | null;
+}
+
 export interface SessionRecoveryState {
 	readonly workflowStarts?: Readonly<Record<string, number>>;
 	/** Sorted, packed 128-bit admission-key digests, encoded as base64. Does not expose original keys. */
@@ -225,6 +252,18 @@ export interface SessionForkWindow {
 	readonly epoch?: string;
 }
 
+export interface SessionChildAliases {
+	readonly taskIds: readonly string[];
+	readonly releasedTaskIds: readonly string[];
+	readonly lastTask?: string;
+	readonly lastStatus?: string;
+}
+export interface SessionChildReadCut {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	readonly seqs: readonly number[];
+	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+}
 export interface SessionResume {
 	readonly header: SessionRecordHeader;
 	readonly lastSeq: number;
@@ -236,6 +275,12 @@ export interface SessionResume {
 	readonly state: readonly SessionStateEntry[];
 	readonly omitted: SessionHistoryTotals;
 	readonly recovery: SessionRecoveryState;
+	/** Returned only on a manager's opt-in metadata read. Inspect these child headings before fetching a
+	 * historical payload; an active child may need it on resume, a completed one does not. */
+	readonly deferredChildren?: {
+		readonly positions: readonly { seq: number; onBranch: boolean }[];
+		readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+	};
 }
 
 export interface SessionSummary {
@@ -471,15 +516,22 @@ export interface SessionStore {
 	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
-	readResume?(sessionId: string, leafId?: string): Promise<SessionResume>;
+	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
+	readChildCatalogCut?(sessionId: string): Promise<SessionChildReadCut>;
+	readSelectedPage?(sessionId: string, seqs: readonly number[], epoch: string): Promise<SessionHistoryPage>;
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
-	readResumeAt?(sessionId: string, leafId: string, throughSeq: number): Promise<SessionResume>;
 	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
 	readForkWindow?(
 		sessionId: string,
 		entryId: string,
 		options?: { readonly archivedReceipts: true },
 	): Promise<SessionForkWindow | undefined>;
+	readResumeAt?(
+		sessionId: string,
+		leafId: string,
+		throughSeq: number,
+		options?: { deferChildRecords: true },
+	): Promise<SessionResume>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;

@@ -13,6 +13,7 @@ export function treeOutlineEntry(seq: number, entry: SessionEntry): SessionTreeO
 	const { id, parentId, timestamp, type } = entry;
 	const base = { seq, id, parentId, timestamp, type };
 	if (type === "label") return { ...base, labelTarget: entry.targetId, label: entry.label?.slice(0, 128) };
+	if (type === "custom" && entry.customType === "subagent-child") return { ...base, childRecord: true };
 	if (type === "custom" && entry.customType === "atomic.leaf") return { ...base, leafMove: true };
 	if (type !== "message") return base;
 	const msg = entry.message;

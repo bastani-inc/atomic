@@ -15,6 +15,7 @@ import {
 import { registerForkScope } from "./fork-store-scope.js";
 import { readSessionHistoryChunks } from "./history-pages.js";
 import {
+	childCatalogCut,
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
@@ -701,7 +702,14 @@ export class MemorySessionStore implements SessionStore {
 		};
 	}
 
-	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+	async readChildCatalogCut(sessionId: string) {
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (index) return childCatalogCut(index);
+		}
+	}
+	async readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		for (;;) {
 			const record = await this.settledRecord(sessionId);
@@ -729,7 +737,7 @@ export class MemorySessionStore implements SessionStore {
 					continue;
 				index = selected;
 			}
-			const plan = sessionResumePlan(index);
+			const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
 			const read = await this.entriesAt(sessionId, record, [...new Set([...branchSeqs, ...plan.state])].sort(bySeq));
 			if (read === undefined) continue;
@@ -737,7 +745,7 @@ export class MemorySessionStore implements SessionStore {
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
 			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			const resume = sessionResumeFrom(index, decodeHeader(record), branch, state, leaf);
+			const resume = sessionResumeFrom(index, decodeHeader(record), branch, state, leaf, plan.children);
 			if (
 				resume.compaction &&
 				!(await readEarlierCompletionIntents(index, resume, (seqs) => this.entriesAt(sessionId, record, seqs)))

@@ -835,7 +835,11 @@ async function recordReuse(sessionManager: SessionManager, mapping: WorktreeRoot
 
 type SessionCheckouts = Pick<
 	SessionManager,
-	"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getSessionId"
+	| "getBranch"
+	| "getWorktreeRootMappings"
+	| "getWorktreeSnapshotRecords"
+	| "getSessionId"
+	| "loadWorktreeSnapshotRecords"
 >;
 
 /** The session's checkouts as they are once `mapping`, not yet recorded, is. */
@@ -845,6 +849,7 @@ function withMapping(sessionManager: SessionManager, mapping: WorktreeRootMappin
 		getBranch: () => sessionManager.getBranch(),
 		getSessionId: () => sessionManager.getSessionId(),
 		getWorktreeSnapshotRecords: () => sessionManager.getWorktreeSnapshotRecords(),
+		loadWorktreeSnapshotRecords: (ids, options) => sessionManager.loadWorktreeSnapshotRecords(ids, options),
 		getWorktreeRootMappings: () => [...sessionManager.getWorktreeRootMappings(), mapping],
 	};
 }

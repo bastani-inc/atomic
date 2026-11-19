@@ -53,7 +53,7 @@ export async function pinnedBranchResume(
 		totals: { ...index.totals, toolCalls: index.totals.toolCalls + extraCalls },
 	};
 	const selected = await selectResumeLeaf(index, leaf, fields(false));
-	const plan = sessionResumePlan(selected);
+	const plan = sessionResumePlan(selected, selected.leafSeq, true);
 	const branch: SessionStoredEntry[] = [],
 		state: SessionStoredEntry[] = [];
 	const stateSeqs = new Set(plan.state);
@@ -75,5 +75,5 @@ export async function pinnedBranchResume(
 			}
 		}
 	}
-	return sessionResumeFrom(selected, header, branch, state, leaf > 0 ? leafId : null);
+	return sessionResumeFrom(selected, header, branch, state, leaf > 0 ? leafId : null, plan.children);
 }

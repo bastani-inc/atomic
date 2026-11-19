@@ -38,6 +38,7 @@ import {
 	watchWorkflowStageSubagentChildren,
 } from "../runs/foreground/subagent-child-records.js";
 import {
+	type ArchivedSubagentChildren,
 	awaitSubagentChildRestoration,
 	holdDormantRunSubagentChildren,
 	holdRunningSubagentChildren,
@@ -549,15 +550,18 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (typeof request.ownerSessionId !== "string" || typeof request.target !== "string") return;
 			const { ownerSessionId, target } = request;
 			const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : 0;
-			const entries = (): SessionEntry[] => {
+			const session = (): { entries: SessionEntry[]; archived?: ArchivedSubagentChildren } => {
 				try {
 					const ctx = state.lastUiContext;
-					return ctx?.sessionManager.getSessionId() === ownerSessionId ? ctx.sessionManager.getEntries() : [];
+					return ctx?.sessionManager.getSessionId() === ownerSessionId
+						? { entries: ctx.sessionManager.getEntries(), archived: ctx.sessionManager }
+						: { entries: [] };
 				} catch {
-					return [];
+					return { entries: [] };
 				}
 			};
-			request.completion = awaitSubagentChildRestoration(ownerSessionId, entries(), target, timeoutMs);
+			const { entries, archived } = session();
+			request.completion = awaitSubagentChildRestoration(ownerSessionId, entries, target, timeoutMs, archived);
 		});
 		eventUnsubscribes.push(unsubscribeChildRestoration);
 		// Intercom asks which children a `subagents:` send reaches (#4752).

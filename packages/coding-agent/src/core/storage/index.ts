@@ -101,6 +101,11 @@ export async function readSavedChildLaunch(
 ) {
 	return (await import("./session/expanded-child-details.js")).readSavedChildLaunch(...args);
 }
+export async function readSessionChildCatalog(
+	...args: Parameters<typeof import("./session/child-reader.js").readSessionChildCatalog>
+) {
+	return (await import("./session/child-reader.js")).readSessionChildCatalog(...args);
+}
 // Ordinary storage setup does not open a transcript reader or import its encoders.
 export async function* readSessionHistory(
 	...args: Parameters<typeof import("./session/history-pages.js").readSessionHistory>
@@ -113,6 +118,7 @@ export async function* readSessionHistoryChunks(
 	yield* (await import("./session/history-pages.js")).readSessionHistoryChunks(...args);
 }
 export type {
+	ArchivedChildCatalogEntry,
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,

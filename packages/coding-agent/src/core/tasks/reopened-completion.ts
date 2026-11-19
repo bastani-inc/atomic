@@ -183,28 +183,30 @@ export function reopenedCompletionName(message: CustomMessage, isProxy: Completi
 /** An SDK caller can copy the same entry object into a different session. Evidence outside the window belongs to
  * the store snapshot that supplied it, not to that entry on its own. Neither weak key keeps a session alive. */
 const earlierWitnesses = new WeakMap<SessionRecoveryState, WeakMap<Card, StopWitness>>();
-/** The manager keeps compact recovery counters separately; copy the association only for the
- * same saved card objects that survive a restore/window transition, never across session identities. */
-export function copyEarlierCompletionWitnesses(
-	from: SessionRecoveryState,
-	to: SessionRecoveryState,
-	entries: Iterable<SessionEntry>,
-) {
-	const old = earlierWitnesses.get(from);
-	if (!old) return;
-	let kept = earlierWitnesses.get(to);
-	for (const entry of entries)
-		if (entry.type === "custom_message") {
-			const witness = old.get(entry);
-			if (witness) {
-				if (!kept) {
-					kept = new WeakMap();
-					earlierWitnesses.set(to, kept);
-				}
-				kept.set(entry, witness);
-			}
-		}
+/** Preserve evidence when the same captured store view exposes a new recovery-state envelope. */
+export function shareCompletionEvidence<T extends SessionRecoveryState>(source: SessionRecoveryState, target: T): T {
+	const cards = earlierWitnesses.get(source);
+	if (cards) earlierWitnesses.set(target, cards);
+	return target;
 }
+/** Local compaction can shorten a parent link without changing the saved card it represents. */
+export function carryCompletionEvidence(
+	source: SessionRecoveryState,
+	from: SessionEntry,
+	target: SessionRecoveryState,
+	to: SessionEntry,
+): void {
+	if (from.type !== "custom_message" || to.type !== "custom_message" || from.id !== to.id) return;
+	const witness = earlierWitnesses.get(source)?.get(from);
+	if (!witness) return;
+	let cards = earlierWitnesses.get(target);
+	if (!cards) {
+		cards = new WeakMap();
+		earlierWitnesses.set(target, cards);
+	}
+	cards.set(to, witness);
+}
+
 export function rememberEarlierCompletion(
 	scope: SessionRecoveryState,
 	entry: SessionEntry,

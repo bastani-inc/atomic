@@ -168,6 +168,8 @@ export class WorkflowStageAdmissionBoundary {
 		};
 		host.updateBinding({
 			heartbeat: undefined,
+			// No live session owns a finishing intent while parked; the stage keeps its final settlement below.
+			onTaskFinishing: undefined,
 			onTaskCleanupQuarantined: undefined,
 			authorizeLaunch: refuseParkedLaunch,
 			// The stage's live workers keep running their shells in its owner while it is released (#4639).

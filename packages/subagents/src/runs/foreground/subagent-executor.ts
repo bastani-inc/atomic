@@ -17,8 +17,13 @@ import {
 } from "../../shared/types.js";
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
 import { takeLegacyForegroundWait, withLegacyForegroundWaitNote } from "./legacy-foreground-wait.js";
-import { registerNamedRunWorktrees } from "./run-worktrees.js";
-import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import {
+	CLEANUP_IN_BACKGROUND,
+	finishingWorktreeStatus,
+	registerNamedRunWorktrees,
+	worktreeWaitDeadline,
+} from "./run-worktrees.js";
+import { subagentChildCardRecord, subagentChildIntercomTargetOfTask } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
@@ -128,12 +133,28 @@ async function handleManagementRequest(input: {
 	}
 	if (action === "wait") {
 		if (isScriptSubagentCall(ctx)) return waitForScriptChild(ctx, params, signal);
+		const tree = params.id && subagentChildCardRecord(undefined, params.id);
+		const deadline = tree && tree.taskId === params.id ? worktreeWaitDeadline(tree) : undefined;
+		const waitSignal = deadline ? AbortSignal.any([signal, deadline.signal]) : signal;
+		const host = ctx.getAgentTaskHost?.();
 		const observed =
-			ctx.getAgentTaskHost && params.id !== undefined
-				? await ctx
-						.getAgentTaskHost()
-						.waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs, undefined, signal)
+			host && params.id !== undefined
+				? await host
+						.waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs, undefined, waitSignal)
+						.finally(() => deadline?.dispose())
 				: { ok: false as const, error: { code: "UnknownTask", message: "Task not found in this owner" } };
+		if (
+			tree &&
+			finishingWorktreeStatus(tree) &&
+			(deadline?.signal.aborted ||
+				(signal.aborted && !observed.ok && observed.error.code === "ObserverCancelled") ||
+				(observed.ok && observed.value.kind !== "settled"))
+		) {
+			return {
+				content: [{ type: "text", text: `${params.id} is finishing. ${CLEANUP_IN_BACKGROUND}` }],
+				details: { mode: "management", results: [] },
+			};
+		}
 		// Esc ends the wait, never the child: it keeps running and reports by its completion notice.
 		if (signal.aborted && !observed.ok && observed.error.code === "ObserverCancelled")
 			return {
@@ -147,9 +168,11 @@ async function handleManagementRequest(input: {
 			};
 		const settledOutput =
 			observed.ok && observed.value.kind === "settled"
-				? await settledTaskOutputText(ctx.getAgentTaskHost?.(), [
-						{ taskId: observed.value.taskId, result: observed.value.result },
-					])
+				? await settledTaskOutputText(
+						ctx.getAgentTaskHost?.(),
+						[{ taskId: observed.value.taskId, result: observed.value.result }],
+						signal,
+					)
 				: "";
 		return {
 			content: [
@@ -203,15 +226,16 @@ async function handleManagementRequest(input: {
 			if (watched.ok) {
 				const records = watched.value.snapshot.tasks.filter((task) => task.ref.taskId === taskId);
 				watched.value.dispose();
-				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records));
+				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records), signal);
 				const ownerSessionId = subagentChildOwner(ctx).sessionId;
 				const shown = records.map((record) =>
-					subagentTaskStatusRecord(
-						record,
-						subagentChildRecordsOf(ownerSessionId).find((child) => child.taskId === record.ref.taskId)
-							?.intercomTarget,
-					),
+					subagentTaskStatusRecord(record, subagentChildIntercomTargetOfTask(ownerSessionId, record.ref.taskId)),
 				);
+				const child = subagentChildCardRecord(undefined, taskId);
+				const cleanup =
+					child && child.taskId === taskId && finishingWorktreeStatus(child)
+						? `${taskId} is finishing. ${CLEANUP_IN_BACKGROUND}\n`
+						: "";
 				const starting = shown.flatMap((record) =>
 					record.start === undefined
 						? []
@@ -223,7 +247,7 @@ async function handleManagementRequest(input: {
 					content: [
 						{
 							type: "text",
-							text: `${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${starting.length > 0 ? `${starting.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(shown)}${settledOutput}`,
+							text: `${cleanup}${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${starting.length > 0 ? `${starting.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(shown)}${settledOutput}`,
 						},
 					],
 					details: { mode: "management", results: [], taskRecords: records },

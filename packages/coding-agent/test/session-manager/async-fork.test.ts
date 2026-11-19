@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import * as streams from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,11 +15,17 @@ import { MemorySessionStore } from "../../src/core/storage/session/memory-sessio
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
-	return { ...actual, createReadStream: vi.fn(actual.createReadStream) };
+	return { ...actual }; // Expose the synchronous entry points to the guard below.
 });
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
-	return { ...actual, writeFile: vi.fn(actual.writeFile), stat: vi.fn(actual.stat) };
+	return {
+		...actual,
+		open: vi.fn(actual.open),
+		readFile: vi.fn(actual.readFile),
+		writeFile: vi.fn(actual.writeFile),
+		stat: vi.fn(actual.stat),
+	};
 });
 
 test("streamed forks retain history and can append without replacing it (#3577)", async () => {
@@ -52,15 +57,14 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 				throw new Error(`Unexpected synchronous filesystem call: ${name}`);
 			}),
 		);
-		const reads = vi.mocked(streams.createReadStream);
-		const writes = vi.mocked(fsPromises.writeFile);
-		reads.mockClear();
-		writes.mockClear();
+		const opens = vi.mocked(fsPromises.open).mockClear();
+		const wholeReads = vi.mocked(fsPromises.readFile).mockClear();
+		const writes = vi.mocked(fsPromises.writeFile).mockClear();
 		let fork: SessionManager;
 		try {
 			fork = await SessionManager.forkFrom(source, dir, join(dir, "forks"), { internal: true, workflow });
-			assert.equal(reads.mock.calls.length, 1);
-			assert.equal(reads.mock.calls[0][0], source);
+			assert.equal(opens.mock.calls.filter(([path]) => path === source).length, 1, "one pinned source file");
+			assert.ok(!wholeReads.mock.calls.some(([path]) => path === source), "do not load the whole source file");
 			assert.equal(writes.mock.calls.length, 1);
 			assert.equal(String(writes.mock.calls[0][0]).startsWith(`${fork.getSessionFile()}.`), true);
 			assert.equal(String(writes.mock.calls[0][0]).endsWith(".tmp"), true);

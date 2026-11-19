@@ -57,7 +57,11 @@ import {
 	savedToolResultIds,
 } from "./released-children.js";
 import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from "./run-worktrees.js";
-import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
+import {
+	indexSubagentChildOwner,
+	loadSubagentChildRecord,
+	readableSubagentChildRecordOf,
+} from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import { type ChildOwnerAPI, subagentChildOwnerOperations } from "./subagent-child-owner.js";
@@ -68,6 +72,7 @@ import {
 	heldTaskExpands,
 	holdInterruptedStillRunningCalls,
 	isRestorableSubagentChild,
+	isSubagentChildRecord,
 	readSubagentChildRecords,
 	recordSubagentChildGone,
 	SUBAGENT_CHILD_GONE_STATUS,
@@ -1011,10 +1016,12 @@ export async function restoreSubagentChild(
 	ctx = owner.ctx;
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
-	// The owner's own session when the index's latest record is in a copy of it that is no longer open.
+	// The owner's own session when the index's latest record is in a copy of it that is no longer open. A child whose
+	// records left the owner's window is read from it, and kept until its relaunch records it again over that record.
 	const record =
 		readableSubagentChildRecordOf(ownerSessionId, id) ??
-		findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId), id);
+		findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId), id) ??
+		(await archivedChildRecord(ctx, ownerSessionId, id));
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
 	if (!isRestorableSubagentChild(record) && !resume) return { kind: "terminal", record };
 	const key = childHoldKey(ownerSessionId, record.childId);
@@ -1135,6 +1142,32 @@ export async function restoreSubagentChild(
 }
 
 /**
+ * A child of `ownerSessionId` whose records left its window, by any id {@link restoreSubagentChild} accepts, read in full
+ * from the owner's session. Read through the child index when it can be, which keeps the record until the child is
+ * recorded again: a relaunched child's records name only what changed.
+ */
+async function archivedChildRecord(
+	ctx: ExtensionContext,
+	ownerSessionId: string,
+	id: string,
+): Promise<SubagentChildRecord | undefined> {
+	const target = id.trim();
+	const catalog =
+		typeof ctx.sessionManager.getArchivedChildCatalog === "function"
+			? ctx.sessionManager.getArchivedChildCatalog().filter((child) => child.ownerSessionId === ownerSessionId)
+			: [];
+	const child =
+		catalog.find((candidate) => candidate.childId === target) ??
+		catalog.find((candidate) => candidate.taskId === target || candidate.intercomTarget === target);
+	if (child === undefined) return undefined;
+	const kept = await loadSubagentChildRecord(ownerSessionId, child.childId, { keep: true }).catch(() => undefined);
+	if (kept !== undefined) return kept;
+	const saved = await ctx.sessionManager.readArchivedChildRecord?.(child.entryId);
+	const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
+	return data?.childId === child.childId ? data : undefined;
+}
+
+/**
  * Intercom asks, when it decides what to do with the interrupted deliveries of a reopened session, which of its children
  * were relaunched but have not registered with Intercom yet (#3760). They may still reconnect, so deliveries they sent
  * are neither replayed as if they were live nor discarded as if they were gone.
@@ -1227,6 +1260,53 @@ function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | un
 	});
 }
 
+/** Where an owner's session keeps the children whose records left its window, and reads their records. */
+export type ArchivedSubagentChildren = Partial<
+	Pick<SessionManager, "getArchivedChildCatalog" | "readArchivedChildRecord">
+>;
+
+/**
+ * The child of `ownerSessionId` reported gone that `target` addresses, among those whose records left its window: read
+ * in full, as its refusal describes it.
+ */
+async function archivedGoneChild(
+	archived: ArchivedSubagentChildren | undefined,
+	ownerSessionId: string,
+	target: string,
+): Promise<SubagentChildRecord | undefined> {
+	if (typeof archived?.getArchivedChildCatalog !== "function") return undefined;
+	const child = archived
+		.getArchivedChildCatalog()
+		.find(
+			(candidate) =>
+				candidate.ownerSessionId === ownerSessionId &&
+				candidate.state === "terminal" &&
+				candidate.terminalStatus === SUBAGENT_CHILD_GONE_STATUS &&
+				[candidate.intercomTarget, candidate.childSessionId].some(
+					(address) => address?.trim().toLowerCase() === target,
+				),
+		);
+	if (child === undefined) return undefined;
+	const saved = await archived.readArchivedChildRecord?.(child.entryId).catch(() => undefined);
+	const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
+	if (data?.childId === child.childId) return data;
+	// Its record cannot be read now: it is refused as it stands, without its task or worktree.
+	return {
+		version: 1,
+		childId: child.childId,
+		runId: child.runId,
+		index: child.index,
+		agent: child.agent,
+		state: child.state,
+		cwd: child.cwd,
+		owner: { kind: "session", sessionId: ownerSessionId },
+		...(child.terminalStatus === undefined ? {} : { terminalStatus: child.terminalStatus }),
+		...(child.intercomTarget === undefined ? {} : { intercomTarget: child.intercomTarget }),
+		...(child.childSessionId === undefined ? {} : { childSessionId: child.childSessionId }),
+		...(child.childSessionFile === undefined ? {} : { childSessionFile: child.childSessionFile }),
+	};
+}
+
 /**
  * Gate a message to a child of this session that a restart is restoring (#3760). The target may be the child's
  * Intercom name, its Atomic session id, or its pre-restart Intercom id. Waits (bounded) while its restoration is
@@ -1239,6 +1319,7 @@ export async function awaitSubagentChildRestoration(
 	entries: readonly SessionEntry[],
 	targetName: string,
 	timeoutMs: number,
+	archived?: ArchivedSubagentChildren,
 ): Promise<string | undefined> {
 	const target = targetName.trim().toLowerCase();
 	if (!target) return undefined;
@@ -1286,12 +1367,13 @@ export async function awaitSubagentChildRestoration(
 		)
 			return goneChildRefusal(reported.record.intercomTarget ?? targetName.trim(), reported.record, reported.reason);
 	}
-	const gone = [...readSubagentChildRecords(entries, ownerSessionId).values()].find(
-		(record) =>
-			addressesChild(record, target) &&
-			record.state === "terminal" &&
-			record.terminalStatus === SUBAGENT_CHILD_GONE_STATUS,
-	);
+	const gone =
+		[...readSubagentChildRecords(entries, ownerSessionId).values()].find(
+			(record) =>
+				addressesChild(record, target) &&
+				record.state === "terminal" &&
+				record.terminalStatus === SUBAGENT_CHILD_GONE_STATUS,
+		) ?? (await archivedGoneChild(archived, ownerSessionId, target));
 	return gone ? goneChildRefusal(gone.intercomTarget ?? targetName.trim(), gone) : undefined;
 }
 

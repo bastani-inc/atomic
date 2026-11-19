@@ -19,6 +19,7 @@ import { nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
 	branchRanges,
+	childCatalogCut,
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
@@ -70,7 +71,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
@@ -2033,6 +2034,7 @@ export class SqlSessionStore implements SessionStore {
 				"toolCallId",
 				"ownerId",
 				"taskId",
+				"terminalStatus",
 			];
 			const op = `CASE WHEN ${jsonType("data", "op")} = '${sqlite ? "text" : "string"}' THEN ${j("data", "op")} END`;
 			const deliveryOp = `chunks > 0 AND ${j("type")} = 'custom' AND ${j("customType")} = 'atomic-pooled-delivery-op'`;
@@ -2491,6 +2493,7 @@ export class SqlSessionStore implements SessionStore {
 				`SELECT CASE WHEN ${role}='assistant' AND ${ctype}='array' THEN ${callIds} END calls,seq,entry_id,chunks,${j("type")} kind,${j("parentId")} parent,${j("timestamp")} stamp,${role} role,
 				CASE WHEN ${role}='assistant' AND COALESCE(${j("message", "stopReason")},'') IN ('','toolUse','stop') AND CASE WHEN ${ctype}='array' THEN NOT ${hasText} WHEN ${ctype}='${sqlite ? "text" : "string"}' THEN length(${trim}(${content},?))=0 ELSE TRUE END THEN 1 ELSE 0 END hidden,
 				CASE WHEN ${j("type")}='custom' AND ${j("customType")}='atomic.leaf' THEN 1 ELSE 0 END leaf_move,
+				CASE WHEN ${j("type")}='custom' AND ${j("customType")}='subagent-child' THEN 1 ELSE 0 END child_record,
 				CASE WHEN ${j("type")}='label' THEN ${j("targetId")} END target,CASE WHEN ${j("type")}='label' THEN substr(${j("label")},1,128) END label
 				FROM ${this.tables.entries} WHERE session_id=? AND seq BETWEEN ? AND ? ORDER BY seq LIMIT ?`,
 				whites,
@@ -2515,11 +2518,45 @@ export class SqlSessionStore implements SessionStore {
 								? { callIds: JSON.parse(row.calls) as string[] }
 								: {}),
 							...(Number(row.leaf_move) === 1 ? { leafMove: true } : {}),
+							...(Number(row.child_record) === 1 ? { childRecord: true } : {}),
 							...(typeof row.target === "string"
 								? { labelTarget: row.target, label: typeof row.label === "string" ? row.label : undefined }
 								: {}),
 						},
 			);
+		}, SESSION_TRANSACTION);
+	}
+
+	/** Sparse page of child state in one fenced read, bounded by the same byte and row caps as a transcript page. */
+	async readSelectedPage(sessionId: string, seqs: readonly number[], epoch: string) {
+		this.assertOpen();
+		const wanted = seqs.slice(0, SESSION_HISTORY_PAGE_ENTRIES);
+		if (!wanted.length) return { items: [] };
+		return this.transaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId);
+			if (head.epoch !== epoch || head.lastSeq < wanted.at(-1)!)
+				throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
+			const tail = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id=e.session_id AND c.seq=e.seq AND c.idx=e.chunks-1)`;
+			const sizes = await tx.all<{ seq: number; bytes: number }>(
+				`SELECT seq,CASE WHEN chunks=0 THEN ${this.entryByteLength("entry_json")} ELSE (chunks-1)*?+${tail} END bytes FROM ${this.tables.entries} e WHERE session_id=? AND seq IN (${wanted.map(() => "?").join(",")}) ORDER BY seq`,
+				SESSION_ENTRY_CHUNK_BYTES,
+				sessionId,
+				...wanted,
+			);
+			const selected: number[] = [];
+			let total = 0;
+			for (const row of sizes) {
+				const seq = Number(row.seq),
+					bytes = Number(row.bytes);
+				if (row.bytes == null || seq !== wanted[selected.length])
+					throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
+				if (!selected.length && bytes > SESSION_HISTORY_PAGE_BYTES)
+					return { items: [{ kind: "oversized", sessionId, epoch, seq, bytes } as const] };
+				if (total + bytes > SESSION_HISTORY_PAGE_BYTES) break;
+				total += bytes;
+				selected.push(seq);
+			}
+			return { items: await this.readSeqs(tx, sessionId, selected) };
 		}, SESSION_TRANSACTION);
 	}
 
@@ -2787,13 +2824,27 @@ export class SqlSessionStore implements SessionStore {
 		}
 	}
 
-	readResumeAt(sessionId: string, leafId: string, throughSeq: number): Promise<SessionResume> {
-		return this.resumeWindow(sessionId, leafId, throughSeq);
+	async readChildCatalogCut(sessionId: string) {
+		this.assertOpen();
+		return childCatalogCut((await this.prepareResume(sessionId)).index);
 	}
-	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
-		return this.resumeWindow(sessionId, leafId);
+	readResumeAt(
+		sessionId: string,
+		leafId: string,
+		throughSeq: number,
+		options?: { deferChildRecords: true },
+	): Promise<SessionResume> {
+		return this.resumeWindow(sessionId, leafId, throughSeq, options);
 	}
-	private async resumeWindow(sessionId: string, leafId?: string, throughSeq?: number): Promise<SessionResume> {
+	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
+		return this.resumeWindow(sessionId, leafId, undefined, options);
+	}
+	private async resumeWindow(
+		sessionId: string,
+		leafId?: string,
+		throughSeq?: number,
+		options?: { deferChildRecords: true },
+	): Promise<SessionResume> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
@@ -2808,7 +2859,7 @@ export class SqlSessionStore implements SessionStore {
 				if (revision !== head.revision) return undefined;
 				const header = JSON.parse(head.header_json) as SessionRecordHeader;
 				const { leafSeq } = index;
-				const plan = sessionResumePlan(index);
+				const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 				announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
 				const branch: SessionStoredEntry[] = [];
 				for (const [start, end] of plan.branch)
@@ -2822,7 +2873,7 @@ export class SqlSessionStore implements SessionStore {
 								sessionId,
 								leafSeq,
 							);
-				const resume = sessionResumeFrom(index, header, branch, state, leaf?.entry_id ?? null);
+				const resume = sessionResumeFrom(index, header, branch, state, leaf?.entry_id ?? null, plan.children);
 				if (resume.compaction)
 					await readEarlierCompletionIntents(index, resume, (seqs) => this.readSeqs(tx, sessionId, seqs));
 				return resume;

@@ -586,8 +586,7 @@ export class SessionList implements Component, Focusable {
 	}
 
 	private emptyText(): string {
-		const query = this.searchInput.getValue().trim();
-		if (query) return parseSearchQuery(query).error ?? `No matches for "${query}"`;
+		if (this.searchInput.getValue().trim()) return `No matches for "${this.searchInput.getValue().trim()}"`;
 		if (this.variant === "runs") return "No workflow runs to resume.";
 		const showAll = clickableKeyTextHint(keyText("app.session.toggleNamedFilter"), " show all");
 		const allFolders = clickableKeyTextHint(keyText("tui.input.tab"), " all folders");

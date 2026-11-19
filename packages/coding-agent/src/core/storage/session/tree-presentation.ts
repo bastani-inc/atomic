@@ -83,26 +83,42 @@ function* matchedString(words: readonly string[]): Reader<string> {
 	if (high) process(high);
 	return match.result();
 }
-const stringField = (limit: number, words?: readonly string[]): Shape =>
+/** A string's first `limit` code units, reporting through `clip` when it had more. */
+function* clippedString(limit: number, clip?: () => void): Reader<string> {
+	let value = "";
+	for (let token = yield; token.name === "stringChunk"; token = yield) {
+		const room = limit - value.length;
+		if (token.value.length > room) clip?.();
+		if (room > 0) value += token.value.slice(0, room);
+	}
+	return value;
+}
+const stringField = (limit: number, words?: readonly string[], clip?: () => void): Shape =>
 	function* (t: Token) {
 		if (t.name !== "startString") {
 			yield* skip(t);
 			return null;
 		}
-		return words ? yield* matchedString(words) : yield* stringValue(limit);
+		return words ? yield* matchedString(words) : yield* clippedString(limit, clip);
 	};
-const textBlocks = (max: number, stringWords?: readonly string[]): Shape =>
+const textBlocks = (max: number, stringWords?: readonly string[], clip?: () => void): Shape =>
 	function* (t: Token) {
-		if (t.name === "startString") return stringWords ? yield* matchedString(stringWords) : yield* stringValue(max);
+		if (t.name === "startString")
+			return stringWords ? yield* matchedString(stringWords) : yield* clippedString(max, clip);
 		if (t.name !== "startArray") {
 			yield* skip(t);
 			return null;
 		}
 		let out = "";
 		for (let item = yield; item.name !== "endArray"; item = yield) {
-			if (out.length >= max) yield* skip(item);
-			else {
-				const block = yield* readValue(item, { type: "short", text: stringField(max - out.length) });
+			if (out.length >= max) {
+				clip?.();
+				yield* skip(item);
+			} else {
+				const block = yield* readValue(item, {
+					type: "short",
+					text: stringField(max - out.length, undefined, clip),
+				});
 				if (
 					block &&
 					typeof block === "object" &&
@@ -121,8 +137,9 @@ export async function treePresentation(
 	chunks: AsyncIterable<Uint8Array>,
 	limit: number,
 	words?: readonly string[],
+	clip?: () => void,
 ): Promise<SessionEntry> {
-	const text = stringField(limit, words);
+	const text = stringField(limit, words, clip);
 	const e = await read(
 		chunks,
 		(function* (): Reader<unknown> {
@@ -143,14 +160,14 @@ export async function treePresentation(
 				label: text,
 				replacement: "objectPresent",
 				targetId: text,
-				content: textBlocks(words ? 200 : limit, words),
+				content: textBlocks(words ? 200 : limit, words, clip),
 				message: {
 					role: "short",
 					content: textBlocks(200),
 					command: text,
 					stopReason: "short",
 					errorMessage: stringField(160),
-					toolName: stringField(limit),
+					toolName: stringField(limit, undefined, clip),
 					toolCallId: "string",
 				},
 			});
@@ -162,23 +179,148 @@ export async function treePresentation(
 	return entry;
 }
 
-/** Select just the formatting inputs used by the built-in tools. Unknown tools display a short JSON preview. */
-export async function treeToolCall(chunks: AsyncIterable<Uint8Array>, id: string, limit: number) {
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+
+/** The characters of `JSON.stringify(arguments)` a custom tool's row shows, plus one to tell whether it continues. */
+export const TOOL_CALL_JSON_PREVIEW = 41;
+// A path is normalized as a whole before it is shortened, so read the longest path an operating system accepts.
+const PATH_CHARS = 32_768;
+// A key is cut only beyond every array index (at most 10 digits), so the cut never changes the key order.
+const KEY_CHARS = 11;
+
+/**
+ * A bounded copy of a JSON value. Its `JSON.stringify` equals the stored value's when that is shorter than `budget`;
+ * otherwise it is at least `budget` long and agrees on the first `budget` characters. It follows `JSON.parse`: canonical
+ * numbers, re-escaped strings, array-index keys first in ascending order, and a repeated key keeping its first place
+ * with its last value. Object members are dropped only where even one-character values put them past the budget, so a
+ * repeated key that later shortens an earlier value cannot bring a dropped member back into view.
+ * `own` reads the members a caller needs whole, wherever they are.
+ */
+function* jsonPrefix(
+	first: Token,
+	budget: number,
+	own?: (key: string, first: Token) => Reader<Json> | undefined,
+): Reader<Json> {
+	switch (first.name) {
+		case "startString":
+			return yield* stringValue(Math.max(0, budget));
+		case "numberValue":
+			return Number(first.value);
+		case "trueValue":
+		case "falseValue":
+		case "nullValue":
+			return first.value;
+		case "startArray": {
+			const out: Json[] = [];
+			let length = 1;
+			for (let item = yield; item.name !== "endArray"; item = yield) {
+				if (length >= budget) {
+					yield* skip(item);
+					continue;
+				}
+				if (out.length) length++;
+				const value = yield* jsonPrefix(item, budget - length);
+				out.push(value);
+				length += JSON.stringify(value).length;
+			}
+			return out;
+		}
+		case "startObject": {
+			const out: { [key: string]: Json } = Object.create(null);
+			const owned = new Set<string>();
+			// The least column a member can start at: every value before it takes at least one character.
+			const columns = function* () {
+				let at = 1;
+				for (const key of Object.keys(out)) {
+					yield [key, at] as const;
+					at += JSON.stringify(key).length + 3;
+				}
+			};
+			while ((yield).name !== "endObject") {
+				let cut = false;
+				let key = yield* clippedString(Math.max(KEY_CHARS, budget + 1), () => {
+					cut = true;
+				});
+				// Never end a cut key inside a surrogate pair: its escape would be longer than the stored key.
+				if (cut && /[\uD800-\uDBFF]$/.test(key)) key = key.slice(0, -1);
+				const token = yield;
+				const repeated = key in out;
+				if (!repeated) out[key] = null;
+				let at = budget;
+				for (const [k, column] of columns())
+					if (k === key) {
+						at = column;
+						break;
+					}
+				const whole = own?.(key, token);
+				if (whole) owned.add(key);
+				else if (at >= budget) {
+					if (!owned.has(key)) delete out[key];
+					yield* skip(token);
+					continue;
+				}
+				out[key] = whole ? yield* whole : yield* jsonPrefix(token, budget - at - JSON.stringify(key).length - 1);
+				// An array-index key is placed before the others, so it can push them past the budget.
+				if (!repeated) for (const [k, column] of columns()) if (column >= budget && !owned.has(k)) delete out[k];
+			}
+			return out;
+		}
+		default:
+			throw new SyntaxError(`Unexpected JSON token ${first.name}`);
+	}
+}
+
+/** `String(command).replace(/[\n\t]/g, " ").trim().slice(0, 50)` and `command.length > 50` without the whole command:
+ * up to 51 leading blanks as stored, the next 50 characters, and one character telling whether anything but blanks follows. */
+function* bashCommand(): Reader<string> {
+	let lead = "",
+		leading = true,
+		rest = "",
+		tail = "";
+	for (let token = yield; token.name === "stringChunk"; token = yield) {
+		let s = token.value;
+		if (leading) {
+			const blank = s.length - s.trimStart().length;
+			if (lead.length < 51) lead += s.slice(0, Math.min(blank, 51 - lead.length));
+			s = s.slice(blank);
+			if (!s) continue;
+			leading = false;
+		}
+		const take = Math.max(0, 50 - rest.length);
+		rest += s.slice(0, take);
+		s = s.slice(take);
+		if (s && tail !== "x") tail = s.trim() ? "x" : " ";
+	}
+	return lead + rest + tail;
+}
+
+const ownArguments = new Set(["path", "file_path", "command", "pattern", "offset", "limit"]);
+
+/** The arguments `formatToolCall` reads: the members built-in tools show, and the JSON prefix custom tools show. */
+function callArguments(limit: number, clip: () => void): Shape {
+	const own = (key: string, first: Token): Reader<Json> | undefined => {
+		if (!ownArguments.has(key)) return undefined;
+		if (first.name !== "startString") return jsonPrefix(first, TOOL_CALL_JSON_PREVIEW);
+		if (key === "command") return bashCommand();
+		return clippedString(key === "pattern" ? Math.max(limit, TOOL_CALL_JSON_PREVIEW) : PATH_CHARS, clip);
+	};
+	return (first) => jsonPrefix(first, TOOL_CALL_JSON_PREVIEW, own);
+}
+
+/** Select the formatting inputs `formatToolCall` reads, never the whole input of a call. */
+export async function treeToolCall(chunks: AsyncIterable<Uint8Array>, id: string, limit: number, clip?: () => void) {
 	let match: { name: string; arguments: Record<string, unknown> } | undefined;
-	const args = {
-		path: stringField(limit),
-		file_path: stringField(limit),
-		command: stringField(limit),
-		pattern: stringField(limit),
-		offset: true,
-		limit: true,
-	} as const;
+	let matchCut = false;
 	const blocks: Shape = function* (t) {
 		if (t.name !== "startArray") {
 			yield* skip(t);
 			return null;
 		}
 		for (let item = yield; item.name !== "endArray"; item = yield) {
+			let cut = false;
+			const args = callArguments(limit, () => {
+				cut = true;
+			});
 			const b = yield* readValue(item, { type: "short", id: "string", name: "string", arguments: args });
 			if (
 				b &&
@@ -187,11 +329,12 @@ export async function treeToolCall(chunks: AsyncIterable<Uint8Array>, id: string
 				b.type === "toolCall" &&
 				b.id === id &&
 				typeof b.name === "string" &&
-				b.arguments &&
-				typeof b.arguments === "object" &&
-				!Array.isArray(b.arguments)
-			)
-				match = { name: b.name, arguments: b.arguments };
+				b.arguments !== undefined &&
+				b.arguments !== null
+			) {
+				match = { name: b.name, arguments: b.arguments as Record<string, unknown> };
+				matchCut = cut;
+			}
 		}
 		return null;
 	};
@@ -201,5 +344,18 @@ export async function treeToolCall(chunks: AsyncIterable<Uint8Array>, id: string
 			return yield* readValue(yield, { message: { content: blocks } });
 		})(),
 	);
+	if (matchCut) clip?.();
 	return match;
+}
+
+/** The whole text of a saved label, for editing it. A row shows only what fits on the screen. */
+export async function treeLabel(chunks: AsyncIterable<Uint8Array>): Promise<string | undefined> {
+	const e = await read(
+		chunks,
+		(function* (): Reader<Json> {
+			return yield* readValue(yield, { type: "short", label: "string" });
+		})(),
+	);
+	if (!e || typeof e !== "object" || Array.isArray(e) || e.type !== "label") throw new Error("Missing label entry");
+	return typeof e.label === "string" ? e.label : undefined;
 }

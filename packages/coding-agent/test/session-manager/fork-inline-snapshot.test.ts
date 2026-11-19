@@ -67,8 +67,11 @@ test("a human fork releases each oversized inline SQL snapshot before reading th
 				blobs: { fixture: "x".repeat(bytes) },
 			}) as SessionEntry;
 		await store.create({ id: "donor", cwd: dir, version: 4, createdAt: stamp }, []);
-		let seq = 0,
-			prior: string | null = null;
+		// Resume retains a checkout's first and latest entries. Keep both of those small so all
+		// four large snapshots are historical bodies, not the new child's required resume state.
+		await store.append("donor", [record("first", null, 0)], { expectSeq: 0 });
+		let seq = 1,
+			prior = "first";
 		for (let i = 0; i < 4; i++) {
 			const id = `snap-${i}`;
 			await store.append("donor", [record(id, prior, 2 * 1024 * 1024)], { expectSeq: seq++ });
@@ -117,7 +120,10 @@ test("a human fork releases each oversized inline SQL snapshot before reading th
 		recording = false;
 		assert.equal(snapshotReads, 4);
 		assert.equal(maxDecoded, 1, "more than one legacy snapshot was live at the next read");
-		assert.equal((await store.load(manager.getSessionId())).entries.length, 8);
+		assert.deepEqual(
+			(await store.load(manager.getSessionId())).entries.map((entry) => entry.id),
+			["first", "snap-0", "snap-1", "snap-2", "snap-3", "latest", "giant-user", "cut", "leaf"],
+		);
 	} finally {
 		recording = false;
 		JSON.parse = parse;

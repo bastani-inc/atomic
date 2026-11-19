@@ -3,6 +3,7 @@ import { formatResumeTimings, latestResumeTimings } from "../../core/resume/timi
 import {
 	compareWorktreeSnapshot,
 	currentWorktreeSnapshots,
+	describeExportedSnapshots,
 	describeLastCapture,
 	describeSnapshotExport,
 	describeWorktreeRestoreStatus,
@@ -125,10 +126,14 @@ InteractiveModeBase.prototype.handleExportCommand = async function (
 		if (outputPath?.endsWith(".jsonl")) {
 			const filePath = await this.session.exportToJsonl(outputPath);
 			this.showStatus(`Session exported to: ${filePath}`);
-			const contents = describeSnapshotExport(
-				this.sessionManager.getBranch(),
-				this.sessionManager.getWorktreeSnapshotRecords(),
-			);
+			// A session holding only its window states what the file carries from the file (#5554).
+			const contents =
+				this.sessionManager.hasFullHistory?.() === false
+					? await describeExportedSnapshots(filePath)
+					: describeSnapshotExport(
+							this.sessionManager.getBranch(),
+							this.sessionManager.getWorktreeSnapshotRecords(),
+						);
 			if (contents) this.showStatus(contents);
 		} else {
 			const filePath = await this.session.exportToHtml(outputPath, { themeName: theme.name });

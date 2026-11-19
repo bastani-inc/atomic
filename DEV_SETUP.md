@@ -1,6 +1,6 @@
 # Atomic Monorepo — Development Setup
 
-This document covers setup, the local dev loop, testing patterns, and project layout for working on the Atomic Bun workspace. The workflow extension lives at [`packages/workflows`](./packages/workflows/README.md), and the Atomic-branded coding-agent fork lives at [`packages/coding-agent`](./packages/coding-agent/README.md).
+This document covers setup, the local dev loop, testing patterns, and project layout for working on the Atomic Bun workspace. The Atomic-branded coding-agent fork lives at [`packages/coding-agent`](./packages/coding-agent/README.md).
 
 ---
 
@@ -10,7 +10,7 @@ This document covers setup, the local dev loop, testing patterns, and project la
 - **[Bun](https://bun.sh) ≥ 1.4.4** — type-checks the workspace (`bun check`), compiles release binaries, runs `scripts/*.ts`, and hosts the Bun-based test fixtures
 - **[Rust](https://rustup.rs)** (stable, with `cargo`) — builds the `@bastani/atomic-natives` N-API module
 
-This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm** installs, builds, checks, and runs the vitest suites; **Bun** compiles the release binaries, runs `scripts/*.ts`, and hosts the test fixtures that need it. `AGENTS.md` carries the full table. The `@bastani/workflows` workspace package ships raw `.ts` files with no build step; Atomic bundles it into `@bastani/atomic` during the coding-agent build.
+This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm** installs, builds, checks, and runs the vitest suites; **Bun** compiles the release binaries, runs `scripts/*.ts`, and hosts the test fixtures that need it. `AGENTS.md` carries the full table.
 
 ---
 
@@ -133,48 +133,15 @@ native search quietly fall back to slower JS paths.
 
 ---
 
-## Local dev loop with atomic
+## Local extension development
 
-The extension entrypoint is now:
-
-```text
-packages/workflows/src/extension/index.ts
-```
-
-Three options, from heaviest to lightest:
-
-### A. `atomic plugin install` against the local package path (persisted)
+Use `-e` to load a source extension without writing settings, then `/reload` after editing it. For example:
 
 ```bash
-atomic plugin install -l "$PWD/packages/workflows"   # project-local
-# or
-atomic plugin install    "$PWD/packages/workflows"   # global
+atomic -e "$PWD/packages/coding-agent/examples/extensions/hello.ts"
 ```
 
-atomic adds the absolute package path to its settings file and resolves the package's `atomic` manifest. From inside atomic, `/reload` re-imports the extension after you edit source — no restart needed.
-
-### B. One-off load with `-e` (no settings write)
-
-```bash
-atomic -e "$PWD/packages/workflows/src/extension/index.ts"
-```
-
-The fastest iteration loop. Combine with `--no-extensions` to isolate the extension under test:
-
-```bash
-atomic --no-extensions \
-   -e "$PWD/packages/workflows/src/extension/index.ts" \
-   "/workflow list"
-```
-
-### C. Symlink into the extensions directory
-
-```bash
-mkdir -p ~/.atomic/agent/extensions
-ln -s "$PWD/packages/workflows" ~/.atomic/agent/extensions/workflows
-```
-
-Useful when you want the extension persisted globally but don't want atomic to track it in settings.
+For repository procedures, edit the corresponding `.agents/skills/<name>/SKILL.md` instead; in a trusted checkout, `/skill:<name>` invokes it.
 
 ---
 
@@ -229,7 +196,7 @@ instead. `test/ci/ci-workflow-contracts.test.ts` enforces both halves.
 
 ### Unit tests (`test/unit/*.test.ts`)
 
-Pure-TS tests against modules in `packages/workflows/src/`. They mock pi's `ExtensionAPI` surface with hand-built fakes — fast, deterministic, no pi runtime in the loop.
+These exercise workspace modules, extension behavior and repository tooling, including the release gates.
 
 Run: `npm run test:unit`.
 
@@ -250,7 +217,7 @@ import {
     SessionManager,
     getAgentDir,
 } from "@bastani/atomic";
-import factory from "./packages/workflows/src/extension/index.ts";
+import factory from "./packages/coding-agent/examples/extensions/hello.ts";
 
 const resourceLoader = new DefaultResourceLoader({
     cwd: process.cwd(),
@@ -270,11 +237,11 @@ const { session } = await createAgentSession({
 ## Running examples
 
 ```bash
-bun examples/hello-world.ts
-bun examples/parallel-fan-out.ts
+bun packages/coding-agent/examples/sdk/01-minimal.ts
+bun packages/coding-agent/examples/sdk/04-skills.ts
 ```
 
-Examples import the workspace package `@bastani/workflows`.
+See the [SDK examples](packages/coding-agent/examples/sdk/README.md) for setup and provider requirements.
 
 ---
 
@@ -285,26 +252,12 @@ Examples import the workspace package `@bastani/workflows`.
 ├── package.json                         # private workspace root: atomic-monorepo
 ├── packages/
 │   ├── coding-agent/                    # @bastani/atomic CLI fork
-│   └── workflows/
-│       ├── package.json                 # private bundled @bastani/workflows metadata
-│       ├── src/
-│       │   ├── extension/               # atomic extension entry point, commands, tools, hooks
-│       │   ├── intercom/                # intercom adapter
-│       │   ├── runs/                    # foreground/background workflow execution
-│       │   ├── shared/                  # store, store-types, types, persistence helpers
-│       │   ├── tui/                     # widget and DAG overlay renderers
-│       │   ├── workflows/               # registry and identity helpers
-│       │   └── index.ts                 # public entry point
-│       ├── workflows/                   # bundled workflow definitions
-│       ├── skills/                      # bundled atomic skills
-│       ├── agents/                      # bundled agent definitions
-│       ├── themes/                      # bundled themes
-│       └── README.md
+│   └── subagents/                       # subagent extension and agent definitions
+├── .agents/skills/                      # repository skills, including releases
 ├── test/
 │   ├── unit/
 │   ├── integration/
 │   └── support/
-├── examples/
 ├── docs/
 ├── scripts/
 ├── vitest.config.ts
@@ -320,9 +273,7 @@ Examples import the workspace package `@bastani/workflows`.
 
 - **Source files use `.js` import extensions** (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to `.ts` sources directly.
 - **Avoid `any` and `unknown`.** Use specific types. The codebase compiles with `strict`, `noUnusedLocals`, and `noUnusedParameters`.
-- **Keep the root package private.** The only publishable workspace package is `packages/coding-agent` (`@bastani/atomic`).
-- **Keep `packages/workflows` private.** It is bundled into `@bastani/atomic`; do not publish it independently.
-- **Do not add a build step** for `@bastani/workflows`; it ships raw TypeScript/resources into the Atomic bundle.
+- **Keep the root package private.** The release payload is defined in `.github/workflows/publish.yml`.
 - **Track in-progress fixes in `issues.md`.** Delete the file once issues are resolved.
 
 ---
@@ -341,7 +292,7 @@ Atomic uses a **versionless release-base** flow: `main` and supported workstream
     The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. A non-main base must be protected with the repository's required CI checks before it is used.
 3. The tag push starts `.github/workflows/publish.yml` directly. It validates the tag identity, rebuilds all native bindings and release archives, stages a verified draft GitHub Release, publishes npm packages through OIDC, and undrafts the GitHub Release only after npm succeeds. Configure npm trusted publishers with workflow filename `publish.yml` and environment `npm-publish`.
 
-To run the full guarded automation (release-notes PR + cut-release + publish monitoring), use the `publish-release` Atomic workflow instead of the manual steps above.
+For the guarded release-notes PR, tag cut and publish monitoring, use the repository's [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`) instead of the manual steps above.
 
 Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. CI uses trusted publishing without a static npm credential.
 

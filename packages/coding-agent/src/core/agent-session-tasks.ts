@@ -259,6 +259,11 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				throw new Error("Task owner is closed");
 			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
 		},
+		onTaskFinishing: (
+			...[ref, receipt, until]: Parameters<
+				NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskFinishing"]>
+			>
+		) => outbox.saveFinishing(ref.ownerId, receipt, until),
 		onTaskSettled: (
 			...[ref, receipt, timing]: Parameters<
 				NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>

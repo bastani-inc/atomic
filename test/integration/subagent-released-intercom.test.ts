@@ -10,6 +10,7 @@ import { afterAll, beforeAll, test, vi } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
+import * as framing from "../../packages/intercom/broker/framing.js";
 import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import {
@@ -18,12 +19,14 @@ import {
 } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import {
+	acknowledgeReleasedChildWake,
 	INTERCOM_CONNECTED_EVENT,
 	type ReleasedChildReservation,
 	releasedChildReservation,
 	reserveReleasedChildren,
 	reserveReleasedChildrenOf,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
+	SUBAGENT_HOLD_RECOVERED_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
@@ -522,8 +525,13 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-async function ownerClient(name: string): Promise<Client> {
-	const client = new IntercomClient(randomUUID());
+async function ownerClient(
+	name: string,
+	address = randomUUID(),
+	token = randomUUID(),
+	preferredSessionId?: string,
+): Promise<Client> {
+	const client = new IntercomClient(address, { preferredSessionId });
 	await client.connect(
 		{
 			name,
@@ -537,7 +545,7 @@ async function ownerClient(name: string): Promise<Client> {
 			groups: ["default"],
 		},
 		undefined,
-		randomUUID(),
+		token,
 	);
 	brokerFixture.onCleanup(() => client.disconnect().catch(() => undefined));
 	return client;
@@ -556,7 +564,9 @@ function namedIn(summary: string): string | undefined {
  * the run of task `task-1` while it waits on a call.
  */
 async function reservingOwner(label: string) {
-	const client = await ownerClient(label);
+	const address = randomUUID();
+	const token = randomUUID();
+	let client = await ownerClient(label, address, token);
 	const sessionManager = SessionManager.inMemory(repoRoot);
 	const ctx = { sessionManager } as unknown as ExtensionContext;
 	const events = eventBus();
@@ -573,8 +583,10 @@ async function reservingOwner(label: string) {
 		{ appendEntry: async (customType, data) => void (await sessionManager.appendCustomEntry(customType, data)) },
 		ctx,
 	);
-	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
-	brokerFixture.onCleanup(stop);
+	const bind = (context = ctx) =>
+		bindReleasedChildWakes({} as SubagentChildRestoreDeps, context, events, new AgentWakeDispatcher());
+	let stop = bind();
+	brokerFixture.onCleanup(() => stop());
 	const record = (
 		childName: string,
 		taskId = "task-1",
@@ -599,15 +611,46 @@ async function reservingOwner(label: string) {
 		assert.ok(reservation, `${childName} is held`);
 		return reservation;
 	};
-	return { client, events, notices, record, reservationOf, ownerSessionId: sessionManager.getSessionId() };
+	const reconnect = async () => {
+		const previous = client.sessionId;
+		assert.ok(previous);
+		await client.disconnect();
+		client = await ownerClient(label, address, token, previous);
+		assert.equal(client.sessionId, previous);
+	};
+	return {
+		get client() {
+			return client;
+		},
+		reconnect,
+		rebind(differentSession = false) {
+			stop();
+			stop = bind(
+				differentSession
+					? {
+							...ctx,
+							sessionManager: SessionManager.inMemory(repoRoot) as unknown as ExtensionContext["sessionManager"],
+						}
+					: ctx,
+			);
+		},
+		events,
+		notices,
+		record,
+		reservationOf,
+		ownerSessionId: sessionManager.getSessionId(),
+	};
 }
 
 /** Hold back the outcome of the next reservation request on `events` until `release` is called. */
-function holdNextReservationOutcome(events: ReturnType<typeof eventBus>) {
+function holdNextReservationOutcome(
+	events: ReturnType<typeof eventBus>,
+	eventName = SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
+) {
 	const refused = Promise.withResolvers<string | undefined>();
 	const allowed = Promise.withResolvers<void>();
 	let armed = true;
-	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+	events.on(eventName, (payload) => {
 		if (!armed) return;
 		armed = false;
 		const request = payload as ObservedReservation;
@@ -738,6 +781,275 @@ test(
 		await earlier;
 
 		assert.deepEqual(owner.notices, [], "the broker holds the child: the overtaken refusal is not reported");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"the owner's Intercom extension forwards a delayed refusal for the release it restored (#5641)",
+	async () => {
+		const cwd = makeTempDirectory("released-confirmation-");
+		const parent = parentSession("confirmation-extension", cwd);
+		const childName = "subagent-confirmation-extension";
+		const ownerId = parent.sessionManager.getSessionId();
+		const notices: string[] = [];
+		parent.events.on(SUBAGENT_COMPLETE_EVENT, (data) => {
+			const notice = data as { noticeLabel: string; summary: string };
+			if (notice.noticeLabel === HOLD_NOTICE_LABEL) notices.push(notice.summary);
+		});
+		const stop = bindReleasedChildWakes(
+			{} as SubagentChildRestoreDeps,
+			parent.ctx,
+			parent.events,
+			new AgentWakeDispatcher(),
+		);
+		try {
+			await parent.fire("session_start", { type: "session_start", reason: "startup" });
+			assert.ok(await requestSupervisorAuthorization(parent.events, childName));
+			const sink = createSubagentChildRecordSink({ appendEntry: parent.appendEntry }, parent.ctx);
+			await sink.record({
+				agent: "worker",
+				runId: childName,
+				index: 0,
+				cwd,
+				state: "terminal",
+				terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+				taskId: "task-1",
+				intercomTarget: childName,
+				waitingOn: [{ toolCallId: "ci", toolName: "bash" }],
+			});
+			const hold = holdNextReservationOutcome(parent.events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT);
+			const confirmation = acknowledgeReleasedChildWake(parent.events, childName, "task-1", `${childName}:0`);
+			try {
+				assert.equal(await hold.refusedWith, "unknown_released_child");
+				await reserveReleasedChildrenOf(parent.events, ownerId);
+			} finally {
+				hold.release();
+				await confirmation;
+			}
+			assert.deepEqual(notices, []);
+		} finally {
+			stop();
+			await parent.host.close("session-close");
+			await parent.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
+			removeTempDirectory(cwd);
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+/** Main's ACK frame, including the four-byte framing header. Only its per-call UUID varies. */
+function assertLegacyAckBytes(chunks: readonly unknown[], name: string): void {
+	let matched = 0;
+	for (const chunk of chunks) {
+		if (!Buffer.isBuffer(chunk) || chunk.length < 5 || chunk.readUInt32BE() !== chunk.length - 4) continue;
+		const frame = JSON.parse(chunk.subarray(4).toString());
+		if (frame.type !== "acknowledge_released_child_wake" || frame.childName !== name) continue;
+		const body = Buffer.from(
+			JSON.stringify({ type: "acknowledge_released_child_wake", childName: name, requestId: frame.requestId }),
+		);
+		const length = Buffer.alloc(4);
+		length.writeUInt32BE(body.length);
+		assert.deepEqual(
+			chunk,
+			Buffer.concat([length, body]),
+			"an unnegotiated ACK is byte-identical to the legacy frame",
+		);
+		matched++;
+	}
+	assert.ok(matched > 0);
+}
+
+/** Once the native refusal is delivered, reporting may drain microtasks but must not wait for a timer or another I/O turn. */
+async function assertImmediateRefusal(pending: Promise<void>, deliver: () => void): Promise<void> {
+	const timers = vi.spyOn(globalThis, "setTimeout");
+	try {
+		deliver();
+		assert.equal(
+			await Promise.race([
+				pending.then(() => "reported"),
+				new Promise<string>((resolve) => setImmediate(() => resolve("next turn"))),
+			]),
+			"reported",
+		);
+		assert.equal(timers.mock.calls.length, 0, "no diagnostic timer for a current refusal");
+	} finally {
+		timers.mockRestore();
+	}
+}
+
+test.each(["restored", "dropped", "fresh refusal", "legacy broker", "opaque forwarder"] as const)(
+	"a delayed confirmation after a physical reconnect distinguishes the %s case (#5641)",
+	async (scenario) => {
+		const name = `subagent-confirmation-${scenario.replaceAll(" ", "-")}`;
+		// Withhold only the registration advertisement, as on an older broker. Do not edit an outgoing ACK.
+		const read = framing.createMessageReader;
+		const legacy =
+			scenario === "legacy broker"
+				? vi.spyOn(framing, "createMessageReader").mockImplementation((receive, fail) =>
+						read((frame) => {
+							if (frame && typeof frame === "object" && !Array.isArray(frame) && frame.type === "registered") {
+								const { stampsReleasedChildren: _omitted, ...registration } = frame;
+								receive(registration);
+							} else receive(frame);
+						}, fail),
+					)
+				: undefined;
+		const capture = legacy && vi.spyOn(net.Socket.prototype, "write");
+		const owner = await reservingOwner(`confirmation-${scenario}`);
+		let verifications = 0;
+		const send = framing.writeMessage;
+		const wire = vi.spyOn(framing, "writeMessage").mockImplementation((socket, frame, callback) => {
+			if ((frame as { type: string }).type === "verify_released_child") verifications++;
+			send(socket, frame, callback);
+		});
+		const firstSend = Promise.withResolvers<void>();
+		if (scenario !== "fresh refusal") firstSend.resolve();
+		owner.record(name);
+		owner.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (payload) => {
+			const request = payload as { childName: string; completion?: Promise<void> };
+			request.completion = firstSend.promise.then(() =>
+				owner.client.acknowledgeReleasedChildWake(
+					request.childName,
+					scenario === "opaque forwarder" ? undefined : request,
+				),
+			);
+		});
+		const hold = holdNextReservationOutcome(owner.events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT);
+		const confirm = () => acknowledgeReleasedChildWake(owner.events, name, "task-1", `${name}:0`);
+		const pending = confirm();
+		try {
+			if (scenario !== "fresh refusal") assert.equal(await hold.refusedWith, "unknown_released_child");
+			await owner.reconnect();
+			const recovered = Promise.withResolvers<void>();
+			owner.events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => recovered.resolve());
+			owner.events.emit(INTERCOM_CONNECTED_EVENT, {});
+			await recovered.promise;
+			await owner.client.acknowledgeReleasedChildWake(name);
+			// Saving another observation of the same released task must not invalidate its broker receipt.
+			await owner.record(name);
+			if (scenario === "dropped" || scenario === "fresh refusal") await owner.client.dropReleasedChildren([name]);
+			firstSend.resolve();
+			assert.equal(await hold.refusedWith, "unknown_released_child");
+			if (capture)
+				assertLegacyAckBytes(
+					capture.mock.calls.map(([chunk]) => chunk),
+					name,
+				);
+			if (scenario === "fresh refusal") await assertImmediateRefusal(pending, hold.release);
+		} finally {
+			firstSend.resolve();
+			hold.release();
+			await pending.finally(() => {
+				wire.mockRestore();
+				capture?.mockRestore();
+				legacy?.mockRestore();
+			});
+		}
+		assert.deepEqual(owner.notices.map(namedIn), scenario === "restored" ? [] : [name]);
+		assert.equal(verifications, scenario === "restored" || scenario === "dropped" ? 1 : 0);
+		if (scenario === "restored") {
+			await owner.client.dropReleasedChildren([name]);
+			const ordinary = holdNextReservationOutcome(owner.events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT);
+			const confirmation = confirm();
+			assert.equal(await ordinary.refusedWith, "unknown_released_child");
+			await assertImmediateRefusal(confirmation, ordinary.release);
+			assert.deepEqual(owner.notices.map(namedIn), [name], "a genuinely unheld release still reports its refusal");
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a reconnect reservation queued before a wake can physically repair its refusal (#5641)",
+	async () => {
+		const owner = await reservingOwner("queued-reconnect");
+		const name = "subagent-queued-repair";
+		await owner.record(name);
+		const write = framing.writeMessage;
+		const installation = Promise.withResolvers<() => void>();
+		const wire = vi.spyOn(framing, "writeMessage").mockImplementation((socket, frame, callback) => {
+			if ((frame as { type: string }).type === "reserve_released_children")
+				installation.resolve(() => write(socket, frame, callback));
+			else write(socket, frame, callback);
+		});
+		try {
+			const reserve = reserveReleasedChildrenOf(owner.events, owner.ownerSessionId);
+			const install = await installation.promise;
+			owner.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (data) => {
+				const request = data as { childName: string; completion?: Promise<void> };
+				request.completion = owner.client.acknowledgeReleasedChildWake(request.childName, request);
+			});
+			const hold = holdNextReservationOutcome(owner.events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT);
+			const confirmation = acknowledgeReleasedChildWake(owner.events, name, "task-1", `${name}:0`);
+			assert.equal(await hold.refusedWith, "unknown_released_child");
+			install();
+			await reserve;
+			hold.release();
+			await confirmation;
+			assert.deepEqual(owner.notices, []);
+		} finally {
+			wire.mockRestore();
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test.each(["recovery", "owner reload", "owner switch"] as const)(
+	"a delayed reservation check cannot silence a lost hold or the next failure after %s (#5641)",
+	async (duringCheck) => {
+		const owner = await reservingOwner(`recovery-while-checking-${duringCheck}`);
+		const name = `subagent-checking-${duringCheck.replaceAll(" ", "-")}`;
+		await owner.record(name);
+		owner.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (data) => {
+			const request = data as { childName: string; completion?: Promise<void> };
+			request.completion = owner.client.acknowledgeReleasedChildWake(request.childName, request);
+		});
+		const hold = holdNextReservationOutcome(owner.events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT);
+		const confirm = () => acknowledgeReleasedChildWake(owner.events, name, "task-1", `${name}:0`);
+		const started = confirm();
+		assert.equal(await hold.refusedWith, "unknown_released_child");
+		const reserve = () => reserveReleasedChildrenOf(owner.events, owner.ownerSessionId);
+		await reserve();
+		const verification = Promise.withResolvers<() => void>();
+		const send = framing.writeMessage;
+		const wire = vi.spyOn(framing, "writeMessage").mockImplementation((socket, frame, callback) => {
+			if ((frame as { type: string }).type === "verify_released_child")
+				verification.resolve(() => send(socket, frame, callback));
+			else send(socket, frame, callback);
+		});
+		try {
+			hold.release();
+			const check = await verification.promise;
+			if (duringCheck === "owner switch") {
+				await owner.client.dropReleasedChildren([name]);
+				owner.rebind(true);
+				await started;
+				assert.deepEqual(
+					owner.notices.map(namedIn),
+					[name],
+					"a check that outlives its owner reports to the departing session",
+				);
+				check();
+				await owner.client.listSessions();
+				assert.deepEqual(owner.notices.map(namedIn), [name]);
+				return;
+			}
+			if (duringCheck === "owner reload") {
+				const recovered = Promise.withResolvers<void>();
+				owner.events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => recovered.resolve());
+				owner.rebind();
+				await recovered.promise;
+			} else await reserve();
+			await owner.client.dropReleasedChildren([name]);
+			check();
+			await started;
+			assert.deepEqual(owner.notices.map(namedIn), [name], "loss keeps the original refusal");
+			await confirm();
+			assert.deepEqual(owner.notices.map(namedIn), [name, name], "the later release recovery reset the episode");
+		} finally {
+			wire.mockRestore();
+		}
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
