@@ -22,7 +22,6 @@ const docFiles = [
 	...readdirSync(docsDir, { recursive: true, encoding: "utf8" })
 		.filter((name) => name.endsWith(".md"))
 		.map((name) => [`packages/coding-agent/docs/${name}`, join(docsDir, name)] as const),
-	["packages/workflows/README.md", join(repoRoot, "packages/workflows/README.md")] as const,
 ];
 
 function doc(name: string): string {
@@ -231,15 +230,6 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.doesNotMatch(tui, /`searchMatchBg`/u);
 	});
 
-	test("workflows docs no longer document find-in-stage-chat", () => {
-		const workflows = doc("workflows/operations.md");
-		assert.doesNotMatch(workflows, /\*\*Find in stage chat\*\*/u);
-		assert.doesNotMatch(workflows, /ctrl\+shift\+f/iu);
-
-		const readme = packageFile("workflows", "README.md");
-		assert.doesNotMatch(readme, /Ctrl\+Shift\+F searches the attached stage chat/u);
-	});
-
 	test("sessions.md describes branch summarization as optional and prompt-driven", () => {
 		const sessions = doc("sessions.md");
 		// The summary is offered when `/tree` switches away from a branch, and the
@@ -323,12 +313,6 @@ describe("pi 0.84.2 docs contract — changelog covers L1–L20", () => {
 		]) {
 			assert.ok(fixed.includes(needle), `[0.9.14-alpha.2] Fixed must mention ${needle}`);
 		}
-	});
-
-	test("workflows [0.9.14-alpha.2] records removal of stage-chat search", () => {
-		const released = changelogSection(packageFile("workflows", "CHANGELOG.md"), "0.9.14-alpha.2");
-		assert.match(released, /Removed find-in-stage-chat/u);
-		assert.doesNotMatch(released, /Added search inside attached workflow stage chats/u);
 	});
 
 	test("subagents [0.9.14-alpha.2] carries the pi 0.84.2 parity fixes", () => {

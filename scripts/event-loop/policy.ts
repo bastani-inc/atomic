@@ -22,8 +22,6 @@ const ANALYZED_PREFIXES = [
 	"packages/agent/src/",
 	"packages/ai/src/",
 	"packages/codemode/src/",
-	"packages/workflows/src/",
-	"packages/workflows/builtin/",
 	"packages/subagents/src/",
 	"packages/intercom/",
 	"packages/mcp/",
@@ -38,7 +36,6 @@ export function isAnalyzedFile(path: string): boolean {
 
 export const PROCESS_ENTRIES: readonly FunctionSelector[] = [
 	{ file: "packages/coding-agent/src/cli.ts", name: "<module>" },
-	{ file: "packages/workflows/src/extension/extension-factory.ts", name: "factory" },
 	{ file: "packages/subagents/src/extension/index.ts", name: "registerSubagentExtension" },
 	{ file: "packages/intercom/index.ts", name: "intercom" },
 	{ file: "packages/mcp/index.ts", name: "mcpExtension" },
@@ -55,7 +52,6 @@ export const STARTUP_MODULES: readonly string[] = [
 	"packages/coding-agent/src/main.ts",
 	"packages/coding-agent/src/core/http-dispatcher.ts",
 	"packages/coding-agent/src/cli/settings-startup.ts",
-	"packages/workflows/src/extension/index.ts",
 	"packages/subagents/src/extension/index.ts",
 	"packages/intercom/index.ts",
 	"packages/mcp/index.ts",
@@ -157,7 +153,6 @@ export interface OwnedArea {
 export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 	{
 		owner: "#5376 (node:sqlite statements off the event loop)",
-		paths: ["packages/workflows/src/workers/ship-shard.ts"],
 		functions: [
 			"databaseNow",
 			"NodeSqliteDatabase.tryBegin/this.driver()",
@@ -296,15 +291,6 @@ export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 		to: { file: "packages/coding-agent/src/utils/shell.ts", name: "isPowerShellAvailable" },
 		reason:
 			"looks for PowerShell only when the config omits powerShellAvailable; createAgentSession resolves it off the event loop and passes it, so only SDK code that constructs an AgentSession itself takes this call",
-	},
-	{
-		from: { file: "packages/workflows/src/shared/stage-question-form.ts", name: "stageQuestionTool" },
-		to: {
-			file: "packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts",
-			name: "createAskUserQuestionToolDefinition",
-		},
-		reason:
-			"stage forms belong to sessions whose createAgentSession has already loaded ask_user_question configuration, so this call reads memory; only SDK callers creating the definition before any session use its synchronous first read",
 	},
 	{
 		from: { file: "packages/coding-agent/src/core/skill-catalog.ts", name: "getSkillCatalog" },

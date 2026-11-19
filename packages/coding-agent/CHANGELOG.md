@@ -12,6 +12,7 @@
 - A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 - `/resume` now lists sessions only. The agent panel, `/tasks` and terminal program status no longer show workflow runs. `/settings` and `atomic config` no longer offer workflow options. To continue work, resume the parent session and inspect its subagents in `/tasks`.
 - `history://` searches session transcripts only. Existing `history://workflows` links explain the removal; old workflow stores are left untouched. Use `history://sessions` to recall the conversation.
+- Source checkouts no longer include the `@bastani/workflows` extension or its builtin workflow definitions. If you linked that directory into another host, remove the link. To reuse a definition, ask Atomic to convert it into a skill that uses codemode and subagents.
 
 ### Added
 

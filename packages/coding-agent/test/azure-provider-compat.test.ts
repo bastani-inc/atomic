@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { resolveCandidateModel } from "../../subagents/src/shared/model-resolution.js";
-import { buildRuntimeAdapters } from "../../workflows/src/extension/wiring.js";
-import type { StageSessionCreateResult } from "../../workflows/src/runs/foreground/stage-runner.js";
+
 import { AuthStorage, ReadOnlyAuthStorage, readStoredCredential } from "../src/core/auth-storage.js";
 import { normalizeAzureSettings } from "../src/core/azure-provider-compat.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -13,8 +12,7 @@ import { resolveCliModel } from "../src/core/model-resolver-cli.js";
 import { findInitialModel, resolveRestoredModelReference } from "../src/core/model-resolver-initial.js";
 import { resolveModelScopeFromModels } from "../src/core/model-resolver-scope.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
-import { createAgentSession } from "../src/core/sdk.js";
-import { SessionManager } from "../src/core/session-manager.js";
+
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { stubOfflineModelCatalog } from "./helpers/offline-model-catalog.js";
 
@@ -354,52 +352,6 @@ test("layered credential lookups retain precedence and canonical collisions win"
 			azure: { type: "api_key", key: "canonical" },
 		});
 		assert.deepEqual(await collision.read(legacy), { type: "api_key", key: "canonical" });
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("workflow stages accept legacy Azure model strings and saved session references", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-azure-workflow-"));
-	try {
-		const runtime = await ModelRuntime.create({
-			credentials: AuthStorage.inMemory({ [legacy]: { type: "api_key", key: "test" } }),
-			modelsPath: null,
-			allowModelNetwork: false,
-		});
-		const adapters = buildRuntimeAdapters(
-			{
-				getChildSessionOptions: (options) => ({
-					cwd: root,
-					agentDir: root,
-					modelRuntime: runtime,
-					settingsManager: SettingsManager.inMemory(),
-					builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
-					tools: [],
-					...options,
-				}),
-			},
-			{ createAgentSession: async (options) => (await createAgentSession(options)) as StageSessionCreateResult },
-		);
-		const saved = SessionManager.inMemory(root);
-		await saved.appendModelChange(legacy, "gpt-5.4");
-		await saved.appendThinkingLevelChange("high");
-		await saved.appendMessage({ role: "user", content: "previous turn", timestamp: Date.now() });
-		for (const options of [
-			{ model: `${legacy}/gpt-5.4`, sessionManager: SessionManager.inMemory(root) },
-			{ sessionManager: saved },
-		]) {
-			const result = await adapters.agentSession!.create({ ...options, fallbackModels: [] });
-			const session = "session" in result ? result.session : result;
-			try {
-				assert.equal(session.model?.provider, "azure");
-				assert.equal(session.model?.id, "gpt-5.4");
-				if (options.sessionManager === saved) assert.equal(session.thinkingLevel, "high");
-			} finally {
-				await session.dispose();
-			}
-		}
-		assert.equal(saved.getEntries().find((entry) => entry.type === "model_change")?.provider, legacy);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
