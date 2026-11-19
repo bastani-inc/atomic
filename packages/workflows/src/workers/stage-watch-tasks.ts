@@ -1,6 +1,7 @@
 import {
 	findTaskMessageError,
 	getOwnerTaskStore,
+	isTaskTurnInterrupted,
 	type OwnerTaskStore,
 	ownerTaskViewSource,
 	type PublishedChatActivity,
@@ -8,6 +9,7 @@ import {
 	type TaskId,
 	TaskMessageError,
 	type TaskViewSource,
+	taskResumedTurns,
 	watchOwnerTaskStoreBinding,
 } from "@bastani/atomic";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
@@ -32,7 +34,18 @@ export function snapshotStageTasks(source: TaskViewSource): PooledStageTasks {
 	}
 	return {
 		...(chatActivity.length ? { chatActivity } : {}),
-		tasks,
+		tasks: tasks.map((task) => {
+			if (task.kind !== "agent") return task;
+			const interrupted = isTaskTurnInterrupted(task);
+			const resumed = taskResumedTurns(task);
+			return !interrupted && resumed === undefined
+				? task
+				: {
+						...task,
+						...(interrupted ? { turnInterrupted: true as const } : {}),
+						...(resumed === undefined ? {} : { resumedTurns: resumed }),
+					};
+		}),
 		background,
 		settlement: [...source.settlementOrder].map(([id, sequence]) => [id, sequence.toString()] as const),
 		activity: background.flatMap((id) => {

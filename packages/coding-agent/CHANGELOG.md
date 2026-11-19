@@ -40,6 +40,7 @@
 - A subagent's chat opened after one of its requests failed or was interrupted before any text arrived, for example during the retry wait or after the subagent finished, now shows the request's `Error: …` line or `Interrupted` block, as the main chat does. Before, the chat showed them only when it was open as the request ended ([#5529](https://github.com/bastani-inc/atomic/issues/5529)).
 - An engine restart while Atomic loads models or waits for another trust answer no longer repeats a session-only trust question you already answered for a project or `-e` extension source ([#5568](https://github.com/bastani-inc/atomic/issues/5568)).
 - Reopening a session that recorded a subagent's release only in its notice title now shows `◌` and the tool calls it was waiting on, instead of `◼ stopped`. Older notices that recorded a pause or quit show `⏸` ([#5563](https://github.com/bastani-inc/atomic/issues/5563)).
+- Switching between subagent chats no longer brings a stopped child back into its chat footer. A workflow that resumes and blocks again between panel updates reappears alongside active work, even within the same millisecond ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
 - Reopening a chat during a provider retry or model switch now shows the wait already in progress. A follow-up delivery warning no longer replaces the working line in subagent or stage chats ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 
 ## [0.9.89] - 2026-11-18
