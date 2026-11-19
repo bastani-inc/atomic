@@ -238,12 +238,24 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
  */
 const STALLED_CHECK_GIT_TIMEOUT_MS = 10_000;
 const stalledCheck = new AsyncLocalStorage<() => void>();
+const finishing = new AsyncLocalStorage<boolean>();
+
+/** A filter invoked by a child’s directory cleanup must not wait for that child's terminal notification. */
+export function withFinishingWorktree<T>(work: () => T): T {
+	return finishing.run(true, work);
+}
 
 export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
 	const onStall = stalledCheck.getStore();
+	const gitEnv = createGitEnvironment(
+		onStall ? { ...env, GIT_OPTIONAL_LOCKS: "0" } : env,
+		createChildProcessEnvironment(),
+	);
+	// Never inherit a phase from an enclosing filter; it describes only this Git invocation.
+	if (finishing.getStore()) gitEnv.ATOMIC_SUBAGENT_WORKTREE_PHASE = "finishing";
+	else delete gitEnv.ATOMIC_SUBAGENT_WORKTREE_PHASE;
 	const result = await spawnCollect("git", ["-C", cwd, ...args], {
-		// A bounded check takes no optional lock, so stopping it never leaves an index.lock behind.
-		env: createGitEnvironment(onStall ? { ...env, GIT_OPTIONAL_LOCKS: "0" } : env, createChildProcessEnvironment()),
+		env: gitEnv,
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 		...(onStall && { timeout: STALLED_CHECK_GIT_TIMEOUT_MS }),
 	});

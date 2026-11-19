@@ -11,12 +11,17 @@
 - `atomic storage migrate` still sets up sessions and Intercom, but no longer creates workflow or worker-pool tables. Existing workflow data is not deleted.
 - A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 - The installed `docs/workflows.md`, `docs/guides/workflows.md`, and `docs/workflows/` guides are retired. Published bookmarks redirect to [Orchestration](docs/orchestration.md) or [Migrating workflows](docs/orchestration/migrating-workflows.md). Update local file references to the new paths.
+- Task cancellation receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Added
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
 - Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
+
+### Changed
+
+- Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Fixed
 
