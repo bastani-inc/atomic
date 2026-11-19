@@ -25,7 +25,7 @@ import {
 	type TaskSupervisor,
 	taskTranscriptSource,
 } from "./supervisor.js";
-import { bindReleasedTaskOwner } from "./task-resumer.js";
+import { bindReleasedTaskOwner } from "./task-resumer.ts";
 
 const interruptedByClock = new WeakMap<TaskElapsedClocks, Set<TaskId>>();
 const resumedTurnsByClock = new WeakMap<TaskElapsedClocks, ReadonlyMap<TaskId, number>>();
