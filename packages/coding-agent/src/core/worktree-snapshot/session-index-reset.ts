@@ -102,7 +102,10 @@ async function detach(tx: SqliteExecutor, t: SnapshotIndexTables, family: Family
 		(await tx.get("SELECT 1 FROM sqlite_temp_schema WHERE instr(lower(sql), ?) > 0 LIMIT 1", old.toLowerCase()))
 	)
 		return false;
-	await tx.exec(`ALTER TABLE ${old} ADD COLUMN ${receiptColumn(receipt)} INTEGER`);
+	// RENAME changes only the schema. ADD COLUMN would revalidate every row of a STRICT table, freezing the
+	// opener even if the added column is nullable. Leave the primary key intact for bounded cleanup.
+	const unused = { sessionLinks: "entry_id", sessionRefs: "root", sessionRecords: "snapshot_id" }[family];
+	await tx.exec(`ALTER TABLE ${old} RENAME COLUMN ${unused} TO ${receiptColumn(receipt)}`);
 	await tx.exec(create);
 	for (const [name, expression] of defs) {
 		const occupied = await tx.get("SELECT 1 FROM sqlite_schema WHERE name = ? COLLATE NOCASE", name);

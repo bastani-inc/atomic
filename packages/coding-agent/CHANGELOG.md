@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
+
 ### Fixed
 
 - On SQLite and local libSQL stores with sufficient free space, upgrading a large snapshot reference index from Atomic 0.9.87 or earlier, or opening one that lost a trigger, no longer freezes Atomic while it clears millions of old rows. Collection releases them in short, resumable batches. Stores with custom schema that depends on the index, or without verifiable disk headroom, keep the previous atomic reset ([#5553](https://github.com/bastani-inc/atomic/issues/5553)).

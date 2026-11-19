@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
 import type { SqliteDatabase, SqliteExecutor } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { dialectOf, type StorageDialect } from "../../packages/coding-agent/src/core/storage/dialect.ts";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import {
+	openNodeSqliteDatabase,
+	wrapNodeSqliteDatabase,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import {
 	BackgroundCollectionPace,
@@ -132,6 +136,30 @@ test("a stale receipt does not delete a replacement application table, even with
 	} finally {
 		await db.close();
 		await peer.close();
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("retiring a strict index does not revalidate every old row in the startup transaction (#5553)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "snapshot-repair-scan-"));
+	const native = new DatabaseSync(join(dir, "store.sqlite"));
+	const db = wrapNodeSqliteDatabase(native);
+	try {
+		let examined = 0;
+		native.function("valid_link", { deterministic: true }, (seq) => {
+			examined++;
+			return Number(seq) > 0 ? 1 : 0;
+		});
+		await SqlSessionStore.open(db);
+		await db.exec("ALTER TABLE snapshot_session_links ADD COLUMN checked INTEGER CHECK (valid_link(seq))");
+		await staleLinks(db, 2500);
+		examined = 0;
+		await SqlSnapshotBlobStore.open(db);
+		assert.equal(examined, 0, "startup rescanned old links while marking the retired table");
+		assert.equal(await retiredLinks(db), 2500);
+	} finally {
+		await db.close();
+		native.close();
 		await rm(dir, { recursive: true, force: true });
 	}
 });
