@@ -302,7 +302,8 @@ test.each([false, true])(
 
 type SavedStep =
 	| { readonly call: { readonly id: string; readonly name: string; readonly args: Record<string, string> } }
-	| { readonly result: { readonly id: string; readonly name: string; readonly text: string } };
+	| { readonly result: { readonly id: string; readonly name: string; readonly text: string } }
+	| { readonly custom: string };
 
 /** Saves `through` entries, prompts `P-<seq>` except `steps`, then, unless `clear` is false, a clear and one prompt. */
 async function appendSavedHistory(
@@ -321,7 +322,8 @@ async function appendSavedHistory(
 	};
 	for (let seq = 1; seq <= through; seq++) {
 		const step = steps[seq];
-		if (step && "call" in step)
+		if (step && "custom" in step) await manager.appendCustomEntry(step.custom, { seq });
+		else if (step && "call" in step)
 			await manager.appendMessage({
 				role: "assistant",
 				api: "openai-completions",
@@ -704,6 +706,126 @@ test("a saved page whose neighbour is not read draws its edge cards as the whole
 	assert.match(held(), /∀ Read\(z\.txt\)/);
 	assert.equal(entryReads, 3, "one saved entry is read for the card");
 	assert.equal(held().match(/Write\(x\.txt\)/g)?.length, 1, "the finished card stands in for the result's card");
+});
+
+test("a call whose result is saved more than a page of other entries later still shows finished (#5593)", async () => {
+	// The call ends the first page read on from the start; extension records fill the next page; then its result.
+	const steps: Record<number, SavedStep> = {
+		64: { call: { id: "call-far", name: "write", args: { path: "far.txt", content: "x" } } },
+		135: { result: { id: "call-far", name: "write", text: "wrote" } },
+	};
+	for (let seq = 65; seq < 135; seq++) steps[seq] = { custom: "unrendered-record" };
+	const { mode, tui, transcript } = await openResumedSession(0);
+	const manager = mode.sessionManager;
+	await appendSavedHistory(manager, 160, steps);
+	const read = manager.readHistory.bind(manager);
+	let entryReads = 0;
+	manager.readHistory = (options) => {
+		if (options?.limit === 1) entryReads++;
+		return read(options);
+	};
+	mode.renderInitialMessages();
+	tui.renderNow();
+	const held = () => stripVTControlCharacters(mode.chatContainer.render(COLUMNS).join("\n"));
+	transcript.scrollToStart();
+	for (let i = 0; i < 200 && !/Write\(far\.txt\)/.test(held()); i++) {
+		await nextTurn();
+		tui.renderNow();
+	}
+	assert.match(held(), /● Write\(far\.txt\)/, "the call shows finished");
+	assert.doesNotMatch(held(), /P-136/, "the pages after the call's are not read");
+	assert.equal(entryReads, 71, "one saved entry at a time, to the result");
+});
+
+/** A 2 MiB tool output: twice what a history page holds, so its saved row is read in chunks, not decoded. */
+const twoMiB = Array.from({ length: 66_000 }, (_, i) => `big line ${String(i).padStart(22, "0")}`).join("\n");
+
+/** Counts what `run` decodes with JSON.parse: the largest text and the total. */
+async function decoded<T>(run: () => Promise<T>): Promise<{ value: T; largest: number; total: number }> {
+	const parse = JSON.parse;
+	let largest = 0;
+	let total = 0;
+	JSON.parse = ((text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+		largest = Math.max(largest, text.length);
+		total += text.length;
+		return parse(text, reviver);
+	}) as typeof JSON.parse;
+	try {
+		return { value: await run(), largest, total };
+	} finally {
+		JSON.parse = parse;
+	}
+}
+
+test("a saved tool result too large for a page shows its call finished, as the whole transcript does, without decoding its body (#5593)", async () => {
+	assert.ok(twoMiB.length >= 2 * 1024 * 1024);
+	// The 2 MiB result is a page of its own: read on from the start the call ends the page before it; read back from
+	// the end, the result's page is read before its call's.
+	const steps: Record<number, SavedStep> = {
+		20: { call: { id: "call-big", name: "read", args: { path: "big.txt" } } },
+		21: { result: { id: "call-big", name: "read", text: twoMiB } },
+	};
+	const whole = await openResumedSession(0);
+	await appendSavedHistory(whole.mode.sessionManager, 60, steps, false);
+	whole.mode.renderInitialMessages();
+	const main = () => stripVTControlCharacters(whole.mode.chatContainer.render(COLUMNS).join("\n"));
+	for (let i = 0; i < 60 && !/P-001/.test(main()); i++) await nextTurn();
+	const header = cardRows(main(), /Read\(big\.txt\)/)[0];
+	assert.match(header ?? "", /^ ● Read\(big\.txt\)/, "the whole transcript shows the call finished");
+
+	const { mode, tui, transcript } = await openResumedSession(0);
+	const manager = mode.sessionManager;
+	await appendSavedHistory(manager, 60, steps);
+	const chunks = manager.readHistoryChunks.bind(manager);
+	let streamed = 0;
+	manager.readHistoryChunks = (reference, options) =>
+		(async function* () {
+			for await (const chunk of chunks(reference, options)) {
+				streamed += chunk.length;
+				yield chunk;
+			}
+		})();
+	mode.renderInitialMessages();
+	tui.renderNow();
+	const held = () => stripVTControlCharacters(mode.chatContainer.render(COLUMNS).join("\n"));
+	const settle = async (shown: RegExp) => {
+		for (let i = 0; i < 60 && !shown.test(held()); i++) {
+			await nextTurn();
+			tui.renderNow();
+		}
+		assert.match(held(), shown);
+	};
+	const finished = () => {
+		const rows = held();
+		assert.equal(rows.match(/Read\(big\.txt\)/g)?.length, 1, rows);
+		assert.equal(cardRows(rows, /Read\(big\.txt\)/)[0], header, "the card shows the call finished as on main");
+	};
+
+	// Read on from the start: the page ends with the call; the result's page after it is not read as a page.
+	const start = await decoded(async () => {
+		transcript.scrollToStart();
+		await settle(/Read\(big\.txt\)/);
+	});
+	assert.doesNotMatch(held(), /P-022/, "the pages after the call's are not read");
+	finished();
+	assert.ok(start.largest < 64 * 1024, `the saved result is not decoded whole (largest parse ${start.largest})`);
+	assert.ok(streamed >= twoMiB.length && streamed < 3 * 1024 * 1024, `its bytes are streamed once (${streamed})`);
+
+	// Read back from the end: the result's own page shows the finished card, with its call's arguments.
+	transcript.scrollToEnd();
+	for (let i = 0; i < 10; i++) await nextTurn();
+	streamed = 0;
+	const back = await decoded(async () => {
+		for (let i = 0; i < 80 && !/Read\(big\.txt\)/.test(held()); i++) {
+			transcript.scrollBy(-20);
+			for (let turn = 0; turn < 4; turn++) await nextTurn();
+			tui.renderNow();
+		}
+		await settle(/Read\(big\.txt\)/);
+	});
+	finished();
+	assert.ok(back.largest < 64 * 1024, `the saved result is not decoded whole (largest parse ${back.largest})`);
+	assert.ok(streamed >= twoMiB.length, `its bytes are streamed (${streamed})`);
 });
 
 test("a frame after the first renders what the viewport shows, however long the resumed transcript", async () => {

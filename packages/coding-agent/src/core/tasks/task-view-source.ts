@@ -5,6 +5,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { chunkedToolResult, chunkedToolResultEntry } from "../storage/session/chunked-tool-result.js";
 import { transcriptCursorWithin } from "../storage/session/history-pages.js";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { readTaskOutputTail } from "./command-output.js";
@@ -708,7 +709,43 @@ function boundaryMessage(message: AgentMessage, calls: boolean): AgentMessage | 
 	}
 }
 
+/** Where to read the original bytes of a saved row too large to show. */
+function oversizedNote(item: { readonly seq: number; readonly bytes: number }, file: FileArchive | undefined): string {
+	return `${file ? `Saved file entry at byte ${item.seq}` : `Saved entry ${item.seq}`} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`;
+}
+
+/**
+ * The tool result a saved row too large to show holds, read field by field from its stored text: its call's card
+ * then shows finished or failed, as a whole read shows it, and the note says where its body is. Undefined for any
+ * other row, or when its bytes cannot be read here.
+ */
+async function oversizedToolResult(
+	session: TaskTranscriptSource,
+	item: import("../storage/session/types.js").OversizedSessionEntry | FileTaskPage["items"][number],
+	file: FileArchive | undefined,
+	current: string | undefined,
+	signal: AbortSignal | undefined,
+): Promise<Entries[number] | undefined> {
+	if ("entry" in item) return undefined;
+	let chunks: AsyncIterable<Uint8Array>;
+	if (file) {
+		if (current === undefined) return undefined;
+		const { taskFileEntryChunks } = await import("./task-file-history.js");
+		chunks = taskFileEntryChunks(file.path, file.sessionId, current, item.seq, item.bytes, signal);
+	} else if ("kind" in item && session.readHistoryChunks)
+		chunks = session.readHistoryChunks(item, signal ? { signal } : {});
+	else return undefined;
+	try {
+		const result = await chunkedToolResult(chunks);
+		return result && chunkedToolResultEntry(result, `oversized-${item.seq}`, oversizedNote(item, file));
+	} catch {
+		signal?.throwIfAborted();
+		return undefined;
+	}
+}
+
 async function savedBoundaryView(
+	session: TaskTranscriptSource,
 	read: (
 		options: Parameters<NonNullable<TaskTranscriptSource["readHistory"]>>[0],
 	) => AsyncIterable<import("../storage/session/types.js").SessionHistoryPage | FileTaskPage>,
@@ -723,12 +760,16 @@ async function savedBoundaryView(
 		const messages: AgentMessage[] = [];
 		const origins = new Map<AgentMessage, string>();
 		for (const item of page.items) {
-			if (!("entry" in item) || item.entry.type !== "message") continue;
-			const message = boundaryMessage(item.entry.message, calls);
+			const entry =
+				"entry" in item
+					? item.entry
+					: await oversizedToolResult(session, item, file, page.adjacent?.current, signal);
+			if (entry?.type !== "message") continue;
+			const message = boundaryMessage(entry.message, calls);
 			if (message === undefined) continue;
 			messages.push(message);
 			const record = file
-				? createHash("sha256").update(JSON.stringify(item.entry)).digest("base64url")
+				? createHash("sha256").update(JSON.stringify(entry)).digest("base64url")
 				: page.adjacent?.current?.split(".", 1)[0];
 			if (record) origins.set(message, `${scope}${record}:${item.seq}:0`);
 		}
@@ -775,17 +816,23 @@ async function savedTranscriptView(
 		return { ok: false, error: { message: "Invalid transcript cursor" } };
 	// A cut inside one saved reply continues in the same saved entry: that is read as a page, as before.
 	if (boundary !== undefined && raw !== undefined && offset === undefined)
-		return savedBoundaryView(read, raw, scope, boundary === "c", file, signal);
+		return savedBoundaryView(session, read, raw, scope, boundary === "c", file, signal);
 	for await (const page of read({
 		...(raw === undefined ? { direction: "backward" as const } : { cursor: raw }),
 		adjacent: true,
 		...(signal ? { signal } : {}),
 	})) {
 		signal?.throwIfAborted();
+		const settled = new Map<number, Entries[number]>();
+		for (const item of page.items) {
+			if ("entry" in item) continue;
+			const result = await oversizedToolResult(session, item, file, page.adjacent?.current, signal);
+			if (result) settled.set(item.seq, result);
+		}
 		const entries: Entries = page.items.map((item) =>
 			"entry" in item
 				? item.entry
-				: {
+				: (settled.get(item.seq) ?? {
 						type: "message",
 						id: `oversized-${item.seq}`,
 						parentId: null,
@@ -795,9 +842,9 @@ async function savedTranscriptView(
 							customType: "atomic.oversized-history-entry",
 							display: true,
 							timestamp: 0,
-							content: `${file ? `Saved file entry at byte ${item.seq}` : `Saved entry ${item.seq}`} is ${item.bytes} bytes. Read the original bytes with the session history reader or export this session.`,
+							content: oversizedNote(item, file),
 						},
-					},
+					}),
 		);
 		const unsaved = taskTranscriptUnsavedAnswer(session);
 		if (!page.adjacent?.newer && unsaved?.type === "message") {

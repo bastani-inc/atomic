@@ -14,6 +14,7 @@ export type { SavedRendererInstances } from "./components/saved-renderer-instanc
 import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { disposeRenderer } from "./components/renderer-disposal.js";
 import { type InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
+import { withOversizedToolResults } from "./interactive-saved-tool-calls.ts";
 import { StartupChatContainer } from "./interactive-startup-chat-container.ts";
 
 type Direction = "older" | "newer" | "start" | "end";
@@ -221,12 +222,14 @@ async function readVisiblePage(
 	options: SessionHistoryReadOptions,
 ): Promise<SessionHistoryPage | undefined> {
 	const read = manager.readHistory(options);
+	let page: SessionHistoryPage | undefined;
 	try {
-		const page = await read.next();
-		return page.done ? undefined : page.value;
+		const next = await read.next();
+		page = next.done ? undefined : next.value;
 	} finally {
 		await read.return();
 	}
+	return page && withOversizedToolResults(manager, page, options.signal);
 }
 
 /** Network I/O owns only its abort signal and a weak return address, not the terminal and every rendered row. */
