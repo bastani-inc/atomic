@@ -53,7 +53,8 @@ import {
 	type OpenRouterUsageAccounting,
 } from "../utils/openrouter-cost.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -410,13 +411,14 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			);
 			const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
+			const retryTransport = ProviderRetryTransport.for(options);
 			const client = createClient(
 				model,
 				normalizedContext,
 				apiKey,
 				options?.headers,
 				options?.identity,
-				options?.fetch,
+				retryTransport?.fetch ?? options?.fetch,
 				cacheSessionId,
 				compat,
 				options?.apiKey,
@@ -452,6 +454,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
 				},
+				retryTransport,
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
@@ -792,7 +795,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					applyStreamedReasoningDetails(block);
 				}
 			}
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;

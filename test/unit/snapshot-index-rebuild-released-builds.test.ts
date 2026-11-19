@@ -401,6 +401,61 @@ describe("released builds sharing the store while this build installs or indexes
 			});
 		}
 
+		test(`on ${driver}, 0.9.89 collecting a reset after shutdown keeps pins when 0.9.87 finishes its backfill (#5553)`, async () => {
+			const mine = await connect(open);
+			const other = await connect(open);
+			const older = await connect(open);
+			const sessions = await SqlSessionStore.open(mine);
+			const start = messageEntry("start");
+			await createSession(sessions, "pinned", [start]);
+			const bundle = await appendDegradedRestore(sessions, "pinned", start.id, 1);
+			await mine.exec("DROP TRIGGER session_entries_snapshot_refs_delete");
+			// A session removed while its delete trigger was missing left many more index rows than live entries.
+			await mine.exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i < 4000)
+				INSERT INTO snapshot_session_links(session_id, seq, entry_id, children, broken) SELECT 'stale',i,'e'||i,0,0 FROM n`);
+			const afterCommit = (db: SqliteDatabase, after: () => void | Promise<void>): SqliteDatabase => ({
+				exec: (sql) => db.exec(sql),
+				run: (sql, ...args) => db.run(sql, ...args),
+				get: (sql, ...args) => db.get(sql, ...args),
+				all: (sql, ...args) => db.all(sql, ...args),
+				close: () => db.close(),
+				descriptor: db.descriptor,
+				...(db.freeBytes ? { freeBytes: () => db.freeBytes!() } : {}),
+				transaction: async (cb, options) => {
+					const result = await db.transaction(cb, options);
+					await after();
+					return result;
+				},
+			});
+			const stop = new AbortController();
+			let commits = 0;
+			const current = await SqlSnapshotBlobStore.open(
+				afterCommit(mine, () => {
+					if (++commits === 2) stop.abort();
+				}),
+			);
+			await current.completeIndex({ signal: stop.signal }).catch((error: unknown) => {
+				if (error !== stop.signal.reason) throw error;
+			});
+			let ran = false;
+			const released = await release0989.SqlSnapshotBlobStore.open(
+				afterCommit(other, async () => {
+					if (ran) return;
+					if (
+						!(await other.get(
+							"SELECT 1 FROM snapshot_index_sources WHERE source='session-entries@degraded-pins' AND watermark=0",
+						))
+					)
+						return;
+					ran = true;
+					await (await release0987.SqlSnapshotBlobStore.open(older)).completeIndex();
+				}),
+			);
+			const deleted = await released.collectGarbage({ graceSeconds: 0 });
+			assert.ok(!deleted.includes(bundle.hash), "0.9.89 deleted the bundle after 0.9.87 indexed the pin");
+			assert.deepEqual(await current.getBlob(bundle.hash), bundle.data);
+		});
+
 		for (const entries of [100, 1_200]) {
 			test(`on ${driver} with ${entries} entries, a reference trigger 0.9.87 installs again before this build's first backfill transaction over 0.9.89's index, this build stopping after it, then 0.9.87 and 0.9.89 collecting, leave the bundle a pin keeps (#5558)`, async () => {
 				const mine = await connect(open);
