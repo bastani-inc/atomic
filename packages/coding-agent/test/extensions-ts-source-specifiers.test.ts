@@ -3,10 +3,13 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createJiti } from "jiti";
 import { afterEach, describe, it } from "vitest";
+import { collectGarbage } from "../../../test/helpers/collect-garbage.js";
 import { createEventBus } from "../src/core/event-bus.js";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.js";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
+import { createTypeScriptSourceSpecifierTransform } from "../src/core/extensions/ts-source-specifiers.js";
 
 const fsModule = createRequire(import.meta.url)("node:fs") as typeof fs;
 const PROBE_CHANNEL = "ts-source-specifier-probe";
@@ -89,6 +92,50 @@ describe("transformed extension TypeScript source specifiers", () => {
 		fs.writeFileSync(leaf, `export const valueC = "ts";\n`);
 		return { entry, leaf };
 	}
+
+	it("releases compiler traversal state between extension loads (#5669)", async () => {
+		const transform = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url, () => undefined);
+		type ProgramPath = { node: { type: string }; scope: object };
+		let observed: { program: ProgramPath["node"]; path: WeakRef<object>; scope: WeakRef<object> } | undefined;
+		const observe = () => ({
+			post(file: { path: ProgramPath }) {
+				const { path } = file;
+				observed = { program: path.node, path: new WeakRef(path), scope: new WeakRef(path.scope) };
+			},
+		});
+		transform({
+			filename: path.join(fixtureRoot(), "extension.ts"),
+			source: "export const value: number = 42;",
+			ts: true,
+			babel: { plugins: [observe] },
+		});
+		assert.ok(observed, "the module was transformed");
+		await collectGarbage(3);
+		// Even a consumer keeping the parsed program should not retain the compiler's work graph.
+		assert.equal(observed.program.type, "Program");
+		assert.ok(!observed.path.deref(), "the completed module still retains its traversal paths");
+		assert.ok(!observed.scope.deref(), "the completed module still retains its scopes");
+	});
+
+	it("keeps an active traversal intact when a plugin compiles another module (#5669)", () => {
+		const transform = createTypeScriptSourceSpecifierTransform(createJiti, import.meta.url, () => undefined);
+		const root = fixtureRoot();
+		let intact = false;
+		const compileInner = () => ({
+			post(file: { path: { get(key: string): object } }) {
+				const first = file.path.get("body.0");
+				transform({ filename: path.join(root, "inner.ts"), source: "export default 2;", ts: true });
+				intact = file.path.get("body.0") === first;
+			},
+		});
+		transform({
+			filename: path.join(root, "outer.ts"),
+			source: "export default 1;",
+			ts: true,
+			babel: { plugins: [compileInner] },
+		});
+		assert.ok(intact, "the inner transform discarded the active outer traversal");
+	});
 
 	it("resolves .js specifiers of TypeScript sources without a failed probe per candidate", async () => {
 		const { entry } = writeChain(fixtureRoot());

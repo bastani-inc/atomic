@@ -78,9 +78,32 @@ function isModuleLoadCall(nodePath: NodePath<CallNode>): boolean {
 	return callee?.type === "Identifier" && callee.name === "require" && !nodePath.scope.hasBinding("require");
 }
 
-function typeScriptSourceSpecifierPlugin(_babel: object, options: { rewrites: ReadonlyMap<string, string> }) {
+interface TraversalCache {
+	clear(): void;
+}
+
+const pendingReleases = new WeakSet<TraversalCache>();
+
+function releaseAfterTraversal(cache: TraversalCache): void {
+	if (pendingReleases.has(cache)) return;
+	pendingReleases.add(cache);
+	// Other jiti hosts share these tables. Even after our transform returns, a caller's plugin can still be
+	// traversing its own file. Release once per compiler runtime after the synchronous stack unwinds.
+	setImmediate(() => {
+		pendingReleases.delete(cache);
+		cache.clear();
+	});
+}
+
+function typeScriptSourceSpecifierPlugin(
+	babel: { traverse: { cache: TraversalCache } },
+	options: { rewrites: ReadonlyMap<string, string> },
+) {
 	return {
 		name: "atomic-typescript-source-specifiers",
+		pre() {
+			releaseAfterTraversal(babel.traverse.cache);
+		},
 		visitor: {
 			"ImportDeclaration|ExportNamedDeclaration|ExportAllDeclaration"(nodePath: NodePath<ModuleSourceNode>) {
 				rewriteSource(nodePath.node.source, options.rewrites);
@@ -137,6 +160,7 @@ function writeCached(file: string, code: string): Promise<void> {
 }
 
 type BabelHost = ReturnType<CreateJiti>;
+
 const babelHosts = new WeakMap<CreateJiti, Map<string, BabelHost>>();
 
 /** One Babel host per jiti implementation and id, so a transform per cache directory stays cheap. */
