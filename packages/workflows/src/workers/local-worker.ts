@@ -32,6 +32,7 @@ import {
 	createStageControlRegistry,
 	type StageControlHandle,
 	type StageControlRegistry,
+	stageWaitsToRetry,
 } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -70,11 +71,18 @@ import { type PendingWorkerRequest, receiveWorkerReply, type WorkerReplyState } 
  */
 const IDLE_OUTAGE_RETRY_MS = 1_000;
 
-/** Stamps each published stage with its handle's queued message count, for the root's graph. */
-function withQueuedCounts(runs: readonly RunSnapshot[], stageControls: StageControlRegistry): readonly RunSnapshot[] {
+/** Stamp the worker's publication with the queue shown in the graph and the turn phase shown in a remote chat. */
+function withStageActivity(runs: readonly RunSnapshot[], stageControls: StageControlRegistry): readonly RunSnapshot[] {
 	for (const run of runs)
 		for (const stage of run.stages) {
-			const count = stageQueuedUserMessageCount(stageControls.peek(run.id, stage.id)?.queuedUserMessages?.());
+			const handle = stageControls.peek(run.id, stage.id);
+			if (handle && (stage.status === "running" || stage.status === "awaiting_input")) {
+				if (stageWaitsToRetry(handle)) stage.chatActivity = "retrying";
+				else if (handle.agentSession?.retryStatus?.type === "model_fallback_start" || handle.modelSwitch)
+					stage.chatActivity = "switching";
+				else stage.chatActivity = handle.isStreaming ? "working" : "idle";
+			}
+			const count = stageQueuedUserMessageCount(handle?.queuedUserMessages?.());
 			if (count > 0) stage.queuedUserMessageCount = count;
 		}
 	return runs;
@@ -602,7 +610,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				const current = (async () => {
 					while (activityDirty) {
 						activityDirty = false;
-						const runs = withQueuedCounts(structuredClone(store.runs()), stageControls);
+						const runs = withStageActivity(structuredClone(store.runs()), stageControls);
 						place.observe(attemptWaitsReleased(runs));
 						try {
 							await request({ kind: "activity", runs }, undefined, true);

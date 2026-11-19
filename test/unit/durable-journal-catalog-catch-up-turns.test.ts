@@ -17,7 +17,10 @@ import type {
 	RunHeader,
 	RunJournalSeedEvent,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { createDurableResumeRuntime } from "../../packages/workflows/src/extension/runtime-durable-resume.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { assertLag, measureLag } from "../helpers/event-loop-lag.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -400,6 +403,54 @@ test("aborting a catalog catch-up stops it between turns and a later catch-up fi
 		"the later catch-up read only the runs the aborted one had not finished",
 	);
 	await assertMatchesOneShotRead(reader, [...history, ...snapshot]);
+});
+
+test("aborting resume by a listed prefix stops reading and publishing unrelated runs (#5480, #5569)", async () => {
+	const { history, snapshot } = await seedJournal(3, HISTORY_CHECKPOINTS);
+	const journal = await openSqlRunJournal(path);
+	const reader = await openBackend(journal, []);
+	const runtime = createDurableResumeRuntime({
+		store: createStore(),
+		registry: createRegistry(),
+		runtimeCwd: directory,
+		baseRunOpts: () => ({}),
+		ensureReady: async () => reader,
+	});
+	const target = snapshot[0]!;
+	assert.deepEqual(
+		(await runtime.prepareDurableResumableForIds!([target])).map((row) => row.workflowId),
+		[target],
+	);
+	const published = () => history.filter((id) => reader.getWorkflow(id) !== undefined);
+	assert.deepEqual(published(), []);
+
+	const controller = new AbortController();
+	const reason = new Error("cancel prefix resume");
+	const reads = observeReads(journal, () => {
+		controller.abort(reason);
+		return undefined;
+	});
+	await assert.rejects(
+		runtime.resumeDurableWorkflow(target.slice(0, 8), { signal: controller.signal }),
+		(e) => e === reason,
+	);
+
+	// A caller can return before the abandoned scan stops. Sample its work when the next catalog read starts,
+	// before that read can publish or read any history of its own.
+	const changeToken = journal.changeToken.bind(journal);
+	let afterAbort: { events: number; published: string[] } | undefined;
+	journal.changeToken = () => {
+		afterAbort = {
+			events: reads.filter((r) => history.includes(r.runId)).reduce((n, r) => n + r.events, 0),
+			published: published(),
+		};
+		return changeToken();
+	};
+	await reader.hydrateResumableWorkflows();
+	assert.ok(afterAbort);
+	assert.deepEqual(afterAbort.published, []);
+	// The first event triggers the abort; at most one more may be in flight when the read observes it.
+	assert.ok(afterAbort.events <= 2, `read ${afterAbort.events} unrelated events`);
 });
 
 test("one caller giving up does not stop the catch-up another caller is waiting for (#5480)", async () => {

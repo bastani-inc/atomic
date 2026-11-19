@@ -33,6 +33,7 @@ import type {
 	SessionStore,
 	TaskViewSource,
 } from "@bastani/atomic";
+import { retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import {
 	ownsStageRecord,
@@ -46,6 +47,7 @@ import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 import type { StageSessionHolds } from "./stage-session-holds.js";
+import type { StageTurnState } from "./stage-turn-start.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -110,11 +112,27 @@ export interface StageControlHandle {
 	 */
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
 	/**
-	 * Whether the stage's session waits out an automatic retry's backoff, for a handle without an `agentSession` (a
-	 * stage on a local worker). Handles with a session expose it through the session instead: see
-	 * {@link stageWaitsToRetry}.
+	 * A backoff outside the local SDK session: the stage is retrying a failed operation itself or its session
+	 * lives on a worker. See {@link stageWaitsToRetry} for either source.
 	 */
 	readonly isWaitingToRetry?: boolean;
+	/** A worker session has a cancellable retry, even before it announces the next attempt. */
+	readonly isRetrying?: boolean;
+	/** False for a status-only watch on another host, which refuses pause commands. */
+	readonly canPause?: boolean;
+	/**
+	 * When the stage's current turn sent its first request, while the turn is under way (a request runs, or a retry or
+	 * a model switch announced the next one). A turn the stage moved to its next model goes on in a new session that
+	 * holds only the requests since the switch, so a chat opened then counts the turn from here. Undefined between
+	 * turns, and from a handle that does not know it (a stage on an older worker).
+	 */
+	readonly turnStartedAt?: number;
+	/** The stage's turn while it may still go on, for a local worker's watch to hand to the root. */
+	turnState?(): StageTurnState | undefined;
+	/** The model switch seen on the worker, until its next request starts. */
+	readonly modelSwitch?: Extract<AgentSessionEvent, { type: "model_fallback_start" }>;
+	/** Initial activity of a stage on another host, updated by stage publications rather than SDK events. */
+	readonly publishedActivity?: import("@bastani/atomic").PublishedChatActivity;
 	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
@@ -187,9 +205,10 @@ export interface StageControlHandle {
 	/**
 	 * Subscribe to AgentSession events. The pending-listener semantics
 	 * from `InternalStageContext.subscribe` apply: listeners registered
-	 * before the session exists are buffered and bound on first attach.
+	 * before the session exists are buffered and bound on first attach. A worker-backed
+	 * handle also notifies the subscriber when its watched attempt stops supplying events.
 	 */
-	subscribe(listener: AgentSessionEventListener): () => void;
+	subscribe(listener: AgentSessionEventListener, onWatchEnd?: () => void): () => void;
 	/**
 	 * Subscribe to workflow-owned delivery lifecycle facts. Present only for
 	 * handles backed by a live stage runner. An accepted idle delivery reports
@@ -387,6 +406,14 @@ export interface ReleasedStage {
 	readonly sessionId: string;
 }
 
+/** A stage can switch sessions between attempts. Follow its own events even when there is no session to read. */
+export type StageRetryWait = "backoff" | StageControlHandle["modelSwitch"];
+export function stageRetryWaitAfter(wait: StageRetryWait, event: AgentSessionEvent): StageRetryWait {
+	const update = retryStatusUpdate(event);
+	if (update === undefined) return wait;
+	return update?.type === "auto_retry_start" ? "backoff" : (update ?? undefined);
+}
+
 /** The registration that released a stage, separate from the IDs used for the public notice. */
 export interface ReleasedStageSource {
 	readonly key: string;
@@ -437,8 +464,7 @@ export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
 export function stageWaitsToRetry(handle: Pick<StageControlHandle, "agentSession" | "isWaitingToRetry">): boolean {
 	const session = handle.agentSession;
-	if (session === undefined) return handle.isWaitingToRetry === true;
-	return session.retryAttempt > 0 && !session.isStreaming;
+	return handle.isWaitingToRetry === true || (session !== undefined && sessionWaitsToRetry(session));
 }
 
 /**
