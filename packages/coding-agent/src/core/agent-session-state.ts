@@ -29,6 +29,7 @@ import {
 	activatesOnRegistration,
 	isMcpToolName,
 	isRegisteredToolAllowed,
+	isRetiredToolName,
 	selectedToolNames,
 } from "./tool-selection.ts";
 import {
@@ -112,6 +113,7 @@ function toolStatusReport(session: AgentSession, git: GitToolStatus): ToolStatus
 		recordedActiveNames: recordedToolLoadout(session)?.current.filter(
 			(name) =>
 				!isMcpToolName(name) &&
+				!isRetiredToolName(name) &&
 				(!session._resourceLoader.getInheritanceSnapshot?.().noExtensions ||
 					session._baseToolDefinitions.has(name)) &&
 				(!session._usesDefaultTools || applyToolModifiers([name], session._defaultToolModifiers).includes(name)),
