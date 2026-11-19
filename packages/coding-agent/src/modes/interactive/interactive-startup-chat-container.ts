@@ -1,7 +1,12 @@
-import { type ScrollView, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
+import { type ScrollView, type TuiMouseEvent, WindowedContainer, withMeasuredMouseLayouts } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
-import { type ContainerMouseResult, handleTranscriptBlockClick } from "./components/transcript-block-clicks.ts";
+import { isSingleLeftClick } from "./components/single-click.ts";
+import {
+	type ContainerMouseResult,
+	handleTranscriptBlockClick,
+	isBlockTitleRow,
+} from "./components/transcript-block-clicks.ts";
 import type { Component, Container } from "./interactive-mode-deps.ts";
 
 /**
@@ -30,21 +35,35 @@ export class StartupChatContainer extends WindowedContainer {
 	 * or collapses it once the click cannot become a double-click.
 	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
-		if (event.type === "press" || event.type === "click") {
-			const handled = handleTranscriptBlockClick(
-				this,
-				this,
-				event,
-				() => this.windowLayoutWidth ?? this.renderedWidth,
-				(expanded) => {
-					// The reader opened the block to read it: hold the view instead of following the end past its header.
-					const view = this.transcriptView();
-					if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
-				},
-			);
-			if (handled) return handled;
+		if (event.type === "press") {
+			this.blockClick(event);
+			return this.pressMouseCell(event);
 		}
-		return super.handleMouse(event);
+		if (!isSingleLeftClick(event)) return super.handleMouse(event);
+		const title = isBlockTitleRow(this, event.width, event.y);
+		const inside = this.clickPressedCell(event);
+		const result = withMeasuredMouseLayouts(() => {
+			const block = this.blockClick(event);
+			if (title) return block;
+			// The block's area check may find different children from those on screen. It can rule out a
+			// pressed control; it must not redirect the click, or change what the next press finds painted.
+			return inside() ?? block;
+		});
+		return result ?? (title ? inside() : undefined);
+	}
+
+	private blockClick(event: TuiMouseEvent): ContainerMouseResult {
+		return handleTranscriptBlockClick(
+			this,
+			this,
+			event,
+			() => this.windowLayoutWidth ?? this.renderedWidth,
+			(expanded) => {
+				// The reader opened the block to read it: hold the view instead of following the end past its header.
+				const view = this.transcriptView();
+				if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
+			},
+		);
 	}
 
 	countedChildren(): number {

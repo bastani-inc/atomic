@@ -428,7 +428,7 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 });
 ```
 
-In fullscreen mode a click anywhere on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. If your renderer draws the same rows either way, the click leaves the message as it is.
+In fullscreen mode a click anywhere on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. If your renderer draws the same rows either way, the click leaves the message as it is. A component your renderer returns that handles a click itself, such as a button whose `handleMouse` returns `{ handled: true }`, keeps that click, and the message stays as it is. The same control must still be under the pointer when the user releases the mouse; a button that moves into the pressed row does not receive the click. This holds when the session runs in the same process as the terminal UI, as it does in a folder you have not trusted; a session in a separate engine process sends its messages to the screen as drawn rows, so there a click always toggles the message.
 
 Messages are sent via `pi.sendMessage()`:
 

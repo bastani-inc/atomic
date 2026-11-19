@@ -77,6 +77,9 @@ function blockStatusMarkPrefix(): RegExp {
 
 export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
+	/** The title follows the tool block's leading blank row. */
+	readonly titleRow = 1;
+	private readonly leadingSpacer = new Spacer(1);
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
@@ -136,7 +139,7 @@ export class ToolExecutionComponent extends Container {
 		this.ui = ui;
 		this.cwd = cwd;
 
-		this.addChild(new Spacer(1));
+		this.addChild(this.leadingSpacer);
 
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
@@ -372,20 +375,32 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
+		this.mouseLayout.set(width, []);
 		if (this.disposed) return [];
 		if (this.argsPending) this.updateDisplay();
 		this.syncWorkingClock();
 		if (this.hideComponent || width < 1 || (!this.expanded && this.groupRole.kind === "hidden")) return [];
 		if (!this.expanded && this.groupRole.kind === "head") return this.renderGroupSummary(width, this.groupRole);
 		const content = this.contentContainer.render(width);
-		if (content.length === 0 && this.imageComponents.length === 0) return [];
-		const rows = content.length > 0 ? ["", ...content] : [];
-		for (let index = 0; index < this.imageComponents.length; index += 1) {
-			const spacer = this.imageSpacers[index];
-			if (spacer) rows.push(...spacer.render(width));
-			const image = this.imageComponents[index];
-			if (image) rows.push(...image.render(width));
+		const children: Array<{ component: Component; height: number }> = [];
+		const rows: string[] = [];
+		if (content.length > 0) {
+			children.push(
+				this.mouseLayout.child(this.leadingSpacer, 1),
+				this.mouseLayout.child(this.contentContainer, content.length),
+			);
+			rows.push("");
+			for (const line of content) rows.push(line);
 		}
+		for (let index = 0; index < this.imageComponents.length; index += 1) {
+			for (const component of [this.imageSpacers[index], this.imageComponents[index]]) {
+				if (!component) continue;
+				const lines = component.render(width);
+				children.push(this.mouseLayout.child(component, lines.length));
+				rows.push(...lines);
+			}
+		}
+		this.mouseLayout.set(width, children);
 		return rows;
 	}
 
