@@ -1,4 +1,5 @@
-import { unsavedHostNotices } from "./agent-session-host-notices.ts";
+import { finalizeProjectedMessages } from "./agent-session-boundaries.ts";
+import { hasUnsavedHostNotices, unsavedHostNotices } from "./agent-session-host-notices.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { hostNoticeFromEntry } from "./host-notices.ts";
@@ -79,10 +80,23 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		transcriptMessages: {
 			get(this: AgentSession) {
 				const saving = this._transcriptAppend;
+				// Only a context edit, a save in flight, or a line about how a turn ended (saved or still saving, #5649) sets
+				// the transcript apart from the context, which is read as it is.
+				if (
+					saving === undefined &&
+					!this.sessionManager.hasContextEdits() &&
+					!this.sessionManager.hasHostNotices() &&
+					!hasUnsavedHostNotices(this)
+				)
+					return this.messages;
 				const beforeSave =
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
 				const { entries, messages } = this.sessionManager.buildSessionProjection("transcript", beforeSave);
-				const pending = this.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
+				// The context also shows rows the store does not have: admitted ones still saving and ones whose save failed.
+				const pending = this.messages.filter(
+					(message) =>
+						this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message),
+				);
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
 				// Lines about how a turn ended are part of the transcript once shown: those saved after the pinned leaf,
 				// and those still being saved (#5649).
@@ -99,7 +113,8 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					this,
 					[...entries, ...noticesAfterPin].map(({ sourceEntry }) => sourceEntry),
 				);
-				if (pending.length === 0 && beforeSave === undefined && unsavedNotices.length === 0) return messages;
+				if (pending.length === 0 && beforeSave === undefined && unsavedNotices.length === 0)
+					return finalizeProjectedMessages(this, messages);
 				// An independent delivery can save a notice after the pinned leaf and publish it while the input's
 				// write is still outstanding. Its source ID distinguishes it from both the prefix and the pending input.
 				const tail = new Set(pending);
@@ -117,7 +132,8 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				}
 				for (const notice of noticesAfterPin) messages.push(...notice.messages);
 				messages.push(...unsavedNotices);
-				return messages;
+				// Paired and repaired as the context is: a call whose result was never saved shows it was interrupted.
+				return finalizeProjectedMessages(this, messages);
 			},
 		},
 		steeringMode: {

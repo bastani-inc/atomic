@@ -85,9 +85,14 @@ function isHostNoticeLevel(value: unknown): value is HostNoticeLevel {
 	return value === "error" || value === "warning" || value === "status";
 }
 
+/** Whether a stored entry is meant to record a notice; {@link hostNoticeFromEntry} reads it. */
+export function isHostNoticeEntry(entry: SessionEntry): boolean {
+	return entry.type === "custom" && entry.customType === HOST_NOTICE_TYPE;
+}
+
 /** The notice a stored entry records, if it is one. */
 export function hostNoticeFromEntry(entry: SessionEntry): HostNotice | undefined {
-	if (entry.type !== "custom" || entry.customType !== HOST_NOTICE_TYPE) return undefined;
+	if (!isHostNoticeEntry(entry) || entry.type !== "custom") return undefined;
 	const data = entry.data as { level?: unknown; text?: unknown } | undefined;
 	if (!isHostNoticeLevel(data?.level) || typeof data.text !== "string") return undefined;
 	return { level: data.level, text: boundHostNoticeText(data.text) };

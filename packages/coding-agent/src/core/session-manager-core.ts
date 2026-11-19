@@ -5,6 +5,7 @@ import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-
 import { getAgentDir } from "../config.js";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
+import { isHostNoticeEntry } from "./host-notices.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
@@ -165,6 +166,8 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
+	private contextEdits = 0;
+	private hostNotices = 0;
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
 
@@ -544,6 +547,8 @@ export class SessionManager {
 		this.byId = index.byId;
 		this.labelsById = index.labelsById;
 		this.labelTimestampsById = index.labelTimestampsById;
+		this.contextEdits = index.contextEdits;
+		this.hostNotices = index.hostNotices;
 		this.leafId = index.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
@@ -704,6 +709,8 @@ export class SessionManager {
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
+			if (entry.type === "context_edit") this.contextEdits++;
+			else if (isHostNoticeEntry(entry)) this.hostNotices++;
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
@@ -1206,6 +1213,16 @@ export class SessionManager {
 			leafId === this.leafId ? this.activeBranch() : leafId === null ? undefined : this.getBranch(leafId),
 			purpose,
 		);
+	}
+
+	/** Whether any entry, on any branch, edits the model context. Without one the transcript is the model context. */
+	hasContextEdits(): boolean {
+		return this.contextEdits > 0;
+	}
+
+	/** Whether any entry, on any branch, records a line Atomic wrote about how a turn ended, which the transcript shows (#5649). */
+	hasHostNotices(): boolean {
+		return this.hostNotices > 0;
 	}
 
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */

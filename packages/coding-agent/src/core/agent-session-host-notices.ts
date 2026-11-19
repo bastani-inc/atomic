@@ -64,6 +64,11 @@ export function recordHostNotice(
 /** Lines a session has shown and is still saving, keyed by the data of the entry that saves each. */
 const unsaved = new WeakMap<object, Map<HostNotice, CustomMessage<HostNotice>>>();
 
+/** Whether `session` has shown a line it is still saving. */
+export function hasUnsavedHostNotices(session: object): boolean {
+	return (unsaved.get(session)?.size ?? 0) > 0;
+}
+
 /**
  * The lines `session` has shown but not yet saved, other than any among `entries`: a chat opened in that moment reads
  * them with the saved transcript, since the event that showed them has passed.

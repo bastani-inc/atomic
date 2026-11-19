@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Text } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
@@ -19,6 +19,7 @@ import { stripAnsi } from "../../packages/coding-agent/src/modes/interactive/com
 import type { ChatTranscriptEntryLike } from "../../packages/coding-agent/src/modes/interactive/components/chat-transcript.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 import type { StageNotice } from "../../packages/workflows/src/shared/store-types.js";
 import { stageNoticeCountsAsMessage } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
 import type { NoticeEntry } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
@@ -187,6 +188,46 @@ test("a compaction redraw keeps a failed attempt outside the compacted region (#
 		assert.match(plain(host.renderBody(80, 20)), /529 after boundary/);
 	} finally {
 		host.dispose();
+	}
+});
+
+test("a compaction redraw shows a call saved without its result as interrupted, as the session does (#5613)", async () => {
+	initTheme("dark");
+	const harness = await createHarness();
+	const session = harness.session;
+	const host = new ChatSessionHost(
+		hostOptions({ getCwd: () => session.sessionManager.getCwd(), getAgentSession: () => session }),
+	);
+	try {
+		const manager = session.sessionManager;
+		const prior = await manager.appendMessage({ role: "user", content: "older request", timestamp: 1 });
+		const result = {
+			compactedText: "earlier conversation",
+			tokensBefore: 100,
+			firstKeptEntryId: null,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
+			parameters: { query: "" },
+			stats: {
+				linesBefore: 2,
+				linesDeleted: 1,
+				linesKept: 1,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 50,
+				percentReduction: 50,
+			},
+		};
+		const details = { ...result, strategy: "verbatim-lines" as const };
+		await manager.appendCompaction(result.compactedText, null, result.tokensBefore, details, undefined, prior);
+		const call = fauxToolCall("bash", { command: "echo lost" }, { id: "call-without-result" });
+		await manager.appendMessage(fauxAssistantMessage([call], { stopReason: "toolUse" }));
+		session.refreshContext();
+		host.applyAgentEvent({ type: "compaction_end", reason: "threshold", result, aborted: false, willRetry: false });
+		assert.match(plain(host.renderBody(80, 20)), /interrupted after it started/);
+	} finally {
+		host.dispose();
+		await harness.cleanup();
 	}
 });
 

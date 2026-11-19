@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.js";
-import { hostNoticeMessageFromEntry } from "./host-notices.ts";
+import { hostNoticeMessageFromEntry, isHostNoticeEntry } from "./host-notices.ts";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
@@ -97,6 +97,11 @@ export function applyContextEdit(messages: AgentMessage[], edit: ContextEditEntr
 	});
 }
 
+/** Whether a chat shows this message to its reader: hidden notices and system messages never show. */
+function isShownToReader(message: AgentMessage): boolean {
+	return message.role === "custom" ? message.display : message.role !== "system";
+}
+
 function projectContextEntry(
 	entry: SessionEntry,
 	edit: ContextEditEntry | undefined,
@@ -104,7 +109,9 @@ function projectContextEntry(
 ): AgentMessage[] {
 	const messages =
 		purpose === "transcript" ? sessionEntryToTranscriptMessages(entry) : sessionEntryToContextMessages(entry);
-	if (!edit) return messages;
+	// Context edits change what the next request sees, not the rows the reader already saw. A row no reader sees
+	// follows the model, so a transcript never carries hidden content the model no longer has.
+	if (!edit || (purpose === "transcript" && messages.some(isShownToReader))) return messages;
 	return applyContextEdit(messages, edit);
 }
 
@@ -268,8 +275,6 @@ export function buildSessionProjection(
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const contextEntries = buildContextEntries(entries, leaf.id, byId, walked);
 	const edits = collectContextEdits(contextEntries);
-	// Context edits change what the next request sees, not the rows the reader already saw.
-	const rowEdits = purpose === "model" ? edits : undefined;
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	// A summary boundary from an older release replays with its kept messages as structured messages.
@@ -281,7 +286,7 @@ export function buildSessionProjection(
 				messages:
 					boundary && sourceEntry.type === "compaction" && sourceEntry.id !== boundary.id
 						? []
-						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id), purpose),
+						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose),
 			}),
 		);
 		return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
@@ -316,7 +321,7 @@ export function buildSessionProjection(
 					? boundaryMessages
 					: keptTailIds.has(sourceEntry.id) || sourceEntry.type === "compaction"
 						? []
-						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id), purpose),
+						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose),
 		}),
 	);
 	return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
@@ -354,6 +359,10 @@ export interface SessionIndex {
 	labelsById: Map<string, string>;
 	labelTimestampsById: Map<string, string>;
 	leafId: string | null;
+	/** How many entries edit the model context, on any branch. */
+	contextEdits: number;
+	/** How many entries record a line Atomic wrote about how a turn ended, on any branch (#5649). */
+	hostNotices: number;
 }
 
 export function buildSessionIndex(fileEntries: readonly FileEntry[]): SessionIndex {
@@ -361,11 +370,15 @@ export function buildSessionIndex(fileEntries: readonly FileEntry[]): SessionInd
 	const labelsById = new Map<string, string>();
 	const labelTimestampsById = new Map<string, string>();
 	let leafId: string | null = null;
+	let contextEdits = 0;
+	let hostNotices = 0;
 
 	for (const entry of fileEntries) {
 		if (entry.type === "session") continue;
 		byId.set(entry.id, entry);
 		leafId = entry.id;
+		if (entry.type === "context_edit") contextEdits++;
+		else if (isHostNoticeEntry(entry)) hostNotices++;
 		if (entry.type === "label") {
 			if (entry.label) {
 				labelsById.set(entry.targetId, entry.label);
@@ -379,7 +392,7 @@ export function buildSessionIndex(fileEntries: readonly FileEntry[]): SessionInd
 
 	const last = leafId === null ? undefined : byId.get(leafId);
 	if (last && isLeafMoveEntry(last)) leafId = last.parentId;
-	return { byId, labelsById, labelTimestampsById, leafId };
+	return { byId, labelsById, labelTimestampsById, leafId, contextEdits, hostNotices };
 }
 
 /**
