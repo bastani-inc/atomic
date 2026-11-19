@@ -67,7 +67,6 @@ class RemoteComponent implements Component {
 			this.runtime.sendEngineCommand({ type: "engine_custom_scroll", componentId: this.componentId, state });
 	}
 	wantsKeyRelease = true;
-	acceptsClickFocus = true;
 	readonly handlesInternalUiAction: boolean;
 	private lines: string[] = [];
 	private width = 0;
@@ -514,7 +513,6 @@ export class RemoteComponentController {
 					message.purpose,
 					message.widgetScroll,
 					message.blocked,
-					message.acceptsClickFocus !== false,
 				);
 				break;
 			case "engine_custom_close":
@@ -584,7 +582,6 @@ export class RemoteComponentController {
 		purpose?: "prompt" | "navigation",
 		widgetScroll?: { maxHeight: number; maxHeightFraction?: number },
 		blocked?: EngineBlockedStatus,
-		acceptsClickFocus = true,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
@@ -600,7 +597,6 @@ export class RemoteComponentController {
 				() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 				() => paintNow(),
 			);
-			component.acceptsClickFocus = acceptsClickFocus;
 			const unsubscribeWidgetRelease = this.ui.onWidgetRelease?.(widgetKey, () => this.releaseWidget(widgetKey));
 			this.mounted.set(componentId, {
 				component,
@@ -637,7 +633,6 @@ export class RemoteComponentController {
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 						() => tui.requestImmediateRender(),
 					);
-					component.acceptsClickFocus = acceptsClickFocus;
 					component.hostColorDepth = tui.terminal?.colorDepth;
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);

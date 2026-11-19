@@ -21,12 +21,10 @@ async function registerIsolatedTests(): Promise<void> {
 	const clickableHints = await import("@bastani/atomic-tui/dist/clickable-hints.js");
 	const { keyInputData } = await import("@bastani/atomic-tui/dist/keys.js");
 	class TestComponent {}
-	const [{ ScrollView }, { VStack }, { Input }, { ClickableRows }] = await Promise.all([
+	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
 		import("@bastani/atomic-tui/dist/components/v-stack.js"),
 		import("@bastani/atomic-tui/dist/components/input.js"),
-		// Stage question cards and the workflows list name their rows for clicks with pi-tui's clickable rows.
-		import("@bastani/atomic-tui/dist/clickable-rows.js"),
 	]);
 	mock.module("@bastani/atomic-tui", () => ({
 		...clickableHints,
@@ -36,7 +34,6 @@ async function registerIsolatedTests(): Promise<void> {
 		foregroundAnsi,
 		parseColor,
 		Box: TestComponent,
-		ClickableRows,
 		Editor: TestComponent,
 		// The stage-chat find box edits its query with pi-tui's own input.
 		Input,

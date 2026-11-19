@@ -1,6 +1,5 @@
 import assert from "node:assert";
 import { describe, it, type TestContext } from "node:test";
-import { Text } from "../src/components/text.ts";
 import { type Component, Container, type TuiMouseEventResult } from "../src/tui.ts";
 import { MULTI_CLICK_INTERVAL_MS, TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -29,7 +28,6 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 		},
 	});
 	const acted: string[] = [];
-	const canceled: string[] = [];
 	const clicks: string[] = [];
 	const row = (name: string, label = name): Component => ({
 		render: () => [`${label} words here`],
@@ -38,11 +36,7 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 			if (options.capture && event.type === "press") return { handled: true, capture: true };
 			if (event.type !== "click" || (event.clickCount ?? 1) !== 1) return undefined;
 			clicks.push(name);
-			return {
-				handled: true,
-				whenSingleClick: () => acted.push(name),
-				onSingleClickCancel: () => canceled.push(name),
-			};
+			return { handled: true, whenSingleClick: () => acted.push(name) };
 		},
 	});
 	const list = new Container();
@@ -53,7 +47,7 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 		terminal.sendInput(press(x, y));
 		terminal.sendInput(release(x, y));
 	};
-	return { terminal, tui, copied, acted, canceled, clicks, click, list, row };
+	return { terminal, tui, copied, acted, clicks, click, list, row };
 }
 
 describe("a single click's action waits until it cannot become a double-click", () => {
@@ -304,83 +298,5 @@ describe("a single click's action waits until it cannot become a double-click", 
 		tui.stop();
 		await sleep(MULTI_CLICK_INTERVAL_MS + 100);
 		assert.deepStrictEqual(acted, []);
-	});
-
-	for (const capture of [false, true]) {
-		it(`a dialog opened and closed during a ${capture ? "captured" : "selection"} press takes the click away`, async () => {
-			const { terminal, tui, clicks } = settleFixture({ capture });
-			tui.start();
-			try {
-				await terminal.waitForRender();
-				terminal.sendInput(press(1, 0));
-				const dialog = tui.showOverlay(new Text("Confirm?", 0, 0), { anchor: "bottom-right", width: 10 });
-				dialog.hide();
-				terminal.sendInput(release(1, 0));
-				assert.deepStrictEqual(clicks, []);
-			} finally {
-				tui.stop();
-			}
-		});
-	}
-
-	it("a click right after a dialog took a captured press away is a single click again", async (t) => {
-		const { terminal, tui, acted, clicks, click } = settleFixture({ capture: true });
-		tui.start();
-		t.after(() => tui.stop());
-		await terminal.waitForRender();
-		mockClickClock(t);
-		terminal.sendInput(press(1, 0));
-		const dialog = tui.showOverlay(new Text("Confirm?", 0, 0), { anchor: "bottom-right", width: 10 });
-		dialog.hide();
-		terminal.sendInput(release(1, 0));
-		click(1, 0);
-		assert.deepStrictEqual(clicks, ["first"], "the press the dialog took away does not make this a double-click");
-		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
-		assert.deepStrictEqual(acted, ["first"]);
-	});
-
-	it("a dialog that opens and closes before a waiting click settles invalidates only that click", async () => {
-		const { terminal, tui, acted, clicks, click } = settleFixture();
-		tui.start();
-		try {
-			await terminal.waitForRender();
-			click(1, 0);
-			const dialog = tui.showOverlay(new Text("Confirm?", 0, 0), { anchor: "bottom-right", width: 10 });
-			dialog.hide();
-			click(1, 1);
-			assert.deepStrictEqual(clicks, ["first", "second"]);
-			await sleep(MULTI_CLICK_INTERVAL_MS + 100);
-			assert.deepStrictEqual(acted, ["second"]);
-		} finally {
-			tui.stop();
-		}
-	});
-
-	it("never runs when a dialog takes focus before the click settles", async () => {
-		const { terminal, tui, acted, clicks, click } = settleFixture();
-		tui.start();
-		await terminal.waitForRender();
-
-		click(1, 0);
-		await terminal.waitForRender();
-		assert.deepStrictEqual(clicks, ["first"]);
-		tui.showOverlay(new Text("Stop everything?", 0, 0), { anchor: "bottom-right", width: 18 });
-		await terminal.waitForRender();
-		await sleep(MULTI_CLICK_INTERVAL_MS + 100);
-		assert.deepStrictEqual(acted, [], "the dialog took the click's action away from the row behind it");
-		tui.stop();
-	});
-
-	it("tells the row its click was canceled when a dialog takes focus before the click settles", async (t) => {
-		const { terminal, tui, acted, canceled, click } = settleFixture();
-		tui.start();
-		t.after(() => tui.stop());
-		await terminal.waitForRender();
-		mockClickClock(t);
-		click(1, 0);
-		tui.showOverlay(new Text("Stop everything?", 0, 0), { anchor: "bottom-right", width: 18 });
-		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
-		assert.deepStrictEqual(acted, []);
-		assert.deepStrictEqual(canceled, ["first"], "the row can release what it kept for the click");
 	});
 });

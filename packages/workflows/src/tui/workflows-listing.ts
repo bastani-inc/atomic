@@ -10,18 +10,15 @@ import {
 	themeSelectorStyle,
 } from "@bastani/atomic";
 import {
-	ClickableRows,
 	getKeybindings,
 	Input,
 	matchesKey,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { displayRunStatus } from "../shared/display-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -222,13 +219,13 @@ export function runRowDescription(
 	run: RunSnapshot,
 	now: number,
 	question?: string,
-	status: RunSnapshot["status"] = effectiveRunStatus(run),
+	status: RunSnapshot["status"] = displayRunStatus(run),
 ): string {
 	if (question !== undefined)
 		return ["needs input", sanitizeToolTitleText(question), listingDuration(elapsedRunMs(run, now)), runCostText(run)]
 			.filter((part): part is string => part !== undefined && part !== "")
 			.join(" · ");
-	const state = runStateIndicator(run);
+	const state = runStateIndicator(run, status);
 	const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
 	const live = status === "running" || status === "pending" || status === "paused";
 	const reason = status === "failed" || status === "blocked" ? shortFailureReason(run) : undefined;
@@ -263,16 +260,18 @@ export function workflowsListingItems(
 	now = Date.now(),
 	invalidDefinitions: readonly WorkflowsListingInvalidDefinition[] = [],
 ): SelectorItem<WorkflowsListingTarget>[] {
+	// Reuse a marker the panel already read from this particular input, never a row at its former index.
+	const markers = new Map<RunSnapshot, Pick<RunSnapshot, "blockedAt">>();
 	const waiting = new Map(
-		panelItemsFromSnapshot(runs, now)
+		panelItemsFromSnapshot(runs, now, undefined, undefined, markers)
 			.filter((item) => item.state === "input")
 			.map((item) => [item.id, item.question ?? item.task] as const),
 	);
 	const runItems = [...topLevelWorkflowRuns(runs)]
 		.sort((a, b) => startedAtRank(b) - startedAtRank(a))
 		.map((run): SelectorItem<WorkflowsListingTarget> => {
-			const status = effectiveRunStatus(run);
-			const state = runStateIndicator(run);
+			const status = displayRunStatus(run, markers.get(run) ?? run);
+			const state = runStateIndicator(run, status);
 			const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
 			const question = waiting.get(`run:${run.id}`);
 			const label = inertDisplayLine(runRowLabel(run));
@@ -411,9 +410,7 @@ function renderCompactListing(
 	width: number,
 	previewOpen: boolean,
 	previewAvailable: boolean,
-	rows: ClickableRows<SelectorItem<WorkflowsListingTarget>>,
 ): string[] {
-	rows.clear();
 	const visible = state.getVisible();
 	const top = state.getTop();
 	const end = Math.min(visible.length, top + state.maxVisible);
@@ -443,17 +440,12 @@ function renderCompactListing(
 			line +=
 				" ".repeat(Math.max(2, width - 3 - visibleWidth(label) - visibleWidth(item.tag))) +
 				style.tone(item.tagTone ?? "muted", item.tag);
-		rows.add(lines.length, item, item.id);
 		lines.push(line);
-		rows.add(lines.length, item, item.id);
 		lines.push(`   ${style.muted(truncateToWidth(item.description ?? "", Math.max(1, width - 3)))}`);
 		if (selected && previewOpen && !state.getQuery()) {
 			const target = item.value;
 			const selectedRun = target.kind === "run" ? runs.find((run) => run.id === target.runId) : undefined;
-			for (const line of renderRunPreview(item, selectedRun, style, width)) {
-				rows.add(lines.length, item, item.id);
-				lines.push(line);
-			}
+			lines.push(...renderRunPreview(item, selectedRun, style, width));
 		}
 	}
 	const keybindings = getKeybindings();
@@ -530,8 +522,6 @@ export function openWorkflowsListing(
 			});
 			let baseTop = selector.getTop();
 			let previewOpen = false;
-			/** The rows each workflow and run was drawn on in the last render. */
-			const clickableRows = new ClickableRows<SelectorItem<WorkflowsListingTarget>>();
 			const canShowPreview = (): boolean =>
 				!selector.getQuery() &&
 				selector.getSelected() !== undefined &&
@@ -654,7 +644,6 @@ export function openWorkflowsListing(
 						width,
 						previewOpen,
 						previewAvailable,
-						clickableRows,
 					);
 					while (lines.length > availableRows && maxVisible > 1) {
 						selector.setMaxVisible(--maxVisible);
@@ -666,20 +655,10 @@ export function openWorkflowsListing(
 							width,
 							previewOpen,
 							previewAvailable,
-							clickableRows,
 						);
 					}
 					if (previewOpen && lines.length > availableRows) {
-						lines = renderCompactListing(
-							selector,
-							cachedRuns,
-							search,
-							style,
-							width,
-							false,
-							previewAvailable,
-							clickableRows,
-						);
+						lines = renderCompactListing(selector, cachedRuns, search, style, width, false, previewAvailable);
 					}
 					paintedSelectionId = selector.getSelected()?.id;
 					refreshedSincePaint = false;
@@ -703,20 +682,6 @@ export function openWorkflowsListing(
 					tui.requestRender?.();
 					return true;
 				},
-				// A click on a workflow or run opens it, as moving there and pressing Enter does.
-				handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
-					const result = clickableRows.handleMouse(event, {
-						activate: (item) => {
-							const index = selector.getVisible().findIndex((candidate) => candidate.id === item.id);
-							if (index < 0) return;
-							selector.select(index);
-							finish(item.value);
-						},
-					});
-					if (result) tui.requestRender?.();
-					return result;
-				},
-				paintedRowKey: (row: number): string | undefined => clickableRows.paintedRowKey(row),
 				invalidate: () => search.invalidate(),
 				dispose: () => finish(undefined),
 				get focused() {

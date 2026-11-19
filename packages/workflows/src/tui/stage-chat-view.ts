@@ -19,13 +19,7 @@
  */
 
 import { clickableHintText, repaintAfterSingleClick } from "@bastani/atomic";
-import {
-	ClickableRows,
-	type Component,
-	type Focusable,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
-} from "@bastani/atomic-tui";
+import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
 	renderBlockedBody,
@@ -119,38 +113,13 @@ export class StageChatView implements Component, Focusable {
 
 	/** The frame rows the stage's transcript took in the last render, while the plain chat was drawn. */
 	private transcriptRows: { readonly top: number; readonly rows: number } | undefined;
-	/** The frame rows a dialog the stage opened took in the last render, while one was drawn. */
-	private customUiRows: { readonly top: number; readonly rows: number } | undefined;
-	/** Where the last render drew each answer of the stage's question card. */
-	private readonly promptRows = new ClickableRows<PromptAnswerTarget>();
 
 	constructor(opts: StageChatViewOpts) {
 		initializeStageChatView(this._ctx(), opts);
 	}
 
-	/**
-	 * A single click on any row of a block in the stage's transcript expands or collapses that block. A click in a
-	 * dialog the stage opened reaches that dialog, and a click on an answer of the stage's question chooses it, as
-	 * moving there and pressing Enter does.
-	 */
+	/** A single click on any row of a block in the stage's transcript expands or collapses that block. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const dialog = this.customUiRows;
-		const mounted = this.mountedCustomUi?.component;
-		if (
-			event.type !== "wheel" &&
-			dialog !== undefined &&
-			mounted !== undefined &&
-			event.y >= dialog.top &&
-			event.y < dialog.top + dialog.rows
-		) {
-			const result = mounted.handleMouse?.({ ...event, y: event.y - dialog.top, height: dialog.rows });
-			if (result) this.requestRender?.();
-			return result;
-		}
-		if (!this.helpOpen && promptCardShown(this._ctx())) {
-			const result = this.promptRows.handleMouse(event, { activate: (target) => this.answerPrompt(target) });
-			if (result) return result;
-		}
 		const region = this.transcriptRows;
 		if (region === undefined || event.y < region.top || event.y >= region.top + region.rows) return undefined;
 		// While a dialog the stage opened, its question or the key help owns input, a click on the transcript does nothing.
@@ -159,33 +128,16 @@ export class StageChatView implements Component, Focusable {
 		return repaintAfterSingleClick(result, () => this.requestRender?.());
 	}
 
-	/** What the last frame drew on `row`: the entry there and the row within it, a dialog's row, or a question's answer. */
+	/** What the last frame drew on `row` of the transcript: the entry there and the row within it. */
 	paintedRowKey(row: number): string | undefined {
-		const dialog = this.customUiRows;
-		if (dialog !== undefined && row >= dialog.top && row < dialog.top + dialog.rows) {
-			return this.mountedCustomUi?.component.paintedRowKey?.(row - dialog.top);
-		}
-		const answer = this.promptRows.paintedRowKey(row);
-		if (answer !== undefined) return answer;
 		const region = this.transcriptRows;
 		if (region === undefined || row < region.top || row >= region.top + region.rows) return undefined;
 		return this.chatHost.bodyRowKey(row - region.top);
 	}
 
-	/** Choose a clicked answer of the stage's question through the keys: move to it, then Enter. */
-	private answerPrompt(target: PromptAnswerTarget): void {
-		const state = this.promptState;
-		if (state === null) return;
-		if (target.kind === "choice") state.selectedIndex = target.index;
-		else state.confirmValue = target.value;
-		this.handleInput("\r");
-	}
-
 	render(width: number): string[] {
 		const ctx = this._ctx();
 		this.transcriptRows = undefined;
-		this.customUiRows = undefined;
-		this.promptRows.clear();
 		if (this.chatHost.hasTaskInspector) {
 			const taskWidth = Math.max(1, width);
 			const rows = viewLineCount(ctx);
@@ -312,15 +264,9 @@ export class StageChatView implements Component, Focusable {
 			...visibleEditorLines,
 			...visibleFooterLines,
 		];
-		if (customUiActive) {
-			const above = lines.length - visibleEditorLines.length - visibleFooterLines.length;
-			// A frame taller than the view loses rows from its top; the dialog sits below them and moves up with them.
-			const top = above - Math.max(0, lines.length - totalRows);
-			if (top >= 0) this.customUiRows = { top, rows: visibleEditorLines.length };
-		}
 		// A frame taller than the view loses rows from its top, and the transcript rows with them.
 		if (lines.length > totalRows) this.transcriptRows = undefined;
-		return this.promptRows.collect(fitStageChatFrame(lines, totalRows, blankLine(w)), parsePromptAnswer);
+		return fitStageChatFrame(lines, totalRows, blankLine(w));
 	}
 
 	handleInput(data: string): boolean {
@@ -412,18 +358,4 @@ export class StageChatView implements Component, Focusable {
 	get _lastBodyMaxScroll(): number {
 		return this.chatHost.bodyMaxScroll();
 	}
-}
-
-/** An answer of the stage's question card: a choice of a select question, or yes or no. */
-type PromptAnswerTarget =
-	| { readonly kind: "choice"; readonly index: number }
-	| { readonly kind: "confirm"; readonly value: boolean };
-
-/** The answer a prompt card's mark names; see `markPromptAnswer` in `prompt-card-render.ts`. */
-function parsePromptAnswer(key: string): PromptAnswerTarget | undefined {
-	if (key === "confirm:yes") return { kind: "confirm", value: true };
-	if (key === "confirm:no") return { kind: "confirm", value: false };
-	if (!key.startsWith("choice:")) return undefined;
-	const index = Number(key.slice("choice:".length));
-	return Number.isInteger(index) && index >= 0 ? { kind: "choice", index } : undefined;
 }

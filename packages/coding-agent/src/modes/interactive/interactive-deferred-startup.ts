@@ -68,13 +68,16 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		}
 	};
 	try {
+		const heldProject =
+			this.runtimeHost?.isProjectTrustPending?.() && !this.runtimeHost.pendingProjectResourcesTrusted?.();
 		await this.bindCurrentSessionExtensions();
 		const completedStartupTrust = Boolean(await this.runtimeHost?.completeStartup?.());
 		if (!completedStartupTrust) await this.session.reload({ reason: "startup" });
 		this.applyRuntimeSettings();
 		// Initial transcript rows precede deferred extension loading, so rebuild them
-		// against the new extension registry before releasing startup output.
-		this.rebuildChatFromMessages();
+		// against the new extension registry before releasing startup output. The transcript was offscreen;
+		// a press held in the editor through trust does not belong to these rows.
+		this.rebuildChatFromMessages(heldProject ? { preserveViewportInput: true } : undefined);
 
 		// A prompt turn keeps its own working loader mounted from submit until
 		// `agent_start` or `compaction_start` takes over; tearing it down here
@@ -86,8 +89,8 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		recordTimeSinceReset("deferred-extension-load");
 
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-		await this.themeController.applyFromSettings();
-		this.setupAutocompleteProvider();
+		await this.themeController.applyFromSettings(heldProject ? { keepPreview: true } : undefined);
+		this.setupAutocompleteProvider(heldProject ? { preserveSelection: true } : undefined);
 		this.setupExtensionShortcuts(this.session.extensionRunner);
 		try {
 			if (completedStartupTrust) {

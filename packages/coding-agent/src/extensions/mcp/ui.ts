@@ -12,8 +12,6 @@ import {
 	Spacer,
 	Text,
 	type TUI,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 } from "@bastani/atomic-tui";
@@ -251,18 +249,6 @@ export class McpManagerView implements McpUi, Component, Focusable {
 		return this.content
 			.render(width)
 			.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width, "") : line));
-	}
-
-	/** A click on a menu row runs it, as moving there and pressing Enter does. */
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (event.type !== "press" && event.type !== "click") return undefined;
-		const result = this.content.handleMouse?.(event);
-		if (result) this.tui.requestRender();
-		return result;
-	}
-
-	paintedRowKey(row: number): string | undefined {
-		return this.content.paintedRowKey?.(row);
 	}
 
 	invalidate(): void {

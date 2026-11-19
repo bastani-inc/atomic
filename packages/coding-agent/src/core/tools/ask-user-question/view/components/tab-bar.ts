@@ -1,7 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
 import { singleLineDisplayText } from "../../../../../utils/terminal-text.ts";
-import { markClickTarget } from "../click-targets.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
 export interface TabBarProps {
@@ -35,9 +34,7 @@ export class TabBar implements StatefulView<TabBarProps> {
 		const steps = [
 			...this.props.tabs.map((tab) => step(singleLineDisplayText(tab.label), tab.active, tab.answered)),
 			step("Review", this.props.submit.active, this.props.submit.allAnswered),
-		]
-			.map((text, index) => markClickTarget({ kind: "tab", index }, text))
-			.join(theme.fg("dim", " ── "));
+		].join(theme.fg("dim", " ── "));
 		const activeIndex = this.props.tabs.findIndex((tab) => tab.active);
 		const total = this.props.tabs.length;
 		const answered = this.props.tabs.filter((tab) => tab.answered).length;

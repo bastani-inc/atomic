@@ -179,10 +179,11 @@ export async function showTaskInspector(
 								return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 							});
 						},
-						// The page and the inline list both draw from their own top row, so the click's row is theirs.
+						// A full-screen page draws from the top row, so the click's row is the page's.
 						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
-							fullscreen || event.type !== "wheel" ? inspector.handleMouse(event) : undefined,
-						paintedRowKey: (row: number): string | undefined => inspector.paintedRowKey(row),
+							fullscreen ? inspector.handleMouse(event) : undefined,
+						paintedRowKey: (row: number): string | undefined =>
+							fullscreen ? inspector.paintedRowKey(row) : undefined,
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
 							closed = true;

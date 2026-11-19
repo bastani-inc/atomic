@@ -44,7 +44,7 @@ class ClaimingOverlay implements Component {
 	readonly handledInputs: string[] = [];
 
 	render(): string[] {
-		return [hyperlink("jump from dialog", TRANSCRIPT_JUMP_TO_END_URL)];
+		return ["dialog"];
 	}
 
 	handleInput(data: string): boolean {
@@ -140,9 +140,8 @@ function createFixture(): Fixture {
 }
 
 /** Locate the screen cell carrying an OSC 8 link to `url`. */
-function findLinkCell(screen: string[], url: string, startRow = 0): { row: number; column: number } {
+function findLinkCell(screen: string[], url: string): { row: number; column: number } {
 	for (const [row, line] of screen.entries()) {
-		if (row < startRow) continue;
 		for (let column = 0; column < 60; column += 1) {
 			if (getOsc8LinkAtColumn(line, column) === url) return { row, column };
 		}
@@ -182,12 +181,8 @@ describe("generic SGR mouse release (upstream #7963)", () => {
 	test("activates an OSC 8 link on a generic SGR release", () => {
 		const fixture = createFixture();
 		try {
-			const background = findLinkCell(fixture.screen(), TRANSCRIPT_JUMP_TO_END_URL);
-			fixture.terminal.input(sgr(PRESS, background.column, background.row));
-			fixture.terminal.input(sgr(GENERIC_RELEASE, background.column, background.row, true));
-			assert.deepEqual(fixture.internalUiActions, [], "the focused dialog blocks the transcript's link");
+			const link = findLinkCell(fixture.screen(), TRANSCRIPT_JUMP_TO_END_URL);
 
-			const link = findLinkCell(fixture.screen(), TRANSCRIPT_JUMP_TO_END_URL, background.row + 1);
 			fixture.terminal.input(sgr(PRESS, link.column, link.row));
 			fixture.terminal.input(sgr(GENERIC_RELEASE, link.column, link.row, true));
 

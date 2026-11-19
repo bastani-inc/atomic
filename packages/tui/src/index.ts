@@ -31,14 +31,6 @@ export {
 	slashCommandHint,
 	stripHintMarkers,
 } from "./clickable-hints.ts";
-export {
-	type ClickableColumns,
-	ClickableRow,
-	type ClickableRowActions,
-	ClickableRows,
-	type ClickableRowsSnapshot,
-	isSingleLeftClick,
-} from "./clickable-rows.ts";
 // Colors and styling
 export {
 	backgroundAnsi,
@@ -145,7 +137,6 @@ export {
 	Key,
 	type KeyEventType,
 	type KeyId,
-	keyInput,
 	keyInputData,
 	matchesKey,
 	parseKey,

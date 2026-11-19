@@ -1,4 +1,5 @@
 import { renderNavKeyOverlay } from "@bastani/atomic";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { colorLevelKey, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
@@ -12,13 +13,7 @@ import { NODE_H } from "./layout.js";
 import { type RunOutcome, renderRunOutcome } from "./run-outcome.js";
 import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { renderStageFailureDetailLines } from "./stage-failure-detail.js";
-import {
-	filterStages,
-	renderSwitcher,
-	SWITCHER_LIST_TOP,
-	SWITCHER_MAX_VISIBLE,
-	switcherWindowStart,
-} from "./switcher.js";
+import { renderSwitcher } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { renderToolDetailLines } from "./tool-detail.js";
 
@@ -60,6 +55,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private lastOverlayFrameHeight = 0;
 	private hasReportedViewportRows = false;
 	private renderRun: RunSnapshot | null | undefined;
+	private headerRun?: RunSnapshot;
 	private detailFrame: ToolDetailFrame | null = null;
 
 	private stageDetailFrame: {
@@ -95,9 +91,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	/** Render to string lines. width = terminal columns. */
 	render(width: number): string[] {
 		this._syncLayout();
-		if (this.mode === "widget") return this._renderWidget(width);
-		this._refreshQueuedNodeHeights();
-		return this._renderOverlay(width);
+		try {
+			if (this.mode === "widget") return this._renderWidget(width);
+			this._refreshQueuedNodeHeights();
+			return this._renderOverlay(width);
+		} finally {
+			this.displayBlock = undefined;
+			this.headerRun = undefined;
+		}
 	}
 
 	override dispose(): void {
@@ -105,14 +106,29 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		super.dispose();
 	}
 
+	private _headerSnapshot(run: RunSnapshot, stages: StageSnapshot[]): RunSnapshot {
+		const header = { ...run, stages };
+		// The header samples enumerable fields. Share its marker with the footer and switcher for this paint.
+		this.displayBlock = { run, marker: "blockedAt" in header ? header : run };
+		return header;
+	}
+
+	private _renderRunHeader(run: RunSnapshot, header: RunSnapshot, width: number): string[] {
+		return renderHeader(header, {
+			width,
+			theme: this.graphTheme,
+			displayStatus: () => this._runDisplayStatus(run, effectiveRunStatus(header)),
+		});
+	}
+
 	protected _renderWidget(width: number): string[] {
 		const run = this._getCurrentRun();
 		if (!run) return [`${hexToAnsi(this.graphTheme.dim)}no active workflow${RESET}`];
 		const displayStages = this._displayStages(run);
-		const headerLines = renderHeader({ ...run, stages: displayStages }, { width, theme: this.graphTheme });
+		const headerLines = this._renderRunHeader(run, this._headerSnapshot(run, displayStages), width);
 		const counts = this._counts(displayStages);
 		const dim = hexToAnsi(this.graphTheme.dim);
-		const runState = runStateIndicator(run);
+		const runState = runStateIndicator(run, () => this._runDisplayStatus(run));
 		const runStateLead =
 			runState === undefined
 				? ""
@@ -131,13 +147,12 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const frameWidth = Math.max(40, width);
 		const run = this._getCurrentRun();
 		this.renderRun = run;
-		this.graphNodeClicks.clear();
-		this.switcherClicks.clear();
 		// One frame, one detail layout: the scroll clamp and the painted rows
 		// must come from the same line array, and a running node's timing must
 		// still advance between frames.
 		this.detailFrame = null;
 		try {
+			if (run) this.headerRun = this._headerSnapshot(run, this._displayStages(run));
 			const frameHeight = this._overlayFrameHeight(run);
 			const layoutFrame = this.graphLayout.render(frameWidth, frameHeight);
 			const lines = this._normalizeLayoutLines(
@@ -152,12 +167,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			const bodyRows = layoutFrame.bodyBox?.rect.height ?? this.graphLayout.viewportRows;
 			if (run) {
 				if (this._detailOpen()) {
+					this.graphNodeHitRects = [];
 					this.lastGraphViewport = null;
 				} else {
 					this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
 					this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
 				}
 			} else {
+				this.graphNodeHitRects = [];
 				this.lastGraphViewport = null;
 			}
 			this._renderKeysHelpOverlay(lines, frameWidth, bodyStart, bodyRows);
@@ -367,8 +384,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	}
 
 	private _renderHeader(width: number): string[] {
-		const run = this._currentRenderRun();
-		if (run) return renderHeader({ ...run, stages: this._displayStages(run) }, { width, theme: this.graphTheme });
+		if (this.headerRun && this.renderRun) return this._renderRunHeader(this.renderRun, this.headerRun, width);
 
 		const t = this.graphTheme;
 		const muted = hexToAnsi(t.textMuted);
@@ -444,23 +460,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const bodyEnd = bodyStart + bodyRows;
 		for (let row = bodyStart; row < bodyEnd; row++) lines[row] = this._blankRow(frameWidth);
 		const switcherWidth = Math.min(60, Math.max(40, frameWidth - 8));
-		const stages = this._displayStages(run);
-		const switcherLines = renderSwitcher(stages, this.switcherState, {
+		const switcherLines = renderSwitcher(this._displayStages(run), this.switcherState, {
 			width: switcherWidth,
 			theme: this.graphTheme,
-			runState: runStateIndicator(run),
+			runState: runStateIndicator(run, () => this._runDisplayStatus(run)),
 			canOpenStageChat: (stage) => this._stageChatTarget(stage) !== undefined,
 		});
 		const insertAt = Math.max(bodyStart, bodyStart + Math.min(2, Math.floor((bodyRows - switcherLines.length) / 3)));
 		const switcherLeft = Math.max(2, Math.floor((frameWidth - switcherWidth) / 2));
-		// The listed stages run from below the header, one row each, within the rows the body shows.
-		const start = switcherWindowStart(this.switcherState);
-		const listed = filterStages(stages, this.switcherState.query).slice(start, start + SWITCHER_MAX_VISIBLE);
-		const columns = { start: switcherLeft, end: switcherLeft + switcherWidth };
-		for (const [index, stage] of listed.entries()) {
-			const row = insertAt + SWITCHER_LIST_TOP + index;
-			if (row < bodyEnd) this.switcherClicks.add(row, stage.id, stage.id, columns);
-		}
 		for (let index = 0; index < switcherLines.length; index++) {
 			const lineIndex = insertAt + index;
 			if (lineIndex >= bodyEnd) break;

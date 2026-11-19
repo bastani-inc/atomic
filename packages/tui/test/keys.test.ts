@@ -10,39 +10,10 @@ import {
 	isKeyRelease,
 	isKeyRepeat,
 	Key,
-	type KeyId,
-	keyInput,
 	matchesKey,
 	parseKey,
 	setKittyProtocolActive,
 } from "../src/keys.ts";
-
-it("a synthesized press matches every supported configured key in both input modes", () => {
-	const bases = [
-		...new Set([
-			...Object.values(Key).filter((key) => typeof key === "string"),
-			..."abcdefghijklmnopqrstuvwxyz0123456789",
-		]),
-	];
-	try {
-		for (const extended of [false, true]) {
-			setKittyProtocolActive(extended);
-			for (const base of bases) {
-				for (let mask = 0; mask < 16; mask++) {
-					// Escape has no modified form; Clear has only the plain, Shift and Ctrl reports.
-					if ((base === "esc" || base === "escape") && mask !== 0) continue;
-					if (base === "clear" && ![0, 1, 4].includes(mask)) continue;
-					const modifiers = ["shift", "alt", "ctrl", "super"].filter((_, bit) => mask & (1 << bit));
-					const key = [...modifiers, base].join("+") as KeyId;
-					const input = keyInput(key);
-					assert.ok(input && matchesKey(input, key), `${key}, extended input: ${extended}`);
-				}
-			}
-		}
-	} finally {
-		setKittyProtocolActive(false);
-	}
-});
 
 function withEnv(name: string, value: string | undefined, fn: () => void): void {
 	const previous = process.env[name];

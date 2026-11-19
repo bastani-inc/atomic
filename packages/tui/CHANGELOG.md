@@ -4,20 +4,29 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.9.90] - 2026-11-19
+
 ### Added
 
-- `keyInput` returns terminal input for a configured key, including modified function and navigation keys. `ClickableRows` and `ClickableRow` run a list row on one left click as Enter on it would. Presses and drags stay with text selection, and a double or triple click does not run the row again. `SelectList`, `SettingsList` and the editor's autocomplete rows use them.
 - `clickableHint()`, `clickableKeysHint()`, `clickableKeyTextHint()`, `clickableHintText()` and `slashCommandHint()` mark hint text with the key or slash command a click on it runs; the marks take no columns and never reach the terminal. In the fullscreen renderer a single left click on a marked hint sends its key through the input path, as a key press, to whatever has the keyboard, and a hint drawn under an overlay that has the keyboard runs nothing. A hint keeps its action on every row it wraps onto, and ends where its text does when it is truncated or an overlay covers part of it. `setHintCommandHandler()` receives the slash commands, `isHintActivation()` tells a component that the key it handles came from a click, and `keyInputData(keyId)` returns the input a key sends, including modified function keys such as Ctrl+F1. A press and release do nothing if a repaint changes the hint's action without changing its text. In a key hint such as `esc / enter`, clicking the separator presses the preceding key; in `esc / / pick`, clicking the last slash or `pick` presses `/`, whether you pass the whole hint as text or supply its label separately. `clickableHintText(text, bindings)` accepts bare letters, digits and punctuation as keys only when explicitly bound, apart from a literal slash after a recognized key; counts, ratios and paths are not shortcut hints. Only core commands and currently registered bundled commands are inferred from text; mark a custom command with `slashCommandHint()`. An unregistered command hint does not submit a message. Hint markers do not add a blank row or preserve extra trailing spaces when a label wraps
 - A mouse handler can return `whenSingleClick` for a single click. It runs once the click cannot become a double- or triple-click: `MULTI_CLICK_INTERVAL_MS` (500 ms, now exported) after the press with no second press on the same spot. A second press there cancels it, so text selection by double- and triple-click never triggers it.
-
-### Changed
-
-- A focused dialog blocks clicks on rows, links and blocks behind it, even before its first paint. Opening and closing a dialog also cancels a press or deferred click that started before it. This applies to capturing overlays and to a dialog the host identifies with `getInlineDialog`. A navigation overlay can set `modal: false` to take keyboard focus without blocking other panes. A first click focuses a keyboard-driven pane and activates its row together. A drag outside still selects text; non-capturing overlays do not block the rest of the screen.
+- `Editor.setAutocompleteProvider(provider, { preserveSelection: true })` keeps an open menu and its provider for the current choice. The next lookup uses the new provider. A lookup that has not opened a menu can retry with the new provider. Without the option, replacing the provider closes the menu as before.
 
 ### Fixed
 
 - Holding the second press of a double-click no longer runs single-click actions on components that take their own presses. A system clock adjustment does not delay a pending single click. A wheel turn, drag or loss of terminal focus breaks the click sequence. A single click that clears a text selection still acts on the item, and clicking two different items painted at the same cell runs both single-click actions ([#5562](https://github.com/bastani-inc/atomic/issues/5562)).
-- If a picker refresh replaces the row just clicked, clicking the replacement starts a new click instead of selecting the word as a double-click.
+
+## [0.9.90-alpha.1] - 2026-11-19
+
+### Added
+
+- `clickableHint()`, `clickableKeysHint()`, `clickableKeyTextHint()`, `clickableHintText()` and `slashCommandHint()` mark hint text with the key or slash command a click on it runs; the marks take no columns and never reach the terminal. In the fullscreen renderer a single left click on a marked hint sends its key through the input path, as a key press, to whatever has the keyboard, and a hint drawn under an overlay that has the keyboard runs nothing. A hint keeps its action on every row it wraps onto, and ends where its text does when it is truncated or an overlay covers part of it. `setHintCommandHandler()` receives the slash commands, `isHintActivation()` tells a component that the key it handles came from a click, and `keyInputData(keyId)` returns the input a key sends, including modified function keys such as Ctrl+F1. A press and release do nothing if a repaint changes the hint's action without changing its text. In a key hint such as `esc / enter`, clicking the separator presses the preceding key; in `esc / / pick`, clicking the last slash or `pick` presses `/`, whether you pass the whole hint as text or supply its label separately. `clickableHintText(text, bindings)` accepts bare letters, digits and punctuation as keys only when explicitly bound, apart from a literal slash after a recognized key; counts, ratios and paths are not shortcut hints. Only core commands and currently registered bundled commands are inferred from text; mark a custom command with `slashCommandHint()`. An unregistered command hint does not submit a message. Hint markers do not add a blank row or preserve extra trailing spaces when a label wraps
+- A mouse handler can return `whenSingleClick` for a single click. It runs once the click cannot become a double- or triple-click: `MULTI_CLICK_INTERVAL_MS` (500 ms, now exported) after the press with no second press on the same spot. A second press there cancels it, so text selection by double- and triple-click never triggers it.
+- `Editor.setAutocompleteProvider(provider, { preserveSelection: true })` keeps an open menu and its provider for the current choice. The next lookup uses the new provider. A lookup that has not opened a menu can retry with the new provider. Without the option, replacing the provider closes the menu as before.
+
+### Fixed
+
+- Holding the second press of a double-click no longer runs single-click actions on components that take their own presses. A system clock adjustment does not delay a pending single click. A wheel turn, drag or loss of terminal focus breaks the click sequence. A single click that clears a text selection still acts on the item, and clicking two different items painted at the same cell runs both single-click actions ([#5562](https://github.com/bastani-inc/atomic/issues/5562)).
 
 ## [0.9.89] - 2026-11-18
 

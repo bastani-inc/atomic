@@ -12,8 +12,6 @@ import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/o
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { bindAgentPanel, showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import type { TaskInspectorUi } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
-import { leavePaneVisible } from "../helpers/engine-click-screen.js";
-import { flushClicks, makeClickScreen } from "../helpers/fullscreen-clicks.js";
 import { taskRecord } from "../helpers/task-record.js";
 
 type MouseComponent = Component & {
@@ -123,33 +121,6 @@ for (const width of [80, 160]) {
 		assert.deepEqual(opened, [], "the main row is where the reader already is");
 		assert.equal(click(widget, target.row, width, lines.length)?.handled, true);
 		assert.deepEqual(opened, [target.id]);
-	});
-}
-
-for (const host of ["local", "engine"] as const) {
-	test(`the first click from the composer opens the clicked agent panel row (${host})`, async () => {
-		const ui = makeClickScreen();
-		const { session, opened } = panelSession([agent("a1")], [workflow("run:first", "first-run")]);
-		let pane!: MouseComponent;
-		void showAgentPanel(session as never, {
-			custom: (factory) =>
-				new Promise((done) => {
-					void Promise.resolve(factory(ui.tui, theme, new KeybindingsManager(), done)).then((component) => {
-						pane = component;
-					});
-				}),
-		});
-		await flushClicks();
-		const mounted = await leavePaneVisible(ui, pane, host, false);
-		try {
-			await ui.click("first-run");
-			await flushClicks();
-			assert.deepEqual(opened, ["run:first"]);
-		} finally {
-			mounted.dispose();
-			pane.dispose?.();
-			ui.tui.stop();
-		}
 	});
 }
 

@@ -17,7 +17,6 @@ import {
 	Text,
 	type TUI,
 	type TuiAltScreen,
-	type TuiMouseEvent,
 	VStack,
 } from "@bastani/atomic-tui";
 import { test } from "vitest";
@@ -338,12 +337,9 @@ async function makeFullscreenGraphFixture(options: BridgeOptions = {}): Promise<
 			detached.count++;
 		},
 	});
-	// As the workflow overlay adapter mounts the graph: input, clicks and the rows it drew all reach it.
 	void bridge.child.custom(() => ({
 		render: (width: number) => graph.render(width),
 		handleInput: (data: string) => graph.handleInput(data),
-		handleMouse: (event: TuiMouseEvent) => graph.handleMouse(event),
-		paintedRowKey: (row: number) => graph.paintedRowKey(row),
 		invalidate: () => graph.invalidate(),
 		dispose: () => graph.dispose(),
 	}));
@@ -566,34 +562,13 @@ test("fullscreen forwards a modified SGR release to close overlay selection", as
 });
 
 test("fullscreen skips application selection for modified overlay clicks", async () => {
-	// An overlay that takes every input, as one that handles its own clicks does: the graph leaves presses to selection.
-	const bridge = makeBridge({ fullscreen: true });
-	void bridge.child.custom(
-		() => ({
-			render: () => ["selectable overlay"],
-			handleInput: () => true,
-			invalidate: () => {},
-		}),
-		{ overlay: true },
-	);
-	await flush();
-	const host = bridge.hostComponent;
-	const tui = bridge.tui;
-	const terminal = bridge.terminal;
-	assert.ok(host, "remote overlay did not mount on the host");
-	assert.ok(tui, "fullscreen renderer did not mount");
-	assert.ok(terminal, "fullscreen terminal did not mount");
-	tui.setLayoutRoot(new Text("transcript", 0, 0));
-	const overlay = tui.showOverlay(host, { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 });
-	tui.start();
-	tui.renderNow();
+	const { host, overlay, tui, terminal } = await makeFullscreenGraphFixture();
 	try {
-		await flush();
 		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
-		const targetRow = lines.findIndex((line) => line.includes("selectable overlay"));
-		assert.ok(targetRow >= 0, "overlay did not render selectable text");
-		const targetCol = lines[targetRow]!.indexOf("selectable overlay");
-		assert.ok(targetCol >= 0, "overlay text was not found");
+		const targetRow = lines.findIndex((line) => line.includes("stage-0"));
+		assert.ok(targetRow >= 0, "workflow overlay did not render a selectable row");
+		const targetCol = lines[targetRow]!.indexOf("stage-0");
+		assert.ok(targetCol >= 0, "workflow overlay did not render selectable text");
 
 		for (const button of [4, 8, 16]) {
 			terminal.input(sgrMouse(button, targetCol, targetRow));

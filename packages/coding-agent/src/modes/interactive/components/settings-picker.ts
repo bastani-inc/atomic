@@ -15,6 +15,7 @@ export class SettingsPicker implements Component, Focusable {
 	private readonly selector: Selector<SettingItem>;
 	private submenu: Component | null = null;
 	private submenuItemId: string | null = null;
+	private nextSubmenus?: () => SettingItem[];
 	private navigateAfterClose: string | null = null;
 	private _focused = false;
 
@@ -52,6 +53,33 @@ export class SettingsPicker implements Component, Focusable {
 		this._focused = value;
 		this.selector.focused = value;
 		if (this.submenu && "focused" in this.submenu) (this.submenu as Component & Focusable).focused = value;
+	}
+
+	setSubmenuSource(read: () => SettingItem[]): void {
+		this.nextSubmenus = read;
+	}
+
+	setItems(items: SettingItem[]): void {
+		this.nextSubmenus = undefined;
+		this.items.splice(0, this.items.length, ...items);
+		this.refresh();
+		this.restoreSubmenu(this);
+	}
+
+	restoreNavigation(previous: Component): void {
+		if (!(previous instanceof SettingsPicker)) return;
+		this.selector.restoreNavigation(previous.selector, true);
+		this.restoreSubmenu(previous);
+	}
+
+	private restoreSubmenu(previous: SettingsPicker): void {
+		const open = previous.submenu;
+		if (!open) return;
+		const item = this.items.find(({ id }) => id === previous.submenuItemId);
+		this.submenu = null;
+		this.submenuItemId = null;
+		// Use the new row's factory: values, labels and save callbacks belong to one settings snapshot.
+		if (item?.submenu) this.activate(item, open);
 	}
 
 	updateValue(id: string, newValue: string): void {
@@ -96,11 +124,6 @@ export class SettingsPicker implements Component, Focusable {
 		return this.selector.handleMouse(event);
 	}
 
-	/** The row the last render drew on `row`, the open submenu's while one is open. */
-	paintedRowKey(row: number): string | undefined {
-		return this.submenu ? this.submenu.paintedRowKey?.(row) : this.selector.paintedRowKey(row);
-	}
-
 	private selectorItems(): SelectorItem<SettingItem>[] {
 		return this.items.map((item) => ({
 			id: item.id,
@@ -116,17 +139,22 @@ export class SettingsPicker implements Component, Focusable {
 		this.selector.setItems(this.selectorItems());
 	}
 
-	private activate(item: SettingItem): void {
+	private activate(item: SettingItem, previous?: Component): void {
+		if (item.submenu && this.nextSubmenus) item = this.nextSubmenus().find((entry) => entry.id === item.id) ?? item;
 		if (item.submenu) {
 			this.submenuItemId = item.id;
 			this.submenu = item.submenu(item.currentValue, (selectedValue, options) => {
 				if (selectedValue !== undefined) {
-					item.currentValue = selectedValue;
+					const current = this.items.find((entry) => entry.id === item.id);
+					if (current) current.currentValue = selectedValue;
 					this.onChange(item.id, selectedValue);
 				}
 				if (options?.navigateTo) this.navigateAfterClose = options.navigateTo;
 				this.closeSubmenu();
 			});
+			if (previous && "restoreNavigation" in this.submenu && typeof this.submenu.restoreNavigation === "function") {
+				this.submenu.restoreNavigation(previous);
+			}
 			if ("focused" in this.submenu) (this.submenu as Component & Focusable).focused = this._focused;
 			return;
 		}

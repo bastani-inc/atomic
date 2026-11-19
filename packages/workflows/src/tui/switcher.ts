@@ -91,17 +91,6 @@ function topBorder(
 	return `${border}╭─${RESET}${titleFg}${title}${RESET}${border}${rule}╮${RESET}`;
 }
 
-/** Stages the switcher lists at once, in a window around the selection. */
-export const SWITCHER_MAX_VISIBLE = 8;
-
-/** Rows {@link renderSwitcher} draws above the first listed stage: the top border, the header and its rule. */
-export const SWITCHER_LIST_TOP = 3;
-
-/** The index, among the stages the query matches, of the first one the switcher lists. */
-export function switcherWindowStart(state: SwitcherState): number {
-	return Math.max(0, state.selectedIndex - Math.floor(SWITCHER_MAX_VISIBLE / 2));
-}
-
 export function renderSwitcher(stages: readonly StageSnapshot[], state: SwitcherState, opts: SwitcherOpts): string[] {
 	const { width, theme } = opts;
 	const filtered = filterStages(stages, state.query);
@@ -153,8 +142,9 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 	lines.push(`${border}│${RESET}${panelBg}${rule}${border}│${RESET}`);
 
 	// Stage list — viewport of 8 around selection
-	const start = switcherWindowStart(state);
-	const visible = filtered.slice(start, start + SWITCHER_MAX_VISIBLE);
+	const maxVisible = 8;
+	const start = Math.max(0, state.selectedIndex - Math.floor(maxVisible / 2));
+	const visible = filtered.slice(start, start + maxVisible);
 
 	if (visible.length === 0) {
 		const empty = `${panelBg}${dim}  (no matches)${RESET}${panelBg}`;

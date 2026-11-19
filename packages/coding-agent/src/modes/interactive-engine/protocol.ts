@@ -30,7 +30,6 @@ export type JsonValue = boolean | JsonObject | JsonValue[] | null | number | str
 
 export interface SerializableOverlayOptions {
 	anchor?: string;
-	modal?: boolean;
 	col?: number | string;
 	margin?: number | { top?: number; right?: number; bottom?: number; left?: number };
 	maxHeight?: number | string;
@@ -114,7 +113,6 @@ export type InteractiveEngineMessage =
 	| {
 			type: "engine_custom_open";
 			componentId: string;
-			acceptsClickFocus?: boolean;
 			overlay: boolean;
 			purpose?: "prompt" | "navigation";
 			deferInlineCustomUiFocus?: boolean;
@@ -672,7 +670,6 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						type: value.type,
 						componentId: value.componentId,
 						overlay: value.overlay,
-						...(value.acceptsClickFocus === false ? { acceptsClickFocus: false } : {}),
 						...(value.purpose === "navigation" || value.purpose === "prompt" ? { purpose: value.purpose } : {}),
 						deferInlineCustomUiFocus: value.deferInlineCustomUiFocus === true,
 						handlesCtrlC: value.handlesCtrlC === true,

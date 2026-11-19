@@ -426,6 +426,8 @@ export class InteractiveModeBase {
 		theme,
 	});
 	mermaidMarkdownTransformerMode: MermaidRenderingMode | undefined;
+	mermaidTransformerWithheldProject = false;
+	mermaidUserEdit = 0;
 
 	// Skill commands: command name -> skill file path
 	skillCommands = new Map<string, string>();
@@ -501,7 +503,6 @@ export class InteractiveModeBase {
 	extensionDialogs: Array<{
 		component: ExtensionDialogComponent;
 		blocked: BlockedStatus | undefined;
-		purpose?: "prompt" | "navigation";
 		release?: () => void;
 	}> = [];
 	/** Numbers the program status sources of blocking overlays, so closing one keeps the others. */
@@ -603,10 +604,9 @@ export class InteractiveModeBase {
 		blocked?: BlockedStatus,
 		focus = true,
 		release?: () => void,
-		purpose?: "prompt" | "navigation",
 	): void {
 		this.disposeActiveSelector();
-		this.extensionDialogs.push({ component, blocked, release, purpose });
+		this.extensionDialogs.push({ component, blocked, release });
 		this.showTopExtensionDialog(focus);
 	}
 
@@ -740,13 +740,6 @@ export class InteractiveModeBase {
 			terminal: options.terminal,
 			copyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			wheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
-			getInlineDialog: () => {
-				const mounted = this.editorContainer.children.at(-1);
-				const top = this.extensionDialogs.at(-1);
-				return mounted === this.editor || (top?.purpose === "navigation" && top.component === mounted)
-					? undefined
-					: mounted;
-			},
 			onRightClickPaste: this.onRightClickPaste,
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,

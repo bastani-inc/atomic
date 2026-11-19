@@ -1,13 +1,10 @@
 import { basename, dirname, join, relative } from "node:path";
 import {
-	ClickableRows,
 	type Component,
 	type Focusable,
 	getKeybindings,
 	Input,
 	matchesKey,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 } from "@bastani/atomic-tui";
@@ -175,8 +172,6 @@ export class ResourceList implements Component, Focusable {
 	public onExit?: () => void;
 	public onToggle?: (item: ResourceItem, newEnabled: boolean) => void;
 	public onSwitchMode?: () => void;
-	/** The row each resource was drawn on in the last render. */
-	private readonly clickableRows = new ClickableRows<ResourceItem>();
 	private _focused = false;
 	get focused(): boolean {
 		return this._focused;
@@ -327,7 +322,6 @@ export class ResourceList implements Component, Focusable {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		this.clickableRows.clear();
 		const gap = this.compactSearch ? [] : [""];
 		return [...this.renderList(width), ...gap, this.renderHint(width)].map((line) =>
 			visibleWidth(line) > width ? truncateToWidth(line, width) : line,
@@ -390,7 +384,6 @@ export class ResourceList implements Component, Focusable {
 				const name = selected
 					? theme.fg("accent", theme.bold(entry.item.displayName))
 					: theme.fg("text", entry.item.displayName);
-				this.clickableRows.add(lines.length, entry.item, entry.item.path);
 				lines.push(truncateToWidth(`${cursor}    ${checkbox} ${name}`, width, "..."));
 			}
 		}
@@ -456,40 +449,21 @@ export class ResourceList implements Component, Focusable {
 			return true;
 		}
 		if (data === " " || kb.matches(data, "tui.select.confirm")) {
-			this.toggleSelected();
+			const entry = this.filteredItems[this.selectedIndex];
+			if (entry?.type === "item") {
+				const newEnabled = !entry.item.enabled;
+				if (this.writeScope === "project")
+					toggleProjectResource(this.settingsManager, entry.item, this.cwd, newEnabled);
+				else this.toggleResource(entry.item, newEnabled);
+				this.updateItem(entry.item, newEnabled);
+				this.onToggle?.(entry.item, newEnabled);
+			}
 			return true;
 		}
 		this.searchInput.handleInput(data);
 		this.filterItems(this.searchInput.getValue());
 		return true;
 	}
-	/** A click on a resource switches it on or off, as moving there and pressing Enter does. */
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		return this.clickableRows.handleMouse(event, {
-			activate: (item) => {
-				const index = this.filteredItems.findIndex((entry) => entry.type === "item" && entry.item === item);
-				if (index < 0) return;
-				this.selectedIndex = index;
-				this.toggleSelected();
-			},
-		});
-	}
-
-	/** The resource the last render drew on `row`. */
-	paintedRowKey(row: number): string | undefined {
-		return this.clickableRows.paintedRowKey(row);
-	}
-
-	private toggleSelected(): void {
-		const entry = this.filteredItems[this.selectedIndex];
-		if (entry?.type !== "item") return;
-		const newEnabled = !entry.item.enabled;
-		if (this.writeScope === "project") toggleProjectResource(this.settingsManager, entry.item, this.cwd, newEnabled);
-		else this.toggleResource(entry.item, newEnabled);
-		this.updateItem(entry.item, newEnabled);
-		this.onToggle?.(entry.item, newEnabled);
-	}
-
 	private toggleResource(item: ResourceItem, enabled: boolean): void {
 		if (item.metadata.origin === "top-level") {
 			this.toggleTopLevelResource(item, enabled);

@@ -1,9 +1,8 @@
-import { ClickableRow, Container, getKeybindings, Spacer, Text } from "@bastani/atomic-tui";
+import { Container, getKeybindings, Spacer, Text } from "@bastani/atomic-tui";
 import { APP_NAME } from "../../../config.js";
 import { type TerminalTheme, theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.js";
-import { rowKeyInput } from "./row-key-input.ts";
 
 export interface FirstTimeSetupResult {
 	theme: string;
@@ -81,22 +80,14 @@ export class FirstTimeSetupComponent extends Container {
 	}
 	private addOptions(labels: string[], selected: number): void {
 		for (let index = 0; index < labels.length; index++) {
-			const text = new Text(
-				index === selected
-					? theme.fg("accent", `→ ${labels[index]}`)
-					: `  ${theme.fg("text", labels[index] ?? "")}`,
-				1,
-				0,
-			);
-			// A click picks the option as moving to it and pressing Enter does.
 			this.addChild(
-				new ClickableRow(text, `${this.step}:${index}`, {
-					activate: () => {
-						if (index !== selected) this.move(index - selected);
-						const confirm = rowKeyInput("tui.select.confirm");
-						if (confirm !== undefined) this.handleInput(confirm);
-					},
-				}),
+				new Text(
+					index === selected
+						? theme.fg("accent", `→ ${labels[index]}`)
+						: `  ${theme.fg("text", labels[index] ?? "")}`,
+					1,
+					0,
+				),
 			);
 		}
 	}

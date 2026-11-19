@@ -1,12 +1,9 @@
 import { clickableHintText, type ExtensionContext } from "@bastani/atomic";
 import {
-	ClickableRows,
 	type Component,
 	type Focusable,
 	Input,
 	matchesKey,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -25,8 +22,6 @@ export class AgentBrowser implements Component, Focusable {
 	private detail = false;
 	private scroll = 0;
 	private readonly agents: AgentConfig[];
-	/** The rows the last render drew each listed agent on. */
-	private readonly clickableRows = new ClickableRows<AgentConfig>();
 	get focused(): boolean {
 		return this.search.focused;
 	}
@@ -52,21 +47,6 @@ export class AgentBrowser implements Component, Focusable {
 		return this.agents.filter((agent) =>
 			`${agent.name} ${agent.description} ${agent.source}`.toLowerCase().includes(query),
 		);
-	}
-	/** A click on a listed agent opens its details, as moving there and pressing Enter does. */
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.detail) return undefined;
-		return this.clickableRows.handleMouse(event, {
-			activate: (agent) => {
-				const index = this.matches().indexOf(agent);
-				if (index < 0) return;
-				this.index = index;
-				this.handleInput("\r");
-			},
-		});
-	}
-	paintedRowKey(row: number): string | undefined {
-		return this.clickableRows.paintedRowKey(row);
 	}
 	handleInput(data: string): boolean {
 		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
@@ -111,8 +91,6 @@ export class AgentBrowser implements Component, Focusable {
 			heading +
 			theme.fg("borderMuted", ` ${"─".repeat(Math.max(0, width - visibleWidth(heading) - 5))}╮`);
 		const body: string[] = [];
-		/** The agent each body row lists, for the rows that list one. */
-		const bodyAgents: Array<AgentConfig | undefined> = [];
 		let selectedRow = 0;
 		if (this.detail && agent) {
 			const section = (label: string, value: string) => {
@@ -137,12 +115,8 @@ export class AgentBrowser implements Component, Focusable {
 					const selected = item === agent;
 					if (selected) selectedRow = body.length;
 					const name = `${selected ? "›" : " "} ${clean(item.name)}`;
-					bodyAgents[body.length] = item;
 					body.push(selected ? theme.fg("accent", theme.bold(name)) : name);
-					if (selected) {
-						bodyAgents[body.length] = item;
-						body.push(theme.fg("muted", `  ${clean(item.description)}`));
-					}
+					if (selected) body.push(theme.fg("muted", `  ${clean(item.description)}`));
 				}
 				body.push("");
 			}
@@ -151,12 +125,6 @@ export class AgentBrowser implements Component, Focusable {
 		const room = Math.max(1, budget - (framed ? 3 : 2) - pinned.length);
 		this.scroll = Math.min(this.scroll, Math.max(0, body.length - room));
 		const offset = this.detail ? this.scroll : Math.max(0, selectedRow - room + Math.min(2, room));
-		this.clickableRows.clear();
-		for (let row = 0; row < room; row++) {
-			const listed = bodyAgents[offset + row];
-			// The heading or top border, then the search field, come before the body.
-			if (listed) this.clickableRows.add(1 + pinned.length + row, listed, listed.filePath);
-		}
 		const rows = [...pinned, ...body.slice(offset, offset + room)].map((line) => {
 			const text = truncateToWidth(line, inner);
 			if (!framed) return text;

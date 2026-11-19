@@ -52,12 +52,6 @@ export interface TuiMouseEvent {
 	clickCount?: number;
 }
 
-/** Identity changes whenever a dialog gains or loses pointer ownership. */
-export interface PointerFocus {
-	readonly generation: number;
-	readonly owner: Component | undefined;
-}
-
 export interface TuiMouseEventResult {
 	/** Stop propagation and suppress renderer-level fallback behavior. */
 	handled?: boolean;
@@ -147,9 +141,6 @@ export interface Component {
 
 	/** Optional handler for keyboard input when component has focus. */
 	handleInput?(data: string): void;
-
-	/** A proxy for a display-only component can decline keyboard focus when its row is clicked. */
-	acceptsClickFocus?: boolean;
 
 	/** Optional normalized mouse handler. */
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
@@ -324,8 +315,6 @@ export interface OverlayOptions {
 	 * Called each render cycle with current terminal dimensions.
 	 */
 	visible?: (termWidth: number, termHeight: number) => boolean;
-	/** False for a navigation pane that takes keyboard focus without blocking clicks on other panes. */
-	modal?: boolean;
 	/** If true, don't capture keyboard focus when shown */
 	nonCapturing?: boolean;
 }
@@ -570,7 +559,6 @@ export abstract class TuiBase extends Container implements TUI {
 	abstract readonly mode: TuiMode;
 	public terminal: Terminal;
 	private focusedComponent: Component | null = null;
-	private pointerFocus: PointerFocus = { generation: 0, owner: undefined };
 	private inputListeners = new Set<TuiInputListener>();
 	private hintCommandHandler: ((command: string) => void) | undefined;
 
@@ -740,7 +728,6 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 
 		this.focusedComponent = nextFocus;
-		this.getPointerFocus();
 
 		if (isFocusable(nextFocus)) {
 			nextFocus.focused = true;
@@ -802,18 +789,11 @@ export abstract class TuiBase extends Container implements TUI {
 		return this.children;
 	}
 
-	protected isPointerTargetMounted(component: Component): boolean {
-		return (
-			this.overlayStack.some((entry) => entry.component === component && this.isOverlayVisible(entry)) ||
-			this.isComponentMounted(component)
-		);
-	}
-
 	private isComponentMounted(component: Component): boolean {
 		return this.getMountedRoots().some((child) => this.containsComponent(child, component));
 	}
 
-	protected containsComponent(root: Component, target: Component): boolean {
+	private containsComponent(root: Component, target: Component): boolean {
 		if (root === target) return true;
 		if (!(root instanceof Container)) return false;
 		return root.children.some((child) => this.containsComponent(child, target));
@@ -966,6 +946,7 @@ export abstract class TuiBase extends Container implements TUI {
 		return component;
 	}
 
+	/** Dispatch to the visually topmost overlay under the pointer. */
 	/** The topmost overlay the last frame drew at screen cell `x`, `y`, and the rectangle it was drawn in. */
 	protected overlayAt(
 		x: number,
@@ -981,43 +962,7 @@ export abstract class TuiBase extends Container implements TUI {
 		return undefined;
 	}
 
-	/**
-	 * The dialog that holds keyboard focus. Non-capturing overlays do not own clicks outside their bounds.
-	 */
-	protected getModalOwner(): Component | undefined {
-		const focused = this.focusedComponent;
-		if (!focused) return undefined;
-		return this.overlayStack.find(
-			(entry) =>
-				!entry.options?.nonCapturing &&
-				entry.options?.modal !== false &&
-				this.isOverlayVisible(entry) &&
-				this.containsComponent(entry.component, focused),
-		)?.component;
-	}
-
-	/** A gesture must stay with one modal owner, even if a dialog opens and closes between two input reports. */
-	protected getPointerFocus(): PointerFocus {
-		const owner = this.getModalOwner();
-		if (this.pointerFocus.owner !== owner)
-			this.pointerFocus = { generation: this.pointerFocus.generation + 1, owner };
-		return this.pointerFocus;
-	}
-
-	protected modalContainsPoint(owner: Component, x: number, y: number): boolean {
-		return this.overlayAt(x, y)?.component === owner;
-	}
-
-	/**
-	 * Offer `event` to the topmost overlay drawn under the pointer. `hit` says an overlay owns the point, so nothing in
-	 * the layout behind it takes the event; while a dialog holds focus, it owns every point outside it as well.
-	 */
-	protected dispatchMouseToOverlay(
-		event: TuiMouseEvent,
-		gesture?: PointerFocus,
-	): { hit: boolean; result?: TuiMouseDispatchResult } {
-		const modal = gesture?.owner;
-		if (modal && !this.modalContainsPoint(modal, event.screenX, event.screenY)) return { hit: true };
+	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;
 			if (
@@ -1028,8 +973,6 @@ export abstract class TuiBase extends Container implements TUI {
 			) {
 				continue;
 			}
-			if (gesture && (!this.overlayStack.includes(layout.entry) || !this.isOverlayVisible(layout.entry)))
-				return { hit: true };
 			const result = dispatchMouseEvent(layout.entry.component, {
 				...event,
 				x: event.screenX - layout.col,

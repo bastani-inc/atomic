@@ -71,7 +71,7 @@ Run `/tasks` to inspect work without stopping it:
 - A subagent whose turn you interrupted reads `stopped` under **Done**, with its time held; its detail page reads `Stopped · send to resume`.
 - On a card without a reply box, Space, Escape or Left closes it, and the hint reads `space/esc/← close`. In a reply box, Space types a space; Escape, or Left at the start of the reply, closes the card. Up and Down close the card and move the selection. On a subagent's or shell's card, Enter or Right opens its detail page unless a reply is typed; a waiting subagent's detail page has an **Open question** action.
 - Escape closes the card and keeps an unsent draft. While a reply is sending, the card shows `Sending…`; Escape or Left closes `/tasks`, and other keys are ignored until it finishes. Your first typed character or numbered choice binds the draft to the question last shown, and typing before any question is shown cannot answer it. If the question changes before your reply is sent, the reply is cleared with a notice, so text typed for one question never reaches the next; type a new reply for the question now shown. When the question disappears, the card stops taking reply text and its list keys work again. A send failure keeps your reply while the inspector stays open. If you close it during a send or stop, a later failure appears in the chat.
-- Enter or Right on a row opens it: a workflow run's graph, a subagent's chat or a shell's output, or its detail page when no transcript is available. In fullscreen mode a click on a row opens it the same way, a click on a task page's action runs it as Enter does, and a click on a peeked question's numbered choice fills it in as its number does.
+- Enter or Right on a row opens it: a workflow run's graph, a subagent's chat or a shell's output, or its detail page when no transcript is available.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it. Up or Down selects a row and keeps the filter.
 - Paused workflow runs remain in Working with a `‖ paused` status. Their elapsed time stays frozen, and `x` twice stops them rather than dismissing them as finished.
 - A shell's completion notice and output page take the last 8 KiB of retained output. If that window starts partway through a UTF-8 character, the excerpt starts at the next character. If the completion notice must shorten the output further, it keeps whole graphemes and shows an omission label only if the entire label fits.
@@ -173,7 +173,7 @@ Completion adds one notice line to the owning chat without depending on a model 
  ◌ worker is waiting on bash (toolu_01) · 16m 16s
 ```
 
-The main chat, a workflow stage's chat and a subagent's view show the same line. When you reopen an older session, a notice that recorded a release shows `◌`. Atomic 0.9.86 and 0.9.87 recorded releases as pauses, so those notices still show `⏸`.
+The main chat, a workflow stage's chat and a subagent's view show the same line. When you reopen an older session, a notice that recorded a release shows `◌`. Atomic 0.9.86 and 0.9.87 recorded releases as pauses, so those notices still show `⏸`. If the result and line are missing, Atomic can still show `◼` when a separately saved agent name identifies a stop in the title. For example, `worker killed (non-resumable): paused · awaiting resume: check the queue` identifies a stop if the saved name is `worker`, but not if it is `worker killed (non-resumable):`. This applies to notices with an empty preview and an empty or title-only string for content. Earlier notices that lack a separate name, and notices with a body or preview, keep their previous reading.
 
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
 
@@ -191,7 +191,7 @@ Restored completions may have only an outcome and task identity if the original 
 
 A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows only its line. Use the expand-tools key, normally Ctrl+O, for the shell's last output lines or the agent's full retained result, or `/tasks` to inspect.
 
-Completion notices are unshaded. Long titles shorten to fit one terminal row, and expanded results wrap to the terminal width. Ctrl+O shows the entire retained agent result, up to 8,000 characters.
+Completion notices are unshaded. Long titles shorten to fit one terminal row, and expanded results wrap to the terminal width. A subagent's saved preview and its result excerpt for the parent stop before any character, such as an emoji, that would cross the 8,000 UTF-16 code unit limit. The child's full result is unchanged.
 
 ## Task heartbeats
 

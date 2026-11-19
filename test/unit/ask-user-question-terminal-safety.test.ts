@@ -33,7 +33,7 @@ const paste = (text: string): string => `\x1b[200~${text}\x1b[201~`;
 const stripAllowedStyling = (line: string): string =>
 	line
 		.replace(/\x1b\[[0-9;]*m/g, "")
-		.replace(/\x1b_(?:pi:(?:c|\/?fc|\/h|h:[^\x07\x1b]*)|atomic:active|atomic-row:[\w%.-]*)(?:\x07|\x1b\\)/g, "");
+		.replace(/\x1b_(?:pi:(?:c|\/?fc|\/h|h:[^\x07\x1b]*)|atomic:active)(?:\x07|\x1b\\)/g, "");
 
 function assertNoControlEscapes(lines: readonly string[], label: string): void {
 	const raw = lines.join("\n");

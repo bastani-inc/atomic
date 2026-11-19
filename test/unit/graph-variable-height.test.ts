@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H } from "../../packages/workflows/src/tui/layout.js";
-import { sgrClick } from "../helpers/graph-click.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore, visibleText } from "./overlay-graph-helpers.js";
 
@@ -68,9 +67,9 @@ test("graph reflows model-card queues without a snapshot change and updates down
 			["│", "│", "│"],
 		);
 		const modelColumn = grown[modelBottom]!.indexOf("╰") + 2;
-		view.handleMouse(sgrClick(`\x1b[<0;${modelColumn};${modelBottom + 1}M`));
+		view.handleInput(`\x1b[<0;${modelColumn};${modelBottom + 1}M`);
 		const column = grown[grownNext]!.indexOf("╭") + 2;
-		view.handleMouse(sgrClick(`\x1b[<0;${column};${grownNext + 1}M`));
+		view.handleInput(`\x1b[<0;${column};${grownNext + 1}M`);
 		assert.deepEqual(attached, ["model", "next"]);
 		queued = 0;
 		view.invalidate();

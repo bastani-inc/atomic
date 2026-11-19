@@ -27,6 +27,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		const run = renderRun !== undefined ? renderRun : this._getCurrentRun();
 		if (!run || this.cachedLayout.length === 0) {
 			this.lastGraphViewport = null;
+			this.graphNodeHitRects = [];
 			this.lastGraphTopPad = 0;
 			this.lastGraphVisibleRows = safeRows;
 			const lines = Array.from({ length: safeRows }, () => "");
@@ -122,12 +123,16 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 
 	protected _recordGraphNodeHitRects(graphStartRow: number, visibleRowCount: number): void {
 		const viewport = this.lastGraphViewport;
-		if (!viewport || visibleRowCount <= 0) return;
+		if (!viewport || visibleRowCount <= 0) {
+			this.graphNodeHitRects = [];
+			return;
+		}
 
 		const visibleTop = graphStartRow;
 		const visibleBottom = graphStartRow + visibleRowCount;
 		const viewportLeft = viewport.leftMargin;
 		const viewportRight = viewport.leftMargin + viewport.viewportWidth;
+		const rects: typeof this.graphNodeHitRects = [];
 		const viewportTop = this._graphScrollTop();
 		const viewportBottom = Math.min(this.cachedRenderGeometry.totalRows, viewportTop + visibleRowCount);
 		const { bands } = this.cachedRenderGeometry;
@@ -149,10 +154,9 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 				const clippedLeft = Math.max(viewportLeft, left);
 				const clippedRight = Math.min(viewportRight, right);
 				if (clippedTop >= clippedBottom || clippedLeft >= clippedRight) continue;
-				const columns = { start: clippedLeft, end: clippedRight };
-				for (let row = clippedTop; row < clippedBottom; row++)
-					this.graphNodeClicks.add(row, node.stage.id, node.stage.id, columns);
+				rects.push({ index, top: clippedTop, bottom: clippedBottom, left: clippedLeft, right: clippedRight });
 			}
 		}
+		this.graphNodeHitRects = rects;
 	}
 }

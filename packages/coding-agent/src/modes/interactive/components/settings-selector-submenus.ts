@@ -56,6 +56,10 @@ export class WarningSettingsSubmenu extends Container {
 		this.addChild(this.settingsList);
 	}
 
+	restoreNavigation(previous: Component): void {
+		if (previous instanceof WarningSettingsSubmenu) this.settingsList.restoreNavigation(previous.settingsList);
+	}
+
 	handleInput(data: string): boolean {
 		this.settingsList.handleInput(data);
 		return true;
@@ -65,6 +69,7 @@ export class WarningSettingsSubmenu extends Container {
 export class SelectSubmenu implements Component, Focusable {
 	readonly capturesViewportInput = true;
 	private readonly selector: Selector<string>;
+	private browsed = false;
 
 	constructor(
 		title: string,
@@ -76,18 +81,7 @@ export class SelectSubmenu implements Component, Focusable {
 		onSelectionChange?: (value: string) => void,
 		searchable = false,
 	) {
-		const items: SelectorItem<string>[] = options.map((option) => {
-			const marked = option.label.startsWith("✓ ");
-			const unmarked = !marked && option.label.startsWith("  ");
-			const label = marked || unmarked ? option.label.slice(2) : option.label;
-			return {
-				id: option.value,
-				value: option.value,
-				label,
-				...(option.description ? { description: option.description } : {}),
-				...(marked ? { mark: "on" as const } : unmarked ? { mark: "off" as const } : {}),
-			};
-		});
+		const items = this.selectorItems(options);
 		const current = items.some((item) => item.id === currentValue) ? currentValue : undefined;
 		this.selector = new Selector<string>({
 			title,
@@ -99,8 +93,32 @@ export class SelectSubmenu implements Component, Focusable {
 			rightConfirms: false,
 			onSelect: (item) => onSelect(item.value),
 			onCancel,
-			...(onSelectionChange ? { onSelectionChange: (item) => item && onSelectionChange(item.value) } : {}),
+			onSelectionChange: (item) => {
+				this.browsed = true;
+				if (item) onSelectionChange?.(item.value);
+			},
 		});
+	}
+
+	private selectorItems(options: SelectItem[]): SelectorItem<string>[] {
+		return options.map((option) => {
+			const marked = option.label.startsWith("✓ ");
+			const unmarked = !marked && option.label.startsWith("  ");
+			return {
+				id: option.value,
+				value: option.value,
+				label: marked || unmarked ? option.label.slice(2) : option.label,
+				...(option.description ? { description: option.description } : {}),
+				...(marked ? { mark: "on" as const } : unmarked ? { mark: "off" as const } : {}),
+			};
+		});
+	}
+
+	restoreNavigation(previous: Component): void {
+		if (!(previous instanceof SelectSubmenu)) return;
+		this.browsed = previous.browsed;
+		// An untouched picker follows its new configured value; an explicit choice follows its row.
+		this.selector.restoreNavigation(previous.selector, previous.browsed);
 	}
 
 	get focused(): boolean {
@@ -121,10 +139,6 @@ export class SelectSubmenu implements Component, Focusable {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		return this.selector.handleMouse(event);
-	}
-
-	paintedRowKey(row: number): string | undefined {
-		return this.selector.paintedRowKey(row);
 	}
 
 	invalidate(): void {
@@ -180,6 +194,9 @@ export class ThemeSubmenu extends Container {
 	private inputComponent: Component | undefined;
 	private readonly callbacks: SettingsCallbacks;
 	private readonly availableThemes: string[];
+	private editedMode = false;
+	private editedLight = false;
+	private editedDark = false;
 	private readonly terminalTheme: TerminalTheme;
 	private readonly onDone: (selectedValue?: string) => void;
 	private readonly originalThemeSetting: string;
@@ -226,10 +243,42 @@ export class ThemeSubmenu extends Container {
 		return true;
 	}
 
+	restoreNavigation(previous: Component): void {
+		if (!(previous instanceof ThemeSubmenu)) return;
+		this.editedMode = previous.editedMode;
+		this.editedLight = previous.editedLight;
+		this.editedDark = previous.editedDark;
+		if (this.editedLight) this.lightTheme = previous.lightTheme;
+		if (this.editedDark) this.darkTheme = previous.darkTheme;
+		if (this.editedMode && previous.mode === "single") {
+			this.singleTheme = this.getActiveAutomaticTheme();
+			this.showSingleMenu();
+		} else if ((this.editedMode && previous.mode === "automatic") || this.editedLight || this.editedDark) {
+			this.showAutomaticMenu();
+		}
+		if (this.editedMode || this.editedLight || this.editedDark)
+			this.callbacks.onThemePreview?.(this.getThemeSetting());
+		if (this.inputComponent instanceof SelectSubmenu && previous.inputComponent instanceof SelectSubmenu) {
+			this.inputComponent.restoreNavigation(previous.inputComponent);
+		} else if (this.inputComponent instanceof SettingsPicker && previous.inputComponent instanceof SettingsPicker) {
+			this.inputComponent.restoreNavigation(previous.inputComponent);
+		}
+	}
+
 	private setContent(renderComponent: Component, inputComponent: Component = renderComponent): void {
 		this.clear();
 		this.addChild(renderComponent);
 		this.inputComponent = inputComponent;
+	}
+
+	/** Switching modes opens a new form. Seed unedited slots from the eligible pair; a previous draft still wins. */
+	private loadPairForModeChange(): void {
+		if (this.editedMode) return;
+		const fresh = this.callbacks.readThemeChoices?.();
+		if (!fresh) return;
+		const pair = defaultAutomaticThemes(fresh.currentTheme, fresh.availableThemes);
+		if (!this.editedLight) this.lightTheme = pair.lightTheme;
+		if (!this.editedDark) this.darkTheme = pair.darkTheme;
 	}
 
 	private showSingleMenu(): void {
@@ -237,10 +286,15 @@ export class ThemeSubmenu extends Container {
 		const menu = new SelectSubmenu(
 			"Theme",
 			"Select a theme, or choose Automatic to follow terminal appearance.",
-			singleModeThemeItems(this.availableThemes, this.singleTheme),
+			singleModeThemeItems(
+				this.callbacks.readThemeChoices?.()?.availableThemes ?? this.availableThemes,
+				this.singleTheme,
+			),
 			this.singleTheme,
 			(value) => {
 				if (value === AUTOMATIC_THEME_VALUE) {
+					this.loadPairForModeChange();
+					this.editedMode = true;
 					this.mode = "automatic";
 					this.callbacks.onThemePreview?.(this.getThemeSetting());
 					this.showAutomaticMenu();
@@ -269,11 +323,13 @@ export class ThemeSubmenu extends Container {
 				currentValue: this.lightTheme,
 				submenu: (currentValue, done) =>
 					this.createThemeSelect(
+						"lightTheme",
 						"Light Theme",
 						"Select the theme to use for light terminal appearance",
 						currentValue,
 						done,
 						(value) => {
+							this.editedLight = true;
 							this.lightTheme = value;
 							this.callbacks.onThemePreview?.(this.getThemeSetting());
 							done(value);
@@ -287,11 +343,13 @@ export class ThemeSubmenu extends Container {
 				currentValue: this.darkTheme,
 				submenu: (currentValue, done) =>
 					this.createThemeSelect(
+						"darkTheme",
 						"Dark Theme",
 						"Select the theme to use for dark terminal appearance",
 						currentValue,
 						done,
 						(value) => {
+							this.editedDark = true;
 							this.darkTheme = value;
 							this.callbacks.onThemePreview?.(this.getThemeSetting());
 							done(value);
@@ -319,6 +377,8 @@ export class ThemeSubmenu extends Container {
 			(id) => {
 				switch (id) {
 					case "single-mode":
+						this.loadPairForModeChange();
+						this.editedMode = true;
 						this.mode = "single";
 						this.singleTheme = this.getActiveAutomaticTheme();
 						this.callbacks.onThemePreview?.(this.singleTheme);
@@ -340,17 +400,22 @@ export class ThemeSubmenu extends Container {
 	}
 
 	private createThemeSelect(
+		slot: "lightTheme" | "darkTheme",
 		title: string,
 		description: string,
 		currentValue: string,
 		done: (selectedValue?: string) => void,
 		onSelect: (value: string) => void,
 	): SelectSubmenu {
+		const fresh = this.callbacks.readThemeChoices?.();
+		const available = fresh?.availableThemes ?? this.availableThemes;
+		const edited = this.editedMode || (slot === "lightTheme" ? this.editedLight : this.editedDark);
+		const offered = fresh && !edited ? defaultAutomaticThemes(fresh.currentTheme, available)[slot] : currentValue;
 		return new SelectSubmenu(
 			title,
 			description,
-			themeItems(this.availableThemes, currentValue),
-			currentValue,
+			themeItems(available, offered),
+			offered,
 			onSelect,
 			() => {
 				this.callbacks.onThemePreview?.(this.getThemeSetting());
@@ -377,7 +442,7 @@ export class ThemeSubmenu extends Container {
 	}
 
 	private cancel(): void {
-		this.callbacks.onThemePreview?.(this.originalThemeSetting);
+		(this.callbacks.onThemePreviewCancel ?? this.callbacks.onThemePreview)?.(this.originalThemeSetting);
 		this.onDone();
 	}
 }

@@ -525,8 +525,6 @@ pi.registerCommand("pick", {
           tui.requestRender();
           return true;
         },
-        // A click on a row chooses it, as Enter does; the container passes it to the list drawn there.
-        handleMouse: (event) => container.handleMouse(event),
       };
     });
 
@@ -538,59 +536,6 @@ pi.registerCommand("pick", {
 ```
 
 **Examples:** [preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts), [tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
-
-### Pattern 1c: Clickable rows in your own list
-
-`Selector`, `SelectList` and `SettingsList` run a row on one click already. For a list you draw yourself, use `ClickableRows` from `@bastani/atomic-tui`. Record each row while rendering, and forward `handleMouse` and `paintedRowKey` to the recorded rows, including through any wrapper. A single left click runs the row, dragging selects text, and a double or triple click does not run the row again.
-
-Call the same action from your click and keyboard handlers. If you forward terminal input instead, `keyInput(key)` encodes a key returned by `getKeybindings().getKeys(action)`, including modified function keys.
-
-If you host your own fullscreen renderer and mount a dialog directly in its layout, pass `getInlineDialog: () => currentDialog` to `TuiAltScreen`. Return `undefined` when it is closed. The dialog owns clicks while it or one of its children has focus; capturing overlays work automatically. Use `modal: false` for an overlay that should take keyboard focus without blocking other panes. Use `nonCapturing: true` to leave keyboard focus where it is when the overlay opens. A single click on a keyboard-driven pane focuses it and acts on its row together. A non-capturing card without a keyboard handler can take a click without taking typing away from the composer, even when it reserves transcript rows.
-
-```typescript
-import { ClickableRows, type Component, type TuiMouseEvent } from "@bastani/atomic-tui";
-
-class FruitList implements Component {
-  private selected = 0;
-  private readonly rows = new ClickableRows<number>();
-  private readonly fruits: string[];
-  private readonly choose: (fruit: string) => void;
-
-  constructor(fruits: string[], choose: (fruit: string) => void) {
-    this.fruits = fruits;
-    this.choose = choose;
-  }
-
-  render(width: number): string[] {
-    this.rows.clear();
-    return this.fruits.map((fruit, index) => {
-      this.rows.add(index, index, fruit); // row drawn, item on it, a key that names the item
-      return `${index === this.selected ? "❯" : " "} ${fruit}`.slice(0, width);
-    });
-  }
-
-  handleInput(data: string): void {
-    if (data === "\r") this.choose(this.fruits[this.selected]!);
-  }
-
-  handleMouse(event: TuiMouseEvent) {
-    return this.rows.handleMouse(event, {
-      activate: (index) => {
-        this.selected = index; // move there, then do what Enter does
-        this.handleInput("\r");
-      },
-    });
-  }
-
-  paintedRowKey(row: number) {
-    return this.rows.paintedRowKey(row);
-  }
-
-  invalidate(): void {}
-}
-```
-
-Forward `handleMouse`, and `paintedRowKey` when you have it, from the component you return to `ctx.ui.custom()`; a `Container` passes a click to the child drawn on the clicked row. For a list built from one component per row, such as a `Text` per option in a `Container`, wrap each row in `ClickableRow(content, key, { activate })` instead. Clicks reach a list only in fullscreen mode, where the terminal reports the mouse; keep every action on a key as well.
 
 ### Pattern 2: Async Operation with Cancel (BorderedLoader)
 
@@ -663,8 +608,6 @@ pi.registerCommand("settings", {
           settingsList.handleInput?.(data);
           return true;
         },
-        // A click on a setting changes it, as Enter does.
-        handleMouse: (event) => container.handleMouse(event),
       };
     });
   },

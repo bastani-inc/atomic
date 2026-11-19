@@ -8,7 +8,6 @@ import type { WorkflowInputValues } from "../../packages/workflows/src/shared/ty
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
-import { sgrClick } from "../helpers/graph-click.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { ANSI_RE } from "./overlay-graph-helpers.js";
 
@@ -115,7 +114,7 @@ describe("large workflow interaction isolation", () => {
 		});
 
 		const lines = view.render(96);
-		assert.deepEqual(view.handleMouse(sgrClick(mousePressForText(lines, "target-stage"))), { handled: true });
+		assert.equal(view.handleInput(mousePressForText(lines, "target-stage")), true);
 		assert.deepEqual(attached, ["target-stage"]);
 		assert.equal(publicSnapshotCalls.count, 0);
 		assert.equal(payloadReads.count, 0);

@@ -22,7 +22,6 @@ import { createStore, store } from "../../packages/workflows/src/shared/store.js
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { sgrClick } from "../helpers/graph-click.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -96,19 +95,7 @@ describe("non-attachable tool interactions", () => {
 
 		view.render(96);
 		assert.equal(view.handleInput("\r"), true, "keyboard activation");
-		// Esc closes the tool's detail, and the graph is drawn again before the click.
-		view.render(96);
-		assert.equal(view.handleInput("\x1b"), true);
-		view.render(96);
-		assert.deepEqual(
-			view.handleMouse(sgrClick(clickForSingleNode(graph.renderStages[0]!))),
-			{ handled: true },
-			"direct mouse activation",
-		);
-		assert.equal(view._toolDetail !== null, true, "the click opens the tool's detail, as enter does");
-		view.render(96);
-		assert.equal(view.handleInput("\x1b"), true);
-		view.render(96);
+		assert.equal(view.handleInput(clickForSingleNode(graph.renderStages[0]!)), true, "direct mouse activation");
 		assert.equal(view.handleInput("/"), true);
 		for (const char of "publish-api") view.handleInput(char);
 		assert.equal(view.handleInput("\r"), true, "switcher activation");
@@ -152,7 +139,7 @@ describe("non-attachable tool interactions", () => {
 
 		view.render(96);
 		view.handleInput("\r");
-		view.handleMouse(sgrClick(clickForSingleNode(graph.renderStages[0]!)));
+		view.handleInput(clickForSingleNode(graph.renderStages[0]!));
 		view.handleInput("/");
 		for (const char of "retained-stage") view.handleInput(char);
 		view.handleInput("\r");

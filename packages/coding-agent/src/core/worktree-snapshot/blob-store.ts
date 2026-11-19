@@ -1386,6 +1386,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		return store;
 	}
 
+	/** A transcript-only handle has no snapshot sources to index. Binding it must not even inspect their tables. */
+	static forTranscriptReader(database: SqliteDatabase & { readonly readOnly: true }): SqlSnapshotBlobStore {
+		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }).meta;
+		return new SqlSnapshotBlobStore(database, dialectOf(database), snapshotIndexTables(), [], journalMeta, "");
+	}
+
 	/**
 	 * Creates the blob table and its reference index inside the caller's transaction, and indexes the referencing tables
 	 * that exist, so a store that creates its own tables, such as a new run journal, takes the write lock once for all

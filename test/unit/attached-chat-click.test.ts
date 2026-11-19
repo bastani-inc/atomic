@@ -383,62 +383,6 @@ test("a click on a block header in a task's transcript does nothing while the ta
 	}
 });
 
-test("a click on an answer of a task's held question answers it, as moving there and pressing enter does", async () => {
-	const session = await childSession();
-	const chat = await openTranscript(session);
-	const controller = new AbortController();
-	const held = heldPrompts().hold(
-		{
-			sessionId: session.getSessionId(),
-			promptId: "confirm-2",
-			kind: "confirm",
-			question: "Ship it?",
-			title: "Ship it?",
-		},
-		controller.signal,
-		false,
-	);
-	try {
-		await flush();
-		assert.match(chat.screen().join("\n"), /Ship it\?/, "the question is shown below the transcript");
-		assert.equal(chat.clickOn(/\bNo\b/, "No")?.handled, true);
-		assert.equal(await held, false);
-	} finally {
-		controller.abort();
-		await held.catch(() => undefined);
-		await chat.dispose();
-	}
-});
-
-test("a click on a block header in a task's transcript expands it once its held question is answered by a click", async () => {
-	const session = await childSession();
-	const chat = await openTranscript(session);
-	const controller = new AbortController();
-	const held = heldPrompts().hold(
-		{
-			sessionId: session.getSessionId(),
-			promptId: "select-1",
-			kind: "select",
-			question: "Which target?",
-			title: "Which target?",
-			choices: ["staging", "production"],
-		},
-		controller.signal,
-		undefined,
-	);
-	try {
-		await flush();
-		assert.equal(chat.clickOn(/production/, "production")?.handled, true);
-		assert.equal(await held, "production");
-		await flush();
-		assert.equal(chat.clickOn(/child-cmd/, "child-cmd")?.handled, true);
-	} finally {
-		controller.abort();
-		await held.catch(() => undefined);
-		await chat.dispose();
-	}
-});
-
 test("a click in a chat's open task transcript reaches the blocks of that transcript", async () => {
 	initTheme("dark");
 	const keys = getKeybindings();

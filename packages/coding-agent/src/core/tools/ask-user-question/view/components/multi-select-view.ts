@@ -5,7 +5,6 @@ import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { rowTone, styleFieldTone } from "../../state/selectors/field-tone.ts";
 import type { QuestionData } from "../../tool/types.js";
-import { markClickTarget } from "../click-targets.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
 const ACTIVE_POINTER = "❯ ";
@@ -84,12 +83,11 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			const num = String(i + 1).padStart(numberWidth, " ");
 			const line = `${pointer}${num}${NUMBER_SEPARATOR}${box}${BOX_LABEL_GAP}${styledLabel}`;
 			const rendered = truncateToWidth(line, width, "");
-			const target = { kind: "option", index: i } as const;
-			lines.push(`${markClickTarget(target, rendered)}${row.active ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
+			lines.push(`${rendered}${row.active ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 			if (opt.description) {
 				const wrapped = wrapTextWithAnsi(opt.description, contentWidth);
 				for (const segment of wrapped) {
-					lines.push(markClickTarget(target, descriptionIndent + this.theme.fg("muted", segment)));
+					lines.push(descriptionIndent + this.theme.fg("muted", segment));
 				}
 			}
 		}
@@ -99,8 +97,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			: this.props.nextLabel;
 		const nextNumber = String(this.question.options.length + 1).padStart(numberWidth, " ");
 		const rendered = truncateToWidth(`${nextPointer}${nextNumber}${NUMBER_SEPARATOR}${nextLabel}`, width, "");
-		const next = markClickTarget({ kind: "option", index: this.question.options.length }, rendered);
-		lines.push(`${next}${this.props.nextActive ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
+		lines.push(`${rendered}${this.props.nextActive ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 		return lines;
 	}
 

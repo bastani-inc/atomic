@@ -889,40 +889,6 @@ function parseKeyId(
 	};
 }
 
-/** A press that matches this binding, using the same key names and sequences as the input decoder. */
-export function keyInput(keyId: KeyId): string | undefined {
-	const parsed = parseKeyId(keyId);
-	if (!parsed) return undefined;
-	const key = parsed.key === "return" ? "enter" : parsed.key === "esc" ? "escape" : parsed.key;
-	const modifier = MODIFIER_NAMES.reduce((mask, name) => mask | (parsed[name] ? MODIFIERS[name] : 0), 0);
-	const special = Object.entries(LEGACY_KEY_SEQUENCES).find(([name]) => name.toLowerCase() === key);
-	let data: string | undefined;
-	if (special) {
-		const [, sequences] = special;
-		if (modifier === 0) data = sequences[0];
-		else if (key === "clear") {
-			if (modifier === MODIFIERS.shift) data = LEGACY_SHIFT_SEQUENCES.clear[0];
-			if (modifier === MODIFIERS.ctrl) data = LEGACY_CTRL_SEQUENCES.clear[0];
-		} else {
-			// Use a form the decoder actually accepts: F3 needs a numeric report, whereas Home and End use
-			// an H or F final, not all of their legacy numeric aliases.
-			for (const sequence of sequences) {
-				const numeric = /^\x1b\[(\d+)~$/.exec(sequence);
-				const candidate = numeric
-					? `\x1b[${numeric[1]};${modifier + 1}~`
-					: `\x1b[1;${modifier + 1}${sequence.at(-1)}`;
-				if (matchesKey(candidate, keyId)) return candidate;
-			}
-		}
-	} else {
-		const code =
-			Object.entries(CODEPOINTS).find(([name]) => name === key)?.[1] ??
-			(key.length === 1 ? key.charCodeAt(0) : undefined);
-		if (code !== undefined) data = modifier === 0 ? String.fromCharCode(code) : `\x1b[${code};${modifier + 1}u`;
-	}
-	return data !== undefined && matchesKey(data, keyId) ? data : undefined;
-}
-
 /**
  * Match input data against a key identifier string.
  *

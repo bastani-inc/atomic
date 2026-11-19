@@ -4,7 +4,6 @@ import { graphemeAt, terminalDisplayCursor, terminalDisplayText } from "../../..
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-tone.ts";
-import { markClickTarget } from "../click-targets.ts";
 
 export type WrappingSelectItem =
 	| { kind: "option"; label: string; description?: string }
@@ -153,11 +152,7 @@ export class WrappingSelect implements Component {
 			const item = this.items[i];
 			if (!item) continue;
 			const isActive = i === this.selectedIndex && this.focused;
-			// Every line of a row is marked, so a click on its description chooses it too.
-			const target = item.kind === "chat" ? ({ kind: "chat" } as const) : ({ kind: "option", index: i } as const);
-			const itemLines = this.renderItem(item, i, isActive, width, numberWidth).map((line) =>
-				markClickTarget(target, line),
-			);
+			const itemLines = this.renderItem(item, i, isActive, width, numberWidth);
 			// Tell a bounding host which row it must not crop away (#2378). The mark
 			// is zero-width and the host strips it; see OVERLAY_ACTIVE_ROW_MARKER.
 			if (isActive && itemLines.length > 0) {

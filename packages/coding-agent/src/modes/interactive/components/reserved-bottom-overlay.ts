@@ -1,11 +1,4 @@
-import {
-	type Component,
-	CURSOR_MARKER,
-	type OverlayMargin,
-	type SizeValue,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
-} from "@bastani/atomic-tui";
+import { type Component, CURSOR_MARKER, type OverlayMargin, type SizeValue } from "@bastani/atomic-tui";
 import { type ExtensionCustomComponent, OVERLAY_ACTIVE_ROW_MARKER } from "../../../core/extensions/ui-types.js";
 import { theme } from "../theme/theme.js";
 
@@ -112,33 +105,14 @@ function takeActiveRow(lines: readonly string[]): { rows: string[]; activeRow: n
  * exactly as it did before.
  */
 export function boundOverlayLines(lines: readonly string[], budget: number): string[] {
-	return boundOverlayRows(lines, budget).lines;
-}
-
-/** Rows numbered from `start`, `count` of them. */
-function rowRange(start: number, count: number): number[] {
-	return Array.from({ length: Math.max(0, count) }, (_, index) => start + index);
-}
-
-/**
- * {@link boundOverlayLines}, with the row of `lines` each kept line came from, so a click on the bounded frame reaches
- * the row the component drew there. The notice row comes from none.
- */
-function boundOverlayRows(
-	lines: readonly string[],
-	budget: number,
-): { lines: string[]; sources: Array<number | undefined> } {
 	const { rows, activeRow } = takeActiveRow(lines);
 	const trimmed = trimTrailingBlankRows(rows);
-	if (budget <= 0) return { lines: [], sources: [] };
-	if (trimmed.length <= budget) return { lines: [...trimmed], sources: rowRange(0, trimmed.length) };
-	if (activeRow !== undefined && budget === 1) {
-		const row = trimmed[activeRow] === undefined ? 0 : activeRow;
-		return { lines: [trimmed[row] ?? ""], sources: [row] };
-	}
+	if (budget <= 0) return [];
+	if (trimmed.length <= budget) return [...trimmed];
+	if (activeRow !== undefined && budget === 1) return [trimmed[activeRow] ?? trimmed[0] ?? ""];
 	const tail = Math.min(OVERLAY_TAIL_KEEP_ROWS, Math.max(0, budget - (activeRow === undefined ? 1 : 2)));
 	const window = budget - tail - 1;
-	if (window <= 0) return { lines: [...trimmed.slice(0, budget)], sources: rowRange(0, budget) };
+	if (window <= 0) return [...trimmed.slice(0, budget)];
 	const tailStart = trimmed.length - tail;
 	const start =
 		activeRow !== undefined && activeRow >= window && activeRow < tailStart
@@ -148,11 +122,7 @@ function boundOverlayRows(
 	const hidden = trimmed.length - kept.length - tail;
 	const notice = theme.fg("muted", `⋮ ${hidden} more rows hidden — answer or cancel to see them`);
 	const tailRows = trimmed.slice(tailStart);
-	const keptSources = rowRange(start, kept.length);
-	const tailSources = rowRange(tailStart, tailRows.length);
-	return start === 0
-		? { lines: [...kept, notice, ...tailRows], sources: [...keptSources, undefined, ...tailSources] }
-		: { lines: [notice, ...kept, ...tailRows], sources: [undefined, ...keptSources, ...tailSources] };
+	return start === 0 ? [...kept, notice, ...tailRows] : [notice, ...kept, ...tailRows];
 }
 
 /**
@@ -174,9 +144,6 @@ export class ReservedBottomOverlay implements Component {
 	private readonly shouldPassViewportInput: (data: string) => boolean;
 	private readonly onHeightChange: () => void;
 	private height = 0;
-	/** The row of the wrapped component's last frame each painted row came from, and that frame's height. */
-	private sources: ReadonlyArray<number | undefined> = [];
-	private innerHeight = 0;
 
 	constructor(
 		inner: WrappedOverlayComponent,
@@ -196,10 +163,6 @@ export class ReservedBottomOverlay implements Component {
 		this.handlesInternalUiAction = inner.handlesInternalUiAction === true;
 	}
 
-	get acceptsClickFocus(): boolean {
-		return typeof this.inner.handleInput === "function" && this.inner.acceptsClickFocus !== false;
-	}
-
 	/** Rows painted by the last `render`. Zero before the first frame. */
 	get renderedHeight(): number {
 		return this.height;
@@ -212,10 +175,7 @@ export class ReservedBottomOverlay implements Component {
 		const transcriptStripBudget = Math.max(1, Math.floor(terminalRows - bottom - MIN_TRANSCRIPT_STRIP_ROWS));
 		const resolvedMaxHeight = resolveOverlayMaxHeight(this.maxHeight, terminalRows, this.margin);
 		const budget = Math.min(availableHeight, transcriptStripBudget, resolvedMaxHeight ?? Number.POSITIVE_INFINITY);
-		const innerLines = this.inner.render(width);
-		const { lines, sources } = boundOverlayRows(innerLines, budget);
-		this.sources = sources;
-		this.innerHeight = innerLines.length;
+		const lines = boundOverlayLines(this.inner.render(width), budget);
 		const previousHeight = this.height;
 		this.height = lines.length;
 		if (this.height !== previousHeight) this.onHeightChange();
@@ -227,20 +187,6 @@ export class ReservedBottomOverlay implements Component {
 		const handler = this.inner.handleInput;
 		if (typeof handler !== "function") return undefined;
 		return handler.call(this.inner, data);
-	}
-
-	/** Button gestures reach the wrapped component at the row it drew. */
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (event.type === "wheel") return undefined;
-		const handler = this.inner.handleMouse;
-		const row = this.sources[Math.floor(event.y)];
-		if (typeof handler !== "function" || row === undefined) return undefined;
-		return handler.call(this.inner, { ...event, y: row, height: this.innerHeight });
-	}
-
-	paintedRowKey(row: number): string | undefined {
-		const source = this.sources[row];
-		return source === undefined ? undefined : this.inner.paintedRowKey?.(source);
 	}
 
 	invalidate(): void {

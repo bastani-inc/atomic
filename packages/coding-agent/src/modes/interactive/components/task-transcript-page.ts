@@ -40,6 +40,7 @@ import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
+import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -201,8 +202,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly elapsedClocks: TaskElapsedClocks;
 	/** How many rows the transcript took at the top of the last frame. */
 	private bodyRows = 0;
-	/** The rows the task's held question took in the last render, while one was shown. */
-	private formRows: { readonly top: number; readonly count: number } | undefined;
 	readonly chat: ChatSessionHost;
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
@@ -246,6 +245,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private followedSessionId?: string;
 	private unsubscribe?: () => void;
 	private cursor?: string;
+	readonly #notices = new TaskTranscriptNotices();
 	private loading = false;
 	private reloadPending = false;
 	private loadingEarlier = false;
@@ -345,6 +345,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
 			},
 		});
+		pagedNotices.set(this.chat, this.#notices);
 		this.restoreDraft();
 		this.restoreUndelivered();
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
@@ -481,17 +482,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return handled;
 	}
 
-	/**
-	 * A single click on any row of a block in the transcript expands or collapses that block. A click on an answer of
-	 * the task's held question below it chooses that answer, as moving there and pressing Enter does.
-	 */
+	/** A single click on any row of a block in the transcript expands or collapses that block. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const form = event.type === "wheel" ? undefined : this.formAt(event.y);
-		if (form !== undefined) {
-			const result = form.form.handleMouse?.({ ...event, y: form.row, height: form.height });
-			if (result !== undefined) this.requestRender();
-			return result;
-		}
 		if (event.y < 0 || event.y >= this.bodyRows) return undefined;
 		// While the task's held question owns input below the transcript, a click on the transcript does nothing.
 		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return undefined;
@@ -499,17 +491,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	paintedRowKey(row: number): string | undefined {
-		const form = this.formAt(row);
-		if (form !== undefined) return form.form.paintedRowKey?.(form.row);
 		return row < 0 || row >= this.bodyRows ? undefined : this.chat.bodyRowKey(row);
-	}
-
-	/** The held question drawn at `row` of the last render, with the row inside it. */
-	private formAt(row: number): { form: HeldPromptForm; row: number; height: number } | undefined {
-		const rows = this.formRows;
-		if (rows === undefined || row < rows.top || row >= rows.top + rows.count || this.chat.hasTaskInspector) return;
-		const form = this.heldForm();
-		return form === undefined ? undefined : { form, row: row - rows.top, height: rows.count };
 	}
 
 	toolOutputToggled(): void {
@@ -520,7 +502,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	render(width: number, rows: number): string[] {
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;
-		this.formRows = undefined;
 		if (this.chat.hasTaskInspector) {
 			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
 			const shownFooter = footer.slice(0, viewport - 1);
@@ -549,9 +530,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const usage = reserve(this.chat.renderUsageRow(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
 		this.bodyRows = body.length;
-		if (form !== undefined) {
-			this.formRows = { top: body.length + pending.length + working.length + usage.length, count: editor.length };
-		}
 		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
 	}
 
@@ -620,6 +598,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.#notices.reset();
 		this.unsubscribePrompts();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -707,7 +686,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		this.followedSessionId = nextSessionId;
 		this.cursor = page.value.nextCursor;
-		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
+		const messages = page.value.messages;
+		this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged });
+		this.#notices.adopt(page, messages, this.cursor !== undefined);
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -781,12 +762,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					return;
 				}
 				this.cursor = page.value.nextCursor;
-				this.chat.prependMessages(page.value.messages);
+				const messages = page.value.messages;
+				this.#notices.adopt(page, messages, this.cursor !== undefined);
+				this.chat.prependMessages(messages);
 			} catch (error) {
 				if (this.disposed) return;
 				this.cursor = undefined;
 				this.status = error instanceof Error ? error.message : String(error);
 			} finally {
+				if (this.cursor === undefined) this.#notices.finishPaging();
 				this.loadingEarlier = false;
 				this.requestRender();
 			}

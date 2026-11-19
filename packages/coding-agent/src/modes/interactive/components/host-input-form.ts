@@ -1,5 +1,4 @@
 import {
-	ClickableRows,
 	type Component,
 	clickableKeysHint,
 	Editor,
@@ -9,8 +8,6 @@ import {
 	type KeyId,
 	matchesKey,
 	type TUI,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -28,9 +25,6 @@ export interface HostInputFormDelegate {
 }
 
 type Editable = Input | Editor;
-
-/** What a row of the form is: a field's name, one of its choices, or the submit button. */
-type FormRow = { kind: "field"; index: number } | { kind: "choice"; index: number; value: string } | { kind: "submit" };
 
 const BOOLEAN_TEXT = new Set(["true", "false", "1", "0", "on", "off"]);
 
@@ -150,8 +144,6 @@ export class HostInputFormComponent implements Component, Focusable {
 	private invalid = new Set<number>();
 	private readonly reasons: Array<{ value: string; reason: string | undefined } | undefined> = [];
 	private _focused = true;
-	/** The rows each field, choice and the submit button were drawn on in the last render. */
-	private readonly clickableRows = new ClickableRows<FormRow>();
 
 	constructor(
 		tui: TUI,
@@ -260,26 +252,12 @@ export class HostInputFormComponent implements Component, Focusable {
 		);
 		body.push("");
 
-		// The frame draws its top border above the body.
-		const rows = this.clickableRows;
-		rows.clear();
 		for (let index = 0; index < this.fields.length; index += 1) {
 			const field = this.fields[index]!;
 			const active = index === this.focusedIndex;
 			const label = this.labelRow(field, index, active, cw);
-			rows.add(body.length + 1, { kind: "field", index }, `field\u0000${index}`);
 			body.push(label.line);
-			const choices =
-				field.type === "select" ? (field.choices ?? []) : field.type === "boolean" ? ["true", "false"] : [];
-			for (const [line, rendered] of this.renderField(field, index, controlWidth).entries()) {
-				const value = choices[line];
-				rows.add(
-					body.length + 1,
-					value === undefined ? { kind: "field", index } : { kind: "choice", index, value },
-					value === undefined ? `field\u0000${index}` : `choice\u0000${index}\u0000${value}`,
-				);
-				body.push(`${indent}${rendered}`);
-			}
+			for (const line of this.renderField(field, index, controlWidth)) body.push(`${indent}${line}`);
 			if (label.wrappedInvalid !== undefined) {
 				const errColor = this.invalid.has(index) || !field.required ? "error" : "warning";
 				for (const line of wrapTextWithAnsi(
@@ -298,7 +276,6 @@ export class HostInputFormComponent implements Component, Focusable {
 			body.push("");
 		}
 
-		rows.add(body.length + 1, { kind: "submit" }, "submit");
 		body.push(this.submitRow());
 		body.push("");
 		body.push(this.footerRow());
@@ -308,36 +285,6 @@ export class HostInputFormComponent implements Component, Focusable {
 
 	invalidate(): void {
 		for (const editor of this.editors) editor?.invalidate();
-	}
-
-	/**
-	 * A click on a choice picks it and moves on to the next field, as choosing it with the arrows and pressing Enter
-	 * does. A click on the submit button submits, as Enter on it does, and a click on a field's name or its text
-	 * focuses that field.
-	 */
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		return this.clickableRows.handleMouse(event, {
-			activate: (row) => {
-				if (row.kind === "submit") {
-					this.focusedIndex = this.fields.length;
-					this.syncFocus();
-					this.submit();
-				} else {
-					this.focusedIndex = row.index;
-					this.syncFocus();
-					if (row.kind === "choice") {
-						this.values[row.index] = row.value;
-						this.moveFocus(1);
-					}
-				}
-				this.tui.requestRender();
-			},
-		});
-	}
-
-	/** The field, choice or button the last render drew on `row`. */
-	paintedRowKey(row: number): string | undefined {
-		return this.clickableRows.paintedRowKey(row);
 	}
 
 	private renderField(field: HostInputFormField, index: number, width: number): string[] {

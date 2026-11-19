@@ -628,10 +628,6 @@ describe("TuiAltScreen", () => {
 		await terminal.waitForRender();
 		assert.strictEqual(scrollView.scrollTop, 40);
 
-		// A move with no button held ends the drag even if the terminal omitted the release.
-		terminal.sendInput("\x1b[<35;10;1M");
-		await terminal.waitForRender();
-		assert.strictEqual(scrollView.scrollTop, 40);
 		terminal.sendInput("\x1b[<0;10;10m");
 		await terminal.waitForRender();
 		assert.ok(terminal.events.every((event) => event.type !== "write" || !event.data.includes("\x1b]52;c;")));
@@ -2113,27 +2109,6 @@ describe("TuiAltScreen", () => {
 		assert.deepStrictEqual(events, ["press", "drag", "release"]);
 		assert.strictEqual(tui.getFocusedComponent(), component);
 		tui.stop();
-	});
-
-	it("a button-free move outside a captured control ends its drag without a click", async (t) => {
-		const terminal = new VirtualTerminal(20, 2);
-		const tui = new TuiAltScreen(terminal);
-		const events: string[] = [];
-		tui.addChild({
-			render: () => ["handle"],
-			invalidate() {},
-			handleMouse(event) {
-				events.push(`${event.type}:${event.button}`);
-				return { handled: true, capture: event.type === "press" };
-			},
-		});
-		tui.start();
-		t.after(() => tui.stop());
-		await terminal.waitForRender();
-		terminal.sendInput("\x1b[<0;1;1M");
-		terminal.sendInput("\x1b[<32;5;2M");
-		terminal.sendInput("\x1b[<35;5;2M");
-		assert.deepEqual(events, ["press:left", "drag:left", "release:left"]);
 	});
 
 	it("reports consecutive click counts to component-owned controls", async () => {

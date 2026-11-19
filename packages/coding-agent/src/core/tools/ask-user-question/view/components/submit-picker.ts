@@ -1,7 +1,6 @@
 import { truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
-import { markClickTarget } from "../click-targets.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
 const ACTIVE_POINTER = "❯ ";
@@ -63,8 +62,7 @@ export class SubmitPicker implements StatefulView<SubmitPickerProps> {
 			const number = `${i + 1}${NUMBER_SEPARATOR}`;
 			const label = active ? this.theme.fg("accent", this.theme.bold(text)) : this.theme.fg("text", text);
 			const rendered = truncateToWidth(`${pointer}${number}${label}`, width, "");
-			const target = { kind: "submit", index: i === 0 ? 0 : 1 } as const;
-			lines.push(`${markClickTarget(target, rendered)}${active ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
+			lines.push(`${rendered}${active ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 		}
 		return lines;
 	}

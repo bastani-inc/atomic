@@ -1,6 +1,5 @@
 import { hintKeyParts, keyHint, keyText, rawKeyHint } from "@bastani/atomic";
 import {
-	ClickableRows,
 	clickableHintText,
 	clickableKeysHint,
 	clickableKeyTextHint,
@@ -434,17 +433,8 @@ function renderConfirmRow(state: PromptCardState, theme: GraphTheme, usable: num
 		paint(!yes ? "●" : "○", !yes ? theme.error : theme.dim) +
 		" " +
 		paint("no", !yes ? theme.text : theme.dim, { bold: !yes });
-	// Each answer is marked so the view that lays the card out can run a click on it, as Enter on it does.
-	const row = `${markPromptAnswer("confirm:yes", onCell)}    ${markPromptAnswer("confirm:no", offCell)}`;
+	const row = `${onCell}    ${offCell}`;
 	return padToUsable(row, usable);
-}
-
-/**
- * `text` marked as the prompt answer `key` names (`choice:<index>`, `confirm:yes`, `confirm:no`), for the view that
- * places the card to find with {@link ClickableRows.collect}.
- */
-function markPromptAnswer(key: string, text: string): string {
-	return `${ClickableRows.mark(key, text)}${ClickableRows.END_MARK}`;
 }
 
 function renderSelectRows(state: PromptCardState, theme: GraphTheme, usable: number, maxRows: number): string[] {
@@ -456,13 +446,7 @@ function renderSelectRows(state: PromptCardState, theme: GraphTheme, usable: num
 	const scrolls = choices.length > Math.min(5, rowBudget);
 	const maxVisible = Math.max(1, Math.min(5, choices.length, rowBudget - (scrolls ? 1 : 0)));
 	const list = createPromptSelectList(state, theme, maxVisible);
-	return list.render(usable).map((line, row) => {
-		// The list names each row it drew a choice on by its index and value; the value is the choice's index.
-		const key = list.paintedRowKey(row);
-		const index = key?.slice(key.indexOf("\u0000") + 1);
-		const padded = padToUsable(line, usable);
-		return index === undefined ? padded : markPromptAnswer(`choice:${index}`, padded);
-	});
+	return list.render(usable).map((line) => padToUsable(line, usable));
 }
 
 function renderInputRow(state: PromptCardState, theme: GraphTheme, usable: number, cursorOn: boolean): string {

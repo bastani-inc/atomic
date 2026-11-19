@@ -1,5 +1,5 @@
 import { TwoPressConfirm } from "@bastani/atomic";
-import type { ClickableRows, KeyId, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
+import type { KeyId } from "@bastani/atomic-tui";
 import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
@@ -12,7 +12,7 @@ import {
 	matchesAction,
 	matchesNavAction,
 } from "./keybindings-adapter.js";
-import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
+import { isTerminalLeftMousePress, parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { filterStages, type SwitcherState } from "./switcher.js";
 import { Key, matchesKey } from "./text-helpers.js";
 
@@ -29,6 +29,16 @@ const GRAPH_NOTICE_MS = 4000;
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
+		const prior = this.displayBlock;
+		this.displayBlock = undefined;
+		try {
+			return this._handleInput(data);
+		} finally {
+			this.displayBlock = prior;
+		}
+	}
+
+	private _handleInput(data: string): boolean {
 		const paintedView = this.paintedView;
 		const paintedBlockerKey = this.paintedBlockerKey;
 		this._syncLayout();
@@ -59,46 +69,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const wheelDelta = this._mouseWheelDelta(data);
 		if (wheelDelta) return this._handleWheelDelta(wheelDelta);
 		return this._handleGraphInput(data);
-	}
-
-	/**
-	 * A click on a graph node, or on a stage the switcher lists, opens it as moving there and pressing Enter does. The
-	 * press is left to the renderer, so a drag across them selects text and opens nothing.
-	 */
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const clicks = this._clickableRows();
-		if (clicks === undefined) return undefined;
-		return clicks.handleMouse(event, {
-			activate: (stageId) => {
-				this._syncLayout();
-				const stages = this.cachedLayout.map((layoutNode) => layoutNode.stage);
-				if (clicks === this.switcherClicks) {
-					if (!this.switcherOpen) return;
-					const index = filterStages(stages, this.switcherState.query).findIndex((stage) => stage.id === stageId);
-					if (index === -1) return;
-					this.switcherState = { ...this.switcherState, selectedIndex: index };
-					this._openSwitcherSelection();
-					return;
-				}
-				const index = stages.findIndex((stage) => stage.id === stageId);
-				if (index === -1 || this._clickableRows() !== this.graphNodeClicks) return;
-				this._disarmStop();
-				this._setFocusedIndex(index);
-				this._activateFocusedNode();
-			},
-		});
-	}
-
-	/** What the last render drew on `row`: a graph node, or a stage the switcher lists. */
-	paintedRowKey(row: number): string | undefined {
-		return this._clickableRows()?.paintedRowKey(row);
-	}
-
-	/** The rows a click acts on now: the switcher's while it is open, else the graph's nodes. */
-	private _clickableRows(): ClickableRows<string> | undefined {
-		if (this.mode !== "overlay" || this.keysHelpOpen) return undefined;
-		if (this.switcherOpen) return this.switcherClicks;
-		return this._detailOpen() || this._getCurrentRun() === null ? undefined : this.graphNodeClicks;
 	}
 
 	private _handleToolDetailInput(data: string): boolean {
@@ -547,6 +517,15 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const wheelDelta = this._mouseWheelDelta(data);
 		if (wheelDelta) return this._handleWheelDelta(wheelDelta);
 
+		const clickedNodeIndex = this._graphNodeIndexForClick(data);
+		if (clickedNodeIndex !== undefined) {
+			if (clickedNodeIndex !== null) {
+				this._setFocusedIndex(clickedNodeIndex);
+				this._activateFocusedNode();
+			}
+			return true;
+		}
+
 		// Vertical-graph navigation: up/down step between depth levels
 		// (col), left/right step between siblings at the same depth (row).
 		// j/k preserved as a flat-order fallback for muscle memory.
@@ -622,12 +601,29 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	private _handleSwitcherInput(data: string): boolean {
+		const stages = this.cachedLayout.map((layoutNode) => layoutNode.stage);
+
 		if (matchesKey(data, Key.escape)) {
 			this.switcherOpen = false;
 			return true;
 		}
 		if (matchesKey(data, Key.enter)) {
-			this._openSwitcherSelection();
+			const filtered = filterStages(stages, this.switcherState.query);
+			const selected = filtered[this.switcherState.selectedIndex];
+			if (selected) {
+				const idx = this.cachedLayout.findIndex((n) => n.stage.id === selected.id);
+				if (idx !== -1) {
+					this._setFocusedIndex(idx);
+					// Selecting from the switcher opens tool detail or preserves the
+					// existing stage attach path; stages without an attach callback
+					// retain their historical no-op behavior.
+					this.switcherOpen = false;
+					if (this.cachedLayout[idx]?.stage.nodeKind === "tool") this._openFocusedToolDetail();
+					else this._attachFocusedStage();
+					return true;
+				}
+			}
+			this.switcherOpen = false;
 			return true;
 		}
 		const wheelEvent = parseTerminalMouseInput(data);
@@ -652,21 +648,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			return true;
 		}
 		return false;
-	}
-
-	/** Enter in the switcher: close it and open the selected stage's chat, or a tool's detail. */
-	private _openSwitcherSelection(): void {
-		const stages = this.cachedLayout.map((layoutNode) => layoutNode.stage);
-		const selected = filterStages(stages, this.switcherState.query)[this.switcherState.selectedIndex];
-		this.switcherOpen = false;
-		const idx = selected ? this.cachedLayout.findIndex((n) => n.stage.id === selected.id) : -1;
-		if (idx === -1) return;
-		this._setFocusedIndex(idx);
-		// Selecting from the switcher opens tool detail or preserves the
-		// existing stage attach path; stages without an attach callback
-		// retain their historical no-op behavior.
-		if (this.cachedLayout[idx]?.stage.nodeKind === "tool") this._openFocusedToolDetail();
-		else this._attachFocusedStage();
 	}
 
 	private _moveSwitcherSelection(step: number): boolean {
@@ -733,6 +714,25 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	private _scrollGraphHorizontallyBy(deltaCols: number): void {
 		this.pendingEnsureFocusedVisible = false;
 		this.graphScrollColOffset = Math.max(0, this.graphScrollColOffset + deltaCols);
+	}
+
+	private _graphNodeIndexForClick(data: string): number | null | undefined {
+		const click = this._sgrLeftMousePress(data);
+		if (!click) return undefined;
+		if (this.mode !== "overlay") return undefined;
+		if (this.cachedLayout.length === 0) return null;
+
+		for (const rect of this.graphNodeHitRects) {
+			if (click.row >= rect.top && click.row < rect.bottom && click.col >= rect.left && click.col < rect.right) {
+				return rect.index;
+			}
+		}
+		return null;
+	}
+	private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
+		const event = parseTerminalMouseInput(data);
+		if (event?.protocol !== "sgr" || !isTerminalLeftMousePress(event)) return null;
+		return { col: event.col, row: event.row };
 	}
 
 	private _mouseWheelDelta(data: string): MouseWheelDelta | null {

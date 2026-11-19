@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Component, Focusable, TUI, TuiMouseEvent } from "@bastani/atomic-tui";
+import type { Component, Focusable, TUI } from "@bastani/atomic-tui";
 import type {
 	PiCustomComponent,
 	PiCustomOverlayFactory,
@@ -806,13 +806,6 @@ export async function mountStageCustomUi(
 			? { handleInput: (data: string): boolean => rawComponent.handleInput?.(data) === true }
 			: {}),
 		invalidate: () => rawComponent.invalidate?.(),
-		// A click in the dialog reaches it at its own row, as in the main chat.
-		...(rawComponent.handleMouse !== undefined
-			? { handleMouse: (event: TuiMouseEvent) => rawComponent.handleMouse?.(event) }
-			: {}),
-		...(rawComponent.paintedRowKey !== undefined
-			? { paintedRowKey: (row: number) => rawComponent.paintedRowKey?.(row) }
-			: {}),
 		...(rawComponent.dispose !== undefined ? { dispose: () => rawComponent.dispose?.() } : {}),
 		...(typeof (rawComponent as PiCustomComponent).capturesBack === "function"
 			? { capturesBack: () => (rawComponent as PiCustomComponent).capturesBack?.() === true }

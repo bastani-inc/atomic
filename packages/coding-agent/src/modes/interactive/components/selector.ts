@@ -1,6 +1,4 @@
 import {
-	ClickableRows,
-	type ClickableRowsSnapshot,
 	type Component,
 	type Focusable,
 	fuzzyFilter,
@@ -331,6 +329,19 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
+	restoreSelection(previous: SelectorState<T>): void {
+		const id = previous.getSelected()?.id;
+		const index = this.visible.findIndex((item) => item.id === id && !item.disabled);
+		if (index < 0) return;
+		if (
+			this.visible.length === previous.visible.length &&
+			this.visible.every((item, i) => item.id === previous.visible[i]?.id)
+		) {
+			this.top = previous.getTop();
+		}
+		this.select(index);
+	}
+
 	select(index: number): void {
 		if (!Number.isInteger(index) || index < 0 || index >= this.visible.length || this.visible[index]?.disabled)
 			return;
@@ -523,8 +534,8 @@ export class Selector<T> implements Component, Focusable {
 	private title?: string;
 	private subtitle?: string;
 	private notice?: { text: string; tone: SelectorTone };
-	/** The row each item was drawn on in the last render. */
-	private readonly clickableRows = new ClickableRows<string>();
+	private rowLines = new Map<number, string>();
+	private mousePressed?: string;
 	private closed = false;
 	private selectedId?: string;
 	private _focused = false;
@@ -537,7 +548,7 @@ export class Selector<T> implements Component, Focusable {
 		inputValue?: string;
 		inputCursor?: number;
 		inputFocused?: boolean;
-		clickableRows: ClickableRowsSnapshot<string>;
+		rowLines: Map<number, string>;
 		lines: string[];
 	};
 
@@ -635,6 +646,21 @@ export class Selector<T> implements Component, Focusable {
 		this.notifySelectionChange();
 	}
 
+	/** Carry navigation, not the old rows or their callbacks, into a refreshed picker. */
+	restoreNavigation(previous: Selector<T>, keepHighlight: boolean): void {
+		if (this.input && previous.input) {
+			this.input = previous.input;
+			this.state.setQuery(this.input.getValue());
+		}
+		if (keepHighlight || this.state.getQuery()) this.state.restoreSelection(previous.state);
+		this.showingHelp = previous.showingHelp;
+		this.mousePressed = previous.mousePressed;
+		this.focused = previous.focused;
+		// Reapply a user's preview even if that row is also the new configured default.
+		if (keepHighlight) this.selectedId = undefined;
+		this.notifySelectionChange();
+	}
+
 	/** Set the search text as if typed. */
 	setQuery(query: string): void {
 		this.cachedRender = undefined;
@@ -656,6 +682,7 @@ export class Selector<T> implements Component, Focusable {
 			if (matchesKey(data, "ctrl+c")) {
 				this.showingHelp = false;
 				this.closed = true;
+				this.mousePressed = undefined;
 				this.options.onCancel?.();
 			} else if (kb.matches(data, "tui.select.cancel") || kb.matches(data, "app.keys.help")) {
 				this.showingHelp = false;
@@ -673,6 +700,7 @@ export class Selector<T> implements Component, Focusable {
 			if (this.state.getQuery() && !matchesKey(data, "ctrl+c")) this.clearSearch();
 			else {
 				this.closed = true;
+				this.mousePressed = undefined;
 				this.options.onCancel?.();
 			}
 			return;
@@ -701,6 +729,7 @@ export class Selector<T> implements Component, Focusable {
 			return;
 		} else if (!this.input && kb.matches(data, "app.keys.help")) {
 			this.showingHelp = true;
+			this.mousePressed = undefined;
 			return;
 		} else if (!this.input && this.options.numbered && /^[1-9]$/.test(data)) {
 			this.pickNumber(Number(data) - 1);
@@ -712,10 +741,6 @@ export class Selector<T> implements Component, Focusable {
 		this.notifySelectionChange();
 	}
 
-	/**
-	 * A click on a row moves the selection there and confirms it, as Enter does; in a multi-select it switches the row's
-	 * checkbox, as space does.
-	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed || this.showingHelp) return { handled: true };
 		if (event.type === "wheel" && event.wheelDelta) {
@@ -724,24 +749,33 @@ export class Selector<T> implements Component, Focusable {
 			this.notifySelectionChange();
 			return { handled: true, render: this.state.getSelected()?.id !== before };
 		}
-		return this.clickableRows.handleMouse(event, {
-			activate: (id) => {
-				const visible = this.state.getVisible();
-				const index = visible.findIndex((entry) => entry.id === id);
-				const item = index < 0 ? undefined : visible[index];
-				if (!item || item.disabled) return;
-				this.cachedRender = undefined;
-				this.state.select(index);
-				this.notifySelectionChange();
-				if (this.state.mode === "multi") this.state.toggle(item.id);
-				else this.confirm();
-			},
-		});
-	}
-
-	/** The item the last render drew on `row`. */
-	paintedRowKey(row: number): string | undefined {
-		return this.clickableRows.paintedRowKey(row);
+		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
+		const id = this.rowLines.get(event.y);
+		if (id === undefined) {
+			this.mousePressed = undefined;
+			return undefined;
+		}
+		const visible = this.state.getVisible();
+		const index = visible.findIndex((entry) => entry.id === id);
+		const item = index < 0 ? undefined : visible[index];
+		if (!item || item.disabled) {
+			this.mousePressed = undefined;
+			return { handled: true };
+		}
+		if (event.type === "press") {
+			this.mousePressed = item.id;
+			this.state.select(index);
+			this.notifySelectionChange();
+			return { handled: true, focus: true };
+		}
+		const pressed = this.mousePressed;
+		this.mousePressed = undefined;
+		if (pressed !== item.id) return { handled: true };
+		this.state.select(index);
+		this.notifySelectionChange();
+		if (this.state.mode === "multi") this.state.toggle(item.id);
+		else this.confirm();
+		return { handled: true };
 	}
 
 	render(width: number): string[] {
@@ -776,11 +810,11 @@ export class Selector<T> implements Component, Focusable {
 			cached.inputCursor === inputCursor &&
 			cached.inputFocused === inputFocused
 		) {
-			this.clickableRows.restore(cached.clickableRows);
+			this.rowLines = cached.rowLines;
 			return cached.lines;
 		}
 		if (this.showingHelp) {
-			this.clickableRows.clear();
+			this.rowLines.clear();
 			const title = this.options.helpTitle ?? this.title ?? "keys";
 			return renderNavKeyOverlay(
 				title,
@@ -808,7 +842,7 @@ export class Selector<T> implements Component, Focusable {
 		}
 		if (this.input) lines.push(...this.renderSearch(width));
 		if (lines.length > 0) lines.push("");
-		this.clickableRows.clear();
+		this.rowLines = new Map();
 		lines.push(...this.renderRows(width, lines.length));
 		const selectedItem = this.state.getSelected();
 		const detail = selectedItem ? this.options.selectedDetail?.(selectedItem) : undefined;
@@ -844,7 +878,7 @@ export class Selector<T> implements Component, Focusable {
 			inputValue,
 			inputCursor,
 			inputFocused,
-			clickableRows: this.clickableRows.snapshot(),
+			rowLines: new Map(this.rowLines),
 			lines: rendered,
 		};
 		return rendered;
@@ -881,12 +915,14 @@ export class Selector<T> implements Component, Focusable {
 		if (this.state.mode === "multi") {
 			if (this.state.getChecked().length === 0 && !this.state.getSelected()) return;
 			this.closed = true;
+			this.mousePressed = undefined;
 			this.options.onConfirm?.(this.state.getChecked());
 			return;
 		}
 		const item = this.state.getSelected();
 		if (!item) return;
 		if (this.options.closeOnSelect !== false) this.closed = true;
+		this.mousePressed = undefined;
 		this.options.onSelect?.(item);
 	}
 
@@ -1006,17 +1042,16 @@ export class Selector<T> implements Component, Focusable {
 				}
 			}
 			if (tag) line += " ".repeat(Math.max(2, width - used - tagWidth + 1)) + tag;
-			this.clickableRows.add(firstLine + lines.length, item.id, item.id);
+			this.rowLines.set(firstLine + lines.length, item.id);
 			lines.push(line);
 			if (wrappedLabels && wrappedLabels.length > 1) {
 				for (const continuation of wrappedLabels.slice(1)) {
-					this.clickableRows.add(firstLine + lines.length, item.id, item.id);
+					this.rowLines.set(firstLine + lines.length, item.id);
 					lines.push(" ".repeat(indent) + parts.label(continuation));
 				}
 			}
 			if (item.description && twoLine) {
 				const description = truncateToWidth(item.description.replace(/\s+/g, " "), Math.max(1, width - indent - 1));
-				this.clickableRows.add(firstLine + lines.length, item.id, item.id);
 				lines.push(" ".repeat(indent) + this.style.muted(description));
 			}
 		}
@@ -1086,10 +1121,6 @@ export class FramedSelector<T> implements Component, Focusable {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		return this.selector.handleMouse({ ...event, y: event.y - 1 });
-	}
-
-	paintedRowKey(row: number): string | undefined {
-		return this.selector.paintedRowKey(row - 1);
 	}
 
 	invalidate(): void {

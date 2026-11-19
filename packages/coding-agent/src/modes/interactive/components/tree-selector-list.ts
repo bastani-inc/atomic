@@ -1,12 +1,4 @@
-import {
-	ClickableRows,
-	type Component,
-	getKeybindings,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
-	truncateToWidth,
-	visibleWidth,
-} from "@bastani/atomic-tui";
+import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { formatLabelTimestamp, getEntryDisplayText } from "./tree-selector-content.ts";
@@ -17,8 +9,7 @@ import { renderHorizontalViewport } from "./tree-selector-viewport.ts";
 /** Tree list component with selection and ASCII art visualization */
 export class TreeList implements Component {
 	private readonly state: TreeListState;
-	/** The row each entry was drawn on in the last render. */
-	private readonly clickableRows = new ClickableRows<string>();
+	private filterChosen = false;
 
 	public onSelect?: (entryId: string) => void;
 	public onCancel?: () => void;
@@ -62,6 +53,20 @@ export class TreeList implements Component {
 
 	invalidate(): void {}
 
+	/** Withdraw a preliminary project default, without overwriting a filter the user selected. */
+	updateInitialFilter(mode: FilterMode): void {
+		if (this.filterChosen || mode === this.state.filterMode) return;
+		this.state.filterMode = mode;
+		applyTreeFilter(this.state);
+	}
+
+	private chooseFilter(mode: FilterMode): void {
+		this.filterChosen = true;
+		this.state.filterMode = mode;
+		this.state.foldedNodes.clear();
+		applyTreeFilter(this.state);
+	}
+
 	getSearchQuery(): string {
 		return this.state.searchQuery;
 	}
@@ -103,7 +108,6 @@ export class TreeList implements Component {
 	render(width: number): string[] {
 		const state = this.state;
 		const lines: string[] = [];
-		this.clickableRows.clear();
 
 		if (state.filteredNodes.length === 0) {
 			lines.push(truncateToWidth(theme.fg("dim", "  No entries match"), width));
@@ -193,7 +197,6 @@ export class TreeList implements Component {
 				gutter = theme.bg("selectedBg", gutter);
 				body = theme.bg("selectedBg", body);
 			}
-			this.clickableRows.add(lines.length + renderedRows.length, entry.id, entry.id);
 			renderedRows.push({ gutter, body, anchorCol, bodyWidth: visibleWidth(body), isSelected });
 		}
 
@@ -208,24 +211,6 @@ export class TreeList implements Component {
 		if (footer.length > 0) lines.push(truncateToWidth(theme.fg("dim", `  ${footer.join(" · ")}`), width));
 
 		return lines;
-	}
-
-	/** A click on an entry goes to it, as moving there and pressing Enter does. */
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const state = this.state;
-		return this.clickableRows.handleMouse(event, {
-			activate: (entryId) => {
-				const index = state.filteredNodes.findIndex((flatNode) => flatNode.node.entry.id === entryId);
-				if (index < 0) return;
-				state.selectedIndex = index;
-				this.onSelect?.(entryId);
-			},
-		});
-	}
-
-	/** The entry the last render drew on `row`. */
-	paintedRowKey(row: number): string | undefined {
-		return this.clickableRows.paintedRowKey(row);
 	}
 
 	handleInput(keyData: string): boolean {
@@ -272,43 +257,29 @@ export class TreeList implements Component {
 			}
 		} else if (kb.matches(keyData, "app.tree.filter.default")) {
 			// Direct filter: default
-			state.filterMode = "default";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter("default");
 		} else if (kb.matches(keyData, "app.tree.filter.noTools")) {
 			// Toggle filter: no-tools ↔ default
-			state.filterMode = state.filterMode === "no-tools" ? "default" : "no-tools";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "no-tools" ? "default" : "no-tools");
 		} else if (kb.matches(keyData, "app.tree.filter.userOnly")) {
 			// Toggle filter: user-only ↔ default
-			state.filterMode = state.filterMode === "user-only" ? "default" : "user-only";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "user-only" ? "default" : "user-only");
 		} else if (kb.matches(keyData, "app.tree.filter.labeledOnly")) {
 			// Toggle filter: labeled-only ↔ default
-			state.filterMode = state.filterMode === "labeled-only" ? "default" : "labeled-only";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "labeled-only" ? "default" : "labeled-only");
 		} else if (kb.matches(keyData, "app.tree.filter.all")) {
 			// Toggle filter: all ↔ default
-			state.filterMode = state.filterMode === "all" ? "default" : "all";
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(state.filterMode === "all" ? "default" : "all");
 		} else if (kb.matches(keyData, "app.tree.filter.cycleBackward")) {
 			// Cycle filter backwards
 			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 			const currentIndex = modes.indexOf(state.filterMode);
-			state.filterMode = modes[(currentIndex - 1 + modes.length) % modes.length];
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(modes[(currentIndex - 1 + modes.length) % modes.length]!);
 		} else if (kb.matches(keyData, "app.tree.filter.cycleForward")) {
 			// Cycle filter forwards: default → no-tools → user-only → labeled-only → all → default
 			const modes: FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 			const currentIndex = modes.indexOf(state.filterMode);
-			state.filterMode = modes[(currentIndex + 1) % modes.length];
-			state.foldedNodes.clear();
-			applyTreeFilter(state);
+			this.chooseFilter(modes[(currentIndex + 1) % modes.length]!);
 		} else if (kb.matches(keyData, "tui.editor.deleteCharBackward")) {
 			if (state.searchQuery.length > 0) {
 				state.searchQuery = state.searchQuery.slice(0, -1);

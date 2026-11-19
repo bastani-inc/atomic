@@ -1,7 +1,6 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { describe, it, vi } from "vitest";
 import { boldOn, RESET } from "../../packages/workflows/src/tui/color-utils.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
@@ -450,30 +449,6 @@ describe("GraphView keyboard navigation", () => {
 		assert.match(withSwitcher, /│\s+○ stage-0\s+pending\s+│/);
 		assert.doesNotMatch(withSwitcher, /╭.*stage-0/);
 		assert.doesNotMatch(withSwitcher, /^\s*○ stage-0\s+pending/m);
-		view.dispose();
-	});
-});
-
-describe("stage switcher presses", () => {
-	it("a press on a stage in the switcher opens nothing by itself: the renderer keeps it for text selection", () => {
-		const stages = [makeStage("alpha"), makeStage("bravo"), makeStage("charlie")];
-		const view = new GraphView({
-			piKeybindings: s5aKeybindings(),
-			mode: "overlay",
-			runId: "run-1",
-			store: makeStore(makeSnap(stages)),
-			graphTheme: defaultTheme,
-			piTui: h.makeTestTui(30),
-		});
-		view.handleInput("/");
-		const lines = view.render(100).map((line) => stripVTControlCharacters(line));
-		const row = lines.findIndex((line) => line.includes("charlie") && line.includes("│"));
-		assert.notEqual(row, -1, lines.join("\n"));
-		const column = lines[row]!.indexOf("charlie");
-		assert.equal(view.handleInput(`\x1b[<0;${column + 1};${row + 1}M`), false);
-		assert.equal(view._switcherOpen, true);
-		assert.equal(view._focusedIndex, 0);
-		assert.equal(view.paintedRowKey(row), "charlie");
 		view.dispose();
 	});
 });

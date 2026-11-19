@@ -1,5 +1,5 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
-import { ClickableRows } from "@bastani/atomic-tui";
+import { hasLiveBlockMarker } from "../shared/display-run-status.js";
 import {
 	type ExpandedWorkflowGraph,
 	type ExpandedWorkflowStage,
@@ -80,6 +80,14 @@ export interface GraphStageCounts {
 	completed: number;
 	failed: number;
 	skipped: number;
+}
+
+interface GraphNodeHitRect {
+	index: number;
+	top: number;
+	bottom: number;
+	left: number;
+	right: number;
 }
 
 interface GraphViewportGeometry {
@@ -170,10 +178,7 @@ export abstract class GraphViewState {
 	protected graphNotice: GraphNotice | null = null;
 	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
-	/** The graph nodes the last render drew, each named by its stage id, for a click on one. */
-	protected readonly graphNodeClicks = new ClickableRows<string>();
-	/** The stages the last render listed in the switcher, each named by its stage id, for a click on one. */
-	protected readonly switcherClicks = new ClickableRows<string>();
+	protected graphNodeHitRects: GraphNodeHitRect[] = [];
 	protected lastGraphViewport: GraphViewportGeometry | null = null;
 	protected lastGraphTopPad = 0;
 	protected lastGraphVisibleRows = 0;
@@ -308,6 +313,7 @@ export abstract class GraphViewState {
 			this.switcherState = { query: "", selectedIndex: 0 };
 			this.keysHelpOpen = false;
 			this.graphScrollColOffset = 0;
+			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
 			this.runDetail = null;
@@ -360,6 +366,7 @@ export abstract class GraphViewState {
 		this.hasAnimatingStages = graphStages.some(
 			(stage) => stage.status === "running" || stage.status === "awaiting_input",
 		);
+		this.graphNodeHitRects = [];
 		this.lastGraphViewport = null;
 		this._finalizeFocus(previousFocusedStageId, false);
 		this._syncToolDetail(run);
@@ -496,6 +503,7 @@ export abstract class GraphViewState {
 		}
 		this.pendingEnsureFocusedVisible = focusNeedsReveal;
 		if (!preserveHitRects && focusNeedsReveal) {
+			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
 		}
 	}
@@ -724,14 +732,24 @@ export abstract class GraphViewState {
 		return effectiveRunStatus(run);
 	}
 
+	/** Only shared within one synchronous paint/key event. Never use an earlier frame to dispatch a key. */
+	protected displayBlock?: { run: RunSnapshot; marker: Pick<RunSnapshot, "blockedAt">; live?: boolean };
+
+	protected _runDisplayStatus(run: RunSnapshot, status = effectiveRunStatus(run)): RunSnapshot["status"] {
+		if (status !== "running") return status;
+		if (this.displayBlock?.run !== run) this.displayBlock = { run, marker: run };
+		this.displayBlock.live ??= run.status === "running" && hasLiveBlockMarker(run, this.displayBlock.marker);
+		return this.displayBlock.live ? "blocked" : status;
+	}
+
 	protected _runPausable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
 		if (this.stageActions?.pauseRun === undefined || run === null || run.endedAt !== undefined) return false;
-		return effectiveRunStatus(run) === "running";
+		return this._runDisplayStatus(run) === "running";
 	}
 
 	protected _runResumable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
 		if (this.stageActions?.resumeRun === undefined || run === null || run.resumable === false) return false;
-		const status = effectiveRunStatus(run);
+		const status = this._runDisplayStatus(run);
 		return status === "paused" || status === "blocked" || this.stageActions.canResumeRun?.(run.id) === true;
 	}
 
@@ -812,6 +830,7 @@ export abstract class GraphViewState {
 	/** Let the renderer discard any cached body frame after a detail transition. */
 	protected graphLayoutInvalidateForDetail(): void {
 		this.pendingEnsureFocusedVisible = true;
+		this.graphNodeHitRects = [];
 		this.lastGraphViewport = null;
 	}
 
