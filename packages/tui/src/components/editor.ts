@@ -472,16 +472,12 @@ export class Editor implements Component, Focusable {
 	}
 
 	setAutocompleteProvider(provider: AutocompleteProvider, options?: { preserveSelection?: boolean }): void {
+		const openMenu = options?.preserveSelection ? this.autocompleteState : null;
+		if (!openMenu) this.cancelAutocomplete();
 		this.autocompleteProvider = provider;
 		this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
-		if (options?.preserveSelection && this.autocompleteState) {
-			this.requestAutocomplete({
-				force: this.autocompleteState === "force",
-				explicitTab: false,
-				preserveSelection: true,
-			});
-		} else {
-			this.cancelAutocomplete();
+		if (openMenu) {
+			this.requestAutocomplete({ force: openMenu === "force", explicitTab: false, preserveSelection: true });
 		}
 	}
 

@@ -135,19 +135,26 @@ test(
 	() =>
 		withPendingProject(async (cli, approveProject) => {
 			cli.write("/global");
-			await cli.waitForScreen((screen) => /❯ globalone\s/.test(screen), STARTUP_TIMEOUT_MS, "the open menu");
+			const highlighted = (screen: string) => /❯ (globalone|globaltwo)\s/.exec(screen)?.[1];
+			await cli.waitForScreen((screen) => !!highlighted(screen), STARTUP_TIMEOUT_MS, "the open menu");
+			// These two matches have equal scores; either file can be discovered first.
+			const second = highlighted(cli.screen()) === "globalone" ? "globaltwo" : "globalone";
 			cli.write("\x1b[B");
-			await cli.waitForScreen((screen) => /❯ globaltwo\s/.test(screen), STARTUP_TIMEOUT_MS, "the second completion");
+			await cli.waitForScreen(
+				(screen) => highlighted(screen) === second,
+				STARTUP_TIMEOUT_MS,
+				"the second completion",
+			);
 			await approveProject();
 			await cli.waitForScreen(
 				(screen) => screen.includes("Project exact match"),
 				STARTUP_TIMEOUT_MS,
 				"the new completion",
 			);
-			assert.match(cli.screen(), /❯ globaltwo\s/);
+			assert.equal(highlighted(cli.screen()), second);
 			cli.write("\t");
 			await cli.waitForScreen(
-				(screen) => /❯\s*\/globaltwo\s*$/m.test(screen),
+				(screen) => screen.split("\n").some((line) => line.trim() === `❯ /${second}`),
 				STARTUP_TIMEOUT_MS,
 				"the selected completion in the editor",
 			);
