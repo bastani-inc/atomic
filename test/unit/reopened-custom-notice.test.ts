@@ -105,6 +105,45 @@ function mount(host: Host, message: CustomMessage, settings: Partial<ChatMessage
 	};
 }
 
+test("repaint shows an extension's in-place text edits when it takes over a completion (#5690)", () => {
+	const message: CustomMessage = {
+		role: "custom",
+		customType: "task-completion",
+		content: killed.notification.title,
+		display: true,
+		details: killed,
+		timestamp: 0,
+	};
+	const card = new CustomMessageComponent(message);
+	try {
+		assert.match(stripVTControlCharacters(card.render(120).join("")), /worker ops/u);
+		// The same message is now extension text, not a builtin notice. Its body reads must still be live.
+		message.details = { caption: "progress" };
+		let text = "";
+		let reads = 0;
+		Object.defineProperty(message, "content", {
+			get() {
+				reads++;
+				return text;
+			},
+			set(value: string) {
+				text = value;
+			},
+		});
+		for (const update of ["Checking the release", "Release checks passed"]) {
+			message.content = update;
+			reads = 0;
+			card.invalidate();
+			const rows = stripVTControlCharacters(card.render(120).join("\n"));
+			assert.ok(rows.includes(update), rows);
+			assert.doesNotMatch(rows, /worker ops/u);
+			assert.equal(reads, 2, "the text renderer reads the string type and value");
+		}
+	} finally {
+		card.dispose();
+	}
+});
+
 for (const backend of ["sqlite", "jsonl"] as const) {
 	test(`${backend}: a surviving body needs no scan of the independently saved name (#5690)`, () => {
 		const name = `worker ${"x".repeat(20_480)}`;
