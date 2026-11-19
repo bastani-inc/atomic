@@ -1,3 +1,4 @@
+import { convertToLlm } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
@@ -144,27 +145,69 @@ function stripAssistantSubagentToolCallBlocks<T>(message: T): T | undefined {
 	return { ...m, content: filteredContent } as T;
 }
 
-/** Remove parent-only orchestration history while preserving it for an authorized fanout child. */
+function isAssistantMessage(message: unknown): boolean {
+	return (message as { role?: string })?.role === "assistant";
+}
+
+/**
+ * Whether the model sees `message` as something between two assistant turns: a tool result, or a message it reads as
+ * a user turn. A message the model never sees, or a system message, leaves the turns around it adjacent.
+ */
+function separatesAssistantTurns(message: unknown): boolean {
+	const role = (message as { role?: string })?.role;
+	if (role === "toolResult") return true;
+	if (role === "assistant" || role === "system") return false;
+	return convertToLlm([message as AgentMessage]).some((converted) => converted.role === "user");
+}
+
+function isReasoningBlock(block: unknown): boolean {
+	const type = (block as { type?: string })?.type;
+	return type === "thinking" || type === "redacted_thinking";
+}
+
+/** The assistant message without its reasoning blocks, or undefined when nothing else is left. */
+function withoutReasoning<T>(message: T): T | undefined {
+	const m = message as { content?: unknown };
+	if (!Array.isArray(m.content)) return message;
+	const content = m.content.filter((block) => !isReasoningBlock(block));
+	if (content.length === m.content.length) return message;
+	if (content.length === 0) return undefined;
+	return { ...m, content } as T;
+}
+
+/** Remove parent-only orchestration without joining earlier thinking to the next assistant turn (#5481). */
 export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanoutToolHistory = false): T[] {
 	let changed = false;
+	// Walk backwards so we already know what follows a removed separator. If the earlier turn
+	// becomes empty, we can continue to its predecessor without repeatedly scanning the same history.
+	let nextIsAssistant = false;
+	let separatorRemoved = false;
 	const filtered: T[] = [];
-	for (const message of messages) {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index]!;
 		if (
 			isParentOnlySubagentMessage(message) ||
 			(!preserveFanoutToolHistory && isSubagentToolResultMessage(message))
 		) {
 			changed = true;
+			if (nextIsAssistant && !separatorRemoved && separatesAssistantTurns(message)) separatorRemoved = true;
 			continue;
 		}
-		const stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
-		if (stripped === undefined) {
-			changed = true;
-			continue;
+		let stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
+		if (stripped !== undefined && isAssistantMessage(stripped)) {
+			if (separatorRemoved) stripped = withoutReasoning(stripped);
+			if (stripped !== undefined) {
+				nextIsAssistant = true;
+				separatorRemoved = false;
+			}
+		} else if (stripped !== undefined && nextIsAssistant && separatesAssistantTurns(stripped)) {
+			nextIsAssistant = false;
+			separatorRemoved = false;
 		}
 		if (stripped !== message) changed = true;
-		filtered.push(stripped);
+		if (stripped !== undefined) filtered.push(stripped);
 	}
-	return changed ? filtered : messages;
+	return changed ? filtered.reverse() : messages;
 }
 
 export interface InProcessChildPromptBehavior {
