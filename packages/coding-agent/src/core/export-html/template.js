@@ -1130,7 +1130,7 @@
         if (savedCard) {
           const { history, answer, caption } = savedCard;
           const title = args.task.split('\n', 1)[0];
-          html += `<div class="tool-header"><span class="tool-name">Agent(${escapeHtml(args.agent)} · ${escapeHtml(title)})</span></div>`;
+          html += `<div class="tool-header" style="overflow-wrap:anywhere"><span class="tool-name">Agent(${escapeHtml(args.agent)} · ${escapeHtml(title)})</span></div>`;
           html += `<div class="tool-output expandable" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')"><div class="output-preview">${caption}<div class="expand-hint">Show recorded details</div></div><div class="output-full"><strong>Prompt</strong><pre>${escapeHtml(args.task)}</pre><strong>Tool calls (recorded)</strong><pre>${escapeHtml(history)}</pre>`;
           if (answer !== undefined) html += `<strong>Result</strong><pre>${escapeHtml(answer)}</pre>`;
           html += `</div></div><details><summary>Recorded arguments and result</summary><div class="tool-output"><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></div>`;
