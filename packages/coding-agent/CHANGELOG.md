@@ -10,6 +10,7 @@
 
 - `generateStructuredOutput()` and the `structured_output` tool no longer send a provider backoff retry after their timeout when the process is busy ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
 - Snapshot collection reports when there is too little space to move an old chunk table. On a closed local SQLite file, `atomic storage move-snapshot-chunks <sqlite-file>` can finish the move with room for one copy and a batch of log records instead of two copies ([#5700](https://github.com/bastani-inc/atomic/issues/5700)).
+- On SQLite and local libSQL stores with sufficient free space, upgrading a large snapshot reference index from Atomic 0.9.87 or earlier, or opening one that lost a trigger, no longer freezes Atomic while it clears millions of old rows. Collection releases them in short, resumable batches. Stores with custom schema that depends on the index, or without verifiable disk headroom, keep the previous atomic reset ([#5553](https://github.com/bastani-inc/atomic/issues/5553)).
 
 ## [0.9.90] - 2026-11-19
 
