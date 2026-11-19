@@ -2071,6 +2071,7 @@ export class SessionManager {
 		leafId: string,
 		path: SessionEntry[],
 		receipts = new Map<string, OversizedSessionEntry>(),
+		preserveReceiptLinks = true,
 	): Promise<string | undefined> {
 		const result = createBranchedSessionState({
 			leafId,
@@ -2078,6 +2079,7 @@ export class SessionManager {
 			parentSessionId: this.sessionId,
 			workflow: classifiedWorkflowMetadata(this.getHeader()),
 			path,
+			preserveReceiptLinks,
 			labelsById: this.labelsById,
 			labelTimestampsById: this.labelTimestampsById,
 		});
@@ -2183,7 +2185,7 @@ export class SessionManager {
 						receipts,
 					)
 				: window.entries;
-			await source.installFork(leafId, entries, receipts);
+			await source.installFork(leafId, entries, receipts, !!bounded);
 			return source;
 		};
 	}

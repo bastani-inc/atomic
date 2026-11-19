@@ -15,7 +15,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { registerForkScope } from "./fork-store-scope.js";
+import { nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
 	branchRanges,
@@ -718,7 +718,11 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<(SessionWriteResult & { remainingBlobs?: readonly string[] }) | undefined> {
 		// Use the original connection's snapshot. A different handle may share its queue; never wait
 		// for a separately scheduled read from inside a write transaction on that queue.
-		if (source.store !== this || this.create !== SqlSessionStore.prototype.create) return undefined;
+		if (this.create !== SqlSessionStore.prototype.create) return undefined;
+		if (source.store !== this)
+			return "read" in entries && entries.kind === "complete-session"
+				? this.createStagedFork(header, entries, source)
+				: undefined;
 		if ("read" in entries) return this.createStreamedFork(header, entries, source);
 		this.assertOpen();
 		validateSessionHeader(header);
@@ -823,14 +827,18 @@ export class SqlSessionStore implements SessionStore {
 			},
 			storedEntry,
 			encode: (value) => this.encode(value),
-			sourceEntryChunks: (store) =>
-				store instanceof SqlSessionStore && store.readEntryChunk === SqlSessionStore.prototype.readEntryChunk
+			sourceEntryChunks: (source) => {
+				const store = nativeForkReader(source, "entry");
+				return store instanceof SqlSessionStore && store.readEntryChunk === SqlSessionStore.prototype.readEntryChunk
 					? (reference) => store.readStoredChunks(reference)
-					: undefined,
-			sourceBlobParts: (store) =>
-				store instanceof SqlSessionStore && store.getBlob === SqlSessionStore.prototype.getBlob
+					: undefined;
+			},
+			sourceBlobParts: (source) => {
+				const store = nativeForkReader(source, "blob");
+				return store instanceof SqlSessionStore && store.getBlob === SqlSessionStore.prototype.getBlob
 					? (sessionId, hash, index) => store.readBlobPart(sessionId, hash, index)
-					: undefined,
+					: undefined;
+			},
 		};
 	}
 

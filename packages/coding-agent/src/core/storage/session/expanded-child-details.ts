@@ -196,7 +196,7 @@ async function projectExpanded(
 			if (typeof toolCallId === "string" && wanted.has(toolCallId))
 				results.set(toolCallId, { ref, edit, role: "toolResult" });
 		}
-	const values = new Map<string, Partial<ExpandedChildCall>>();
+	const values = new Map<string, Omit<ExpandedChildCall, "id" | "name" | "args">>();
 	for (const [call, sel] of results) {
 		const r = await cardFields(chunks(sel.ref), sel.edit ? "editedResult" : "result");
 		const replacement = sel.edit ? (await cardFields(chunks(sel.edit), "replacement")).content : undefined;
@@ -207,13 +207,14 @@ async function projectExpanded(
 					? [{ type: "text", text: replacement }]
 					: replacement;
 		const content = (Array.isArray(c) ? c : []) as NonNullable<ExpandedChildCall["resultContent"]>;
+		// Fields in the released card's order, as callers that serialize or compare a card see them.
 		values.set(call, {
 			resultContent: content,
+			...(r.details !== undefined ? { resultDetails: r.details } : {}),
 			resultText:
 				typeof c === "string"
 					? c
 					: content.flatMap((b) => (b?.type === "text" && typeof b.text === "string" ? [b.text] : [])).join("\n"),
-			...(r.details !== undefined ? { resultDetails: r.details } : {}),
 			isError: r.isError === true,
 			...(typeof r.durationMs === "number" ? { durationMs: r.durationMs } : {}),
 			completed: true,
@@ -223,14 +224,14 @@ async function projectExpanded(
 	for (const row of calls) {
 		const p = await piece(row.sel, false, new Set(row.names.map((c) => c.index)));
 		for (const c of p.calls)
-			toolCalls.push({ id: c.id, name: c.name, args: c.args ?? {}, completed: false, ...values.get(c.id) });
+			toolCalls.push({ id: c.id, name: c.name, args: c.args ?? {}, ...(values.get(c.id) ?? { completed: false }) });
 	}
 	signal?.throwIfAborted();
 	return {
-		lines,
-		toolCalls,
 		...(prompt ? { prompt: (await piece(prompt, true)).text } : {}),
+		toolCalls,
 		...(answer ? { result: (await piece(answer, true)).text?.trim() } : {}),
+		lines,
 	};
 }
 

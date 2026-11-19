@@ -66,7 +66,6 @@ export class LegacySessionStore implements SessionStore {
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
-		inheritForkScope(this, inner);
 		this.legacyDirectory = options.legacyDirectory;
 		this.databasePath = options.databasePath;
 		const { putBlob, getBlob, readForkWindow } = inner;
@@ -114,6 +113,16 @@ export class LegacySessionStore implements SessionStore {
 				return readEntryRange.call(inner, sessionId, query);
 			};
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;
+		const forwardedBlob = this.getBlob;
+		inheritForkScope(this, inner, (field) =>
+			(
+				field === "blob"
+					? this.getBlob === forwardedBlob && inner.getBlob === getBlob
+					: this.readEntryChunk === LegacySessionStore.prototype.readEntryChunk
+			)
+				? inner
+				: undefined,
+		);
 	}
 
 	get descriptor(): StorageDescriptor {
