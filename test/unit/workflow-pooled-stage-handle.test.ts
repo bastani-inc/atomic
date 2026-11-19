@@ -646,7 +646,11 @@ for (const reason of ["stage_finished", "pool_closed", "worker_exited", "attempt
 	test(`an open stage chat drops the retry at ${reason} without waiting for the store (#5572)`, async () => {
 		const store = createStore();
 		setupRun(store, "child", "agent");
-		const fake = singleWatch({ ...snapshot(), waitingToRetry: true });
+		const fake = singleWatch({
+			...snapshot(),
+			waitingToRetry: true,
+			turn: { startedAt: Date.now() - 3_000, running: false, pending: true, lastAnswerFailed: true },
+		});
 		const ref = { runId: "child", stageId: "agent" };
 		const opened = await openPooledStageHandle(fake.transport, ref, "agent");
 		assert.ok(opened.ok);
@@ -676,6 +680,7 @@ for (const reason of ["stage_finished", "pool_closed", "worker_exited", "attempt
 			assert.equal(line(view), "∀ retrying…");
 			const before = frames;
 			opened.handle.receive({ kind: "ended", reason });
+			assert.equal(opened.handle.turnStartedAt, undefined, "the retired attempt no longer owns a turn");
 			assert.equal(line(view), undefined);
 			assert.ok(frames > before, "the watch end invalidates the mounted chat");
 			fresh = new StageChatView(options);
