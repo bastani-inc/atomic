@@ -5,6 +5,7 @@
 ### Added
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
+- Snapshot collection reports when there is too little space to move an old chunk table. On a closed local SQLite file, `atomic storage move-snapshot-chunks <sqlite-file>` can finish the move with room for one copy and a batch of log records instead of two copies ([#5700](https://github.com/bastani-inc/atomic/issues/5700)).
 
 ## [0.9.90] - 2026-11-19
 
