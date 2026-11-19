@@ -103,7 +103,44 @@ interface SessionFileState {
 
 type JsonValue = SessionJsonValue;
 
+type ForkCatalogType = "session_info" | "session_summary" | "branch_summary";
+interface JsonlForkIndex {
+	/** Latest active label per target, in insertion order (clearing and resetting moves a target to the end). */
+	readonly labels: readonly number[];
+	readonly catalog: readonly (readonly [number, ForkCatalogType])[];
+}
+function isForkCatalogType(type: string): type is ForkCatalogType {
+	return type === "session_info" || type === "session_summary" || type === "branch_summary";
+}
+
+/** Update only the sparse fork metadata touched by the append. Old sidecars without it remain usable. */
+function appendedForkIndex(cached: JsonlIndex, entries: readonly SessionEntry[]): JsonlForkIndex | undefined {
+	const previous = cached.fork;
+	if (!previous) return undefined;
+	let labels: number[] | undefined, catalog: Array<readonly [number, ForkCatalogType]> | undefined;
+	let latest: Map<string, number> | undefined;
+	for (const [i, entry] of entries.entries()) {
+		const seq = cached.index.seq + i + 1;
+		if (isForkCatalogType(entry.type)) {
+			catalog ??= [...previous.catalog];
+			catalog.push([seq, entry.type]);
+		}
+		if (entry.type !== "label") continue;
+		latest ??= new Map();
+		labels ??= [...previous.labels];
+		const before = latest.get(entry.targetId) ?? cached.index.latest[`label:${entry.targetId}`]?.[0];
+		const pos = before === undefined ? -1 : labels.indexOf(before);
+		if (entry.label) {
+			if (pos < 0) labels.push(seq);
+			else labels[pos] = seq;
+		} else if (pos >= 0) labels.splice(pos, 1);
+		latest.set(entry.targetId, seq);
+	}
+	return labels || catalog ? { labels: labels ?? previous.labels, catalog: catalog ?? previous.catalog } : previous;
+}
+
 interface JsonlIndex {
+	readonly fork?: JsonlForkIndex;
 	readonly identity: string;
 	readonly birthtimeNs: string;
 	readonly headerStamp: string;
@@ -960,6 +997,72 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
+	readForkWindow(sessionId: string, entryId: string) {
+		return this.run(async () => {
+			const { indexedForkWindow, rangedForkMetadata, scanForkRecords } = await import("./fork-window.js");
+			for (;;) {
+				const { path, header, jsonl } = await this.indexed(sessionId);
+				const file = await open(path, "r");
+				try {
+					const stat = await file.stat({ bigint: true });
+					if (!matchesIndexRevision(stat, jsonl)) continue;
+					const leaf = (await this.seqInFile(path, jsonl, entryId, file)) ?? 0;
+					const many = (seqs: readonly number[]) => this.entriesAt(path, jsonl, seqs, false, file);
+					const metadata = rangedForkMetadata(
+						(seq) => [spanStart(jsonl, seq), spanEnd(jsonl, seq)],
+						(start, n) => readFrom(file, start, n),
+					);
+					const scan = scanForkRecords(metadata);
+					let fork = jsonl.fork;
+					const forkIndex = async (): Promise<JsonlForkIndex> => {
+						if (fork) return fork;
+						// An older sidecar has offsets but not label order. Fill the optional cache only when
+						// a fork needs it, reading bounded metadata once rather than decoding the file per fork.
+						const active = new Map<string, number>(),
+							catalog: Array<readonly [number, ForkCatalogType]> = [];
+						for await (const m of scan(
+							[[1, jsonl.index.seq]],
+							[],
+							["label", "session_info", "session_summary", "branch_summary"],
+						)) {
+							if (isForkCatalogType(m.type)) catalog.push([m.seq, m.type]);
+							else {
+								const target = m.label?.targetId ?? m.labelTarget;
+								if (target === undefined) continue;
+								if (m.label?.label || m.labelSet) active.set(target, m.seq);
+								else active.delete(target);
+							}
+						}
+						fork = { labels: [...active.values()], catalog };
+						await this.keepIndex(path, { ...jsonl, fork });
+						return fork;
+					};
+					return await indexedForkWindow(
+						header,
+						jsonl.index,
+						leaf,
+						(lo, hi) => many(seqRange(lo, hi)),
+						many,
+						metadata,
+						async function* (ranges, kinds, types = []) {
+							if (kinds.length || types.includes("label")) {
+								yield* scan(ranges, kinds, types);
+								return;
+							}
+							for (const [seq, type] of (await forkIndex()).catalog)
+								if (types.includes(type) && ranges.some(([lo, hi]) => seq >= lo && seq <= hi))
+									yield { seq, type };
+						},
+						undefined,
+						async () => (await forkIndex()).labels,
+					);
+				} finally {
+					await file.close();
+				}
+			}
+		});
+	}
+
 	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
 		return this.run(async () => {
 			if (leafId !== undefined) validateSessionText("entry.id", leafId);
@@ -1087,6 +1190,7 @@ export class JsonlSessionStore implements SessionStore {
 			torn: folded.torn,
 			spans: folded.spans,
 			ids: folded.ids,
+			fork: folded.fork,
 			index: folded.index,
 			sidecarSize: 0,
 		};
@@ -1100,6 +1204,7 @@ export class JsonlSessionStore implements SessionStore {
 		readonly index: SessionResumeIndex;
 		readonly spans: number[];
 		readonly ids: number[];
+		readonly fork: JsonlForkIndex;
 		readonly size: number;
 		readonly terminated: boolean;
 		readonly torn: boolean;
@@ -1107,12 +1212,22 @@ export class JsonlSessionStore implements SessionStore {
 		let index: SessionResumeIndex = { ...foldSessionResume(undefined, [], undefined, activeSeq), epoch };
 		const spans: number[] = [];
 		const hashes: number[] = [];
+		const activeLabels = new Map<string, number>();
+		const catalog: Array<readonly [number, ForkCatalogType]> = [];
+		const fork = (): JsonlForkIndex => ({ labels: [...activeLabels.values()], catalog });
 		const ids = new Map<string, number>();
 		let batch: SessionEntry[] = [];
 		const flush = () => {
 			if (batch.length === 0) return;
 			validateSessionEntryStructure(batch, path);
 			validateSessionEntries(batch);
+			for (const [i, entry] of batch.entries()) {
+				const seq = index.seq + i + 1;
+				if (entry.type === "label") {
+					if (entry.label) activeLabels.set(entry.targetId, seq);
+					else activeLabels.delete(entry.targetId);
+				} else if (isForkCatalogType(entry.type)) catalog.push([seq, entry.type]);
+			}
 			index = foldSessionResume(index, batch, (id) => ids.get(id), activeSeq);
 			batch = [];
 		};
@@ -1152,20 +1267,28 @@ export class JsonlSessionStore implements SessionStore {
 		const rest = parts.length === 0 ? undefined : Buffer.concat(parts);
 		if (rest === undefined || header) {
 			flush();
-			return { index, spans, ids: hashes, size: position, terminated: rest === undefined, torn: false };
+			return {
+				index,
+				spans,
+				ids: hashes,
+				fork: fork(),
+				size: position,
+				terminated: rest === undefined,
+				torn: false,
+			};
 		}
 		const unterminated = parseUnterminated(rest.toString("utf8"));
 		if (unterminated === undefined) {
 			flush();
 			reportTornLine(path);
-			return { index, spans, ids: hashes, size: lineStart, terminated: true, torn: true };
+			return { index, spans, ids: hashes, fork: fork(), size: lineStart, terminated: true, torn: true };
 		}
 		spans.push(lineStart, position);
 		hashes.push(idHash(unterminated.id));
 		batch.push(unterminated);
 		ids.set(unterminated.id, spans.length / 2);
 		flush();
-		return { index, spans, ids: hashes, size: position, terminated: false, torn: false };
+		return { index, spans, ids: hashes, fork: fork(), size: position, terminated: false, torn: false };
 	}
 
 	private async catchUp(path: string, cached: JsonlIndex, stats: BigIntStats): Promise<JsonlIndex | undefined> {
@@ -1219,6 +1342,7 @@ export class JsonlSessionStore implements SessionStore {
 			torn,
 			spans,
 			ids: [...cached.ids, ...entries.map((entry) => idHash(entry.id))],
+			fork: appendedForkIndex(cached, entries),
 			index,
 		};
 	}
@@ -1273,6 +1397,7 @@ export class JsonlSessionStore implements SessionStore {
 			torn: false,
 			spans,
 			ids: [...cached.ids, ...entries.map((entry) => idHash(entry.id))],
+			fork: appendedForkIndex(cached, entries),
 			index: await this.foldAppended(path, cached, entries),
 		};
 		if (next.size - next.sidecarSize >= SIDECAR_REFRESH_BYTES) await this.keepIndex(path, next);
@@ -1284,11 +1409,12 @@ export class JsonlSessionStore implements SessionStore {
 		jsonl: JsonlIndex,
 		seqs: readonly number[],
 		exactRevision = false,
+		pinned?: FileHandle,
 	): Promise<SessionStoredEntry[]> {
 		const wanted = [...new Set(seqs.filter((seq) => seq >= 1 && seq <= jsonl.index.seq))].sort((a, b) => a - b);
 		const entries: SessionStoredEntry[] = [];
 		if (wanted.length === 0) return entries;
-		const file = await open(path, "r");
+		const file = pinned ?? (await open(path, "r"));
 		try {
 			if (exactRevision && !matchesIndexRevision(await file.stat({ bigint: true }), jsonl)) return [];
 			let index = 0;
@@ -1316,18 +1442,25 @@ export class JsonlSessionStore implements SessionStore {
 			}
 			if (exactRevision && !matchesIndexRevision(await file.stat({ bigint: true }), jsonl)) return [];
 		} finally {
-			await file.close();
+			if (!pinned) await file.close();
 		}
 		return entries;
 	}
 
-	private async seqInFile(path: string, jsonl: JsonlIndex, entryId: string): Promise<number | undefined> {
+	private async seqInFile(
+		path: string,
+		jsonl: JsonlIndex,
+		entryId: string,
+		pinned?: FileHandle,
+	): Promise<number | undefined> {
 		const total = jsonl.spans.length / 2;
 		if (jsonl.index.lastId === entryId && jsonl.index.seq === total) return total;
 		const hash = idHash(entryId);
 		const candidates: number[] = [];
 		for (let seq = 1; seq <= total; seq++) if (jsonl.ids[seq - 1] === hash) candidates.push(seq);
-		return (await this.entriesAt(path, jsonl, candidates)).findLast((held) => held.entry.id === entryId)?.seq;
+		return (await this.entriesAt(path, jsonl, candidates, false, pinned)).findLast(
+			(held) => held.entry.id === entryId,
+		)?.seq;
 	}
 
 	private async readPersisted(path: string, stored?: StoredSessionHeader): Promise<SessionSnapshot> {
@@ -2088,6 +2221,7 @@ async function writeSidecar(path: string, jsonl: JsonlIndex): Promise<boolean> {
 		spans: encodeDeltas(jsonl.spans),
 		ids: encodeIdHashes(jsonl.ids),
 		index: jsonl.index,
+		fork: jsonl.fork,
 	});
 	const sidecar = `${path}${SIDECAR_SUFFIX}`;
 	const temporary = `${sidecar}.${randomUUID()}.tmp`;
@@ -2099,6 +2233,19 @@ async function writeSidecar(path: string, jsonl: JsonlIndex): Promise<boolean> {
 		await unlink(temporary).catch(() => undefined);
 		return false;
 	}
+}
+
+function validForkIndex(value: unknown, last: number): JsonlForkIndex | undefined {
+	if (value === null || typeof value !== "object" || !("labels" in value) || !("catalog" in value)) return undefined;
+	const seq = (n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n > 0 && n <= last;
+	if (
+		!Array.isArray(value.labels) ||
+		!value.labels.every(seq) ||
+		!Array.isArray(value.catalog) ||
+		!value.catalog.every((row) => Array.isArray(row) && row.length === 2 && seq(row[0]) && isForkCatalogType(row[1]))
+	)
+		return undefined;
+	return value as JsonlForkIndex;
 }
 
 async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
@@ -2154,6 +2301,7 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 		spans,
 		ids,
 		index: stored.index,
+		fork: validForkIndex(stored.fork, stored.index.seq),
 		sidecarSize: stored.size,
 	};
 }
