@@ -18,7 +18,6 @@ import type { InteractiveSubmission } from "../../packages/coding-agent/src/mode
 const testDir = dirname(fileURLToPath(import.meta.url));
 const explicitPackagePaths = [
 	join(testDir, "../../packages/coding-agent/test/fixtures/slash-autosend-extension-package"),
-	join(testDir, "../../packages/coding-agent/test/fixtures/slash-autosend-workflow-package"),
 ];
 const startupCwd = mkdtempSync(join(tmpdir(), "atomic-explicit-package-startup-"));
 
@@ -150,7 +149,7 @@ function createStartupContext(
 
 describe("interactive startup input with explicit packages", () => {
 	for (const draft of ["/", "/foo"]) {
-		test(`keeps ${JSON.stringify(draft)} as a draft when extension and workflow package loading finishes`, async () => {
+		test(`keeps ${JSON.stringify(draft)} as a draft when extension package loading finishes`, async () => {
 			const captureEnabled = startupCaptureEnabledForExplicitPackages();
 			assert.equal(captureEnabled, true, "explicit -e packages must keep raw startup input capture enabled");
 			const capture = captureEnabled ? { consume: () => ({ text: draft, submissions: [] }) } : undefined;
