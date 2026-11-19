@@ -80,104 +80,202 @@ if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux not found in PATH" >&2
   exit 1
 fi
-# A child created during group cancellation must also see that the wait ended.
-active() { [[ -d "$scratch" && ! -e "$scratch/stopped" ]]; }
 # Bound each timer sleep to a day, not the overall wait. Large decimal budgets
 # must not overflow shell arithmetic or the platform's sleep primitive.
 remaining_cs() {
   local now
-  active || return 1
   now=$(monotonic_cs) || return 1
   awk -v elapsed="$((10#$now - 10#$start))" -v timeout="$timeout" '
     BEGIN { left = timeout * 100 - elapsed; if (left <= 0) exit 1; printf "%.0f\n", (left > 8640000 ? 8640000 : left) }'
 }
 before_deadline() { remaining_cs >/dev/null; }
 
-scratch=""
-worker=""
-stop_worker() {
-  if [[ -n "$worker" ]]; then
-    # The shell reports a failed write; losing scratch must not prevent group cleanup.
-    : >"$scratch/stopped" || :
-    kill -KILL -- "-$worker" 2>/dev/null || :
-    # Windows delivers a group signal to its current members. A Windows child
-    # created during that delivery can otherwise live past the helper's exit.
-    case $OSTYPE in
-      msys*|cygwin*)
-        while builtin kill -0 -- "-$worker" 2>/dev/null; do
-          kill -KILL -- "-$worker" 2>/dev/null || break
-        done ;;
-    esac
-    worker=""
-  fi
+# The worker and everything it starts stay in the caller's process group, so a
+# kill of that group stops them all, and the wait writes nothing to disk. Each
+# child runs in the background, so a stop request interrupts the wait for it.
+stopping=0
+child=""
+stop_child() {
+  stopping=1
+  if [[ -n "$child" ]]; then kill -KILL "$child" 2>/dev/null || :; fi
 }
-trap 'stop_worker; if [[ -n "$scratch" ]]; then rm -rf -- "$scratch"; fi' EXIT
-# Stop an owned group immediately, or remember the signal until its PID is saved.
-# A second interrupt must not cut off the first one's cleanup.
-cancelled=0
-trap 'trap "" HUP INT TERM; cancelled=1; stop_worker' HUP INT TERM
-# Let mktemp report the path it created, even if the caller's whole group is interrupted.
-scratch=$(trap '' HUP INT TERM; exec mktemp -d)
-(( ! cancelled )) || exit 1
-: >"$scratch/pane"
+# Wait for $child. Once the worker is asked to stop, end it and return 143.
+wait_child() {
+  local rc=0
+  if (( stopping )); then kill -KILL "$child" 2>/dev/null || :; fi
+  wait "$child" 2>/dev/null || rc=$?
+  if (( stopping )); then
+    wait "$child" 2>/dev/null || :
+    rc=143
+  fi
+  child=""
+  return "$rc"
+}
 
+# Runs in a command substitution, with the worker's output on fd 5. The helper
+# kills a capture that is still running when the wait ends, so it learns each
+# capture's PID.
+capture() {
+  local rc=0
+  tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null 5>&- &
+  printf 'capture %s\n' "$!" >&5 2>/dev/null
+  wait "$!" || rc=$?
+  printf 'captured %s\n' "$!" >&5 2>/dev/null
+  return "$rc"
+}
+
+captured=0
+last_pane=""
 poll() {
-  local pane_text rc
-  active || return 124
-  LC_NUMERIC=C sleep 0.0 2>/dev/null || return 125
+  local pane_text rc=0
+  LC_NUMERIC=C sleep 0.0 >/dev/null 2>&1 &
+  child=$!
+  wait_child || return 125
   # Check the pattern inside the timed worker: even the first grep can stall.
-  grep "$grep_flag" -- "$pattern" </dev/null >/dev/null || {
-    rc=$?
-    (( rc == 1 )) || return "$rc"
-  }
-  while before_deadline; do
-    if pane_text=$(tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null) &&
-      printf '%s\n' "$pane_text" >"$scratch/next" && mv -f "$scratch/next" "$scratch/pane"; then
-      if before_deadline && grep "$grep_flag" -- "$pattern" "$scratch/pane" >/dev/null 2>&1 && before_deadline; then
-        return 0
+  # Check quietly, so nothing a stalled check started keeps the caller's error
+  # output open, and repeat a failed check to report its error.
+  grep "$grep_flag" -- "$pattern" </dev/null >/dev/null 2>&1 &
+  child=$!
+  wait_child || rc=$?
+  if (( rc > 1 )); then
+    grep "$grep_flag" -- "$pattern" </dev/null >/dev/null &
+    child=$!
+    wait_child || :
+    return "$rc"
+  fi
+  while before_deadline && (( ! stopping )); do
+    # Stop polling once the helper is gone, even if only its own PID was killed.
+    if ! kill -0 "$$" 2>/dev/null; then
+      stopping=1
+      return 143
+    fi
+    if { pane_text=$(capture); } 5>&1; then
+      captured=1
+      last_pane=$pane_text
+      if before_deadline; then
+        printf '%s\n' "$pane_text" 2>/dev/null | grep "$grep_flag" -- "$pattern" >/dev/null 2>&1 &
+        child=$!
+        if wait_child && before_deadline; then return 0; fi
       fi
     fi
-    active || return 124
-    sleep "$interval" || return "$?"
+    (( ! stopping )) || return 143
+    sleep "$interval" >/dev/null &
+    child=$!
+    wait_child || return "$?"
   done
   return 124
 }
 
 watch_deadline() {
-  local remaining duration
+  local remaining duration rc
+  trap stop_child TERM
+  echo 'timer ready' 2>/dev/null
   while remaining=$(remaining_cs); do
     printf -v duration '%d.%02d' "$((remaining / 100))" "$((remaining % 100))"
-    active || break
-    LC_NUMERIC=C sleep "$duration" 2>/dev/null || { echo 125 2>/dev/null; return; }
+    LC_NUMERIC=C sleep "$duration" >/dev/null 2>&1 &
+    child=$!
+    rc=0
+    wait_child || rc=$?
+    (( ! stopping )) || return 0
+    if (( rc != 0 )); then
+      echo 'status 125' 2>/dev/null
+      return 0
+    fi
   done
-  echo 124 2>/dev/null
+  (( stopping )) || echo 'status 124' 2>/dev/null
 }
 
-# The poll and its timer share a private process group. The first status on the
-# pipe wins. Stopping the group cancels the other, even inside tmux or sleep.
-set -m
-(
-  set +m
-  IFS= read -r result < <(
-    (status=0; poll || status=$?; echo "$status" 2>/dev/null) &
-    watch_deadline &
-    wait
-  )
-  exit "$result"
-) &
-worker=$!
-(( ! cancelled )) || exit 1
-status=0
-wait "$worker" 2>/dev/null || status=$?
+# The worker's output: the PIDs of its timer and of each capture, the first
+# status from the poll or its timer, then the last complete capture once the
+# timer has stopped. The worker and its timer say when they can take a stop
+# request: a signal sent while a shell is still starting can be lost.
+watch_pane() {
+  local status=0 timer
+  trap stop_child TERM
+  # A write after the helper has gone must not end the worker before its timer.
+  trap '' PIPE
+  echo ready 2>/dev/null
+  watch_deadline &
+  timer=$!
+  printf 'timer %s\n' "$timer" 2>/dev/null
+  poll || status=$?
+  (( stopping )) || printf 'status %s\n' "$status" 2>/dev/null
+  kill -TERM "$timer" 2>/dev/null || :
+  wait "$timer" 2>/dev/null || wait "$timer" 2>/dev/null || :
+  if (( captured )); then printf 'pane\n%s\n' "$last_pane" 2>/dev/null; fi
+}
+
+worker=""
+stopping_worker=0
+timer_pid=""
+capture_pid=""
+status=""
+have_pane=0
+pane=""
+# Act on a line of the worker's output. Returns 1 after its last complete capture.
+take() {
+  case $1 in
+    ready) if (( stopping_worker )); then kill -TERM "$worker" 2>/dev/null || :; fi ;;
+    'timer ready'|'timer '*)
+      if [[ $1 != 'timer ready' ]]; then timer_pid=${1#timer }; fi
+      if (( stopping_worker )) && [[ -n "$timer_pid" ]]; then kill -TERM "$timer_pid" 2>/dev/null || :; fi ;;
+    'capture '*)
+      capture_pid=${1#capture }
+      if (( stopping_worker )); then kill -KILL "$capture_pid" 2>/dev/null || :; fi ;;
+    'captured '*) capture_pid="" ;;
+    'status '*) if [[ -z "$status" ]]; then status=${1#status }; fi ;;
+    pane) have_pane=1; pane=$(cat <&3) || :; return 1 ;;
+  esac
+}
+# Ask the worker and its timer to stop, and kill a capture still running.
+signal_worker() {
+  stopping_worker=1
+  kill -TERM "$worker" 2>/dev/null || :
+  if [[ -n "$timer_pid" ]]; then kill -TERM "$timer_pid" 2>/dev/null || :; fi
+  if [[ -n "$capture_pid" ]]; then kill -KILL "$capture_pid" 2>/dev/null || :; fi
+}
+# Stop the worker and keep its last complete capture. End of file means the
+# worker and its children are gone.
+stop_worker() {
+  local line
+  if [[ -n "$worker" ]]; then
+    signal_worker
+    while IFS= read -r line <&3 && take "$line"; do :; done
+    exec 3<&-
+    worker=""
+  fi
+}
+trap stop_worker EXIT
+# Only note the signal here and ask the worker to stop. Reading the worker's
+# output in this handler could take a line the main loop has begun to read.
+cancelled=""
+on_signal() {
+  if [[ -z "$cancelled" ]]; then cancelled=$1; fi
+  if [[ -n "$worker" ]]; then signal_worker; fi
+}
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+if [[ -z "$cancelled" ]]; then
+  exec 3< <(watch_pane)
+  worker=$!
+  # The first status wins. A signal ends this loop at the worker's next line.
+  while [[ -z "$status$cancelled" ]] && IFS= read -r line <&3 && take "$line"; do :; done
+fi
 stop_worker
-(( ! cancelled )) || exit 1
+if [[ -n "$cancelled" ]]; then
+  # End by the same signal, so a calling script stops too.
+  trap - EXIT "$cancelled"
+  kill -"$cancelled" "$$"
+  exit "$((128 + $(kill -l "$cancelled")))"
+fi
 if [[ "$status" == 125 ]]; then
   echo 'The wait timer requires a sleep command that accepts fractional seconds.' >&2
   exit 1
 fi
-if [[ "$status" != 124 ]]; then exit "$status"; fi
+if [[ "$status" != 124 ]]; then exit "${status:-1}"; fi
 
 echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
 echo "Last ${lines} lines from $target:" >&2
-cat "$scratch/pane" >&2
+if (( have_pane )); then printf '%s\n' "$pane" >&2; fi
 exit 1
