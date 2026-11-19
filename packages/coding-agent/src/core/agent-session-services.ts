@@ -174,10 +174,13 @@ export async function createAgentSessionServices(
 /** Prepare trust now; construct approved resources and register providers on continuation. */
 export async function prepareAgentSessionServices(
 	options: CreateAgentSessionServicesOptions,
+	startupSessionQuit?: () => boolean,
 ): Promise<() => Promise<AgentSessionServices>> {
 	const inherited = sessionLifecycleCreation.getStore();
 	const lifetime = { ...inherited, scope: inherited?.scope ?? {}, claimed: false };
-	const complete = await sessionLifecycleCreation.run(lifetime, () => prepareOwnedAgentSessionServices(options));
+	const complete = await sessionLifecycleCreation.run(lifetime, () =>
+		prepareOwnedAgentSessionServices(options, startupSessionQuit),
+	);
 	return () =>
 		sessionLifecycleCreation.run(lifetime, async () => {
 			const services = await complete();
@@ -188,6 +191,7 @@ export async function prepareAgentSessionServices(
 
 async function prepareOwnedAgentSessionServices(
 	options: CreateAgentSessionServicesOptions,
+	startupSessionQuit?: () => boolean,
 ): Promise<() => Promise<AgentSessionServices>> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
@@ -216,6 +220,7 @@ async function prepareOwnedAgentSessionServices(
 	const completeReload = await prepareDefaultResourceLoaderReload(
 		defaultResourceLoader,
 		options.resourceLoaderReloadOptions,
+		startupSessionQuit,
 	);
 	let initialServices = true;
 	return async () => {

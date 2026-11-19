@@ -1,9 +1,13 @@
 import { basename, join, relative, sep } from "node:path";
+import { isProxy } from "node:util/types";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@bastani/atomic-agent-core";
 import { getOpenCodeSessionHeaders } from "@bastani/atomic-ai";
+import { stageAnthropicSerializedBody } from "@bastani/atomic-ai/api/anthropic-serialized-body";
 import {
+	type Api,
 	clampThinkingLevel,
 	type Message,
+	type Model,
 	type ProviderHeaders,
 	streamSimple,
 	type Usage,
@@ -22,7 +26,7 @@ import {
 	type ReleaseWhenIdleOptions,
 } from "./agent-session-release.ts";
 import { bindChildTaskNotices, childCommandTaskHost, openChildCommandTaskHost } from "./agent-session-tasks.js";
-import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
+import { type ForkReplayHook, restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
 import { withBuiltinResourceLoader } from "./builtin-resource-loader.ts";
@@ -41,6 +45,15 @@ import {
 } from "./extensions/loader-rollback.ts";
 import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
 import { deferFirstPromptModel } from "./first-prompt-model.ts";
+import {
+	acceptsForkReplay,
+	captureForkReplayPair,
+	type ForkReplayFilter,
+	type ForkReplayPair,
+	forkReplayFilter,
+	isForkHeader,
+} from "./fork-replay-pair.ts";
+import { type ForkReplayWire, repairSerializedForkReplay } from "./fork-replay-wire.ts";
 import { SessionIntercomPolicy, validateIntercomSessionOptions } from "./intercom-policy.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
@@ -48,7 +61,7 @@ import {
 	isolateMandatoryResourceLoader,
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
-import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
+import { convertToLlm, convertToLlmWithForkBoundaries, repairOrphanToolResults } from "./messages.ts";
 import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
@@ -71,6 +84,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionManager } from "./session-manager.ts";
+import { physicalForkHeader } from "./session-manager-core.ts";
 import { prepareSessionOpenMarkers } from "./session-open-markers.js";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { resolveSessionStore } from "./session-storage.js";
@@ -234,16 +248,19 @@ function createScopedSession(
 						: (options.resourceAdmission ?? currentResourceAdmission());
 				try {
 					acquisition.release = await acquireSessionPermit(admission, options);
+					const scopedOptions = {
+						...options,
+						extensionBindings: options.extensionBindings ?? context.bindings,
+						resourceAdmission: admission,
+					};
+					// Only inspect the fresh spread's own data. Selection still reads the model after the history filter.
 					return await constructAgentSession(
-						{
-							...options,
-							extensionBindings: options.extensionBindings ?? context.bindings,
-							resourceAdmission: admission,
-						},
+						scopedOptions,
 						deferStart,
 						persistInitialState,
 						acquisition,
-						recoverMissingModel,
+						recoverMissingModel &&
+							(Object.hasOwn(scopedOptions, "model") ? !scopedOptions.model : !("model" in scopedOptions)),
 					);
 				} catch (error) {
 					// The resumed session never opened: nothing else releases the pooled worktrees it holds (#4748).
@@ -365,14 +382,9 @@ async function constructAgentSession(
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
-	// createScopedSession already copied own options. Don't invoke an inherited model getter before selection.
-	const ownsModel = Object.hasOwn(options, "model");
-	let model = ownsModel ? options.model : undefined;
 	const restore = { allowNetwork: false };
 	const observing =
-		recoverMissingModel &&
-		(ownsModel ? !model : !("model" in options)) &&
-		ModelRuntime[sessionAccountCheckpoint](modelRuntime)
+		recoverMissingModel && ModelRuntime[sessionAccountCheckpoint](modelRuntime)
 			? sessionLifecycleCreation.getStore()
 			: undefined;
 	let missingCatalog = false;
@@ -464,9 +476,43 @@ async function constructAgentSession(
 		? options.initialContextTransform(repairedMessages)
 		: repairedMessages;
 	const hasExistingSession = existingMessages.length > 0;
-	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
+	const branch = sessionManager.getBranch();
+	const hasThinkingEntry = branch.some((entry) => entry.type === "thinking_level_change");
+	// Only the matching built-in filter opts in. A caller's filter remains an ordinary unary method.
+	const filter: ForkReplayFilter | undefined =
+		existingMessages !== repairedMessages &&
+		!isProxy(options) &&
+		Object.getOwnPropertyDescriptor(options, "subagentPolicy")?.value
+			? Object.getOwnPropertyDescriptor(options, forkReplayFilter)?.value
+			: undefined;
+	let header =
+		filter && filter.project === Object.getOwnPropertyDescriptor(options, "initialContextTransform")?.value
+			? physicalForkHeader(sessionManager)
+			: undefined;
+	let openingPair =
+		filter && isForkHeader(header) && (!options.model || acceptsForkReplay(options.model))
+			? captureForkReplayPair(repairedMessages, existingMessages, filter, branch, options.model)
+			: undefined;
+	if (!openingPair) header = undefined;
+	let activeForkPair = openingPair;
+	const requestContextProjectionTransform =
+		openingPair &&
+		((messages: AgentMessage[]) => {
+			const projected = filter!.project(messages);
+			activeForkPair =
+				acceptsForkReplay(agent.state.model) &&
+				physicalForkHeader(sessionManager) === header &&
+				openingPair!.matches(
+					messages,
+					projected,
+					(session as unknown as AgentSessionInternalSurface)._entryIdsByMessage,
+				)
+					? openingPair
+					: undefined;
+			return projected;
+		});
 
-	if (!ownsModel) model = options.model;
+	let model = options.model;
 	let missingAccountModel: string | undefined;
 	let modelFallbackMessage: string | undefined;
 	let modelFallbackReason: import("./model-resolver-types.ts").ModelFallbackReason | undefined;
@@ -601,10 +647,23 @@ async function constructAgentSession(
 	let agent: Agent;
 
 	let lastConvertedLlmMessages: Message[] | undefined;
+	let requestForkBoundaries: ForkReplayPair | undefined;
 
+	let convertForRequest = convertToLlm;
+	if (openingPair) {
+		convertForRequest = (messages) => {
+			const pair = activeForkPair;
+			requestForkBoundaries = undefined;
+			return pair
+				? convertToLlmWithForkBoundaries(messages, (normalized) => {
+						requestForkBoundaries = pair.converted(messages, normalized);
+					})
+				: convertToLlm(messages);
+		};
+	}
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		const converted = convertToLlm(messages);
+		const converted = convertForRequest(messages);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			lastConvertedLlmMessages = converted;
@@ -689,6 +748,50 @@ async function constructAgentSession(
 		});
 	};
 
+	// Keep the ordinary SDK callback a payload callback. Only our own first native stream gets the
+	// private receipt and transport; manual callback calls, warmers and later streams never do.
+	type OpeningRequest = { pair: ForkReplayPair; header: typeof header };
+	const preparePayload = async (
+		payload: unknown,
+		model: Model<Api>,
+		first?: OpeningRequest,
+		receiveWire?: (wire: ForkReplayWire) => void,
+	) => {
+		const sourceMessages = lastConvertedLlmMessages;
+		const pair = first && physicalForkHeader(sessionManager) === first.header ? first.pair : undefined;
+		const hook: ForkReplayHook | undefined = pair ? {} : undefined;
+		const guarded = sourceMessages
+			? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model, pair, hook)
+			: payload;
+		let finalPayload = guarded;
+		const runner = extensionRunnerRef.current;
+		if (runner?.hasHandlers("before_provider_request")) {
+			if (hook) {
+				hook.original = hook.matched;
+				hook.matched = undefined;
+			}
+			finalPayload = await runner.emitBeforeProviderRequest(guarded);
+			const samePair =
+				hook?.original && first && physicalForkHeader(sessionManager) === first.header ? pair : undefined;
+			if (sourceMessages)
+				finalPayload = restoreAnthropicReplayThinkingBlocks(finalPayload, sourceMessages, model, samePair, hook);
+		}
+		if (hook?.matched) {
+			const { model, index, earlierContent, laterContent } = hook.matched;
+			receiveWire?.({
+				model: JSON.stringify(model),
+				index,
+				earlier: `{"role":"assistant","content":${earlierContent}}`,
+				later: `{"role":"assistant","content":${laterContent}}`,
+			});
+		}
+		const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
+		markLifecycleTiming("before-provider-request");
+		return sanitizedPayload;
+	};
+	const onPayload: NonNullable<ModelRuntimeSimpleStreamOptions["onPayload"]> = (payload, model) =>
+		preparePayload(payload, model);
+
 	agent = new Agent({
 		initialState: {
 			systemPrompt: "",
@@ -699,6 +802,19 @@ async function constructAgentSession(
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, streamOptions) => {
+			let first: OpeningRequest | undefined;
+			if (openingPair) {
+				if (requestForkBoundaries && streamOptions?.onPayload === onPayload && acceptsForkReplay(model)) {
+					first = { pair: requestForkBoundaries, header };
+				}
+				// Consume even if authentication, a hook, or the transport fails.
+				openingPair = undefined;
+				activeForkPair = undefined;
+				convertForRequest = convertToLlm;
+				requestForkBoundaries = undefined;
+				header = undefined;
+				(session as unknown as AgentSessionInternalSurface)._requestContextProjectionTransform = undefined;
+			}
 			const onProviderStreamEvent = streamOptions?.onProviderStreamEvent ?? handleProviderStreamEvent;
 			const prepare = async () => {
 				const authResult = await modelRuntime.getRequestAuth(model, {
@@ -743,6 +859,7 @@ async function constructAgentSession(
 				const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
 				const usesExtensionStream =
 					extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
+				if (first && (usesExtensionStream || extensionProvider?.aliasOf)) first = undefined;
 				const transportHeaders = usesExtensionStream
 					? assembledHeaders
 					: removeUnownedModelHeaders(assembledHeaders, model.headers, requestHeaders);
@@ -823,27 +940,37 @@ async function constructAgentSession(
 			// The Codex routing identity is attached by ModelRuntimeStreaming, after auth headers are
 			// merged. Applying it here would be inert: `mergeHeaders` copies the header object the
 			// wrapper mutates.
+			if (first) {
+				let withdraw: (() => void) | undefined;
+				let closed = false;
+				requestOptions.onPayload = (payload, target) => {
+					const receipt = first;
+					first = undefined;
+					return preparePayload(payload, target, receipt, (wire) => {
+						if (!closed && typeof payload === "object" && payload !== null) {
+							withdraw = stageAnthropicSerializedBody(payload, repairSerializedForkReplay.bind(undefined, wire));
+						}
+					});
+				};
+				const release = () => {
+					closed = true;
+					first = undefined;
+					withdraw?.();
+					withdraw = undefined;
+				};
+				try {
+					const stream = modelRuntime.streamSimple(requestModel, context, requestOptions);
+					// Also retire if the stream fails before reaching serialization.
+					void stream.result().then(release, release);
+					return stream;
+				} catch (error) {
+					release();
+					throw error;
+				}
+			}
 			return modelRuntime.streamSimple(requestModel, context, requestOptions);
 		},
-		onPayload: async (payload, model) => {
-			const sourceMessages = lastConvertedLlmMessages;
-			const replayGuardedPayload = sourceMessages
-				? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)
-				: payload;
-			const runner = extensionRunnerRef.current;
-			let finalPayload: unknown;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				finalPayload = replayGuardedPayload;
-			} else {
-				const extensionPayload = await runner.emitBeforeProviderRequest(replayGuardedPayload);
-				finalPayload = sourceMessages
-					? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
-					: extensionPayload;
-			}
-			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
-			markLifecycleTiming("before-provider-request");
-			return sanitizedPayload;
-		},
+		onPayload,
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("after_provider_response")) {
@@ -974,6 +1101,10 @@ async function constructAgentSession(
 			contextProjectionTransform: options.initialContextTransform,
 			workspace,
 		});
+		if (requestContextProjectionTransform) {
+			(session as unknown as AgentSessionInternalSurface)._requestContextProjectionTransform =
+				requestContextProjectionTransform;
+		}
 	} catch (error) {
 		// The constructor releases its own leases/subscriptions; restore borrowed provider state here.
 		const cleanup = await Promise.allSettled([providerRollback.commit(), settingsManager.flush()]);

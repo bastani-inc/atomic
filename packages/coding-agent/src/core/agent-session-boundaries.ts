@@ -35,7 +35,7 @@ type BoundaryKind = "turn_end" | "agent_before_settle";
  * transform; the durable transcript is never rewritten.
  */
 export function _projectFinalizedMessages(this: AgentSession): AgentMessage[] {
-	return finalizeProjectedMessages(this, projectSessionMessages(this));
+	return finalizeProjectedMessages(this, projectSessionMessages(this), this._requestContextProjectionTransform);
 }
 
 function projectSessionMessages(session: AgentSession): AgentMessage[] {
@@ -54,9 +54,14 @@ export function repairUniquifiedMessages(session: AgentSession, messages: AgentM
 	});
 }
 
-export function finalizeProjectedMessages(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
+export function finalizeProjectedMessages(
+	session: AgentSession,
+	messages: AgentMessage[],
+	requestTransform?: (messages: AgentMessage[]) => AgentMessage[],
+): AgentMessage[] {
 	// Unique ids first: deferral and repair pair results with calls by id (#5056).
 	const repaired = repairUniquifiedMessages(session, uniquifyToolCallIds(messages));
+	if (requestTransform) return requestTransform(repaired);
 	return session._contextProjectionTransform ? session._contextProjectionTransform(repaired) : repaired;
 }
 
