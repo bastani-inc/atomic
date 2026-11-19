@@ -1,14 +1,20 @@
 import { createExtensionRuntime, type PackageMcpServerSource } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
-import type { PathMetadata, ResolvedMcpServer, ResolvedPaths, ResolvedResource } from "./package-manager.ts";
+import type {
+	PackageDiscovery,
+	PathMetadata,
+	ResolvedMcpServer,
+	ResolvedPaths,
+	ResolvedResource,
+} from "./package-manager-types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { resolveResourcePath } from "./resource-loader-paths.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot, ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
 import { createSourceInfo } from "./source-info.ts";
 
-export function emptyResolvedPaths(): ResolvedPaths {
+export function emptyResolvedPaths(): PackageDiscovery {
 	return { extensions: [], skills: [], prompts: [], themes: [], legacyWorkflowFiles: [], mcpServers: [] };
 }
 
@@ -20,9 +26,9 @@ export async function resolvePackageResourcePaths(
 		trustedBorrowedProjectLocalSources?: Set<string>;
 	},
 ): Promise<{
-	resolvedPaths: ResolvedPaths;
-	cliExtensionPaths: ResolvedPaths;
-	builtinPackagePaths: ResolvedPaths;
+	resolvedPaths: PackageDiscovery;
+	cliExtensionPaths: PackageDiscovery;
+	builtinPackagePaths: PackageDiscovery;
 }> {
 	const state = resourceInternals(loader);
 	if (!options?.useLoadedSettings) await state.settingsManager.reload();
@@ -47,7 +53,7 @@ export async function resolvePackageResourcePaths(
 	return { resolvedPaths, cliExtensionPaths, builtinPackagePaths };
 }
 
-function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
+function markBundledResources(paths: PackageDiscovery): PackageDiscovery {
 	const mark = <T extends ResolvedResource | ResolvedMcpServer>(resources: T[]): T[] =>
 		resources.map((resource) => ({
 			...resource,
@@ -100,7 +106,10 @@ export async function resolveTrustedBorrowedProjectLocalSources(
 	return trustedSources;
 }
 
-export function filterBorrowedProjectLocalResources(paths: ResolvedPaths, trustedSources: Set<string>): ResolvedPaths {
+export function filterBorrowedProjectLocalResources(
+	paths: PackageDiscovery,
+	trustedSources: Set<string>,
+): PackageDiscovery {
 	const filterResources = <T extends ResolvedResource | ResolvedMcpServer>(resources: T[]): T[] =>
 		resources.filter(
 			(resource) => !resource.metadata.borrowedProjectLocal || trustedSources.has(resource.metadata.source),

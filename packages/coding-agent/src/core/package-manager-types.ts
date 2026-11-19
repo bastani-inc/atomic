@@ -35,11 +35,14 @@ export interface ResolvedPaths {
 	skills: ResolvedResource[];
 	prompts: ResolvedResource[];
 	themes: ResolvedResource[];
-	/** Read-only recipe candidates for migration. Never load these as extensions or other resources. */
-	legacyWorkflowFiles: ResolvedResource[];
 	mcpServers: ResolvedMcpServer[];
 	/** Configured packages that were skipped because installing them failed. */
 	installFailures?: PackageInstallFailure[];
+}
+
+/** The host also discovers read-only recipe candidates. Never load these as extensions or other resources. */
+export interface PackageDiscovery extends ResolvedPaths {
+	legacyWorkflowFiles: ResolvedResource[];
 }
 
 /** A configured package that could not be installed while resolving resources. */
