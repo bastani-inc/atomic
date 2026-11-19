@@ -1,6 +1,7 @@
 import { type ScrollView, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
+import { isSingleLeftClick } from "./components/single-click.ts";
 import {
 	type ContainerMouseResult,
 	handleTranscriptBlockClick,
@@ -34,7 +35,7 @@ export class StartupChatContainer extends WindowedContainer {
 	 * or collapses it once the click cannot become a double-click.
 	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
-		if (event.type !== "press" && event.type !== "click") return super.handleMouse(event);
+		if (event.type !== "press" && !isSingleLeftClick(event)) return super.handleMouse(event);
 		// A control drawn inside a block, such as an extension's button, takes its click first, as it did before a click
 		// on any row of a block toggled it; only a click it leaves toggles the block. A tool block's title row toggles first,
 		// as it always did.

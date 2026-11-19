@@ -25,12 +25,8 @@ export interface ClickExpandableBlock extends Component {
 	 * that only separate it from the block above. Undefined while it draws nothing.
 	 */
 	clickArea(width: number): RowRange | undefined;
-	/**
-	 * The rows of `render(width)` a click toggles the block from before anything drawn inside the block sees it: a tool
-	 * block's title row. A click toggled a block only from there before a click on any row did, so a control a tool's
-	 * renderer draws on that row never had the click, and still does not. Blocks without such a row omit it.
-	 */
-	titleRows?(width: number): readonly number[];
+	/** The row within the painted block where a click toggles it before a control drawn there gets the click. */
+	readonly titleRow?: number;
 	/** The block's place in a group of finished calls; blocks that never group omit it. */
 	getGroupRole?(): ToolGroupRole;
 	/**
@@ -194,16 +190,11 @@ function clickUnitAt(
 	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
 }
 
-/**
- * Whether row `row` of `container` is a block's title row (`ClickExpandableBlock.titleRows`), found as `clickUnitAt`
- * finds the block. A click there toggles the block before anything drawn inside it sees the click. On every other row
- * of a block, a control drawn there, such as an extension's button, takes the click first, as it did before a click on
- * any row toggled the block.
- */
+/** Only decides who gets the click first. `clickUnitAt` checks that the painted block is still present before claiming it. */
 export function isBlockTitleRow(container: Container, width: number, row: number): boolean {
 	const hit = container.childAtRow(width, row);
-	if (!hit || !container.children.includes(hit.component)) return false;
-	if (isClickExpandableBlock(hit.component)) return hit.component.titleRows?.(width).includes(hit.row) === true;
+	if (!hit) return false;
+	if (isClickExpandableBlock(hit.component)) return hit.row === hit.component.titleRow;
 	const nested = hit.component as Container;
 	if (!nested.children || !nested.childAtRow) return false;
 	return isBlockTitleRow(nested, width, hit.row);

@@ -77,6 +77,8 @@ function blockStatusMarkPrefix(): RegExp {
 
 export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
+	/** The title follows the tool block's leading blank row. */
+	readonly titleRow = 1;
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
@@ -297,11 +299,6 @@ export class ToolExecutionComponent extends Container {
 	/** Every row of the block, below the blank row it leads with. */
 	clickArea(width: number): RowRange | undefined {
 		return rowsFrom(1, this.render(width).length);
-	}
-
-	/** The title row, right after the blank row the block leads with. */
-	titleRows(width: number): readonly number[] {
-		return this.render(width).length > 1 ? [1] : [];
 	}
 
 	setExpanded(expanded: boolean): void {

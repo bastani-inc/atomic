@@ -29,6 +29,7 @@ import { CustomEntryComponent } from "../src/modes/interactive/components/custom
 import {
 	type ClickExpandableBlock,
 	clickableBlocksView,
+	supersedeBlockClicks,
 } from "../src/modes/interactive/components/transcript-block-clicks.js";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
@@ -38,7 +39,7 @@ import { ExpandableText } from "../src/modes/interactive/interactive-mode-helper
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
-import { getLayoutFrame, RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
+import { getLayoutFrame, RecordingTerminal, transcriptSiblingReads } from "./helpers/interactive-fullscreen-layout.js";
 
 const browser = vi.hoisted(() => ({ openBrowser: vi.fn<(url: string) => void>() }));
 vi.mock("../src/utils/open-browser.ts", () => browser);
@@ -301,6 +302,31 @@ async function mountChat(
 }
 
 describe("clicking transcript blocks in the main chat", () => {
+	test("a modified or superseded click on the last message reads no transcript siblings (#5696)", async () => {
+		const chat = await mountChat(100, 24);
+		try {
+			const container = chat.mode.chatContainer;
+			for (let i = 0; i < 32; i++) container.addChild(new Text(`message ${i}`, 0, 0));
+			chat.tui.renderNow();
+			const row = chat.rowOf(/message 31/) + 1;
+			assert.equal(
+				transcriptSiblingReads(container, () => {
+					chat.terminal.input(`\x1b[<4;2;${row}M`);
+					chat.terminal.input(`\x1b[<4;2;${row}m`);
+				}),
+				0,
+			);
+			chat.press(5, row - 1);
+			supersedeBlockClicks(container);
+			assert.equal(
+				transcriptSiblingReads(container, () => chat.release(5, row - 1)),
+				0,
+			);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("a click on a tool block's header expands it and a second click collapses it, leaving the other blocks alone", async () => {
 		const chat = await mountChat(100, 60);
 		try {
