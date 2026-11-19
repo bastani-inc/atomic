@@ -1154,9 +1154,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
+		finishSequence?: number,
 	): Promise<void> {
 		return this.serialize(runId, () =>
-			this.setStatus(runId, status, pendingPrompts, resumable, failure, runGeneration),
+			this.setStatus(runId, status, pendingPrompts, resumable, failure, runGeneration, finishSequence),
 		);
 	}
 	private *setStatus(
@@ -1166,9 +1167,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		resumable?: boolean,
 		failure?: DurableWorkflowFailureMetadata,
 		runGeneration?: number,
+		finishSequence?: number,
 	): Operation<void> {
 		const draft = yield* this.draft(runId);
-		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure, runGeneration);
+		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable, failure, runGeneration, finishSequence);
 		const handle = draft.getWorkflow(runId);
 		if (handle) yield* this.snapshot(handle);
 	}
