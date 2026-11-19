@@ -454,9 +454,12 @@ export function findRunBlockedMetadata(
 			failureKind,
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),
 			failureRecoverability: "recoverable",
-			...(typeof failureDisposition === "string" && isWorkflowFailureDisposition(failureDisposition)
-				? { failureDisposition }
-				: {}),
+			// Every run.blocked entry records an active block: one written before blocks recorded their disposition still
+			// restores as one, so it reads as blocked as it did when it was written (#5534).
+			failureDisposition:
+				typeof failureDisposition === "string" && isWorkflowFailureDisposition(failureDisposition)
+					? failureDisposition
+					: "active_blocked",
 			...(typeof failureMessage === "string" ? { failureMessage } : {}),
 			...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
 			resumable: true,

@@ -16,6 +16,7 @@ import { type DurableWorkflowBackend, resumableEntryFromHandle } from "../durabl
 import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
+import { type ResumeAdmissionMark, withResumeAdmissionMark } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { resolveToolResumeFrontier } from "../durable/tool-resume-frontier.js";
@@ -177,6 +178,11 @@ export interface RuntimeDispatchOptions {
 	 * A continuation only: resume a root whose worker entry modules were edited, as `RunOpts.acceptEntryChanges` (#4200).
 	 */
 	readonly acceptEntryChanges?: boolean;
+	/**
+	 * A resume only: the mark (`ResumeAdmissionMark`) its request took when it read the run, before its own awaits. A
+	 * resume admitted after it already resumed what the request saw (#5534). Taken on entry when absent.
+	 */
+	readonly admissionMark?: ResumeAdmissionMark;
 }
 // ---------------------------------------------------------------------------
 // Factory
@@ -351,6 +357,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 
 	async function resumeFailedRun(
 		sourceRunId: string,
+		admissionMark: ResumeAdmissionMark,
 		stageId?: string,
 		options?: RuntimeDispatchOptions,
 	): Promise<ResumeFailedRunResult> {
@@ -402,6 +409,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				registry,
 				durableBackend: backend,
 				jobs,
+				admissionMark,
 				expectedUpdatedAt: options?.expectedUpdatedAt,
 				signal: options?.signal,
 				onRunAccepted: options?.onRunAccepted,
@@ -491,7 +499,13 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		},
 
 		resumeFailedRun: (sourceRunId, stageId, options) =>
-			raceWorkflowRequestAbort(resumeFailedRun(sourceRunId, stageId, options), options?.signal),
+			withResumeAdmissionMark(
+				sourceRunId,
+				options?.admissionMark,
+				(mark) => raceWorkflowRequestAbort(resumeFailedRun(sourceRunId, mark, stageId, options), options?.signal),
+				options?.signal,
+				availableRunDurableBackend(activeStore, sourceRunId) ?? backendRef.current,
+			),
 		...createDurableResumeRuntime({
 			registry,
 			store: activeStore,

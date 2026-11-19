@@ -1,5 +1,5 @@
 import type { RunEndMetadata } from "./store-public-types.js";
-import type { RunSnapshot, RunStatus, StageSnapshot, WorkflowFailureKind } from "./store-types.js";
+import type { RunSnapshot, RunStatus, StageSnapshot } from "./store-types.js";
 import type { WorkflowOutputValues } from "./types.js";
 
 const RETURNED_BLOCKED_STATUSES = new Set([
@@ -108,6 +108,9 @@ export function structuredRecoverableWorkflowFailureText(
 
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
 	if (run.status === "running" && run.phase === "starting") return "pending";
+	// A retained store may already have restored the block before restores recorded its active_blocked disposition.
+	if (run.status === "running" && run.blockedAt !== undefined && run.failureRecoverability === "recoverable")
+		return "blocked";
 	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (
 		(run.status === "running" || run.status === "completed") &&
@@ -121,6 +124,11 @@ export function effectiveRunStatus(run: RunSnapshot): RunStatus {
 	return run.status;
 }
 
+/**
+ * A failure the engine blocks the run on rather than ending it: every recoverable `active_blocked` failure, whatever
+ * its kind, such as a provider outage, an undeliverable queued instruction (#3628) or a woken stage whose session
+ * store stays unreachable (#4309). The engine blocks a run on exactly these, so every surface reads them as blocked.
+ */
 function structuredRecoverableFailureFromSnapshot(
 	snapshot: Pick<
 		RunSnapshot | StageSnapshot,
@@ -136,12 +144,7 @@ function structuredRecoverableFailureFromSnapshot(
 ): StructuredRecoverableWorkflowFailure | undefined {
 	if (snapshot.failureDisposition !== "active_blocked") return undefined;
 	if (snapshot.failureRecoverability !== "recoverable") return undefined;
-	if (
-		!isRecoverableProviderFailureKind(snapshot.failureKind) &&
-		snapshot.failureCode !== "pending_stage_delivery_failed"
-	)
-		return undefined;
-	const error = snapshot.error ?? snapshot.failureMessage ?? "Workflow is blocked by a recoverable provider failure.";
+	const error = snapshot.error ?? snapshot.failureMessage ?? "Workflow is blocked by a recoverable failure.";
 	return {
 		error,
 		metadata: {
@@ -155,12 +158,6 @@ function structuredRecoverableFailureFromSnapshot(
 			...(snapshot.retryAfterMs !== undefined ? { retryAfterMs: snapshot.retryAfterMs } : {}),
 		},
 	};
-}
-
-function isRecoverableProviderFailureKind(
-	kind: WorkflowFailureKind | undefined,
-): kind is "auth" | "rate_limit" | "provider" {
-	return kind === "auth" || kind === "rate_limit" || kind === "provider";
 }
 
 function stringResultField(result: WorkflowOutputValues | undefined, key: string): string | undefined {

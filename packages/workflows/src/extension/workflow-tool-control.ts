@@ -1,6 +1,8 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { bindResumeAdmission, type ResumeAdmissionMark, withResumeAdmissionMark } from "../durable/run-claims.js";
 import { runNotFoundResumeResult } from "../durable/run-not-found.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
@@ -57,6 +59,11 @@ export interface WorkflowControlActionDeps {
 	owner?: WorkflowOwnerResources;
 	/** Model-tool boundary only; slash/internal callers retain their explicit exception. */
 	authorize?: (runId: string) => void | Promise<void>;
+	/**
+	 * A resume only: the mark (`ResumeAdmissionMark`) the request took when it resolved its run, before its own awaits
+	 * (#5534). Taken on entry when absent.
+	 */
+	admissionMark?: ResumeAdmissionMark;
 }
 
 export type WorkflowForeignRunGuard = Pick<WorkflowControlActionDeps, "getRuntime" | "authorize">;
@@ -463,6 +470,7 @@ async function resumeDurableShadow(
 		| "onRunAccepted"
 		| "owner"
 		| "authorize"
+		| "admissionMark"
 	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
@@ -485,6 +493,7 @@ async function resumeDurableShadow(
 		signal: deps.signal,
 		onRunAccepted: deps.onRunAccepted,
 		...(budget === undefined ? {} : { budget }),
+		...(deps.admissionMark === undefined ? {} : { admissionMark: deps.admissionMark }),
 	});
 	const message = warning === undefined ? resumed.message : `${warning}\n\n${resumed.message}`;
 	return {
@@ -500,7 +509,7 @@ async function resumePreparedDurableTarget(
 	runId: string,
 	deps: Pick<
 		WorkflowControlActionDeps,
-		"getRuntime" | "policy" | "signal" | "beforeResume" | "onRunAccepted" | "authorize"
+		"getRuntime" | "policy" | "signal" | "beforeResume" | "onRunAccepted" | "authorize" | "admissionMark"
 	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
@@ -513,6 +522,7 @@ async function resumePreparedDurableTarget(
 			signal: deps.signal,
 			onRunAccepted: deps.onRunAccepted,
 			...(budget === undefined ? {} : { budget }),
+			...(deps.admissionMark === undefined ? {} : { admissionMark: deps.admissionMark }),
 		});
 		return {
 			action: "resume",
@@ -551,10 +561,16 @@ async function resolveExplicitDurableTarget(
 		| "onRunAccepted"
 		| "owner"
 		| "authorize"
+		| "admissionMark"
 	>,
 	liveRuns: readonly RunSnapshot[] = [],
 ): Promise<WorkflowToolResult> {
 	const runtime = deps.getRuntime();
+	const bindJournal = () => {
+		const known = runtime.readyResumeBackend?.(target);
+		if (known && deps.admissionMark) bindResumeAdmission(deps.admissionMark, known, target);
+	};
+	bindJournal();
 	let durable: readonly ResumableWorkflowEntry[];
 	let completed: readonly ResumableWorkflowEntry[];
 	let storedIds: readonly string[] | undefined;
@@ -562,7 +578,7 @@ async function resolveExplicitDurableTarget(
 		await deps.ensureWorkflowResourcesLoaded();
 		deps.signal?.throwIfAborted();
 		if (isFullRunId(target) && runtime.prepareDurableResumableForIds !== undefined) {
-			durable = await runtime.prepareDurableResumableForIds([target]);
+			durable = await runtime.prepareDurableResumableForIds([target], bindJournal);
 			const handle = runtime.durableBackend().getLoadableWorkflow(target);
 			const historical =
 				handle !== undefined &&
@@ -571,7 +587,7 @@ async function resolveExplicitDurableTarget(
 				(handle.status === "completed" || (handle.status === "failed" && !isDurableWorkflowResumable(handle)));
 			completed = historical ? [resumableEntryFromHandle(handle)] : [];
 		} else {
-			const catalog = await runtime.prepareDurableCatalog?.();
+			const catalog = await runtime.prepareDurableCatalog?.(undefined, bindJournal);
 			storedIds = catalog?.inspectableIds;
 			durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
 			completed =
@@ -596,8 +612,20 @@ async function resolveExplicitDurableTarget(
 	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message, code: "run_not_found" };
 	}
-	if (resolved.kind === "durable" || resolved.kind === "live" || resolved.kind === "completed")
-		await deps.authorize?.(resolved.workflowId);
+	if (
+		resolved.kind === "durable" ||
+		resolved.kind === "live" ||
+		resolved.kind === "completed" ||
+		resolved.kind === "stored"
+	) {
+		if (deps.admissionMark)
+			bindResumeAdmission(
+				deps.admissionMark,
+				runtime.readyResumeBackend?.(resolved.workflowId) ?? runtime.durableBackend(),
+				resolved.workflowId,
+			);
+		if (resolved.kind !== "stored") await deps.authorize?.(resolved.workflowId);
+	}
 	if (resolved.kind === "durable") {
 		const refusal = refuseStageScopedDurableResume(resolved.workflowId, args);
 		if (refusal !== undefined) return refusal;
@@ -650,29 +678,40 @@ async function resolveExplicitDurableTarget(
 	return runNotFoundResumeResult(backend, target);
 }
 
+type ResumeActionDeps = Pick<
+	WorkflowControlActionDeps,
+	| "getRuntime"
+	| "policy"
+	| "ensureWorkflowResourcesLoaded"
+	| "signal"
+	| "beforeResume"
+	| "onRunAccepted"
+	| "owner"
+	| "authorize"
+	| "admissionMark"
+>;
+
 export async function workflowResumeAction(
 	args: WorkflowToolArgs,
-	deps: Pick<
-		WorkflowControlActionDeps,
-		| "getRuntime"
-		| "policy"
-		| "ensureWorkflowResourcesLoaded"
-		| "signal"
-		| "beforeResume"
-		| "onRunAccepted"
-		| "owner"
-		| "authorize"
-	>,
+	deps: ResumeActionDeps,
 ): Promise<WorkflowToolResult> {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
 	deps = { ...deps, owner };
-	const { store, toolControlRegistry } = owner;
+	const { store } = owner;
 	deps.signal?.throwIfAborted();
 	const explicitTarget = args.runId?.trim();
+	const resumeExplicit = (id: string, liveRuns?: readonly RunSnapshot[]) =>
+		withResumeAdmissionMark(
+			id,
+			deps.admissionMark,
+			(admissionMark) => resolveExplicitDurableTarget(id, args, { ...deps, admissionMark }, liveRuns),
+			deps.signal,
+			availableRunDurableBackend(store, id),
+		);
 	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
 		// #2603: resume prefixes must see both live and durable candidates before
 		// local precedence can select a run.
-		return resolveExplicitDurableTarget(explicitTarget, args, deps, topLevelWorkflowRuns(store.runs()));
+		return resumeExplicit(explicitTarget, topLevelWorkflowRuns(store.runs()));
 	}
 	const target = resolveToolRunTarget(args, "No active run to resume.", store);
 	if (target.kind === "all")
@@ -682,10 +721,26 @@ export async function workflowResumeAction(
 	}
 	if (target.kind === "not_found") {
 		if (explicitTarget !== undefined && explicitTarget.length > 0) {
-			return resolveExplicitDurableTarget(explicitTarget, args, deps);
+			return resumeExplicit(explicitTarget);
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
+	return withResumeAdmissionMark(
+		target.runId,
+		deps.admissionMark,
+		(admissionMark) => resumeLiveTarget(target, args, { ...deps, admissionMark }, owner),
+		deps.signal,
+		availableRunDurableBackend(store, target.runId),
+	);
+}
+
+async function resumeLiveTarget(
+	target: { runId: string },
+	args: WorkflowToolArgs,
+	deps: ResumeActionDeps,
+	owner: WorkflowOwnerResources,
+): Promise<WorkflowToolResult> {
+	const { store, toolControlRegistry } = owner;
 	await deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
 	// so it cannot disagree with the resolved run; the old re-resolution branch
@@ -714,7 +769,7 @@ export async function workflowResumeAction(
 	if (shadow === "eligible") {
 		const refusal = refuseStageScopedDurableResume(target.runId, args);
 		if (refusal !== undefined) return refusal;
-		return resumeDurableShadow(target.runId, deps, args.budget);
+		return await resumeDurableShadow(target.runId, deps, args.budget);
 	}
 	if (shadow === "ineligible") {
 		return {
@@ -763,7 +818,7 @@ export async function workflowResumeAction(
 	if (isDurableAuthorExit) {
 		const refusal = refuseStageScopedDurableResume(stageRunId, args);
 		if (refusal !== undefined) return refusal;
-		return resumeDurableShadow(stageRunId, deps, args.budget);
+		return await resumeDurableShadow(stageRunId, deps, args.budget);
 	}
 	if (isResumableContinuation) {
 		try {
@@ -779,6 +834,7 @@ export async function workflowResumeAction(
 			signal: deps.signal,
 			onRunAccepted: deps.onRunAccepted,
 			...(args.budget === undefined ? {} : { budget: args.budget }),
+			...(deps.admissionMark === undefined ? {} : { admissionMark: deps.admissionMark }),
 		});
 		const message = warning === undefined ? continuation.message : `${warning}\n\n${continuation.message}`;
 		return {

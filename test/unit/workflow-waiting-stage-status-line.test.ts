@@ -169,7 +169,7 @@ describe("a stage whose session store stayed unreachable (#4309)", () => {
 	test("blocks the run resumably, as a provider outage does, rather than failing it (#4309)", () => {
 		assert.deepEqual(stageSessionUnavailableDecision(), {
 			kind: "unknown",
-			code: "unknown",
+			code: "session_unavailable",
 			retryable: true,
 			resumable: true,
 			recoverability: "recoverable",
