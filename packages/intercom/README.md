@@ -272,7 +272,7 @@ Do not use `contact_supervisor` for routine completion handoffs. Return the fina
 
 Cross-group delivery uses a dedicated broker protocol. Ordinary raw `send` frames always remain group-isolated and are rejected if they include a forged `channel: "supervisor"` marker. A child can cross groups only after its broker-issued capability has bound its registered socket to the exact supervisor. The broker adds the `supervisor` channel marker to validated inbound traffic so parent relays can distinguish it. Replies cross back only when `replyTo` matches a recorded supervisor message in the exact reverse direction; fabricated thread IDs do not bypass isolation.
 
-Parallel asks, decisions, interviews, sends, and progress updates use ordinary Intercom delivery. The exact-child probe/commit handshake may release foreground observations so the parent can reply; it never cancels the batch or discards queued siblings. Only blocking requests wait for a reply. Targeted cancellation and owner/batch cleanup remain separate. Single-child claimed parent asks retain their source-side terminal fresh-start handoff.
+Asks, decisions, interviews, sends, and progress updates from subagents use ordinary Intercom delivery. The exact-child probe/commit handshake lets a child's message reach its busy parent so the parent can reply; it never cancels the batch or discards queued siblings. Only blocking requests wait for a reply. Targeted cancellation and owner/batch cleanup remain separate. Only a single child that an SDK host without a task owner runs directly ends with the source-side terminal fresh-start handoff when its parent ask is claimed.
 
 ### Example: Blocked Subagent Asks for Guidance
 
