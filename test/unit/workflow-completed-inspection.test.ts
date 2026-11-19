@@ -21,6 +21,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
+import { sgrClick } from "../helpers/graph-click.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
@@ -199,7 +200,7 @@ describe("completed workflow inspection", () => {
 		});
 		assert.match(visibleText(view.render(96)), /↵ open stage chat/);
 		view.handleInput("\r");
-		view.handleInput(clickForSingleNode(graph.renderStages[0]!));
+		view.handleMouse(sgrClick(clickForSingleNode(graph.renderStages[0]!)));
 		view.handleInput("/");
 		assert.match(visibleText(view.render(96)), /↵ open stage chat/);
 		for (const char of "final") view.handleInput(char);

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on a run in `/workflows` opens it, a click on a stage in the graph's stage switcher opens it, and a click on an answer of a stage's choice or yes/no question, or on an option of a question a stage asked in its chat, answers it as Enter on it does.
+
 ### Changed
 
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.
@@ -23,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The `/workflows` graph marks a stage suspended with its session released with the dim `◌` waiting mark, the same mark a released subagent has in the chat, `/tasks` and the agent panel, in node cards, the stage switcher, the stage strip and the header's count. It used `◷`. A paused stage keeps `❚❚` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - Restoring a blocked workflow keeps it blocked in the agent panel without briefly showing it as running. A new block gets its own notice even if it happens in the same millisecond as the previous block ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
 - On Windows, a Git command or worktree setup hook that a workflow stops for its timeout or output size has its process tree terminated once. Atomic no longer terminates it again when the command's exit arrives, or when its timeout comes after an output overflow ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
+- Clicking the stage summary in a workflow run's preview opens that run, including on the first click from another pane.
+- A graph node opens on a click, once the button is released where it was pressed, instead of on the press, so dragging across the run graph selects its text rather than opening the stage under the pointer.
 
 ## [0.9.89] - 2026-11-18
 

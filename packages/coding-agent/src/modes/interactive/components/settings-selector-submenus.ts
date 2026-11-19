@@ -123,6 +123,10 @@ export class SelectSubmenu implements Component, Focusable {
 		return this.selector.handleMouse(event);
 	}
 
+	paintedRowKey(row: number): string | undefined {
+		return this.selector.paintedRowKey(row);
+	}
+
 	invalidate(): void {
 		this.selector.invalidate();
 	}

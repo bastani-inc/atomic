@@ -6,7 +6,12 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Added
 
+- `keyInput` returns terminal input for a configured key, including modified function and navigation keys. `ClickableRows` and `ClickableRow` run a list row on one left click as Enter on it would. Presses and drags stay with text selection, a double or triple click does not run the row again, and the wheel moves the selection when the list gives a `scroll` action. `SelectList`, `SettingsList` and the editor's autocomplete rows use them.
 - A mouse handler can return `whenSingleClick` for a single click. It runs once the click cannot become a double- or triple-click: `MULTI_CLICK_INTERVAL_MS` (500 ms, now exported) after the press with no second press on the same spot. A second press there cancels it, so text selection by double- and triple-click never triggers it.
+
+### Changed
+
+- A focused dialog blocks clicks on rows, links and blocks behind it, even before its first paint. Opening and closing a dialog also cancels a press or deferred click that started before it. This applies to capturing overlays and to a dialog the host identifies with `getInlineDialog`. A navigation overlay can set `modal: false` to take keyboard focus without blocking other panes. A first click focuses a keyboard-driven pane and activates its row together. A drag outside still selects text; non-capturing overlays do not block the rest of the screen.
 
 ## [0.9.89] - 2026-11-18
 

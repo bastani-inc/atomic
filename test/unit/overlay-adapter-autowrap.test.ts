@@ -16,15 +16,18 @@ async function registerIsolatedTests(): Promise<void> {
 	// The host theme's color environment, which the shared chat-input label reads, parses colors with pi-tui.
 	const { colorToHex, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
 	class TestComponent {}
-	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
+	const [{ ScrollView }, { VStack }, { Input }, { ClickableRows }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
 		import("@bastani/atomic-tui/dist/components/v-stack.js"),
 		import("@bastani/atomic-tui/dist/components/input.js"),
+		// Stage question cards and the workflows list name their rows for clicks with pi-tui's clickable rows.
+		import("@bastani/atomic-tui/dist/clickable-rows.js"),
 	]);
 	mock.module("@bastani/atomic-tui", () => ({
 		colorToHex,
 		parseColor,
 		Box: TestComponent,
+		ClickableRows,
 		Editor: TestComponent,
 		// The stage-chat find box edits its query with pi-tui's own input.
 		Input,

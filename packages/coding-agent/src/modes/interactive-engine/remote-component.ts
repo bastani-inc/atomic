@@ -65,6 +65,9 @@ class RemoteComponent implements Component {
 			this.runtime.sendEngineCommand({ type: "engine_custom_scroll", componentId: this.componentId, state });
 	}
 	wantsKeyRelease = true;
+	/** Whether a wheel turn over a named row goes to the engine component; see `forwardWheel`. */
+	forwardsWheel = false;
+	acceptsClickFocus = true;
 	readonly handlesInternalUiAction: boolean;
 	private lines: string[] = [];
 	private width = 0;
@@ -155,6 +158,7 @@ class RemoteComponent implements Component {
 	 * and what the component left for that moment runs.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "wheel") return this.forwardWheel(event);
 		if (this.disposed || !isSingleLeftClick(event) || this.paintedFrame === undefined) return undefined;
 		const rowKey = this.paintedRowKeys?.[Math.floor(event.y)];
 		const clickId = ++this.clickId;
@@ -184,6 +188,23 @@ class RemoteComponent implements Component {
 				}
 			},
 		};
+	}
+
+	/**
+	 * A wheel turn over a row the engine component named, such as a list row, goes to that component as the wheel
+	 * report a terminal sends, so the list moves its selection. Over anything else the host scrolls as before. An
+	 * overlay gets the report as input before this, so only a component in the prompt's place forwards it here.
+	 */
+	private forwardWheel(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.disposed || !this.forwardsWheel || !event.wheelDelta) return undefined;
+		const row = Math.floor(event.y);
+		if (!this.paintedRowKeys?.[row]) return undefined;
+		const button = event.wheelDelta < 0 ? 64 : 65;
+		// The host's own input path paints a key once the engine answers it; this turn did not come through there.
+		void this.handleInput(`\x1b[<${button};${Math.max(0, Math.floor(event.x)) + 1};${row + 1}M`).then((handled) => {
+			if (handled === true) this.requestRender();
+		});
+		return { handled: true };
 	}
 
 	handleInput(data: string): Promise<boolean | undefined> {
@@ -510,6 +531,7 @@ export class RemoteComponentController {
 					message.purpose,
 					message.widgetScroll,
 					message.blocked,
+					message.acceptsClickFocus !== false,
 				);
 				break;
 			case "engine_custom_close":
@@ -579,6 +601,7 @@ export class RemoteComponentController {
 		purpose?: "prompt" | "navigation",
 		widgetScroll?: { maxHeight: number; maxHeightFraction?: number },
 		blocked?: EngineBlockedStatus,
+		acceptsClickFocus = true,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
@@ -594,6 +617,7 @@ export class RemoteComponentController {
 				() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 				() => paintNow(),
 			);
+			component.acceptsClickFocus = acceptsClickFocus;
 			const unsubscribeWidgetRelease = this.ui.onWidgetRelease?.(widgetKey, () => this.releaseWidget(widgetKey));
 			this.mounted.set(componentId, {
 				component,
@@ -629,6 +653,9 @@ export class RemoteComponentController {
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 						() => tui.requestImmediateRender(),
 					);
+					// An overlay receives wheel reports as input already; one in the prompt's place gets them here.
+					component.forwardsWheel = overlay !== true;
+					component.acceptsClickFocus = acceptsClickFocus;
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered
