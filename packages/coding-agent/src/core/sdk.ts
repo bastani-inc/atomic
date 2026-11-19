@@ -59,7 +59,7 @@ import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
 import { prepareSessionResume, savedProjectTrustAsync, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
-import { readSessionAccountModel } from "./session-account-model.ts";
+import { readSessionAccountModel, sessionAccountCheckpoint } from "./session-account-model.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	ownedSessionManagerStores,
@@ -364,6 +364,8 @@ async function constructAgentSession(
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
+	const previousMiss =
+		recoverMissingModel && !options.model ? ModelRuntime[sessionAccountCheckpoint](modelRuntime) : null;
 	const restoredCatalog = await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
@@ -494,15 +496,15 @@ async function constructAgentSession(
 
 	// Only an actual failed selection can need a list. A supplied, restored or bundled model is already usable.
 	if (
-		recoverMissingModel &&
+		previousMiss !== null &&
 		!model &&
 		missingAccountModel &&
-		modelRuntime[readSessionAccountModel] &&
 		!restoredCatalog.aborted &&
 		!restoredCatalog.errors.has("github-copilot")
 	) {
 		const read = modelRuntime[readSessionAccountModel](
 			missingAccountModel,
+			previousMiss,
 			options.signal,
 			() =>
 				!resourceLoader

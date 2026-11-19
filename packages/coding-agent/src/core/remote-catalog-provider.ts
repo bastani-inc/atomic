@@ -369,7 +369,7 @@ function withSavedModels(entry: ModelsStoreEntry, saved: readonly AnyModel[]): M
 export function withDiscoveredModels(
 	provider: Provider,
 	discover: DiscoverModels,
-	cache?: { missing: boolean },
+	cache?: { missing?: symbol; enabled: boolean },
 ): Provider {
 	let discovered: readonly AnyModel[] = [];
 	const catalogModels = (): readonly AnyModel[] => provider.getAllModels?.() ?? provider.getModels();
@@ -396,7 +396,8 @@ export function withDiscoveredModels(
 				!(await context.publish({
 					update: () => {
 						discovered = saved;
-						if (cache) cache.missing = !context.allowNetwork && stored === undefined;
+						if (cache?.enabled)
+							cache.missing = !context.allowNetwork && stored === undefined ? Symbol() : undefined;
 					},
 				}))
 			) {

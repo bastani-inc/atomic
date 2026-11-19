@@ -11,6 +11,7 @@ import { isCommandConfigValue } from "./resolve-config-value.ts";
 
 /** Internal SDK capability, absent on a borrowed runtime from another package copy. */
 export const readSessionAccountModel = Symbol("readSessionAccountModel");
+export const sessionAccountCheckpoint = Symbol("sessionAccountCheckpoint");
 
 export interface SessionAccountSource {
 	provider: Provider;

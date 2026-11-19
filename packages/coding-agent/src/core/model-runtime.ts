@@ -93,7 +93,11 @@ import {
 import { withDiscoveredModels, withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { isCommandConfigValue } from "./resolve-config-value.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
-import { readSelectedAccountModel, readSessionAccountModel } from "./session-account-model.ts";
+import {
+	readSelectedAccountModel,
+	readSessionAccountModel,
+	sessionAccountCheckpoint,
+} from "./session-account-model.ts";
 
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
@@ -163,6 +167,11 @@ export interface SaveCredentialOptions {
 	refreshCatalog?: boolean;
 }
 
+interface SessionAccountList {
+	missing?: symbol;
+	enabled: boolean;
+}
+
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
@@ -176,7 +185,7 @@ export class ModelRuntime implements Models {
 	private readonly fastModelVariantDiagnostics = new Map<string, readonly FastModelVariantDiagnostic[]>();
 	private readonly modelsPath: string | undefined;
 	private readonly modelNetworkEnabled: boolean;
-	private readonly sessionAccountList: { missing: boolean; enabled: boolean };
+	readonly #sessionAccountList: SessionAccountList;
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
@@ -202,9 +211,9 @@ export class ModelRuntime implements Models {
 		modelsStore: ModelsStore,
 		providers: readonly Provider[],
 		modelNetworkEnabled: boolean,
-		sessionAccountList: ModelRuntime["sessionAccountList"],
+		sessionAccountList: SessionAccountList,
 	) {
-		this.sessionAccountList = sessionAccountList;
+		this.#sessionAccountList = sessionAccountList;
 		this.credentials = credentials;
 		this.config = config;
 		this.modelsPath = modelsPath;
@@ -238,7 +247,7 @@ export class ModelRuntime implements Models {
 				: new InMemoryCodingAgentModelsStore());
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
 		const catalogBaseUrl = options.catalogBaseUrl ?? (getEnvValue(ENV_MODEL_CATALOG_URL) || undefined);
-		const sessionAccountList = { missing: false, enabled: false };
+		const sessionAccountList: SessionAccountList = { enabled: false };
 		const providers = builtinProviderCatalog.builtinProviders().map((provider) => {
 			// OpenRouter narrows the catalog to the models, limits and prices of the user's key.
 			if (provider.id === "openrouter") {
@@ -282,14 +291,22 @@ export class ModelRuntime implements Models {
 		}
 		return runtime;
 	}
+	/** The previous accepted miss, without invoking any getter on a borrowed runtime from another SDK copy. */
+	static [sessionAccountCheckpoint](runtime: ModelRuntime): symbol | undefined | null {
+		return #sessionAccountList in runtime && runtime.#sessionAccountList.enabled
+			? runtime.#sessionAccountList.missing
+			: null;
+	}
 	/** Resolve an exact SDK startup miss without refreshing or publishing the runtime's catalog. */
 	[readSessionAccountModel](
 		id: string,
+		previous: symbol | undefined,
 		signal: AbortSignal | undefined,
 		ownsSelection: () => boolean,
 	): Promise<Model<Api> | null | undefined> | undefined {
-		const cache = this.sessionAccountList;
-		if (!cache.enabled || !cache.missing || isOfflineModeEnabled() || signal?.aborted) return undefined;
+		const cache = this.#sessionAccountList;
+		// A superseded cache pass can return without observing a row. Its predecessor's miss is not evidence.
+		if (!cache.missing || cache.missing === previous || isOfflineModeEnabled() || signal?.aborted) return undefined;
 		const providerId = "github-copilot";
 		return readSelectedAccountModel(
 			id,

@@ -191,6 +191,47 @@ it("discards a response if its runtime account changed during the last credentia
 	}
 });
 
+it("a superseded session restore cannot claim a miss observed before it started (#5685)", async () => {
+	const reads = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+	const release = Promise.withResolvers<void>();
+	let warm = false;
+	let count = 0;
+	const modelRuntime = await ModelRuntime.create({
+		credentials: AuthStorage.inMemory({ [provider]: { type: "api_key", key: "github_pat_example" } }),
+		modelsPath: null,
+		modelsStore: {
+			async read(p) {
+				if (p !== provider || !warm) return undefined;
+				reads[count++]?.resolve();
+				await release.promise;
+				return { models: [] };
+			},
+			async write() {
+				throw new Error("Unexpected cache write");
+			},
+			async delete() {
+				throw new Error("Unexpected cache deletion");
+			},
+		},
+	});
+	warm = true;
+	const requests = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ data: [] }));
+	const creating = start(modelRuntime);
+	let newer: Promise<unknown> | undefined;
+	try {
+		await reads[0]!.promise;
+		newer = modelRuntime.refresh({ providers: [provider], allowNetwork: false });
+		await reads[1]!.promise;
+		const { modelFallbackMessage } = await creating;
+		assert.equal(requests.mock.calls.length, 0);
+		assert.match(modelFallbackMessage ?? "", /update --models/);
+	} finally {
+		release.resolve();
+		await newer;
+		await (await creating).session.dispose();
+	}
+});
+
 it("a cache-only runtime does not consume an unused create-time network deadline (#5685)", async () => {
 	let networkPolicyReads = 0;
 	await ModelRuntime.create({
