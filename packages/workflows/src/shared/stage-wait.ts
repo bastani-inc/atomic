@@ -5,8 +5,8 @@ import type {
 	WorkflowSerializableObject,
 	WorkflowSerializableValue,
 } from "./authoring-contract-stage.js";
+import { boundedRecordedToolPayload } from "./recorded-tool-payload.js";
 import { StageWaitConfigError } from "./stage-wait-errors.js";
-import { boundedToolPayload } from "./tool-payload-bounds.js";
 import { isRetryableWorkflowError } from "./workflow-infrastructure-error.js";
 
 /** How long a stage waits on a tool call inline before it releases its session, unless configured otherwise. */
@@ -175,28 +175,55 @@ export interface StageWaitToolResult extends WorkflowSerializableObject {
 type DetachedResultPayload = DetachedToolResult["result"];
 
 function recordedPart(part: DetachedResultPayload["content"][number]): StageWaitToolResultPart {
-	if (part.type === "image") return { type: "image", data: part.data, mimeType: part.mimeType };
-	return {
-		type: "text",
-		text: part.text,
-		...(part.textSignature === undefined ? {} : { textSignature: part.textSignature }),
-	};
+	const type = part.type;
+	if (type === "image") {
+		const { data, mimeType } = part;
+		if (typeof data !== "string" || typeof mimeType !== "string") throw new TypeError("Invalid image part");
+		return { type, data, mimeType };
+	}
+	const { text, textSignature } = part;
+	if (
+		type !== "text" ||
+		typeof text !== "string" ||
+		(textSignature !== undefined && typeof textSignature !== "string")
+	)
+		throw new TypeError("Invalid text part");
+	return { type, text, ...(textSignature === undefined ? {} : { textSignature }) };
 }
 
 /** The JSON-safe record of the results a waiting stage was woken with. */
 export function recordStageWaitToolResults(results: readonly DetachedToolResult[]): StageWaitToolResult[] {
-	return results.map(({ toolCallId, toolName, isError, result }) => ({
-		toolCallId,
-		toolName,
-		isError,
-		content: (result.content ?? []).map(recordedPart),
-		...(result.details === undefined
-			? {}
-			: { details: boundedToolPayload(result.details as WorkflowSerializableValue) }),
-		...(result.structuredContent === undefined
-			? {}
-			: { structuredContent: boundedToolPayload(result.structuredContent as WorkflowSerializableValue) }),
-	}));
+	return results.map((answer) => {
+		const { toolCallId, toolName } = answer;
+		try {
+			const { isError, result } = answer;
+			const { content, details, structuredContent } = result;
+			const parts = (content ?? []).map(recordedPart);
+			const keptDetails =
+				details === undefined
+					? undefined
+					: boundedRecordedToolPayload(details as WorkflowSerializableValue, "details");
+			const keptStructured =
+				structuredContent === undefined
+					? undefined
+					: boundedRecordedToolPayload(structuredContent as WorkflowSerializableValue, "structuredContent");
+			return {
+				toolCallId,
+				toolName,
+				isError,
+				content: parts,
+				...(keptDetails === undefined ? {} : { details: keptDetails }),
+				...(keptStructured === undefined ? {} : { structuredContent: keptStructured }),
+			};
+		} catch {
+			return {
+				toolCallId,
+				toolName,
+				isError: true,
+				content: [{ type: "text", text: "Could not record this tool result" }],
+			};
+		}
+	});
 }
 
 /** The results a waiting stage recorded, as its reopened session takes them. */

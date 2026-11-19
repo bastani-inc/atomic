@@ -38,6 +38,7 @@ export async function finalizeTerminalFailure(input: {
 	const recorded = store.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
 	await appendRunEndWhenRecorded(persistence, recorded, {
 		runId,
+		runGeneration: runSnapshot.runGeneration,
 		status: "failed",
 		error: metadata.errorMessage,
 		failureKind: metadata.failureKind,
