@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { createRepositoryFixtureDir } from "./lazy-tool-fixtures.js";
+import { createRepositoryFixtureDir, writeWebRendererFixture } from "./lazy-tool-fixtures.js";
 
 const repoRoot = resolve(__dirname, "../../../../..");
 const subprocessTimeoutMs = 10_000;
@@ -66,10 +66,7 @@ function assertWebAccessRetriesRejectedInitializer(): void {
 		writeFileSync(join(tempDir, "lifecycle-lease.ts"), readRepoFile("packages/web-access/lifecycle-lease.ts"));
 		// #3105: keep the lightweight wrapper's diagnostic dependency available.
 		writeFileSync(join(tempDir, "diagnostics.ts"), readRepoFile("packages/web-access/diagnostics.ts"));
-		writeFileSync(
-			join(tempDir, "result-renderers.ts"),
-			"export function renderWebAccessToolResult() { return undefined; }\n",
-		);
+		writeWebRendererFixture(tempDir);
 		writeFileSync(
 			join(tempDir, "index-heavy.ts"),
 			`
