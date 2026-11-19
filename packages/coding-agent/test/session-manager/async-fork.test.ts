@@ -426,8 +426,10 @@ test("a fork killed while it copies a file leaves no child session behind (#5594
 	try {
 		const file = join(dir, "source.jsonl");
 		const rows = [said("root", null, "start"), said("abandoned", "root", "a sibling branch")];
+		// Several MiB of rows, so the copy writes some of them before it reaches the last.
+		for (let i = 0; i < 4; i++) rows.push(said(`large-${i}`, rows.at(-1)!.id, "x".repeat(1_200_000)));
 		await writeFile(file, savedLines([savedHeader(dir), ...rows, said("now", "root", "current")]));
-		// Stop the copy for good after its header and before its first row, as a crash would.
+		// Stop the copy for good once part of it is written, as a crash would.
 		const child = forkProcess(
 			`import { open } from "node:fs/promises";
 			const probe = await open(process.env.FORK_SOURCE, "r");
@@ -456,10 +458,9 @@ test("a fork killed while it copies a file leaves no child session behind (#5594
 			child.on("close", () => resolve(stdout));
 		});
 		assert.equal(progress, "copying\n");
-		assert.ok(
-			(await readdir(dir)).some((name) => name.endsWith(".tmp")),
-			"the copy was under way",
-		);
+		const partial = (await readdir(dir)).filter((name) => name.endsWith(".tmp"));
+		assert.equal(partial.length, 1);
+		assert.ok((await fsPromises.stat(join(dir, partial[0]!))).size > 0, "the copy was under way");
 		child.kill("SIGKILL");
 		await exited;
 

@@ -210,12 +210,18 @@ function openedHeader(opened: OpenedSession): SessionRecordHeader {
 	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
 }
 
-/** A saved file being forked: its window, any position of the same open file, and a check that it did not change. */
+/** A saved file being forked: any position of the same open file, its window when asked for, and a check that it
+ * did not change. */
 interface ExportedSource {
 	readonly id: string;
-	readonly window: SessionResume;
 	readonly history: SessionHistorySource;
-	readonly file: { readonly legacy: boolean; unchanged(): Promise<void> };
+	readonly file: {
+		readonly epoch: string;
+		readonly lastSeq: number;
+		readonly legacy: boolean;
+		window(): Promise<SessionResume>;
+		unchanged(): Promise<void>;
+	};
 }
 
 /** The window copy for a destination proven to be another collection, without its inline outputs. */
@@ -227,13 +233,13 @@ interface ExportedWindow {
 
 /** The one entry at `seq` of the saved file, upgraded when the file is legacy: never a page or the whole file. */
 async function readExportedEntry(source: ExportedSource, seq: number, id?: string): Promise<SessionEntry> {
-	const range = await source.history.readRange!(source.id, seq, seq, source.window.epoch);
+	const range = await source.history.readRange!(source.id, seq, seq, source.file.epoch);
 	const entry = range.entries[0];
 	if (
 		!entry ||
 		range.entries.length !== 1 ||
 		range.startSeq !== seq ||
-		range.epoch !== source.window.epoch ||
+		range.epoch !== source.file.epoch ||
 		(id !== undefined && entry.id !== id)
 	)
 		throw new SessionConflictError(source.id, seq, range.lastSeq);
@@ -241,7 +247,8 @@ async function readExportedEntry(source: ExportedSource, seq: number, id?: strin
 }
 
 async function exportedWindow(source: ExportedSource): Promise<ExportedWindow> {
-	const { window, history, id } = source;
+	const { history, id } = source;
+	const window = await source.file.window();
 	const held = [...window.state.filter(({ onBranch }) => onBranch), ...window.branch].sort((a, b) => a.seq - b.seq);
 	const archived = new Map<string, OversizedSessionEntry>();
 	const path = await includeNamedForkOutputs(
@@ -286,20 +293,20 @@ function exportedSessionStream(
 	outputs: Map<string, number>,
 	finish: () => Promise<void>,
 ): SessionForkStream {
-	const { history, id, window } = source;
+	const { history, id, file } = source;
 	return {
 		kind: "complete-session",
 		async *read() {
 			const { forkSeedFields } = await import("./storage/session/chunked-resume-projection.js");
-			for await (const { items } of historyPages(history, id, window.epoch, window.lastSeq, {}))
+			for await (const { items } of historyPages(history, id, file.epoch, file.lastSeq, {}))
 				for (const item of items) {
 					let row: SessionForkRow =
 						"entry" in item
 							? { entry: item.entry }
-							: source.file.legacy
+							: file.legacy
 								? { entry: await readExportedEntry(source, item.seq) }
 								: {
-										...(await forkSeedFields(() => historyChunks(history, id, window.epoch, item, {}))),
+										...(await forkSeedFields(() => historyChunks(history, id, file.epoch, item, {}))),
 										reference: item,
 									};
 					if (row.entry.type === "custom" && row.entry.customType === TOOL_OUTPUT_ENTRY_TYPE) {
@@ -2622,8 +2629,8 @@ export class SessionManager {
 		const path = resolvePath(sourcePath);
 		const sourceStore = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
 		try {
-			return await sourceStore[withForkFileWindow](path, async (window, history, file) => {
-				const source: ExportedSource = { window, history, file, id: window.header.id };
+			return await sourceStore[withForkFileWindow](path, async (file, history) => {
+				const source: ExportedSource = { history, file, id: file.header.id };
 				const into = async (
 					store: SessionStore,
 					directory: string,
@@ -2655,7 +2662,7 @@ export class SessionManager {
 						{
 							store: history as SessionStore,
 							sessionId: source.id,
-							epoch: window.epoch,
+							epoch: file.epoch,
 							hashes: [],
 							receipts: new Map(),
 						},
