@@ -1,7 +1,9 @@
 import { sliceHead } from "@bastani/atomic";
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
+import { hasLiveBlockMarker } from "../shared/display-run-status.js";
 import { poolCoordinationLine } from "../shared/pool-coordination.js";
 import { formatStagePredictionStatus } from "../shared/possible-stage-prediction.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
 import { pooledStageStartingText, stageDisplayStatus, stageStatusWithWait } from "../shared/stage-display-status.js";
@@ -19,6 +21,25 @@ import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
 
 function stringifyWorkflowToolResult(result: WorkflowRegisteredToolResult): string {
 	return JSON.stringify(result, null, 2);
+}
+
+/** Inspect only plain fields. Let JSON itself read accessors and honor each adapter's published representation. */
+function liveDetailForStatusText(result: object): object | undefined {
+	try {
+		if ("toJSON" in result) return undefined;
+		const detail: unknown = Object.getOwnPropertyDescriptor(result, "detail")?.value;
+		if (typeof detail !== "object" || detail === null || "toJSON" in detail) return undefined;
+		const marker = Object.getOwnPropertyDescriptor(detail, "blockedAt");
+		if (!marker?.enumerable || typeof marker.value !== "number") return undefined;
+		const ended = Object.getOwnPropertyDescriptor(detail, "endedAt");
+		const resumable = Object.getOwnPropertyDescriptor(detail, "resumable");
+		return (!("endedAt" in detail) || (ended && "value" in ended && ended.value === undefined)) &&
+			(!("resumable" in detail) || (resumable && "value" in resumable && resumable.value !== false))
+			? detail
+			: undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function compactWorkflowToolMessage(
@@ -122,7 +143,7 @@ function statusRunIcon(
 	allRuns: readonly RunSnapshot[],
 ): string {
 	if (snapshot === undefined) return statusIcon(run.status);
-	const indicatorStatus = runIndicatorStatus(snapshot, allRuns);
+	const indicatorStatus = runIndicatorStatus(snapshot, allRuns, effectiveRunStatus);
 	if (snapshot.endedAt === undefined && snapshot.status === "paused" && snapshot.exitReason === "quit") {
 		return statusIcon("pending");
 	}
@@ -138,13 +159,21 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 	const inFlight = result.runs.filter((run) => run.endedAt === undefined).length;
 	lines.push(`runs: ${result.runs.length} (${inFlight} in flight)`);
 	result.runs.forEach((run, index) => {
+		const snapshot = result.snapshots[index];
+		// Direct status filters and JSON describe the saved status. Only the default text presents a live block.
+		const liveBlock =
+			result.filter !== "running" &&
+			run.status === "running" &&
+			snapshot?.id === run.runId &&
+			snapshot.status === "running" &&
+			hasLiveBlockMarker(snapshot);
 		const hint = statusRunHint(run);
 		const summaryLine = [
 			`[${index + 1}]`,
-			statusRunIcon(run, result.snapshots[index], allRuns),
+			liveBlock ? statusIcon("blocked") : statusRunIcon(run, snapshot, allRuns),
 			run.runId,
 			run.name,
-			run.status,
+			liveBlock ? "blocked" : run.status,
 			fmtDuration(run.elapsedMs),
 			...(hint !== undefined ? [hint] : []),
 		].join("  ");
@@ -307,8 +336,18 @@ export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, 
 			return compactWorkflowToolMessage(result);
 		case "status":
 			return renderStatusToolContent(result);
+		case "statusDetail": {
+			const detail = liveDetailForStatusText(result);
+			if (detail === undefined) return stringifyWorkflowToolResult(result);
+			return JSON.stringify(
+				result,
+				function (key, value) {
+					return this === detail && key === "status" && value === "running" ? "blocked" : value;
+				},
+				2,
+			);
+		}
 		case "list":
-		case "statusDetail":
 		case "statusSummary":
 		case "inputs":
 		case "get":
