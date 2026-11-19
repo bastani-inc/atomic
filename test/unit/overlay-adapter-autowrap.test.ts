@@ -15,6 +15,9 @@ async function registerIsolatedTests(): Promise<void> {
 	const { replaceControlCharacters, stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
 	// Use real colour conversion for the shared input label and the graph’s status palette.
 	const { colorToHex, colorToRgb, foregroundAnsi, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
+	// Hint lines mark their keys for clicks with pi-tui's own hint markers.
+	const clickableHints = await import("@bastani/atomic-tui/dist/clickable-hints.js");
+	const { keyInputData } = await import("@bastani/atomic-tui/dist/keys.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
@@ -22,6 +25,8 @@ async function registerIsolatedTests(): Promise<void> {
 		import("@bastani/atomic-tui/dist/components/input.js"),
 	]);
 	mock.module("@bastani/atomic-tui", () => ({
+		...clickableHints,
+		keyInputData,
 		colorToHex,
 		colorToRgb,
 		foregroundAnsi,

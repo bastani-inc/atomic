@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on a key in a stage chat's hint row, the workflow graph's hint line, the stage switcher, a question card or a blocker's action line presses that key
+
 ### Changed
 
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.

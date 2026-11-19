@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, stripHintMarkers, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { WorkflowRunSummary } from "../../packages/coding-agent/src/core/extensions/workflow-run-control.js";
 import { KeybindingsManager, migrateKeybindingsConfig } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -25,9 +24,11 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const plainStyle: NavKeyStyle = {
-	dim: (text) => text,
+	// Hint lines are compared as the terminal shows them, without their zero-width click markers.
+	dim: (text) => stripHintMarkers(text),
 	text: (text) => text,
 	muted: (text) => text,
 	border: (text) => text,
@@ -99,14 +100,14 @@ test("hints follow remaps, leave out unbound actions and never repeat a key two 
 test("the ? overlay lists every key in a rounded box, and degrades to plain rows when narrow (#5224)", () => {
 	const keys = new KeybindingsManager();
 	for (const width of [160, 80]) {
-		const box = renderNavKeyOverlay("keys · tasks", KEYS, width, plainStyle, keys);
+		const box = renderNavKeyOverlay("keys · tasks", KEYS, width, plainStyle, keys).map(stripHintMarkers);
 		assert.match(box[0] ?? "", /^╭─ keys · tasks ─+╮$/);
 		assert.match(box.at(-1) ?? "", /^╰─+╯$/);
 		assert.ok(box.every((line) => visibleWidth(line) === width));
 		assert.match(box.join("\n"), /│ enter\/→ +open +│/);
 		assert.match(box.join("\n"), /│ esc\/\? +close this help +│/);
 	}
-	const narrow = renderNavKeyOverlay("keys", KEYS, 20, plainStyle, keys);
+	const narrow = renderNavKeyOverlay("keys", KEYS, 20, plainStyle, keys).map(stripHintMarkers);
 	assert.equal(narrow[0], "keys");
 	assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
 });

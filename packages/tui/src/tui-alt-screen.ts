@@ -4,6 +4,7 @@ import {
 	type AltScreenSearchMatch,
 	getAltScreenSearchMatchKey,
 } from "./alt-screen-search.ts";
+import { type HintAction, type HintSpan, hintActionAt, readHintSpans } from "./clickable-hints.ts";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
 import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
@@ -71,6 +72,8 @@ const ENABLE_ALL_MOTION_MOUSE = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1
 const DISABLE_MOUSE = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
+/** The Shift, Alt and Ctrl bits of an SGR mouse report's button. */
+const MODIFIER_BUTTON_BITS = 4 | 8 | 16;
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 const EXIT_TRANSCRIPT_START = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
@@ -147,6 +150,7 @@ interface ClickTarget {
 /** What the screen showed at a pointer position: the painted row and the components drawn there. */
 interface PointerFrame {
 	readonly line: string | undefined;
+	readonly hint: HintAction | undefined;
 	/** Before the text selection was painted, including the row's original styling and links. */
 	readonly unselectedLine: string | undefined;
 	readonly highlighted: boolean;
@@ -191,6 +195,9 @@ function samePointerGeometry(a: PointerFrame | undefined, b: PointerFrame): bool
 function sameDrawnAtPointer(a: PointerFrame | undefined, b: PointerFrame): boolean {
 	return (
 		a !== undefined &&
+		(a.hint === b.hint ||
+			(a.hint?.kind === "key" && b.hint?.kind === "key" && a.hint.key === b.hint.key) ||
+			(a.hint?.kind === "command" && b.hint?.kind === "command" && a.hint.command === b.hint.command)) &&
 		a.drawn.length === b.drawn.length &&
 		a.drawn.every((item, index) => item === b.drawn[index]) &&
 		samePointerGeometry(a, b)
@@ -352,6 +359,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToEndIndicatorRect?: ScrollToEndIndicatorRect;
 	private activeSearch?: ActiveSearch;
 	private pressedUrl?: string;
+	/** The key hint under the press, which the click that releases there runs. */
+	private pressedHint?: HintAction;
+	/** A press on a key hint is down: its drag and release go to the text selection. */
+	private hintGestureActive = false;
+	/** The key hints the last frame painted, by screen row. */
+	private paintedHints: (readonly HintSpan[] | undefined)[] = [];
 	/** What the screen showed under the pointer when the left button went down. */
 	private pressFrame?: PointerFrame;
 	/** Rows of the primary transcript that a drawn-over row covers: the pinned prompt and the jump-to-latest row. */
@@ -497,6 +510,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionInitialRange = undefined;
 		this.lastClick = undefined;
 		this.pressedUrl = undefined;
+		this.pressedHint = undefined;
+		this.hintGestureActive = false;
+		this.paintedHints = [];
 		this.selectionDragged = false;
 		this.clearComponentMouseGesture();
 		this.resetRenderState();
@@ -908,6 +924,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (this.activeSearch?.component.setHoveredNavigationDirection(undefined)) this.requestRender();
 			this.stopScrollbarDrag();
 			this.pressedUrl = undefined;
+			this.pressedHint = undefined;
+			this.hintGestureActive = false;
 			this.selectionDragged = false;
 			this.clearComponentMouseGesture();
 			if (hadActiveSelection) {
@@ -1152,6 +1170,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionGranularity = "character";
 		this.selectionInitialRange = undefined;
 		this.pressedUrl = undefined;
+		this.pressedHint = undefined;
 		this.selectionDragged = false;
 	}
 
@@ -1206,6 +1225,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 
 		if (this.handleSearchMouseEvent(raw)) return;
+
+		// A press on a key hint, and the drag or release that follows it, belong to the text selection: a click runs the
+		// hint and a drag selects text, whatever component drew the hint.
+		if (this.hintGestureActive || (type === "press" && this.isHintPress(raw))) {
+			this.hintGestureActive = !raw.release;
+			this.handleSelectionMouseEvent(raw, timestamp, previous);
+			return;
+		}
 
 		const overlay = this.dispatchMouseToOverlay(event);
 		if (!overlay.hit) {
@@ -1401,6 +1428,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionInitialRange = undefined;
 		this.lastClick = undefined;
 		this.pressedUrl = undefined;
+		this.pressedHint = undefined;
 		this.selectionDragged = false;
 		this.setScrollbarHover(target.scrollView);
 		const onThumb =
@@ -1547,6 +1575,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const innermost = boxes[0];
 		return {
 			line: this.previousScreen[y],
+			hint: this.hintAt(x, y),
 			unselectedLine: this.unselectedScreen[y],
 			highlighted: this.highlightedRows.has(y),
 			boxes: boxes.map((box) => ({ component: box.component, x: box.rect.x, y: box.rect.y })),
@@ -1660,6 +1689,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.pressFrame = undefined;
 			const clickedUrl = isClick && unchanged ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
+			// A key hint acts on a single click of what the press showed, as a pressed key would.
+			const clickedHint = isClick && unchanged ? this.pressedHint : undefined;
+			this.pressedHint = undefined;
+			if (clickedHint) {
+				this.selectionAnchor = undefined;
+				this.selectionFocus = undefined;
+				if (this.lastClick) this.lastClick.awaitingPaint = true;
+				this.runHintAction(clickedHint);
+				this.requestRender();
+				return;
+			}
 			if (clickedUrl && this.openUrl) {
 				this.selectionAnchor = undefined;
 				this.selectionFocus = undefined;
@@ -1696,6 +1736,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.selectionDragged = true;
 			this.lastClick = undefined;
 			this.pressedUrl = undefined;
+			this.pressedHint = undefined;
 			this.updateSelectionFocus(point);
 			this.updateSelectionAutoScroll(event);
 			this.requestRender();
@@ -1734,7 +1775,19 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					this.previousScreen[Math.max(0, Math.min(this.terminal.rows - 1, event.y))] ?? "",
 					Math.max(0, Math.min(this.terminal.columns - 1, event.x)),
 				);
+		this.pressedHint = range || (event.button & MODIFIER_BUTTON_BITS) !== 0 ? undefined : pressFrame.hint;
 		this.requestRender();
+	}
+
+	/** The action of the key hint the last frame painted at screen cell `x`, `y`, when keys reach what is drawn there. */
+	private hintAt(x: number, y: number): HintAction | undefined {
+		const action = hintActionAt(this.paintedHints[y], x);
+		return action !== undefined && this.takesKeysAt(x, y) ? action : undefined;
+	}
+
+	/** A plain left press on a key hint, which the text selection takes so a click runs the hint and a drag selects. */
+	private isHintPress(event: SgrMouseEvent): boolean {
+		return !event.release && event.button === 0 && this.hintAt(event.x, event.y) !== undefined;
 	}
 
 	private getSelectionBounds(): { start: SelectionPoint; end: SelectionPoint } | undefined {
@@ -2119,6 +2172,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		screen = this.compositeFlashes(screen, width, height);
 
 		const cursorPos = this.extractCursorPosition(screen, height);
+		const paintedHints: (readonly HintSpan[] | undefined)[] = [];
+		screen = screen.map((line, row) => {
+			const read = readHintSpans(line);
+			if (read.spans.length > 0) paintedHints[row] = read.spans;
+			return read.line;
+		});
+		this.paintedHints = paintedHints;
 		screen = this.applyLineResets(screen).map((line) => {
 			if (isImageLine(line) || visibleWidth(line) <= width) return line;
 			return sliceByColumn(line, 0, width, true);
