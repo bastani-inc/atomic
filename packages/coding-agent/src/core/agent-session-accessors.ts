@@ -2,7 +2,7 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { finalizeProjectedMessages, repairUniquifiedMessages } from "./agent-session-boundaries.ts";
 import { hasUnsavedHostNotices, unsavedHostNotices } from "./agent-session-host-notices.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { uniquifyToolCallIds } from "./context-tool-pairing.ts";
+import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { hostNoticeFromEntry } from "./host-notices.ts";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
