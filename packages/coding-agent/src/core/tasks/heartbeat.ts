@@ -1,5 +1,5 @@
 import { taskOutputText } from "./command-output.js";
-import type { NativeEvent, OwnerSnapshot, TaskId, TaskRecord } from "./contracts.js";
+import { type NativeEvent, type OwnerSnapshot, spanElapsedMs, type TaskId, type TaskRecord } from "./contracts.js";
 import {
 	DEFAULT_TASK_HEARTBEAT_MS,
 	formatTaskHeartbeat,
@@ -350,7 +350,7 @@ export class TaskHeartbeatMonitor {
 			...(task.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 			...(task.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 			...(task.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
-			elapsedMs: Math.max(0, at - entry.startedAt),
+			elapsedMs: task.elapsedSpan ? spanElapsedMs(task.elapsedSpan) : Math.max(0, at - entry.startedAt),
 			intervalMs: entry.intervalMs,
 		};
 		if (task.kind === "command" && lease) {

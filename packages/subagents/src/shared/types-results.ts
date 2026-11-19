@@ -2,7 +2,7 @@
  * Result, progress, and core subagent public types.
  */
 
-import type { SerializedSessionStartError, SessionStats } from "@bastani/atomic";
+import type { SerializedSessionStartError, SessionStats, TaskElapsedSpan, TaskId } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
 import type { ChildIdentity } from "@bastani/atomic-natives";
@@ -130,6 +130,9 @@ export interface AgentProgress {
 	agent: string;
 	status: "pending" | "running" | "completed" | "failed" | "detached" | "interrupted" | "killed";
 	activityState?: ActivityState;
+	/** The task's current span, for live cards rendering between progress reports. */
+	elapsedSpan?: TaskElapsedSpan;
+	taskId?: TaskId;
 	task: string;
 	/** Effective model for this live attempt, including fallback changes. */
 	model?: string;
@@ -285,6 +288,8 @@ export interface Details {
 	runId?: string;
 	context?: "fresh" | "fork";
 	results: SingleResult[];
+	/** Slots corresponding to the packed results of a partial parallel update. */
+	resultIndices?: readonly number[];
 	controlEvents?: ControlEvent[];
 	runControl?: SubagentRunControlDetails;
 	progress?: AgentProgress[];

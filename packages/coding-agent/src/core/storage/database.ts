@@ -25,8 +25,10 @@ export interface SqliteStatement {
 	readonly params: readonly SqliteValue[];
 }
 
-/** How one write transaction waits for the database's write lock, and whether it may run again. */
+/** How a transaction takes its snapshot or write lock, and whether it may run again. */
 export interface SqliteTransactionOptions {
+	/** @internal A consistent read snapshot without a writer lock. The callback must only read. */
+	readonly readOnly?: boolean;
 	/**
 	 * How long the transaction keeps waiting for the write lock while it is held and no other connection commits,
 	 * instead of the connection's own lock wait. A writer whose work must not fail because another process stalled
@@ -43,7 +45,7 @@ export interface SqliteTransactionOptions {
 	readonly retryTransientFailures?: boolean;
 	/**
 	 * How the transaction excludes other writers; `{ kind: "serial" }` when absent. SQLite runs every kind as
-	 * `BEGIN IMMEDIATE`; only a driver that runs transactions concurrently (Postgres) tells them apart.
+	 * `BEGIN IMMEDIATE` unless `readOnly` is set; only a driver that runs transactions concurrently (Postgres) tells them apart.
 	 */
 	readonly concurrency?: TransactionConcurrency;
 }

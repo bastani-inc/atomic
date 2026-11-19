@@ -21,7 +21,7 @@
  *   - `q` does not navigate, cancel, or pause the active run.
  */
 
-import { Container } from "@bastani/atomic-tui";
+import { Container, stripHintMarkers } from "@bastani/atomic-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	type HostSessionPickerUi,
@@ -489,7 +489,7 @@ export function buildPrintCtxWithRealCustom(rows?: number): {
 export const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 export function visibleText(lines: string[]): string {
-	return lines.join("\n").replace(ANSI_RE, "");
+	return stripHintMarkers(lines.join("\n")).replace(ANSI_RE, "");
 }
 
 export {

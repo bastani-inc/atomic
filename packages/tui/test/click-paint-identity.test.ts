@@ -57,7 +57,7 @@ const press = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}M`;
 const release = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}m`;
 
 describe("a click acts on the frame painted at the press", () => {
-	it("drops the click when the overlay under the pointer moved before the release, even with the row's text unchanged", async () => {
+	it("drops the click when the overlay under the pointer moved before the release, even with the row's text unchanged (#5562)", async () => {
 		const terminal = new VirtualTerminal(20, 10);
 		const tui = new TuiAltScreen(terminal);
 		const overlay = new RecordingOverlay(["item", "item", "item"], ["click"]);
@@ -80,8 +80,7 @@ describe("a click acts on the frame painted at the press", () => {
 			"the click was aimed at the overlay's second row",
 		);
 
-		// Past the double-click window, a click on the frame as painted now lands.
-		await new Promise((resolve) => setTimeout(resolve, 600));
+		// The invalid gesture does not make the next click on the new frame a double-click.
 		terminal.sendInput(press(1, 8));
 		terminal.sendInput(release(1, 8));
 		await terminal.waitForRender();
@@ -91,6 +90,25 @@ describe("a click acts on the frame painted at the press", () => {
 			"a click on an unchanged frame still lands",
 		);
 		tui.stop();
+	});
+
+	it("never opens a link replaced between press and release (#5562)", async (t) => {
+		const terminal = new VirtualTerminal(30, 2);
+		const opened: string[] = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { openUrl: (url) => opened.push(url) });
+		let url = "https://example.com/old";
+		tui.addChild({ render: () => [`\x1b]8;;${url}\x07link\x1b]8;;\x07`], invalidate: () => {} });
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		terminal.sendInput(press(1, 0));
+		url = "https://example.com/new";
+		tui.requestRender();
+		await terminal.waitForRender();
+		terminal.sendInput(release(1, 0));
+		terminal.sendInput(press(1, 0));
+		terminal.sendInput(release(1, 0));
+		assert.deepStrictEqual(opened, [url]);
 	});
 
 	it("gives a target that took the press its release but no click once it is no longer painted", async () => {
