@@ -255,7 +255,7 @@ export class ToolExecutionComponent extends Container {
 	// already-started component must not schedule another render, or the
 	// remote-renderer bridge (EngineRenderService) turns every repeated
 	// engine_tool_render into a fresh invalidate → render ping-pong (TUI
-	// flicker while a workflow stage streams).
+	// flicker during streaming).
 	markExecutionStarted(startedAt?: number): void {
 		if (this.disposed || this.executionStarted) return;
 		this.executionStarted = true;

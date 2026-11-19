@@ -99,9 +99,8 @@ const QUERY_KEYS: Readonly<Record<"sessions" | "root", readonly string[]>> = {
 };
 const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$/;
 
-type Domain = "sessions";
 interface HistoryTarget {
-	readonly domain?: Domain;
+	readonly domain?: "sessions";
 	readonly id?: string;
 	readonly limit: number;
 	readonly offset: number;
@@ -196,7 +195,7 @@ function parseTarget(url: string): HistoryTarget {
 	const [, domainText = "", idText, queryText] = match;
 	if (domainText !== "" && domainText !== "sessions")
 		throw new Error(`Unknown history resource: ${domainText}; use history://sessions`);
-	const domain: Domain | undefined = domainText === "" ? undefined : domainText;
+	const domain = domainText === "" ? undefined : domainText;
 	if (domain === undefined && idText) throw new Error(`Unknown history resource: ${idText}`);
 	const params = new URLSearchParams(queryText ?? "");
 	const allowed = QUERY_KEYS[domain ?? "root"];
@@ -276,7 +275,6 @@ function sessionUrl(id: string, target: HistoryTarget, cursor?: string, ranges?:
 }
 
 function pageUrl(
-	domain: Domain,
 	target: HistoryTarget,
 	offset: number,
 	cursor?: string,
@@ -287,12 +285,12 @@ function pageUrl(
 	const params = new URLSearchParams();
 	if (offset > 0) params.set("offset", String(offset));
 	if (target.limit !== DEFAULT_LIMIT) params.set("limit", String(target.limit));
-	if (domain === "sessions" && target.project !== undefined) params.set("project", target.project);
+	if (target.project !== undefined) params.set("project", target.project);
 	if (pinned !== undefined) params.set("session", pinned);
 	if (cursor !== undefined) params.set("cursor", cursor);
 	if (after !== undefined) params.set("after", sessionKeyText(after, pinned));
 	const query = params.toString();
-	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
+	return `history://sessions${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
 }
 
 function skippedClauses(seq: number | undefined, where = ""): readonly string[] {
@@ -709,7 +707,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const discovered = await discoverSessions(target, budget);
 		if (discovered.stopped !== undefined) {
 			const suffix = positionCursor(target) === undefined ? lineSuffix(selection) : exactLineSuffix(selection);
-			const contUrl = `${pageUrl("sessions", target, target.offset, discovered.stopped.cursor)}${suffix}`;
+			const contUrl = `${pageUrl(target, target.offset, discovered.stopped.cursor)}${suffix}`;
 			return {
 				text: `# sessions in ${scope}\n[scanned ${discovered.stopped.scanned} sessions so far; ${stopText(discovered.stopped.reason)}; continue with ${contUrl}]`,
 				preselected: true,
@@ -720,7 +718,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const next = target.offset + shown.length;
 		return {
 			text: [
-				`# sessions ${windowText(sessions.length, target.offset, shown.length)} in ${scope}, newest first${next < sessions.length ? `; next page: ${pageUrl("sessions", target, next)}` : ""}`,
+				`# sessions ${windowText(sessions.length, target.offset, shown.length)} in ${scope}, newest first${next < sessions.length ? `; next page: ${pageUrl(target, next)}` : ""}`,
 				...shown.map((summary) =>
 					[
 						sessionUrl(summary.id, target),
@@ -790,7 +788,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	/** The first line of a windowed search, labelled so the search tool keeps it beside matches. */
 	function coverage(
-		domain: Domain,
 		target: HistoryTarget,
 		total: number,
 		shown: number,
@@ -802,13 +799,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const end = target.offset + shown;
 		if (target.offset === 0 && end >= total && unreadable === 0) return [];
 		return [
-			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end, undefined, ranges, nextPin, after)}` : ""}]`,
+			`${pageUrl(target, target.offset)}:0: [searched sessions ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(target, end, undefined, ranges, nextPin, after)}` : ""}]`,
 		];
 	}
 
 	function stoppedCoverage(
-		domain: Domain,
-		label: string,
 		target: HistoryTarget,
 		total: number,
 		searched: number,
@@ -817,7 +812,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		continuation: string | undefined,
 		where: string,
 	): string {
-		return `${pageUrl(domain, target, target.offset)}:0: [searched ${label} ${windowText(total, target.offset, searched)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}; ${stopText(reason)}${where}${continuation === undefined ? "" : `; continue with ${continuation}`}]`;
+		return `${pageUrl(target, target.offset)}:0: [searched sessions ${windowText(total, target.offset, searched)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}; ${stopText(reason)}${where}${continuation === undefined ? "" : `; continue with ${continuation}`}]`;
 	}
 
 	async function searchOneSession(
@@ -935,19 +930,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const pin = positionCursor(target) === undefined ? undefined : target.session;
 		const discovered = await discoverSessions(target, budget, pin, target.order);
 		if (discovered.stopped !== undefined) {
-			const contUrl = pageUrl(
-				"sessions",
-				target,
-				target.offset,
-				discovered.stopped.cursor,
-				request.ranges,
-				pin,
-				target.after,
-			);
+			const contUrl = pageUrl(target, target.offset, discovered.stopped.cursor, request.ranges, pin, target.after);
 			const lines = [
 				charged(
 					budget,
-					`${pageUrl("sessions", target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
+					`${pageUrl(target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
 				),
 			];
 			return () => {
@@ -988,7 +975,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const out: string[] = [];
 		const notes: string[] = pinnedGone
 			? [
-					`${pageUrl("sessions", scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
+					`${pageUrl(scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
 				]
 			: [];
 		for (const note of notes) budget.spend(lineBytes(note));
@@ -1014,50 +1001,29 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			clause = "",
 		) =>
 			stoppedCoverage(
-				"sessions",
-				"sessions",
 				scope,
 				candidates.length,
 				index + 1,
 				unreadableBefore,
 				reason,
-				pageUrl(
-					"sessions",
-					scope,
-					scope.offset + index,
-					formatSearchCursor(next),
-					request.ranges,
-					id,
-					positionOf(index),
-				),
+				pageUrl(scope, scope.offset + index, formatSearchCursor(next), request.ranges, id, positionOf(index)),
 				` at entry ${next.seq}${totalText(lastSeq)} in ${sessionUrl(id, target)}${clause}`,
 			);
 		const nextSessionFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string =>
 			stoppedCoverage(
-				"sessions",
-				"sessions",
 				scope,
 				candidates.length,
 				index + 1,
 				unreadableAfter,
 				reason,
 				scope.offset + index + 1 < candidates.length
-					? pageUrl(
-							"sessions",
-							scope,
-							scope.offset + index + 1,
-							undefined,
-							request.ranges,
-							undefined,
-							positionOf(index),
-						)
+					? pageUrl(scope, scope.offset + index + 1, undefined, request.ranges, undefined, positionOf(index))
 					: undefined,
 				"",
 			);
 		const afterFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string[] =>
 			index + 1 >= window.length
 				? coverage(
-						"sessions",
 						scope,
 						candidates.length,
 						window.length,
@@ -1137,22 +1103,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					});
 					ending = () => [
 						stoppedCoverage(
-							"sessions",
-							"sessions",
 							scope,
 							candidates.length,
 							index + 1,
 							unreadableBefore,
 							"time",
-							pageUrl(
-								"sessions",
-								scope,
-								scope.offset + index,
-								cursor,
-								request.ranges,
-								summary.id,
-								positionOf(index),
-							),
+							pageUrl(scope, scope.offset + index, cursor, request.ranges, summary.id, positionOf(index)),
 							` in ${sessionUrl(summary.id, target)}`,
 						),
 					];
@@ -1167,7 +1123,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		function fixedLines(): string[] {
 			return [...notes, ...(windowCut ? [windowNoteLine] : [])];
 		}
-		const windowNoteLine = `${pageUrl("sessions", scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`;
+		const windowNoteLine = `${pageUrl(scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`;
 		const checkpointFooter = (session: (typeof searched)[number], next: SearchResume, cut = false): string[] => {
 			const lastSeq = session.result?.lastSeq ?? 0;
 			if (!pastEnd(next, lastSeq))
@@ -1282,7 +1238,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					request.signal?.throwIfAborted();
 					const cursor = target.cursor === undefined ? undefined : cursorText(target.cursor);
 					return render([
-						`history://sessions:0: [sessions not searched: ${stopText("row")}; continue with ${pageUrl("sessions", target, target.offset, cursor, request.ranges)}]`,
+						`history://sessions:0: [sessions not searched: ${stopText("row")}; continue with ${pageUrl(target, target.offset, cursor, request.ranges)}]`,
 					]);
 				}
 				const page = await searchSessions(target, request, prefilter, budget, positions);

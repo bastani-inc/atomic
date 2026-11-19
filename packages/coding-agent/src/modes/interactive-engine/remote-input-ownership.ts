@@ -11,8 +11,7 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
  * component controller reports its own mounts here instead.
  *
  * The identity, rather than a boolean, lets the route ask the controller what
- * that exact mount declared: a component that binds Ctrl+C itself (the
- * workflows prompt card's `ctrl+c Skip`, the stage chat's `ctrl+c Close`) keeps
+ * that exact mount declared: a component that binds Ctrl+C itself keeps
  * receiving the key, while an undeclared one is closed locally so it can never
  * trap the keyboard.
  */
