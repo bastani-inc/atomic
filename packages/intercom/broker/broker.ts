@@ -2160,6 +2160,7 @@ class IntercomBroker {
             claimsWorkflowInvocations: true as const,
             extendsSaves: true as const,
             marksEndedChildren: true as const,
+            stampsReleasedChildren: true as const,
             multiNodeRouting: this.multiNodeStatus,
             protocol: { ...BROKER_PROTOCOL },
             ...(clientMessage.reachPolicy === undefined ? {} : { enforcesReach: true as const }),

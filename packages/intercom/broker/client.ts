@@ -513,6 +513,7 @@ export class IntercomClient extends EventEmitter {
 	/** #3983: the broker of the current registration accepts `saving`. */
 	private brokerExtendsSaves = false;
 	private brokerMarksEndedChildren = false;
+	private brokerStampsReleasedChildren = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -823,6 +824,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerClaimsWorkflowInvocations = false;
         this.brokerExtendsSaves = false;
         this.brokerMarksEndedChildren = false;
+        this.brokerStampsReleasedChildren = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -1007,6 +1009,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
         this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
         this.brokerMarksEndedChildren = brokerMessage.marksEndedChildren === true;
+        this.brokerStampsReleasedChildren = brokerMessage.stampsReleasedChildren === true;
         this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
         void this.syncReach().catch(() => {});
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
@@ -2075,18 +2078,20 @@ export class IntercomClient extends EventEmitter {
       return Promise.reject(toError(error));
     }
     const requestId = randomUUID();
+    // The confirmation and reservation keep their original wire bytes unless this particular broker offered stamps.
+    const receipt = this.brokerStampsReleasedChildren ? observe : undefined;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!this.pendingRestoringRecipientRequests.delete(requestId)) return;
         void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
       }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
       this.pendingRestoringRecipientRequests.set(requestId, {
-        observe,
+        observe: receipt,
         resolve: (published = true) => { clearTimeout(timeout); resolve(published); },
         reject: (error) => { clearTimeout(timeout); reject(error); },
       });
       try {
-        writeMessage(socket, { ...frame, requestId, ...(observe ? { releaseStamp: true } : {}) });
+        writeMessage(socket, { ...frame, requestId, ...(receipt ? { releaseStamp: true } : {}) });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingRestoringRecipientRequests.delete(requestId);

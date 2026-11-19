@@ -838,18 +838,70 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
+/** Main's ACK frame, including the four-byte framing header. Only its per-call UUID varies. */
+function assertLegacyAckBytes(chunks: readonly unknown[], name: string): void {
+	let matched = 0;
+	for (const chunk of chunks) {
+		if (!Buffer.isBuffer(chunk) || chunk.length < 5 || chunk.readUInt32BE() !== chunk.length - 4) continue;
+		const frame = JSON.parse(chunk.subarray(4).toString());
+		if (frame.type !== "acknowledge_released_child_wake" || frame.childName !== name) continue;
+		const body = Buffer.from(
+			JSON.stringify({ type: "acknowledge_released_child_wake", childName: name, requestId: frame.requestId }),
+		);
+		const length = Buffer.alloc(4);
+		length.writeUInt32BE(body.length);
+		assert.deepEqual(
+			chunk,
+			Buffer.concat([length, body]),
+			"an unnegotiated ACK is byte-identical to the legacy frame",
+		);
+		matched++;
+	}
+	assert.ok(matched > 0);
+}
+
+/** Once the native refusal is delivered, reporting may drain microtasks but must not wait for a timer or another I/O turn. */
+async function assertImmediateRefusal(pending: Promise<void>, deliver: () => void): Promise<void> {
+	const timers = vi.spyOn(globalThis, "setTimeout");
+	try {
+		deliver();
+		assert.equal(
+			await Promise.race([
+				pending.then(() => "reported"),
+				new Promise<string>((resolve) => setImmediate(() => resolve("next turn"))),
+			]),
+			"reported",
+		);
+		assert.equal(timers.mock.calls.length, 0, "no diagnostic timer for a current refusal");
+	} finally {
+		timers.mockRestore();
+	}
+}
+
 test.each(["restored", "dropped", "fresh refusal", "legacy broker", "opaque forwarder"] as const)(
 	"a delayed confirmation after a physical reconnect distinguishes the %s case (#5641)",
 	async (scenario) => {
-		const owner = await reservingOwner(`confirmation-${scenario}`);
 		const name = `subagent-confirmation-${scenario.replaceAll(" ", "-")}`;
+		// Withhold only the registration advertisement, as on an older broker. Do not edit an outgoing ACK.
+		const read = framing.createMessageReader;
+		const legacy =
+			scenario === "legacy broker"
+				? vi.spyOn(framing, "createMessageReader").mockImplementation((receive, fail) =>
+						read((frame) => {
+							if (frame && typeof frame === "object" && !Array.isArray(frame) && frame.type === "registered") {
+								const { stampsReleasedChildren: _omitted, ...registration } = frame;
+								receive(registration);
+							} else receive(frame);
+						}, fail),
+					)
+				: undefined;
+		const capture = legacy && vi.spyOn(net.Socket.prototype, "write");
+		const owner = await reservingOwner(`confirmation-${scenario}`);
 		let verifications = 0;
 		const send = framing.writeMessage;
 		const wire = vi.spyOn(framing, "writeMessage").mockImplementation((socket, frame, callback) => {
-			const { type, releaseStamp, ...rest } = frame as Record<string, unknown>;
-			if (type === "verify_released_child") verifications++;
-			// A legacy broker ignores the optional request flag and returns no stamp.
-			send(socket, scenario === "legacy broker" && releaseStamp ? { ...rest, type } : frame, callback);
+			if ((frame as { type: string }).type === "verify_released_child") verifications++;
+			send(socket, frame, callback);
 		});
 		const firstSend = Promise.withResolvers<void>();
 		if (scenario !== "fresh refusal") firstSend.resolve();
@@ -879,16 +931,29 @@ test.each(["restored", "dropped", "fresh refusal", "legacy broker", "opaque forw
 			if (scenario === "dropped" || scenario === "fresh refusal") await owner.client.dropReleasedChildren([name]);
 			firstSend.resolve();
 			assert.equal(await hold.refusedWith, "unknown_released_child");
+			if (capture)
+				assertLegacyAckBytes(
+					capture.mock.calls.map(([chunk]) => chunk),
+					name,
+				);
+			if (scenario === "fresh refusal") await assertImmediateRefusal(pending, hold.release);
 		} finally {
 			firstSend.resolve();
 			hold.release();
-			await pending.finally(() => wire.mockRestore());
+			await pending.finally(() => {
+				wire.mockRestore();
+				capture?.mockRestore();
+				legacy?.mockRestore();
+			});
 		}
 		assert.deepEqual(owner.notices.map(namedIn), scenario === "restored" ? [] : [name]);
 		assert.equal(verifications, scenario === "restored" || scenario === "dropped" ? 1 : 0);
 		if (scenario === "restored") {
 			await owner.client.dropReleasedChildren([name]);
-			await confirm();
+			const ordinary = holdNextReservationOutcome(owner.events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT);
+			const confirmation = confirm();
+			assert.equal(await ordinary.refusedWith, "unknown_released_child");
+			await assertImmediateRefusal(confirmation, ordinary.release);
 			assert.deepEqual(owner.notices.map(namedIn), [name], "a genuinely unheld release still reports its refusal");
 		}
 	},

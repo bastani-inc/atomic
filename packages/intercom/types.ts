@@ -496,6 +496,8 @@ export type BrokerMessage =
 			extendsSaves?: true;
 			/** #4639: this broker accepts `mark_ended_children`; absent on older brokers, which drop a client that sends it. */
 			marksEndedChildren?: true;
+			/** This connection accepts stamped release requests and read-only checks of a stamped hold. */
+			stampsReleasedChildren?: true;
 			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
 			multiNodeRouting?: BrokerMultiNodeStatus["status"];
 			/** #4538: the wire protocol versions this broker accepts; absent on brokers of protocol 1. */
