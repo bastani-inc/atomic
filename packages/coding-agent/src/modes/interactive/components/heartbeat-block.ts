@@ -9,7 +9,7 @@ export type HeartbeatRow = string | { readonly text: string; readonly wrap: true
 
 /** A heartbeat in the transcript: what is still running, the rows under it, and where to inspect it. */
 export interface HeartbeatBlockSpec {
-	/** `Task heartbeat`, `Workflow heartbeat`. */
+	/** For example, `Task heartbeat`. */
 	readonly title: string;
 	/** What is still running, after the title as ` · <subject>`; shortened with `…` only once every fact is dropped. */
 	readonly subject?: string;

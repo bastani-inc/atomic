@@ -236,7 +236,6 @@ it("reads a tiny cold JSONL session as a transcript, not an unknown-size outline
 			const router = createHistoryRouter({
 				cwd: header.cwd,
 				sessionStore: () => reader,
-				workflows: () => undefined,
 			});
 			const text = (await router.readSelected!("history://sessions/session", {})) ?? "";
 			assert.match(text, /tiny cold message/);

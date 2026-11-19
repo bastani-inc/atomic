@@ -104,7 +104,7 @@ export function taskBoardCounts(rows: readonly TaskBoardRow[]): string {
 
 type Glyph = { glyph: string; color: "accent" | "success" | "error" | "warning" | "muted" | "dim" };
 
-export function stateGlyph(state: TaskBoardState, kind?: "agent" | "workflow" | "shell" | "command"): Glyph {
+export function stateGlyph(state: TaskBoardState, kind?: TaskBoardItem["kind"] | "command"): Glyph {
 	switch (state) {
 		case "input":
 			return { glyph: "◆", color: "warning" };
@@ -146,7 +146,7 @@ function rowElapsed(row: TaskBoardRow): number | undefined {
 		if (!isTaskTurnInterrupted(row.task)) return reported;
 		return taskClockOf(row.task)?.elapsedMs(row.task.ref.taskId, reported, false) ?? reported;
 	}
-	if (row.item.kind !== "workflow" && row.item.state !== "queued") {
+	if (row.item.state !== "queued") {
 		const clocks = taskClockOf(row.item);
 		if (clocks !== undefined) {
 			return clocks.elapsedMs(row.item.id, row.item.elapsedMs, taskClockRunning(row.item.state));
@@ -199,15 +199,11 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 		validMetric(row.item.progress.total) &&
 		row.item.progress.done <= row.item.progress.total &&
 		state !== "input"
-			? `${row.item.kind === "workflow" ? "stage " : ""}${row.item.progress.done}/${row.item.progress.total}`
+			? `${row.item.progress.done}/${row.item.progress.total}`
 			: "";
 	const reason = row.kind === "item" && state === "failed" && row.item.reason ? taskDisplayText(row.item.reason) : "";
-	const rawTitle = rowTask(row);
-	const title =
-		progress && row.kind === "item" && row.item.kind === "workflow" && rawTitle.startsWith("stage ")
-			? rawTitle.slice(6)
-			: rawTitle;
-	const task = [title, progress, reason === rawTitle ? "" : reason].filter(Boolean).join(" · ");
+	const title = rowTask(row);
+	const task = [title, progress, reason === title ? "" : reason].filter(Boolean).join(" · ");
 	const fullMeta = rowMeta(row);
 	const meta = 2 + 2 + nameColumn + 2 + visibleWidth(fullMeta) <= width ? fullMeta : "";
 	const fixed = 2 + 2 + nameColumn + (meta ? 2 + visibleWidth(meta) : 0);

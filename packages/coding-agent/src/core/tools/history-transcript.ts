@@ -91,16 +91,8 @@ export interface HistoryEntryRange {
 	readonly end: number;
 }
 
-export function transcriptHeaderLines(header: SessionRecordHeader, linkRun: boolean): string[] {
-	return [
-		`# session ${header.id}`,
-		`created: ${timestamp(header.createdAt)}`,
-		...(header.workflow
-			? [
-					`workflow stage: ${header.workflow.stageName} of run ${header.workflow.runId}${linkRun ? ` (history://workflows/${header.workflow.runId})` : ""}`,
-				]
-			: []),
-	];
+export function transcriptHeaderLines(header: SessionRecordHeader): string[] {
+	return [`# session ${header.id}`, `created: ${timestamp(header.createdAt)}`];
 }
 
 export interface HistoryEntrySeqs {

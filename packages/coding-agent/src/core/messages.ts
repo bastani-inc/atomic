@@ -189,7 +189,7 @@ export function verbatimRecallHint(sessionId: string): string {
 	const url = `history://sessions/${sessionId}`;
 	const lines = [
 		`Removed lines remain in this session's history at ${url}. Use \`search\` on that URL to find removed text, including text removed in this session's earlier compaction cycles, then \`read\` with \`:N-M\` to open it.`,
-		"You can also recall relevant findings from the project's other sessions (`search history://sessions`) and from workflow runs (`search history://workflows`, or `search history://` for both). Do this before redoing an investigation, or when a removed decision, error message, file path or result matters.",
+		"You can also recall relevant findings from the project's other sessions (`search history://sessions` or `search history://`). Do this before redoing an investigation, or when a removed decision, error message, file path or result matters.",
 		"A search over several records covers the newest ones by default; page on with `?offset=`.",
 	];
 	return `${lines.join("\n")}\n\n`;

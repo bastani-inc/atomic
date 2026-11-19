@@ -42,7 +42,7 @@ describe("history continuation notes stay inside the byte budget (#5250)", () =>
 		const text = "z".repeat(80_000);
 		const store = await session(text, cwd);
 		try {
-			const router = createHistoryRouter({ cwd: "/project", sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: "/project", sessionStore: () => store });
 			let url: string | undefined = `history://sessions/long-scope?project=${encodeURIComponent(cwd)}:1-1`;
 			const pieces: string[] = [];
 			for (let page = 0; url !== undefined && page < 20; page++) {
@@ -73,7 +73,7 @@ describe("history continuation notes stay inside the byte budget (#5250)", () =>
 			cwd,
 		);
 		try {
-			const router = createHistoryRouter({ cwd: "/project", sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: "/project", sessionStore: () => store });
 			let url: string | undefined = `history://sessions/long-scope?project=${encodeURIComponent(cwd)}:1-1`;
 			const found: number[] = [];
 			for (let page = 0; url !== undefined && page < 20; page++) {
@@ -110,7 +110,6 @@ describe("history continuation notes stay inside the byte budget (#5250)", () =>
 			const router = createHistoryRouter({
 				cwd: "/project",
 				sessionStore: () => store,
-				workflows: () => undefined,
 				budget: { bytes },
 			});
 			const url = `history://sessions/long-scope?project=${encodeURIComponent(CWD)}:1-1`;

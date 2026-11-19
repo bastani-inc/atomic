@@ -81,7 +81,6 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
 				decisionModel: this.settingsManager.getDecisionModel(),
 				...decisionSettingScopes(project),
-				autoAdvanceAfterSteer: this.settingsManager.getAutoAdvanceAfterSteer(),
 				availableCompactorModels: [...this.session.modelRuntime.getModelsOfType("compactor")],
 				morphAuthenticated: this.session.modelRuntime.hasConfiguredAuth("morph"),
 				compactionModel: this.settingsManager.getCompactionModel(),
@@ -168,9 +167,6 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 			},
 			onDecisionModelChange: (model) => {
 				this.settingsManager.setDecisionModel(model, config.decisionModelScope);
-			},
-			onAutoAdvanceAfterSteerChange: (enabled) => {
-				this.settingsManager.setAutoAdvanceAfterSteer(enabled, config.autoAdvanceAfterSteerScope);
 			},
 			onCompactionModelChange: (model) => {
 				this.settingsManager.setCompactionModel(model, config.compactionModelScope);

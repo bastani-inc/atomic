@@ -54,8 +54,7 @@ export function splitNodeOptions(nodeOptions: string): string[] {
 }
 
 /**
- * Node flags that size the interactive engine's V8 heap. The engine hosts every in-process subagent and workflow
- * stage, so V8's default limit (about 4 GiB) caps the whole fleet regardless of machine size. Under Node the engine
+ * Node flags that size the interactive engine's V8 heap. The engine hosts every in-process subagent, so V8's default limit (about 4 GiB) caps the whole fleet regardless of machine size. Under Node the engine
  * gets half of system memory, or of its container's memory limit when that is smaller, when this exceeds the
  * current limit. An explicit `--max-old-space-size` in
  * `NODE_OPTIONS` (inherited by the engine) or on the host's own command line wins, the last command-line flag first,

@@ -24,7 +24,7 @@ async function replyBoard(initialQuestion: string | null = "Deploy to staging?")
 	const fixture = taskFixture();
 	let item: AgentPanelItem = {
 		id: "run:deploy",
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: "deploy",
 		task: "stage ask",

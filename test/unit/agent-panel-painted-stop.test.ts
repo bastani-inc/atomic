@@ -26,7 +26,7 @@ const microtasks = async () => {
 function run(id: string, state: AgentPanelItem["state"]): AgentPanelItem {
 	return {
 		id,
-		kind: "workflow",
+		kind: "agent",
 		state,
 		name: id.slice(4),
 		task: "stage build",

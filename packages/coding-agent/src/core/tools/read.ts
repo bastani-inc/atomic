@@ -398,7 +398,7 @@ export function createReadToolDefinition(
 		name: "read",
 		label: "read",
 		description:
-			"Read files, directories, archives, SQLite databases, internal resources (including history:// for past sessions and workflow runs), images, documents, and URLs through one path string.",
+			"Read files, directories, archives, SQLite databases, internal resources (including history:// for past sessions), images, documents, and URLs through one path string.",
 		promptSnippet: readToolSystemPromptContribution.snippet,
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		constrainedSampling: { type: "json_schema", strict: "prefer" },

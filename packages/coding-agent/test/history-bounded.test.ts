@@ -5,7 +5,6 @@ import { getPriority, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import type { WorkflowRunDetail } from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -23,11 +22,7 @@ import {
 	type SessionStore,
 	type SessionSummary,
 } from "../src/core/storage/session/types.js";
-import {
-	createHistoryRouter,
-	type HistoryBudget,
-	type WorkflowRunHistory,
-} from "../src/core/tools/history-protocol.js";
+import { createHistoryRouter, type HistoryBudget } from "../src/core/tools/history-protocol.js";
 import { matchLinesInWorker, renderRawEntryInWorker } from "../src/core/tools/history-regex-worker.js";
 import {
 	cutTextToUtf8Bytes,
@@ -246,7 +241,6 @@ function historyOver(store: SessionStore, budget?: Partial<HistoryBudget>) {
 	const router = createHistoryRouter({
 		cwd: PROJECT,
 		sessionStore: () => store,
-		workflows: () => undefined,
 		...(budget === undefined ? {} : { budget }),
 	});
 	const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
@@ -606,62 +600,6 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		} finally {
 			await close();
 		}
-	});
-
-	it("stops a search of a workflow run at its byte budget and continues where it stopped (#5250)", async () => {
-		const detail: WorkflowRunDetail = {
-			runId: "run-many",
-			name: "many-stages",
-			status: "completed",
-			startedAt: BASE,
-			inputs: {},
-			stages: Array.from({ length: 120 }, (_, index) => ({
-				id: `s${index}`,
-				name: `build-step-${index}`,
-				status: "completed" as const,
-			})),
-		};
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () => [
-				{
-					runId: "run-many",
-					name: "many-stages",
-					status: "completed",
-					startedAt: BASE,
-					elapsedMs: 1,
-					activeStages: [],
-					awaitingInputCount: 0,
-					awaitingInput: [],
-				},
-			],
-			getRun: async () => detail,
-		};
-		const router = createHistoryRouter({
-			cwd: PROJECT,
-			sessionStore: () => undefined,
-			workflows: () => workflows,
-			budget: { bytes: 1_500 },
-		});
-		const rows: string[] = [];
-		let url: string | undefined = "history://workflows/run-many";
-		for (let calls = 0; url !== undefined && calls < 50; calls++) {
-			const output =
-				(await router.search?.(url, {
-					pattern: "build-step",
-					ignoreCase: false,
-					literal: false,
-					contextBefore: 0,
-					contextAfter: 0,
-				})) ?? "";
-			assert.ok(Buffer.byteLength(output) <= 1_500, `output of ${Buffer.byteLength(output)} bytes`);
-			rows.push(...output.split("\n").filter((line) => /^history:\/\/workflows\/run-many:[1-9]\d*: /.test(line)));
-			url = continuation(output);
-		}
-		assert.equal(url, undefined, "the search finishes");
-		assert.deepEqual(
-			rows.map((row) => /build-step-(\d+)/.exec(row)?.[1]),
-			Array.from({ length: 120 }, (_, index) => String(index)),
-		);
 	});
 
 	it("scans a session when its index cannot be queried (#5250)", async () => {
@@ -1920,7 +1858,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		}
 	});
 
-	it("reports entry-unit selector errors on session URLs and line-unit errors on workflows (#5250)", async () => {
+	it("reports entry-unit selector errors on session URLs (#5250)", async () => {
 		const store = new MemorySessionStore();
 		await store.create(header("s1"), [message("e1", "user", "hello", BASE)]);
 		const { read, search } = historyOver(store);
@@ -1928,8 +1866,6 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		await assert.rejects(read("history://sessions/s1:5-3"), /Invalid entry selector :5-3; end must be >= start/);
 		await assert.rejects(search("hello", "history://sessions/s1:0-2"), /Invalid entry-range selector: 0-2/);
 		await assert.rejects(search("hello", "history://sessions/s1:5-3"), /Invalid entry-range selector: 5-3/);
-		await assert.rejects(read("history://workflows/r1:0-2"), /Line selector 0 is invalid; lines are 1-indexed/);
-		await assert.rejects(search("hello", "history://workflows/r1:0-2"), /Invalid line-range selector: 0-2/);
 	});
 
 	it("lists cold JSONL sessions with oversized first messages or legacy headers without loading them whole (#5250)", async () => {
@@ -2016,7 +1952,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		assert.equal(listCalls, 1, "resumed discovery must reuse the parked iterator");
 	});
 
-	it("resumes multi-line searches past the first slice under row, byte, +N more, and workflow stage cursors without repeating matches (#5250)", async () => {
+	it("resumes multi-line searches past the first slice under row, byte, and +N more cursors without repeating matches (#5250)", async () => {
 		const { store, close } = await openSql(dir);
 		try {
 			const padLines = Array.from({ length: 700 }, (_, i) => `pad-${i}-${"p".repeat(95)}`);
@@ -2062,64 +1998,6 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			assert.equal(capUrl, undefined);
 			assert.deepEqual(
 				seenCapHits,
-				Array.from({ length: 16 }, (_, i) => `slice2-hit-${i + 1}`),
-			);
-
-			await store.create(
-				{
-					...header("stage-ml"),
-					internal: true,
-					workflow: { runId: "run-ml", stageId: "s1", stageName: "build" },
-				},
-				[message("e1", "user", entryText, BASE)],
-			);
-			const workflows: WorkflowRunHistory = {
-				listRuns: async () => [
-					{
-						runId: "run-ml",
-						name: "ml-workflow",
-						status: "completed",
-						startedAt: BASE,
-						elapsedMs: 1,
-						activeStages: [],
-						awaitingInputCount: 0,
-						awaitingInput: [],
-					},
-				],
-				getRun: async () => ({
-					runId: "run-ml",
-					name: "ml-workflow",
-					status: "completed",
-					startedAt: BASE,
-					inputs: {},
-					stages: [{ id: "s1", name: "build", status: "completed", sessionId: "stage-ml" }],
-				}),
-			};
-			const wfRouter = createHistoryRouter({
-				cwd: PROJECT,
-				sessionStore: () => store,
-				workflows: () => workflows,
-				budget: { bytes: 950 },
-			});
-			const wfHits: string[] = [];
-			let wfUrl: string | undefined = "history://workflows/run-ml";
-			for (let calls = 0; wfUrl !== undefined && calls < 20; calls++) {
-				const out =
-					(await wfRouter.search?.(wfUrl, {
-						pattern: "(?m)^slice2-hit-\\d+",
-						ignoreCase: false,
-						literal: false,
-						contextBefore: 0,
-						contextAfter: 0,
-					})) ?? "";
-				for (const match of out.matchAll(/^history:\/\/sessions\/stage-ml:1: (slice2-hit-\d+) /gm)) {
-					wfHits.push(match[1]!);
-				}
-				wfUrl = continuation(out);
-			}
-			assert.equal(wfUrl, undefined);
-			assert.deepEqual(
-				wfHits,
 				Array.from({ length: 16 }, (_, i) => `slice2-hit-${i + 1}`),
 			);
 		} finally {
@@ -2633,7 +2511,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		}
 	});
 
-	it("search tool keeps all 10 matches, the +N more cursor note, and 20 workflow matches when context contains file:line: text (#5250)", async () => {
+	it("search tool keeps all 10 matches and the +N more cursor note when context contains file:line: text (#5250)", async () => {
 		const store = new MemorySessionStore();
 		try {
 			const entries: SessionEntry[] = [];
@@ -2648,42 +2526,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				);
 			}
 			await store.create(header("ctx-colons"), entries);
-			const workflows: WorkflowRunHistory = {
-				listRuns: async () =>
-					Array.from({ length: 30 }, (_, i) => ({
-						runId: `run-${i + 1}`,
-						name: "wf",
-						status: "completed" as const,
-						startedAt: BASE + (30 - i) * 1000,
-						elapsedMs: 1,
-						activeStages: [],
-						awaitingInputCount: 0,
-						awaitingInput: [],
-					})),
-				getRun: async (runId): Promise<WorkflowRunDetail | undefined> =>
-					runId === "run-1"
-						? {
-								runId: "run-1",
-								name: "wf",
-								status: "completed",
-								startedAt: BASE,
-								inputs: {},
-								stages: Array.from({ length: 20 }, (_, i) => ({
-									id: `s${i + 1}`,
-									name: `wf-needle-${i + 1}`,
-									status: "completed" as const,
-								})),
-							}
-						: {
-								runId,
-								name: "wf",
-								status: "completed",
-								startedAt: BASE,
-								inputs: {},
-								stages: [],
-							},
-			};
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => workflows });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
 			const tool = createSearchToolDefinition(PROJECT);
 
@@ -2698,20 +2541,6 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			const matched = out.split("\n").filter((line) => /^history:\/\/sessions\/ctx-colons:\d+: needle/.test(line));
 			assert.equal(matched.length, 10, out);
 			assert.match(out, /\+30 more in this session; search history:\/\/sessions\/ctx-colons\?cursor=11 for them/);
-
-			const wfRes = await tool.execute(
-				"search",
-				{ pattern: "wf-needle-", paths: "history://workflows" },
-				undefined,
-				undefined,
-				ctx as never,
-			);
-			const wfOut = wfRes.content.map((b) => ("text" in b ? b.text : "")).join("\n");
-			const wfMatched = wfOut
-				.split("\n")
-				.filter((line) => /^history:\/\/workflows\/run-1:\d+: .*wf-needle-/.test(line));
-			assert.equal(wfMatched.length, 20, wfOut);
-			assert.match(wfOut, /^history:\/\/workflows:0: \[searched workflows 1-25 of 30/m);
 		} finally {
 			await store.close();
 		}

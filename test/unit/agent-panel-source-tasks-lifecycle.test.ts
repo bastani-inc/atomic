@@ -15,7 +15,6 @@ import {
 	answerAgentPanelItem,
 	openAgentPanelItem,
 	stopAgentPanelItem,
-	viewedAgentPanelItems,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -42,7 +41,7 @@ test("a source whose subscribe throws is not listed and is reported once as an e
 	};
 	const item: AgentPanelItem = {
 		id: "run:sub-throws",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "deploy",
 		task: "stage build",
@@ -81,7 +80,7 @@ test("throwing source.open returns false, reports an extension error, and keeps 
 	const liveItems: AgentPanelItem[] = [
 		{
 			id: "run: broken",
-			kind: "workflow",
+			kind: "agent",
 			state: "done",
 			name: "deploy\x1b[2J\u202e",
 			task: "stage 1/1",
@@ -141,7 +140,6 @@ test("throwing source.open returns false, reports an extension error, and keeps 
 		active.handleInput?.("\r");
 		assert.equal(inspectorClosed, 0);
 		assert.deepEqual(errors, ["graph boom"]);
-		assert.equal(viewedAgentPanelItems(session).has("run: broken"), false);
 		const frame = active
 			.render(100)
 			.map((line: string) => stripVTControlCharacters(line))
@@ -150,10 +148,8 @@ test("throwing source.open returns false, reports an extension error, and keeps 
 
 		shouldThrow = false;
 		assert.equal(openAgentPanelItem(session, "run: broken"), true);
-		assert.equal(viewedAgentPanelItems(session).has("run: broken"), true);
 		liveItems.length = 0;
 		agentPanelExtensionItems(session);
-		assert.equal(viewedAgentPanelItems(session).size, 0);
 
 		active.handleInput?.("\x1b");
 		await shown;
@@ -217,7 +213,7 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 
 		itemsByGeneration[1]!.push({
 			id: "run:after-reload",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "reloaded-wf",
 			task: "stage verify",
@@ -236,7 +232,7 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 	}
 });
 
-test("showTaskInspector hides the agent panel in-process, across workflow reopen, and reports reopen rejection (#5224)", async () => {
+test("showTaskInspector hides the agent panel in-process, across a task reopening, and reports reopen rejection (#5224)", async () => {
 	initTheme("dark");
 	const previousKeys = getKeybindings();
 	const keys = new KeybindingsManager();
@@ -248,7 +244,7 @@ test("showTaskInspector hides the agent panel in-process, across workflow reopen
 		items: () => [
 			{
 				id: "run:wf-1",
-				kind: "workflow",
+				kind: "agent",
 				state: "running",
 				name: "alpha",
 				task: "stage build",
@@ -374,7 +370,7 @@ test("re-registering a source after subscribe threw clears the stored subscribe 
 	let shouldThrow = true;
 	const source = {
 		items: (): readonly AgentPanelItem[] => [
-			{ id: "run:recovered", kind: "workflow", state: "running", name: "deploy", task: "stage verify" },
+			{ id: "run:recovered", kind: "agent", state: "running", name: "deploy", task: "stage verify" },
 		],
 		subscribe: () => {
 			if (shouldThrow) throw new Error("transient subscribe failure");

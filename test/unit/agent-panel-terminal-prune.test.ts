@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { resolve, sep } from "node:path";
-import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { panelCounts } from "../../packages/coding-agent/src/core/tasks/agent-panel-rules.ts";
@@ -12,11 +11,7 @@ import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-e
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.ts";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.ts";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.ts";
-import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.ts";
-import {
-	mainComposerFooterHints,
-	mainComposerHintSegments,
-} from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
+import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.ts";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { engineAgentPanelCounts } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
@@ -81,8 +76,7 @@ const agent = (id: string, state: AgentPanelItem["state"]): AgentPanelItem => ({
 
 /** The rows the in-process model keeps for the same items. */
 function modelRows(items: readonly AgentPanelItem[]): AgentPanelItem[] {
-	const keep = (row: AgentPanelItem) => row.kind === "workflow" && row.viewed !== true;
-	return new AgentPanelModel(() => 1_000).rows(items, keep);
+	return new AgentPanelModel(() => 1_000).rows(items);
 }
 const modelIds = (items: readonly AgentPanelItem[]) => modelRows(items).map((row) => row.id);
 
@@ -137,16 +131,6 @@ describe("the panel below the composer prunes subagents once they are terminal",
 		assert.deepEqual(panel.hint(), ["? keys"]);
 	});
 
-	test("an unviewed finished workflow run stays when nothing is active and leaves once viewed", () => {
-		const run: AgentPanelItem = { id: "run:w", kind: "workflow", state: "done", name: "ralph", task: "ship" };
-		const panel = panelSession([run, agent("stopped", "stopped")]);
-		assert.deepEqual(panel.ids(), ["run:w"]);
-		assert.equal(agentPanelCounts(panel.session).total, 1);
-
-		panel.set([{ ...run, viewed: true }, agent("stopped", "stopped")]);
-		assert.deepEqual(panel.ids(), []);
-	});
-
 	test("the count includes stopped rows folded below the visible rows while something is active", () => {
 		const items = [agent("live", "running"), ...Array.from({ length: 6 }, (_, i) => agent(`s${i}`, "stopped"))];
 		const panel = panelSession(items);
@@ -158,13 +142,10 @@ describe("the panel below the composer prunes subagents once they are terminal",
 	});
 
 	test("the panel model keeps exactly the rows and counts the engine's ranking lists", () => {
-		const run: AgentPanelItem = { id: "run:w", kind: "workflow", state: "done", name: "ralph", task: "ship" };
 		const scenarios: AgentPanelItem[][] = [
 			[agent("a", "done"), agent("b", "running")],
 			[agent("a", "failed"), agent("b", "stopped"), agent("c", "paused")],
 			[agent("a", "stopped"), agent("b", "waiting")],
-			[run, agent("a", "stopped")],
-			[{ ...run, viewed: true }, agent("a", "input"), agent("b", "stopped")],
 		];
 		for (const items of scenarios) {
 			const panel = panelSession(items);
@@ -255,217 +236,12 @@ describe("the hint names /tasks when the panel has no rows", () => {
 	});
 });
 
-describe("only subagent rows count as agents", () => {
-	const run = (state: AgentPanelItem["state"]): AgentPanelItem => ({
-		id: "run:w",
-		kind: "workflow",
-		state,
-		name: "ralph",
-		task: "ship",
-	});
-
-	test("a lone running workflow run is not counted as an agent, and ↓ still focuses its row", () => {
-		const panel = panelSession([run("running")]);
-		assert.deepEqual(panel.ids(), ["run:w"]);
-		assert.equal(agentPanelCounts(panel.session).total, 1);
-		assert.equal(agentPanelCounts(panel.session).agents, 0);
-		assert.deepEqual(panel.hint(), ["? keys"]);
-	});
-
-	test("a workflow run and two subagents count as two agents", () => {
-		const panel = panelSession([run("running"), agent("a", "running"), agent("b", "running")]);
-		assert.deepEqual(panel.hint(), ["↓ 2 agents", "? keys"]);
-	});
-
-	test("a workflow run waiting on an answer with no subagents shows only its question count", () => {
-		const panel = panelSession([{ ...run("input"), question: "Ship it?" }]);
-		assert.deepEqual(panel.hint(), ["1 needs input", "? keys"]);
-	});
-});
-
-describe("a paused or blocked workflow run rests like a paused subagent (#5490)", () => {
-	/** A workflow run's row; a live run that is paused, or blocked on a failed stage, reads `paused`. */
-	const run = (state: AgentPanelItem["state"], id = "w"): AgentPanelItem => ({
-		id: `run:${id}`,
-		kind: "workflow",
-		state,
-		name: "ralph",
-		task: "stage review",
-	});
-	const shell = (state: AgentPanelItem["state"]): AgentPanelItem => ({
-		id: "ext:sh",
-		kind: "shell",
-		state,
-		name: "shell",
-		task: "sleep 300",
-	});
-
-	test("stays listed while a subagent runs, and the whole panel goes once nothing is active (#5490)", () => {
-		const items = [run("paused"), agent("stopped", "stopped"), agent("live", "running")];
-		const panel = panelSession(items);
-		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:stopped", "ext:live"]));
-		assert.deepEqual(new Set(modelIds(items)), new Set(panel.ids()));
-		assert.deepEqual(panel.hint(), ["↓ 2 agents", "? keys"]);
-
-		const idle = [run("paused"), agent("stopped", "stopped"), agent("live", "done")];
-		panel.set(idle);
-		assert.deepEqual(panel.ids(), []);
-		assert.deepEqual(modelIds(idle), []);
-		assert.equal(agentPanelCounts(panel.session).total, 0);
-		assert.deepEqual(panel.hint(), ["/workflows to see runs", "? keys"]);
-	});
-
-	test("alone, it does not keep the panel up (#5490)", () => {
-		const panel = panelSession([run("paused")]);
-		assert.deepEqual(panel.ids(), []);
-		assert.deepEqual(modelIds([run("paused")]), []);
-		assert.deepEqual(panel.hint(), ["/workflows to see runs", "? keys"]);
-	});
-
-	test("both hosts point to /workflows while a paused run is missing from the panel (#5710)", async () => {
-		const fixture = taskFixture();
-		try {
-			await fixture.start("keeps running");
-			const panel = panelSession([run("paused")]);
-			bindOwnerTaskStore(panel.session, fixture.store);
-			let hostHint: string[] = [];
-			const dispose = bindAgentPanel(panel.session, { setWidget() {}, requestRender() {} } as never, (counts) => {
-				const message = parseInteractiveEngineMessage(
-					serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }).trim(),
-				);
-				if (message?.type === "engine_agent_panel_state") {
-					hostHint = mainComposerHintSegments(keybindings, () => engineAgentPanelCounts(message));
-				}
-			});
-			const expectHints = async (...expected: string[]) => {
-				assert.deepEqual(panel.hint(), expected);
-				await vi.waitFor(() => assert.deepEqual(hostHint, expected));
-			};
-			try {
-				await expectHints("↓ 1 agent", "? keys");
-				await fixture.settle(0);
-				assert.deepEqual(panel.ids(), []);
-				await expectHints("/tasks to see subagents", "/workflows to see runs", "? keys");
-				panel.set([run("paused"), agent("new", "running")]);
-				assert.deepEqual(panel.ids(), ["ext:new"]);
-				await expectHints("↓ 1 agent", "/workflows to see runs", "? keys");
-				panel.set([agent("new", "running")]);
-				await expectHints("↓ 1 agent", "? keys");
-			} finally {
-				dispose();
-			}
-		} finally {
-			await fixture.dispose();
-		}
-	});
-
-	describe.each(["in-process", "isolated"] as const)("%s host", (host) => {
-		test.each([80, 120, 160])(
-			"the workflow hint uses only spare footer cells at %i columns (#5710)",
-			async (width) => {
-				vi.stubEnv("ATOMIC_EXPERIMENTAL", "1");
-				vi.stubEnv("ATOMIC_DEBUG", "1");
-				const home = resolve("home");
-				vi.stubEnv("HOME", home);
-				const fixture = taskFixture();
-				try {
-					await fixture.start("keeps running");
-					const panel = panelSession([run("paused")]);
-					bindOwnerTaskStore(panel.session, fixture.store);
-					await fixture.settle(0);
-					assert.deepEqual(panel.ids(), []);
-					const message = parseInteractiveEngineMessage(
-						serializeInteractiveEngineMessage({
-							type: "engine_agent_panel_state",
-							...agentPanelCounts(panel.session),
-						}),
-					);
-					assert.ok(message?.type === "engine_agent_panel_state");
-					const source = host === "isolated" ? () => engineAgentPanelCounts(message) : panel.session;
-					let directory = "footer" + "x".repeat(width - 80);
-					const footer = new FooterComponent(
-						{
-							state: { model: { provider: "local", id: "cap-1" } },
-							sessionManager: { getCwd: () => resolve(home, directory) },
-						} as never,
-						{
-							getGitBranch: () => "main",
-							getExtensionStatuses: () => new Map(),
-							getAvailableProviderCount: () => 1,
-							onBranchChange: () => () => {},
-						},
-						undefined,
-						undefined,
-						undefined,
-						() => mainComposerFooterHints(keybindings, source),
-					);
-					const line = () => stripTerminalSequences(footer.render(width)[0]!);
-					const prefix = () => `cap-1 • ~${sep}${directory} (main) xp debug · /tasks to see subagents`;
-					assert.equal(line(), `${prefix()} · ? keys`);
-					directory = "footer";
-					assert.equal(line(), `${prefix()}${width === 80 ? "" : " · /workflows to see runs"} · ? keys`);
-				} finally {
-					await fixture.dispose();
-				}
-			},
-		);
-	});
-
-	test("stays listed while another workflow run or a background shell is active (#5490)", () => {
-		for (const other of [run("running", "other"), run("waiting", "other"), shell("running")]) {
-			const items = [run("paused"), other];
-			const panel = panelSession(items);
-			const expected = other.kind === "shell" ? ["run:w"] : ["run:w", "run:other"];
-			assert.deepEqual(new Set(panel.ids()), new Set(expected), other.state);
-			assert.deepEqual(new Set(modelIds(items)), new Set(expected), other.state);
-		}
-	});
-
-	test("once it left, it stays out when new work starts and comes back only after it runs again (#5490)", () => {
-		const panel = panelSession([run("paused"), agent("a", "running")]);
-		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:a"]));
-		panel.set([run("paused"), agent("a", "done")]);
-		assert.deepEqual(panel.ids(), []);
-
-		panel.set([run("paused"), agent("a", "done"), agent("b", "running")]);
-		assert.deepEqual(panel.ids(), ["ext:b"], "a new subagent does not bring the paused run back");
-
-		panel.set([run("running"), agent("a", "done"), agent("b", "running")]);
-		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:b"]), "resumed, it is listed again");
-		panel.set([run("paused"), agent("a", "done"), agent("b", "running")]);
-		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "ext:b"]), "paused again while work runs");
-	});
-
-	test("a run waiting for input still keeps the panel up and counts as needing input (#5490)", () => {
-		const items = [{ ...run("input"), question: "Ship it?" }, run("paused", "other")];
-		const panel = panelSession(items);
-		assert.deepEqual(new Set(panel.ids()), new Set(["run:w", "run:other"]));
-		assert.deepEqual(new Set(modelIds(items)), new Set(panel.ids()));
-		assert.deepEqual(panel.hint(), ["1 needs input", "? keys"]);
-	});
-
-	test("a stopped run still stays until it is opened, and does not read as resting (#5490)", () => {
-		const panel = panelSession([run("stopped")]);
-		assert.deepEqual(panel.ids(), ["run:w"]);
-		assert.deepEqual(modelIds([run("stopped")]), ["run:w"]);
-		panel.set([{ ...run("stopped"), viewed: true }]);
-		assert.deepEqual(panel.ids(), []);
-	});
-});
-
 describe("the focused panel", () => {
 	for (const [name, initial] of [
 		["its only subagent finishes", [agent("a", "running")]],
 		[
 			"the only active subagent finishes and the stopped one leaves with it",
 			[agent("a", "running"), agent("b", "stopped")],
-		],
-		[
-			"the only active subagent finishes and a paused workflow run leaves with it (#5490)",
-			[
-				agent("a", "running"),
-				{ id: "run:w", kind: "workflow", state: "paused", name: "ralph", task: "stage review" },
-			],
 		],
 	] as const) {
 		test(`returns to the prompt when ${name}`, async () => {

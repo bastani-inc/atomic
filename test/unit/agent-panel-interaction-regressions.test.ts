@@ -5,7 +5,6 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
-	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
@@ -19,7 +18,6 @@ import {
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	AGENT_PANEL_REFRESH_WINDOW_MS,
-	agentPanelRows,
 	bindAgentPanel,
 	setAgentPanelVisible,
 	showAgentPanel,
@@ -80,7 +78,7 @@ test("focused panel disarms a pending stop when the row finishes, sanitizes stop
 	);
 	const runningRow: AgentPanelRow = {
 		id: "run:1",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "deploy\x1b[2J\x1b]0;pwn\x07",
 		task: "stage build",
@@ -123,7 +121,7 @@ test("bindAgentPanel renders cached rows without per-frame source reads and defe
 			items: () => {
 				sourceReads++;
 				now += costMs;
-				return [{ id: "run:r1", kind: "workflow", state: "running", name: "ralph", task: "stage build" }];
+				return [{ id: "run:r1", kind: "agent", state: "running", name: "ralph", task: "stage build" }];
 			},
 			subscribe: (listener) => {
 				extListeners.add(listener);
@@ -188,7 +186,7 @@ test("a panel bound after an inspector hides it keeps the existing visibility ho
 	initTheme("dark");
 	const hub = new AgentPanelSourceHub();
 	hub.register({
-		items: () => [{ id: "run:held", kind: "workflow", state: "running", name: "held", task: "build" }],
+		items: () => [{ id: "run:held", kind: "agent", state: "running", name: "held", task: "build" }],
 		subscribe: () => () => {},
 	});
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
@@ -217,7 +215,7 @@ test("showAgentPanel sanitizes failure notifications and catches rejecting onRet
 		items: () => [
 			{
 				id: "run:1",
-				kind: "workflow",
+				kind: "agent",
 				state: "running",
 				name: "bad\x1b[2Jname",
 				task: "stage 1",
@@ -270,7 +268,7 @@ test("showAgentPanel sanitizes failure notifications and catches rejecting onRet
 	}
 });
 
-test("renderAgentPanelRows only reads names in the visible window and agentPanelRows prunes viewed runs (#5224)", () => {
+test("renderAgentPanelRows only reads names in the visible window (#5224)", () => {
 	let hiddenNameReads = 0;
 	const rows: AgentPanelRow[] = Array.from({ length: 100 }, (_, index) => {
 		const row: AgentPanelRow = {
@@ -293,51 +291,4 @@ test("renderAgentPanelRows only reads names in the visible window and agentPanel
 	renderAgentPanelRows(rows, 100, plain);
 	renderAgentPanelRows(rows, 100, plain, { selectedId: "task:0", scroll: 0 });
 	assert.equal(hiddenNameReads, 0);
-
-	let now = 1_000;
-	vi.spyOn(Date, "now").mockImplementation(() => now);
-	try {
-		const hub = new AgentPanelSourceHub();
-		let currentItems: AgentPanelItem[] = [
-			{ id: "run:a", kind: "workflow", state: "done", name: "alpha", task: "stage 1" },
-			{ id: "run:b", kind: "workflow", state: "done", name: "beta", task: "stage 1", viewed: true },
-		];
-		let notify = () => {};
-		hub.register({
-			items: () => currentItems,
-			subscribe: (listener) => {
-				notify = listener;
-				return () => {};
-			},
-			open: () => {},
-		});
-		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-		// A finished run already opened is not listed; an unopened one stays until it is opened.
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => row.id),
-			["run:a"],
-		);
-		openAgentPanelItem(session, "run:a");
-		assert.deepEqual(agentPanelRows(session), []);
-
-		currentItems = [];
-		notify();
-		assert.deepEqual(agentPanelRows(session), []);
-
-		now += 1_000;
-		currentItems = [{ id: "run:a", kind: "workflow", state: "done", name: "alpha", task: "stage 1" }];
-		notify();
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => row.id),
-			["run:a"],
-		);
-		now += 60 * 60_000;
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => row.id),
-			["run:a"],
-			"viewed set was pruned when run:a left, so a new unviewed run:a stays until opened",
-		);
-	} finally {
-		vi.restoreAllMocks();
-	}
 });

@@ -48,7 +48,7 @@ Navigation still owns keyboard focus. In `getHostCustomUiState()` and its change
 
 Custom components do not report Atomic as waiting for you through [program status](/terminal-setup#program-status), because `ctx.ui.custom()` also hosts loaders and other non-blocking UI. When a component waits for an answer, pass `blocked: { kind: "question", message: "Pick a color" }` so supporting terminals show Atomic as blocked. `kind` is `"question"`, `"permission"`, or `"auth"`. An inline component reports blocked while it is visible: a newer dialog or component shown in its place reports its own status instead. An overlay reports blocked from when it is shown until it calls `done()` or its `signal` aborts, also while it is hidden with `setHidden()` or covered by another overlay. When several blocking prompts are open, the most recently shown one supplies `kind` and `message`.
 
-Main-chat inline custom UIs share the editor slot. Completing or canceling an older mount leaves the current one visible; closing the current mount restores the most recently mounted UI that is still pending, including task navigation or an approval. The main editor returns only after the last inline owner closes. A foreground workflow graph keeps focus until you hide or close it, then the surviving inline UI is visible and receives input.
+Main-chat inline custom UIs share the editor slot. Completing or canceling an older mount leaves the current one visible; closing the current mount restores the most recently mounted UI that is still pending, including task navigation or an approval. The main editor returns only after the last inline owner closes.
 
 Reserving bottom prompts (`reserveTranscriptRows`, including `ask_user_question`) also wait out of view while inline navigation or an overlay's `deferInlineCustomUiFocus` owns input. Leaving navigation restores the same pending prompt, not a new questionnaire. Escape belongs exclusively to the active navigation view until then; once the questionnaire returns, its ordinary Escape cancellation applies.
 
@@ -753,22 +753,22 @@ ctx.ui.setFooter(undefined); // restore default
 
 `ctx.ui.getFooterDataProvider()` exposes the same read-only status and Git-branch provider to embedded extension UIs, including isolated interactive sessions.
 
-For a workflow-stage session with a different cwd, subscribe with that cwd to retain its branch watcher, and read the live branch during each render using the same raw cwd string:
+For a viewer with a different cwd, subscribe with that cwd to retain its branch watcher, and read the live branch during each render using the same raw cwd string:
 
 ```typescript
-// stageCwd is fixed for this viewer's lifetime.
+// viewerCwd is fixed for this viewer's lifetime.
 ctx.ui.setFooter((tui, theme, footerData) => ({
   invalidate() {},
   render(width: number): string[] {
-    return [`${ctx.model?.id} (${footerData.getGitBranch(stageCwd) || "no git"})`];
+    return [`${ctx.model?.id} (${footerData.getGitBranch(viewerCwd) || "no git"})`];
   },
-  dispose: footerData.onBranchChange(() => tui.requestRender(), stageCwd),
+  dispose: footerData.onBranchChange(() => tui.requestRender(), viewerCwd),
 }));
 ```
 
 The returned unsubscribe function belongs to the viewer: call it on disposal or before replacing the viewer's cwd, then subscribe for the new cwd. Embedded UIs using `ctx.ui.getFooterDataProvider()` must likewise release their own subscription. Active viewers using the same raw cwd share the cached provider and watcher; the last unsubscribe releases that alternate-cwd resource. Do not call the parent provider's `dispose()` from an individual viewer.
 
-An unleased `getGitBranch(stageCwd)` lookup is transient: it does not retain an alternate-cwd cache or watcher, so an unscoped callback alone does not enable stage-branch updates. Scoped subscriptions retain resources, but notifications still reach the same branch-change listeners; they are not filtered by cwd. Omitting the cwd argument retains the provider's own cwd behavior shown in the default recipe above.
+An unleased `getGitBranch(viewerCwd)` lookup is transient: it does not retain an alternate-cwd cache or watcher, so an unscoped callback alone does not enable branch updates for that directory. Scoped subscriptions retain resources, but notifications still reach the same branch-change listeners; they are not filtered by cwd. Omitting the cwd argument retains the provider's own cwd behavior shown in the default recipe above.
 
 Token stats available via `ctx.sessionManager.getBranch()` and `ctx.model`.
 
@@ -852,7 +852,7 @@ export default function (pi: ExtensionAPI) {
 
 ### Pattern 7b: Attached Composer
 
-A chat that talks to something other than the main agent should not look like the main chat. `applyAttachedComposer(style, label, placeholder, lines)` takes an editor's rendered lines and returns them in the form Atomic uses for subagent and workflow stage chats: accent-coloured rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
+A chat that talks to something other than the main agent should not look like the main chat. `applyAttachedComposer(style, label, placeholder, lines)` takes an editor's rendered lines and returns them in the form Atomic uses for subagent chats: accent-coloured rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
 
 ```typescript
 import { applyAttachedComposer, CustomEditor, type ExtensionAPI, type Theme } from "@bastani/atomic";

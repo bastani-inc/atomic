@@ -7,7 +7,7 @@ import { renderComposerRule } from "./composer-rule.ts";
 /** Supported terminal floor for naming the session in a chat input's top rule. */
 export const INPUT_LABEL_MIN_COLUMNS = 40;
 
-/** What kind of session a chat input sends to: an attached workflow stage, or a subagent. */
+/** What kind of session a chat input sends to: the recipient of an attached composer. */
 export type InputLabelKind = "stage" | "subagent";
 
 /** Colours of a label: the brackets and kind are muted, the name is bold in the text colour. */
