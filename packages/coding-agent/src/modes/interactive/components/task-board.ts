@@ -69,7 +69,6 @@ export function rowFinished(row: TaskBoardRow): boolean {
 
 export function rowName(row: TaskBoardRow): string {
 	if (row.kind === "item") return taskDisplayText(row.item.name);
-	// A tool task reads as its tool (`search`), as `taskLabel` names it.
 	return taskDisplayText(row.task.kind === "command" ? "shell" : taskLabel(row.task));
 }
 
@@ -105,10 +104,7 @@ export function taskBoardCounts(rows: readonly TaskBoardRow[]): string {
 
 type Glyph = { glyph: string; color: "accent" | "success" | "error" | "warning" | "muted" | "dim" };
 
-export function stateGlyph(
-	state: TaskBoardState,
-	kind?: "agent" | "workflow" | "shell" | "search" | "command" | "tool",
-): Glyph {
+export function stateGlyph(state: TaskBoardState, kind?: "agent" | "workflow" | "shell" | "command"): Glyph {
 	switch (state) {
 		case "input":
 			return { glyph: "◆", color: "warning" };
@@ -127,11 +123,7 @@ export function stateGlyph(
 		case "stopped":
 			return { glyph: "◼", color: "muted" };
 		default:
-			// Shells and a tool call's background work run without a model: the hourglass, not the agent's mark.
-			return {
-				glyph: kind === "shell" || kind === "search" || kind === "command" || kind === "tool" ? "⧗" : "∀",
-				color: "accent",
-			};
+			return { glyph: kind === "shell" || kind === "command" ? "⧗" : "∀", color: "accent" };
 	}
 }
 

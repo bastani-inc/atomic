@@ -10,14 +10,8 @@ import {
 	type TaskHeartbeatMessage,
 	TaskHeartbeatMonitor,
 } from "../../packages/coding-agent/src/core/tasks/heartbeat.js";
-import { singleLine } from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
 import { executeSupervisedCommand } from "../../packages/coding-agent/src/core/tools/bash-pty-native.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
-
-test("a shortened task heartbeat line leaves room for its ellipsis without splitting a character (#5671)", () => {
-	assert.equal(singleLine("end e\u0301...", 6), "end …");
-	assert.equal(singleLine("end 😀...", 7), "end 😀…");
-});
 
 const MINUTE = 60_000;
 

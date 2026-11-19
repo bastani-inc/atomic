@@ -113,33 +113,12 @@ test("panel counts mirror engine updates and clear on session reset or current g
 	try {
 		const probe = createClearQueueClient();
 		const runtime = await createRuntime(harness, probe.client);
-		assert.deepEqual(runtime.agentPanelCounts, {
-			total: 0,
-			agents: 0,
-			needsInput: 0,
-			shells: 0,
-			searches: 0,
-			subagents: 0,
-		});
+		assert.deepEqual(runtime.agentPanelCounts, { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 });
 		probe.emitEngineMessage({ type: "engine_agent_panel_state", total: 17, needsInput: 2 });
 		// An engine that predates the agent count counted every row as an agent.
-		assert.deepEqual(runtime.agentPanelCounts, {
-			total: 17,
-			agents: 17,
-			needsInput: 2,
-			shells: 0,
-			searches: 0,
-			subagents: 0,
-		});
+		assert.deepEqual(runtime.agentPanelCounts, { total: 17, agents: 17, needsInput: 2, shells: 0, subagents: 0 });
 		probe.emitEngineMessage({ type: "engine_extension_ui_reset" });
-		assert.deepEqual(runtime.agentPanelCounts, {
-			total: 0,
-			agents: 0,
-			needsInput: 0,
-			shells: 0,
-			searches: 0,
-			subagents: 0,
-		});
+		assert.deepEqual(runtime.agentPanelCounts, { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 });
 		probe.emitEngineMessage({
 			type: "engine_agent_panel_state",
 			total: 3,
@@ -148,28 +127,14 @@ test("panel counts mirror engine updates and clear on session reset or current g
 			shells: 2,
 			subagents: 5,
 		});
-		assert.deepEqual(runtime.agentPanelCounts, {
-			total: 3,
-			agents: 2,
-			needsInput: 1,
-			shells: 2,
-			searches: 0,
-			subagents: 5,
-		});
+		assert.deepEqual(runtime.agentPanelCounts, { total: 3, agents: 2, needsInput: 1, shells: 2, subagents: 5 });
 		probe.emitGenerationEnded({
 			generation: 1,
 			error: new Error("engine stopped"),
 			kind: "explicit-stop",
 			expected: true,
 		});
-		assert.deepEqual(runtime.agentPanelCounts, {
-			total: 0,
-			agents: 0,
-			needsInput: 0,
-			shells: 0,
-			searches: 0,
-			subagents: 0,
-		});
+		assert.deepEqual(runtime.agentPanelCounts, { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 });
 		await runtime.dispose();
 	} finally {
 		await harness.cleanup();

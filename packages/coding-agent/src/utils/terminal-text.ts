@@ -201,21 +201,3 @@ export function graphemeAt(text: string, cursor: number): { index: number; segme
 	const cluster = graphemeSegmenter.segment(text).containing(cursor);
 	return cluster && { index: cluster.index, segment: cluster.segment };
 }
-
-/** At most `limit` UTF-16 code units, cutting before a grapheme that would not fit. */
-export function graphemeHead(text: string, limit: number): string {
-	if (text.length <= limit) return text;
-	if (limit <= 0) return "";
-	// The boundary before the next code point depends only on that point and what precedes it.
-	const cut = graphemeAt(text.slice(0, limit + 2), limit)!;
-	return text.slice(0, cut.index);
-}
-
-/** At most `limit` UTF-16 code units from the end, starting at a whole grapheme. */
-export function graphemeTail(text: string, limit: number): string {
-	if (text.length <= limit) return text;
-	if (limit <= 0) return "";
-	const start = text.length - limit;
-	const cut = graphemeAt(text, start)!;
-	return text.slice(cut.index === start ? start : cut.index + cut.segment.length);
-}

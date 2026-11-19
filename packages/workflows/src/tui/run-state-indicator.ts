@@ -6,7 +6,7 @@
  * Glyphs and colours come from the status vocabulary in status-helpers.ts
  * (DESIGN.md §1): `↑ blocked`, `❚❚ paused` and `○ quit`.
  */
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { displayRunStatus } from "../shared/display-run-status.js";
 import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { inertDisplayLine } from "./display-text.js";
@@ -46,13 +46,16 @@ export function isQuitRun(run: RunSnapshot): boolean {
  * `undefined` for a run whose status already says everything (running,
  * including a run that was resumed, pending, or ended without a block).
  *
- * Blocked uses {@link effectiveRunStatus}, so author exits, returned blocked
- * statuses, recoverable provider blocks and the resumable `budget_exceeded`
+ * Blocked uses {@link displayRunStatus}, so author exits, returned blocked
+ * statuses, live recorded blocks and the resumable `budget_exceeded`
  * stop all count.
  */
-export function runStateIndicator(run: RunSnapshot): RunStateIndicator | undefined {
+export function runStateIndicator(
+	run: RunSnapshot,
+	displayStatus?: RunStatus | (() => RunStatus),
+): RunStateIndicator | undefined {
 	if (isQuitRun(run)) return indicator("quit");
-	const status = effectiveRunStatus(run);
+	const status = typeof displayStatus === "function" ? displayStatus() : (displayStatus ?? displayRunStatus(run));
 	if (status === "blocked") return indicator("blocked", blockedReason(run));
 	if (status === "paused") return indicator("paused");
 	return undefined;
@@ -68,6 +71,7 @@ function indicator(kind: RunStateKind, reason?: string): RunStateIndicator {
 }
 
 function blockedReason(run: RunSnapshot): string | undefined {
+	if (!("exitReason" in run)) return undefined;
 	const reason = sanitizeToolTitleText(inertDisplayLine(run.exitReason ?? "")).trim();
 	return reason.length > 0 ? reason : undefined;
 }

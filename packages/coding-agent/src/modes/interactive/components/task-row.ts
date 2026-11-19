@@ -6,7 +6,6 @@ import { isResumableStop, releasedWaitingOn, waitingReleasedTools } from "../../
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockRunning, taskElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
-import { toolTaskNoun, unreachableTaskKind } from "../../../core/tasks/task-kind.js";
 import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
@@ -44,16 +43,7 @@ export function taskState(task: TaskRecord): string {
 	return task.execution.kind;
 }
 export function taskLabel(task: TaskRecord): string {
-	switch (task.kind) {
-		case "agent":
-			return task.agentName ?? "agent";
-		case "command":
-			return "bash";
-		case "tool":
-			return toolTaskNoun(task);
-		default:
-			return unreachableTaskKind(task.kind);
-	}
+	return task.kind === "command" ? "bash" : (task.agentName ?? "agent");
 }
 export function taskTitle(task: TaskRecord): string {
 	return task.title || taskLabel(task);

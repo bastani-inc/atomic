@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A stage chat keeps counting a turn when the stage moves a failed request to the next model in its `fallbackModels`, instead of reading `for 0s` for the fallback model's answer. A chat opened during or after the move, also for a stage on a local worker, counts from the turn's first request, and shows `switching model…` while the move is under way ([#5535](https://github.com/bastani-inc/atomic/issues/5535)).
 - Resuming a failed workflow by ID or with `r` in its graph waits for the previous attempt to finish saving, keeps the original run ID and reuses completed checkpoints. `/resume <prefix>` lists all matching top-level IDs instead of starting the only resumable match ([#5569](https://github.com/bastani-inc/atomic/issues/5569)).
 - Esc in a stage chat pauses a pending retry or model switch, including a retry waiting for a provider's rate limit to clear. The wait no longer sends another request after you interrupt it ([#5564](https://github.com/bastani-inc/atomic/issues/5564)).
+- A live workflow whose waiting stage cannot reopen its session store now shows as blocked in the run views and in the workflow tool's default status text. The graph offers `r resume run` instead of `p pause run` ([#5534](https://github.com/bastani-inc/atomic/issues/5534)).
 
 ## [0.9.89] - 2026-11-18
 

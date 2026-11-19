@@ -66,29 +66,6 @@ test("completion content is readable, bounded and leaves structured identity unc
 	assert.equal(JSON.stringify(envelope), before);
 });
 
-test("a search notice keeps the whole emoji or combining sequence at its output and title limits (#5671)", () => {
-	const search = { ...task, kind: "tool" as const, toolName: "search", title: `${"t".repeat(239)}e\u0301` };
-	for (const cluster of ["😀", "e\u0301", "👩‍💻"]) {
-		const head = "x".repeat(7999);
-		const output = `${head}${cluster} found`;
-		const notice = taskCompletionNotice(envelope, search, output);
-		assert.equal(notice.preview.length, head.length);
-		assert.equal(notice.preview, head);
-		assert.equal(notice.line?.subject, "t".repeat(239));
-		const message = formatTaskCompletion(envelope, search, output);
-		assert.ok(message.includes(`\n${head}\n[Result excerpt truncated]`));
-		assert.ok(message.startsWith(`Background search completed: ${"t".repeat(239)}\n`));
-	}
-	const aligned = `${"x".repeat(7998)}😀`;
-	assert.equal(taskCompletionNotice(envelope, search, `${aligned} more`).preview, aligned);
-});
-
-test("a command notice keeps the tail, without the remainder of an emoji sequence at its start (#5671)", () => {
-	const shell = taskRecord("shell", "command");
-	const tail = "x".repeat(7998);
-	assert.equal(taskCompletionNotice(envelope, shell, `before👩‍💻${tail}`).preview, tail);
-});
-
 async function shellCompletion(expression: string) {
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: crypto.randomUUID() }, authorizeLaunch() {} });
 	onTestFinished(async () => {

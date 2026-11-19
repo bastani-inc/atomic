@@ -10,7 +10,6 @@ import {
 	taskResumedTurns,
 	watchOwnerTaskStoreBinding,
 } from "./owner-store.js";
-import { toolTaskNoun } from "./task-kind.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
 export type AgentPanelState =
@@ -26,7 +25,7 @@ export type AgentPanelState =
 
 export interface AgentPanelItem {
 	readonly id: string;
-	readonly kind: "agent" | "shell" | "search" | "workflow";
+	readonly kind: "agent" | "shell" | "workflow";
 	readonly state: AgentPanelState;
 	readonly name: string;
 	readonly task: string;
@@ -342,18 +341,15 @@ export function isInterruptedPanelTask(item: object): boolean {
 
 /**
  * Which part of the agent panel a native task is: a subagent is a row and counts as an agent; a shell is never a row
- * and is counted on the hint line; a tool call's background work (a `search`, the one tool that runs as a task) is
- * never a row either. Every task kind must be routed here explicitly, so a new kind cannot become an agent row by
- * default.
+ * and is counted on the hint line. Every task kind must be routed here explicitly, so a new kind cannot become an
+ * agent row by default.
  */
-export function taskPanelRole(task: Pick<TaskRecord, "kind">): "agent" | "shell" | "search" {
+export function taskPanelRole(task: Pick<TaskRecord, "kind">): "agent" | "shell" {
 	switch (task.kind) {
 		case "agent":
 			return "agent";
 		case "command":
 			return "shell";
-		case "tool":
-			return "search";
 		default: {
 			const unrouted: never = task.kind;
 			return unrouted;
@@ -368,7 +364,7 @@ export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks
 	const interrupted = task.execution.kind !== "settled" && state === "stopped";
 	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
 	const kind = taskPanelRole(task);
-	const name = kind === "agent" ? (task.agentName ?? "agent") : kind === "search" ? toolTaskNoun(task) : "shell";
+	const name = kind === "agent" ? (task.agentName ?? "agent") : "shell";
 	const title = shortTaskTitle(task.title || "");
 	const reason =
 		state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
