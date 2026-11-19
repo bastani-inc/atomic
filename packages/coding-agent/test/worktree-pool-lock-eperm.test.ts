@@ -107,6 +107,17 @@ vi.mock("../src/core/worktree-snapshot/windows-temporary.ts", async (original) =
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const open: typeof actual.open = async (path, flags, mode) => {
+		const file = await actual.open(path, flags, mode);
+		if (String(path).endsWith(".tmp")) {
+			const write = file.writeFile.bind(file);
+			file.writeFile = async (data, options) => {
+				if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
+				return write(data, options);
+			};
+		}
+		return file;
+	};
 	const writeFile: typeof actual.writeFile = async (path, data, options) => {
 		if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
 		return actual.writeFile(path, data, options);
@@ -121,7 +132,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 			return stats;
 		return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { mtimeMs: Date.now() });
 	}) as typeof actual.stat;
-	return { ...actual, writeFile, rm, stat };
+	return { ...actual, open, writeFile, rm, stat };
 });
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -857,6 +868,33 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 			assert.equal(existsSync(temporary), false);
 		},
 	);
+
+	test("a failed temporary record write is cleaned up without delete-on-close (#5636)", async () => {
+		setPlatform("win32");
+		const storeDir = sandbox.path("store-partial-temp");
+		const remotes = ["https://example.com/acme/repo.git"];
+		const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");
+		const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+		lockRefusals.deleteOnCloseUnavailable = true;
+		let failed: string | undefined;
+		lockRefusals.onRecordWrite = async (path, data) => {
+			if (path.startsWith(`${file}.`) && data.includes('"holder"')) {
+				failed = path;
+				writeFileSync(path, "partial");
+				throw Object.assign(new Error("partial record"), { code: "EIO" });
+			}
+		};
+		await assert.rejects(
+			admitPooledWorktree(
+				{ storeDir, remotes, lastState: state, envHash: "env" },
+				{ kind: "session", id: "record-owner" },
+			),
+			{ code: "EIO" },
+		);
+		assert.ok(failed);
+		assert.equal(existsSync(failed), false);
+		assert.equal(existsSync(file), false);
+	});
 
 	test("temporary-file cleanup refusal does not orphan a published pool admission (#5320)", async () => {
 		// Simulate a filesystem requiring an explicit delete, so this still exercises an actual cleanup refusal.

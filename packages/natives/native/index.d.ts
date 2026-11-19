@@ -669,8 +669,9 @@ export interface OmittedRange {
 }
 
 /**
- * Creates a new file without replacing an existing entry. A null result means the filesystem does not support
- * delete-on-close here. An existing name is reported separately so the caller can choose another one.
+ * Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
+ * directory and requests deletion only after measuring the clock; a record also requests delete-on-close at creation.
+ * Reports a collision separately and returns null when this open is unavailable.
  */
 export declare function openWindowsTemporaryFile(path: string, clockProbe?: boolean | undefined | null): Promise<WindowsTemporaryFile | undefined | null>
 

@@ -47,8 +47,6 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 #[napi]
 pub struct WindowsTemporaryFile {
 	file: Option<File>,
-	#[cfg(windows)]
-	dispose_at_close: bool,
 }
 
 #[napi]
@@ -57,11 +55,9 @@ impl WindowsTemporaryFile {
 	#[napi]
 	pub fn close(&mut self) -> crate::task::Promise<()> {
 		let file = self.file.take();
-		#[cfg(windows)]
-		let dispose = self.dispose_at_close;
 		crate::task::blocking("temporary-file-close", (), move |_| {
 			#[cfg(windows)]
-			if dispose && let Some(file) = &file {
+			if let Some(file) = &file {
 				dispose_by_handle(file);
 			}
 			drop(file);
@@ -73,9 +69,37 @@ impl WindowsTemporaryFile {
 #[cfg(windows)]
 fn dispose_by_handle(file: &File) {
 	use std::os::windows::io::AsRawHandle;
-	use windows_sys::Win32::Storage::FileSystem::{
-		FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
+	use windows_sys::Win32::{
+		Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED},
+		Storage::FileSystem::{
+			FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+			FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+			FileDispositionInfo, FileDispositionInfoEx, SetFileInformationByHandle,
+		},
 	};
+	// Unlink the name now, even while a compatible reader still has the file open. A legacy delete-pending
+	// file cannot be opened, but its name still appears in directory listings until that reader closes.
+	let disposition = FILE_DISPOSITION_INFO_EX {
+		Flags: FILE_DISPOSITION_FLAG_DELETE
+			| FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+			| FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+	};
+	if unsafe {
+		SetFileInformationByHandle(
+			file.as_raw_handle(),
+			FileDispositionInfoEx,
+			(&raw const disposition).cast(),
+			std::mem::size_of_val(&disposition) as u32,
+		)
+	} != 0
+	{
+		return;
+	}
+	let code = std::io::Error::last_os_error().raw_os_error().map(|n| n as u32);
+	if !matches!(code, Some(ERROR_INVALID_FUNCTION | ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED))
+	{
+		return;
+	}
 	let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
 	unsafe {
 		SetFileInformationByHandle(
@@ -87,8 +111,9 @@ fn dispose_by_handle(file: &File) {
 	};
 }
 
-/// Creates a new file without replacing an existing entry. A null result means the filesystem does not support
-/// delete-on-close here. An existing name is reported separately so the caller can choose another one.
+/// Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
+/// directory and requests deletion only after measuring the clock; a record also requests delete-on-close at creation.
+/// Reports a collision separately and returns null when this open is unavailable.
 #[napi]
 pub fn open_windows_temporary_file(
 	path: String,
@@ -114,7 +139,7 @@ pub fn open_windows_temporary_file(
 				options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
 			}
 			match options.open(path) {
-				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(file), dispose_at_close })),
+				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(file) })),
 				Err(error) if error.kind() == ErrorKind::AlreadyExists => {
 					Err(napi::Error::from_reason("EEXIST"))
 				},

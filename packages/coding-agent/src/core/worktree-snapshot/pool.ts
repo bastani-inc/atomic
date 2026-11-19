@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
@@ -561,8 +561,19 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 	const reservation = windows ? await openWindowsTemporary(temporary, "record") : undefined;
 	let created = false;
 	try {
-		await writeFile(temporary, JSON.stringify(record), { mode: 0o600, flag: windows && !reservation ? "wx" : "w" });
-		created = true;
+		const data = JSON.stringify(record);
+		if (windows && !reservation) {
+			// Without a native handle, distinguish a failed exclusive create from a later partial write.
+			const file = await open(temporary, "wx", 0o600);
+			created = true;
+			try {
+				await file.writeFile(data);
+			} finally {
+				await file.close();
+			}
+		} else {
+			await writeFile(temporary, data, { mode: 0o600 });
+		}
 		try {
 			await link(temporary, file);
 			return true;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
@@ -16,6 +16,7 @@ const io = vi.hoisted(() => ({
 	afterList: undefined as (() => void) | undefined,
 	refuseDelete: false,
 	withoutDeleteOnClose: false,
+	onStat: undefined as ((path: string) => void) | undefined,
 	refusalClock: undefined as { now: number; stamp: number } | undefined,
 	stamp: 0,
 }));
@@ -61,6 +62,7 @@ vi.mock("node:fs/promises", async (original) => {
 		stat: async (path: string) => {
 			io.calls.push("stat");
 			const result = await fs.stat(path);
+			io.onStat?.(path);
 			io.stamp = result.mtimeMs;
 			return io.refusalClock ? { ...result, mtimeMs: io.refusalClock.stamp } : result;
 		},
@@ -85,6 +87,7 @@ afterEach(() => {
 	io.refuseDelete = false;
 	io.withoutDeleteOnClose = false;
 	io.refusalClock = undefined;
+	io.onStat = undefined;
 	names.length = 0;
 	vi.restoreAllMocks();
 });
@@ -123,6 +126,25 @@ test.runIf(process.platform === "win32")(
 			assert.equal(clock.now - start, 150);
 			assert.equal(offset, 0);
 		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
+
+test.runIf(process.platform === "win32")(
+	"a compatible reader does not keep a finished probe's name in the pool (#5605)",
+	async () => {
+		const directory = mkdtempSync(join(tmpdir(), "clock-reader-"));
+		let reader: number | undefined;
+		try {
+			io.onStat = (path) => {
+				reader ??= openSync(path, "r");
+			};
+			await sharedClockOffset(directory);
+			assert.notEqual(reader, undefined);
+			assert.deepEqual(readdirSync(directory), []);
+		} finally {
+			if (reader !== undefined) closeSync(reader);
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},
