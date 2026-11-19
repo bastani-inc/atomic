@@ -104,6 +104,35 @@ test("branching to held state and pre-boundary kept messages restores their comp
 	}
 });
 
+test("rewinding within the current window needs no archive and preserves a live entry's identity (#5554)", async () => {
+	const { store, open } = await fixture([
+		user("old", null),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+		user("later", "current"),
+	]);
+	const local = await open();
+	const held = local.getEntry("current");
+	assert.ok(held?.type === "message" && held.message.role === "user");
+	held.message.content = "SDK mutation";
+	await store.delete("session");
+	await local.branch("current");
+	assert.equal(local.getLeafEntry(), held);
+	const last = local.buildSessionContext().messages.at(-1);
+	assert.equal(last?.role === "user" && last.content, "SDK mutation");
+});
+
+test("a later compaction may keep an older span, and live and reopened windows agree (#5554)", async () => {
+	const { open } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const live = await open();
+	await live.appendCompaction("second", "old", 3, { strategy: "verbatim-lines", backend: "summary" } as Parameters<
+		SessionManager["appendCompaction"]
+	>[3]);
+	const restored = await open();
+	assert.deepEqual(live.buildSessionContext(), restored.buildSessionContext());
+	assert.ok(live.getEntry("old"));
+});
+
 test("the source window stays visible while a historical branch write is pending and after it fails (#5554)", async () => {
 	const { open, store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
 	const session = await open();

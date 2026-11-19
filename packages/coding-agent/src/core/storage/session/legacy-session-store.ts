@@ -12,6 +12,7 @@ import { summarizeSession } from "./session-summary.js";
 import type {
 	OversizedSessionEntry,
 	SessionBlob,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
@@ -155,6 +156,12 @@ export class LegacySessionStore implements SessionStore {
 		const { assertSnapshotCut, snapshotStamp } = await import("./snapshot-history.js");
 		assertSnapshotCut(snapshot, expectedEpoch, Math.min(endSeq, snapshot.lastSeq));
 		return { ...sessionRangeOf(snapshot.entries, startSeq, endSeq), epoch: expectedEpoch ?? snapshotStamp(snapshot) };
+	}
+
+	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		await this.convert(sessionId);
+		if (this.inner.readBranchSpan) return this.inner.readBranchSpan(sessionId, cut);
+		return (await import("./snapshot-history.js")).snapshotBranchSpan(this.inner, sessionId, cut);
 	}
 
 	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {

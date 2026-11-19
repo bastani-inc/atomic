@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { getBranchPath } from "../../session-manager-history.ts";
 import { SessionConflictError } from "./errors.js";
-import { sessionResumeOf } from "./session-resume.js";
+import { foldSessionResume, sessionResumeOf, transcriptBranchSpan } from "./session-resume.js";
 import {
 	type OversizedSessionEntry,
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
 	SESSION_HISTORY_PAGE_ENTRIES,
+	type SessionBranchPageCut,
 	type SessionHistoryItem,
 	type SessionSnapshot,
 	type SessionStore,
@@ -101,6 +102,13 @@ export async function snapshotChunk(store: SessionStore, ref: OversizedSessionEn
 	if (bytes.length !== ref.bytes) throw new SessionConflictError(ref.sessionId, ref.seq, snapshot.lastSeq);
 	// Never let a chunk's backing buffer retain the remainder of an oversized entry.
 	return Uint8Array.from(bytes.subarray(offset, offset + SESSION_HISTORY_CHUNK_BYTES));
+}
+
+export async function snapshotBranchSpan(store: SessionStore, id: string, cut: SessionBranchPageCut) {
+	const snapshot = await store.load(id);
+	assertSnapshotCut(snapshot, cut.epoch, cut.leaf);
+	const index = foldSessionResume(undefined, snapshot.entries);
+	return transcriptBranchSpan(id, { ...index, epoch: cut.epoch ?? snapshotStamp(snapshot) }, cut);
 }
 
 export async function snapshotHead(store: SessionStore, id: string) {

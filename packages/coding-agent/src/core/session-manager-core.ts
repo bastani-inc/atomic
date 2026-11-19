@@ -36,6 +36,7 @@ import {
 	buildSessionProjection,
 	buildSessionTree,
 	getBranchPath,
+	getLatestCompactionBoundaryEntry,
 	isLeafMoveEntry,
 	LEAF_MOVE_ENTRY_TYPE,
 } from "./session-manager-history.ts";
@@ -115,9 +116,15 @@ import type {
 	SessionResume,
 	SessionSnapshot,
 	SessionStore,
+	SessionStoredEntry,
 } from "./storage/session/types.js";
 import { SESSION_HISTORY_PAGE_ENTRIES } from "./storage/session/types.js";
-import { type AssistantAnswer, lastBranchAnswer, savedWindowAnswer } from "./storage/session/window-answer.js";
+import {
+	type AssistantAnswer,
+	archivedAnswerAt,
+	lastBranchAnswer,
+	savedWindowAnswer,
+} from "./storage/session/window-answer.js";
 import { writeChunksAtomically } from "./storage/transfer-files.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
@@ -1171,9 +1178,85 @@ export class SessionManager {
 			);
 			const systemMessage = getCurrentSystemMessage(this.buildSessionProjection().messages);
 			if (systemMessage) entry.systemMessage = { ...systemMessage, timestamp: new Date(entry.timestamp).getTime() };
-			await this._appendEntry(entry);
+			const expanded = await this.expandForBoundary([firstKeptEntryId, coveredThroughEntryId]);
+			if (expanded) precondition?.();
+			await this._appendEntry(entry, expanded);
 			return entry.id;
 		});
+	}
+
+	/** A boundary may name an ancestor before the previous window. Stage that exact branch span before
+	 * committing. The old view and its entry identities remain unchanged if a read or the write fails. */
+	private async expandForBoundary(
+		anchors: readonly (string | null | undefined)[],
+	): Promise<SelectedWindow | undefined> {
+		if (this.answerWindowStart <= 1 || !this.leafId) return;
+		const leaf = this.entrySeqs.get(this.leafId)!;
+		let from = this.answerWindowStart;
+		for (const id of anchors) {
+			if (id == null) continue;
+			const at = await this.findEntrySeq(id);
+			if (at === undefined || at >= from) continue;
+			// A pointer to a sibling does not extend the active window.
+			const match = await this.readHistory({ branchLeafSeq: leaf, fromSeq: at, toSeq: at }).next();
+			if (!match.done) from = at;
+		}
+		if (from === this.answerWindowStart) return;
+		const path = this.getBranch();
+		const onBranch = new Set(path.map((entry) => entry.id));
+		const branch: SessionStoredEntry[] = [];
+		let omitted = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
+		for await (const { items } of this.readHistory({
+			branchLeafSeq: leaf,
+			fromSeq: from,
+			toSeq: this.answerWindowStart - 1,
+		})) {
+			for (const item of items) {
+				const entry =
+					"entry" in item
+						? item.entry
+						: (await readSessionRange(this.store, this.sessionId, item.seq, item.seq, this.historyEpoch))
+								.entries[0]!;
+				const local = this.byId.get(entry.id);
+				branch.push({ seq: item.seq, entry: local ?? entry });
+				if (!local) omitted = addEntryToHistoryTotals(omitted, entry, -1);
+			}
+		}
+		for (const entry of path) {
+			const seq = this.entrySeqs.get(entry.id)!;
+			if (seq >= this.answerWindowStart) branch.push({ seq, entry });
+		}
+		const kept = new Set(branch.map(({ entry }) => entry.id));
+		const first = branch[0]!;
+		const edits = new Map(
+			branch.flatMap(({ seq, entry }) => (entry.type === "context_edit" ? [[entry.targetId, seq] as const] : [])),
+		);
+		const priorAnswer = first.entry.parentId
+			? await archivedAnswerAt(
+					this.store,
+					this.sessionId,
+					this.historyEpoch,
+					this.lastSeq,
+					first.seq,
+					first.entry.parentId,
+					edits,
+				)
+			: undefined;
+		return {
+			header: this.recordHeader(),
+			epoch: this.historyEpoch!,
+			archiveOnlyEpoch: this.archiveOnlyEpoch ? true : undefined,
+			lastSeq: this.lastSeq,
+			lastEntryId: this.lastEntryId,
+			leafId: this.leafId,
+			branch,
+			state: this.getEntries()
+				.filter((entry) => !kept.has(entry.id))
+				.map((entry) => ({ seq: this.entrySeqs.get(entry.id)!, entry, onBranch: onBranch.has(entry.id) })),
+			omitted,
+			priorAnswer,
+			recovery: { ...this.getSessionRecoveryState(), workflowStarts: this.workflowStarts },
+		};
 	}
 
 	/** Save a JSONL backup; database-backed sessions have no file snapshot. */
@@ -1216,18 +1299,41 @@ export class SessionManager {
 			) {
 				throw new SessionEntryError(targetId, "invalid-replacement");
 			}
-			const target = await this.requireEntry(targetId);
-			if (!this.getBranch().some((entry) => entry.id === targetId)) {
-				throw new SessionEntryError(targetId, "inactive");
+			const branch = this.getBranch();
+			const seq = await this.findEntrySeq(targetId);
+			if (seq === undefined) throw new SessionEntryError(targetId, "missing");
+			const held = branch.find((entry) => entry.id === targetId);
+			let targetRole: string | undefined;
+			if (held)
+				targetRole =
+					held.type === "message" ? held.message.role : held.type === "custom_message" ? "custom" : undefined;
+			else {
+				const leaf = this.leafId && this.entrySeqs.get(this.leafId);
+				if (!leaf) throw new SessionEntryError(targetId, "inactive");
+				const next = await this.readHistory({ branchLeafSeq: leaf, fromSeq: seq, toSeq: seq }).next();
+				const item = !next.done && next.value.items[0];
+				if (!item) throw new SessionEntryError(targetId, "inactive");
+				if ("entry" in item)
+					targetRole =
+						item.entry.type === "message"
+							? item.entry.message.role
+							: item.entry.type === "custom_message"
+								? "custom"
+								: undefined;
+				else {
+					const hint = await (await import("./storage/session/chunked-resume-projection.js")).chunkedAnswerHeader(
+						this.readHistoryChunks(item),
+					);
+					targetRole = hint.type === "message" ? hint.role : hint.type === "custom_message" ? "custom" : undefined;
+				}
 			}
-			const editable =
-				target.type === "custom_message" ||
-				(target.type === "message" &&
-					(target.message.role === "user" ||
-						target.message.role === "assistant" ||
-						target.message.role === "toolResult"));
-			if (!editable) throw new SessionEntryError(targetId, "not-editable");
-			const targetRole = target.type === "message" ? target.message.role : "custom";
+			if (
+				targetRole !== "custom" &&
+				targetRole !== "user" &&
+				targetRole !== "toolResult" &&
+				targetRole !== "assistant"
+			)
+				throw new SessionEntryError(targetId, "not-editable");
 			const normalizedReplacement =
 				replacement !== null &&
 				(targetRole === "assistant" || targetRole === "toolResult") &&
@@ -1235,7 +1341,28 @@ export class SessionManager {
 					? { content: [{ type: "text" as const, text: replacement.content }] }
 					: replacement;
 			const entry = createContextEditEntry(targetId, normalizedReplacement, this.byId, this.leafId);
+			const first =
+				targetRole === "assistant" && seq < this.answerWindowStart
+					? branch.find((item) => this.entrySeqs.get(item.id) === this.answerWindowStart)
+					: undefined;
+			const before = first
+				? await archivedAnswerAt(
+						this.store,
+						this.sessionId,
+						this.historyEpoch,
+						this.lastSeq,
+						this.answerWindowStart,
+						first.parentId,
+						new Map(
+							branch.flatMap((item) =>
+								item.type === "context_edit" ? [[item.targetId, this.entrySeqs.get(item.id)!] as const] : [],
+							),
+						),
+						entry,
+					)
+				: undefined;
 			await this._appendEntry(entry);
+			if (first) this.priorAnswer = before;
 			return entry.id;
 		});
 	}
@@ -1611,6 +1738,19 @@ export class SessionManager {
 
 	private async prepareBranchTarget(id: string): Promise<SelectedWindow | undefined> {
 		if (!this.hasFullHistory() && id !== this.leafId) {
+			// Rewinding within the complete window does not need the archive. Keep caller-mutated entries
+			// and permit a local move even if the backing store was deleted after this session opened.
+			if (this.byId.has(id)) {
+				const path = this.getBranch();
+				const boundary = getLatestCompactionBoundaryEntry(path);
+				const from = path.findIndex((entry) => entry.id === id);
+				if (
+					from >= 0 &&
+					(!boundary || from >= path.indexOf(boundary)) &&
+					!path.slice(from + 1).some((entry) => entry.type === "context_edit")
+				)
+					return undefined;
+			}
 			if (!this.store.readResume || !this.store.readRange) {
 				const target = await (await import("./storage/session/snapshot-history.js")).snapshotWindow(
 					this.store,

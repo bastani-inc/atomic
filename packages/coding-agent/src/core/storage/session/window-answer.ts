@@ -72,11 +72,32 @@ export async function savedWindowAnswer(
 		return;
 	const edits = new Map<string, number>();
 	for (const { entry, seq } of resume.branch) if (entry.type === "context_edit") edits.set(entry.targetId, seq);
-	const id = resume.header.id;
+	return archivedAnswerAt(
+		store,
+		resume.header.id,
+		resume.epoch,
+		resume.lastSeq,
+		first.seq,
+		first.entry.parentId,
+		edits,
+	);
+}
+
+export async function archivedAnswerAt(
+	store: SessionStore,
+	id: string,
+	epoch: string | undefined,
+	through: number,
+	firstSeq: number,
+	parent: string | null,
+	edits: ReadonlyMap<string, number>,
+	overlay?: ContextEditEntry,
+): Promise<AssistantAnswer | undefined> {
 	const pages = (fromSeq: number, toSeq: number) =>
-		historyPages(store, id, resume.epoch, resume.lastSeq, { fromSeq, toSeq, direction: "backward" });
+		historyPages(store, id, epoch, through, { fromSeq, toSeq, direction: "backward" });
 	const chunks = (item: Exclude<SessionHistoryItem, { entry: SessionEntry }>) =>
-		historyChunks(store, id, resume.epoch, item, {});
+		historyChunks(store, id, epoch, item, {});
+	const latest = new Map(edits);
 	const replacement = async (seq: number) => {
 		for await (const { items } of pages(seq, seq)) {
 			const item = items[0]!;
@@ -86,8 +107,7 @@ export async function savedWindowAnswer(
 				return item.entry.replacement === null ? null : contentText(item.entry.replacement.content);
 		}
 	};
-	let parent: string | null = first.entry.parentId;
-	for await (const { items } of pages(1, first.seq - 1)) {
+	for await (const { items } of pages(1, firstSeq - 1)) {
 		for (let i = items.length - 1; i >= 0; i--) {
 			const item = items[i]!;
 			let entry: {
@@ -111,19 +131,26 @@ export async function savedWindowAnswer(
 			} else entry = await (await import("./chunked-resume-projection.js")).chunkedAnswerHeader(chunks(item));
 			if (entry.id !== parent) continue;
 			parent = entry.parentId;
-			if (entry.targetId !== undefined && !edits.has(entry.targetId)) edits.set(entry.targetId, item.seq);
+			if (entry.targetId !== undefined && !latest.has(entry.targetId)) latest.set(entry.targetId, item.seq);
 			if (entry.type === "message" && entry.role === "assistant") {
-				const edited = edits.get(entry.id);
+				const edited = latest.get(entry.id);
 				const text =
-					edited !== undefined
-						? await replacement(edited)
-						: "entry" in item
-							? contentText(
-									item.entry.type === "message" &&
-										item.entry.message.role === "assistant" &&
-										item.entry.message.content,
-								)
-							: await (await import("./chunked-resume-projection.js")).chunkedAnswerContent(chunks(item), false);
+					overlay?.targetId === entry.id
+						? overlay.replacement === null
+							? null
+							: contentText(overlay.replacement.content)
+						: edited !== undefined
+							? await replacement(edited)
+							: "entry" in item
+								? contentText(
+										item.entry.type === "message" &&
+											item.entry.message.role === "assistant" &&
+											item.entry.message.content,
+									)
+								: await (await import("./chunked-resume-projection.js")).chunkedAnswerContent(
+										chunks(item),
+										false,
+									);
 				if (text !== null && (text || entry.stop)) return text ? { text } : {};
 			}
 			if (parent === null) return;

@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
+import { SessionConflictError } from "./errors.js";
 import { SessionKeyDigests } from "./key-digests.js";
 import type {
+	SessionBranchPageCut,
+	SessionBranchSpan,
 	SessionCompactionPoint,
 	SessionEntryRange,
 	SessionHistoryTotals,
@@ -657,20 +660,60 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	);
 }
 
+function branchJump(jumps: readonly ResumeJump[], high: number): number {
+	let lowest = 0;
+	let found = -1;
+	for (let top = jumps.length - 1; lowest <= top; ) {
+		const middle = (lowest + top) >> 1;
+		if (jumps[middle]![0] <= high) {
+			found = middle;
+			lowest = middle + 1;
+		} else top = middle - 1;
+	}
+	return found;
+}
+
+/** Find the contiguous run nearest the cursor. Only indices, never a stack of visited pages or message bodies,
+ * cross a branch jump. Appends after the pinned leaf cannot become part of this walk. */
+export function transcriptBranchSpan(
+	sessionId: string,
+	index: SessionResumeIndex,
+	cut: SessionBranchPageCut,
+): SessionBranchSpan | undefined {
+	if ((cut.epoch !== undefined && cut.epoch !== index.epoch) || cut.leaf > index.seq)
+		throw new SessionConflictError(sessionId, cut.leaf, index.seq);
+	let newer = false;
+	let candidate: SessionBranchSpan | undefined;
+	for (let high = cut.leaf; high >= cut.first; ) {
+		const jump = index.jumps[branchJump(index.jumps, high)];
+		const low = !jump ? 1 : high > jump[1] ? jump[1] + 1 : high;
+		const from = Math.max(cut.first, low),
+			to = Math.min(cut.last, high);
+		if (from <= to) {
+			if (cut.backward) {
+				if (candidate) return { ...candidate, older: true };
+				if (from <= cut.pivot)
+					candidate = { start: from, end: Math.min(to, cut.pivot), older: false, newer: newer || to > cut.pivot };
+			} else {
+				if (to < cut.pivot) return candidate && { ...candidate, older: true };
+				candidate = { start: Math.max(from, cut.pivot), end: to, older: from < cut.pivot, newer };
+				if (from < cut.pivot) return candidate;
+			}
+			newer = true;
+		}
+		const next = !jump ? 0 : high > jump[1] ? jump[1] : jump[2];
+		if (next >= high) break;
+		high = next;
+	}
+	return candidate;
+}
+
 export function branchRanges(index: Pick<SessionResumeIndex, "jumps">, leafSeq: number): (readonly [number, number])[] {
 	const ranges: (readonly [number, number])[] = [];
 	const jumps = index.jumps;
 	let high = leafSeq;
 	while (high > 0) {
-		let lowest = 0;
-		let found = -1;
-		for (let top = jumps.length - 1; lowest <= top; ) {
-			const middle = (lowest + top) >> 1;
-			if (jumps[middle]![0] <= high) {
-				found = middle;
-				lowest = middle + 1;
-			} else top = middle - 1;
-		}
+		const found = branchJump(jumps, high);
 		if (found < 0) {
 			ranges.push([1, high]);
 			break;
@@ -881,7 +924,10 @@ export async function readSessionRange(
 	endSeq: number,
 	expectedEpoch?: string,
 ): Promise<SessionEntryRange> {
-	if (store.readRange) return store.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+	if (store.readRange)
+		return expectedEpoch === undefined
+			? store.readRange(sessionId, startSeq, endSeq)
+			: store.readRange(sessionId, startSeq, endSeq, expectedEpoch);
 	const snapshot = await store.load(sessionId);
 	const { assertSnapshotCut } = await import("./snapshot-history.js");
 	assertSnapshotCut(snapshot, expectedEpoch, Math.min(endSeq, snapshot.lastSeq));

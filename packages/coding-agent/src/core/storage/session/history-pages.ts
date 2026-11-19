@@ -34,87 +34,141 @@ export async function* historyPages(
 	const snapshotOnly = !store.readEntrySizes || !store.readRange;
 	let cut = watermark;
 	let cursorStamp: string | undefined;
+	let leaf = options.branchLeafSeq;
 	let start = Math.max(1, options.fromSeq ?? 1);
-	let end = Math.min(watermark, options.toSeq ?? watermark);
+	let end = Math.min(watermark, options.toSeq ?? watermark, leaf ?? watermark);
+	let firstSeq = start,
+		lastSeq = end;
 	let reverse = options.direction === "backward";
 	let stamp = epoch;
 	let scope = epoch === undefined ? undefined : cursorScope(sessionId, epoch);
 	if (options.cursor !== undefined) {
-		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)(\.b)?(?:\.s(\d+))?$/.exec(options.cursor);
+		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)(\.b)?(?:\.(\d+)\.(\d+))?(?:\.p(\d+))?(?:\.s(\d+))?$/.exec(
+			options.cursor,
+		);
 		if (
 			!match ||
-			(!snapshotOnly && match[1] !== scope) ||
-			(!snapshotOnly && match[5] !== undefined) ||
+			(!snapshotOnly && (match[1] !== scope || match[8] !== undefined)) ||
 			options.fromSeq !== undefined ||
 			options.toSeq !== undefined ||
+			options.branchLeafSeq !== undefined ||
 			(options.direction !== undefined && reverse !== Boolean(match[4]))
 		)
 			throw new TypeError("History cursor does not match this session, generation or range");
+		cursorStamp = match[1];
+		cut = match[8] === undefined ? watermark : Number(match[8]);
+		leaf = match[7] === undefined ? undefined : Number(match[7]);
 		start = Number(match[2]);
 		end = Number(match[3]);
 		reverse = Boolean(match[4]);
-		cursorStamp = match[1];
-		if (match[5] !== undefined) cut = Number(match[5]);
-		if (!Number.isSafeInteger(cut) || cut > watermark || end > cut || start > end)
+		firstSeq = match[5] === undefined ? start : Number(match[5]);
+		lastSeq = match[6] === undefined ? end : Number(match[6]);
+		if (
+			!Number.isSafeInteger(firstSeq) ||
+			!Number.isSafeInteger(lastSeq) ||
+			firstSeq < 1 ||
+			firstSeq > start ||
+			lastSeq < end ||
+			!Number.isSafeInteger(cut) ||
+			cut > watermark ||
+			lastSeq > cut ||
+			start > end
+		)
 			throw new TypeError("Invalid history cursor range");
 	}
+	if (leaf !== undefined && (!Number.isSafeInteger(leaf) || leaf < 1 || leaf > watermark || lastSeq > leaf))
+		throw new RangeError("Branch history must start from a sequence in the captured session");
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1)
 		throw new RangeError("History sequence must be a safe integer");
 	while (start <= end) {
 		options.signal?.throwIfAborted();
-		const from = reverse ? Math.max(start, end - SESSION_HISTORY_PAGE_ENTRIES + 1) : start;
-		const through = reverse ? end : Math.min(end, start + SESSION_HISTORY_PAGE_ENTRIES - 1);
-		if (snapshotOnly) {
-			// load() is the adapter's contract. The helper drops its full snapshot before this iterator yields.
-			const { snapshotPage } = await import("./snapshot-history.js");
-			const page = await snapshotPage(store, sessionId, from, through, reverse, cut, stamp);
+		const branchCut =
+			leaf === undefined
+				? undefined
+				: { leaf, first: firstSeq, last: lastSeq, pivot: reverse ? end : start, backward: reverse, epoch: stamp };
+		const span = !branchCut
+			? undefined
+			: store.readBranchSpan
+				? await store.readBranchSpan(sessionId, branchCut)
+				: await (await import("./snapshot-history.js")).snapshotBranchSpan(store, sessionId, branchCut);
+		if (leaf !== undefined) {
 			options.signal?.throwIfAborted();
-			stamp = page.epoch;
+			if (!span) return;
+		}
+		const left = span?.start ?? start,
+			right = span?.end ?? end;
+		const from = reverse ? Math.max(left, right - SESSION_HISTORY_PAGE_ENTRIES + 1) : left;
+		const through = reverse ? right : Math.min(right, left + SESSION_HISTORY_PAGE_ENTRIES - 1);
+		let page: SessionHistoryPage["items"];
+		let low: number, high: number;
+		if (snapshotOnly) {
+			const result = await (await import("./snapshot-history.js")).snapshotPage(
+				store,
+				sessionId,
+				from,
+				through,
+				reverse,
+				cut,
+				stamp,
+			);
+			options.signal?.throwIfAborted();
+			stamp = result.epoch;
 			scope = cursorScope(sessionId, stamp);
 			if (cursorStamp && scope !== cursorStamp)
 				throw new TypeError("History cursor does not match this session generation");
-			if (reverse) end = page.items[0]!.seq - 1;
-			else start = page.items[page.items.length - 1]!.seq + 1;
-			yield {
-				items: page.items,
-				...(start <= end ? { nextCursor: `${scope}.${start}.${end}${reverse ? ".b" : ""}.s${cut}` } : {}),
-			};
-			if (start <= end) await yieldToEventLoop();
-			continue;
-		}
-		const sized = await store.readEntrySizes!(sessionId, from, through);
-		options.signal?.throwIfAborted();
-		stamp ??= sized.epoch;
-		scope ??= cursorScope(sessionId, stamp);
-		if (sized.epoch !== stamp || sized.lastSeq < end)
-			throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
-		const ordered = reverse ? [...sized.sizes].reverse() : sized.sizes;
-		const first = ordered[0];
-		const edge = reverse ? end : start;
-		if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
-		let page: SessionHistoryPage["items"];
-		let low = edge,
-			high = edge;
-		if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
-			page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
+			page = result.items;
+			low = page[0]!.seq;
+			high = page[page.length - 1]!.seq;
 		} else {
-			let used = 0;
-			for (const size of ordered) {
-				if (used + size.bytes > SESSION_HISTORY_PAGE_BYTES) break;
-				used += size.bytes;
-				if (reverse) low = size.seq;
-				else high = size.seq;
-			}
-			const range = await store.readRange!(sessionId, low, high, stamp);
+			const sized = await store.readEntrySizes!(sessionId, from, through);
 			options.signal?.throwIfAborted();
-			if (range.epoch !== stamp || range.lastSeq < end)
-				throw new SessionConflictError(sessionId, watermark, range.lastSeq);
-			page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? low + i, entry }));
+			stamp ??= sized.epoch;
+			scope ??= cursorScope(sessionId, stamp);
+			if (sized.epoch !== stamp || sized.lastSeq < end)
+				throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
+			const ordered = reverse ? [...sized.sizes].reverse() : sized.sizes;
+			const first = ordered[0];
+			const edge = reverse ? through : from;
+			if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
+			low = high = edge;
+			if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
+				page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
+			} else {
+				let used = 0;
+				for (const size of ordered) {
+					if (used + size.bytes > SESSION_HISTORY_PAGE_BYTES) break;
+					used += size.bytes;
+					if (reverse) low = size.seq;
+					else high = size.seq;
+				}
+				const range = await store.readRange!(sessionId, low, high, stamp);
+				options.signal?.throwIfAborted();
+				if (range.epoch !== stamp || range.lastSeq < end)
+					throw new SessionConflictError(sessionId, watermark, range.lastSeq);
+				page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? low + i, entry }));
+			}
 		}
 		if (reverse) end = low - 1;
 		else start = high + 1;
-		yield { items: page, ...(start <= end ? { nextCursor: `${scope}.${start}.${end}${reverse ? ".b" : ""}` } : {}) };
-		if (start <= end) await yieldToEventLoop();
+		const hasOlder = span ? low > left || span.older : low > firstSeq;
+		const hasNewer = span ? high < right || span.newer : high < lastSeq;
+		const hasNext = reverse ? hasOlder : hasNewer;
+		const cursorFor = (from: number, to: number, backward: boolean) =>
+			`${scope}.${from}.${to}${backward ? ".b" : ""}${options.adjacent || leaf !== undefined ? `.${firstSeq}.${lastSeq}` : ""}${leaf === undefined ? "" : `.p${leaf}`}${snapshotOnly ? `.s${cut}` : ""}`;
+		yield {
+			items: page,
+			...(hasNext ? { nextCursor: cursorFor(start, end, reverse) } : {}),
+			...(options.adjacent
+				? {
+						adjacent: {
+							...(hasOlder ? { older: cursorFor(firstSeq, low - 1, true) } : {}),
+							...(hasNewer ? { newer: cursorFor(high + 1, lastSeq, false) } : {}),
+						},
+					}
+				: {}),
+		};
+		if (!hasNext) return;
+		await yieldToEventLoop();
 	}
 }
 
