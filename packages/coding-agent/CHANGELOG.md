@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- While a `project_trust` extension is still deciding about a folder you saved as trusted, for example a policy check that takes a while to answer, the interface no longer loads that folder's project prompts, skills, themes and settings, because the extension can still decline it. Until the extension answers, the interface shows no untrusted warning either. Once the engine approves the folder, its prompts and skills appear in the resource list and Tab completion even if a separate `-e` source still awaits trust. The update keeps expanded sections open and keeps the selected completion highlighted ([#5693](https://github.com/bastani-inc/atomic/issues/5693)).
 - Drawing the usage meter no longer checks credential files synchronously, avoiding a stalled frame when those file checks are slow ([#5516](https://github.com/bastani-inc/atomic/issues/5516)).
 - Subagents started from deeply nested directories no longer wait for each parent directory's resource checks one at a time, keeping starts responsive while the main thread is busy ([#5514](https://github.com/bastani-inc/atomic/issues/5514)).
 - The main chat no longer leaves a blank row between the working line and the usage meter above the prompt. Every chat now keeps exactly one row there: the usage meter, or a blank row in a subagent or stage chat with no usage to show, so a chat's last line never runs into its prompt.

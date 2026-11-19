@@ -66,7 +66,7 @@ declare module "./interactive-mode-base.ts" {
 		getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[];
 		createBaseAutocompleteProvider(): AutocompleteProvider;
 		buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
-		setupAutocompleteProvider(): void;
+		setupAutocompleteProvider(options?: { preserveSelection?: boolean }): void;
 		showStartupNoticesIfNeeded(targetContainer?: Container): void;
 		reportModelCatalogWarning(targetContainer?: Container): void;
 		reportedModelCatalogWarning: string | undefined;
@@ -146,9 +146,11 @@ declare module "./interactive-mode-base.ts" {
 				prompts?: string;
 				extensions?: string;
 			};
+			previousSections?: readonly Component[];
 			targetContainer?: Container;
 		}): void;
 		showLoadedResources(options?: {
+			preserveExpansion?: boolean;
 			extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 			force?: boolean;
 			showDiagnosticsWhenQuiet?: boolean;
