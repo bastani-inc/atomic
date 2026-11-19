@@ -1759,6 +1759,49 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
+	it("captures every selected row of a mutable history range, not just its visible endpoints (#5593)", async () => {
+		const terminal = new RecordingTerminal(30, 4);
+		const document = new WindowedContainer();
+		const source = Symbol();
+		const expected: string[] = [];
+		for (let i = 0; i < 70; i++) {
+			const value = `row ${i}`,
+				leaf = new Text(value, 0, 0);
+			expected.push(value);
+			document.addChild(leaf);
+			WindowedContainer.markHistoryComponent(leaf, source, i, 0, 0);
+		}
+		const view = new ScrollView(document, { primary: true });
+		view.setHistoryNavigation(() => {});
+		let copied = "";
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copyOnSelect: false,
+			copySelection: async (text) => {
+				copied = text;
+				return true;
+			},
+		});
+		tui.setLayoutRoot(view);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<0;1;1M");
+			view.scrollTo(55);
+			tui.requestRender();
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<32;6;1M");
+			terminal.sendInput("\x1b[<0;6;1m");
+			await terminal.waitForRender();
+			document.clear();
+			tui.requestRender();
+			await terminal.waitForRender();
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			assert.equal(copied, expected.slice(0, 56).join("\n"));
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("copies selected volatile rows twice after their components change and forgets them on reset (#5593)", async () => {
 		const terminal = new RecordingTerminal(30, 4);
 		const copied: string[] = [];

@@ -26,6 +26,7 @@ import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } fr
 import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
 	launchedTaskViewSource,
+	readTaskPageForView,
 	type TaskTranscriptView,
 	type TaskViewResult,
 	type TaskViewSource,
@@ -189,8 +190,23 @@ function isTyping(data: string): boolean {
 	return [...data].every((ch) => ch >= " " && ch !== "\x7f");
 }
 
-async function settled<T>(read: T | Promise<T>): Promise<T> {
-	return read instanceof Promise ? await read : read;
+interface AdjacentRequest {
+	edge: "older" | "newer";
+	cursor: string;
+	generation: number;
+	controller: AbortController;
+	source?: WeakRef<TaskTranscriptSource>;
+}
+const finishAdjacent = Symbol();
+function deliverAdjacent(
+	weak: WeakRef<TaskAgentTranscriptPage>,
+	request: AdjacentRequest,
+	read: TaskViewResult<TaskTranscriptView> | Promise<TaskViewResult<TaskTranscriptView>>,
+): void {
+	void Promise.resolve(read).then(
+		(page) => weak.deref()?.[finishAdjacent](request, page),
+		(error) => weak.deref()?.[finishAdjacent](request, { ok: false, error: { message: failureText(error) } }),
+	);
 }
 
 /**
@@ -254,7 +270,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	readonly #notices = new TaskTranscriptNotices();
 	private loading = false;
 	private reloadPending = false;
-	private loadingEarlier = false;
+	private loadingEarlier?: AdjacentRequest;
+	private failedCursor?: string;
+	private latestRead?: AbortController;
 	/** A history-only transcript changed while the reader was away from its end; it is read again when they return. */
 	private behind = false;
 	private disposed = false;
@@ -331,6 +349,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				(this.followed ?? this.source.followTaskTranscript(this.taskId)?.session)?.getEntries(),
 			requestRender,
 			taskRowsInChat: false,
+			savedTaskPages: true,
 			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			workingTokenCount: () => source.tasks.find((task) => task.ref.taskId === taskId)?.metrics?.tokenCount,
@@ -402,11 +421,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return;
 		}
 		this.loading = true;
+		const controller = new AbortController();
+		this.latestRead = controller;
 		try {
-			// A synchronous read subscribes in the same turn, so no event queued during the read is missed.
-			const read = this.source.readTaskTranscript(this.taskId);
+			// A synchronous read subscribes in the same turn. A pending read never binds old rows to a replacement owner.
+			const before = this.source.followTaskTranscript(this.taskId);
+			const read = readTaskPageForView(this.source, this.taskId, undefined, controller.signal);
 			const page = read instanceof Promise ? await read : read;
 			if (this.disposed) return;
+			if (read instanceof Promise && before?.session !== this.source.followTaskTranscript(this.taskId)?.session) {
+				this.reloadPending = true;
+				return;
+			}
 			this.adoptLatestPage(page);
 		} catch (error) {
 			if (!this.disposed) this.status = error instanceof Error ? error.message : String(error);
@@ -450,6 +476,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return true;
 		}
 		const keybindings = keybindingsOf(this.env.keybindings);
+		if (
+			this.failedCursor &&
+			(parseWheelReport(data) ||
+				matchesKey(data, "pageUp") ||
+				matchesKey(data, "pageDown") ||
+				keybindings.matches(data, "tui.altScreen.top") ||
+				keybindings.matches(data, "tui.altScreen.bottom"))
+		)
+			this.failedCursor = undefined;
 		if (!this.chat.hasTaskInspector && this.chat.hasTransientModal) {
 			const handled = this.chat.handleInput(data);
 			this.requestRender();
@@ -637,6 +672,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.cancelAdjacent();
+		this.latestRead?.abort();
 		this.savedPages.length = 0;
 		this.#notices.reset();
 		this.unsubscribePrompts();
@@ -725,6 +762,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.resetFollowedSession({ preserveWorkedRun: sameConversation && session === undefined });
 		}
 		this.followedSessionId = nextSessionId;
+		this.cancelAdjacent();
 		this.windowGeneration++;
 		this.savedPages.length = 0;
 		this.newerCursor = undefined;
@@ -759,6 +797,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				setTaskTurnInterrupted(this.source, this.taskId, true);
 			}
 			this.chat.applyAgentEvent(event);
+			if (event.type === "compaction_end" && event.result && !event.aborted && session.getEarlierCursor?.()) {
+				// Only a source that can replay the previous context authorizes releasing those rows. Never clear
+				// private SDK rows merely because they arrived before a new boundary.
+				this.cancelAdjacent();
+				this.windowGeneration++;
+				if (this.chat.bodyScrollFromBottom() === 0 && this.newerCursor === undefined) void this.load();
+				else this.behind = true;
+			}
 			this.requestRender();
 		});
 	}
@@ -794,6 +840,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	private goToLatestSavedPage(): void {
+		this.cancelAdjacent();
 		this.windowGeneration++;
 		this.newerCursor = undefined;
 		this.behind = false;
@@ -827,46 +874,68 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.newerCursor = this.savedPages.at(-1)?.newer;
 	}
 
+	private cancelAdjacent(): void {
+		this.loadingEarlier?.controller.abort();
+		this.loadingEarlier = undefined;
+		this.failedCursor = undefined;
+	}
 	private loadAdjacent(edge: "older" | "newer"): void {
-		const current = () => (edge === "older" ? this.cursor : this.newerCursor);
-		const cursor = current();
-		const generation = this.windowGeneration;
-		if (cursor === undefined || this.loadingEarlier || this.loading || this.disposed) return;
+		const cursor = edge === "older" ? this.cursor : this.newerCursor;
+		if (!cursor || cursor === this.failedCursor || this.loadingEarlier || this.loading || this.disposed) return;
 		if (edge === "older" && this.followed && cursor.includes(":") && !this.olderIntent) return;
-		this.loadingEarlier = true;
-		void (async () => {
-			try {
-				const page = await settled(this.source.readTaskTranscript(this.taskId, cursor));
-				if (this.disposed || generation !== this.windowGeneration || cursor !== current()) return;
-				if (!page.ok) {
-					if (edge === "older") this.cursor = undefined;
-					else this.newerCursor = undefined;
-					this.status = page.error.message;
-					return;
-				}
-				if (page.value.savedWindow && (this.savedPages.length || this.followed)) {
-					if (this.followed && this.liveHistoryStart === undefined) this.liveHistoryStart = cursor;
-					if (edge === "older")
-						this.#notices.adopt(page, page.value.messages, page.value.nextCursor !== undefined);
-					this.attachSavedPage(page.value, edge);
-					if (edge === "older" && this.goToFirst) this.chat.scrollBodyTo(0);
-				} else {
-					this.cursor = page.value.nextCursor;
-					const messages = page.value.messages;
-					this.#notices.adopt(page, messages, this.cursor !== undefined);
-					this.chat.prependMessages(messages);
-				}
-			} catch (error) {
-				if (this.disposed || generation !== this.windowGeneration || cursor !== current()) return;
-				if (edge === "older") this.cursor = undefined;
-				else this.newerCursor = undefined;
-				this.status = error instanceof Error ? error.message : String(error);
-			} finally {
-				if (this.cursor === undefined) this.#notices.finishPaging();
-				this.loadingEarlier = false;
-				this.requestRender();
+		const src = this.source.followTaskTranscript(this.taskId)?.session;
+		const request: AdjacentRequest = {
+			edge,
+			cursor,
+			generation: this.windowGeneration,
+			controller: new AbortController(),
+			source: src && new WeakRef(src),
+		};
+		this.loadingEarlier = request;
+		try {
+			deliverAdjacent(
+				new WeakRef(this),
+				request,
+				readTaskPageForView(this.source, this.taskId, cursor, request.controller.signal),
+			);
+		} catch (error) {
+			this[finishAdjacent](request, { ok: false, error: { message: failureText(error) } });
+		}
+	}
+	[finishAdjacent](request: AdjacentRequest, page: TaskViewResult<TaskTranscriptView>): void {
+		const { edge, cursor } = request;
+		if (this.disposed || this.loadingEarlier !== request) return;
+		this.loadingEarlier = undefined;
+		if (
+			request.generation !== this.windowGeneration ||
+			cursor !== (edge === "older" ? this.cursor : this.newerCursor) ||
+			request.source?.deref() !== this.source.followTaskTranscript(this.taskId)?.session
+		)
+			return;
+		try {
+			if (!page.ok) {
+				this.failedCursor = cursor;
+				this.status = page.error.message;
+				return;
 			}
-		})();
+			if (page.value.savedWindow && (this.savedPages.length || this.followed)) {
+				if (this.followed && this.liveHistoryStart === undefined) this.liveHistoryStart = cursor;
+				if (edge === "older") this.#notices.adopt(page, page.value.messages, page.value.nextCursor !== undefined);
+				this.attachSavedPage(page.value, edge);
+				if (edge === "older" && this.goToFirst) this.chat.scrollBodyTo(0);
+			} else {
+				this.cursor = page.value.nextCursor;
+				this.#notices.adopt(page, page.value.messages, this.cursor !== undefined);
+				this.chat.prependMessages(page.value.messages);
+			}
+			this.status = "";
+		} catch (error) {
+			this.failedCursor = cursor;
+			this.status = failureText(error);
+		} finally {
+			if (!this.cursor) this.#notices.finishPaging();
+			this.requestRender();
+		}
 	}
 
 	private async send(text: string): Promise<void> {

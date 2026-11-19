@@ -207,6 +207,154 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 	}
 });
 
+test("a saved task chat revisits the same stateful extension instance after its page is evicted (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendCustomMessageEntry("stateful-card", "raw", true);
+	for (let i = 0; i < 320; i++) await session.appendMessage({ role: "user", content: `saved-${i}`, timestamp: i });
+	let built = 0;
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole archive loaded");
+			},
+		},
+		{
+			environment: {
+				getChatRenderSettings: () => ({
+					getCustomMessageRenderer: (name) =>
+						name === "stateful-card"
+							? () => {
+									const identity = ++built;
+									return { render: () => [`widget incarnation ${identity}`], invalidate() {} };
+								}
+							: undefined,
+				}),
+			},
+		},
+	);
+	const visit = async () => {
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 45; i++) {
+			const value = /widget incarnation (\d+)/.exec(host.text())?.[1];
+			if (value) return value;
+			await flush();
+		}
+		throw new Error("widget not in view");
+	};
+	try {
+		host.frame();
+		const first = await visit();
+		host.inspector.handleInput(CTRL_END);
+		await flush();
+		assert.match(host.text(), /saved-319/);
+		assert.equal(await visit(), first);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a new scroll request does not wait for an obsolete task page after jumping to the tail (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 200; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	const old = Promise.withResolvers<void>();
+	let reads = 0;
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole archive loaded");
+			},
+		},
+		{
+			source: (owner) =>
+				Object.assign(Object.create(owner) as TaskViewSource, {
+					async readTaskTranscript(id: TaskId, cursor?: string) {
+						if (cursor && ++reads === 1) await old.promise;
+						return owner.readTaskTranscript(id, cursor);
+					},
+				}),
+		},
+	);
+	try {
+		host.frame();
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(reads, 1);
+		host.inspector.handleInput(CTRL_END);
+		await flush();
+		host.frame();
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 12 && !host.text().includes("M-000"); i++) await flush();
+		assert.match(host.text(), /M-000/);
+		old.resolve();
+		await flush();
+		assert.match(host.text(), /M-000/);
+	} finally {
+		old.resolve();
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a live task chat mounted before a clear releases its previous context and can page back to it (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 80; i++)
+		await session.appendMessage({ role: "user", content: `retired live ${i}`, timestamp: i });
+	let event: ((e: AgentSessionEvent) => void) | undefined, chat: ChatSessionHost | undefined;
+	const source: TaskTranscriptSource = {
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getTaskTranscriptEntries(),
+		getEarlierCursor: () => session.getEarlierCursor(),
+		readHistory: session.readHistory.bind(session),
+		subscribe(cb) {
+			event = cb;
+			return () => {
+				event = undefined;
+			};
+		},
+	};
+	const host = await openTranscript(source, {
+		environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+	});
+	try {
+		assert.match(host.text(), /retired live 79/);
+		await session.appendCompaction("new context", null, 100, verbatimDetails);
+		event?.({
+			type: "compaction_end",
+			reason: "manual",
+			aborted: false,
+			willRetry: false,
+			result: {
+				compactedText: "new context",
+				firstKeptEntryId: null,
+				tokensBefore: 100,
+				parameters: verbatimDetails.parameters,
+				stats: verbatimDetails.stats,
+				promptVersion: verbatimDetails.promptVersion,
+				form: "cleared",
+			},
+		});
+		await flush();
+		assert.ok(chat);
+		host.frame();
+		assert.doesNotMatch(chat.renderBodyRows(80, 0, chat.bodyRowCount(80)).join("\n"), /retired live 0/);
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 25 && !host.text().includes("retired live 0"); i++) await flush();
+		assert.match(host.text(), /retired live 0/);
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
 test("a live subagent chat reads across a clear without missing output that arrives while its history is pending (#5593)", async () => {
 	const session = SessionManager.inMemory();
 	for (let i = 0; i < 130; i++)

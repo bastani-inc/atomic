@@ -207,6 +207,7 @@ export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
 	stopChatSessionWorkingLifecycle(state);
 	state.extraEntries.length = 0;
 	state.replaceTranscriptWindow([]);
+	state.savedRenderers?.dispose();
 	state.firstUserEntry = undefined;
 	state.firstUserEntryExactText = undefined;
 	state.optimisticUserSignatureCounts.clear();

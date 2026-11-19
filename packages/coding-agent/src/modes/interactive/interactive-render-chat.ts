@@ -915,7 +915,13 @@ function savedChatComponents(
 			}
 			const index = scratch.children.length;
 			addTranscriptStep(mode, step, false, true);
-			if (key) exceptions.remember(key, scratch.children.slice(index));
+			if (key) {
+				const [seq, block] = key.split(":");
+				exceptions.remember(key, scratch.children.slice(index), {
+					seq: Number(seq),
+					block: block === "entry" ? 0 : Number(block),
+				});
+			}
 		}
 		return scratch.children;
 	} finally {

@@ -25,6 +25,7 @@ import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
 import type { FileTaskPage } from "./task-file-history.js";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
+import { bindSavedTaskOrigins } from "./transcript-origin.js";
 
 export type TaskViewResult<T> =
 	| { readonly ok: true; readonly value: T }
@@ -192,6 +193,7 @@ export interface TaskViewSource {
 	readTaskTranscript(
 		id: TaskId,
 		cursor?: string,
+		signal?: AbortSignal,
 	): TaskViewResult<TaskTranscriptView> | Promise<TaskViewResult<TaskTranscriptView>>;
 	followTaskTranscript(id: TaskId): TaskTranscriptFollow | undefined;
 	extensionStatuses(id: TaskId): ReadonlyMap<string, string>;
@@ -218,6 +220,20 @@ export interface TaskViewSource {
 	taskCommands?(id: TaskId): TaskCommandCatalog | undefined | Promise<TaskCommandCatalog | undefined>;
 }
 
+const cancellablePages = new WeakSet<TaskViewSource["readTaskTranscript"]>();
+export function readTaskPageForView(
+	source: TaskViewSource,
+	id: TaskId,
+	cursor: string | undefined,
+	signal: AbortSignal,
+) {
+	const read = source.readTaskTranscript;
+	return cancellablePages.has(read)
+		? read.call(source, id, cursor, signal)
+		: cursor === undefined
+			? read.call(source, id)
+			: read.call(source, id, cursor);
+}
 const cancellableDetails = new WeakSet<TaskViewSource["taskDetailText"]>();
 /** Pass cancellation only to a detail reader that accepts it. Old SDK readers see their original arguments. */
 export function readTaskDetailForView(source: TaskViewSource, id: TaskId, signal?: AbortSignal) {
@@ -274,7 +290,8 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		writeTaskInput: (id, text) => root.writeTaskInput(id, text),
 		readTaskOutput: (id, range) => root.readTaskOutput(id, range),
 		taskDetailText: (id, signal) => readTaskDetailForView(root, id, signal),
-		readTaskTranscript: (id, cursor) => root.readTaskTranscript(id, cursor),
+		readTaskTranscript: (id, cursor, signal) =>
+			signal ? readTaskPageForView(root, id, cursor, signal) : root.readTaskTranscript(id, cursor),
 		followTaskTranscript: (id) => root.followTaskTranscript(id),
 		extensionStatuses: (id) => root.extensionStatuses(id),
 		watchExtensionStatuses: (id, listener) => root.watchExtensionStatuses(id, listener),
@@ -288,6 +305,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 			? {}
 			: { taskReadOnlyReason: (id: TaskId) => taskReadOnlyReason.call(root, id) }),
 	};
+	cancellablePages.add(view.readTaskTranscript);
 	cancellableDetails.add(view.taskDetailText);
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
@@ -396,7 +414,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				return loadTaskOwnTranscriptEntries(task.value).then((entries) => detailText(entries));
 			return detailText(taskOwnTranscriptEntries(task.value));
 		},
-		readTaskTranscript(id, cursor) {
+		readTaskTranscript(id, cursor, signal) {
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
 			const bound = taskTranscriptSource(task.value);
@@ -411,10 +429,11 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 						(opts) => taskFilePages(file.path, file.sessionId, opts ?? {}),
 						cursor,
 						file,
+						signal,
 					),
 				);
 			if (session.readHistory && ((session.loadHistory && !session.subscribe) || cursor?.includes(":")))
-				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor);
+				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor, undefined, signal);
 			// A finished task keeps its history in its session store, not in memory (#5186).
 			if (session.loadHistory) {
 				const archive = archiveReader(session);
@@ -540,6 +559,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			});
 		},
 	};
+	cancellablePages.add(source.readTaskTranscript);
 	cancellableDetails.add(source.taskDetailText);
 	sources.set(store, source);
 	bindTaskClockSource(source, store);
@@ -622,6 +642,7 @@ async function savedTranscriptView(
 	) => AsyncIterable<import("../storage/session/types.js").SessionHistoryPage | FileTaskPage>,
 	cursor: string | undefined,
 	file?: FileArchive,
+	signal?: AbortSignal,
 ): Promise<TaskViewResult<TaskTranscriptView>> {
 	const sessionId = file?.sessionId ?? session.getSessionId();
 	const scope = savedTaskScope(taskId, sessionId);
@@ -638,7 +659,9 @@ async function savedTranscriptView(
 	for await (const page of read({
 		...(raw === undefined ? { direction: "backward" as const } : { cursor: raw }),
 		adjacent: true,
+		...(signal ? { signal } : {}),
 	})) {
+		signal?.throwIfAborted();
 		const entries: Entries = page.items.map((item) =>
 			"entry" in item
 				? item.entry
@@ -662,6 +685,7 @@ async function savedTranscriptView(
 			if (last?.type !== "message" || JSON.stringify(last.message) !== JSON.stringify(unsaved.message))
 				entries.push(unsaved);
 		}
+		const origins = new Map<AgentMessage, string>();
 		let from = 0,
 			end = 0,
 			count = 0;
@@ -672,6 +696,12 @@ async function savedTranscriptView(
 			undefined,
 			{
 				storedRows: entries.length,
+				origin(row, message, fragment) {
+					const record = file
+						? createHash("sha256").update(JSON.stringify(entries[row])).digest("base64url")
+						: page.adjacent?.current?.split(".", 1)[0];
+					if (record) origins.set(message, `${scope}${record}:${page.items[row]?.seq ?? "unsaved"}:${fragment}`);
+				},
 				collect(row, notice) {
 					// The cursor's source fingerprint identifies this generation. The sequence identifies its saved reply.
 					if (file) {
@@ -694,6 +724,7 @@ async function savedTranscriptView(
 			},
 		);
 		if (result.ok) {
+			bindSavedTaskOrigins(result.value.messages, origins);
 			const self = page.adjacent?.current;
 			const previousPage = page.adjacent ? page.adjacent.older : page.nextCursor;
 			const older = from > 0 && self ? `${self}~b${from}` : previousPage && `${previousPage}~b`;
@@ -756,7 +787,11 @@ function transcriptView(
 	taskId: string,
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
-	archive?: { storedRows: number; collect: (row: number, notice: NoticePosition) => void },
+	archive?: {
+		storedRows: number;
+		collect: (row: number, notice: NoticePosition) => void;
+		origin?: (row: number, msg: AgentMessage, fragment: number) => void;
+	},
 	window?: Parameters<typeof taskTranscriptPageWithCuts>[5],
 ): TaskViewResult<TaskTranscriptView> {
 	let fromEarlier: string | undefined;
@@ -785,15 +820,21 @@ function transcriptView(
 		if (entry.type !== "message") {
 			const projected = sessionEntryToContextMessages(entry);
 			nextMessageIndex += projected.length;
+			if (archive?.origin) for (const m of projected) archive.origin(row, m, 0);
 			return projected;
 		}
 		const index = nextMessageIndex++;
 		const message = entry.message;
-		if (message.role !== "assistant") return [message];
+		if (message.role !== "assistant") {
+			archive?.origin?.(row, message, 0);
+			return [message];
+		}
 		const projected = { ...message };
+		let fragment: number | undefined;
 		let standalone = (fromEarlier === id || intoLater === id) && projected.stopReason === "error";
 		projected.content = message.content.filter((block, blockIndex) => {
 			if (!itemIds.has(`${id}:${blockIndex}`)) return false;
+			fragment ??= blockIndex;
 			if (standalone && !plainNoticeBlock(block)) standalone = false;
 			return true;
 		});
@@ -814,6 +855,7 @@ function transcriptView(
 			notices ??= [];
 			notices.push(notice);
 		}
+		archive?.origin?.(row, projected, fragment ?? 0);
 		return [projected];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;

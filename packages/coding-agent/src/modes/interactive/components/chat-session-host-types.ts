@@ -90,6 +90,8 @@ export interface ChatSessionViewportSettings {
 }
 
 export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike = never> {
+	/** @internal First-party task transcripts can recreate only the renderers that opted into it. */
+	readonly savedTaskPages?: true;
 	style: ChatSessionHostStyle;
 	commands?: ChatSessionHostCommands;
 	requestRender?: () => void;

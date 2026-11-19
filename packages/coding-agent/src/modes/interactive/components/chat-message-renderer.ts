@@ -11,6 +11,7 @@ import {
 } from "../../../core/messages.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore, TaskActivity } from "../../../core/tasks/owner-store.js";
+import { savedTaskRows } from "../../../core/tasks/transcript-origin.js";
 import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -185,6 +186,7 @@ function buildChatEntries(
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
 	onSourceRow?: ChatEntryGrouping["onSourceRow"],
 ): ChatMessageEntry[] {
+	onSourceRow ??= savedTaskRows(messages);
 	const entries: ChatMessageEntry[] = [];
 	const pendingTools = new Map<string, Extract<ChatMessageEntry, { kind: "tool" }>>();
 	for (const message of messages) {

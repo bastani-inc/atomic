@@ -171,6 +171,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	readonly supportsRowWindow: boolean;
 
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
+	private readonly release: (component: Component | undefined) => void;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
 	private measuredRows: MeasuredRowWindow | undefined;
 	/** The blocks and their first rows as last drawn, which a click is resolved against. */
@@ -187,7 +188,9 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		entries: readonly TEntry[],
 		renderEntry: ChatTranscriptRenderer<TEntry>,
 		cacheKey?: ChatTranscriptCacheKey<TEntry>,
+		release = disposeComponent,
 	) {
+		this.release = release;
 		this.entries = entries;
 		this.renderEntry = renderEntry;
 		this.cacheKey = cacheKey;
@@ -337,8 +340,8 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	}
 
 	invalidate(): void {
-		for (const block of this.blockCache) disposeComponent(block?.component);
-		for (const component of new Set(this.staticComponents)) disposeComponent(component);
+		for (const block of this.blockCache) this.release(block?.component);
+		for (const component of new Set(this.staticComponents)) this.release(component);
 		this.blockCache = [];
 		this.staticComponents = [];
 		this.staticSegments = [];
@@ -365,7 +368,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 				const cached = previous[index];
 				const block = this.currentBlock(entries[index], index, width, cached);
 				if (block === cached) continue;
-				if (cached !== undefined && cached.component !== block?.component) disposeComponent(cached.component);
+				if (cached !== undefined && cached.component !== block?.component) this.release(cached.component);
 				previous[index] = block;
 				firstChanged = Math.min(firstChanged, index);
 			}
@@ -385,7 +388,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			if (block !== previous[index]) firstChanged = Math.min(firstChanged, index);
 		}
 		for (const block of previous) {
-			if (block !== undefined && !kept.has(block.component)) disposeComponent(block.component);
+			if (block !== undefined && !kept.has(block.component)) this.release(block.component);
 		}
 		this.blockCache = next;
 		return firstChanged;
@@ -472,7 +475,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		} finally {
 			const retained = new Set(nextComponents);
 			for (const component of new Set(this.staticComponents)) {
-				if (!retained.has(component)) disposeComponent(component);
+				if (!retained.has(component)) this.release(component);
 			}
 			this.staticComponents = nextComponents;
 		}

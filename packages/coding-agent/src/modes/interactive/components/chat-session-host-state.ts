@@ -3,6 +3,7 @@ import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { savedTaskRowKey } from "../../../core/tasks/transcript-origin.js";
 import { theme } from "../theme/theme.js";
 import { atomicWorkingFrame } from "./atomic-working-status.ts";
 import { type ChatMessageEntry, LiveChatEntriesController } from "./chat-message-renderer.ts";
@@ -23,6 +24,8 @@ import {
 import type { FooterComponent } from "./footer.ts";
 import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
+import { disposeRenderer } from "./renderer-disposal.js";
+import { SavedRendererInstances } from "./saved-renderer-instances.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
@@ -152,6 +155,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly replacedEntryKeys = new Map<number, readonly unknown[]>();
 	nextRenderIdentityId = 1;
 	liveChat: LiveChatEntriesController;
+	readonly savedRenderers?: SavedRendererInstances;
 	editor: EditorComponent | undefined;
 	optimisticUserSignatureCounts = new Map<string, number>();
 	/**
@@ -226,10 +230,24 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.countsAsMessage = opts.countsAsMessage;
 		this.tui = opts.tui;
 		this.liveChat = new LiveChatEntriesController(this.transcript);
+		const store = opts.savedTaskPages ? new SavedRendererInstances() : undefined;
+		this.savedRenderers = store;
 		this.transcriptComponent = new ChatTranscriptComponent(
 			this.transcript,
-			(entry) => callbacks.renderEntry(this, entry),
+			(entry) => {
+				const key = store && savedTaskRowKey(entry);
+				const kept = key && store?.get(key)?.[0];
+				if (kept) return kept;
+				const component = callbacks.renderEntry(this, entry);
+				if (key) store?.remember(key, [component]);
+				return component;
+			},
 			(entry, index) => callbacks.transcriptCacheKey(this, entry, index),
+			store
+				? (component) => {
+						if (component && !store.protect(component)) disposeRenderer(component);
+					}
+				: undefined,
 		);
 	}
 }

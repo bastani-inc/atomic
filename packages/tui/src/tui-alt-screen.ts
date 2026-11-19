@@ -1887,20 +1887,30 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			}
 		for (const row of this.selectedFragments.keys())
 			if (row < selection.start.row || row > selection.end.row) this.selectedFragments.delete(row);
-		this.capturePaintedFragments(selection, this.currentLayout);
+		this.capturePaintedFragments(selection, this.currentLayout, !this.selectionPressActive);
 	}
 
-	private capturePaintedFragments(selection: SelectionRange, layout: LayoutFrame | undefined): void {
+	private capturePaintedFragments(selection: SelectionRange, layout: LayoutFrame | undefined, finished = false): void {
 		const view = selection.start.scrollView;
 		if (!layout || !view) return;
 		const rows = getScrollContentRows(getScrollViewBox(layout, view));
 		const a = selection.start.archive,
 			b = selection.end.archive;
 		const archived = a && b && a.source === b.source;
-		const first = archived ? view.scrollTop : Math.max(selection.start.row, view.scrollTop);
-		const last = archived
-			? view.scrollTop + view.viewportHeight - 1
-			: Math.min(selection.end.row, view.scrollTop + view.viewportHeight - 1);
+		// A completed selection can span more than one screen. Seal the selected cells of the mounted mutable
+		// pages, not only the two painted endpoints; plain repaint and merely asking whether a selection exists
+		// do not perform this work. Never request an unselected archive page here.
+		const fullRange = archived && finished;
+		const first = fullRange
+			? (selection.start.trackRow?.() ?? view.scrollTop)
+			: archived
+				? view.scrollTop
+				: Math.max(selection.start.row, view.scrollTop);
+		const last = fullRange
+			? (selection.end.trackRow?.() ?? view.scrollTop + view.viewportHeight - 1)
+			: archived
+				? view.scrollTop + view.viewportHeight - 1
+				: Math.min(selection.end.row, view.scrollTop + view.viewportHeight - 1);
 		rows?.visitVolatileRows?.(first, last, (row, line, renderer, position) => {
 			if (archived && position && a && b) {
 				const lo = compareArchivedRows(position, a),
