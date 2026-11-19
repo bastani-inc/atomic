@@ -38,6 +38,7 @@ import {
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
+	ChildDisplayLaunch,
 	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
@@ -2235,6 +2236,27 @@ export class SqlSessionStore implements SessionStore {
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		return { lastSeq: Number(row.last_seq), epoch: row.epoch };
+	}
+
+	async readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
+		const { childDisplayCut } = await import("./card-view.js");
+		const { index } = await this.prepareResume(sessionId);
+		if (typeof launch.launchLeafId !== "string") return childDisplayCut(index, launch);
+		return this.transaction(
+			async (tx) => {
+				const head = await this.historyHead(tx, sessionId);
+				if (head.epoch !== index.epoch || head.lastSeq < index.seq)
+					throw new SessionConflictError(sessionId, index.seq, head.lastSeq);
+				const row = await tx.get<SqliteRow & { seq: number }>(
+					`SELECT seq FROM ${this.tables.entries} WHERE session_id=? AND entry_id=? AND seq<=? ORDER BY seq DESC LIMIT 1`,
+					sessionId,
+					launch.launchLeafId!,
+					index.seq,
+				);
+				return childDisplayCut(index, launch, row === undefined ? undefined : Number(row.seq));
+			},
+			{ ...SESSION_TRANSACTION, readOnly: true },
+		);
 	}
 
 	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {

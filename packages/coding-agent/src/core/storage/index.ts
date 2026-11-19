@@ -90,6 +90,12 @@ export {
 	type TeamStorageSelection,
 	teamProfileSelection,
 } from "./selection.js";
+export {
+	type ExpandedChildCall,
+	type ExpandedChildDetails,
+	readExpandedChildDetails,
+	readSavedChildLaunch,
+} from "./session/expanded-child-details.js";
 export { readSessionHistory, readSessionHistoryChunks } from "./session/history-pages.js";
 export type {
 	OversizedSessionEntry,

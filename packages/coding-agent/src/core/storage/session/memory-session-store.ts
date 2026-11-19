@@ -36,6 +36,7 @@ import {
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
+	ChildDisplayLaunch,
 	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
@@ -500,6 +501,21 @@ export class MemorySessionStore implements SessionStore {
 			const state = read.filter((held) => held.seq < start);
 			const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
 			return sessionTailFrom(index, decodeHeader(record), start, state, tail);
+		}
+	}
+
+	async readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
+		const { childDisplayCut } = await import("./card-view.js");
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (!index) continue;
+			const found =
+				typeof launch.launchLeafId === "string"
+					? await this.seqOfEntry(sessionId, record, launch.launchLeafId)
+					: undefined;
+			if (this.records.get(sessionId) === record && record.lastSeq === index.seq)
+				return childDisplayCut(index, launch, found);
 		}
 	}
 

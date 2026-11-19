@@ -293,24 +293,28 @@ async function entriesAfterLaunch(
 	) {
 		return branch.slice(launchIndex);
 	}
-	if (typeof sessionManager.findEntrySeq === "function") {
+	const store = typeof sessionManager.findEntrySeq !== "function" ? sessionManager.getSessionStore?.() : undefined;
+	const locate =
+		typeof sessionManager.findEntrySeq === "function"
+			? (id: string) => sessionManager.findEntrySeq(id)
+			: store?.findEntrySeq
+				? (id: string) => store.findEntrySeq!(sessionManager.getSessionId(), id)
+				: undefined;
+	if (locate) {
 		const launchSeq =
 			record.launchLeafSeq ??
 			(record.launchLeafId === null
 				? 0
 				: typeof record.launchLeafId === "string"
-					? await sessionManager.findEntrySeq(record.launchLeafId)
+					? await locate(record.launchLeafId)
 					: undefined);
 		if (launchSeq === undefined) return branch.slice(launchIndex);
-		const branchSeqs = await Promise.all(branch.map((entry) => sessionManager.findEntrySeq(entry.id)));
+		const branchSeqs = await Promise.all(branch.map((entry) => locate(entry.id)));
 		if (branchSeqs.every((seq) => seq !== undefined)) {
 			return branch.filter((_entry, index) => (branchSeqs[index] ?? 0) > launchSeq);
 		}
 	}
-	if (hasPartialHistory(sessionManager)) {
-		if (typeof sessionManager.loadFullHistory === "function") await sessionManager.loadFullHistory();
-		if (hasPartialHistory(sessionManager)) return branch.slice(launchIndex);
-	}
+	if (hasPartialHistory(sessionManager)) return branch.slice(launchIndex);
 	const entries = typeof sessionManager.getEntries === "function" ? sessionManager.getEntries() : [];
 	const seqById = new Map<string, number>();
 	for (let index = 0; index < entries.length; index += 1) {

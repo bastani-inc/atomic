@@ -120,6 +120,72 @@ test.each(["memory", "sqlite", "jsonl"])(
 	},
 );
 
+test.each(["shared connection", "separate databases"])(
+	"inverse forks on two SQL handles finish and copy only their selected outputs (%s; #5594)",
+	async (mode) => {
+		const dir = await mkdtemp(join(tmpdir(), "fork-two-handles-"));
+		const a = await openNodeSqliteDatabase(join(dir, "a.db"));
+		const b = mode === "shared connection" ? a : await openNodeSqliteDatabase(join(dir, "b.db"));
+		const left = await SqlSessionStore.open(a, { prefix: "left" });
+		const right = await SqlSessionStore.open(b, { prefix: "right" });
+		try {
+			const donor = async (store: SessionStore, name: string) => {
+				const parent = await SessionManager.create(store, dir);
+				await parent.appendMessage({ role: "user", content: `retired ${name}`, timestamp: 1 });
+				const bytes = Buffer.from(`saved ${name}`);
+				const { hash } = await store.putBlob!(parent.getSessionId(), bytes);
+				const receipt = await parent.appendCustomEntry("atomic.tool-output", {
+					hash,
+					toolCallId: name,
+					extra: name.repeat(1024 * 1024),
+				});
+				await parent.appendCompaction("clear", null, 100, {
+					strategy: "verbatim-lines",
+					form: "cleared",
+					promptVersion: 7,
+					parameters: { query: "clear" },
+					stats: {
+						linesBefore: 1,
+						linesDeleted: 1,
+						linesKept: 0,
+						rangeCount: 0,
+						tokensBefore: 100,
+						tokensAfter: 0,
+						percentReduction: 100,
+					},
+				});
+				await parent.appendMessage({ role: "user", content: `inspect tool-output://${hash}`, timestamp: 2 });
+				return { parent, receipt, hash, bytes, name };
+			};
+			const x = await donor(left, "x"),
+				y = await donor(right, "y");
+			const [r, l] = await Promise.all([x.parent.forkTo(dir, right), y.parent.forkTo(dir, left)]);
+			for (const [target, child, src] of [
+				[right, r, x],
+				[left, l, y],
+			] as const) {
+				const saved = await target.load(child.getSessionId());
+				assert.ok(saved.entries.some((e) => e.id === src.receipt));
+				assert.ok(
+					!saved.entries.some(
+						(e) =>
+							e.type === "message" && e.message.role === "user" && e.message.content === `retired ${src.name}`,
+					),
+				);
+				assert.deepEqual(Buffer.from((await target.getBlob(child.getSessionId(), src.hash))!), src.bytes);
+				assert.deepEqual(child.buildSessionContext(), src.parent.buildSessionContext());
+			}
+		} finally {
+			await left.close();
+			await right.close();
+			await a.close();
+			if (b !== a) await b.close();
+			await rm(dir, { recursive: true, force: true });
+		}
+	},
+	15_000,
+);
+
 test("a fork keeps an archived receipt after its original settings, including when reopening at the receipt (#5594)", async () => {
 	const store = new MemorySessionStore();
 	try {

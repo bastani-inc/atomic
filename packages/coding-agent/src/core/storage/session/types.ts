@@ -129,6 +129,22 @@ export interface SessionBranchSpan {
 }
 
 /** Body-free navigation record. The original entry and any long label stay at their sequence in the store. */
+export interface ChildDisplayLaunch {
+	readonly launchLeafId?: string | null;
+	readonly launchLeafSeq?: number;
+	readonly forked?: boolean;
+}
+export interface ChildDisplayCut {
+	readonly epoch: string;
+	readonly through: number;
+	readonly leaf: number;
+	readonly from: number;
+	readonly earlier: readonly number[];
+	readonly model?: true;
+	readonly boundary?: number;
+	readonly covered?: number;
+}
+
 export interface SessionTreeOutlineEntry {
 	readonly seq: number;
 	readonly id: string;
@@ -387,6 +403,8 @@ export interface ForkArchiveSource {
 
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
+	/** Resolve an expanded child card's saved branch and launch boundary without opening its runtime. */
+	readChildDisplayCut?(sessionId: string, launch: ChildDisplayLaunch): Promise<ChildDisplayCut>;
 	/** Create a new child, substituting the original encoded receipt bytes at the marked entry positions.
 	 * Return undefined, without publishing anything, when this source or destination is not supported. */
 	createFork?(

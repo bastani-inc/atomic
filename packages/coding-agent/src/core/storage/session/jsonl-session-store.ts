@@ -68,6 +68,7 @@ import {
 	summarizeSession,
 } from "./session-summary.js";
 import type {
+	ChildDisplayLaunch,
 	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBranchPageCut,
@@ -1096,6 +1097,31 @@ export class JsonlSessionStore implements SessionStore {
 			const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
 			return sessionTailFrom(jsonl.index, header, start, state, tail);
 		});
+	}
+
+	readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
+		return this.run(async () => {
+			const { childDisplayCut } = await import("./card-view.js");
+			const { path, jsonl } = await this.indexed(sessionId);
+			const found =
+				typeof launch.launchLeafId === "string"
+					? await this.seqInFile(path, jsonl, launch.launchLeafId)
+					: undefined;
+			return childDisplayCut(jsonl.index, launch, found);
+		});
+	}
+
+	/** Bind a short-lived archive reader to this exact file, including for duplicate exported IDs. */
+	static async withFileReader<T>(path: string, read: (store: SessionStore, id: string) => Promise<T>): Promise<T> {
+		const input = resolve(path);
+		const store = await JsonlSessionStore.open(dirname(input), { exactDirectory: true, scanExisting: false });
+		try {
+			const { id } = await store.readHeaderFile(input);
+			store[bindSessionFile](id, input);
+			return await read(store, id);
+		} finally {
+			await store.close();
+		}
 	}
 
 	readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {

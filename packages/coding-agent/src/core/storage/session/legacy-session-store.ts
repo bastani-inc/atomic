@@ -61,6 +61,7 @@ export class LegacySessionStore implements SessionStore {
 	readonly searchIndex?: SessionSearchIndex;
 	readonly readForkWindow?: SessionStore["readForkWindow"];
 	readonly readTreeOutline?: SessionStore["readTreeOutline"];
+	readonly readChildDisplayCut?: SessionStore["readChildDisplayCut"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -79,6 +80,11 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		if (inner.readChildDisplayCut)
+			this.readChildDisplayCut = async (id, launch) => {
+				await this.convert(id);
+				return inner.readChildDisplayCut!(id, launch);
+			};
 		if (inner.readTreeOutline)
 			this.readTreeOutline = async (id, from, to, epoch) => {
 				await this.convert(id);

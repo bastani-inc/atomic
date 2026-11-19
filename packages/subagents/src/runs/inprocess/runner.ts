@@ -1346,10 +1346,7 @@ function hasPartialHistory(manager: SessionManager): boolean {
 
 async function sessionLeafSeq(manager: SessionManager, leafId: string): Promise<number | undefined> {
 	if (typeof manager.findEntrySeq === "function") return await manager.findEntrySeq(leafId);
-	if (hasPartialHistory(manager)) {
-		if (typeof manager.loadFullHistory === "function") await manager.loadFullHistory();
-		if (hasPartialHistory(manager)) return undefined;
-	}
+	if (hasPartialHistory(manager)) return manager.getSessionStore?.().findEntrySeq?.(manager.getSessionId(), leafId);
 	if (typeof manager.getEntries !== "function") return undefined;
 	const entries = manager.getEntries();
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
