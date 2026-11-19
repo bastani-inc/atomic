@@ -13,6 +13,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { durableWorkflowRunSnapshots as olderDurableWorkflowRunSnapshots } from "../helpers/reference-nested-run-snapshots/completed-catalog.js";
+import { legacyBoundaryRecord } from "../helpers/reference-nested-run-snapshots/legacy-boundary-record.js";
 import { testRunId } from "../helpers/run-id.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
@@ -113,6 +114,9 @@ function olderWriter(backend: DurableWorkflowBackend): DurableWorkflowBackend {
 	return new Proxy(backend, {
 		get(target, key) {
 			if (key === "workflowAttempt") return undefined;
+			if (key === "commitCheckpoint")
+				return (...[record, options]: Parameters<DurableWorkflowBackend["commitCheckpoint"]>) =>
+					target.commitCheckpoint(legacyBoundaryRecord(record), options);
 			const value = Reflect.get(target, key);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
@@ -130,7 +134,10 @@ function graph(runs: readonly RunSnapshot[], rootId: string): readonly string[] 
 		);
 		const boundaries = new Set(
 			snapshot.stages
-				.filter((stage) => stage.status !== "failed" && stage.status !== "skipped")
+				.filter(
+					(stage) =>
+						stage.startedChildRunId !== undefined || (stage.status !== "failed" && stage.status !== "skipped"),
+				)
 				.map((stage) => stage.id),
 		);
 		for (const childRun of runs)

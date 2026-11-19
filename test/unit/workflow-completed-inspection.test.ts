@@ -21,6 +21,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { computeLayout, NODE_H, NODE_W } from "../../packages/workflows/src/tui/layout.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { testRunId } from "../helpers/run-id.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
@@ -303,6 +304,39 @@ describe("completed workflow inspection", () => {
 			);
 		}
 
+		test("an open pane still controls its attachment after inspection refreshes the same saved chat (#5559)", async () => {
+			const run = await inspected();
+			const pane = new WorkflowAttachPane({
+				store: run.store,
+				graphTheme: defaultTheme,
+				runId: run.runId,
+				initialAttachStageId: "final-source",
+				stageControlRegistry: run.registry,
+				onClose() {},
+			});
+			try {
+				pane.setVisible(false);
+				assert.equal(
+					(
+						await openCompletedDurableWorkflow(run.runId, {
+							durableBackend: run.backend,
+							store: run.store,
+							stageControlRegistry: run.registry,
+							adapters: run.adapters,
+							cwd: tempDir,
+						})
+					).ok,
+					true,
+				);
+				assert.equal(run.registry.peek(run.runId, "final-source"), run.handle);
+				pane.setVisible(true);
+				assert.equal(run.store.run(run.runId)?.stages[0]?.attached, true);
+			} finally {
+				pane.dispose();
+				await run.registry.clear();
+			}
+		});
+
 		test("a handle nobody opened holds no session", async () => {
 			const run = await inspected();
 			await new Promise((resolve) => setTimeout(resolve, 20));
@@ -334,7 +368,7 @@ describe("completed workflow inspection", () => {
 			assert.equal(run.created(), 2, "each reopening built the session once");
 		});
 
-		test("opening the run again while a stage chat is attached does not keep the session after the chat closes", async () => {
+		test("opening the run again keeps an attached stage’s conversation usable until its chat closes (#5577)", async () => {
 			const run = await inspected();
 			const detach = run.handle.subscribe(() => {});
 			await run.handle.sendUserMessage?.("what did you change?");
@@ -349,7 +383,16 @@ describe("completed workflow inspection", () => {
 			});
 			assert.equal(reopened.ok, true);
 			assert.equal(run.registry.get(run.runId, "final-source"), run.handle, "the attached handle is kept as is");
-
+			const resolved = await createPostMortemHandleResolver({
+				store: run.store,
+				stageControlRegistry: run.registry,
+				adapters: run.adapters,
+				resolveDefaultStageSessionDir: () => undefined,
+			})(run.runId, "final-source");
+			assert.ok(resolved?.ok, "the refreshed row still owns this registry entry");
+			assert.equal(resolved.handle, run.handle);
+			await resolved.handle.prompt("still the same conversation");
+			assert.equal(run.prompts.at(-1), "still the same conversation");
 			detach();
 			await untilReleased(run);
 		});
@@ -440,6 +483,66 @@ describe("completed workflow inspection", () => {
 		assert.equal(store.runs()[0]?.status, "running");
 	});
 
+	test("an inspection waiting for the saved transcript leaves a newly active run alone (#5559)", async () => {
+		const backend = await createMemoryTestBackend();
+		const store = createStore();
+		const id = testRunId("inspection-handoff");
+		const sessionFile = retainedSession("inspection-handoff");
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: "review",
+			inputs: {},
+			createdAt: 1,
+			status: "completed",
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: id,
+			checkpointId: "stage:review",
+			name: "review",
+			replayKey: "stage:review",
+			output: "done",
+			sessionFile,
+			sessionId: "inspection-handoff-session",
+			completedAt: 2,
+			topology: completedTopology("review"),
+		});
+		const entered = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const load = sessionStore.load.bind(sessionStore);
+		vi.spyOn(sessionStore, "load")
+			.mockImplementationOnce(load)
+			.mockImplementationOnce(async (...args) => {
+				entered.resolve();
+				await finish.promise;
+				return load(...args);
+			});
+		const inspecting = openCompleted(
+			id,
+			{ durableBackend: backend, store, sessionStore },
+			backend.listCompletedWorkflows(),
+		);
+		try {
+			await entered.promise;
+			store.recordRunStart({
+				id,
+				name: "successor",
+				inputs: {},
+				status: "running",
+				stages: [],
+				toolNodes: [],
+				startedAt: 3,
+			});
+			finish.resolve();
+			const result = await inspecting;
+			assert.equal(result.ok, false);
+			assert.equal(store.run(id)?.name, "successor");
+		} finally {
+			finish.resolve();
+			await inspecting;
+		}
+	});
+
 	test("replaces a retained completed snapshot with authoritative durable detail", async () => {
 		const backend = await createMemoryTestBackend();
 		const store = createStore();
@@ -483,66 +586,73 @@ describe("completed workflow inspection", () => {
 		assert.equal(store.runs()[0]?.stages[0]?.sessionFile, sessionFile);
 	});
 
-	test("refreshes a retained chat handle when authoritative transcript detail changes", async () => {
-		const backend = await createMemoryTestBackend();
-		const store = createStore();
-		const lifecycle = lifecycleRestoration(store);
-		const registry = createStageControlRegistry();
-		const firstSessionFile = retainedSession("first-authoritative");
-		const secondSessionFile = retainedSession("second-authoritative");
-		await backend.commitWorkflowRegistration({
-			workflowId: testRunId("refresh-chat"),
-			name: "completed-flow",
-			inputs: {},
-			createdAt: 1,
-			status: "completed",
-		});
-		await backend.commitCheckpoint({
-			kind: "stage",
-			workflowId: testRunId("refresh-chat"),
-			checkpointId: "stage:1",
-			name: "final",
-			replayKey: "stage:final:1",
-			sessionFile: firstSessionFile,
-			sessionId: "first-authoritative-session",
-			completedAt: 2,
-			topology: completedTopology("final-source"),
-		});
-		const deps = {
-			durableBackend: backend,
-			store,
-			stageControlRegistry: registry,
-			beforeRestore: lifecycle.beforeRestore,
-			adapters: {
-				agentSession: {
-					async create() {
-						return mockSession();
+	test.each([false, true])(
+		"refreshes a retained chat handle when authoritative transcript detail changes (mounted: %s) (#5559)",
+		async (mounted) => {
+			const backend = await createMemoryTestBackend();
+			const store = createStore();
+			const lifecycle = lifecycleRestoration(store);
+			const registry = createStageControlRegistry();
+			const firstSessionFile = retainedSession("first-authoritative");
+			const secondSessionFile = retainedSession("second-authoritative");
+			await backend.commitWorkflowRegistration({
+				workflowId: testRunId("refresh-chat"),
+				name: "completed-flow",
+				inputs: {},
+				createdAt: 1,
+				status: "completed",
+			});
+			await backend.commitCheckpoint({
+				kind: "stage",
+				workflowId: testRunId("refresh-chat"),
+				checkpointId: "stage:1",
+				name: "final",
+				replayKey: "stage:final:1",
+				sessionFile: firstSessionFile,
+				sessionId: "first-authoritative-session",
+				completedAt: 2,
+				topology: completedTopology("final-source"),
+			});
+			const deps = {
+				durableBackend: backend,
+				store,
+				stageControlRegistry: registry,
+				beforeRestore: lifecycle.beforeRestore,
+				adapters: {
+					agentSession: {
+						async create() {
+							return mockSession();
+						},
 					},
 				},
-			},
-		};
+			};
 
-		assert.equal((await openCompletedDurableWorkflow(testRunId("refresh-chat"), deps)).ok, true);
-		const firstHandle = registry.get(testRunId("refresh-chat"), "final-source");
-		assert.equal(firstHandle?.sessionFile, firstSessionFile);
-		await backend.commitCheckpoint({
-			kind: "stage",
-			workflowId: testRunId("refresh-chat"),
-			checkpointId: "stage:2",
-			name: "final",
-			replayKey: "stage:final:1",
-			sessionFile: secondSessionFile,
-			sessionId: "second-authoritative-session",
-			completedAt: 3,
-			topology: completedTopology("final-source"),
-		});
+			assert.equal((await openCompletedDurableWorkflow(testRunId("refresh-chat"), deps)).ok, true);
+			const firstHandle = registry.get(testRunId("refresh-chat"), "final-source");
+			assert.ok(firstHandle);
+			assert.equal(firstHandle.sessionFile, firstSessionFile);
+			const close = mounted ? firstHandle.subscribe(() => {}) : undefined;
+			await backend.commitCheckpoint({
+				kind: "stage",
+				workflowId: testRunId("refresh-chat"),
+				checkpointId: "stage:2",
+				name: "final",
+				replayKey: "stage:final:1",
+				sessionFile: secondSessionFile,
+				sessionId: "second-authoritative-session",
+				completedAt: 3,
+				topology: completedTopology("final-source"),
+			});
 
-		assert.equal((await openCompletedDurableWorkflow(testRunId("refresh-chat"), deps)).ok, true);
-		assert.equal(firstHandle?.isDisposed, true);
-		assert.equal(registry.get(testRunId("refresh-chat"), "final-source")?.sessionFile, secondSessionFile);
-		assert.deepEqual(lifecycle.sent, []);
-		lifecycle.unsubscribe();
-	});
+			assert.equal((await openCompletedDurableWorkflow(testRunId("refresh-chat"), deps)).ok, true);
+			assert.equal(firstHandle.isDisposed, !mounted);
+			close?.();
+			assert.equal(firstHandle.isDisposed, true);
+			assert.equal(registry.get(testRunId("refresh-chat"), "final-source")?.sessionFile, secondSessionFile);
+			assert.deepEqual(lifecycle.sent, []);
+			lifecycle.unsubscribe();
+		},
+	);
 
 	test("removes a retained chat handle when its transcript becomes invalid", async () => {
 		const backend = await createMemoryTestBackend();

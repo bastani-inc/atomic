@@ -13,13 +13,19 @@ import {
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
-import { isReleasedChildError, ReleasedChildError, type ReleasedChildErrorCode } from "./released-child-errors.js";
+import {
+	isReleasedChildError,
+	ReleasedChildError,
+	type ReleasedChildErrorCode,
+	releasedChildErrorSubject,
+} from "./released-child-errors.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	findAppendedSubagentChildRecord,
 	isSubagentChildRecord,
 	isUnsavedSubagentChildRecord,
 	observeSubagentChildRecord,
+	pendingSubagentChildWrites,
 	registerSubagentChildRecordReader,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -30,6 +36,8 @@ import {
 	subagentChildRecordOf,
 	unsavedSubagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
+
+import { subagentChildOwnerWriter, subagentChildStageCloseWriter } from "./subagent-child-owner.js";
 
 export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE, SUBAGENT_CHILD_RELEASED_STATUS };
 
@@ -438,7 +446,21 @@ export function subagentChildOwner(
 		: { kind: "session", sessionId };
 }
 
-const appendChains = new Map<string, Promise<void>>();
+// A replacement generation must neither overtake a pending save nor lose a stop requested by its predecessor.
+function newRecordState() {
+	return {
+		appendChains: new Map<string, Promise<void>>(),
+		stopRequests: new Map<string, SubagentChildStopStatus>(),
+		pendingRecordFailures: new Map<string, ChildRecordFailureNotice>(),
+		stageChildren: new WeakMap<AbortSignal, StageChildren>(),
+		stageSessionsInProcess: new Set<string>(),
+	};
+}
+const RECORD_STATE = Symbol.for("@bastani/subagents/child-record-writes@1");
+const processRecords = globalThis as { [RECORD_STATE]?: ReturnType<typeof newRecordState> };
+processRecords[RECORD_STATE] ??= newRecordState();
+const { appendChains, stopRequests, pendingRecordFailures, stageChildren, stageSessionsInProcess } =
+	processRecords[RECORD_STATE];
 
 /** Failed appends of child records, counted so a record that could not be saved is not lost silently. */
 export const subagentChildRecordFailures: { count: number; last?: ReleasedChildError } = { count: 0 };
@@ -449,7 +471,6 @@ interface ChildRecordFailureNotice {
 	readonly message: string;
 	readonly hint: string;
 }
-const pendingRecordFailures = new Map<string, ChildRecordFailureNotice>();
 
 /** Record one owner-scoped notice without retaining the error or its cause. */
 export function observeChildRecordFailure(ownerSessionId: string, error: ReleasedChildError): void {
@@ -517,10 +538,13 @@ function stageCloseFailure(ownerSessionId: string, childId: string | undefined, 
 
 /** Append `record`, already observed as its child's full latest record, and point the index at its entry. */
 async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
+	pendingSubagentChildWrites.add(record);
 	try {
 		await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
 	} catch (error) {
 		throw recordAppendFailure(record, error as Error);
+	} finally {
+		pendingSubagentChildWrites.delete(record);
 	}
 	settleSubagentChildRecord(record);
 }
@@ -532,6 +556,7 @@ async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: Sub
  */
 function appendInOrder(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
 	const full = observeSubagentChildRecord(record);
+	pendingSubagentChildWrites.add(full);
 	return inOrder(full.owner.sessionId, () => appendObserved(pi, full)).catch((error: Error) => {
 		observeChildRecordFailure(full.owner.sessionId, asRecordFailure(full, error));
 	});
@@ -546,12 +571,14 @@ export async function saveUnsavedSubagentChildRecords(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	ownerSessionId: string,
 ): Promise<void> {
-	for (const record of unsavedSubagentChildRecordsOf(ownerSessionId))
+	for (const record of unsavedSubagentChildRecordsOf(ownerSessionId)) {
+		if (pendingSubagentChildWrites.has(record)) continue;
 		void inOrder(ownerSessionId, async () => {
 			if (isUnsavedSubagentChildRecord(record)) await appendObserved(pi, record);
 		}).catch((error: Error) => {
 			observeChildRecordFailure(ownerSessionId, asRecordFailure(record, error));
 		});
+	}
 	await subagentChildRecordsAppended(ownerSessionId);
 }
 
@@ -573,10 +600,6 @@ interface StageChildren {
 	readonly follow: (pi: Pick<ExtensionAPI, "appendEntry">, sessionManager: StageSession) => void;
 }
 
-const stageChildren = new WeakMap<AbortSignal, StageChildren>();
-/** Workflow stage sessions with a generation in this process, whose own session records how their children end. */
-const stageSessionsInProcess = new Set<string>();
-
 /** Whether an append failed because the session it went through was given up: its extension API refuses it. */
 function refusedByGivenUpSession(error: Error): boolean {
 	const cause = isReleasedChildError(error) && error.cause instanceof Error ? error.cause : error;
@@ -596,7 +619,7 @@ function saveStageClosed(
 	const sessionId = full.owner.sessionId;
 	void inOrder(sessionId, async () => {
 		try {
-			await appendObserved(stage.pi, full);
+			await appendObserved(subagentChildStageCloseWriter(stage.pi), full);
 		} catch (error) {
 			if (!refusedByGivenUpSession(error as Error)) throw error;
 			const stored = await SessionManager.open(stage.sessionManager.getSessionStore(), sessionId, undefined, {
@@ -746,6 +769,7 @@ export function createSubagentChildRecordSink(
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
 ): SubagentChildRecordSink {
 	const owner = subagentChildOwner(ctx);
+	pi = subagentChildOwnerWriter(pi, ctx.sessionManager);
 	registerSubagentChildRecordReader(ctx.sessionManager);
 	const stage = watchWorkflowStageSubagentChildren(pi, ctx);
 	const worktreeRootMappings = currentWorktreeRootMappings();
@@ -822,8 +846,6 @@ export async function holdSubagentChildMessages(
 
 /** `terminalStatus` of a child stopped by `pause` or `quit`; both stay resumable. */
 export type SubagentChildStopStatus = "paused" | "quit";
-
-const stopRequests = new Map<string, SubagentChildStopStatus>();
 
 /** Mark the task about to be cancelled so its settlement is recorded as paused or quit, not interrupted. */
 export function requestSubagentChildStop(taskId: string, status: SubagentChildStopStatus): void {
@@ -1047,7 +1069,9 @@ export async function recordSubagentChildWakeFailure(
 			wakeFailure: {
 				...(latest.taskId === undefined ? {} : { taskId: latest.taskId }),
 				code: failure.code,
-				reason: failure.fields.reason ?? failure.message,
+				// Shown before the code and the hint, so not the message, which ends with them, also for a copy that
+				// crossed a JSON boundary (#5551).
+				reason: failure.fields?.reason ?? releasedChildErrorSubject(failure),
 				hint: failure.hint,
 				...(reported ? { reported } : {}),
 			},

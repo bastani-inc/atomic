@@ -2,8 +2,9 @@
  * Utilities for formatting keybinding hints in the UI.
  */
 
-import { getKeybindings, type Keybinding, type KeyId } from "@bastani/atomic-tui";
+import { clickableKeysHint, getKeybindings, type HintKeyPart, type Keybinding, type KeyId } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
+import { hintKeyParts } from "./nav-keys.ts";
 
 export interface KeyTextFormatOptions {
 	/** @deprecated Key labels are always normalized for display. */
@@ -81,14 +82,37 @@ function formatHintLabel(description: string): string {
 	return description;
 }
 
+/** The keys of `keybinding` as a hint names them, each with the key a click on its text presses. */
+function keyParts(keybinding: Keybinding, style = (text: string) => theme.fg("dim", text)): HintKeyPart[] {
+	const keys = getKeybindings().getKeys(keybinding);
+	return keys.map((key, index) => ({
+		text: style(`${formatKeyText(key)}${index < keys.length - 1 ? "/" : ""}`),
+		key,
+	}));
+}
+
+/**
+ * `esc Cancel` with no style of its own, for text styled as a whole, such as a loader's message: the keys of
+ * `keybinding` and what they do. A click on the hint presses its key.
+ */
+export function keyTextHint(keybinding: Keybinding, description: string): string {
+	return clickableKeysHint(
+		keyParts(keybinding, (text) => text),
+		` ${formatHintLabel(description)}`,
+	);
+}
+
+/** `ctrl+o expand`: the keys of `keybinding` and what they do. A click on the hint presses its key. */
 export function keyHint(keybinding: Keybinding, description: string): string {
-	return theme.fg("dim", keyText(keybinding)) + theme.fg("muted", ` ${formatHintLabel(description)}`);
+	const parts = keyParts(keybinding);
+	const label = theme.fg("muted", ` ${formatHintLabel(description)}`);
+	return parts.length > 0 ? clickableKeysHint(parts, label) : theme.fg("dim", "") + label;
 }
 
 export function keyHintIfBound(keybinding: Keybinding, description: string): string {
-	const text = keyText(keybinding);
-	if (!text) return "";
-	return theme.fg("dim", text) + theme.fg("muted", ` ${formatHintLabel(description)}`);
+	const parts = keyParts(keybinding);
+	if (parts.length === 0) return "";
+	return clickableKeysHint(parts, theme.fg("muted", ` ${formatHintLabel(description)}`));
 }
 
 export function parenthesizedKeyHint(keybinding: Keybinding, description: string, prefix?: string): string {
@@ -97,6 +121,8 @@ export function parenthesizedKeyHint(keybinding: Keybinding, description: string
 	return theme.fg("muted", `(${prefix ? `${prefix}, ` : ""}`) + hint + theme.fg("muted", ")");
 }
 
+/** A hint for a key that is not a keybinding, such as `↑↓ navigate`. A click on a key's text presses that key. */
 export function rawKeyHint(key: string, description: string): string {
-	return theme.fg("dim", formatKeyText(key)) + theme.fg("muted", ` ${formatHintLabel(description)}`);
+	const parts = hintKeyParts(formatKeyText(key)).map((part) => ({ ...part, text: theme.fg("dim", part.text) }));
+	return clickableKeysHint(parts, theme.fg("muted", ` ${formatHintLabel(description)}`));
 }

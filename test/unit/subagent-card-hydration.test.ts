@@ -1061,6 +1061,7 @@ function isolatedEngineHost(manager: SessionManager, subagentRenderer: ToolRende
 	service.bindSession(engineSession as unknown as AgentSession);
 	let resourcesLoaded = () => {};
 	const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			listeners.push(listener);
 			return () => listeners.splice(listeners.indexOf(listener), 1);

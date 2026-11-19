@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it } from "vitest";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
@@ -9,6 +8,7 @@ import {
 	summarizeFailureText,
 	withoutStackFrames,
 } from "../../packages/workflows/src/tui/run-outcome.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import { defaultTheme, makeStage } from "./overlay-graph-helpers.js";
 
 function stage(

@@ -1,5 +1,6 @@
 import {
 	builtinToolBlockPresentation,
+	clickableKeyTextHint,
 	drawsWithMargin,
 	formatTokenSegment,
 	initTheme,
@@ -10,6 +11,7 @@ import {
 	keyText,
 	navEntryKeys,
 	SlicedRows,
+	slashCommandHint,
 	streamRows,
 	streamSeparated,
 	type TaskId,
@@ -843,7 +845,11 @@ function buildOutcomeToolBlock(input: {
 			status = "warning";
 			const questionFirstLine = firstDisplayLine(task.attention.prompt || "");
 			const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
-			statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+			statusLine = statJoin(theme, [
+				"Needs input",
+				questionFirstLine,
+				answerKey ? clickableKeyTextHint(answerKey, " to answer") : "",
+			]);
 		} else if (turnInterrupted) {
 			status = "stopped";
 			statusLine = statJoin(theme, ["Stopped", elapsedText]);
@@ -875,7 +881,7 @@ function buildOutcomeToolBlock(input: {
 					"Running",
 					runningElapsedText,
 					tokenText,
-					manageKey ? `${manageKey} to manage` : "",
+					manageKey ? clickableKeyTextHint(manageKey, " to manage") : "",
 				]);
 			} else {
 				const terminal = record.terminalStatus ?? "";
@@ -930,7 +936,7 @@ function buildOutcomeToolBlock(input: {
 				"Running",
 				runningElapsedText,
 				tokenText,
-				manageKey ? `${manageKey} to manage` : "",
+				manageKey ? clickableKeyTextHint(manageKey, " to manage") : "",
 			]);
 		} else if (observation.result.kind === "completed") {
 			status = "success";
@@ -1040,7 +1046,11 @@ function buildForegroundChildToolBlock(input: {
 		status = "warning";
 		const questionFirstLine = firstDisplayLine(taskRecord.attention.prompt || "");
 		const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
-		statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+		statusLine = statJoin(theme, [
+			"Needs input",
+			questionFirstLine,
+			answerKey ? clickableKeyTextHint(answerKey, " to answer") : "",
+		]);
 	} else if (turnInterrupted) {
 		status = "stopped";
 		statusLine = statJoin(theme, ["Stopped", elapsedText]);
@@ -1053,7 +1063,7 @@ function buildForegroundChildToolBlock(input: {
 			"Running",
 			runningElapsedText,
 			tokenText,
-			manageKey ? `${manageKey} to manage` : "",
+			manageKey ? clickableKeyTextHint(manageKey, " to manage") : "",
 		]);
 	} else if (!child) {
 		status = "stopped";
@@ -1273,7 +1283,7 @@ export function renderSubagentToolResult(
 				? text.text
 				: `${theme.bold(`${count} available agents`)}\n${theme.fg(
 						"dim",
-						["/agents to browse", keyHintIfBound("app.tools.expand", "Expand")]
+						[slashCommandHint("/agents to browse"), keyHintIfBound("app.tools.expand", "Expand")]
 							.filter(Boolean)
 							.map((hint, index) => (index ? `(${hint})` : hint))
 							.join(" · "),
