@@ -19,7 +19,7 @@ let headlessWarningWritten = false;
 
 /**
  * Write {@link DEFAULT_GROUP_WARNING} to stderr for a session without a UI, at most once per process. Print and JSON
- * runs, workflow stages and subagents have no place to show a notice, and stdout stays the answer's.
+ * runs and subagents have no place to show a notice, and stdout stays the answer's.
  */
 export function warnDefaultGroupWithoutUi(write: (line: string) => void = (line) => console.error(line)): void {
   if (headlessWarningWritten) return;

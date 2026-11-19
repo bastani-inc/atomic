@@ -543,44 +543,32 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 	);
 
 	test(
-		"a workflow-stage pattern still queues one sticky send through its run's owner (#4752)",
+		"a workflow-stage target is refused, pattern or not, and sends nothing (Atomic 0.10.0 removed workflows)",
 		async () => {
 			const runId = randomUUID();
-			const invocationGroup = `workflow:${runId}`;
-			const capability = `capability-${runId}`;
-			const owner = await connect("workflow-owner", { group: invocationGroup });
-			owner.registerPendingStageRoute(runId, invocationGroup, capability, [
-				{
-					stageId: "reviewer",
-					stageName: "reviewer",
-					target: `workflow:${runId}/reviewer`,
-					lifecycle: "pending",
-					routeEligible: true,
-					group: invocationGroup,
-				},
-			]);
-			await owner.listSessions();
-			const routed: string[] = [];
-			owner.on("pending_stage_message", (request: { requestId: string; target: string }) => {
-				routed.push(request.target);
-				owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
-			});
+			const member = await connect("workflow-member", { group: `workflow:${runId}` });
+			const inbox: string[] = [];
+			member.on("message", (_from: unknown, message: { content: { text: string } }) =>
+				inbox.push(message.content.text),
+			);
 			const sender = await connect("workflow-sender");
-			await sender.joinGroup(invocationGroup);
 			const tool = registerTool(sender);
 
-			const result = await tool.execute(
-				"workflow",
-				{ action: "send", to: `workflow:${runId}/**`, message: "broadcast" },
-				undefined,
-				undefined,
-				contextFor("workflow-host"),
-			);
-
-			assert.equal(result.isError, false, text(result));
-			assert.equal(result.details?.queued, true);
-			assert.match(text(result), new RegExp(`Message queued for workflow:${runId}/\\*\\*`));
-			assert.deepEqual(routed, [`workflow:${runId}/**`], "the owner routes the pattern once, not per session");
+			for (const to of [`workflow:${runId}/**`, `workflow:${runId}/reviewer`]) {
+				const result = await tool.execute(
+					"workflow",
+					{ action: "send", to, message: "broadcast" },
+					undefined,
+					undefined,
+					contextFor("workflow-host"),
+				);
+				assert.equal(result.isError, true, to);
+				assert.match(
+					text(result),
+					/Workflow stage targets \(workflow:<rootRunId>\/\.\.\.\) were removed in Atomic 0\.10\.0/,
+				);
+			}
+			assert.deepEqual(inbox, []);
 		},
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);

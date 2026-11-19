@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { type ChatMessageRenderOptions, SessionManager } from "@bastani/atomic";
-import { test, vi } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
 import type { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
-import { getEditorTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 import { withDiskSessions } from "../helpers/on-disk-session.js";
+
+beforeAll(() => initTheme("dark", false));
 
 const title = "Subagent worker completed: Review";
 const finished = {
@@ -18,7 +20,6 @@ const finished = {
 };
 
 type Backend = "sqlite" | "jsonl";
-type Host = "chat" | "stage";
 
 const killed = {
 	notification: {

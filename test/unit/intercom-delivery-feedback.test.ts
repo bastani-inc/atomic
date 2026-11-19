@@ -215,20 +215,3 @@ test("completion prelude cannot continue or roll back into a replacement parent 
 		await current.close();
 	}
 });
-
-test("closed stages keep non-owned refusals as feedback and suppress their own retired child traffic", async () => {
-	const current = await fixture(true);
-	try {
-		await current.deliver({ ...refusal, id: "owned-refusal", source: { subagentRunId: "owned-run" } });
-		assert.equal(current.sent.length, 0);
-		await current.deliver({ ...refusal, source: { subagentRunId: "external-run" } });
-		assert.equal(current.sent.length, 1);
-		assert.match(current.sent[0]!.content, /Intercom delivery failed/);
-		assert.match(current.sent[0]!.content, /1970-01-01T00:00:01.000Z/);
-		assert.notEqual(current.sent[0]!.options?.triggerTurn, true);
-		await current.deliver({ ...refusal, source: { subagentRunId: "external-run" } });
-		assert.equal(current.sent.length, 1);
-	} finally {
-		await current.close();
-	}
-});
