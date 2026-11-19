@@ -27,7 +27,7 @@ describe("removed provider active surfaces", () => {
 	});
 
 	test("Impeccable ships no removed-editor compatibility adapter", () => {
-		const skill = "packages/workflows/skills/impeccable";
+		const skill = "packages/subagents/skills/impeccable";
 		assert.equal(existsSync(join(root, skill, "scripts/hook-before-edit.mjs")), false);
 		for (const path of [
 			`${skill}/SKILL.md`,
