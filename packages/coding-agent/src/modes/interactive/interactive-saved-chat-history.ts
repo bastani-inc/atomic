@@ -184,7 +184,7 @@ function requestPage(
 }
 
 class SavedChatHistory {
-	private readonly marker = new Text("↑ Scroll up for earlier messages", 1, 0);
+	private readonly marker = new Text("Earlier messages are saved above this point.", 1, 0);
 	private readonly pages: MountedPage[] = [];
 	private pending?: AbortController;
 	private readonly counter?: NewMessageCounter;

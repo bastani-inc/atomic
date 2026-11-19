@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { yieldToEventLoop } from "../../../utils/event-loop.js";
+import { hash } from "fast-sha256";
 import { SessionConflictError } from "./errors.js";
 import { type HistoryPacketReader, historySnapshotFor } from "./history-snapshot.js";
 import {
@@ -10,12 +9,11 @@ import {
 	type SessionHistoryPage,
 	type SessionHistoryReadOptions,
 	type SessionStore,
+	yieldSessionTurn as yieldToEventLoop,
 } from "./types.js";
 
 function cursorScope(sessionId: string, epoch: string): string {
-	return createHash("sha256")
-		.update(JSON.stringify([sessionId, epoch]))
-		.digest("base64url");
+	return Buffer.from(hash(new TextEncoder().encode(JSON.stringify([sessionId, epoch])))).toString("base64url");
 }
 
 /** Start a portable iteration over the captured generation without reading its first page yet. */

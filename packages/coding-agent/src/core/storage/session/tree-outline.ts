@@ -1,8 +1,12 @@
-import { yieldToEventLoop } from "../../../utils/event-loop.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SessionConflictError } from "./errors.js";
 import { historyChunks } from "./history-pages.js";
-import { SESSION_HISTORY_PAGE_ENTRIES, type SessionStore, type SessionTreeOutlineEntry } from "./types.js";
+import {
+	SESSION_HISTORY_PAGE_ENTRIES,
+	type SessionStore,
+	type SessionTreeOutlineEntry,
+	yieldSessionTurn as yieldToEventLoop,
+} from "./types.js";
 
 /** The shape needed for the unfiltered tree; preview text is never part of a navigation record. */
 export function treeOutlineEntry(seq: number, entry: SessionEntry): SessionTreeOutlineEntry {

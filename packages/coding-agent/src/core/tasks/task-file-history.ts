@@ -165,6 +165,11 @@ async function filePage(
 			throw new Error(`History unavailable: the session file was moved or deleted (${path}).`);
 		throw error;
 	});
+	// A detail can be left during its first read; release the old OS handle without waiting for another UI turn.
+	const closeOnAbort = () => {
+		void file.close().catch(() => {});
+	};
+	signal?.addEventListener("abort", closeOnAbort, { once: true });
 	try {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			signal?.throwIfAborted();
@@ -274,6 +279,7 @@ async function filePage(
 		}
 		throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
 	} finally {
+		signal?.removeEventListener("abort", closeOnAbort);
 		await file.close();
 	}
 }
@@ -310,18 +316,20 @@ export async function taskFileDetail(
 	id: string,
 	throughId: string | undefined,
 	text: (message: Extract<SessionEntry, { type: "message" }>["message"]) => string | undefined,
+	signal?: AbortSignal,
 ): Promise<{ prompt?: string; output?: string }> {
 	const stamp = async () => {
 		const s = await stat(path, { bigint: true });
 		return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
 	};
 	for (let attempt = 0; attempt < 3; attempt++) {
+		signal?.throwIfAborted();
 		const observed = await stamp();
 		let prompt: string | undefined, output: string | undefined;
 		for (const direction of ["forward", "backward"] as const) {
 			const forward = direction === "forward";
 			let own = !throughId || !forward;
-			read: for await (const page of taskFilePages(path, id, { direction, detail: { throughId } })) {
+			read: for await (const page of taskFilePages(path, id, { direction, signal, detail: { throughId } })) {
 				for (const item of forward ? page.items : [...page.items].reverse()) {
 					if (throughId && ("entry" in item ? item.entry.id === throughId : item.detail?.inheritedEnd)) {
 						if (!forward) break read;

@@ -188,7 +188,7 @@ export interface TaskViewSource {
 		range: { readonly start: string; readonly maximumBytes: number },
 	): Promise<TaskViewResult<TaskOutputView>>;
 	/** Synchronous where the task's session is in this process, so a view reads it in the same turn. */
-	taskDetailText(id: TaskId): TaskDetailText | Promise<TaskDetailText>;
+	taskDetailText(id: TaskId, signal?: AbortSignal): TaskDetailText | Promise<TaskDetailText>;
 	readTaskTranscript(
 		id: TaskId,
 		cursor?: string,
@@ -218,6 +218,12 @@ export interface TaskViewSource {
 	taskCommands?(id: TaskId): TaskCommandCatalog | undefined | Promise<TaskCommandCatalog | undefined>;
 }
 
+const cancellableDetails = new WeakSet<TaskViewSource["taskDetailText"]>();
+/** Pass cancellation only to a detail reader that accepts it. Old SDK readers see their original arguments. */
+export function readTaskDetailForView(source: TaskViewSource, id: TaskId, signal?: AbortSignal) {
+	const read = source.taskDetailText;
+	return signal && cancellableDetails.has(read) ? read.call(source, id, signal) : read.call(source, id);
+}
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
 const sources = new WeakMap<OwnerTaskStore, TaskViewSource>();
 /** Each launched-task view by the task that launched them, under the view of every task. */
@@ -267,7 +273,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		stdinAvailable: (id) => root.stdinAvailable(id),
 		writeTaskInput: (id, text) => root.writeTaskInput(id, text),
 		readTaskOutput: (id, range) => root.readTaskOutput(id, range),
-		taskDetailText: (id) => root.taskDetailText(id),
+		taskDetailText: (id, signal) => readTaskDetailForView(root, id, signal),
 		readTaskTranscript: (id, cursor) => root.readTaskTranscript(id, cursor),
 		followTaskTranscript: (id) => root.followTaskTranscript(id),
 		extensionStatuses: (id) => root.extensionStatuses(id),
@@ -282,6 +288,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 			? {}
 			: { taskReadOnlyReason: (id: TaskId) => taskReadOnlyReason.call(root, id) }),
 	};
+	cancellableDetails.add(view.taskDetailText);
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
 	bindTaskClockSource(view, root);
@@ -359,7 +366,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const page = await readTaskOutputTail(store.supervisor, task.value, range);
 			return page.ok ? page : { ok: false, error: { message: page.error.message } };
 		},
-		taskDetailText(id) {
+		taskDetailText(id, signal) {
 			const task = lease(id);
 			if (!task.ok) return {};
 			const source = taskTranscriptSource(task.value);
@@ -369,7 +376,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				if (file && archiveReader(session))
 					return import("./task-file-history.js")
 						.then(({ taskFileDetail }) =>
-							taskFileDetail(file.path, file.sessionId, inheritedThroughId, messageText),
+							taskFileDetail(file.path, file.sessionId, inheritedThroughId, messageText, signal),
 						)
 						.then((value) =>
 							file.unsaved?.type === "message" && file.unsaved.message.role === "assistant"
@@ -533,6 +540,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			});
 		},
 	};
+	cancellableDetails.add(source.taskDetailText);
 	sources.set(store, source);
 	bindTaskClockSource(source, store);
 	return source;

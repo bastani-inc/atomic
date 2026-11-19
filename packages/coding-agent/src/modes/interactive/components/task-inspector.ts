@@ -33,7 +33,11 @@ import {
 	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, OwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import {
+	ownerTaskViewSource,
+	readTaskDetailForView,
+	type TaskViewSource,
+} from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
@@ -235,6 +239,7 @@ export class TaskInspector implements Component {
 	private detailContent: Omit<TaskDetailContent, "stdinAvailable"> = {};
 	private detailTaskId?: TaskId;
 	private detailGeneration = 0;
+	private detailRead?: AbortController;
 	private disposed = false;
 	private statusWatch?: { taskId: TaskId; release: () => void };
 	private readonly input = new Input();
@@ -647,6 +652,8 @@ export class TaskInspector implements Component {
 	}
 	dispose(): void {
 		this.disposed = true;
+		this.detailRead?.abort();
+		this.detailRead = undefined;
 		this.releaseBoardSource?.();
 		this.releaseStatusWatch();
 		this.closeTranscript();
@@ -728,6 +735,8 @@ export class TaskInspector implements Component {
 	}
 	/** Opens the selected task's transcript: an agent's chat or a shell's retained output, on the shared stack. */
 	private openTranscript(): void {
+		this.detailRead?.abort();
+		this.detailRead = undefined;
 		this.closeTranscript();
 		const task = this.selected();
 		if (!task) return;
@@ -829,6 +838,9 @@ export class TaskInspector implements Component {
 		this.requestRender();
 	}
 	private async loadDetail(): Promise<void> {
+		this.detailRead?.abort();
+		const controller = new AbortController();
+		this.detailRead = controller;
 		const selectedId = this.selected()?.ref.taskId;
 		if (selectedId !== this.detailTaskId) {
 			this.detailContent = {};
@@ -845,7 +857,7 @@ export class TaskInspector implements Component {
 			this.navigation.focus === focus &&
 			focus.kind === "detail" &&
 			this.navigation.selectedTaskId === task.ref.taskId;
-		const read = this.store.taskDetailText(task.ref.taskId);
+		const read = readTaskDetailForView(this.store, task.ref.taskId, controller.signal);
 		const own = read instanceof Promise ? await read : read;
 		if (!current()) return;
 		if (own.prompt !== undefined) this.detailContent.prompt = own.prompt;

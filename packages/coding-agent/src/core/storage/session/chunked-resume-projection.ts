@@ -28,7 +28,7 @@ type Shape =
 	| "op"
 	| "usage"
 	| "number";
-type Reader<T> = Generator<void, T, Token>;
+export type Reader<T> = Generator<void, T, Token>;
 
 const protocolMessage = { id: true, replyTo: true, expectsReply: true } as const;
 const usageTotals = {
@@ -76,7 +76,7 @@ function field(fields: Fields, key: string): Shape | undefined {
 }
 
 /** Consume the rest of one value without retaining any constituent token or nesting frame. */
-function* skip(first: Token): Reader<void> {
+export function* skip(first: Token): Reader<void> {
 	let depth = first.name.startsWith("start") ? 1 : 0;
 	while (depth > 0) {
 		const { name } = yield;
@@ -85,7 +85,7 @@ function* skip(first: Token): Reader<void> {
 	}
 }
 
-function* stringValue(limit = Infinity): Reader<string> {
+export function* stringValue(limit = Infinity): Reader<string> {
 	let value = "";
 	for (let token = yield; token.name === "stringChunk"; token = yield) {
 		if (value.length < limit) value += token.value.slice(0, limit - value.length);
@@ -331,7 +331,7 @@ function* project(
 
 // Limit the number of short tokens a single tokenizer call can return as well as the bytes read from storage.
 const TOKEN_PAGE_BYTES = 16 * 1024;
-async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<T>): Promise<T> {
+export async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<T>): Promise<T> {
 	const decoder = new TextDecoder("utf-8", { fatal: true });
 	const consume = feed(reader);
 	for await (const chunk of chunks) {
