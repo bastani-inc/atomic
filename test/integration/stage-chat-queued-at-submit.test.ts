@@ -106,9 +106,16 @@ test.each(["before", "after"] as const)(
 		const turn = fixture.handle.prompt(prompt);
 		try {
 			await entered.promise;
+			const notice = "Concurrent stage notice";
+			await fixture.stage.session.sendCustomMessage(
+				{ customType: "notice", content: notice, display: true },
+				{ excludeFromContext: true },
+			);
 			const reopened = fixture.mount();
-			assert.equal(count(live), 1);
-			assert.equal(count(reopened), 1);
+			const rows = (view: StageChatView) =>
+				view.render(120).flatMap((line) => [prompt, notice].filter((text) => stripAnsi(line).includes(text)));
+			assert.deepEqual(rows(live), [prompt, notice]);
+			assert.deepEqual(rows(reopened), rows(live));
 			release.resolve();
 			await turn;
 			assert.equal(count(reopened), 1);

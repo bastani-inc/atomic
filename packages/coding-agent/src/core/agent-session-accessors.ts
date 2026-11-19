@@ -81,15 +81,24 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
 				const { entries, messages } = this.sessionManager.buildSessionProjection("transcript", beforeSave);
 				const pending = this.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
-				if (pending.length === 0) return messages;
+				if (pending.length === 0 && beforeSave === undefined) return messages;
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
-				return [
-					...messages,
-					...pending.filter((message) => {
+				// An independent delivery can save a notice after the pinned leaf and publish it while the input's
+				// write is still outstanding. Its source ID distinguishes it from both the prefix and the pending input.
+				const tail = new Set(pending);
+				if (beforeSave !== undefined) {
+					for (const message of this.messages) {
 						const id = this._entryIdsByMessage.get(message);
-						return id === undefined || !saved.has(id);
-					}),
-				];
+						if (id !== undefined && !saved.has(id)) tail.add(message);
+					}
+				}
+				for (const message of tail) {
+					const id = this._entryIdsByMessage.get(message);
+					if (id !== undefined && saved.has(id)) continue;
+					if (id !== undefined) saved.add(id);
+					messages.push(message);
+				}
+				return messages;
 			},
 		},
 		steeringMode: {
