@@ -754,7 +754,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			const until = pending?.type === "auto_retry_start" ? pending.retryAt : now + event.delayMs;
 			const wait = retryWaitFromEvent({ ...event, retryAt: until });
 			const cancel = retryCancelHint();
-			const retryMessage = (seconds: number) => retryWaitMessage(wait, seconds, cancel);
+			// The line fits the columns its row leaves it when it renders, so it never wraps.
+			const retryMessage = (seconds: number) => (columns: number) =>
+				retryWaitMessage(wait, seconds, cancel, columns);
 			this.retryLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,

@@ -3229,15 +3229,14 @@ test(
 		const marker = join(tools, "port"),
 			stop = join(tools, "stop");
 		const helper = join(tools, "monitor.cjs");
+		// The helper's source is fixed; its paths arrive as arguments.
 		writeFileSync(
 			helper,
-			`const fs = require('node:fs'); const s = require('node:net').createServer(); s.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(marker)}, String(s.address().port))); setInterval(() => { if (fs.existsSync(${JSON.stringify(stop)})) process.exit(1); }, 40);`,
+			"const fs = require('node:fs'); const [marker, stop] = process.argv.slice(2); const s = require('node:net').createServer(); s.listen(0, '127.0.0.1', () => fs.writeFileSync(marker, String(s.address().port))); setInterval(() => { if (fs.existsSync(stop)) process.exit(1); }, 40);",
 		);
 		const monitor = join(tools, "monitor");
-		writeFileSync(
-			monitor,
-			`#!/bin/sh\nexec '${process.execPath.replaceAll("\\", "/")}' '${helper.replaceAll("\\", "/")}'\n`,
-		);
+		const shellArgs = [process.execPath, helper, marker, stop].map((path) => `'${path.replaceAll("\\", "/")}'`);
+		writeFileSync(monitor, `#!/bin/sh\nexec ${shellArgs.join(" ")}\n`);
 		chmodSync(monitor, 0o755);
 		const savedPath = process.env.PATH;
 		if (process.platform !== "win32") {
