@@ -56,6 +56,7 @@ interface PendingInput {
 }
 
 class RemoteComponent implements Component {
+	hostColorDepth?: number;
 	private scrollRequest: WidgetScrollRequest | undefined;
 	getScrollRequest(): WidgetScrollRequest | undefined {
 		return this.scrollRequest;
@@ -164,25 +165,24 @@ class RemoteComponent implements Component {
 			frame: this.paintedFrame,
 			...(rowKey === undefined ? {} : { rowKey }),
 			clickId,
+			cancelsClicks: true,
 			x: Math.max(0, Math.floor(event.x)),
 			y: Math.max(0, Math.floor(event.y)),
 			width: Math.max(0, Math.floor(event.width)),
 			height: Math.max(0, Math.floor(event.height)),
 		});
+		const finish = (type: "engine_custom_click_settle" | "engine_custom_click_cancel") => {
+			if (this.disposed) return;
+			try {
+				this.runtime.sendEngineCommand({ type, componentId: this.componentId, clickId });
+			} catch {
+				// An engine that went away takes no click; the host keeps its frame.
+			}
+		};
 		return {
 			handled: true,
-			whenSingleClick: () => {
-				if (this.disposed) return;
-				try {
-					this.runtime.sendEngineCommand({
-						type: "engine_custom_click_settle",
-						componentId: this.componentId,
-						clickId,
-					});
-				} catch {
-					// An engine that went away takes no click; the host keeps its frame.
-				}
-			},
+			whenSingleClick: () => finish("engine_custom_click_settle"),
+			onSingleClickCancel: () => finish("engine_custom_click_cancel"),
 		};
 	}
 
@@ -242,6 +242,7 @@ class RemoteComponent implements Component {
 		this.runtime.sendEngineCommand({
 			type: "engine_custom_render",
 			componentId: this.componentId,
+			...(this.requestId === 0 && this.hostColorDepth !== undefined ? { colorDepth: this.hostColorDepth } : {}),
 			requestId: ++this.requestId,
 			width,
 			rows,
@@ -607,6 +608,7 @@ export class RemoteComponentController {
 			this.ui.setWidget(
 				widgetKey,
 				(tui) => {
+					component.hostColorDepth = tui.terminal?.colorDepth;
 					getRows = () => tui.terminal.rows;
 					paintNow = () => tui.requestImmediateRender();
 					return component;
@@ -629,6 +631,7 @@ export class RemoteComponentController {
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 						() => tui.requestImmediateRender(),
 					);
+					component.hostColorDepth = tui.terminal?.colorDepth;
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered

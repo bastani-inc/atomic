@@ -1,5 +1,26 @@
 import type { RunSnapshot, StageSnapshot } from "./store-types.js";
 
+// Worker publication and durable inspection can replace a snapshot without starting a new execution.
+// Share owners across host reloads without keeping any old run, stage or transcript reachable.
+const attachmentOwnersKey = Symbol.for("atomic-workflows/run-attachment-owners@1");
+const processState = globalThis as typeof globalThis & { [attachmentOwnersKey]?: WeakMap<RunSnapshot, symbol> };
+const attachmentOwners = processState[attachmentOwnersKey] ?? new WeakMap<RunSnapshot, symbol>();
+processState[attachmentOwnersKey] = attachmentOwners;
+
+export function runAttachmentOwner(run: RunSnapshot): symbol {
+	let owner = attachmentOwners.get(run);
+	if (owner === undefined) {
+		owner = Symbol();
+		attachmentOwners.set(run, owner);
+	}
+	return owner;
+}
+
+export function publishRunForOwner(run: RunSnapshot, owner: symbol): RunSnapshot {
+	attachmentOwners.set(run, owner);
+	return run;
+}
+
 /** Child run selected by a boundary's status-authoritative ownership metadata. */
 export function authoritativeWorkflowChildRunId(stage: StageSnapshot | undefined): string | undefined {
 	if (stage === undefined) return undefined;
