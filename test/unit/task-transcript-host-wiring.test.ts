@@ -256,7 +256,7 @@ test("the worker names the task when messages are unsupported or the failure is 
 test("a reopened task shows the lines Atomic wrote about how its turns ended, in place (#5649)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
-	await session.appendCustomEntry("atomic.notice", {
+	await session.appendCustomEntry("atomic.turn-outcome.v1", {
 		level: "error",
 		text: "Retry failed after 1 attempts: overloaded_error",
 	});
@@ -271,7 +271,7 @@ test("a reopened task shows the lines Atomic wrote about how its turns ended, in
 				page.value.messages.map((message) =>
 					message.role === "custom" ? `${message.customType}: ${message.content}` : message.role,
 				),
-				["user", "atomic.notice: Retry failed after 1 attempts: overloaded_error", "user"],
+				["user", "atomic.turn-outcome.v1: Retry failed after 1 attempts: overloaded_error", "user"],
 			);
 		},
 	);

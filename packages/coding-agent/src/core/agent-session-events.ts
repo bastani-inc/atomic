@@ -4,7 +4,7 @@ import { cleanupSessionResources } from "@bastani/atomic-ai/compat";
 import { abortBash } from "./agent-session-bash.ts";
 import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
-import { recordHostNotice, showHostNotice } from "./agent-session-host-notices.ts";
+import { recordHostNotice } from "./agent-session-host-notices.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
 import {
@@ -73,11 +73,11 @@ import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts"
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	observeToolExecutionTiming(this, event);
-	const notice = recordHostNotice(this, event);
+	const publish = recordHostNotice(this, event);
 	for (const l of this._eventListeners) {
 		l(event);
 	}
-	if (notice !== undefined) showHostNotice(this, notice);
+	publish?.();
 }
 
 export function _emitQueueUpdate(this: AgentSession): void {

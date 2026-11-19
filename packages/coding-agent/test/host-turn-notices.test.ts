@@ -76,7 +76,7 @@ test("a final retry failure reopens with the session, in its place, and never re
 	assert.deepEqual(live, [
 		"error: overloaded_error",
 		"error: overloaded_error",
-		"atomic.notice error: Retry failed after 1 attempts: overloaded_error",
+		"atomic.turn-outcome.v1 error: Retry failed after 1 attempts: overloaded_error",
 	]);
 	const reopened = await reopen();
 	assert.deepEqual(rows(reopened.buildSessionProjection("transcript").messages), live, "reopened rows");
@@ -98,7 +98,7 @@ test("a retry cancelled during its wait reopens as the same line (#5649)", async
 	const live = liveRows(harness);
 	assert.deepEqual(live, [
 		"error: overloaded_error",
-		"atomic.notice error: Retry failed after 1 attempts: Retry cancelled",
+		"atomic.turn-outcome.v1 error: Retry failed after 1 attempts: Retry cancelled",
 	]);
 	assert.deepEqual(rows((await reopen()).buildSessionProjection("transcript").messages), live);
 });
@@ -121,7 +121,7 @@ test("the next prompt follows the saved line, and its request leaves the line ou
 	assert.match(lastContext, /second/);
 	assert.doesNotMatch(lastContext, /Retry failed/);
 	assert.deepEqual(rows((await reopen()).buildSessionProjection("transcript").messages).slice(-2), [
-		"atomic.notice error: Retry failed after 1 attempts: overloaded_error",
+		"atomic.turn-outcome.v1 error: Retry failed after 1 attempts: overloaded_error",
 		"reply: fine",
 	]);
 });
@@ -138,7 +138,7 @@ test("a provider error longer than the notice bound is saved cut at a whole char
 
 	const notices = (await reopen())
 		.getEntries()
-		.flatMap((entry) => (entry.type === "custom" && entry.customType === "atomic.notice" ? [entry] : []));
+		.flatMap((entry) => (entry.type === "custom" && entry.customType === "atomic.turn-outcome.v1" ? [entry] : []));
 	assert.equal(notices.length, 1);
 	const text = (notices[0]!.data as { text: string }).text;
 	assert.ok(Buffer.byteLength(text) <= 4096, `${Buffer.byteLength(text)} bytes`);
@@ -165,8 +165,9 @@ test("a chat that reads the transcript while the line is still being saved shows
 		if (event.type === "message_end" && event.message.role === "custom") shown.resolve();
 	});
 	harness.setResponses([overloaded(), overloaded()]);
-	const notices = () => rows(harness.session.transcriptMessages).filter((row) => row.startsWith("atomic.notice"));
-	const expected = ["atomic.notice error: Retry failed after 1 attempts: overloaded_error"];
+	const notices = () =>
+		rows(harness.session.transcriptMessages).filter((row) => row.startsWith("atomic.turn-outcome.v1"));
+	const expected = ["atomic.turn-outcome.v1 error: Retry failed after 1 attempts: overloaded_error"];
 
 	const prompt = harness.session.prompt("hello");
 	await shown.promise;
@@ -203,7 +204,7 @@ test("a cancelled manual compaction reopens as the line the chat showed (#5649)"
 	assert.match(String(await compaction), /Compaction cancelled/);
 
 	const live = liveRows(harness);
-	assert.deepEqual(live, ["reply: hi", "atomic.notice error: Compaction cancelled"]);
+	assert.deepEqual(live, ["reply: hi", "atomic.turn-outcome.v1 error: Compaction cancelled"]);
 	await vi.waitFor(async () =>
 		assert.deepEqual(rows((await reopen()).buildSessionProjection("transcript").messages), live),
 	);

@@ -12,13 +12,10 @@ import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import type { SessionEntry } from "./session-manager-types.ts";
 
 /**
- * Saves the line `event` puts in the session's chat, if any, and returns the message that shows it (#5649). The entry
+ * Saves the line `event` puts in the session's chat, if any, and returns its publisher (#5649). The entry
  * is queued before the event's listeners run, so anything they append comes after it, as it does on screen.
  */
-export function recordHostNotice(
-	session: AgentSession,
-	event: AgentSessionEvent,
-): CustomMessage<HostNotice> | undefined {
+export function recordHostNotice(session: AgentSession, event: AgentSessionEvent): (() => void) | undefined {
 	// A closing session admits nothing more, and nothing follows it to show the line (#5649).
 	if (session._disposed || sessionGenerationClosing.has(session)) return undefined;
 	const found = hostNoticeForEvent(event, session._compactionReason);
@@ -32,10 +29,9 @@ export function recordHostNotice(
 	} catch {
 		// A session that can no longer be written still shows the line; it is lost with the session's other unsaved work.
 	}
+	const pending = unsaved.get(session) ?? new Map<HostNotice, CustomMessage<HostNotice>>();
 	if (saved !== undefined) {
-		const pending = unsaved.get(session) ?? new Map<HostNotice, CustomMessage<HostNotice>>();
 		unsaved.set(session, pending);
-		pending.set(notice, message);
 		const announced = saved.then(
 			(id) => {
 				pending.delete(notice);
@@ -58,7 +54,12 @@ export function recordHostNotice(
 		settled.catch(() => {});
 		session._agentEventQueue = settled;
 	}
-	return message;
+	return () => {
+		// A redraw inside the outcome's listener precedes the line, just as it precedes its live message.
+		if (saved !== undefined) pending.set(notice, message);
+		session._emit({ type: "message_start", message });
+		session._emit({ type: "message_end", message });
+	};
 }
 
 /** Lines a session has shown and is still saving, keyed by the data of the entry that saves each. */
@@ -78,10 +79,4 @@ export function unsavedHostNotices(session: object, entries: readonly SessionEnt
 	if (pending === undefined || pending.size === 0) return [];
 	const saved = new Set(entries.flatMap((entry) => (entry.type === "custom" ? [entry.data] : [])));
 	return [...pending].flatMap(([notice, message]) => (saved.has(notice) ? [] : [message]));
-}
-
-/** Shows a saved notice in the chats that follow the session, as a display-only message. */
-export function showHostNotice(session: AgentSession, message: CustomMessage<HostNotice>): void {
-	session._emit({ type: "message_start", message });
-	session._emit({ type: "message_end", message });
 }

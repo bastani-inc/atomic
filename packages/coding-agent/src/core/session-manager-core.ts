@@ -168,6 +168,7 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private contextEdits = 0;
 	private hostNotices = 0;
+	private noticeBranch?: { leaf: string | null; present: boolean };
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
 
@@ -549,6 +550,7 @@ export class SessionManager {
 		this.labelTimestampsById = index.labelTimestampsById;
 		this.contextEdits = index.contextEdits;
 		this.hostNotices = index.hostNotices;
+		this.noticeBranch = undefined;
 		this.leafId = index.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
@@ -710,7 +712,12 @@ export class SessionManager {
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
 			if (entry.type === "context_edit") this.contextEdits++;
-			else if (isHostNoticeEntry(entry)) this.hostNotices++;
+			const notice = isHostNoticeEntry(entry);
+			if (notice) this.hostNotices++;
+			if (this.noticeBranch?.leaf === entry.parentId) {
+				this.noticeBranch.leaf = entry.id;
+				this.noticeBranch.present ||= notice;
+			}
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
@@ -1205,6 +1212,7 @@ export class SessionManager {
 
 	/** Project the current leaf and its compaction boundary. Transcript rows keep the content shown before model-only edits. */
 	buildSessionProjection(purpose: "model" | "transcript" = "model", leafId = this.leafId): SessionProjection {
+		if (leafId === this.leafId && this.hostNotices > 0) this.hasHostNotices();
 		return buildSessionProjection(
 			this.getEntries(),
 			leafId,
@@ -1220,9 +1228,12 @@ export class SessionManager {
 		return this.contextEdits > 0;
 	}
 
-	/** Whether any entry, on any branch, records a line Atomic wrote about how a turn ended, which the transcript shows (#5649). */
+	/** A notice on another branch does not set this transcript apart from the resident context. */
 	hasHostNotices(): boolean {
-		return this.hostNotices > 0;
+		if (!this.hostNotices || this.leafId === null) return false;
+		if (this.noticeBranch?.leaf !== this.leafId)
+			this.noticeBranch = { leaf: this.leafId, present: this.activeBranch()?.some(isHostNoticeEntry) ?? false };
+		return this.noticeBranch.present;
 	}
 
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */

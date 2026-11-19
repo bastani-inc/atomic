@@ -9,7 +9,7 @@ import type { SessionEntry } from "./session-manager-types.ts";
  * a checkout snapshot that could not be recorded. A `custom` entry is never part of model context, so the line is only
  * shown: live as a custom message of the same type, and from the entry when the chat is opened again.
  */
-export const HOST_NOTICE_TYPE = "atomic.notice";
+export const HOST_NOTICE_TYPE = "atomic.turn-outcome.v1";
 
 /** `error` and `warning` lines read `Error: …` and `Warning: …`; a `status` line is the text alone, dimmed. */
 export type HostNoticeLevel = "error" | "warning" | "status";
