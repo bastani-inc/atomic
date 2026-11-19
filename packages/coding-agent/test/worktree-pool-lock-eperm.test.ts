@@ -105,19 +105,7 @@ vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) 
 	return {
 		...actual,
 		lockShared,
-		windowsTemporaryFiles: () => {
-			const binding = actual.windowsTemporaryFiles();
-			if (!binding || lockRefusals.deleteOnCloseUnavailable) return undefined;
-			return {
-				...binding,
-				createWindowsTemporaryRecord: async (path: string, data: string, readOnly: boolean) => {
-					await lockRefusals.onRecordWrite?.(path, data);
-					const handle = await binding.createWindowsTemporaryRecord(path, data, readOnly);
-					if (handle) lockRefusals.afterWrite?.(path);
-					return handle;
-				},
-			};
-		},
+		windowsTemporaryFiles: () => (lockRefusals.deleteOnCloseUnavailable ? undefined : actual.windowsTemporaryFiles()),
 	};
 });
 
@@ -891,6 +879,33 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 				assert.equal(readdirSync(dirname(file)).includes(basename(temporary)), false);
 			} finally {
 				if (reader !== undefined) closeSync(reader);
+			}
+		},
+	);
+
+	test.runIf(process.platform === "win32")(
+		"retrying a refused removal preserves a replacement at the temporary slot name (#5636)",
+		async () => {
+			const storeDir = sandbox.path("store-replaced-link");
+			const remotes = ["https://example.com/acme/repo.git"];
+			const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+			const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");
+			let replaced: string | undefined;
+			lockRefusals.onRemove = async (path) => {
+				if (replaced || !path.startsWith(`${file}.`) || !path.endsWith(".tmp")) return;
+				rmSync(path);
+				writeFileSync(path, "a different file");
+				replaced = path;
+				throw Object.assign(new Error("temporary removal refused"), { code: "EPERM" });
+			};
+			const owner = { kind: "session" as const, id: "record-owner" };
+			const lease = await admitPooledWorktree({ storeDir, remotes, lastState: state, envHash: "env" }, owner);
+			try {
+				assert.ok(replaced);
+				assert.equal(readFileSync(replaced, "utf8"), "a different file");
+				assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).holder, owner);
+			} finally {
+				await releaseRestoredWorktree(lease, state);
 			}
 		},
 	);

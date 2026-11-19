@@ -55,6 +55,10 @@ vi.mock("node:fs/promises", async (original) => {
 	const fs = await original<typeof import("node:fs/promises")>();
 	return {
 		...fs,
+		open: (...args: Parameters<typeof fs.open>) => {
+			io.calls.push("open");
+			return fs.open(...args);
+		},
 		stat: async (path: string) => {
 			io.calls.push("stat");
 			const result = await fs.stat(path);
@@ -77,7 +81,7 @@ vi.mock("node:fs/promises", async (original) => {
 	};
 });
 
-const loadedKey = Symbol.for("@bastani/atomic/windows-temporary@2");
+const loadedKey = Symbol.for("@bastani/atomic/windows-temporary@3");
 let originalRegistration: PropertyDescriptor | undefined;
 beforeAll(() => {
 	if (process.platform !== "win32") return;
@@ -92,18 +96,25 @@ beforeAll(() => {
 				: {
 						deref: () => ({
 							...binding,
-							openWindowsTemporaryFile: (path: string, measuring: boolean) => {
+							readWindowsClockProbe: async (path: string) => {
+								io.calls.push("sample");
 								const clock = io.refusalClock;
-								if (!clock) return binding.openWindowsTemporaryFile(path, measuring);
-								if (!measuring) {
-									clock.now += 150;
-									return null;
+								if (!clock) {
+									const reading = await binding.readWindowsClockProbe(path);
+									if (reading) {
+										io.stamp = reading.mtimeMs;
+										io.onStat?.(path);
+									}
+									return reading;
 								}
-								writeFileSync(path, "", { flag: "wx" });
 								clock.stamp = clock.now;
 								return {
-									close: async () => {
-										clock.now += 150;
+									mtimeMs: clock.stamp,
+									createdInMs: 0,
+									pending: {
+										close: async () => {
+											clock.now += 150;
+										},
 									},
 								};
 							},
@@ -156,6 +167,7 @@ test.runIf(process.platform === "win32")(
 			io.refusalClock = clock;
 			io.refuseDelete = true;
 			vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+			vi.spyOn(performance, "now").mockImplementation(() => clock.now);
 			const offset = await sharedClockOffset(directory);
 			assert.equal(clock.now - start, 150);
 			assert.equal(offset, 0);
@@ -185,12 +197,12 @@ test.runIf(process.platform === "win32")(
 );
 
 test.runIf(process.platform === "win32")(
-	"a failed native create in a missing directory is not tried again (#5674)",
+	"a failed create in a missing directory is not tried again with the binding loaded (#5674)",
 	async () => {
 		const directory = mkdtempSync(join(tmpdir(), "clock-missing-"));
 		try {
 			assert.equal(await sharedClockOffset(join(directory, "missing")), 0);
-			assert.ok(!io.calls.includes("open"), "retried a failed native create by pathname");
+			assert.deepEqual(io.calls, ["sample"]);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
@@ -203,6 +215,7 @@ test("without delete-on-close a reading stays accurate and performs just its ori
 		io.withoutDeleteOnClose = true;
 		const time = Date.now();
 		vi.spyOn(Date, "now").mockReturnValue(time + 180_000);
+		vi.spyOn(performance, "now").mockReturnValue(0);
 		await sharedClockOffset(directory); // warm the periodic directory sweep
 		io.calls.length = 0;
 		io.refuseDelete = true;
@@ -248,6 +261,23 @@ test("stepping the reader's wall clock during cleanup does not age a fresh remot
 		const now = await sharedClockNow(directory);
 		assert.equal(step, 180_000);
 		assert.ok(Math.abs(now - io.stamp) < 10_000, `filesystem time jumped by ${now - io.stamp} ms`);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("a clock step during a relative reading does not make a fresh lock thirty seconds old (#5050, #5674)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-relative-step-"));
+	try {
+		const time = Date.now.bind(Date);
+		let step = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => time() + step);
+		io.onStat = () => {
+			step = 45_000;
+		};
+		const offset = await sharedClockOffset(directory);
+		assert.equal(step, 45_000);
+		assert.ok(Date.now() + offset - io.stamp < 30_000, "fresh lock appeared stale");
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}

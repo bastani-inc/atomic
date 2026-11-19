@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, toNamespacedPath } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, test } from "vitest";
 import { bunExecutable, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -129,6 +129,78 @@ test.runIf(process.platform === "win32").each(["Node", "Bun"])(
 		`;
 		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
 			env: { ...process.env, POOL_STORE: root },
+		});
+	},
+);
+
+test.runIf(process.platform === "win32")(
+	"a queued Node slot write uses the mask at physical creation (#5636)",
+	async () => {
+		const script = `
+		import assert from 'node:assert/strict';
+		import { pbkdf2 } from 'node:crypto';
+		import { statSync, writeFileSync } from 'node:fs';
+		import { createRequire } from 'node:module';
+		import { join } from 'node:path';
+		createRequire(import.meta.url)('@bastani/atomic-natives');
+		const {admitPooledWorktree,releaseRestoredWorktree,repositoryIdOf} = await import(${JSON.stringify(pool)});
+		const storeDir=process.env.POOL_STORE, remotes=['https://example.com/acme/repo.git'];
+		const state={snapshotId:null,head:'a'.repeat(40),tree:'b'.repeat(40)};
+		const ordinary={kind:'session',id:'owner'}; let queued=false;
+		process.umask(0o222);
+		const lease=await admitPooledWorktree({storeDir,remotes,lastState:state,envHash:'env'}, {...ordinary,toJSON(){
+			if (!queued) { queued=true; pbkdf2('pool','clock',350000,16,'sha256',()=>{}); queueMicrotask(()=>process.umask(0o022)); }
+			return ordinary;
+		}});
+		try {
+			assert.ok(queued);
+			const control=join(storeDir,'control'); writeFileSync(control,'',{mode:0o600});
+			assert.equal(statSync(join(storeDir,'pool',repositoryIdOf(remotes),'0.json')).mode,statSync(control).mode);
+		} finally { await releaseRestoredWorktree(lease,state); }
+	`;
+		await run(process.execPath, ["--input-type=module", "-e", script], {
+			env: { ...process.env, POOL_STORE: root, UV_THREADPOOL_SIZE: "1" },
+		});
+	},
+);
+
+test.runIf(process.platform === "win32").each(["Node", "Bun"])(
+	"a live %s probe has the runtime's creation permissions (#5605)",
+	async (runtime) => {
+		const script = `
+		import assert from 'node:assert/strict';
+		import { closeSync, openSync, statSync, watch } from 'node:fs';
+		import { createRequire } from 'node:module'; import { join } from 'node:path';
+		createRequire(import.meta.url)('@bastani/atomic-natives');
+		const {sharedClockOffset}=await import(${JSON.stringify(clock)});
+		const dir=process.env.POOL_STORE, seen=[]; process.umask(0o222);
+		const c=join(dir,'control');closeSync(openSync(c,'wx'));const mode=statSync(c).mode;
+		const observer=watch(dir,(_event,name)=>{if(!name?.startsWith('.clock-'))return;try{seen.push(statSync(join(dir,name)).mode)}catch{}});
+		try { for(let i=0;i<60 && seen.length<3;i++) await sharedClockOffset(dir); }
+		finally { observer.close(); }
+		assert.ok(seen.length,'no in-flight probe observed'); for(const observed of seen)assert.equal(observed,mode);
+	`;
+		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
+			env: { ...process.env, POOL_STORE: root },
+		});
+	},
+);
+
+test.runIf(process.platform === "win32").each(["Node", "Bun"])(
+	"%s measures a directory whose actual name ends in a dot (#5634)",
+	async (runtime) => {
+		const directory = join(root, "pool.");
+		mkdirSync(toNamespacedPath(directory));
+		const script = `
+		import assert from 'node:assert/strict'; import {createRequire} from 'node:module';
+		createRequire(import.meta.url)('@bastani/atomic-natives');
+		const {sharedClockOffset}=await import(${JSON.stringify(clock)});
+		const now=Date.now.bind(Date); Date.now=()=>now()+180000;
+		const offset=await sharedClockOffset(process.env.PROBE_DIRECTORY);
+		assert.ok(Math.abs(offset+180000)<10000, 'expected a filesystem reading; got '+offset);
+	`;
+		await run(runtime === "Node" ? process.execPath : bunExecutable(), ["--input-type=module", "-e", script], {
+			env: { ...process.env, PROBE_DIRECTORY: directory },
 		});
 	},
 );

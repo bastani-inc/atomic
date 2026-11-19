@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, toNamespacedPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import { renameWithRetry } from "../rename-retry.ts";
@@ -557,55 +557,41 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 	const temporary = `${file}.${randomUUID()}.tmp`;
 	const windows = process.platform === "win32";
 	const data = JSON.stringify(record);
-	const binding = windowsTemporaryFiles();
-	let reservation: Awaited<ReturnType<NonNullable<typeof binding>["createWindowsTemporaryRecord"]>>;
 	let created = false;
+	let published = false;
 	try {
-		if (binding) {
-			// Windows Node's mode-0600 create sets READONLY when the CRT mask clears owner-write. Bun's does not.
-			const readOnly = !process.versions.bun && (process.umask() & 0o200) !== 0;
-			try {
-				reservation = await binding.createWindowsTemporaryRecord(temporary, data, readOnly);
-			} catch (error) {
-				if ((error as Error).message === "EEXIST") throw Object.assign(error as Error, { code: "EEXIST" });
-				if ((error as Error).message !== "ENOENT") throw error;
-				// Report the ordinary Windows open error without opening the missing path a second time.
-				const missing = new Error(`ENOENT: no such file or directory, open '${temporary}'`);
-				throw Object.assign(
-					missing,
-					process.versions.bun
-						? { code: "ENOENT", path: temporary, syscall: "open", errno: -4058 }
-						: { errno: -4058, code: "ENOENT", syscall: "open", path: temporary },
-				);
-			}
-		}
-		if (!reservation) {
-			// Submit the complete write at once. An exclusive open failure gives us no name to clean up.
-			try {
-				await writeFile(temporary, data, { mode: 0o600, flag: windows ? "wx" : "w" });
-				created = true;
-			} catch (error) {
-				const { code, syscall } = error as NodeJS.ErrnoException;
-				created = code !== "EEXIST" && syscall !== "open";
-				throw error;
-			}
+		// Let the runtime apply its actual umask at creation and write through the handle granted there.
+		try {
+			await writeFile(temporary, data, { mode: 0o600, flag: windows ? "wx" : "w" });
+			created = true;
+		} catch (error) {
+			const { code, syscall } = error as NodeJS.ErrnoException;
+			created = code !== "EEXIST" && syscall !== "open";
+			throw error;
 		}
 		try {
 			await link(temporary, file);
+			published = true;
 			return true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
 			throw error;
 		}
 	} finally {
-		const cleanup = reservation
-			? reservation.close()
-			: created || !windows
-				? rm(temporary, { force: true })
-				: undefined;
-		await cleanup?.catch((error: unknown) => {
-			reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
-		});
+		if (created || !windows) {
+			await rm(temporary, { force: true }).catch(async (error: NodeJS.ErrnoException) => {
+				if (windows && published && (error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY")) {
+					// Never retry a pathname unlink. Both open handles must identify the published file.
+					if (
+						await windowsTemporaryFiles()
+							?.removeWindowsHardLink(toNamespacedPath(temporary), toNamespacedPath(file))
+							.catch(() => false)
+					)
+						return;
+				}
+				reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
+			});
+		}
 	}
 }
 

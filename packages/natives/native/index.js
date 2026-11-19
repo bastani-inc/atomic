@@ -859,7 +859,6 @@ module.exports.CancelCause = nativeBinding.CancelCause
 module.exports.CommandOutputSink = nativeBinding.CommandOutputSink
 module.exports.CommandTaskKind = nativeBinding.CommandTaskKind
 module.exports.containProcessTree = nativeBinding.containProcessTree
-module.exports.createWindowsTemporaryRecord = nativeBinding.createWindowsTemporaryRecord
 module.exports.FileType = nativeBinding.FileType
 module.exports.glob = nativeBinding.glob
 module.exports.grep = nativeBinding.grep
@@ -868,11 +867,12 @@ module.exports.hasMatch = nativeBinding.hasMatch
 module.exports.HostProcessEventKind = nativeBinding.HostProcessEventKind
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees
-module.exports.openWindowsTemporaryFile = nativeBinding.openWindowsTemporaryFile
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
 module.exports.pendingStdinInput = nativeBinding.pendingStdinInput
 module.exports.processCreationTime = nativeBinding.processCreationTime
+module.exports.readWindowsClockProbe = nativeBinding.readWindowsClockProbe
 module.exports.removeWindowsFileOlderThan = nativeBinding.removeWindowsFileOlderThan
+module.exports.removeWindowsHardLink = nativeBinding.removeWindowsHardLink
 module.exports.renameNoReplace = nativeBinding.renameNoReplace
 module.exports.renameNoReplaceAsync = nativeBinding.renameNoReplaceAsync
 module.exports.search = nativeBinding.search
@@ -885,6 +885,9 @@ module.exports.windowsDirectorySecurity = nativeBinding.windowsDirectorySecurity
 module.exports.windowsDirectorySecurityAsync = nativeBinding.windowsDirectorySecurityAsync
 module.exports.YieldReason = nativeBinding.YieldReason
 
-if (process.platform === 'win32' && module.exports.createWindowsTemporaryRecord) {
-  try { process[Symbol.for('@bastani/atomic/windows-temporary@2')] = new WeakRef(module.exports) } catch { /* Optional on restricted hosts. */ }
+if (process.platform === 'win32' && module.exports.readWindowsClockProbe && module.exports.removeWindowsHardLink) {
+  try {
+    // Permission-managed hosts must perform their own filesystem checks.
+    if (!process.permission) process[Symbol.for('@bastani/atomic/windows-temporary@3')] = new WeakRef(module.exports)
+  } catch { /* Optional on restricted hosts. */ }
 }

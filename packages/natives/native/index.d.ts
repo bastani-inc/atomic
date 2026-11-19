@@ -172,9 +172,7 @@ export declare class WaitLease {
 }
 
 export declare class WindowsTemporaryFile {
-  /** Write through the handle granted at creation; opening the path again can require different permissions. */
-  writeFile(data: string): Promise<undefined>
-  /** Close the original handle off the event loop. Closing it removes only its own name, not a published hard link. */
+  /** Dispose the reserved name, not a file which may since have appeared at the same path. */
   close(): Promise<undefined>
 }
 
@@ -320,9 +318,6 @@ export interface ContextLine {
   /** Raw line content (trimmed line ending). */
   line: string
 }
-
-/** Create and write a slot in one worker operation, before JavaScript has to run again. */
-export declare function createWindowsTemporaryRecord(path: string, data: string, readOnly: boolean): Promise<WindowsTemporaryFile | undefined | null>
 
 export interface CurrentAction {
   tool: string
@@ -673,13 +668,6 @@ export interface OmittedRange {
   end: string
 }
 
-/**
- * Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
- * directory and requests deletion only after measuring the clock; a writable record also requests delete access.
- * A failed probe create rejects; only a name collision permits another attempt. A record may fall back if delete access is unavailable.
- */
-export declare function openWindowsTemporaryFile(path: string, clockProbe?: boolean | undefined | null): Promise<WindowsTemporaryFile | undefined | null>
-
 export interface OutcomeReport {
   reportId: string
   result: TaskResult
@@ -776,8 +764,17 @@ export interface PtyStartOptions {
   closeStdinAfterCommand?: boolean
 }
 
+/**
+ * Create with the host's current mask and reserve the name before sampling, in one filesystem-worker turn.
+ * Null means that the host's libuv operations are unavailable; no create has been attempted.
+ */
+export declare function readWindowsClockProbe(path: string): Promise<WindowsClockReading | undefined | null>
+
 /** Removes a regular file older than `beforeMs` using the handle whose last-write time was checked. */
 export declare function removeWindowsFileOlderThan(path: string, beforeMs: number): Promise<undefined>
+
+/** Retry a refused temporary-link removal only if both open names still identify the published file. */
+export declare function removeWindowsHardLink(temporary: string, published: string): Promise<boolean>
 
 /**
  * Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,
@@ -964,6 +961,12 @@ export type WaitOutcome =
 export interface WindowsAccessRule {
   allow: boolean
   sid: string
+}
+
+export interface WindowsClockReading {
+  mtimeMs: number
+  createdInMs: number
+  pending?: WindowsTemporaryFile
 }
 
 export declare function windowsDirectorySecurity(path: string): WindowsDirectorySecurity | null

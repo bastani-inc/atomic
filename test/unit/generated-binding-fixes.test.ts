@@ -35,7 +35,8 @@ test("a Windows host can load native bindings without allowing new process prope
 		WindowsTemporaryFile: class {
 			writeFile() {}
 		},
-		createWindowsTemporaryRecord() {},
+		readWindowsClockProbe() {},
+		removeWindowsHardLink() {},
 	};
 	const module = { exports: {} };
 	vm.runInNewContext(loader, {
@@ -52,6 +53,26 @@ test("a Windows host can load native bindings without allowing new process prope
 		require: (id: string) => (id === "fs" ? {} : binding),
 	});
 	assert.equal(module.exports, binding);
+});
+
+test("a permission-managed host uses its own filesystem operations for clock readings (#5605)", async () => {
+	const { loader } = await artifacts();
+	const binding = { readWindowsClockProbe() {}, removeWindowsHardLink() {} };
+	const host = {
+		env: { NAPI_RS_NATIVE_LIBRARY_PATH: "test-override" },
+		platform: "win32",
+		arch: "x64",
+		permission: {},
+	};
+	const module = { exports: {} };
+	vm.runInNewContext(loader, {
+		module,
+		exports: module.exports,
+		process: host,
+		require: (id: string) => (id === "fs" ? {} : binding),
+	});
+	assert.equal(module.exports, binding);
+	assert.deepEqual(Object.getOwnPropertySymbols(host), []);
 });
 
 // PR #3131 / Greptile: do not clone frozen bindings merely to add metadata.
