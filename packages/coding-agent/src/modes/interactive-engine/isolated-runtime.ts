@@ -5,6 +5,7 @@ import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession, ClearedQueue, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type {
+	ExtensionBindings,
 	ModelMutationOptions,
 	PromptDisposition,
 	PromptOptions,
@@ -143,6 +144,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
+	/** Host sessions bound with an extension error listener. Engine errors that arrive before one is bound wait for it. */
+	private readonly errorReportingSessions = new WeakSet<AgentSession>();
+	private readonly heldExtensionErrors: ExtensionError[] = [];
 	private readonly patchedSettingsManagers = new WeakSet<AgentSession["settingsManager"]>();
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
@@ -904,7 +908,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.patchSessionManager(session.sessionManager);
 		this.patchSettingsManager(session.settingsManager);
 		this.sessionStats.track(session);
+		// Optional because focused runtime test doubles stand in for a session without extension bindings.
+		const bindExtensions = session.bindExtensions?.bind(session);
 		Object.defineProperties(session, {
+			...(bindExtensions && {
+				bindExtensions: {
+					configurable: true,
+					value: async (bindings: ExtensionBindings) => {
+						await bindExtensions(bindings);
+						if (!bindings.onError) return;
+						this.errorReportingSessions.add(session);
+						for (const error of this.heldExtensionErrors.splice(0)) session.extensionRunner.emitError(error);
+					},
+				},
+			}),
 			isStreaming: { configurable: true, get: () => this.streaming },
 			retryStatus: { configurable: true, get: () => this.retryStatus },
 			isCompacting: { configurable: true, get: () => this.compacting },
@@ -1430,11 +1447,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (isEngineExtensionError(record)) {
 			// A load failure is part of the engine's resource state, which the host shows with its resource diagnostics.
 			if (isExtensionLoadError(record)) return;
-			session.extensionRunner.emitError({
+			const error = {
 				extensionPath: record.extensionPath,
 				event: record.event,
 				error: record.error,
-			});
+				...(typeof record.stack === "string" && { stack: record.stack }),
+			};
+			// An engine that loads its resources eagerly starts its extensions while this host is still starting up.
+			if (this.errorReportingSessions.has(session)) session.extensionRunner.emitError(error);
+			else this.heldExtensionErrors.push(error);
 			return;
 		}
 		const status = retryStatusUpdate(event);

@@ -1,17 +1,21 @@
 import type { Store } from "../shared/store.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
-import type { StageSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import { publishRunForOwner } from "../shared/workflow-run-ownership.js";
 import { isRunChanges, type PublishedRun } from "./run-changes.js";
 
 export function hasLiveStageSession(stage: StageSnapshot): boolean {
 	return (stage.sessionId !== undefined || stage.sessionFile !== undefined) && !isTerminalStageStatus(stage.status);
 }
 
-/** Withdraw a retired worker's live session and activity, preserving terminal sessions for the archive. */
-export function releaseWorkerStages(store: Store, runId: string): void {
+/**
+ * Withdraw a retired worker's live session and activity, preserving terminal sessions for the archive. With an
+ * attachment owner, the released run is published under it, so a pane open on the run stays mounted on it.
+ */
+export function releaseWorkerStages(store: Store, runId: string, owner?: symbol): void {
 	const run = store.run(runId);
 	if (!run?.stages.some((stage) => stage.chatActivity !== undefined || hasLiveStageSession(stage))) return;
-	store.recordRunStart({
+	const released: RunSnapshot = {
 		...run,
 		stages: run.stages.map((stage) => {
 			if (hasLiveStageSession(stage)) {
@@ -22,7 +26,8 @@ export function releaseWorkerStages(store: Store, runId: string): void {
 			const { chatActivity: _phase, ...history } = stage;
 			return history;
 		}),
-	});
+	};
+	store.recordRunStart(owner === undefined ? released : publishRunForOwner(released, owner));
 }
 
 /** The stages of one pooled run that a publication gives the root's prompt routing and stage registrations. */

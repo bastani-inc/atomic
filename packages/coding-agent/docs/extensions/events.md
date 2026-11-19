@@ -9,7 +9,7 @@ description: Every extension event, its payload, and its return contract.
 
 ### Lifecycle Overview
 
-Interactive trust-gated startup first emits `session_start` and `resources_discover` for the permitted trust-safe extensions, then resolves `project_trust`. After authorization, newly loaded extensions receive `session_start`; resource discovery runs again against the completed set. Existing reporters keep their session and do not receive a second `session_start`. Noninteractive startup resolves trust before the ordinary session lifecycle.
+Interactive trust-gated startup first emits `session_start` and `resources_discover` for the permitted trust-safe extensions, then resolves `project_trust`. After authorization, newly loaded extensions receive `session_start`; resource discovery runs again against the completed set. A `resources_discover` handler that fails both times with the same error is reported once. Different handlers are reported separately, even if they throw the same message or their extensions have the same display name. Existing reporters keep their session and do not receive a second `session_start`. Noninteractive startup resolves trust before the ordinary session lifecycle.
 
 ```
 Atomic starts
@@ -149,6 +149,8 @@ pi.on("session_start", async (event, ctx) => {
   ctx.ui.notify(`Session: ${ctx.sessionManager.getSessionId()}`, "info");
 });
 ```
+
+If the handler throws, the interactive terminal shows the error with the extension's path and keeps the session; print mode, RPC mode, SDK sessions and workflow stages fail startup instead. See [Error Handling](/extensions/api-reference#error-handling).
 
 #### session_recovery_restore / session_recovery_replay
 
