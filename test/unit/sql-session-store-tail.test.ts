@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, it } from "vitest";
@@ -14,7 +15,11 @@ import {
 	sessionTailOf as rawSessionTailOf,
 	sessionCompactionOf,
 } from "../../packages/coding-agent/src/core/storage/session/session-resume.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import {
+	SESSION_ENTRY_CHUNK_BYTES,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { refuseChunkProjection } from "../helpers/resume-projection-limit.js";
 import { makeTempDirectory } from "../helpers/runtime.js";
 
 function sessionTailOf(...args: Parameters<typeof rawSessionTailOf>) {
@@ -257,6 +262,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		await onDatabase(path, dropResumeIndex);
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
+			refuseChunkProjection(db, old.id);
 			const get = db.get.bind(db);
 			let replacement: Promise<void> | undefined;
 			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
@@ -288,6 +294,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		await onDatabase(path, dropResumeIndex);
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
+			refuseChunkProjection(db, interrupted.id);
 			const get = db.get.bind(db);
 			let chunks = 0;
 			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
@@ -312,6 +319,96 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 			assert.equal(reread, false, "already folded the first page before interruption");
 			assert.equal(await hasResumeIndex(db), true);
 			await store.close();
+		});
+	});
+
+	it("rebuilds fitting chunked entries within the cost of projecting their joined rows (#5590)", async () => {
+		const path = databasePath();
+		const chunkedEntries = 12;
+		const targetBytes = 3 * SESSION_ENTRY_CHUNK_BYTES;
+		const fragment = 'line "a"\\b\n';
+		const text = fragment.repeat(Math.floor(targetBytes / (JSON.stringify(fragment).length - 2)));
+		await writeSession(
+			path,
+			Array.from({ length: chunkedEntries }, (_, i) =>
+				entry(i + 1, {
+					message: {
+						role: "assistant",
+						timestamp: i,
+						provider: "p",
+						model: "m",
+						api: "openai-completions",
+						stopReason: "stop",
+						content: [
+							{ type: "text", text },
+							{ type: "toolCall", id: "t", name: "edit", arguments: {} },
+						],
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						},
+					},
+				}),
+			),
+		);
+		const measure = (mode: string) =>
+			JSON.parse(
+				execFileSync(
+					process.execPath,
+					["--expose-gc", "--import", "jiti/register", "test/fixtures/session-resume-rebuild-cost.ts", path, mode],
+					{ encoding: "utf8" },
+				),
+			) as { micros: number; peakBytes: number; toolCalls: number };
+		// CPU time excludes time waiting for other test workers. Bracket the run with two independent controls
+		// to measure allocator and timer noise on this machine rather than setting a machine-specific RSS/time limit.
+		const first = measure("joined");
+		const actual = measure("stored");
+		const second = measure("joined");
+		assert.equal(first.toolCalls, chunkedEntries);
+		assert.equal(actual.toolCalls, chunkedEntries);
+		const cpuJitterFraction = 0.2;
+		const allocatorSlackBytes = 2 * SESSION_ENTRY_CHUNK_BYTES;
+		const cpuBudget = Math.max(first.micros, second.micros) * (1 + cpuJitterFraction);
+		const peakBudget = Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes;
+		assert.ok(
+			actual.micros <= cpuBudget && actual.peakBytes <= peakBudget,
+			JSON.stringify({ actual, first, second }),
+		);
+	}, 120_000);
+
+	it("a slower reader cannot replace a peer's published index with its checkpoint (#5590)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(520);
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const all = db.all.bind(db);
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				if (rows.some((row) => row.entry_id === "e1")) {
+					await onDatabase(path, async (other) => {
+						const peer = await SqlSessionStore.open(other);
+						try {
+							await peer.findLatestCompaction(header.id);
+						} finally {
+							await peer.close();
+						}
+					});
+				}
+				if (rows.some((row) => row.entry_id === "e513")) throw new Error("reader stopped after checkpoint");
+				return rows;
+			};
+			try {
+				await assert.rejects(() => store.findLatestCompaction(header.id), /reader stopped after checkpoint/);
+				assert.ok(await hasResumeIndex(db), "the completed index must still be published");
+			} finally {
+				await store.close();
+			}
 		});
 	});
 

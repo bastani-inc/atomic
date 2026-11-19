@@ -8,6 +8,7 @@ import {
 	SESSION_TABLES,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { refuseChunkProjection } from "../helpers/resume-projection-limit.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -147,15 +148,21 @@ for (const backend of storageBackends) {
 						))!.summary_state,
 					);
 				const { resume: _ignored, ...summary } = await state();
-				const rebuild = async () => {
+				const rebuild = async (refused = false) => {
 					await db.run(
 						`UPDATE ${tables.sessions} SET summary_state = ? WHERE id = ?`,
 						JSON.stringify(summary),
 						header.id,
 					);
-					const reader = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
-					await reader.readResume(header.id);
-					return JSON.stringify((await state()).resume);
+					const connection = await scope.connect();
+					const reader = await SqlSessionStore.open(connection, { prefix: scope.prefix });
+					if (refused) refuseChunkProjection(connection, entries[0]!.id);
+					try {
+						await reader.readResume(header.id);
+						return JSON.stringify((await state()).resume);
+					} finally {
+						await reader.close();
+					}
 				};
 				const inline = await rebuild();
 				// Change only the physical representation. The old SQL projection still serves as an independent oracle.
@@ -181,6 +188,7 @@ for (const backend of storageBackends) {
 					}
 				});
 				assert.equal(await rebuild(), inline);
+				assert.equal(await rebuild(true), inline);
 			} finally {
 				await scope.close();
 			}
@@ -195,7 +203,8 @@ for (const backend of storageBackends) {
 			const operation = "r".repeat(SESSION_ENTRY_CHUNK_BYTES + 19);
 			const receipt = entries[0]!;
 			assert.ok(receipt.type === "custom");
-			receipt.data = { op: operation };
+			// This extension field is text, not the JSON-encoded groups of a membership record.
+			receipt.data = { op: operation, groups: "{not a membership record" };
 			await store.create(header, entries);
 			const table = renderStorageIdentifiers("sessions", { sessions: "sessions" }, scope.prefix).sessions;
 			await database.run(
@@ -239,6 +248,8 @@ for (const backend of storageBackends) {
 			await database.run(`UPDATE ${table} SET summary_state = ? WHERE id = ?`, JSON.stringify(summary), header.id);
 			const lost = await scope.connect();
 			const interrupted = await SqlSessionStore.open(lost, { prefix: scope.prefix });
+			// sqld enforces its own 5 MB cap; exercise an interrupted bounded read on the other engines too.
+			if (backend.name !== "libSQL server (sqld)") refuseChunkProjection(lost, "receipt");
 			const get = lost.get.bind(lost);
 			let chunks = 0;
 			lost.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
