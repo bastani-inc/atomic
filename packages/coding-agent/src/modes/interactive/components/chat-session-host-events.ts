@@ -342,7 +342,8 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 					Date.now())
 				: undefined;
 			state.sdkBusy = manualTakeoverPending || compaction.midTurn === true;
-			if (!manualTakeoverPending) state.statusMessage = compaction.errorMessage ?? "";
+			// The session shows a failure or a cancellation as a line in the transcript, which it saves (#5649).
+			if (!manualTakeoverPending) state.statusMessage = "";
 			if (compaction.midTurn !== true || compaction.aborted || compaction.errorMessage) {
 				state.workingMessage = undefined;
 				stopChatSessionWorkingLifecycle(state);
@@ -427,7 +428,9 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.sdkBusy = false;
 			state.compacting = false;
 			state.compactionStartedAt = undefined;
-			state.statusMessage = continueError.errorMessage;
+			// The session shows the error as a line in the transcript, which it saves (#5649); a held message that
+			// could not be sent stays queued, and its error is only shown.
+			state.statusMessage = continueError.queuedMessage === true ? continueError.errorMessage : "";
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;

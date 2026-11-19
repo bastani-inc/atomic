@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { EditorTheme } from "@bastani/atomic-tui";
+import { hostNoticeForEvent, hostNoticeMessage } from "../../packages/coding-agent/src/core/host-notices.ts";
 import {
 	ChatSessionHost,
 	type ChatSessionHostOpts,
@@ -36,6 +37,19 @@ export function makeLifecycleHost(overrides: Partial<ChatSessionHostOpts> = {}):
 		editorTheme,
 		...overrides,
 	});
+}
+
+/**
+ * Applies `event` as an agent session emits it: followed, when it ends a turn with an error or a cancellation, by the
+ * display-only line the session saves about it (#5649).
+ */
+export function applySessionEvent(host: ChatSessionHost<never>, event: unknown): void {
+	host.applyAgentEvent(event as never);
+	const notice = hostNoticeForEvent(event as never, undefined);
+	if (notice === undefined) return;
+	const message = hostNoticeMessage(notice, 0);
+	host.applyAgentEvent({ type: "message_start", message } as never);
+	host.applyAgentEvent({ type: "message_end", message } as never);
 }
 
 export function stripAnsi(text: string): string {

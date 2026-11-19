@@ -73,7 +73,16 @@ export type AgentSessionEvent =
 			type: "child_session_usage";
 			usage: Usage;
 	  }
-	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }
+	| {
+			type: "agent_continue_error";
+			source: "post_compaction";
+			errorMessage: string;
+			/**
+			 * Set when the failure is a message held during compaction that could not be sent; the message stays queued.
+			 * The chat shows that error at once and does not save it with the session.
+			 */
+			queuedMessage?: true;
+	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| {

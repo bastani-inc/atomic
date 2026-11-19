@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
-import { sessionEntryToContextMessages } from "../session-manager-history.ts";
+import { sessionEntryToTranscriptMessages } from "../session-manager-history.ts";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { taskOutputText } from "./command-output.js";
@@ -446,7 +446,7 @@ function transcriptView(
 	const itemIds = new Set(items.map((item) => item.id));
 	const messages = entries.flatMap<AgentMessage>((entry) => {
 		if (!entryIds.has(entry.id)) return [];
-		if (entry.type !== "message") return sessionEntryToContextMessages(entry);
+		if (entry.type !== "message") return sessionEntryToTranscriptMessages(entry);
 		const message = entry.message;
 		if (message.role === "assistant")
 			return [

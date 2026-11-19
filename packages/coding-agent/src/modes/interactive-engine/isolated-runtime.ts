@@ -15,6 +15,7 @@ import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError, HostSessionPickerRow } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
+import { hostNoticeFromEntry } from "../../core/host-notices.ts";
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
@@ -1455,6 +1456,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			// An appended entry can carry usage of its own, as a session summary or a cache warm does (#4726).
 			case "entry_appended":
 				this.sessionStats.refresh();
+				// A line the engine saved about how a turn ended is in the chat; a chat rebuilt from this host's view of
+				// the session keeps it (#5649).
+				if (event.type === "entry_appended" && hostNoticeFromEntry(event.entry) !== undefined)
+					this.dispatchBestEffort("refresh session view", this.refreshSessionView());
 				break;
 			case "queue_update":
 				this.queueUpdateGeneration += 1;

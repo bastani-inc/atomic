@@ -2,6 +2,7 @@ import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import { hostNoticeFromMessage, hostNoticeMessageFromEntry } from "../../core/host-notices.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
@@ -521,7 +522,11 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	entry: ChatMessageEntry,
 ): Component {
 	const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
-	if (entry.kind !== "system" && !(entry.kind === "custom" && isVerbatimCompactionMessage(entry.message))) {
+	// A line Atomic writes about how a turn ended is not a new message, as an error or a status is not (#5649).
+	const notCounted =
+		entry.kind === "custom" &&
+		(isVerbatimCompactionMessage(entry.message) || hostNoticeFromMessage(entry.message) !== undefined);
+	if (entry.kind !== "system" && !notCounted) {
 		messageComponents.add(component);
 	}
 	addChatTranscriptEntry(this.chatContainer, component, entry.role);
@@ -636,7 +641,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								},
 							);
 				component.setExpanded(this.toolOutputExpanded);
-				messageComponents.add(component);
+				if (hostNoticeFromMessage(message) === undefined) messageComponents.add(component);
 				this.chatContainer.addChild(component);
 			}
 			break;
@@ -805,7 +810,12 @@ function planTranscript(
 		messageBuffer = [];
 	};
 	for (const entry of sessionEntries) {
-		if (entry.type === "custom") {
+		const notice = hostNoticeMessageFromEntry(entry);
+		if (notice !== undefined) {
+			// A line Atomic wrote about how a turn ended shows where it was written, as it did live (#5649).
+			messageMeta.set(notice, { id: entry.id, timestamp: entry.timestamp });
+			messageBuffer.push(notice);
+		} else if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.
 			if (!mode.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
 			flushMessages();

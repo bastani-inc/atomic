@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.js";
+import { hostNoticeMessageFromEntry } from "./host-notices.ts";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
@@ -96,8 +97,13 @@ export function applyContextEdit(messages: AgentMessage[], edit: ContextEditEntr
 	});
 }
 
-function projectContextEntry(entry: SessionEntry, edit: ContextEditEntry | undefined): AgentMessage[] {
-	const messages = sessionEntryToContextMessages(entry);
+function projectContextEntry(
+	entry: SessionEntry,
+	edit: ContextEditEntry | undefined,
+	purpose: "model" | "transcript",
+): AgentMessage[] {
+	const messages =
+		purpose === "transcript" ? sessionEntryToTranscriptMessages(entry) : sessionEntryToContextMessages(entry);
 	if (!edit) return messages;
 	return applyContextEdit(messages, edit);
 }
@@ -167,6 +173,15 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 		}
 	}
 	return [];
+}
+
+/**
+ * Convert one durable session entry into the messages a chat transcript shows for it: its context messages, or the
+ * display-only line a host notice records, which model context never contains (#5649).
+ */
+export function sessionEntryToTranscriptMessages(entry: SessionEntry): AgentMessage[] {
+	const notice = hostNoticeMessageFromEntry(entry);
+	return notice === undefined ? sessionEntryToContextMessages(entry) : [notice];
 }
 
 /**
@@ -266,7 +281,7 @@ export function buildSessionProjection(
 				messages:
 					boundary && sourceEntry.type === "compaction" && sourceEntry.id !== boundary.id
 						? []
-						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id)),
+						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id), purpose),
 			}),
 		);
 		return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
@@ -301,7 +316,7 @@ export function buildSessionProjection(
 					? boundaryMessages
 					: keptTailIds.has(sourceEntry.id) || sourceEntry.type === "compaction"
 						? []
-						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id)),
+						: projectContextEntry(sourceEntry, rowEdits?.get(sourceEntry.id), purpose),
 		}),
 	);
 	return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
