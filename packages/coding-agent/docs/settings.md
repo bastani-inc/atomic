@@ -312,7 +312,7 @@ These compaction settings were removed and are ignored when present; settings st
 |---------|------|---------|-------------|
 | `resume.waitForBlueprint` | `"prompt"` \| `"tools"` | `"prompt"` in the TUI, `"tools"` without a UI | When a resume restores a worktree, what waits for its blueprint build. `"prompt"` opens the session once the build has finished. `"tools"` opens it and sends the first request while the build runs; every tool call waits for the build, and the first of them reports how it went. Unset, it is `"prompt"` in the interactive TUI and `"tools"` for `-p`, `--mode json`, `--mode rpc` and SDK sessions. See [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs) |
 | `resume.cache` | array | unset | Extra cache paths for [`atomic blueprint cache-key`](/guides/resume-on-any-machine#caches-for-runners), added to the package stores it detects from the repository's lockfiles. Each entry is `{ "paths": [...], "kind"?: "store" \| "build", "keyFiles"?: [...] }`: `"store"` (default) paths are absolute or under `~` and outside the repository; `"build"` paths are relative to the repository root. Paths that could hold credentials, globs and a leading `!` are refused with a warning. A project's list replaces the global one |
-| `resume.setupCommand` | string | unset | Deprecated; remove it in favour of a blueprint. Kept for one release as an alias for one maintenance step of the global blueprint: the command runs in the root of each worktree restored on resume, or by a worker host for a pooled child, in a trusted project. A resume that builds a worktree prints a deprecation warning while it is set. Move the command into the `maintenance` section of `.atomic/blueprint.yaml`. Read from global settings only; a project's settings cannot set it. See [Set the environment up with a blueprint](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint) |
+| `resume.setupCommand` | string | unset | Deprecated; remove it in favour of a blueprint. Kept for one release as an alias for one maintenance step of the global blueprint: the command runs in the root of each worktree restored on resume, in a trusted project. A resume that builds a worktree prints a deprecation warning while it is set. Move the command into the `maintenance` section of `.atomic/blueprint.yaml`. Read from global settings only; a project's settings cannot set it. See [Set the environment up with a blueprint](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint) |
 
 ### Snapshots
 
@@ -517,7 +517,7 @@ Plain names establish a replacement list before its modifiers apply. A project l
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `sessions.storage` | object | Local SQLite | Session-only storage selection: `{ "path": "..." }`, `{ "dir": "..." }`, `{ "memory": true }`, or `{ "adapter": "...", "options": {}, "secrets": {}, "prefix": "..." }`. |
-| `storage` | object | Local SQLite | Storage selection for sessions when `sessions.storage` is unset. Accepts the same forms except `dir`. |
+| `storage` | object | Local SQLite | Storage selection for sessions when `sessions.storage` is unset. In global settings it also selects the Intercom broker's storage; see [Running Intercom across machines](/intercom/operations#running-intercom-across-machines). Accepts the same forms except `dir`. |
 
 ```json
 { "sessions": { "storage": { "path": "sessions.sqlite" } } }

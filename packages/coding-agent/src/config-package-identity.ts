@@ -30,7 +30,7 @@ export function packageJsonDefinesAppIdentity(pkg: PackageIdentityJson): boolean
  *
  * Prebundled companion extensions live under `dist/builtin/<name>/` with their
  * own `package.json`. The first package.json from those bundles is
- * `@bastani/workflows` (or another companion), which must not become APP_NAME.
+ * a companion such as `@bastani/subagents`, which must not become APP_NAME.
  */
 export function resolvePackageDirFrom(startDir: string): string {
 	let dir = startDir;

@@ -39,7 +39,7 @@ Each System One service takes images in its own request format, which the model'
 
 A model chain is a pinned model followed by `fallbackModels` in a session or subagent; `model: "auto"` starts the chain with your default model:
 
-- Candidates whose providers lack usable credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents and stages). `auto` never stands for a default model whose provider has no credentials.
+- Candidates whose providers lack usable credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents). `auto` never stands for a default model whose provider has no credentials.
 - A provider that rejects credentials (HTTP 401, an invalid, expired, leaked, disabled, or restricted API key, an invalid request signature, an expired or invalid security token, an invalidated token, or a suspended API consumer) is skipped for the rest of that walk. A model-scoped HTTP 403 (such as missing model access or moderation) blocks only that model, leaving other models on that provider eligible.
 - A chain with no usable model fails at once naming each model and missing provider. A single pinned model with no fallbacks is never replaced.
 

@@ -132,9 +132,9 @@ Project agents override user agents with the same name when `agentScope: "both"`
 | `reviewer` | Code review | Sonnet | read, search, find, ls, bash |
 | `worker` | General-purpose | Sonnet | (all default) |
 
-## Workflow prompts
+## Ordered work
 
-This example focuses on direct single-agent and independent parallel delegation. Use the main Atomic workflow tools when a task needs ordered stages, review loops, or durable handoffs.
+This example focuses on direct single-agent and independent parallel delegation. When a task needs ordered steps, review loops, or handoffs between children, use Atomic's bundled `subagent` tool from the parent chat or a codemode script; see [Orchestration](../../../docs/orchestration.md).
 
 ## Limitations
 

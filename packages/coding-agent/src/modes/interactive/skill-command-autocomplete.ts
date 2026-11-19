@@ -118,7 +118,7 @@ export function createSessionSkillAutocompleteProvider(
 				const session = resolved as AgentSession | undefined;
 				if (!session?.resourceLoader || !session.settingsManager) {
 					onUnavailable?.(
-						"Skill discovery unavailable: this stage host does not expose its session command metadata.",
+						"Skill discovery unavailable: this chat's host does not expose its session command metadata.",
 					);
 					return null;
 				}

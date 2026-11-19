@@ -5,7 +5,7 @@ export const ONBOARDING_COPY = [
 	"agent workflows you can feel confident in.",
 	"Use it to implement tickets, research a codebase, design a UI,",
 	"or build and run your own loops.",
-	"Run dynamic workflows and save the ones you like for future use.",
+	"Orchestrate subagents with codemode and save the procedures you like as skills.",
 	"Start building a verifiable software factory.",
 	"",
 	"Type a message or slash command below to continue normally.",

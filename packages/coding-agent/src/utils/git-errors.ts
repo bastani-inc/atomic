@@ -1,4 +1,4 @@
-/** The oldest system git Atomic accepts; workflow worktree commands need `rev-parse --end-of-options` (Git 2.30). */
+/** The oldest system git Atomic accepts; worktree commands need `rev-parse --end-of-options` (Git 2.30). */
 export const GIT_MINIMUM_VERSION = "2.30.0";
 
 const GIT_PROVISION_ERROR_NAME = "GitProvisionError";

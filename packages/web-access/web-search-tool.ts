@@ -56,7 +56,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 			const queryList = normalizeQueryList(rawQueryList);
 			const configWorkflow = (await loadConfigForExtensionInit()).workflow;
 			// The curator needs a person at a browser. A session that renders UI but has no human input
-			// (a subagent or workflow stage) can never complete it, so it gets raw results instead.
+			// (a subagent) can never complete it, so it gets raw results instead.
 			const canCurate = ctx?.hasUI !== false && ctx?.hasHumanInput !== false;
 			const workflow = resolveWorkflow(configWorkflow, canCurate);
 			const shouldCurate = workflow !== "none";
