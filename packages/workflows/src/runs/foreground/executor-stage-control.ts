@@ -361,6 +361,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 					runtime.innerCtx.__idleForRelease()
 				);
 			},
+			chatHolds: holds,
 			holdsTaken: () => holds.holdsTaken,
 			onHoldLifted: (listener) => holds.onLifted(listener),
 		},

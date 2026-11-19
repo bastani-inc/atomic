@@ -46,6 +46,7 @@ import {
 	durableRecordedToolResults,
 	durableWaitingStages,
 	latestStageSessionCheckpoints,
+	resumingStageChats,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { recordThrowingToolFailure, recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
@@ -114,6 +115,7 @@ import {
 } from "../runs/foreground/run-residency.js";
 import {
 	stageControlRegistry as defaultStageControlRegistry,
+	disposeAfterStageHolds,
 	type StageControlHandle,
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
@@ -367,7 +369,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				opts.workers ||
 				backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
 		if (publicResources) opts = await restoreWorkerOptions(backend, { ...opts, runId });
-		const publicPool = publicResources ? await activatePublicPool(backend, opts) : undefined;
+		const publicPool = publicResources ? await activatePublicPool(backend, opts, resumingChats) : undefined;
 		try {
 			if (opts.effectiveResources)
 				opts = {
@@ -412,9 +414,18 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			}
 		}
 	};
-	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
-		? await backend.withWorkflowLease(runId, execute)
-		: await execute();
+	const resumingChats =
+		opts.parentRun === undefined && opts.runId !== undefined && backend.getWorkflow(runId) !== undefined
+			? (opts.stageControlRegistry ?? defaultStageControlRegistry)
+			: undefined;
+	const releaseChats = resumingChats?.reserveStageChats?.(resumingStageChats(backend, runId));
+	try {
+		return opts.parentRun === undefined && backend instanceof JournalDurableBackend
+			? await backend.withWorkflowLease(runId, execute)
+			: await execute();
+	} finally {
+		releaseChats?.();
+	}
 }
 
 function evictionRefused(
@@ -765,7 +776,9 @@ async function executeRun(
 	 * runs, so its end releases only these and leaves a successor's handles alone (#5499).
 	 */
 	const ownStageHandles = new Set<StageControlHandle>();
-	const stageRegistry = recordStageRegistrations(sharedStageRegistry, ownStageHandles);
+	const stageRegistry = recordStageRegistrations(sharedStageRegistry, ownStageHandles, () =>
+		isTerminalRunStatus(runSnapshot.status),
+	);
 	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
 	const sourceToContinuationNodeIds = new Map<string, string>();
 	const replayIndex = createContinuationReplayIndex(opts.continuation, sourceToContinuationNodeIds);
@@ -2098,13 +2111,17 @@ async function executeRun(
  * `registry`, recording in `own` every handle registered through it until that handle is unregistered. A handle
  * another registration displaced stays recorded: only this execution can still release it.
  */
-function recordStageRegistrations(registry: StageControlRegistry, own: Set<StageControlHandle>): StageControlRegistry {
+function recordStageRegistrations(
+	registry: StageControlRegistry,
+	own: Set<StageControlHandle>,
+	executionEnded: () => boolean,
+): StageControlRegistry {
 	return new Proxy(registry, {
 		get(target, key) {
 			if (key === "register") {
 				return (handle: StageControlHandle) => {
 					own.add(handle);
-					const unregister = target.register(handle);
+					const unregister = target.register(handle, executionEnded);
 					return () => {
 						own.delete(handle);
 						unregister();
@@ -2177,7 +2194,7 @@ function disposeDisplacedStageHandles(
 ): Promise<unknown>[] {
 	return [...own]
 		.filter((handle) => !registered.includes(handle))
-		.map((handle) => Promise.resolve(handle.dispose?.()));
+		.map((handle) => Promise.resolve(disposeAfterStageHolds(handle)));
 }
 
 async function settleStageReleases(releases: readonly Promise<unknown>[]): Promise<void> {

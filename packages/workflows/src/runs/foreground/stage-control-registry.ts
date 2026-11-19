@@ -35,10 +35,12 @@ import type {
 } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import { type StageRecordOwner, stageRecordIdentity, stageRecordOwner } from "../../shared/stage-record-owner.js";
+import { isTerminalStageStatus } from "../../shared/store-internal.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
+import type { StageSessionHolds } from "./stage-session-holds.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -199,6 +201,15 @@ export interface StageControlHandle {
 	readonly releaseGate?: StageSessionReleaseGate;
 }
 
+/** Release a handle its execution and its registration have both let go of, but not underneath a chat. */
+export function disposeAfterStageHolds(
+	handle: StageControlHandle,
+	dispose = () => handle.dispose?.(),
+): Promise<void> | void {
+	const holds = handle.releaseGate?.chatHolds;
+	return holds ? holds.afterLastHold(dispose) : dispose();
+}
+
 export interface StageSessionReleaseGate {
 	/**
 	 * Set by a handle no workflow body holds, such as one reopened from a saved transcript: nothing but its own
@@ -212,6 +223,8 @@ export interface StageSessionReleaseGate {
 	savedForReopen(): Promise<SessionStore | undefined>;
 	/** Synchronous: true while no subscriber, message, turn, queue, or pause work needs the live session. */
 	idle(): boolean;
+	/** Displacement does not require a saved transcript, but must wait for open views and operations. */
+	readonly chatHolds?: StageSessionHolds;
 	/** How many subscriptions and operations began on the handle so far. Never decreases. */
 	holdsTaken(): number;
 	/** Observe each moment something that kept the session may have let go of it. Returns the unsubscribe function. */
@@ -263,7 +276,7 @@ export interface StageControlRegistry {
 	 * run-level pause/resume stops seeing the stage while any open chat pane can
 	 * keep using its direct handle reference.
 	 */
-	register(handle: StageControlHandle): () => void;
+	register(handle: StageControlHandle, executionEnded?: () => boolean): () => void;
 	/**
 	 * Atomically resolve an existing non-disposed handle for `runId + stageId`
 	 * or create one via `create`, register it, and immediately detach it from
@@ -280,6 +293,12 @@ export interface StageControlRegistry {
 	acquireDetached(runId: string, stageId: string, create: () => StageControlHandle): DetachedStageHandleLease;
 	/** The exact registration of this handle, if it is still resident in this registry. */
 	registrationSource?(handle: StageControlHandle): ReleasedStageSource | undefined;
+	/** Follow a replaced stage by identity: a pane can still hold an old worker view after its registration is gone. */
+	onStageReplaced?(listener: (stage: StageChatTarget, next?: StageControlHandle) => void): () => void;
+	/** A worker published a stage reserved for resume: its live view is served by the pool, not this registry. */
+	handoffToWorker?(runId: string, stageId: string, terminal: boolean): void;
+	/** Reserve the retained chats whose transcripts a same-id resume will reopen; release on startup failure or run end. */
+	reserveStageChats?(stages: readonly StageChatTarget[]): () => void;
 	/** Inspect without claiming a provisional detached handle. */
 	peek(runId: string, stageId: string): StageControlHandle | undefined;
 	/** Resolve and permanently claim a provisional detached handle. */
@@ -327,6 +346,27 @@ export interface StageControlRegistry {
 	 * stage on demand. Returns the unsubscribe function.
 	 */
 	onStageReleased(listener: ReleasedStageListener): () => void;
+}
+
+export interface StageChatTarget {
+	readonly runId: string;
+	readonly stageId: string;
+}
+
+/** A running post-mortem turn owns its transcript until it finishes. Never wait for it in resume admission. */
+export function busyStageChat(handle: StageControlHandle): string | undefined {
+	const session = handle.agentSession;
+	if (
+		handle.releaseGate?.chatHolds?.operating ||
+		handle.isStreaming ||
+		handle.isTurnLoopBusy ||
+		session?.isRetrying ||
+		session?.isBashRunning ||
+		session?.isCompacting
+	) {
+		return `Stage "${handle.stageName}" has an active chat turn. Wait for it to finish or press Esc in its chat, then resume the workflow.`;
+	}
+	return undefined;
 }
 
 /** What remains of a stage whose session was released: ids only, never a session or store. */
@@ -394,6 +434,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 	type RegistryEntry = {
 		handle: StageControlHandle;
 		readonly source: ReleasedStageSource;
+		executionEnded?: () => boolean;
 		controlsDependencies: boolean;
 		permanent: boolean;
 		readonly leases: Set<symbol>;
@@ -415,8 +456,25 @@ export function createStageControlRegistry(): StageControlRegistry {
 	const _byRun = new Map<string, Map<string, RegistryEntry>>();
 	const pendingDisposals = new Set<Promise<void>>();
 	const pendingLookups = new Map<string, { count: number }>();
+	const chatReservations = new Map<string, { until: AbortController; workerPublished: boolean }>();
+	const chatKey = (runId: string, stageId: string) => JSON.stringify([runId, stageId]);
 	const sessionStores = new Map<string, Map<string, SessionStore>>();
 	const releaseListeners = new Set<ReleasedStageListener>();
+	const replacementListeners = new Set<(stage: StageChatTarget, next?: StageControlHandle) => void>();
+	function notifyReplacement(stage: StageChatTarget): void {
+		for (const listener of [...replacementListeners]) {
+			try {
+				listener(stage, _byRun.get(stage.runId)?.get(stage.stageId)?.handle);
+			} catch (error) {
+				console.warn("atomic-workflows: could not switch stage chat to its replacement", error);
+			}
+		}
+	}
+	function retire(entry: RegistryEntry): void {
+		void Promise.resolve(disposeAfterStageHolds(entry.handle, () => disposeEntry(entry))).catch((error: unknown) =>
+			console.warn("atomic-workflows: displaced stage handle dispose failed", error),
+		);
+	}
 	let generation = 0;
 	function rememberSessionStore(
 		handle: StageControlHandle,
@@ -450,7 +508,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 		runId: string,
 		stageId: string,
 		handle: StageControlHandle,
-		fields: Pick<RegistryEntry, "controlsDependencies" | "permanent" | "releaseWanted">,
+		fields: Pick<RegistryEntry, "controlsDependencies" | "permanent" | "releaseWanted" | "executionEnded">,
 	): RegistryEntry {
 		const entry: RegistryEntry = {
 			handle,
@@ -459,6 +517,10 @@ export function createStageControlRegistry(): StageControlRegistry {
 			leases: new Set(),
 			epoch: 0,
 		};
+		if (fields.executionEnded === undefined && isTerminalStageStatus(handle.status)) {
+			const reserved = chatReservations.get(chatKey(runId, stageId));
+			if (reserved) handle.releaseGate?.chatHolds?.reserveForResume(reserved.until.signal);
+		}
 		entry.stopWatching = handle.releaseGate?.onHoldLifted(() => releaseWhenLetGo(runId, stageId, entry));
 		return entry;
 	}
@@ -658,20 +720,31 @@ export function createStageControlRegistry(): StageControlRegistry {
 				},
 			};
 		},
-		register(handle: StageControlHandle): () => void {
-			rememberSessionStore(handle);
+		register(handle: StageControlHandle, executionEnded?: () => boolean): () => void {
 			const runMap = ensureRun(handle.runId);
 			const displaced = runMap.get(handle.stageId);
+			const retiring =
+				displaced !== undefined &&
+				displaced.handle !== handle &&
+				(!displaced.permanent || (displaced.executionEnded?.() ?? isTerminalStageStatus(displaced.handle.status)));
+			if (retiring && executionEnded !== undefined) {
+				const busy = busyStageChat(displaced.handle);
+				if (busy) throw new Error(busy);
+			}
+			rememberSessionStore(handle);
+			const takeover =
+				(executionEnded !== undefined || handle.placement !== undefined) &&
+				chatReservations.delete(chatKey(handle.runId, handle.stageId));
 			const registered = createEntry(handle.runId, handle.stageId, handle, {
+				executionEnded,
 				controlsDependencies: true,
 				permanent: true,
 				releaseWanted: handle.releaseGate?.releaseWhenIdle === true,
 			});
 			runMap.set(handle.stageId, registered);
 			if (displaced !== undefined) stopWatching(displaced);
-			if (displaced !== undefined && displaced.handle !== handle && !displaced.permanent) {
-				disposeEntryInBackground(displaced, "atomic-workflows: displaced provisional stage handle dispose failed");
-			}
+			if (retiring) retire(displaced);
+			if (takeover || (displaced !== undefined && displaced.handle !== handle)) notifyReplacement(handle);
 			return () => {
 				const existing = _byRun.get(handle.runId);
 				if (!existing) return;
@@ -842,6 +915,53 @@ export function createStageControlRegistry(): StageControlRegistry {
 			}
 			// A release a hold's end started may have unregistered its stage already: wait for its session to go too.
 			await Promise.allSettled([...pendingDisposals]);
+		},
+		handoffToWorker(runId, stageId, terminal) {
+			const key = chatKey(runId, stageId);
+			const reserved = chatReservations.get(key);
+			if (!reserved) return;
+			const entries = _byRun.get(runId);
+			const entry = entries?.get(stageId);
+			if (terminal) {
+				chatReservations.delete(key);
+				reserved.until.abort();
+			}
+			if (entries && entry) {
+				if (!(entry.executionEnded?.() ?? isTerminalStageStatus(entry.handle.status))) return;
+				entries.delete(stageId);
+				if (entries.size === 0) _byRun.delete(runId);
+				stopWatching(entry);
+				retire(entry);
+			} else if (reserved.workerPublished) return;
+			reserved.workerPublished = true;
+			notifyReplacement({ runId, stageId });
+		},
+		reserveStageChats(stages) {
+			const reservations = new Map<string, AbortController>();
+			for (const { runId, stageId } of stages) {
+				const current = _byRun.get(runId)?.get(stageId)?.handle;
+				const busy = current && busyStageChat(current);
+				if (busy) throw new Error(busy);
+				if (chatReservations.has(chatKey(runId, stageId)))
+					throw new Error(`Workflow ${runId} is already resuming.`);
+			}
+			for (const { runId, stageId } of stages) {
+				const key = chatKey(runId, stageId);
+				const until = new AbortController();
+				reservations.set(key, until);
+				chatReservations.set(key, { until, workerPublished: false });
+				_byRun.get(runId)?.get(stageId)?.handle.releaseGate?.chatHolds?.reserveForResume(until.signal);
+			}
+			return () => {
+				for (const [key, until] of reservations) {
+					until.abort();
+					if (chatReservations.get(key)?.until === until) chatReservations.delete(key);
+				}
+			};
+		},
+		onStageReplaced(listener) {
+			replacementListeners.add(listener);
+			return () => replacementListeners.delete(listener);
 		},
 		onStageReleased(listener: ReleasedStageListener): () => void {
 			releaseListeners.add(listener);

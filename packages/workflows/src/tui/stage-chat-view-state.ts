@@ -333,9 +333,12 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 						excludeFromContext: request.excludeFromContext,
 					});
 				if (!agentSession) throw new Error("no live agent session on this stage");
-				return agentSession.executeBash(request.command, request.onChunk, {
-					excludeFromContext: request.excludeFromContext,
-				});
+				const execute = () =>
+					agentSession.executeBash(request.command, request.onChunk, {
+						excludeFromContext: request.excludeFromContext,
+					});
+				const holds = handle.releaseGate?.chatHolds;
+				return holds ? holds.operation(execute) : execute();
 			},
 			abortBash: async () => {
 				const handle = liveHandle(ctx);
@@ -748,7 +751,12 @@ async function handleSlashCommand(ctx: StageChatViewContext, text: string): Prom
 						: () => handle.compact!(instructions || undefined);
 			if (compact === undefined) return false;
 			try {
-				await compact();
+				const holds = handle.releaseGate?.chatHolds;
+				if (holds)
+					await holds.operation(async () => {
+						await compact();
+					});
+				else await compact();
 			} catch (error) {
 				// compaction_end owns cancellation/failure UI; a stage that could not start compacting says why.
 				if (handle.agentSession === undefined) ctx.chatHost.showWarning((error as Error).message);

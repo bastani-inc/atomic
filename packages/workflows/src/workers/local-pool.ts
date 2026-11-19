@@ -48,6 +48,7 @@ import { formatPoolCoordination } from "../shared/pool-coordination.js";
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
 import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
+import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { PoolCoordinationStats } from "../shared/store-types.js";
 import type {
 	WorkflowDefinition,
@@ -506,6 +507,8 @@ export class LocalWorkerPool {
 			 * every live pooled stage. A handle opens a watch only while it is used.
 			 */
 			readonly stageControlRegistry?: StageControlRegistry;
+			/** The host drops a retained chat once its resumed worker publishes that stage. */
+			readonly resumingChats?: StageControlRegistry;
 		},
 	) {
 		// Where the pool's tables are: a SQLite file by path, or, for a shared pool, the durable journal itself.
@@ -1771,6 +1774,17 @@ export class LocalWorkerPool {
 			const accepted = publications
 				.filter((_, index) => outcomes[index] === undefined)
 				.map(({ work, runs }) => ({ work, runs: this.openStages.visit(work, runs) }));
+			const chats = this.options.resumingChats;
+			if (chats?.handoffToWorker) {
+				for (const { runs } of accepted)
+					for (const run of runs)
+						for (const stage of run.stages) {
+							const terminal = isTerminalStageStatus(stage.status);
+							// An SDK caller gets a replacement proxy below; the host resolves its own worker view.
+							if (!this.options.stageControlRegistry || terminal)
+								chats.handoffToWorker(run.id, stage.id, terminal);
+						}
+			}
 			this.routePrompts(accepted);
 			this.drainRemoteStages(handoff, accepted);
 			const registry = this.options.stageControlRegistry;
