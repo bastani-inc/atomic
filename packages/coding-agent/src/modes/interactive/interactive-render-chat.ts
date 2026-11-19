@@ -955,6 +955,30 @@ InteractiveModeBase.prototype.attachStartupNoticesContainer = function (
 };
 
 const renderedSessionIds = new WeakMap<InteractiveModeBase, string>();
+const nativeHistoryHints = new WeakMap<Container, Component>();
+
+/** The terminal owns scrollback in regular mode: a resumed window cannot paint rows it never printed. */
+function showNativeHistoryHint(mode: InteractiveModeBase): void {
+	const notices = mode.startupNoticesContainer;
+	const previous = nativeHistoryHints.get(notices);
+	if (mode.ui.mode !== "regular" || !mode.sessionManager.getOmittedHistoryTotals?.()?.totalMessages) {
+		if (previous) notices.removeChild(previous);
+		return;
+	}
+	const hint =
+		previous ??
+		new ThemedText(
+			() =>
+				theme.fg(
+					"dim",
+					"Older messages: use terminal scrollback, ask the agent to read history://, or use /export.",
+				),
+			1,
+			0,
+		);
+	if (!previous) nativeHistoryHints.set(notices, hint);
+	if (!notices.children.includes(hint)) notices.addChild(hint);
+}
 
 export function clearChatForRerender(mode: InteractiveModeBase): void {
 	const renderer = mode.ui as AltScreenMessageCounterHost;
@@ -971,6 +995,7 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	const renderer = this.ui as AltScreenMessageCounterHost;
 	if (previousSessionId !== sessionId) renderer.newMessages?.reset();
 	this.attachStartupNoticesContainer({ resetDetached: true });
+	showNativeHistoryHint(this);
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
 	renderProjectTrustWarningIfNeeded(this);
@@ -1125,6 +1150,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	clearChatForRerender(this);
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();
+	showNativeHistoryHint(this);
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
 	// A caller that suppresses the persisted boundary appends the live one, then the warning (appendProjectTrustWarning).
