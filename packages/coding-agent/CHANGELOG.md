@@ -29,6 +29,7 @@
 
 ### Fixed
 
+- `@bastani/atomic` no longer lists a `./hooks` export. Its files were never published, so importing `@bastani/atomic/hooks` failed with `ERR_MODULE_NOT_FOUND`; it now fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`, like any subpath the package does not export. Extensions import their API from `@bastani/atomic` ([#5972](https://github.com/bastani-inc/atomic/pull/5972)).
 - `generateStructuredOutput()` and the `structured_output` tool no longer send a provider backoff retry after their timeout when the process is busy ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
 - Snapshot collection reports when there is too little space to move an old chunk table. On a closed local SQLite file, `atomic storage move-snapshot-chunks <sqlite-file>` can finish the move with room for one copy and a batch of log records instead of two copies ([#5700](https://github.com/bastani-inc/atomic/issues/5700)).
 - On Linux and macOS, worktree pool leases and session-open markers are aged by the shared filesystem's time when the clock reading finishes, as on Windows, so the cleanup of the reading's probe file no longer makes them look younger than they are. A change to this machine's wall clock during the reading is not counted as elapsed time ([#5674](https://github.com/bastani-inc/atomic/issues/5674)).
