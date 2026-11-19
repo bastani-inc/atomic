@@ -2,6 +2,7 @@ import type { TextContent } from "@bastani/atomic-ai/compat";
 import type { Component } from "@bastani/atomic-tui";
 import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@bastani/atomic-tui";
 import type { MarkdownTransformer, MessageRenderer } from "../../../core/extensions/types.ts";
+import { HOST_NOTICE_TYPE, type HostNotice, hostNoticeFromMessage } from "../../../core/host-notices.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE } from "../../../core/tasks/heartbeat-notice.js";
@@ -28,6 +29,14 @@ import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
  */
 function isRenderableComponent(value: unknown): value is Component {
 	return typeof value === "object" && value !== null && typeof (value as { render?: unknown }).render === "function";
+}
+
+/** The row a host notice shows, live and when its chat is opened again (#5649). */
+function hostNoticeLine(notice: HostNotice): string {
+	const text = stripTerminalControls(notice.text);
+	if (notice.level === "error") return theme.fg("error", `Error: ${text}`);
+	if (notice.level === "warning") return theme.fg("warning", `Warning: ${text}`);
+	return theme.fg("dim", text);
 }
 
 /**
@@ -158,6 +167,20 @@ export class CustomMessageComponent extends Container {
 			if (notice) {
 				this.spacer = new Spacer(1);
 				this.customComponent = new TaskCompletionMessage(notice, this._expanded, this.completionOptions);
+				this.addChild(this.spacer);
+				this.addChild(this.customComponent);
+				return;
+			}
+		}
+		if (this.message.customType === HOST_NOTICE_TYPE) {
+			const notice = hostNoticeFromMessage(this.message);
+			if (notice) {
+				this.spacer = new Spacer(1);
+				this.customComponent = new Text(
+					hostNoticeLine(notice) + (this._expanded && notice.location ? `\n${notice.location}` : ""),
+					this.outputPad,
+					0,
+				);
 				this.addChild(this.spacer);
 				this.addChild(this.customComponent);
 				return;

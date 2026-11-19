@@ -236,6 +236,7 @@ export function createRpcCommandHandler({
 								type: "agent_continue_error",
 								source: "post_compaction",
 								errorMessage: `Failed to send queued message: ${formatRpcErrorMessage(promptError)}`,
+								queuedMessage: true,
 							});
 						}
 					})

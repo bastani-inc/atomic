@@ -18,7 +18,7 @@ import {
 	type ChatSessionHostStyle,
 } from "../../packages/coding-agent/src/index.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "./chat-session-host-working-lifecycle-fixture.ts";
+import { applySessionEvent, stripAnsi } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 beforeAll(() => {
 	initTheme("dark", false);
@@ -134,7 +134,7 @@ test("ChatSessionHost gives factual retry, fallback, error, cancellation, and co
 		const host = makeHost();
 		host.applyAgentEvent({ type: "agent_start" } as never);
 		host.applyAgentEvent({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: {} } as never);
-		host.applyAgentEvent(event as never);
+		applySessionEvent(host, event);
 		const body = host.renderBody(80, 8).join("\n");
 		const status = host.renderWorkingStatus(80).join("\n");
 		const count = (text: string) =>

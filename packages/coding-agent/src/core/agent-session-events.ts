@@ -4,6 +4,7 @@ import { cleanupSessionResources } from "@bastani/atomic-ai/compat";
 import { abortBash } from "./agent-session-bash.ts";
 import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
+import { recordHostNotice } from "./agent-session-host-notices.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
 import {
@@ -80,9 +81,11 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	const status = retryStatusUpdate(event);
 	if (status !== undefined) this._retryStatus = status ?? undefined;
 	observeToolExecutionTiming(this, event);
+	const publish = recordHostNotice(this, event);
 	for (const l of this._eventListeners) {
 		l(event);
 	}
+	publish?.();
 }
 
 export function _emitQueueUpdate(this: AgentSession): void {

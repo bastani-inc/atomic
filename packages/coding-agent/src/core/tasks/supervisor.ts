@@ -74,7 +74,10 @@ export interface TaskTranscriptCommands {
 
 /** A finished task's history as {@link TaskTranscriptSource.loadHistory} reads it. */
 export type TaskTranscriptHistory =
-	| { readonly entries: ReturnType<SessionManager["getEntries"]>; readonly unavailable?: undefined }
+	| {
+			readonly entries: ReturnType<SessionManager["getEntries"]>;
+			readonly unavailable?: undefined;
+	  }
 	| {
 			/** The task's own prompt and answer, which its transcript kept in memory. */
 			readonly entries: ReturnType<SessionManager["getEntries"]>;

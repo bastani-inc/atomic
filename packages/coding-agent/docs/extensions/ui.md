@@ -40,6 +40,8 @@ ctx.ui.notify("Done!", "info");  // "info" | "warning" | "error"
 
 Notifications emitted while extensions load or startup is in progress always appear below the startup `RESOURCES` disclosure line, never above it.
 
+A notification is not saved with the session: resuming the session or reopening the chat does not show it again. To keep a line in the conversation, send it with `pi.sendMessage({ customType, content, display: true }, { excludeFromContext: true })`, which shows and saves it without sending it to the model, or save an entry with `pi.appendEntry()` and draw it with `pi.registerEntryRenderer()`.
+
 #### Timed Dialogs with Countdown
 
 Dialogs support a `timeout` option that auto-dismisses with a live countdown display:

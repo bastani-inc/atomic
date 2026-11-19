@@ -7,6 +7,8 @@ import {
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionResult,
 } from "../../../core/compaction/index.ts";
+import { HOST_NOTICE_PREVIEW_BYTES } from "../../../core/host-notice-window.ts";
+import { boundHostNoticeText, type HostNotice, hostNoticeFromMessage } from "../../../core/host-notices.ts";
 import {
 	type CustomMessage,
 	createVerbatimCompactionMessage,
@@ -212,6 +214,12 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 	if (boundary) state.liveChat.appendMessages([boundary]);
 }
 
+function hostNoticeOf(message: unknown): HostNotice | undefined {
+	if (typeof message !== "object" || message === null || (message as { role?: unknown }).role !== "custom")
+		return undefined;
+	return hostNoticeFromMessage(message as CustomMessage);
+}
+
 export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	event: AgentSessionEvent,
@@ -240,6 +248,14 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 	}
 	if (isSharedLiveChatEvent(type)) {
+		// The line the session saves about how a turn ended takes over from the status line that said the same (#5649).
+		const notice = type === "message_start" ? hostNoticeOf((event as { message?: unknown }).message) : undefined;
+		if (
+			notice !== undefined &&
+			(state.statusMessage === notice.text ||
+				boundHostNoticeText(state.statusMessage, HOST_NOTICE_PREVIEW_BYTES) === notice.text)
+		)
+			state.statusMessage = "";
 		const changed = state.liveChat.applyEvent(event);
 		if (type === "message_start" && state.firstUserEntry === undefined && state.seenFirstRawUser) {
 			syncFirstUserEntry(state);

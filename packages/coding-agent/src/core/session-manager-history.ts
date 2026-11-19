@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.js";
+import { hostNoticeMessageFromEntry, isHostNoticeEntry } from "./host-notices.ts";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
@@ -107,7 +108,8 @@ function projectContextEntry(
 	purpose: "model" | "transcript",
 	onTranscriptEdit?: () => void,
 ): AgentMessage[] {
-	const messages = sessionEntryToContextMessages(entry);
+	const messages =
+		purpose === "transcript" ? sessionEntryToTranscriptMessages(entry) : sessionEntryToContextMessages(entry);
 	// Context edits change what the next request sees, not the rows the reader already saw. A row no reader sees
 	// follows the model, so a transcript never carries hidden content the model no longer has.
 	if (!edit) return messages;
@@ -183,6 +185,15 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 		}
 	}
 	return [];
+}
+
+/**
+ * Convert one durable session entry into the messages a chat transcript shows for it: its context messages, or the
+ * display-only line a host notice records, which model context never contains (#5649).
+ */
+export function sessionEntryToTranscriptMessages(entry: SessionEntry): AgentMessage[] {
+	const notice = hostNoticeMessageFromEntry(entry);
+	return notice === undefined ? sessionEntryToContextMessages(entry) : [notice];
 }
 
 /**
@@ -356,6 +367,8 @@ export interface SessionIndex {
 	leafId: string | null;
 	/** How many entries edit the model context, on any branch. */
 	contextEdits: number;
+	/** How many entries record a line Atomic wrote about how a turn ended, on any branch (#5649). */
+	hostNotices: number;
 }
 
 export function buildSessionIndex(fileEntries: readonly FileEntry[]): SessionIndex {
@@ -364,12 +377,14 @@ export function buildSessionIndex(fileEntries: readonly FileEntry[]): SessionInd
 	const labelTimestampsById = new Map<string, string>();
 	let leafId: string | null = null;
 	let contextEdits = 0;
+	let hostNotices = 0;
 
 	for (const entry of fileEntries) {
 		if (entry.type === "session") continue;
 		byId.set(entry.id, entry);
 		leafId = entry.id;
 		if (entry.type === "context_edit") contextEdits++;
+		else if (isHostNoticeEntry(entry)) hostNotices++;
 		if (entry.type === "label") {
 			if (entry.label) {
 				labelsById.set(entry.targetId, entry.label);
@@ -383,7 +398,7 @@ export function buildSessionIndex(fileEntries: readonly FileEntry[]): SessionInd
 
 	const last = leafId === null ? undefined : byId.get(leafId);
 	if (last && isLeafMoveEntry(last)) leafId = last.parentId;
-	return { byId, labelsById, labelTimestampsById, leafId, contextEdits };
+	return { byId, labelsById, labelTimestampsById, leafId, contextEdits, hostNotices };
 }
 
 /**

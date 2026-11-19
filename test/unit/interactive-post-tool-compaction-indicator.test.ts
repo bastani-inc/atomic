@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { Container, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, test } from "vitest";
+import { hostNoticeForEvent } from "../../packages/coding-agent/src/core/host-notices.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import {
 	AtomicWorkingLoader,
@@ -208,7 +209,13 @@ test("aborted and failed post-tool compaction leave no active indicator", async 
 			assert.equal(harness.mode.loadingAnimation, undefined);
 			assert.doesNotMatch(harness.status(), /Auto-compacting|∀ /);
 			assert.equal(timers.intervalCount(), 0, "no animation timer survives a terminal compaction");
-			if (expectAborted) assert.deepEqual(harness.statuses, ["Auto-compaction cancelled"]);
+			// The session shows how the compaction ended, as a line it saves; this handler adds nothing (#5649).
+			assert.deepEqual([...harness.statuses, ...harness.errors], []);
+			if (expectAborted)
+				assert.deepEqual(hostNoticeForEvent(end as never, undefined), {
+					level: "status",
+					text: "Auto-compaction cancelled",
+				});
 		} finally {
 			harness.mode.loadingAnimation?.stop();
 			harness.mode.autoCompactionLoader?.stop();

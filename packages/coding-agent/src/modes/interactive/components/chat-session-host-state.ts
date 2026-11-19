@@ -1,6 +1,7 @@
 import type { Component, EditorComponent, MarkdownTheme, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { hostNoticeFromMessage } from "../../../core/host-notices.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
@@ -238,6 +239,9 @@ export function countableTranscriptLength<TExtraEntry extends ChatTranscriptEntr
 	}
 	for (const entry of state.transcript) {
 		if ("kind" in entry && entry.kind === "task") excluded += 1;
+		// A line Atomic writes about how a turn ended is not a new message (#5649).
+		else if ("kind" in entry && entry.kind === "custom" && hostNoticeFromMessage(entry.message) !== undefined)
+			excluded += 1;
 	}
 	return Math.max(0, state.transcript.length - excluded);
 }

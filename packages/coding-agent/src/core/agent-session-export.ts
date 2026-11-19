@@ -12,6 +12,7 @@ import type { SessionStats } from "./agent-session-types.js";
 import { calculateContextTokens, estimateProjectedContextTokens } from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
+import { storedNotices } from "./host-notice-window.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import { applyContextEdit, collectContextEdits } from "./session-manager-history.ts";
 import { inlineToolOutput, withoutInlineToolOutput } from "./session-tool-output.ts";
@@ -196,7 +197,7 @@ export async function exportToJsonl(
 
 	const store = this.sessionManager.getSessionStore();
 	const snapshotEntries = await inlineSnapshotBlobs(
-		this.sessionManager.getBranch(),
+		await storedNotices(this.sessionManager.getBranch()),
 		this.sessionManager.getWorktreeSnapshotRecords(),
 		options.snapshotContent === false
 			? undefined
