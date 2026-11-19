@@ -1,7 +1,14 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
-import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import {
+	advanceCacheHistory,
+	cacheMissAfter,
+	createCacheMissModelSource,
+	formatCacheMissNotice,
+	type ModelPriceSource,
+	type PreviousRequest,
+} from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
@@ -96,13 +103,17 @@ InteractiveModeBase.prototype.maybeShowAssistantDiagnostics = function (
 			break;
 		}
 	}
+	addThinkingDrop(this, count, previousCount);
+};
+
+function addThinkingDrop(mode: InteractiveModeBase, count: number, previousCount: number): void {
 	if (count <= previousCount) return;
 	const noun = count === 1 ? "thinking block" : "thinking blocks";
-	this.chatContainer.addChild(new Spacer(1));
-	this.chatContainer.addChild(
+	mode.chatContainer.addChild(new Spacer(1));
+	mode.chatContainer.addChild(
 		new Text(theme.fg("warning", `Anthropic dropped ${count} ${noun} (details in session)`), 1, 0),
 	);
-};
+}
 
 // Weak keys leave cleared/rebuilt transcripts collectible without separate lifecycle state.
 // Only persistent diagnostic statuses participate; ordinary chat/status is never evicted.
@@ -766,8 +777,25 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	this.ui.requestRender();
 };
 
+interface ReplyNotices {
+	message: AssistantMessage;
+	previousReply: AssistantMessage | undefined;
+	previousRequest: PreviousRequest | undefined;
+	models: ModelPriceSource;
+}
+
+function paintReplyNotices(mode: InteractiveModeBase, notes: ReplyNotices): void {
+	const { message, previousReply, previousRequest, models } = notes;
+	if (message.stopReason !== "aborted" && message.stopReason !== "error") {
+		const count = countDroppedThinkingBlocks(message);
+		if (count > 0) addThinkingDrop(mode, count, previousReply ? countDroppedThinkingBlocks(previousReply) : 0);
+	}
+	const miss = cacheMissAfter(previousRequest, message, models);
+	if (miss) mode.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
+}
+
 type TranscriptStep =
-	| { readonly kind: "entry"; readonly entry: ChatMessageEntry }
+	| { readonly kind: "entry"; readonly entry: ChatMessageEntry; readonly notices?: ReplyNotices }
 	| { readonly kind: "custom"; readonly entry: CustomEntry }
 	| { readonly kind: "cost"; readonly type: "compaction" | "branch_summary"; readonly usage: Usage };
 
@@ -785,6 +813,12 @@ function planTranscript(
 	resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
+	const models = mode.settingsManager.getShowCacheMissNotices()
+		? createCacheMissModelSource(mode.session.modelRuntime)
+		: undefined;
+	let previousRequest: PreviousRequest | undefined;
+	let previousReply: AssistantMessage | undefined;
+	const replyGroups: ReplyNotices[] = [];
 	let firstMessage = true;
 	const flushMessages = (): void => {
 		if (options.suppressCompactionBoundary && firstMessage) {
@@ -796,7 +830,14 @@ function planTranscript(
 		}
 		firstMessage = false;
 		breakMainToolGroup(mode);
-		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta, { tracker: grouping.tracker })) {
+		// Pair by occurrence, not by message identity: an SDK caller can append the very same object twice.
+		let occurrence = 0;
+		const groups = replyGroups.length ? new Map<ChatMessageEntry, ReplyNotices>() : undefined;
+		const entries = chatEntriesFromAgentMessages(messageBuffer, messageMeta, {
+			tracker: grouping.tracker,
+			onAssistantGroup: groups && ((lastRow) => groups.set(lastRow, replyGroups[occurrence++]!)),
+		});
+		for (const entry of entries) {
 			if (entry.kind === "tool" && entry.isPartial !== false) {
 				const startedAt = grouping.starts.get(entry.toolCallId);
 				if (startedAt !== undefined) {
@@ -808,9 +849,10 @@ function planTranscript(
 			if (entry.kind === "assistant")
 				grouping.carriedBreak = assistantCallBreaks(entry.message.content, grouping.carriedBreak).trailing;
 			else if (entry.kind !== "tool") grouping.carriedBreak = false;
-			steps.push({ kind: "entry", entry });
+			steps.push({ kind: "entry", entry, notices: groups?.get(entry) });
 			if (options.populateHistory && entry.kind === "user") mode.editor.addToHistory?.(entry.text);
 		}
+		replyGroups.length = 0;
 		messageBuffer = [];
 	};
 	for (const entry of sessionEntries) {
@@ -821,7 +863,14 @@ function planTranscript(
 			steps.push({ kind: "custom", entry });
 		} else {
 			const messages = sessionEntryToContextMessages(entry);
-			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+			for (const message of messages) {
+				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+				if (models && message.role === "assistant") {
+					replyGroups.push({ message, previousReply, previousRequest, models });
+					previousReply = message;
+				}
+			}
+			if (models) previousRequest = advanceCacheHistory(previousRequest, entry);
 			messageBuffer.push(...messages);
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
 				flushMessages();
@@ -858,6 +907,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 		if (latest) grouping.lastMember = component;
 	}
 	if (entry.kind === "assistant") addServiceTierWarnings(mode, entry.message);
+	if (step.notices) paintReplyNotices(mode, step.notices);
 	if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
 		mode.pendingTools.set(entry.toolCallId, component);
 	}
@@ -934,14 +984,6 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
 	}
 	for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
-	if (this.settingsManager.getShowCacheMissNotices()) {
-		for (const miss of collectCacheMisses(
-			sessionEntries,
-			createCacheMissModelSource(this.session.modelRuntime),
-		).values()) {
-			this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
-		}
-	}
 	restoreDeferredEchoes(this, pendingEchoes);
 	this.ui.requestRender();
 };

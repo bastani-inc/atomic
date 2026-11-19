@@ -70,7 +70,7 @@ describe("InteractiveMode assistant diagnostics", () => {
 		expect(disabled.chatContainer.children).toHaveLength(0);
 	});
 
-	test("does not replay persisted Anthropic thinking-drop diagnostics", () => {
+	test("redraw puts each notice after its own saved reply occurrence (#5681)", () => {
 		initTheme("dark");
 		const chatContainer = new Container();
 		const entry: SessionEntry = {
@@ -78,7 +78,24 @@ describe("InteractiveMode assistant diagnostics", () => {
 			id: "m1",
 			parentId: null,
 			timestamp: new Date(1).toISOString(),
-			message,
+			message: { ...message, usage: { ...message.usage, input: 30_000 } },
+		};
+		const warm: SessionEntry = {
+			type: "usage",
+			id: "warm",
+			parentId: "m1",
+			timestamp: entry.timestamp,
+			kind: "cache_warm",
+			provider: "anthropic",
+			model: message.model,
+			usage: { ...message.usage, cacheRead: 30_000 },
+		};
+		const between: SessionEntry = {
+			type: "message",
+			id: "u",
+			parentId: "m2",
+			timestamp: entry.timestamp,
+			message: { role: "user", content: "between", timestamp: 2 },
 		};
 		const mode = {
 			resetTranscriptSelection: vi.fn(),
@@ -91,8 +108,11 @@ describe("InteractiveMode assistant diagnostics", () => {
 			settingsManager: { getShowCacheMissNotices: () => true },
 			session: { modelRuntime: { getModel: () => undefined } },
 			ui: { requestRender: () => undefined },
-			addRenderedChatEntry: () => new Text("assistant response", 0, 0),
-			maybeShowAssistantDiagnostics: Reflect.get(InteractiveMode.prototype, "maybeShowAssistantDiagnostics"),
+			addRenderedChatEntry: ({ kind }: { kind: string }) => {
+				const row = new Text(kind, 0, 0);
+				chatContainer.addChild(row);
+				return row;
+			},
 			renderDeferredUserInput: () => undefined,
 		};
 		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
@@ -100,9 +120,24 @@ describe("InteractiveMode assistant diagnostics", () => {
 			entries: SessionEntry[],
 		) => void;
 
-		renderSessionEntries.call(mode, [entry]);
-		const output = stripAnsi(chatContainer.render(120).join("\n"));
-		expect(output).not.toContain("Anthropic dropped");
+		const entries = [entry, warm, { ...entry, id: "m2", parentId: "warm" }, between];
+		renderSessionEntries.call(mode, entries);
+		const output = () =>
+			chatContainer
+				.render(180)
+				.map((line) => stripAnsi(line).trim())
+				.filter(Boolean);
+		assert.deepEqual(output(), [
+			"assistant",
+			"Anthropic dropped 1 thinking block (details in session)",
+			"assistant",
+			"Prompt cache miss: 30,000 tokens re-billed (cost unknown)",
+			"user",
+		]);
+		mode.settingsManager.getShowCacheMissNotices = () => false;
+		chatContainer.clear();
+		renderSessionEntries.call(mode, entries);
+		assert.deepEqual(output(), ["assistant", "assistant", "user"]);
 	});
 	test("shows a saved reply's service tier warning once when the session is rebuilt (#3529)", () => {
 		initTheme("dark");

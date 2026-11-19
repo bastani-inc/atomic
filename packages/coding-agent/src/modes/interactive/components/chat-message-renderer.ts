@@ -108,6 +108,8 @@ export interface ChatMessageRenderOptions {
 }
 type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 export interface ChatEntryGrouping {
+	/** The final row produced by each assistant occurrence, including its tool calls. */
+	readonly onAssistantGroup?: (lastRow: ChatMessageEntry) => void;
 	readonly tracker?: ToolGroupTracker;
 	readonly groupBash?: boolean;
 }
@@ -116,7 +118,7 @@ export function chatEntriesFromAgentMessages(
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
 	grouping: ChatEntryGrouping = {},
 ): ChatMessageEntry[] {
-	const entries = buildChatEntries(messages, messageMeta);
+	const entries = buildChatEntries(messages, messageMeta, grouping.onAssistantGroup);
 	groupChatEntries(entries, grouping.tracker ?? new ToolGroupTracker({ groupBash: grouping.groupBash }));
 	return entries;
 }
@@ -184,6 +186,7 @@ function inferInterruptedToolActivity(
 function buildChatEntries(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
+	onAssistantGroup?: (lastRow: ChatMessageEntry) => void,
 ): ChatMessageEntry[] {
 	const entries: ChatMessageEntry[] = [];
 	const pendingTools = new Map<string, Extract<ChatMessageEntry, { kind: "tool" }>>();
@@ -233,6 +236,7 @@ function buildChatEntries(
 					}
 					pendingTools.clear();
 				}
+				onAssistantGroup?.(entries[entries.length - 1]!);
 				break;
 			}
 			case "toolResult": {

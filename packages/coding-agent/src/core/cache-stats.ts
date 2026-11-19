@@ -40,7 +40,7 @@ export function createCacheMissModelSource(runtime: {
 		},
 	};
 }
-interface PreviousRequest {
+export interface PreviousRequest {
 	promptTokens: number;
 	provider: string;
 	model: string;
@@ -53,7 +53,7 @@ export function describeCacheMissCause(miss: CacheMiss): string {
 	return miss.cacheExpired ? " after cache TTL expiry" : "";
 }
 
-function detect(
+export function cacheMissAfter(
 	prev: PreviousRequest | undefined,
 	message: AssistantMessage,
 	models: ModelPriceSource,
@@ -100,29 +100,38 @@ function previous(message: AssistantMessage, reportedCache: boolean): PreviousRe
 		: undefined;
 }
 
+/** Advance the predecessor used by the next reply, without inspecting message bodies or looking up model prices. */
+export function advanceCacheHistory(
+	prev: PreviousRequest | undefined,
+	entry: SessionEntry,
+): PreviousRequest | undefined {
+	if (entry.type === "compaction" || entry.type === "branch_summary") return undefined;
+	if (entry.type === "usage" && entry.kind === "cache_warm") {
+		const promptTokens = entry.usage.input + entry.usage.cacheRead + entry.usage.cacheWrite;
+		if (promptTokens > 0)
+			return {
+				promptTokens,
+				provider: entry.provider,
+				model: entry.model,
+				timestamp: Date.parse(entry.timestamp),
+				reportedCache: true,
+			};
+	} else if (entry.type === "message" && entry.message.role === "assistant") {
+		return previous(entry.message, prev?.reportedCache ?? false) ?? prev;
+	}
+	return prev;
+}
+
 function scan(entries: SessionEntry[], models: ModelPriceSource) {
 	let prev: PreviousRequest | undefined;
 	const totals: CacheWasteTotals = { missedTokens: 0, missedCost: 0, missCount: 0, unpricedCount: 0 };
 	const misses = new Map<AssistantMessage, CacheMiss>();
 	for (const entry of entries) {
-		if (entry.type === "compaction" || entry.type === "branch_summary") {
-			prev = undefined;
+		if (entry.type !== "message" || entry.message.role !== "assistant") {
+			prev = advanceCacheHistory(prev, entry);
 			continue;
 		}
-		if (entry.type === "usage" && entry.kind === "cache_warm") {
-			const promptTokens = entry.usage.input + entry.usage.cacheRead + entry.usage.cacheWrite;
-			if (promptTokens > 0)
-				prev = {
-					promptTokens,
-					provider: entry.provider,
-					model: entry.model,
-					timestamp: Date.parse(entry.timestamp),
-					reportedCache: true,
-				};
-			continue;
-		}
-		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		const miss = detect(prev, entry.message, models);
+		const miss = cacheMissAfter(prev, entry.message, models);
 		if (miss) {
 			totals.missedTokens += miss.missedTokens;
 			totals.missedCost += miss.missedCost;
@@ -149,7 +158,7 @@ export function detectCacheMiss(
 	message: AssistantMessage,
 	models: ModelPriceSource,
 ): CacheMiss | undefined {
-	return detect(scan(entries, models).prev, message, models);
+	return cacheMissAfter(scan(entries, models).prev, message, models);
 }
 
 /**
