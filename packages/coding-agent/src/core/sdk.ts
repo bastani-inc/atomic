@@ -448,7 +448,11 @@ async function constructAgentSession(
 				}
 			: undefined;
 	// The initial projection can also be sent directly through the agent's conversion and payload hooks.
-	const existingMessages = (requestContextProjectionTransform ?? transform)?.(repairedMessages) ?? repairedMessages;
+	const existingMessages = requestContextProjectionTransform
+		? requestContextProjectionTransform(repairedMessages)
+		: options.initialContextTransform
+			? options.initialContextTransform(repairedMessages)
+			: repairedMessages;
 	const hasExistingSession = existingMessages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
@@ -948,7 +952,7 @@ async function constructAgentSession(
 			inheritedHistory: options.inheritedHistory,
 			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
-			contextProjectionTransform: transform,
+			contextProjectionTransform: options.initialContextTransform,
 			requestContextProjectionTransform,
 			workspace,
 		});

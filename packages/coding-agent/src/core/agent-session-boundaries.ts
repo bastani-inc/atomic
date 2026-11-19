@@ -49,7 +49,7 @@ function projectSessionMessages(session: AgentSession): AgentMessage[] {
 function finalizeProjectedMessages(
 	session: AgentSession,
 	messages: AgentMessage[],
-	transform = session._contextProjectionTransform,
+	requestTransform?: (messages: AgentMessage[]) => AgentMessage[],
 ): AgentMessage[] {
 	// While a run is active the loop owns pairing for the in-flight tool batch.
 	// Unique ids first: deferral and repair pair results with calls by id (#5056).
@@ -57,7 +57,8 @@ function finalizeProjectedMessages(
 		repairTrailing: !session.isStreaming,
 		inFlightToolCallIds: session._reissuedToolCallIds,
 	});
-	return transform ? transform(repaired) : repaired;
+	if (requestTransform) return requestTransform(repaired);
+	return session._contextProjectionTransform ? session._contextProjectionTransform(repaired) : repaired;
 }
 
 /** Refresh the public finalized transcript from the canonical session projection. */

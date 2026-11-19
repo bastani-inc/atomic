@@ -317,11 +317,17 @@ describe("child context refresh (#5481)", () => {
 		);
 		await parent.appendMessage(parentToolResult("parent_call", "subagent", "Parent-only result."));
 		const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
-		const session = await createChildSession({}, child, { initialContextTransform: stripParentOnlySubagentMessages });
+		const session = await createChildSession({}, child, {
+			initialContextTransform(this: { sessionManager: SessionManager }, messages, preserveFanoutHistory = false) {
+				assert.equal(this.sessionManager.getSessionId(), child!.getSessionId());
+				return stripParentOnlySubagentMessages(messages, preserveFanoutHistory);
+			},
+		});
 		try {
 			assert.ok(
 				!session.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent"),
 			);
+			session.refreshContext();
 		} finally {
 			await session.dispose();
 		}
