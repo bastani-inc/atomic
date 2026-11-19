@@ -168,6 +168,7 @@ export async function completedWorkflowRunSnapshots(
 			priorRunElapsedMs(backend, handle.workflowId) ?? Math.max(0, handle.updatedAt - handle.createdAt);
 		const root: RunSnapshot = {
 			...runs[rootIndex]!,
+			...(handle.runGeneration !== undefined ? { runGeneration: handle.runGeneration } : {}),
 			inputs: { ...handle.inputs } as WorkflowInputValues,
 			status: handle.status,
 			startedAt: handle.createdAt,
@@ -228,6 +229,7 @@ function rootSnapshot(
 	const terminalDurationMs = priorDurationMs ?? Math.max(0, handle.updatedAt - handle.createdAt);
 	return {
 		id: handle.workflowId,
+		...(handle.runGeneration !== undefined ? { runGeneration: handle.runGeneration } : {}),
 		label: handle.label,
 		summary: handle.summary,
 		summarizedThrough: handle.summarizedThrough,

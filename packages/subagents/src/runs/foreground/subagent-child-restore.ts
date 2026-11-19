@@ -192,7 +192,24 @@ interface ActiveRestoration {
 	knownPreviousIntercomId?: string;
 }
 
-const activeRestorations = new Map<string, ActiveRestoration>();
+// The restore owns its entry until release. A reloaded stage uses its existing owner and must join that same restore.
+const ACTIVE_RESTORATIONS = Symbol.for("@bastani/subagents/active-restorations@1");
+const processRestores = globalThis as { [ACTIVE_RESTORATIONS]?: Map<string, ActiveRestoration> };
+const activeRestorations = processRestores[ACTIVE_RESTORATIONS] ?? new Map<string, ActiveRestoration>();
+processRestores[ACTIVE_RESTORATIONS] = activeRestorations;
+
+/**
+ * A restoration of this child that has not relaunched it yet: it settles once the child runs again or could not be
+ * restored, never later, so a caller does not wait for the run it starts (#5485). Undefined when none is under way.
+ */
+export function subagentChildRestoring(ownerSessionId: string, childId: string): Promise<void> | undefined {
+	const active = activeRestorations.get(childHoldKey(ownerSessionId, childId));
+	if (active === undefined || active.settled !== undefined) return undefined;
+	return active.outcome.then(
+		() => undefined,
+		() => undefined,
+	);
+}
 /** Children this process found unrestorable, kept until their gone record is durable so senders see them as gone at once. */
 const goneChildren = new Map<
 	string,
@@ -804,7 +821,6 @@ async function relaunchChild(
 		...(fresh?.intentTask === undefined ? {} : { intentTask: fresh.intentTask }),
 		...(resume || fresh ? { operation: `${record.runId}:${record.index}:resume:${randomUUID()}` } : {}),
 		options,
-		wait: { kind: "background" },
 		runtime,
 		recordChild,
 		forked: record.forked === true,

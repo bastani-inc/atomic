@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.
 - The bundled `show-me` skill now runs only when you type `/skill:show-me`, as its upstream HumanLayer skill does; the model no longer loads it on its own.
 - The `prompt-engineer` GPT-6.2 guide now says where reusable instructions belong: GPT-6.2 appends the Responses API's top-level `instructions` after `input`, so a `developer` message at the start of `input` keeps them in the cached prefix. The Claude Opus 5.5 guide adds that its progress notes arrive as thinking blocks a client must request to show, and the `max_tokens` Anthropic used for long agentic coding turns. The Claude Fable 5.2 page follows Anthropic's revised guide: a new code-ownership sentence and its measurements, new subagent and caution advice, and the `null` refusal category. The Claude Haiku 5.5 page notes that `budget_tokens` now returns an error, and the GPT-6 and GPT-6.1 pages link to OpenAI's GPT-6 guide again and follow its current text, which moved the per-model descriptions into the model pages.
+- In a stage chat, a click anywhere on a stage notice with detail, such as a task whose process cleanup is still being confirmed, shows or hides that detail, as Ctrl+O does for every notice.
 
 ### Fixed
 
@@ -18,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
 - The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - A session that keeps running workflows no longer holds an Intercom connection for every run it has finished. Only the 32 most recently finished invocations keep their pending-stage routes, so a message to one of their stages still gets that run's own answer; an older finished invocation's routes are withdrawn and its connection closes, and an invocation that runs again is routed again ([#5492](https://github.com/bastani-inc/atomic/issues/5492))
+- The `/workflows` graph marks a stage suspended with its session released with the dim `◌` waiting mark, the same mark a released subagent has in the chat, `/tasks` and the agent panel, in node cards, the stage switcher, the stage strip and the header's count. It used `◷`. A paused stage keeps `❚❚` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
+- Restoring a blocked workflow keeps it blocked in the agent panel without briefly showing it as running. A new block gets its own notice even if it happens in the same millisecond as the previous block ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
 
 ## [0.9.89] - 2026-11-18
 

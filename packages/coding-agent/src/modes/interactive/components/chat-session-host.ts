@@ -1,4 +1,4 @@
-import type { Component, Focusable, TuiMouseEvent } from "@bastani/atomic-tui";
+import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
@@ -30,6 +30,8 @@ import {
 import {
 	chatSessionWorkingMeta,
 	dropExpandedOverrides,
+	entryExpands,
+	entryIsExpanded,
 	renderChatSessionBody,
 	renderChatSessionEditor,
 	renderChatSessionEntry,
@@ -67,6 +69,7 @@ import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
+import { isClickedGroup } from "./transcript-block-clicks.ts";
 import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
 export type {
@@ -496,13 +499,23 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return (this.taskSource?.backgroundTasks.length ?? 0) > 0;
 	}
 
+	private footerTaskSource(): TaskViewSource | undefined {
+		const agent = this.state.getAgentSession?.();
+		const session = agent ?? this.state.getChatBoxSession?.();
+		const store = session && getOwnerTaskStore(session);
+		return (
+			(agent ? undefined : this.state.getTaskSource?.()) ?? (store ? ownerTaskViewSource(store) : this.taskSource)
+		);
+	}
+
 	renderTaskFooter(width: number): string[] {
-		if (this.taskSource === undefined) return [];
-		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
+		const source = this.footerTaskSource();
+		return source ? renderTaskFooter(source, width) : [];
 	}
 	renderFooter(width: number, navigationActive = false): string[] {
 		const footer = renderChatSessionFooter(
 			this.state,
+			() => this.footerTaskSource(),
 			width,
 			navigationActive || (this.hasTaskInspector && !this.taskInspectorFullscreen),
 		);
@@ -555,32 +568,46 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * A single click at row `event.y` of the body the last `renderBody` drew: on a block's header it expands or collapses
-	 * that block, or a group summary and its calls, and returns true. Expanding while the body follows its end holds
-	 * the view where it is, so the header stays under the pointer.
+	 * A single click at row `event.y` of the body the last `renderBody` drew: on any row of a block it expands or
+	 * collapses that block, or a group summary and its calls, once the click cannot become a double-click. Expanding
+	 * while the body follows its end holds the view where it is, so the block stays under the pointer.
 	 */
-	handleBodyClick(event: TuiMouseEvent): boolean {
-		if (!isSingleLeftClick(event)) return false;
+	handleBodyClick(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (!isSingleLeftClick(event)) return undefined;
 		const layout = this.bodyLayout;
 		// A task's transcript the chat shows full-screen takes the click into its own transcript.
-		if (layout.taskView) return this.taskInspector?.handleMouse(event)?.handled === true;
+		if (layout.taskView) return this.taskInspector?.handleMouse(event);
 		// While the prompt search or a completion menu owns input, a click on the transcript does nothing.
-		if (event.y >= layout.transcriptRows || hasChatSessionTransientModal(this.state)) return false;
+		if (event.y >= layout.transcriptRows || hasChatSessionTransientModal(this.state)) return undefined;
 		const state = this.state;
 		const hit = state.bodyViewport.componentAtRow(event.y);
-		if (hit === undefined || hit.component !== state.transcriptComponent) return false;
+		if (hit === undefined || hit.component !== state.transcriptComponent) return undefined;
 		const clicked = state.transcriptComponent.clickedEntries(hit.width, hit.row);
-		if (clicked === undefined) return false;
-		for (const entry of clicked.entries) {
-			setExpandedOverride(state, entry, clicked.expand);
-			state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
-		}
-		const first = state.bodyViewport.firstVisibleRow();
-		if (clicked.expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
-			state.bodyViewport.scrollTo(first);
-		}
-		state.requestRender?.();
-		return true;
+		if (clicked === undefined) return undefined;
+		// The entries are drawn again with the click's expansion.
+		const expandEntries = (expand: boolean) => {
+			for (const entry of clicked.entries) {
+				setExpandedOverride(state, entry, expand);
+				state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
+			}
+			const first = state.bodyViewport.firstVisibleRow();
+			if (expand && state.bodyViewport.getScrollFromBottom() === 0 && first !== undefined) {
+				state.bodyViewport.scrollTo(first);
+			}
+			state.requestRender?.();
+		};
+		// The blocks as drawn may be redrawn by the time the click settles, by another click on them among others: the
+		// entries are asked then how they are drawn and whether they change, and a group always changes as its calls
+		// fold or show.
+		const [entry] = clicked.entries;
+		return {
+			handled: true,
+			whenSingleClick: () => {
+				if (entry === undefined) return;
+				const changes = isClickedGroup(clicked.blocks) || entryExpands(state, entry, hit.width);
+				if (changes) expandEntries(!entryIsExpanded(state, entry));
+			},
+		};
 	}
 
 	/**

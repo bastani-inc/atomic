@@ -161,9 +161,10 @@ export {
 	isTaskTurnInterrupted,
 	OwnerTaskStore,
 	type TaskActivity,
+	taskResumedTurns,
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
-export { belongsToSession, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
+export { belongsToSession, scopedBackgroundTasks, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
 export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
@@ -243,6 +244,13 @@ export {
 	builtinToolBlockPresentation,
 } from "./modes/interactive/components/tool-block-families.ts";
 export { formatToolActionSummary } from "./modes/interactive/components/tool-block-summary.ts";
+// Internal host seam for bundled workflow stage chats' click-expandable blocks; not yet a stable extension API.
+export {
+	type ClickExpandableBlock,
+	type RowRange,
+	repaintAfterSingleClick,
+	rowsFrom,
+} from "./modes/interactive/components/transcript-block-clicks.ts";
 export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,

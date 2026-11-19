@@ -212,7 +212,8 @@ export function bindReleasedChildWakes(
 				if (outcome.kind === "unrestorable")
 					throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 				// A pause or quit waiting on this wake now finds the run the resume started, and stops it.
-				settleReleasedChildRelaunch(subagentWakeKey(ownerSessionId, record.childId));
+				const key = subagentWakeKey(ownerSessionId, record.childId);
+				settleReleasedChildRelaunch(key);
 				return outcome;
 			},
 			redispatch: (record, slot) =>
