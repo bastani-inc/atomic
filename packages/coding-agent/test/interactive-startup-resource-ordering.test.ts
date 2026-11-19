@@ -179,6 +179,36 @@ async function renderNoticeBeforeDisclosure(startupPath: "eager" | "deferred", n
 	return normalizeStartupOutput(mode.chatContainer);
 }
 
+test("eager and deferred startup show one workflow migration hint after discovery, unless startup is quiet", async () => {
+	for (const path of ["eager", "deferred"] as const) {
+		for (const quiet of [false, true]) {
+			const mode = createOrderingMode();
+			mode.attachStartupNoticesContainer();
+			if (path === "deferred") configureDeferredMode(mode);
+			Object.assign(mode, {
+				startupNoticesShown: true, // Input was already ready before resource discovery.
+				rebindCurrentSession: async () => {},
+				maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
+				showLoadedResources() {},
+				shouldShowStartupDetails: () => !quiet,
+			});
+			Object.assign(mode.session, {
+				resourceLoader: {
+					getThemes: () => ({ themes: [] }),
+					getLegacyWorkflowFiles: () => ({ files: [{ scope: "user", path: "triage.ts" }], total: 1 }),
+				},
+			});
+			if (path === "eager") await bindInitialEagerSession(mode);
+			else await InteractiveMode.prototype.completeDeferredStartup.call(mode);
+			assert.equal(
+				normalizeStartupOutput(mode.startupNoticesContainer).match(/1 legacy workflow file\b/g)?.length ?? 0,
+				quiet ? 0 : 1,
+				`${path}, quiet=${quiet}`,
+			);
+		}
+	}
+});
+
 const COLLISION_WARNING =
 	'Model "openai-codex/gpt-5.6-sol-fast" is already defined by the provider, models.json, or an extension';
 

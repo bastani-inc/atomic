@@ -36,7 +36,7 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
-import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRenderTime, type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -150,6 +150,8 @@ export class ToolExecutionComponent extends Container {
 
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
+		// The content starts after the spacer. Its title (row one) belongs to block disclosure, even for custom tools.
+		if (toolDefinition) setRendererClickTarget(this, { container: this.contentContainer, top: 1, firstRow: 2 });
 
 		this.updateDisplay();
 	}

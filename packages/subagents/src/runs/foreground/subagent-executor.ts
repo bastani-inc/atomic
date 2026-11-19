@@ -1,5 +1,11 @@
-import { type ExtensionContext, validateTaskHeartbeatMs } from "@bastani/atomic";
+import { type ExtensionContext, getSupportedThinkingLevels, validateTaskHeartbeatMs } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.js";
+import {
+	scriptControlResult,
+	scriptLaunchReceipt,
+	scriptResult,
+	waitForScriptChild,
+} from "../../extension/codemode-access.js";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.js";
 import {
 	REMOVED_SUBAGENT_ACTIONS,
@@ -11,8 +17,13 @@ import {
 } from "../../shared/types.js";
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
 import { takeLegacyForegroundWait, withLegacyForegroundWaitNote } from "./legacy-foreground-wait.js";
-import { registerNamedRunWorktrees } from "./run-worktrees.js";
-import { subagentChildIntercomTargetOfTask } from "./subagent-child-card-state.js";
+import {
+	CLEANUP_IN_BACKGROUND,
+	finishingWorktreeStatus,
+	registerNamedRunWorktrees,
+	worktreeWaitDeadline,
+} from "./run-worktrees.js";
+import { subagentChildCardRecord, subagentChildIntercomTargetOfTask } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
@@ -26,6 +37,7 @@ import { foregroundStatusResult, getForegroundControl } from "./subagent-executo
 import {
 	type ExecutorDeps,
 	isManagementActionsRestricted,
+	isScriptSubagentCall,
 	type ResolvedExecutorDeps,
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
@@ -34,6 +46,7 @@ import {
 	controlSubagentChildren,
 	subagentChildrenAwaitingResume,
 	subagentRunsLaunchedBy,
+	subagentScriptChildren,
 } from "./subagent-run-control.js";
 import {
 	settledOutputsFromRecords,
@@ -45,7 +58,7 @@ import {
 
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 /** Observing management actions do not start or mutate child execution. */
-const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "status", "wait"]);
+const READ_ONLY_MANAGEMENT_ACTIONS = new Set(["list", "get", "models", "status", "wait"]);
 const FANOUT_REFUSAL_MESSAGE = "Subagent fanout is not authorized for this child.";
 
 export type { SubagentExecutorRuntimeDeps, SubagentParamsLike } from "./subagent-executor-types.js";
@@ -102,13 +115,46 @@ async function handleManagementRequest(input: {
 		const childRefusal = refuseSubagentChildDelegation(ctx, "management");
 		if (childRefusal) return childRefusal;
 	}
+	if (action === "models") {
+		const current = ctx.model;
+		const models = (ctx.modelRegistry?.getAvailable() ?? []).map((model) => ({
+			provider: model.provider,
+			id: model.id,
+			fullId: `${model.provider}/${model.id}`,
+			isCurrent: current !== undefined && model.provider === current.provider && model.id === current.id,
+			availableThinkingLevels: getSupportedThinkingLevels(model),
+		}));
+		const structuredContent = { action, models };
+		return {
+			content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+			structuredContent,
+			details: { mode: "management", results: [] },
+		};
+	}
 	if (action === "wait") {
+		if (isScriptSubagentCall(ctx)) return waitForScriptChild(ctx, params, signal);
+		const tree = params.id && subagentChildCardRecord(undefined, params.id);
+		const deadline = tree && tree.taskId === params.id ? worktreeWaitDeadline(tree) : undefined;
+		const waitSignal = deadline ? AbortSignal.any([signal, deadline.signal]) : signal;
+		const host = ctx.getAgentTaskHost?.();
 		const observed =
-			ctx.getAgentTaskHost && params.id !== undefined
-				? await ctx
-						.getAgentTaskHost()
-						.waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs, undefined, signal)
+			host && params.id !== undefined
+				? await host
+						.waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs, undefined, waitSignal)
+						.finally(() => deadline?.dispose())
 				: { ok: false as const, error: { code: "UnknownTask", message: "Task not found in this owner" } };
+		if (
+			tree &&
+			finishingWorktreeStatus(tree) &&
+			(deadline?.signal.aborted ||
+				(signal.aborted && !observed.ok && observed.error.code === "ObserverCancelled") ||
+				(observed.ok && observed.value.kind !== "settled"))
+		) {
+			return {
+				content: [{ type: "text", text: `${params.id} is finishing. ${CLEANUP_IN_BACKGROUND}` }],
+				details: { mode: "management", results: [] },
+			};
+		}
 		// Esc ends the wait, never the child: it keeps running and reports by its completion notice.
 		if (signal.aborted && !observed.ok && observed.error.code === "ObserverCancelled")
 			return {
@@ -122,9 +168,11 @@ async function handleManagementRequest(input: {
 			};
 		const settledOutput =
 			observed.ok && observed.value.kind === "settled"
-				? await settledTaskOutputText(ctx.getAgentTaskHost?.(), [
-						{ taskId: observed.value.taskId, result: observed.value.result },
-					])
+				? await settledTaskOutputText(
+						ctx.getAgentTaskHost?.(),
+						[{ taskId: observed.value.taskId, result: observed.value.result }],
+						signal,
+					)
 				: "";
 		return {
 			content: [
@@ -150,7 +198,7 @@ async function handleManagementRequest(input: {
 		};
 	}
 	if ((SUBAGENT_RUN_CONTROL_ACTIONS as readonly string[]).includes(action)) {
-		return controlSubagentChildren(
+		const result = await controlSubagentChildren(
 			deps,
 			ctx,
 			{
@@ -163,7 +211,10 @@ async function handleManagementRequest(input: {
 			},
 			signal,
 		);
+		return isScriptSubagentCall(ctx) ? scriptControlResult(result) : result;
 	}
+	if (action === "status" && isScriptSubagentCall(ctx))
+		return scriptResult({ action, children: await subagentScriptChildren(ctx, params.id) });
 	const targetTaskId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 	// A paused or quit child awaits resume, as a quit workflow run does; its records outlive its task and a restart.
 	const awaitingResume = action === "status" ? subagentChildrenAwaitingResume(ctx, targetTaskId) : [];
@@ -175,11 +226,16 @@ async function handleManagementRequest(input: {
 			if (watched.ok) {
 				const records = watched.value.snapshot.tasks.filter((task) => task.ref.taskId === taskId);
 				watched.value.dispose();
-				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records));
+				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records), signal);
 				const ownerSessionId = subagentChildOwner(ctx).sessionId;
 				const shown = records.map((record) =>
 					subagentTaskStatusRecord(record, subagentChildIntercomTargetOfTask(ownerSessionId, record.ref.taskId)),
 				);
+				const child = subagentChildCardRecord(undefined, taskId);
+				const cleanup =
+					child && child.taskId === taskId && finishingWorktreeStatus(child)
+						? `${taskId} is finishing. ${CLEANUP_IN_BACKGROUND}\n`
+						: "";
 				const starting = shown.flatMap((record) =>
 					record.start === undefined
 						? []
@@ -191,7 +247,7 @@ async function handleManagementRequest(input: {
 					content: [
 						{
 							type: "text",
-							text: `${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${starting.length > 0 ? `${starting.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(shown)}${settledOutput}`,
+							text: `${cleanup}${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${starting.length > 0 ? `${starting.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(shown)}${settledOutput}`,
 						},
 					],
 					details: { mode: "management", results: [], taskRecords: records },
@@ -234,7 +290,7 @@ async function handleManagementRequest(input: {
 			details: { mode: "management", results: [] },
 		};
 	}
-	return handleManagementAction(action, paramsWithResolvedCwd, { ...ctx, cwd: requestCwd });
+	return handleManagementAction(action, paramsWithResolvedCwd, { ...ctx, cwd: requestCwd }, isScriptSubagentCall(ctx));
 }
 
 function inferExecutionMode(params: SubagentParamsLike): "single" | "parallel" {
@@ -296,9 +352,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		if (params.action) {
 			return handleManagementRequest({ params, paramsWithResolvedCwd, requestCwd, ctx, deps, signal });
 		}
-		// Fanout authorization gates delegation and privileged control. Only `list`,
-		// `get`, `status`, and `wait` stay available to an unauthorized child; run control
-		// and mutating management are refused by handleManagementRequest.
+		// Fanout authorization gates delegation and privileged control, not the read-only actions.
 		if (deps.childPolicy && !deps.childPolicy.fanoutAuthorized) {
 			return {
 				content: [{ type: "text", text: FANOUT_REFUSAL_MESSAGE }],
@@ -327,13 +381,12 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		// A named worktree is recorded with its child, like a `worktree: true` one, but never removed (#5202).
 		const namedWorktrees = registerNamedRunWorktrees(prepared.runId, namedWorktreesByIndex(prepared.effectiveParams));
 		try {
-			if (prepared.hasTasks && prepared.effectiveParams.tasks) {
-				const result = await runParallelPath(prepared.execData, deps);
-				return withForkContext(result, prepared.effectiveParams.context);
-			}
-			if (prepared.hasSingle) {
-				const result = await runSinglePath(prepared.execData, deps);
-				return withForkContext(result, prepared.effectiveParams.context);
+			if (prepared.hasTasks || prepared.hasSingle) {
+				const run = prepared.hasTasks ? runParallelPath : runSinglePath;
+				const result = await run(prepared.execData, deps);
+				return isScriptSubagentCall(ctx)
+					? scriptLaunchReceipt(prepared.runId, prepared.effectiveParams, result)
+					: withForkContext(result, prepared.effectiveParams.context);
 			}
 		} catch (error) {
 			return toExecutionErrorResult(prepared.effectiveParams, error);
@@ -375,7 +428,11 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			// told so. Without one the call still runs its children directly and waits for them, so nothing changed.
 			const legacy = takeLegacyForegroundWait(id, params, ctx);
 			const result = await (invalidHeartbeatResult(legacy.params) ??
-				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx, legacy.wait));
+				// Model calls in one assistant message may coalesce. Each nested launch has its own caller and
+				// admission signal; never let a sibling's call admit children for a script that has ended.
+				(isScriptSubagentCall(ctx)
+					? execute(id, legacy.params, signal, onUpdate, ctx)
+					: executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx, legacy.wait)));
 			return legacy.foreground && ctx.getAgentTaskHost ? withLegacyForegroundWaitNote(result) : result;
 		},
 	};

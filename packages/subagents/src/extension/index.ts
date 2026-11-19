@@ -76,6 +76,7 @@ import {
 	type SubagentResultRenderState,
 	stopResultAnimations,
 } from "../tui/render.js";
+import { subagentScriptAccess } from "./codemode-access.js";
 import { loadConfig } from "./config.js";
 import { parseSubagentNotifyContent } from "./notification-content.js";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.js";
@@ -398,14 +399,21 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
 			name: "subagent",
 			exposure: "model-only",
+			scriptAccess: subagentScriptAccess,
 			label: "Subagent",
 			description: SUBAGENT_TOOL_DESCRIPTION,
 			parameters: SubagentParams,
 			prepareArguments: prepareSubagentArguments,
 			promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
-			execute(id, params, signal, onUpdate, ctx) {
+			async execute(id, params, signal, onUpdate, ctx) {
 				const executionSignal = signal ?? ctx.signal ?? new AbortController().signal;
-				return executeSubagentCollapsed(id, params as SubagentParamsLike, executionSignal, onUpdate, ctx);
+				const args = params as SubagentParamsLike;
+				if (ctx.parentToolCallId !== undefined) {
+					if ((!args.action || args.action === "resume") && !ctx.getAgentTaskHost)
+						throw new Error("Launching a subagent from a script requires a session task host.");
+					return executorForContext(ctx).execute(id, args, executionSignal, onUpdate, ctx);
+				}
+				return executeSubagentCollapsed(id, args, executionSignal, onUpdate, ctx);
 			},
 			renderCall(args, theme, context) {
 				return renderSubagentToolCall(args as SubagentParamsLike, theme, context);

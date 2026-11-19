@@ -1,3 +1,4 @@
+import { isProxy } from "node:util/types";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
@@ -7,8 +8,10 @@ import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../.
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
-import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+import { buildContextEntries, type SessionEntry } from "../../core/session-manager.ts";
+import { sessionEntryToDisplayMessages } from "../../core/session-manager-history.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { ReopenedCompletionHeaders } from "../../core/tasks/reopened-completion.js";
 import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
 import {
@@ -877,6 +880,13 @@ function planTranscript(
 		}
 		messageBuffer = [];
 	};
+	const headers = new ReopenedCompletionHeaders(
+		() => ({
+			entries: mode.sessionManager.getBranch(),
+			recovery: mode.sessionManager.getSessionRecoveryState(),
+		}),
+		isProxy,
+	);
 	for (const entry of sessionEntries) {
 		if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.
@@ -887,7 +897,7 @@ function planTranscript(
 			if (options.saved) options.saved.owners.set(entry, `${options.saved.seqs.get(entry)}:entry`);
 			steps.push({ kind: "custom", entry });
 		} else {
-			const messages = sessionEntryToContextMessages(entry);
+			const messages = sessionEntryToDisplayMessages(entry, headers);
 			const seq = options.saved ? options.saved.seqs.get(entry) : mode.sessionManager?.getEntrySeq?.(entry.id);
 			for (const message of messages) {
 				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });

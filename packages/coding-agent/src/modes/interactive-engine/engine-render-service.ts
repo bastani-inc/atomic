@@ -349,6 +349,7 @@ export class EngineRenderService {
 				undefined,
 				undefined,
 				{
+					reopenedStopName: command.reopenedStopName,
 					hasTranscript: (taskId) => {
 						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
 						return lease?.ok ? taskTranscriptSource(lease.value).ok : false;

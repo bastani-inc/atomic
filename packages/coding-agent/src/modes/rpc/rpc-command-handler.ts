@@ -365,6 +365,9 @@ export function createRpcCommandHandler({
 					queuedMessagesPaused: session.queuedMessagesPaused,
 					...projectTrustState(runtimeHost, session),
 					...trustDecisionsState(runtimeHost.trustDecisions?.()),
+					...(isInteractiveEngineChild()
+						? { legacyWorkflowFileCount: session.resourceLoader.getLegacyWorkflowFiles?.()?.total }
+						: {}),
 					resourceOverlaps: extensionResult.overlaps ?? [],
 					resourceErrors: extensionResult.errors,
 					resourceWarnings: extensionResult.warnings ?? [],

@@ -689,17 +689,30 @@ for (const wait of [undefined, { kind: "background" }] as const) {
 					);
 					assert.deepEqual(current.effects, [0, 1]);
 				} else {
+					const confirmations = Promise.all(
+						current.snapshot().map((task) => current.host.waitForTask(task.ref.taskId)),
+					);
 					const closed = await current.host.close(stop);
 					assert.ok(closed.ok);
 					assert.equal(closed.value.tasks.length, 3);
-					assert.ok(
-						closed.value.tasks.every(
-							(task) =>
-								task.execution.kind === "settled" &&
-								task.execution.result.kind === "cancelled" &&
-								task.cleanup.kind === "reaped",
-						),
-					);
+					for (const task of closed.value.tasks) {
+						if (task.execution.kind === "settled") {
+							assert.equal(task.execution.result.kind, "cancelled");
+							assert.equal(task.cleanup.kind, "reaped");
+						} else {
+							// These three children all use temporary worktrees. A pending batch sweep
+							// cannot keep this session open or report a reaped child on its behalf.
+							assert.equal(task.decision, "already-finishing");
+							assert.equal(task.execution.kind, "cancelling");
+							assert.notEqual(task.cleanup.kind, "reaped");
+						}
+					}
+					for (const observation of await confirmations) {
+						assert.ok(observation.ok && observation.value.kind === "settled");
+						assert.ok(
+							observation.value.result.kind === "cancelled" && observation.value.result.cause === "owner-close",
+						);
+					}
 					assert.deepEqual(current.effects, []);
 				}
 				assert.deepEqual(

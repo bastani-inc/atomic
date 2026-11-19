@@ -137,6 +137,7 @@ import {
 	savedWindowAnswer,
 } from "./storage/session/window-answer.js";
 import { writeChunksAtomically } from "./storage/transfer-files.js";
+import { carryCompletionEvidence, shareCompletionEvidence } from "./tasks/reopened-completion.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
 	PathContinuation,
@@ -348,7 +349,7 @@ export class SessionManager {
 		this.priorAnswer = resume.priorAnswer;
 		this.lastEntryId = resume.lastEntryId;
 		const { workflowStarts, ...recovery } = resume.recovery;
-		this.recoveryState = { ...recovery, admissionDigests: "" };
+		this.recoveryState = shareCompletionEvidence(resume.recovery, { ...recovery, admissionDigests: "" });
 		this.workflowStarts = { ...workflowStarts };
 		// An older custom store includes open workflow records in its state rows instead of their positions.
 		if (workflowStarts === undefined) {
@@ -555,7 +556,10 @@ export class SessionManager {
 		};
 	}
 	getSessionRecoveryState(): SessionRecoveryState {
-		return { ...this.recoveryState, admissionDigests: this.admissionKeys.serialize() };
+		return shareCompletionEvidence(this.recoveryState, {
+			...this.recoveryState,
+			admissionDigests: this.admissionKeys.serialize(),
+		});
 	}
 	/** @internal Body-free terminal child headings. A newer resident observation supersedes its archived heading. */
 	getArchivedChildCatalog() {
@@ -1013,9 +1017,10 @@ export class SessionManager {
 					return parentId !== undefined && parentId !== entry.parentId ? { ...entry, parentId } : entry;
 				})
 			: entries;
-		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined);
+		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined, undefined, isProxy);
 		if (!resume.compaction) return;
 		this.admissionKeys.mergeEncoded(resume.recovery.admissionDigests);
+		const priorRecovery = this.recoveryState;
 		this.recoveryState = {
 			...this.recoveryState,
 			intercomDeliveredIds: [
@@ -1046,9 +1051,14 @@ export class SessionManager {
 		const path = current.filter((entry) => keep.has(entry.id));
 		const retained: FileEntry[] = [this.fileEntries[0]!];
 		let totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
-		for (const entry of entries) {
-			if (keep.has(entry.id)) retained.push(entry);
-			else {
+		for (const [i, entry] of entries.entries()) {
+			if (keep.has(entry.id)) {
+				retained.push(entry);
+				if (entry.type === "custom_message") {
+					carryCompletionEvidence(priorRecovery, entry, this.recoveryState, entry);
+					carryCompletionEvidence(resume.recovery, linked[i]!, this.recoveryState, entry);
+				}
+			} else {
 				totals = addEntryToHistoryTotals(totals, entry);
 				const seq = this.entrySeqs.get(entry.id)!;
 				if (
@@ -1344,7 +1354,10 @@ export class SessionManager {
 				.map((entry) => ({ seq: this.entrySeqs.get(entry.id)!, entry, onBranch: onBranch.has(entry.id) })),
 			omitted,
 			priorAnswer,
-			recovery: { ...this.getSessionRecoveryState(), workflowStarts: this.workflowStarts },
+			recovery: shareCompletionEvidence(this.recoveryState, {
+				...this.getSessionRecoveryState(),
+				workflowStarts: this.workflowStarts,
+			}),
 		};
 	}
 
@@ -1814,6 +1827,7 @@ export class SessionManager {
 			() => {
 				visible = true;
 			},
+			this.recoveryState,
 		);
 		if (leafId === this.leafId) this.projectedEdits = { leafId, visible };
 		return projection;
@@ -2057,7 +2071,13 @@ export class SessionManager {
 						)
 							throw new SessionConflictError(this.sessionId, this.lastSeq, snapshot.lastSeq);
 						resume = {
-							...sessionResumeOf(this.recordHeader(), snapshot.entries.slice(0, this.lastSeq), id),
+							...sessionResumeOf(
+								this.recordHeader(),
+								snapshot.entries.slice(0, this.lastSeq),
+								id,
+								undefined,
+								isProxy,
+							),
 							epoch: snapshot.epoch ?? resume.epoch,
 						};
 					}

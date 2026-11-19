@@ -69,6 +69,8 @@ export type InteractiveEngineMessage =
 	| { type: "engine_ready"; protocolVersion: typeof INTERACTIVE_ENGINE_PROTOCOL_VERSION; pid: number }
 	| { type: "engine_bound" }
 	| { type: "engine_project_trust_resolved" }
+	/** A newly registered startup hook can still decline this folder. This is not a session decision. */
+	| { type: "engine_project_resources_withheld"; path: string }
 	| { type: "engine_trust_decision"; scope: keyof SessionTrustDecisions; path: string; trusted: boolean }
 	/** The child recorded `engine_explicit_quit`; it is safe for the host to stop it. */
 	| { type: "engine_explicit_quit_ack" }
@@ -292,6 +294,7 @@ export type InteractiveEngineCommand =
 			requestId: number;
 			width: number;
 			message: JsonObject;
+			reopenedStopName?: string;
 			expanded: boolean;
 			compareExpansion?: true;
 			inspectHistoryReplay?: true;
@@ -575,6 +578,8 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				: undefined;
 		case "engine_bound":
 			return { type: value.type };
+		case "engine_project_resources_withheld":
+			return typeof value.path === "string" ? { type: value.type, path: value.path } : undefined;
 		case "engine_trust_decision":
 			return (value.scope === "projects" || value.scope === "extensionSources") &&
 				typeof value.path === "string" &&
@@ -1010,6 +1015,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			width: value.width,
 			message: value.message,
 			...(value.inspectHistoryReplay === true ? { inspectHistoryReplay: true } : {}),
+			...(typeof value.reopenedStopName === "string" ? { reopenedStopName: value.reopenedStopName } : {}),
 			...(value.compareExpansion === true ? { compareExpansion: true } : {}),
 			expanded: value.expanded,
 			outputPad: value.outputPad,

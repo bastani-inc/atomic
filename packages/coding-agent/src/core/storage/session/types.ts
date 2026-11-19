@@ -210,6 +210,7 @@ export interface ArchivedChildCatalogEntry {
 	readonly intercomTarget?: string;
 	readonly intercomGroup?: string;
 	readonly releasedIntercomId?: string;
+	readonly managedWorktree?: boolean;
 	readonly elapsedMs?: number;
 	readonly elapsedSpan?: { dispatchedAt: number; endedAt?: number } | null;
 }

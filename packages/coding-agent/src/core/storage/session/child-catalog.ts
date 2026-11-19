@@ -83,6 +83,7 @@ export class ChildCatalog {
 			if (Object.hasOwn(d, key))
 				projected[key] = typeof d[key] === "string" || typeof d[key] === "number" ? d[key] : null;
 		projected.owner = { kind: o.kind, sessionId: o.sessionId };
+		if (d.worktree) projected.worktree = { named: !!obj(d.worktree).named };
 		if (d.elapsedSpan) {
 			const s = obj(d.elapsedSpan);
 			projected.elapsedSpan = { dispatchedAt: s.dispatchedAt, endedAt: s.endedAt };
@@ -152,6 +153,7 @@ export class ChildCatalog {
 				};
 			else valid = false;
 		}
+		if (Object.hasOwn(d, "worktree")) extras.managedWorktree = !!d.worktree && !obj(d.worktree).named;
 		Object.assign(heading, extras);
 		if (heading.taskId !== undefined) {
 			const released = new Set(p?.releasedTaskIds);

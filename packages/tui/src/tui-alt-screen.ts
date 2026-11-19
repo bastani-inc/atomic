@@ -171,6 +171,8 @@ interface SelectionRange {
 type SelectionGranularity = "character" | "word" | "line";
 
 interface ClickTarget {
+	/** The overlay occurrence that received the press, if any. Revocation affects activation, not drag cleanup. */
+	overlayPress?: { readonly revoked: boolean };
 	timestamp: number;
 	count: number;
 	button: number;
@@ -967,7 +969,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mousePressMoved = false;
 	}
 
-	private handleViewportInput(data: string): { consume?: boolean } | undefined {
+	/** Handle a viewport report, optionally replayed from before a dialog answered raw input. */
+	protected handleViewportInput(data: string, receivedAt?: number): { consume?: boolean } | undefined {
 		if (data === FOCUS_OUT) {
 			this.dropWaitingSingleClicks();
 			const hadActiveSelection = this.selectionPressActive;
@@ -1014,7 +1017,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const mouseEvent = this.parseSgrMouseEvent(data);
 		if (mouseEvent) {
-			this.handleMouseEvent(mouseEvent);
+			this.handleMouseEvent(mouseEvent, receivedAt);
 			return { consume: true };
 		}
 		if (this.isMouseSequence(data)) return { consume: true };
@@ -1189,7 +1192,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					for (const [press, result] of this.waitingSingleClicks) {
 						if (clickTime() - press.timestamp <= MULTI_CLICK_INTERVAL_MS) break;
 						this.waitingSingleClicks.delete(press);
-						result.whenSingleClick?.();
+						if (press.overlayPress?.revoked) result.onSingleClickCancel?.();
+						else result.whenSingleClick?.();
 						this.requestRender();
 					}
 				} finally {
@@ -1235,7 +1239,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionDragged = false;
 	}
 
-	private handleMouseEvent(raw: SgrMouseEvent): void {
+	private handleMouseEvent(raw: SgrMouseEvent, receivedAt?: number): void {
 		const isMotion = (raw.button & 32) !== 0;
 		const type: TuiMouseEvent["type"] = raw.release
 			? "release"
@@ -1265,6 +1269,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				const click = this.lastClick;
 				if (
 					click &&
+					!click.overlayPress?.revoked &&
 					!this.mousePressMoved &&
 					this.mousePressPoint?.x === raw.x &&
 					this.mousePressPoint.y === raw.y &&
@@ -1295,7 +1300,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 
-		const overlay = this.dispatchMouseToOverlay(event);
+		const pressAt =
+			type === "press" && event.button === "left" ? (receivedAt ?? this.overlayVisibilityVersion) : undefined;
+		const overlay = this.dispatchMouseToOverlay(event, pressAt);
 		if (!overlay.hit) {
 			if (this.handleScrollToEndIndicatorMouseEvent(raw)) return;
 			const scrollbarHandled = this.handleScrollbarMouseEvent(raw);
@@ -1322,6 +1329,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					wordEnd: raw.x,
 					drawn: this.mousePressFrame.drawn,
 					component: result.target.component,
+					...(overlay.press && { overlayPress: overlay.press }),
 				});
 				this.mousePressMoved = false;
 			}
@@ -1330,7 +1338,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 
 		if (this.handleRightClickPaste(raw)) return;
-		this.handleSelectionMouseEvent(raw, timestamp, previous);
+		this.handleSelectionMouseEvent(raw, timestamp, previous, overlay.press);
 	}
 
 	private parseWheelEvent(data: string): WheelEvent | undefined {
@@ -1719,7 +1727,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionDragPointer = undefined;
 	}
 
-	private handleSelectionMouseEvent(event: SgrMouseEvent, timestamp: number, previous: ClickTarget | undefined): void {
+	private handleSelectionMouseEvent(
+		event: SgrMouseEvent,
+		timestamp: number,
+		previous: ClickTarget | undefined,
+		overlayPress?: ClickTarget["overlayPress"],
+	): void {
 		const button = event.button & 3;
 		if (button !== 0 && !(event.release && button === 3)) return;
 		const anchorScrollView = this.selectionAnchor?.scrollView;
@@ -1781,7 +1794,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.requestRender();
 				return;
 			}
-			if (click && isClick && unchanged && !releaseFrame.decorated) {
+			// For a repeat click in text selection only the handler knows whether it consumes the selected word or
+			// line. Preserve that decision rather than guessing whether to write the clipboard.
+			if (click?.count === 1 && click.overlayPress?.revoked) this.lastClick = undefined;
+			else if (click && isClick && unchanged && !releaseFrame.decorated) {
 				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
 					clickCount: click.count,
 				});
@@ -1832,6 +1848,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			wordStart: (word?.start.col ?? anchor.col) + offset,
 			wordEnd: (word?.end.col ?? anchor.col) + offset,
 			drawn: pressFrame.drawn,
+			...(overlayPress && { overlayPress }),
 		});
 		const range = clickCount === 2 ? word : clickCount === 3 ? this.getLineSelection(anchor) : undefined;
 		this.selectionGranularity = range ? (clickCount === 2 ? "word" : "line") : "character";

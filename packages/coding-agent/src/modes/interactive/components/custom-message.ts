@@ -13,7 +13,7 @@ import { declaresHistoryReplayable, disposeRenderer } from "./renderer-disposal.
 import { TaskCompletionMessage, type TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -116,6 +116,7 @@ export class CustomMessageComponent extends Container {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		setRendererClickTarget(this);
 		disposeRenderer(this.customComponent);
 		this.customComponent = undefined;
 		this.completionOptions = undefined;
@@ -140,6 +141,7 @@ export class CustomMessageComponent extends Container {
 	private rebuild(): void {
 		if (this.disposed) return;
 		const previous = this.customComponent;
+		setRendererClickTarget(this);
 		this.customComponent = undefined;
 		if (previous) this.removeChild(previous);
 		try {
@@ -212,6 +214,7 @@ export class CustomMessageComponent extends Container {
 					this.addChild(this.spacer);
 					this.customComponent = component;
 					this.addChild(component);
+					setRendererClickTarget(this, { container: this, top: 0, firstRow: 1 });
 					return;
 				}
 			} catch {

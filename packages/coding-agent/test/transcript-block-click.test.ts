@@ -4,6 +4,8 @@ import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bast
 import {
 	Container,
 	getKeybindings,
+	HStack,
+	MouseRegion,
 	MULTI_CLICK_INTERVAL_MS,
 	matchesKey,
 	resetCapabilitiesCache,
@@ -12,7 +14,9 @@ import {
 	setKeybindings,
 	stripTerminalSequences,
 	Text,
+	type TUI,
 	type TuiAltScreen,
+	type TuiMouseEvent,
 	VStack,
 	WindowedContainer,
 } from "@bastani/atomic-tui";
@@ -25,6 +29,7 @@ import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
 import { CustomEntryComponent } from "../src/modes/interactive/components/custom-entry.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import {
 	type ClickExpandableBlock,
 	clickableBlocksView,
@@ -292,6 +297,166 @@ async function mountChat(
 		expanded,
 	};
 }
+
+for (const kind of ["message", "entry", "tool"] as const) {
+	test(`an unmodified ${kind} renderer gets first refusal on its own clicks (#5696)`, async () => {
+		const calls: number[] = [];
+		const content = (expanded: boolean) => ({
+			render: () => ["[ Approve ]   reference", ...(expanded ? ["Approval details"] : [])],
+			invalidate() {},
+			handleMouse(event: TuiMouseEvent) {
+				if (event.type !== "click") return;
+				calls.push(event.x);
+				return { handled: event.y === 0 && event.x < 11 };
+			},
+		});
+		const chat = await mountChat(100, 60, {
+			messageRenderers: { approval: (_message, { expanded }) => content(expanded) },
+		});
+		try {
+			if (kind === "message") {
+				mode(chat).addMessageToChat({
+					role: "custom",
+					customType: "approval",
+					content: "approve?",
+					display: true,
+					timestamp: 1,
+				});
+			} else if (kind === "entry") {
+				mode(chat).chatContainer.addChild(
+					new CustomEntryComponent(
+						{ type: "custom", customType: "approval", data: {}, id: "approval", parentId: null, timestamp: "" },
+						(_entry, { expanded }) => content(expanded),
+					),
+				);
+			} else {
+				const tool = new ToolExecutionComponent(
+					"review",
+					"review-1",
+					{},
+					{},
+					{
+						renderShell: "self",
+						renderCall: () => ({ ...content(false), render: () => ["Review title"] }),
+						renderResult: (_result, { expanded }) => content(expanded),
+					},
+					chat.tui as TUI,
+					"/workspace",
+				);
+				tool.updateResult({ content: [{ type: "text", text: "ok" }], isError: false });
+				mode(chat).chatContainer.addChild(tool);
+			}
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Approve \]/);
+			chat.quickClick(3, row);
+			assert.deepEqual(
+				calls,
+				[3],
+				"the extension gets the completed click synchronously, before disclosure settles",
+			);
+			chat.settle();
+			assert.ok(!chat.screen().some((line) => line.includes("Approval details")));
+			chat.click(17, row);
+			assert.deepEqual(calls, [3, 17], "a declined click is offered only once");
+			assert.ok(chat.screen().some((line) => line.includes("Approval details")));
+			if (kind === "tool") {
+				chat.click(3, chat.rowOf(/Review title/));
+				assert.deepEqual(calls, [3, 17], "the tool title belongs to disclosure");
+				assert.ok(!chat.screen().some((line) => line.includes("Approval details")));
+			}
+		} finally {
+			chat.tui.stop();
+		}
+	});
+}
+
+test("a local message click reaches the renderer before disclosure measures another frame (#5696)", async () => {
+	const opened: string[] = [];
+	let record = "A";
+	let shown = "A";
+	const chat = await mountChat(100, 60, {
+		messageRenderers: {
+			account: () => ({
+				render() {
+					shown = record;
+					return [`Open account ${shown}`];
+				},
+				invalidate() {},
+				handleMouse(event) {
+					if (event.type === "release") record = "B";
+					if (event.type !== "click") return;
+					opened.push(shown);
+					return { handled: true };
+				},
+			}),
+		},
+	});
+	try {
+		mode(chat).addMessageToChat({
+			role: "custom",
+			customType: "account",
+			content: "account",
+			display: true,
+			timestamp: 1,
+		});
+		chat.tui.renderNow();
+		chat.click(2, chat.rowOf(/Open account A/));
+		assert.deepEqual(opened, ["A"]);
+	} finally {
+		chat.tui.stop();
+	}
+});
+
+test("a legacy renderer that delegates its clicks keeps the result of its own hit test (#5696)", async () => {
+	const clicked = vi.fn();
+	const chat = await mountChat(100, 60, {
+		messageRenderers: {
+			legacy: (_msg, { expanded }) => {
+				const panel = new MouseRegion(
+					new HStack([
+						{
+							component: {
+								render: () => ["Action"],
+								invalidate() {},
+								handleMouse(event: TuiMouseEvent) {
+									if (event.type !== "click") return;
+									clicked();
+									return { handled: true };
+								},
+							},
+							basis: 0,
+							grow: 0,
+							shrink: 0,
+						},
+						{ component: new Text(expanded ? "Account details" : "Account summary", 0, 0), grow: 1 },
+					]),
+					() => undefined,
+				);
+				return {
+					render: (width) => panel.render(width),
+					invalidate: () => panel.invalidate(),
+					handleMouse: (event) => panel.handleMouse(event),
+				};
+			},
+		},
+	});
+	try {
+		mode(chat).addMessageToChat({
+			role: "custom",
+			customType: "legacy",
+			content: "account",
+			display: true,
+			timestamp: 1,
+		});
+		chat.tui.renderNow();
+		const row = chat.rowOf(/Account summary/);
+		chat.click(chat.columnOf(row, "summary"), row);
+		assert.equal(clicked.mock.calls.length, 1);
+		assert.ok(chat.screen().some((line) => line.includes("Account summary")));
+	} finally {
+		chat.tui.stop();
+	}
+});
 
 describe("clicking transcript blocks in the main chat", () => {
 	test("copying an active selection keeps the Markdown an extension painted before the row was recreated (#5593)", async () => {

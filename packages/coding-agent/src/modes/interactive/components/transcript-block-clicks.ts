@@ -5,6 +5,20 @@ import type { ToolGroupRole } from "./tool-block.ts";
 /** What a container's mouse handler returns: the component that handled the event, and where it is drawn. */
 export type ContainerMouseResult = ReturnType<Container["handleMouse"]>;
 
+/** Only local renderer blocks have a mounted TUI container to dispatch into. Engine blocks contain rendered rows. */
+interface RendererClickTarget {
+	container: Container;
+	top: number;
+	firstRow: number;
+}
+let rendererTargets: WeakMap<Component, RendererClickTarget> | undefined;
+export function setRendererClickTarget(block: Component, target?: RendererClickTarget): void {
+	if (target) {
+		rendererTargets ??= new WeakMap();
+		rendererTargets.set(block, target);
+	} else rendererTargets?.delete(block);
+}
+
 /** Rows `start` up to, not including, `end` of what a component rendered. */
 export interface RowRange {
 	readonly start: number;
@@ -188,18 +202,35 @@ function clickUnitAt(
 	container: Container,
 	width: number,
 	row: number,
-): (() => readonly ClickExpandableBlock[] | undefined) | undefined {
+	event: TuiMouseEvent,
+	offer?: (container: Container, event: TuiMouseEvent) => ContainerMouseResult,
+): (() => readonly ClickExpandableBlock[] | undefined) | ContainerMouseResult {
 	const hit = container.childAtRow(width, row);
 	if (!hit || !container.children.includes(hit.component)) return undefined;
 	if (isClickExpandableBlock(hit.component)) {
-		const area = hit.component.clickArea(width);
+		let area: RowRange | undefined;
+		const target = offer && rendererTargets?.get(hit.component);
+		if (offer && target && hit.row >= target.firstRow) {
+			// Tool headers were always measured before dispatch; message and entry controls saw the existing layout.
+			if (target.top > 0) {
+				area = hit.component.clickArea(width);
+				if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
+			}
+			const result = offer(target.container, {
+				...event,
+				y: hit.row - target.top,
+				height: hit.height - target.top,
+			});
+			if (result) return result;
+		}
+		area ??= hit.component.clickArea(width);
 		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
 		return () => clickUnit(container.children, container.children.indexOf(hit.component));
 	}
 	const nested = hit.component as Container;
 	if (!nested.children || !nested.childAtRow) return undefined;
-	const unit = clickUnitAt(nested, width, hit.row);
-	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
+	const unit = clickUnitAt(nested, width, hit.row, event, offer);
+	return typeof unit === "function" ? () => (container.children.includes(nested) ? unit() : undefined) : unit;
 }
 
 // A global expansion supersedes only transcript toggles, not other controls' single-click actions.
@@ -218,6 +249,7 @@ export function handleTranscriptBlockClick(
 	event: TuiMouseEvent,
 	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
+	offerRendererClick?: (container: Container, event: TuiMouseEvent) => ContainerMouseResult,
 ): ContainerMouseResult {
 	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
 	let scope = clickScopes.get(container);
@@ -233,8 +265,8 @@ export function handleTranscriptBlockClick(
 	pressedScopes.delete(container);
 	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
-	const unit = clickUnitAt(container, event.width, event.y);
-	if (!unit) return undefined;
+	const unit = clickUnitAt(container, event.width, event.y, event, offerRendererClick);
+	if (typeof unit !== "function") return unit;
 	return {
 		handled: true,
 		whenSingleClick: () => {
