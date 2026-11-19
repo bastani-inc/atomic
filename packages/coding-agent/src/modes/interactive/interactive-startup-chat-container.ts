@@ -1,7 +1,11 @@
 import { type ScrollView, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
-import { type ContainerMouseResult, handleTranscriptBlockClick } from "./components/transcript-block-clicks.ts";
+import {
+	type ContainerMouseResult,
+	handleTranscriptBlockClick,
+	isBlockTitleRow,
+} from "./components/transcript-block-clicks.ts";
 import type { Component, Container } from "./interactive-mode-deps.ts";
 
 /**
@@ -29,21 +33,21 @@ export class StartupChatContainer extends WindowedContainer {
 	 * or collapses it once the click cannot become a double-click.
 	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
-		if (event.type === "click") {
-			const handled = handleTranscriptBlockClick(
-				this,
-				this.children,
-				(width, row) => this.childAtRow(width, row),
-				event,
-				(expanded) => {
-					// The reader opened the block to read it: hold the view instead of following the end past its header.
-					const view = this.transcriptView();
-					if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
-				},
-			);
-			if (handled) return handled;
-		}
-		return super.handleMouse(event);
+		if (event.type !== "click") return super.handleMouse(event);
+		const locate = (width: number, row: number) => this.childAtRow(width, row);
+		// A control drawn inside a block, such as an extension's button, takes its click first, as it did before a click
+		// on any row of a block toggled it; only a click it leaves toggles the block. A tool block's title row toggles first,
+		// as it always did.
+		const titleRow = isBlockTitleRow(this.children, locate, event.width, event.y);
+		const inside = titleRow ? undefined : super.handleMouse(event);
+		if (inside?.handled) return inside;
+		const handled = handleTranscriptBlockClick(this, this.children, locate, event, (expanded) => {
+			// The reader opened the block to read it: hold the view instead of following the end past its header.
+			const view = this.transcriptView();
+			if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
+		});
+		if (handled) return handled;
+		return titleRow ? super.handleMouse(event) : inside;
 	}
 
 	countedChildren(): number {

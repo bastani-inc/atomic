@@ -25,6 +25,12 @@ export interface ClickExpandableBlock extends Component {
 	 * that only separate it from the block above. Undefined while it draws nothing.
 	 */
 	clickArea(width: number): RowRange | undefined;
+	/**
+	 * The rows of `render(width)` a click toggles the block from before anything drawn inside the block sees it: a tool
+	 * block's title row. A click toggled a block only from there before a click on any row did, so a control a tool's
+	 * renderer draws on that row never had the click, and still does not. Blocks without such a row omit it.
+	 */
+	titleRows?(width: number): readonly number[];
 	/** The block's place in a group of finished calls; blocks that never group omit it. */
 	getGroupRole?(): ToolGroupRole;
 	/**
@@ -156,14 +162,42 @@ function clickUnitAt(
 	width: number,
 	row: number,
 ): readonly ClickExpandableBlock[] | undefined {
+	const at = blockAt(children, locate, width, row);
+	return at === undefined ? undefined : clickedBlocks(at.siblings, at.index, width, at.row);
+}
+
+/** The block drawn on row `row` among `children` or, for a child that is a plain container of blocks, among its own. */
+function blockAt(
+	children: readonly Component[],
+	locate: (width: number, row: number) => { readonly component: Component; readonly row: number } | undefined,
+	width: number,
+	row: number,
+): { readonly siblings: readonly Component[]; readonly index: number; readonly row: number } | undefined {
 	const hit = locate(width, row);
 	if (!hit) return undefined;
 	const index = children.indexOf(hit.component);
 	if (index === -1) return undefined;
-	if (isClickExpandableBlock(hit.component)) return clickedBlocks(children, index, width, hit.row);
+	if (isClickExpandableBlock(hit.component)) return { siblings: children, index, row: hit.row };
 	const nested = hit.component as Partial<Container>;
 	if (nested.children === undefined || nested.childAtRow === undefined) return undefined;
-	return clickUnitAt(nested.children, (w, r) => nested.childAtRow?.(w, r), width, hit.row);
+	return blockAt(nested.children, (w, r) => nested.childAtRow?.(w, r), width, hit.row);
+}
+
+/**
+ * Whether row `row` among `children` is a block's title row (`ClickExpandableBlock.titleRows`), where a click toggles
+ * the block before anything drawn inside it sees the click. On every other row of a block, a control drawn there, such
+ * as an extension's button, takes the click first, as it did before a click on any row toggled the block.
+ */
+export function isBlockTitleRow(
+	children: readonly Component[],
+	locate: (width: number, row: number) => { readonly component: Component; readonly row: number } | undefined,
+	width: number,
+	row: number,
+): boolean {
+	const at = blockAt(children, locate, width, row);
+	if (at === undefined) return false;
+	const block = at.siblings[at.index] as ClickExpandableBlock;
+	return block.titleRows?.(width).includes(at.row) === true;
 }
 
 /**

@@ -296,6 +296,11 @@ export class ToolExecutionComponent extends Container {
 		return rowsFrom(1, this.render(width).length);
 	}
 
+	/** The title row, right after the blank row the block leads with. */
+	titleRows(width: number): readonly number[] {
+		return this.render(width).length > 1 ? [1] : [];
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.disposed) return;
 		if (this.expanded === expanded) return;
