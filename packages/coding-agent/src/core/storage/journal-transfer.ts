@@ -288,7 +288,7 @@ async function openExportSource(
 							selectedRunId === undefined
 								? readCatalogPages<JournalRunTableRow>(tx, sql, [], "run_id", limit)
 								: tx.all<JournalRunTableRow>(`${sql} WHERE run_id = ?`, selectedRunId),
-						4096,
+						selectedRunId === undefined ? 4096 : 1,
 					);
 		return {
 			path,

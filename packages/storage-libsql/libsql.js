@@ -1668,7 +1668,6 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		redact,
 		transientFailure,
 		payloadLimits: local ? LOCAL_PAYLOAD_LIMITS : SERVER_PAYLOAD_LIMITS,
-		concurrentReads: !local,
 		// A server's disk is not this process's to see.
 		...(local ? { freeBytes: () => freeBytesOfFile(url) } : {}),
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.

@@ -116,6 +116,41 @@ for (const backend of storageBackends) {
 			}
 		});
 
+		it("stops after the selected header alone is still too large to export (#5537)", async () => {
+			const scope = await backend.openScope();
+			const directory = makeTempDirectory("atomic-selected-run-");
+			try {
+				const database = await scope.connect();
+				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
+				try {
+					await journal.createRun(header);
+					await journal.createRun({ ...header, runId: "unselected" });
+					const attempts: number[] = [];
+					const restore = limitHeaderResponse(database, (rows) => {
+						attempts.push(rows.length);
+						return false;
+					});
+					try {
+						await expect(
+							exportWorkflowRuns(
+								{ kind: "database", prefix: scope.prefix, location: "catalog", open: async () => database },
+								directory,
+								{ runs: [header.runId] },
+							),
+						).rejects.toThrow(/response/i);
+						expect(attempts).toEqual([2, 1]);
+					} finally {
+						restore();
+					}
+				} finally {
+					await journal.close();
+				}
+			} finally {
+				await scope.close();
+				removeTempDirectory(directory);
+			}
+		});
+
 		it.each(["run versions", "named export"])(
 			"%s cannot include a later commit without its predecessor (#5537)",
 			async (view) => {
