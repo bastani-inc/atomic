@@ -24,8 +24,7 @@ import { createTestExtensionsResult, createTestResourceLoader } from "./utilitie
 test("shared reporter ignores child shutdown and keeps reporting for its parent", async () => {
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 	const extension = await loadExtensionFromFactory(
 		createHerdrExtension({ env: fake.env, enabled: () => true }),
 		fake.dir,
@@ -71,8 +70,7 @@ test("shared reporter ignores child shutdown and keeps reporting for its parent"
 test("shared reporter accepts activity only from the first eligible session", async () => {
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 	const extension = await loadExtensionFromFactory(
 		createHerdrExtension({ env: fake.env, enabled: () => true }),
 		fake.dir,
@@ -149,8 +147,6 @@ test("real compaction and continued prompts retain pane authority until quit", a
 		extensionFactories: [
 			createHerdrExtension({ env: fake.env, enabled: () => true }),
 			(pi) => {
-				const publisher = pi.registerWorkflowActivityPublisher();
-				publisher.publishSnapshot({ availability: "ready", roots: [] });
 				pi.on("session_start", () => {
 					lifecycle.push("start");
 				});
@@ -401,8 +397,7 @@ if (args.includes("working")) {
 	}, 5);
 } else finish();`);
 	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 	const extension = await loadExtensionFromFactory(
 		createHerdrExtension({ env: fake.env, enabled: () => true, clock: () => 100 }),
 		fake.dir,

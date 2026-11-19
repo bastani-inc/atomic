@@ -94,7 +94,6 @@ function rollbackContext(cwd: string) {
 		getContextUsage: () => undefined,
 		compact: unavailable,
 		getSystemPrompt: () => "",
-		observeWorkflowActivity: unavailable,
 	});
 }
 

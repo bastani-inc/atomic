@@ -189,7 +189,7 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		const listener = createStopAllChord({
 			keybindings: new KeybindingsManager(),
 			chordAllowed: () => true,
-			stopAll: async () => ({ agents: 0, shells: 0, workflowRuns: 0, failures: [] }),
+			stopAll: async () => ({ agents: 0, shells: 0, failures: [] }),
 			showStatus: (message) => statuses.push(message),
 			showWarning: () => {},
 			clearStatus: () => {},

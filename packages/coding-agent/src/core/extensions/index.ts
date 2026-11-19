@@ -28,7 +28,6 @@ export type { ConstrainedSamplingConfig } from "@bastani/atomic-ai/compat";
 export type { AtomicProviderCompat } from "../model-capabilities.ts";
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.js";
 export type { SourceInfo } from "../source-info.ts";
-export type { WorkflowResourceProvider, WorkflowResourceProviderInput } from "./loader.ts";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
@@ -290,17 +289,4 @@ export {
 	isWriteToolResult,
 } from "./types.ts";
 export { OVERLAY_ACTIVE_ROW_MARKER } from "./ui-types.js";
-export type * from "./workflow-events.js";
-export type * from "./workflow-run-control.js";
-export {
-	WorkflowRunControlError,
-	WorkflowRunControlUnavailableError,
-	WorkflowRunNotFoundError,
-	WorkflowRunNotResumableError,
-	WorkflowRunOwnershipError,
-	WorkflowRunStorageError,
-	WorkflowStageAmbiguousError,
-	WorkflowStageNotFoundError,
-	WorkflowStageResumeUnsupportedError,
-} from "./workflow-run-control.js";
 export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.ts";
