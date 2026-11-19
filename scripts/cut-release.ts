@@ -139,7 +139,7 @@ const FALLBACK_GIT_LOCAL_ENV_VARS = [
  * path argument alike, and every repository this script touches is addressed
  * by path: the checkout it reads, and the temporary worktree it stamps,
  * commits, and tags. A caller that exports them — a git hook, or the
- * publish-release workflow running under one — would otherwise redirect all of
+ * publish-release skill running under one — would otherwise redirect all of
  * that into a repository nobody is releasing. `git rev-parse --local-env-vars`
  * is the list's own source, so this cannot drift as git adds to it.
  *

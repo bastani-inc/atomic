@@ -22,6 +22,7 @@ export type RetainedTaskOutput = {
 	/** Leading bytes of the output, bounded by INLINE_TASK_OUTPUT_MAX_BYTES. */
 	readonly head: string;
 	readonly totalBytes: number;
+	readonly worktree?: { readonly runId: string; readonly index: number };
 };
 
 // Neither a private copy nor its eviction record should keep the task alive.
@@ -88,6 +89,7 @@ export async function retainTaskOutput(
 	text: string,
 	ref: { readonly ownerId: string; readonly taskId: string },
 	lease?: WeakRef<TaskLease>,
+	worktree?: RetainedTaskOutput["worktree"],
 ): Promise<void> {
 	const path = await writePrivateCopy(ref.ownerId, ref.taskId, await fullOutputText(child, text));
 	const key = retentionKey(ref.ownerId, ref.taskId);
@@ -99,6 +101,7 @@ export async function retainTaskOutput(
 			...(path ? { path } : {}),
 			...(child.outputReference ? { requestedPath: child.outputReference.path } : {}),
 			...(child.outputSaveError ? { saveError: child.outputSaveError } : {}),
+			...(worktree ? { worktree } : {}),
 			head: utf8Head(text, INLINE_TASK_OUTPUT_MAX_BYTES),
 			totalBytes: Buffer.byteLength(text, "utf-8"),
 		},

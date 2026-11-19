@@ -5,7 +5,6 @@
 This repo is the private `atomic-monorepo` npm workspace. It currently houses:
 
 - `@bastani/atomic` in `packages/coding-agent` — the Atomic-branded fork of pi's coding-agent CLI, and the package users install.
-- `@bastani/workflows` in `packages/workflows` — a first-party extension for Atomic/pi that brings multi-stage, DAG-driven workflow execution to agent sessions.
 - `@bastani/subagents` in `packages/subagents` — builtin subagent orchestration, reusable agent definitions, skills, prompts, and foreground/background execution.
 - `@bastani/mcp` in `packages/mcp` — builtin MCP adapter extension that exposes MCP servers as agent tools.
 - `@bastani/web-access` in `packages/web-access` — builtin web search, URL fetching, GitHub repository, PDF, and video extraction tools.
@@ -92,7 +91,6 @@ name it.
 - Avoid ambiguous types like `any` and `unknown`. Use specific types instead.
 - The Bun runtime/CI pin and its types are both 1.4.4 (`@types/bun` 1.4.4, which depends on `bun-types` 1.4.4). Move the runtime and types together, and verify with `npm run typecheck` when bumping types. If `bun check` reports an error that TypeScript 7 `tsc` does not, it is a Bun bug: add an explicit type annotation at the reported site rather than loosening the code, and report it upstream.
 - Source files use `.js` import extensions (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to the underlying `.ts` source directly — no loader hook required. atomic's loader follows the same convention as pi.
-- Do not add a build step (`dist/`, `tsconfig.build.json`, etc.) to `packages/workflows`; it distributes raw TypeScript and the host loads it directly. `packages/coding-agent` is copied from upstream pi and keeps its existing build setup.
 - When using skills, if you see a frontmatter of `metadata: internal` set to `true` (if missing assume `false`), that means the skill is for internal developers of this package. If this flag is omitted, the skill is meant for consumers/everyday users.
 
 ## Design Context
@@ -242,24 +240,16 @@ The selected base is never advanced by the version stamp. The script resolves it
 
 ### Agent publishing requests
 
-If a user asks to publish a release or prerelease, route the request through the repository-local `publish-release` Atomic workflow:
+When asked to publish a release or prerelease, follow the repository-local [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`). Ask for a missing version; infer release versus prerelease from a valid version and clarify ambiguity. Default the release base to `main`. Require non-main bases to be protected with the repository's required CI checks.
 
-1. Ask for the version only when it was not supplied. Stable releases use `MAJOR.MINOR.PATCH`; prereleases use `MAJOR.MINOR.PATCH-alpha.REVISION` with revision starting at 1.
-2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid. Use the requested `base_ref`, defaulting to the short branch name `main` when omitted.
-3. For non-main bases, require the branch to be protected with the repository's required CI checks before using it as the selected release base.
-4. Launch one `publish-release` workflow run with `target_version`, `release_kind`, and `base_ref`. Do not duplicate its Git, PR, tag, or publishing actions inline.
-5. A durable preflight first requires a clean worktree, then either proves that no release branch or PR exists and allows changelog preparation, or reuses one exact changelog-only commit and matching open PR. Commit inspection exhausts every GitHub file page and checks both sides of renamed paths. Conflicting worktree, base, files, commit, branch, local/remote SHA, or PR identity stops the run; the workflow never resets or force-pushes reuse state.
-6. The workflow discovers exact required contexts and app identities from branch protection and active rulesets. Only the classic unprotected-branch status-check lookup may be absent; ruleset lookup errors fail closed. Configured checks that have not materialized remain pending. An empty configured set, identity drift, failed check, GitHub/auth error, abort, or the 45-minute bound stops the run; only all exact checks passing or the exact PR being admin-merged proceeds.
-7. After the gate passes, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
-8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. That tag push automatically starts `publish.yml`; the workflow does not manually dispatch normal publication.
-9. A durable gate polls for the exact `bastani-inc/atomic` push run at `.github/workflows/publish.yml`, matching tag and release SHA. A delayed run stays pending; identity drift, command/auth failure, a non-success conclusion, abort, or the 60-minute bound stops the run.
+Use `validate`, `inspect-preparation`, `check-changelog-diff`, `wait-required-checks`, `merge-exact-head` and `wait-publish-run` in `scripts/release/publish-release.ts` as the skill directs. Never substitute a green PR badge, bypass a gate, or repeat a push after losing its response. Use `--dry-run` to verify without merging; an actual merge, push or tag requires an explicit request to publish. The skill requires a clean checkout, prepares or reuses one exact changelog-only PR, gates its verified head for up to 45 minutes, and only then merges, fast-forwards the versionless base and cuts the detached tag. The tag starts `publish.yml`. Wait up to 60 minutes for its exact push run; never reset, force-push, move a tag or dispatch a duplicate publication.
 
 ## Docs
 
 - ALWAYS keep the user-facing docs in `packages/coding-agent/docs` up-to-date with the latest changes after you make changes. Prefer to keep other docs up-to-date as well, but the coding-agent docs are the most important since they are user-facing and often consulted by users and other agents.
 - `packages/coding-agent/docs` is user-facing documentation. Explain how to use, configure, and troubleshoot Atomic. Do not include internal implementation details, test infrastructure, debugging histories, verification evidence, or maintainer-only design notes. Keep those in repository-level docs or PR descriptions. Keep user guides concise and focused on what users need to know.
 - Update user guides only when a change affects how users use, configure, or troubleshoot Atomic. An internal optimization does not require a guide edit merely to say that something is faster, uses less CPU, or needs no configuration. If there is no actionable user guidance, leave the guide unchanged. Put user-visible performance improvements in the package changelog and measurements or implementation rationale in repository-level notes or the PR description.
-- To update docs, prefer using your `release-docs` workflow to thoroughly update all relevant docs with the latest changes. If you need to make a quick fix or update, you can also edit the markdown files directly, but make sure to keep them comprehensive and up-to-date.
+- For a thorough refresh, use the repository-local [release-docs skill](.agents/skills/release-docs/SKILL.md) (`/skill:release-docs`) on a clean feature branch. For a focused fix you can edit the relevant Markdown directly.
 
 ## Changelog
 
@@ -290,7 +280,7 @@ Use these sections under `## [Unreleased]`:
   subsections. It must stand alone: the GitHub release page shows only that section.
 - A release section opens with a human-readable summary: the prose between the
   `## [x.y.z]` heading and its first `###` section. Write it when preparing the
-  release (the `publish-release` workflow does this), never under `## [Unreleased]`.
+  release (see the `publish-release` skill), never under `## [Unreleased]`.
   Write one summary per release, in `packages/coding-agent/CHANGELOG.md` only, covering
   every package; never repeat a change across packages' summaries, and keep it brief.
   Use one theme-title sentence, then one short bullet per change grouped by theme, each
@@ -337,20 +327,17 @@ Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not
 
 ## Tips
 
-1. The workflows extension is bundled into `@bastani/atomic`. For local development against upstream pi, symlink `packages/workflows` into `~/.pi/agent/extensions/workflows` if you want host-level discovery outside Atomic.
-2. Rely on agent skills to provide information on best practices during implementation. Here is a short list of Agent Skills that are incredibly relevant to this project that you should try to use when applicable:
+1. Rely on agent skills to provide information on best practices during implementation. Here is a short list of Agent Skills that are incredibly relevant to this project that you should try to use when applicable:
     - bun
     - gh-commit
     - gh-create-pr
     - prek
     - typescript-advanced-types
     - typescript-expert
-3. Ask for clarity if you are unsure about a change. The developer is your best friend and oftentimes can clarify intent.
-4. When modifying this extension, follow pi's extension and SDK conventions.
+2. Ask for clarity if you are unsure about a change. The developer is your best friend and oftentimes can clarify intent.
+3. When modifying extensions, follow pi's extension and SDK conventions.
 
 <EXTREMELY_IMPORTANT>
-`@bastani/workflows` ships raw `.ts` files with no build step — do NOT introduce `dist/`, `tsconfig.build.json`, `outDir`, or any bundling.
-
 Install with `npm ci --ignore-scripts`, and add dependencies with `npm install`. Never run
 `yarn install` or `pnpm install`, and do not bring back `bun install`: each writes a competing
 lockfile that `npm ci` neither reads nor verifies, and bypasses the `save-exact` pin in the

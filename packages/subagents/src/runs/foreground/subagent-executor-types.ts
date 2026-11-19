@@ -20,6 +20,8 @@ export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
 export const BURST_TASK_INPUT_INDEX = Symbol("burstTaskInputIndex");
 /** Retain the expanded tasks' actual working directories for call-local output checks if a merged run fails. */
 export const BURST_PREPARED_TASKS = Symbol("burstPreparedTasks");
+/** Let each caller render its own range of a completed SDK batch; run-wide guidance is not an answer. */
+export const BURST_ANSWERS = Symbol("burstAnswers");
 /** The named worktree a launch's child runs in, once it exists (#5202). */
 export const NAMED_WORKTREE = Symbol("namedWorktree");
 
@@ -52,6 +54,7 @@ export type BurstTaskParam = TaskParam & {
 
 export interface SubagentParamsLike {
 	[BURST_PREPARED_TASKS]?: (tasks: TaskParam[]) => void;
+	[BURST_ANSWERS]?: (render: (start: number, length: number) => string) => void;
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
 	/** `action: "wait"` only: how long to wait for the task. */

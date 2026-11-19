@@ -148,7 +148,7 @@ function resultSummaryForIntercom(result: SingleResult): string {
 			: output || result.error || "(no output)";
 	// A child that ran on another model than its launch asked for says so (#4188).
 	const ranOn = resultRanOnLine(result);
-	return ranOn ? `${ranOn}\n${summary}` : summary;
+	return [result.worktreeNote, ranOn, summary].filter(Boolean).join("\n");
 }
 
 /**
