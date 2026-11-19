@@ -3,7 +3,7 @@ import type { Provider } from "@bastani/atomic-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
-import { closeAgentSession, closedExtensionBindError } from "./agent-session-events.ts";
+import { closedExtensionBindError, recordSessionCloseOrigin } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
@@ -293,7 +293,10 @@ function startExtensions(
 		failedExtensionStarts.add(runner);
 		return rollbackStartup(runner, error instanceof Error ? error : new Error(String(error)), async (cause) => {
 			try {
-				if (!hasSessionReload(session)) await closeAgentSession(session, "startupRollback");
+				if (!hasSessionReload(session)) {
+					recordSessionCloseOrigin(session, "startupRollback");
+					await session.dispose();
+				}
 			} catch (cleanupError) {
 				const errors = [cause, cleanupError];
 				throw Object.assign(

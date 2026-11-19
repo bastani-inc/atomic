@@ -733,13 +733,18 @@ export function _disconnectFromAgent(this: AgentSession): void {
 const shutdownEventFailures = new WeakMap<AgentSession, Error[]>();
 const sessionClosures = new WeakMap<object, Promise<void>>();
 const sessionRetirements = new WeakMap<AgentSession, Promise<void>>();
-// A startup rollback closes the session to clean up its failure; it is not a request to cancel a bind.
-const requestedCloses = new WeakSet<object>();
+type SessionCloseOrigin = "request" | "startupRollback";
+const closeOrigins = new WeakMap<object, SessionCloseOrigin>();
 const bindCloseListeners = new WeakMap<object, Set<(error: Error) => void>>();
+
+/** A rollback calls the normal disposer for cleanup; only the first close determines whether a bind can be cancelled. */
+export function recordSessionCloseOrigin(session: object, origin: SessionCloseOrigin): void {
+	if (!closeOrigins.has(session)) closeOrigins.set(session, origin);
+}
 
 export function closedExtensionBindError(session: object): Error {
 	const error = hostInputError("SessionClosed");
-	if (requestedCloses.has(session)) {
+	if (closeOrigins.get(session) === "request") {
 		for (const listener of bindCloseListeners.get(session) ?? []) listener(error);
 	}
 	return error;
@@ -761,14 +766,13 @@ export function isAgentSessionClosed(session: object): boolean {
 /** Shared terminal boundary for direct SDK disposal and runtime replacement. */
 export function closeAgentSession(
 	session: AgentSession,
-	origin: "request" | "startupRollback",
 	event: SessionShutdownEvent = { type: "session_shutdown", reason: "quit" },
 	beforeInvalidate?: () => void,
 ): Promise<void> {
 	const handoff = event.reason !== "quit" && hasCallingSessionWork(session);
 	const existing = sessionClosures.get(session);
 	if (existing) return (handoff && sessionRetirements.get(session)) || existing;
-	if (origin === "request") requestedCloses.add(session);
+	recordSessionCloseOrigin(session, "request");
 	let resolveRetired!: () => void;
 	let rejectRetired!: (error: Error) => void;
 	const retirement = new Promise<void>((resolve, reject) => {
@@ -874,7 +878,7 @@ export function closeAgentSession(
 }
 
 export function dispose(this: AgentSession): Promise<void> {
-	return closeAgentSession(this, "request");
+	return closeAgentSession(this);
 }
 
 // =========================================================================
@@ -885,7 +889,7 @@ export function dispose(this: AgentSession): Promise<void> {
 
 export const agentSessionEventsMethods = {
 	_close(this: AgentSession, event: SessionShutdownEvent, beforeInvalidate?: () => void) {
-		return closeAgentSession(this, "request", event, beforeInvalidate);
+		return closeAgentSession(this, event, beforeInvalidate);
 	},
 	_emit,
 	_emitQueueUpdate,

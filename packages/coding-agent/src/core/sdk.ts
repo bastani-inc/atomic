@@ -13,7 +13,7 @@ import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { AgentSession } from "./agent-session.js";
-import { closeAgentSession } from "./agent-session-events.ts";
+import { recordSessionCloseOrigin } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { markRuntimeStreamFunction } from "./agent-session-models.ts";
 import {
@@ -947,8 +947,9 @@ async function constructAgentSession(
 	if (!options.settingsManager) ownedSettingsManagers.set(settingsManager, session);
 	const rollbackReason = sessionLifecycleCreation.getStore()?.replacement ? "new" : "quit";
 	registerStartupRollback(session.extensionRunner, async (error) => {
+		recordSessionCloseOrigin(session, "startupRollback");
 		const results = await Promise.allSettled([
-			closeAgentSession(session as unknown as AgentSessionInternalSurface, "startupRollback", {
+			(session as unknown as AgentSessionInternalSurface)._close({
 				type: "session_shutdown",
 				reason: rollbackReason,
 			}),

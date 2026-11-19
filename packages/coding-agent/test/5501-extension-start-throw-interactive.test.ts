@@ -7,9 +7,11 @@
 
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
+import { Agent } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, registerFauxProvider, streamSimple } from "@bastani/atomic-ai/compat";
 import type { Terminal } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import {
@@ -23,7 +25,7 @@ import type { ExtensionFactory, InlineExtension, LoadExtensionsResult } from "..
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { DefaultResourceLoader, type ResourceExtensionPaths } from "../src/core/resource-loader.js";
 import { SessionManager } from "../src/core/session-manager.js";
-import { AgentSessionRuntime, InteractiveMode } from "../src/index.js";
+import { AgentSession, AgentSessionRuntime, InteractiveMode } from "../src/index.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { normalizeRenderedOutput } from "./interactive-mode-status-helpers.js";
 import { createHarness } from "./suite/harness.js";
@@ -155,6 +157,44 @@ async function createMode(
 function occurrences(text: string, part: string): number {
 	return text.split(part).length - 1;
 }
+
+test("a failed SDK startup releases resources owned by the session's dispose override before rejecting (#5697)", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-dispose-"));
+	cleanup.push(async () => rmSync(cwd, { recursive: true, force: true }));
+	const { resourceLoader, settingsManager, modelRuntime } = await createAgentSessionServices({
+		cwd,
+		agentDir: cwd,
+		resourceLoaderOptions: {
+			builtinPackagePaths: [],
+			extensionFactories: [
+				(pi) =>
+					pi.on("session_start", () => {
+						throw new Error("failed to start");
+					}),
+			],
+		},
+	});
+	const log = await open(join(cwd, "session.log"), "w");
+	cleanup.push(() => log.close());
+	class LoggingSession extends AgentSession {
+		override async dispose(): Promise<void> {
+			await log.close();
+			await super.dispose();
+		}
+	}
+	const session = new LoggingSession({
+		agent: new Agent({ streamFn: streamSimple }),
+		cwd,
+		sessionManager: SessionManager.inMemory(cwd),
+		resourceLoader,
+		settingsManager,
+		modelRuntime,
+	});
+	cleanup.push(() => session.dispose());
+
+	await assert.rejects(session.bindExtensions({}), { name: "ExtensionStartupError", message: /failed to start/ });
+	await assert.rejects(log.write("after rollback"), { code: "EBADF" });
+});
 
 test.each(["before run", "during session_start", "before a later runtime quit"] as const)(
 	"disposing the SDK session %s rejects interactive startup with the original error (#5697)",
