@@ -427,6 +427,8 @@ export interface StageSnapshot {
 	 * activity so the graph can show them without a live view of the stage (#3996).
 	 */
 	queuedUserMessageCount?: number;
+	/** The worker's current turn phase. Views on another host read publications, not the worker's session stream. */
+	chatActivity?: import("@bastani/atomic").PublishedChatActivity;
 	/**
 	 * The Intercom messages the stage's session `sessionId` took before its first turn, by message id, as the worker of
 	 * a pooled stage on a host that does not run its root publishes them: the root records their receipts when the

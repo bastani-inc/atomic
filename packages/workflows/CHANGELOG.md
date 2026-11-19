@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Resuming a failed workflow releases the stage session it replaces. Open chat panes follow the resumed stage in the same conversation. If a chat turn is still running on that stage, wait for it to finish or press Esc in its chat, then resume again ([#5559](https://github.com/bastani-inc/atomic/issues/5559)).
 - Intercom keeps the stage routes of the 32 most recently finished workflow invocations even when several finish together. A resumed invocation counts from its latest finish; a refused resume does not change its place. Opening a completed run keeps its original journal, and deleting it from that journal retires its routes even when the session uses another journal by default ([#5561](https://github.com/bastani-inc/atomic/issues/5561)).
 - Running and awaiting-input stage borders now pulse in their own status colour instead of fading through the graph connector colour ([#5596](https://github.com/bastani-inc/atomic/issues/5596)).
+- A stage chat opened during a provider backoff or model switch shows `retrying…` or `switching model…` even when the session still reads as streaming, including on a worker. When the worker exits or is replaced, the stage and its subagent chats clear the old wait; a remote stage reopens on the replacement’s own session ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 
 ## [0.9.89] - 2026-11-18
 
