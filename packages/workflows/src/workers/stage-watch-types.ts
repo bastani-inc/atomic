@@ -15,7 +15,7 @@ import type {
 	TaskTranscriptView,
 	TaskViewResult,
 } from "@bastani/atomic";
-import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
+import type { StageContextMeter, StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import type { StageTurnState } from "../runs/foreground/stage-turn-start.js";
@@ -56,8 +56,10 @@ export interface PooledStageChatSnapshot {
 	readonly sessionId: string | undefined;
 	readonly status: StageControlStatus;
 	readonly isStreaming: boolean;
-	/** Settled messages. */
+	/** Settled display messages. */
 	readonly messages: AgentSession["messages"];
+	/** Omitted when these rows already match the request context, and by older workers. */
+	readonly contextMeter?: StageContextMeter;
 	/** The assistant message still streaming, if any. */
 	readonly streamingMessage?: AssistantMessage;
 	/** Whether the stage's session waits out an automatic retry's backoff. Absent from older workers. */

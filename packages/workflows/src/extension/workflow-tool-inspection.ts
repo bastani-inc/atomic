@@ -130,7 +130,8 @@ export function workflowTranscriptResult(
 			runId: stageRunId,
 			stageId: stage.stageId,
 			source: "live",
-			entryCount: liveHandle.messages.length,
+			// A path-only lookup counts resident messages without projecting saved rows. A preview counts the rows it builds.
+			entryCount: liveHandle.agentSession?.messages.length ?? liveHandle.messages.length,
 			buildEntries: () => liveHandle.messages.map((m) => transcriptEntryFromMessage(m as MessageLike)),
 			args,
 			sessionId,
