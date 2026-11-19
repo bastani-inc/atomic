@@ -909,6 +909,18 @@ export class ExtensionRunner {
 		return createExtensionContext(this.createContextSource(), this.contextOwner);
 	}
 
+	private readonly nestedTool = new AsyncLocalStorage<{ id: string; parentId: string }>();
+
+	runNestedTool<T>(id: string, parentId: string, run: () => T): T {
+		return this.nestedTool.run({ id, parentId }, run);
+	}
+
+	/** The exact call this runner is executing, not a later direct call in work it started. */
+	parentToolCallId(id: string): string | undefined {
+		const nested = this.nestedTool.getStore();
+		return nested?.id === id ? nested.parentId : undefined;
+	}
+
 	/** Bound to the actual executing parent, not an extension-supplied caller identity. */
 	createToolContext(toolCallId: string, signal: AbortSignal | undefined): ExtensionToolContext {
 		const invoke = AsyncLocalStorage.bind(async (name: string, args: unknown, options: ExecuteToolOptions = {}) => {
@@ -928,6 +940,7 @@ export class ExtensionRunner {
 			return this.executeToolFn(toolCallId, name, args, { ...options, signal: callSignal });
 		});
 		return Object.defineProperties(this.createContext() as ExtensionToolContext, {
+			parentToolCallId: { value: this.parentToolCallId(toolCallId) },
 			tools: {
 				get: () => {
 					this.assertActive();
@@ -1165,10 +1178,19 @@ export class ExtensionRunner {
 	emitResourcesDiscover(
 		cwd: string,
 		reason: ResourcesDiscoverEvent["reason"],
+		reportError?: (error: ExtensionError) => void,
+	): Promise<ResourcesDiscoverCombinedResult>;
+	emitResourcesDiscover(
+		cwd: string,
+		reason: ResourcesDiscoverEvent["reason"],
 		reportError: (error: ExtensionError) => void = (error) => this.emitError(error),
+		admission?: { closed?: Error },
 	): Promise<ResourcesDiscoverCombinedResult> {
-		return runResourceRegistrationBatch(this.runtime, () =>
-			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+		return runResourceRegistrationBatch(
+			this.runtime,
+			() => runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+			false,
+			admission,
 		);
 	}
 
@@ -1195,3 +1217,12 @@ export class ExtensionRunner {
 		);
 	}
 }
+
+// An SDK discovery override can report an independent failure, even after calling the stock method.
+export const stockResourceDiscovery: (
+	this: ExtensionRunner,
+	cwd: string,
+	reason: ResourcesDiscoverEvent["reason"],
+	reportError: ((error: ExtensionError) => void) | undefined,
+	admission: { closed?: Error },
+) => Promise<ResourcesDiscoverCombinedResult> = ExtensionRunner.prototype.emitResourcesDiscover;

@@ -47,11 +47,12 @@ import {
 	notifyDetachedForegroundChildExit,
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
-import type {
-	ExecutionContextData,
-	ForegroundControl,
-	ResolvedExecutorDeps,
-	SubagentParamsLike,
+import {
+	type ExecutionContextData,
+	type ForegroundControl,
+	isScriptSubagentCall,
+	type ResolvedExecutorDeps,
+	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
 import { runAgentTask, taskToolResultWithOutput } from "./task-execution.js";
 
@@ -304,6 +305,7 @@ export async function runSinglePath(
 			// A task-hosted child runs in the background: the launch returns once it is admitted, and the child reports
 			// by its completion notice.
 			let progressCleanup: Promise<void> | undefined;
+			if (isScriptSubagentCall(ctx)) signal.throwIfAborted();
 			const response = await runAgentTask({
 				host: ctx.getAgentTaskHost(),
 				cwd: ctx.cwd,

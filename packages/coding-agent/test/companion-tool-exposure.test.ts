@@ -7,7 +7,7 @@ import subagents from "../../subagents/src/extension/index.js";
 
 import { createHarness } from "./suite/harness.js";
 
-test("script tool catalogs retain ordinary tools but exclude Atomic orchestration and human prompts", async () => {
+test("script tool catalogs include subagent but exclude workflow, supervisor and human prompts", async () => {
 	let catalog: string[] = [];
 	const harness = await createHarness({
 		extensionFactories: [
@@ -39,8 +39,8 @@ test("script tool catalogs retain ordinary tools but exclude Atomic orchestratio
 		],
 	});
 	try {
-		const orchestrators = ["subagent", "contact_supervisor", "ask_user_question"];
-		for (const name of orchestrators)
+		const directOnly = ["contact_supervisor", "ask_user_question"];
+		for (const name of ["subagent", ...directOnly])
 			assert(harness.session.getActiveToolNames().includes(name), `${name} remains model-active`);
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("catalog_probe", {})], { stopReason: "toolUse" }),
@@ -49,7 +49,8 @@ test("script tool catalogs retain ordinary tools but exclude Atomic orchestratio
 		await harness.session.prompt("inspect catalog");
 		assert(catalog.includes("read"));
 		assert(catalog.includes("bash"));
-		for (const name of orchestrators) assert(!catalog.includes(name), `${name} must not be script-callable`);
+		assert(catalog.includes("subagent"));
+		for (const name of directOnly) assert(!catalog.includes(name), `${name} must not be script-callable`);
 	} finally {
 		await harness.cleanup();
 	}

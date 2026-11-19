@@ -58,9 +58,11 @@ While `codemode` is active, `codemode.mode` in [settings](/settings#tools) decid
 
 ### Model-only tools
 
-Model-only tools, such as `subagent`, `workflow`, and `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. They cannot be called from inside a `codemode` script; when one is needed and available in the session, the model calls that separate top-level tool directly instead of trying to reach it through `codemode`, so a missing entry in `tools` does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `searchTools("subagent")` or `describeTool("workflow")`, with a hint to call it directly as a top-level tool, not from a script. The hint does not make the tool callable from scripts.
+Tools without script access, such as `workflow` and `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. They cannot be called from inside a `codemode` script; when one is needed and available in the session, the model calls that separate top-level tool directly instead of trying to reach it through `codemode`, so a missing entry in `tools` does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `searchTools("ask_user_question")` or `describeTool("workflow")`, with a hint to call it directly as a top-level tool, not from a script. The hint does not make the tool callable from scripts.
 
-Some model-only tools let scripts use part of them. `intercom` is in `tools` with `list`, `status`, `pending`, and `send` to an exact target, each resolving to a structured value; its other actions, and sends to globs or `subagents:` targets, fail with a message to call the tool directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
+Some model-only tools let scripts use part of them. `tools.subagent({ agent, task })` or `tools.subagent({ tasks })` returns task IDs at admission. Its children keep running if the script ends or fails; use `status`, a bounded `wait`, or the parent session's completion notices to follow them. Scripts can also pause, quit or resume this session's children and inspect agent definitions and the model catalog. See [Subagents from codemode scripts](/subagents#from-codemode-scripts).
+
+`intercom` is in `tools` with `list`, `status`, `pending`, and `send` to an exact target, each resolving to a structured value; its other actions, and sends to globs or `subagents:` targets, fail with a message to call the tool directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
 
 ## Store values
 

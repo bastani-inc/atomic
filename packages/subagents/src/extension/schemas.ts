@@ -60,7 +60,7 @@ function heartbeatSchema(scope: string) {
 
 const GroupSchema = Type.Union([Type.String(), Type.Boolean()], {
 	description:
-		"Intercom group for spawned children. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set. The names `true` and `auto` are reserved; use a different literal group name. Defaults to the current session/stage's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
+		"Intercom group for spawned children. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set. The names `true` and `auto` are reserved; use a different literal group name. Defaults to the current session's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
 });
 
 const NamedWorktreeSchema = Type.Object(
@@ -174,7 +174,7 @@ export const SubagentParams = Type.Object(
 			Type.String({
 				enum: [...SUBAGENT_ACTIONS],
 				description:
-					"Management/control action. Omit for execution mode. pause/resume/quit control a launched child; kill and interrupt were removed (use quit).",
+					"Management/control action; models lists the configured model catalog. Omit for execution mode. pause/resume/quit control a launched child; kill and interrupt were removed (use quit).",
 			}),
 		),
 		id: Type.Optional(

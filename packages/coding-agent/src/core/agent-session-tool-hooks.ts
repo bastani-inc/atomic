@@ -11,7 +11,6 @@ import type { ToolCall } from "@bastani/atomic-ai/compat";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import { isDetachedToolCall } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { joinTurnEndAdmissions, openTurnEndAdmissions } from "./agent-session-persistent-custom-messages.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
@@ -42,7 +41,7 @@ export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
 		// A detached call's placeholder is no result: resumeDetachedTurn finalizes its real result when it arrives.
 		if (isDetachedToolCall(this, toolCall.id)) return undefined;
-		const parentToolCallId = getParentToolCallId();
+		const parentToolCallId = this.extensionRunner.parentToolCallId(toolCall.id);
 		const replacement = await finalizeToolResult(this, { toolCall, args, result, isError, parentToolCallId });
 		if (parentToolCallId) return replacement;
 		if (result.terminate === true) this._terminatingToolCallIds.add(toolCall.id);
@@ -86,7 +85,7 @@ async function checkToolCall(
 			type: "tool_call",
 			toolName: toolCall.name,
 			toolCallId: toolCall.id,
-			parentToolCallId: getParentToolCallId(),
+			parentToolCallId: runner.parentToolCallId(toolCall.id),
 			input: args as Record<string, unknown>,
 		});
 		if (result?.block && result.terminate === true) {
