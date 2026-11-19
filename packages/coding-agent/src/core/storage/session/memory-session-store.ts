@@ -21,10 +21,12 @@ import {
 	readEarlierCompletionIntents,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
+	selectedPagePlan,
 	selectResumeLeaf,
 	sessionResumeFrom,
 	sessionResumePlan,
 	sessionTailFrom,
+	snapshotCutOf,
 	stateSeqsBefore,
 	transcriptBranchSpan,
 } from "./session-resume.js";
@@ -46,10 +48,12 @@ import type {
 	SessionEntryAt,
 	SessionEntryRange,
 	SessionEntrySizes,
+	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
 	SessionSnapshot,
+	SessionSnapshotCut,
 	SessionStore,
 	SessionStoredEntry,
 	SessionSummary,
@@ -58,7 +62,12 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
+import {
+	entrySizeLimit,
+	matchesSessionIdPrefix,
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_ENTRIES,
+} from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
@@ -575,6 +584,46 @@ export class MemorySessionStore implements SessionStore {
 			const record = await this.settledRecord(sessionId);
 			const index = await this.resumeIndex(sessionId, record);
 			if (index) return childCatalogCut(index);
+		}
+	}
+	async readSnapshotCut(
+		sessionId: string,
+		options: { readonly leafSeq?: number } = {},
+	): Promise<SessionSnapshotCut | undefined> {
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (!index) continue;
+			if (options.leafSeq !== undefined && options.leafSeq > index.seq) return undefined;
+			return snapshotCutOf(index, options.leafSeq);
+		}
+	}
+	async readSelectedPage(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options: { readonly limit?: number; readonly backward?: boolean } = {},
+	): Promise<SessionHistoryPage> {
+		const limit = entrySizeLimit(options.limit);
+		const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
+		if (!wanted.length) return { items: [] };
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			if (record.index.epoch !== epoch) throw new SessionConflictError(sessionId, wanted.at(-1)!, record.lastSeq);
+			const held = this.held(record);
+			const plan = selectedPagePlan(
+				sessionId,
+				wanted,
+				held.lastSeq,
+				(seq) => {
+					const [start, end] = this.spanOf(held, seq, seq);
+					return end - start;
+				},
+				options.backward,
+			);
+			if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+			const read = await this.entriesAt(sessionId, record, plan.seqs);
+			if (read !== undefined) return { items: read };
 		}
 	}
 	async readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {

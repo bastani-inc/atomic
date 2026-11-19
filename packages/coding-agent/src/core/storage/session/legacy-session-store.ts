@@ -63,6 +63,7 @@ export class LegacySessionStore implements SessionStore {
 	readonly readChildCatalogCut?: SessionStore["readChildCatalogCut"];
 	readonly readSelectedPage?: SessionStore["readSelectedPage"];
 	readonly readForkWindow?: SessionStore["readForkWindow"];
+	readonly readSnapshotCut?: SessionStore["readSnapshotCut"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -87,9 +88,14 @@ export class LegacySessionStore implements SessionStore {
 				return inner.readChildCatalogCut!(id);
 			};
 		if (inner.readSelectedPage)
-			this.readSelectedPage = async (id, seqs, epoch) => {
+			this.readSelectedPage = async (id, seqs, epoch, options) => {
 				await this.convert(id);
-				return inner.readSelectedPage!(id, seqs, epoch);
+				return inner.readSelectedPage!(id, seqs, epoch, options);
+			};
+		if (inner.readSnapshotCut)
+			this.readSnapshotCut = async (id, options) => {
+				await this.convert(id);
+				return inner.readSnapshotCut!(id, options);
 			};
 		if (inner.readTreeOutline)
 			this.readTreeOutline = async (id, from, to, epoch) => {

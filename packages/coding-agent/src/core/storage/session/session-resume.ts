@@ -18,12 +18,14 @@ import type {
 	SessionHistoryTotals,
 	SessionRecordHeader,
 	SessionResume,
+	SessionSnapshotCut,
 	SessionStateEntry,
 	SessionStore,
 	SessionStoredEntry,
 	SessionTail,
 	SessionUsageTotals,
 } from "./types.js";
+import { SESSION_HISTORY_PAGE_BYTES } from "./types.js";
 import { validateSessionText } from "./validation.js";
 import { yieldTurn } from "./yield-turn.js";
 
@@ -1216,6 +1218,61 @@ export function childCatalogCut(index: SessionResumeIndex) {
 			]),
 		].sort((a, b) => a - b),
 	};
+}
+
+/**
+ * Where the index locates the session's snapshot entries (#5554): its plain snapshot entries and its state entries, among
+ * them every restore, unrestored or degraded snapshot entry, on the branch from `leafSeq` when one is given.
+ */
+export function snapshotCutOf(index: SessionResumeIndex, leafSeq?: number): SessionSnapshotCut {
+	const ranges = leafSeq === undefined ? undefined : branchRanges(index, leafSeq);
+	const positions = (deltas: string): number[] => {
+		const seqs: number[] = [];
+		let at = 0;
+		if (deltas !== "")
+			for (const delta of deltas.split(".")) {
+				at += Number.parseInt(delta, 36);
+				if (ranges === undefined || onBranch(ranges, at)) seqs.push(at);
+			}
+		return seqs;
+	};
+	const plain = positions(index.snapshotRefs);
+	const state = positions(index.state);
+	const seqs: number[] = [];
+	for (let p = 0, s = 0; p < plain.length || s < state.length; ) {
+		if (s === state.length || (p < plain.length && plain[p]! < state[s]!)) seqs.push(plain[p++]!);
+		else seqs.push(state[s++]!);
+	}
+	return { epoch: index.epoch, lastSeq: index.seq, records: index.snapshotRecords, seqs };
+}
+
+/**
+ * Which of `seqs` one `readSelectedPage` reads: the longest prefix (with `backward`, suffix) within
+ * {@link SESSION_HISTORY_PAGE_BYTES}, or its first (last) entry alone, by reference, when that is larger. Rejects with
+ * `SessionConflictError` when `seqs` are not ascending or name an entry past `lastSeq`, as a store finds when it holds
+ * no entry there.
+ */
+export function selectedPagePlan(
+	sessionId: string,
+	seqs: readonly number[],
+	lastSeq: number,
+	bytesOf: (seq: number) => number,
+	backward = false,
+): { readonly seqs: readonly number[] } | { readonly oversized: { readonly seq: number; readonly bytes: number } } {
+	for (const [position, seq] of seqs.entries())
+		if (!Number.isSafeInteger(seq) || seq < 1 || seq > lastSeq || (position > 0 && seq <= seqs[position - 1]!))
+			throw new SessionConflictError(sessionId, seqs.at(-1)!, lastSeq);
+	const selected: number[] = [];
+	let total = 0;
+	for (let step = 0; step < seqs.length; step++) {
+		const seq = seqs[backward ? seqs.length - 1 - step : step]!;
+		const bytes = bytesOf(seq);
+		if (selected.length === 0 && bytes > SESSION_HISTORY_PAGE_BYTES) return { oversized: { seq, bytes } };
+		if (total + bytes > SESSION_HISTORY_PAGE_BYTES) break;
+		total += bytes;
+		selected.push(seq);
+	}
+	return { seqs: backward ? selected.reverse() : selected };
 }
 
 export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq, deferChildren = false) {

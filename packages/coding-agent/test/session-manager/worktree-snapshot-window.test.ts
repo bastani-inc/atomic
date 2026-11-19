@@ -6,6 +6,7 @@ import type { AgentSession } from "../../src/core/agent-session.ts";
 import { exportToJsonl } from "../../src/core/agent-session-export.ts";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import type { SessionEntry } from "../../src/core/session-manager-types.ts";
 import {
 	archivedSnapshotBlobs,
 	currentWorktreeSnapshots,
@@ -81,6 +82,52 @@ const stores: Record<string, () => Promise<SessionStore>> = {
 const A = "/work/repo-a";
 const B = "/work/repo-b";
 const RESTORED = "/host/worktrees/repo-a";
+
+/** `store`, and how many entries its reads have returned since the count was last taken. */
+function counting(store: SessionStore): { readonly store: SessionStore; read(): number } {
+	let entries = 0;
+	const counts: Record<string, (result: never) => number> = {
+		load: (result: { entries: unknown[] }) => result.entries.length,
+		readRange: (result: { entries: unknown[] }) => result.entries.length,
+		readEntryRange: (result: { entries: unknown[] }) => result.entries.length,
+		readSelectedPage: (result: { items: unknown[] }) => result.items.length,
+		readTail: (result: { entries: unknown[]; state: unknown[] }) => result.entries.length + result.state.length,
+		readResume: (result: { branch: unknown[]; state: unknown[] }) => result.branch.length + result.state.length,
+		readResumeAt: (result: { branch: unknown[]; state: unknown[] }) => result.branch.length + result.state.length,
+	};
+	const counted = new Proxy(store, {
+		get(target, key) {
+			const value = Reflect.get(target, key, target);
+			if (typeof value !== "function") return value;
+			const count = typeof key === "string" ? counts[key] : undefined;
+			if (count === undefined) return value.bind(target);
+			return async (...args: unknown[]) => {
+				const result = await value.apply(target, args);
+				entries += count(result as never);
+				return result;
+			};
+		},
+	});
+	return {
+		store: counted,
+		read: () => {
+			const read = entries;
+			entries = 0;
+			return read;
+		},
+	};
+}
+
+async function snapshotEntries(
+	pages: AsyncIterable<readonly { readonly entry: SessionEntry }[]>,
+	direction: "forward" | "backward" = "forward",
+): Promise<SessionEntry[]> {
+	const entries: SessionEntry[] = [];
+	for await (const page of pages)
+		if (direction === "forward") entries.push(...page.map(({ entry }) => entry));
+		else entries.unshift(...page.map(({ entry }) => entry));
+	return entries;
+}
 
 /** A snapshot record whose patch the store holds, as a capture leaves it. */
 async function record(store: SessionStore, id: string, root: string, index: number): Promise<WorktreeSnapshot> {
@@ -235,6 +282,95 @@ describe.each(Object.keys(stores))("worktree snapshots of a resumed window on th
 		expect(branch).toEqual(full.getBranch().filter((entry) => entry.type === "worktree_snapshot"));
 	});
 
+	it("reads only the archived snapshot entries a reading needs, however long the history", async () => {
+		const { store, read } = counting(await stores[kind]!());
+		const { id } = await snapshotHistory(store, 60);
+		const full = await SessionManager.open(store, id, undefined, { history: "full" });
+		const window = await SessionManager.open(store, id);
+		const stored = full.getEntries().filter((entry) => entry.type === "worktree_snapshot");
+		expect(full.getEntries().length).toBeGreaterThan(stored.length + 60);
+		read();
+
+		const all = full.getWorktreeSnapshotRecords();
+		expect(await window.loadWorktreeSnapshotRecords(["a-1", "a-2", "never-recorded"])).toEqual(
+			new Map(["a-1", "a-2"].map((id) => [id, all.get(id)])),
+		);
+		// The entries carrying the two records, found by their ids.
+		expect(read()).toBeLessThanOrEqual(2);
+
+		const branch = await snapshotEntries(window.readWorktreeSnapshotPages({ branch: true }));
+		expect(branch).toEqual(full.getBranch().filter((entry) => entry.type === "worktree_snapshot"));
+		expect(read()).toBeLessThanOrEqual(stored.length);
+		const backward = await snapshotEntries(window.readWorktreeSnapshotPages({ direction: "backward" }), "backward");
+		expect(backward).toEqual(stored);
+		expect(read()).toBeLessThanOrEqual(stored.length);
+	});
+
+	it("reads archived snapshots as the session stood when the manager read it, though later entries record them again", async () => {
+		const store = await stores[kind]!();
+		const { id } = await snapshotHistory(store, 30);
+		const window = await SessionManager.open(store, id);
+		const before = await SessionManager.open(store, id, undefined, { history: "full" });
+		const writer = await SessionManager.open(store, id);
+		await writer.appendWorktreeSnapshot(A, "a-1", await record(store, "a-1", A, 77));
+		await writer.appendWorktreeSnapshot(A, "a-40", await record(store, "a-40", A, 40));
+		const after = await SessionManager.open(store, id, undefined, { history: "full" });
+		expect(after.getWorktreeSnapshotRecords().get("a-1")).not.toEqual(before.getWorktreeSnapshotRecords().get("a-1"));
+
+		const records = before.getWorktreeSnapshotRecords();
+		expect(await window.loadWorktreeSnapshotRecords(["a-1", "a-2", "a-40"])).toEqual(
+			new Map(["a-1", "a-2"].map((id) => [id, records.get(id)])),
+		);
+		const stored = before.getEntries().filter((entry) => entry.type === "worktree_snapshot");
+		expect(await snapshotEntries(window.readWorktreeSnapshotPages())).toEqual(stored);
+		expect(await snapshotEntries(window.readWorktreeSnapshotPages({ branch: true }))).toEqual(
+			before.getBranch().filter((entry) => entry.type === "worktree_snapshot"),
+		);
+		const reopened = await SessionManager.open(store, id);
+		expect(await reopened.loadWorktreeSnapshotRecords(["a-1", "a-40"])).toEqual(
+			new Map(["a-1", "a-40"].map((id) => [id, after.getWorktreeSnapshotRecords().get(id)])),
+		);
+	});
+
+	it("reads the snapshot entries and records of an abandoned branch with the whole history, and not with the active branch", async () => {
+		const store = await stores[kind]!();
+		const { id } = await snapshotHistory(store, 30);
+		const writer = await SessionManager.open(store, id);
+		const fork = writer.getLeafId()!;
+		const moved = "/host/worktrees/repo-a-2";
+		await writer.appendWorktreeSnapshot(moved, "a-3", undefined, restore(A, moved, "a-3"));
+		await writer.appendWorktreeSnapshot(
+			moved,
+			"x-1",
+			await record(store, "x-1", moved, 51),
+			undefined,
+			[],
+			undefined,
+			3,
+			"a-3",
+		);
+		await writer.appendWorktreeSnapshot(A, "a-5", undefined);
+		await writer.appendMessage({ role: "user", content: "abandoned", timestamp: 3 });
+		await writer.branch(fork);
+		await writer.appendMessage({ role: "user", content: "active", timestamp: 4 });
+		await writer.appendWorktreeSnapshot(B, "b-1", undefined);
+		const full = await SessionManager.open(store, id, undefined, { history: "full" });
+		const window = await SessionManager.open(store, id);
+		expect(
+			window.getEntries().some((entry) => entry.type === "worktree_snapshot" && entry.snapshotId === "x-1"),
+		).toBe(false);
+
+		const stored = full.getEntries().filter((entry) => entry.type === "worktree_snapshot");
+		expect(stored.some((entry) => entry.restore?.to === moved)).toBe(true);
+		expect(await snapshotEntries(window.readWorktreeSnapshotPages())).toEqual(stored);
+		expect(await snapshotEntries(window.readWorktreeSnapshotPages({ branch: true }))).toEqual(
+			full.getBranch().filter((entry) => entry.type === "worktree_snapshot"),
+		);
+		expect(await window.loadWorktreeSnapshotRecords(["x-1", "a-3"])).toEqual(
+			new Map(["x-1", "a-3"].map((id) => [id, full.getWorktreeSnapshotRecords().get(id)])),
+		);
+	});
+
 	it("states what an export file carries as a manager holding the whole history does", async () => {
 		const store = await stores[kind]!();
 		const { id } = await snapshotHistory(store, 30);
@@ -298,7 +434,13 @@ it("an unreachable store fails an archived snapshot read with the error naming i
 	const unavailable = () => {
 		throw new StorageUnavailableError(store.descriptor, new Error("connection refused"));
 	};
-	Object.assign(store, { readRange: unavailable, readEntrySizes: unavailable, load: unavailable });
+	Object.assign(store, {
+		readRange: unavailable,
+		readEntrySizes: unavailable,
+		load: unavailable,
+		readSnapshotCut: unavailable,
+		readSelectedPage: unavailable,
+	});
 
 	expect(window.getWorktreeSnapshotRecords().has("a-1")).toBe(false);
 	await expect(window.loadWorktreeSnapshotRecords(["a-1"])).rejects.toThrow(
