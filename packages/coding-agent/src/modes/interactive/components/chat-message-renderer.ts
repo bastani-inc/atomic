@@ -105,7 +105,7 @@ export interface ChatMessageRenderOptions {
 	) => Component;
 	createCustomMessageComponent?: (message: CustomMessage<unknown>, context?: ChatRendererContext) => Component;
 }
-type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
+export type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 export interface ChatEntryGrouping {
 	readonly tracker?: ToolGroupTracker;
 	readonly groupBash?: boolean;
@@ -181,6 +181,77 @@ function inferInterruptedToolActivity(
 	const names = [...new Set(interrupted.map((entry) => entry.toolName).filter(Boolean))];
 	return names.length > 0 ? names : undefined;
 }
+/** Tool cards drawn from a saved result whose call was not among the messages they were drawn with. */
+const resultsWithoutCall = new WeakSet<object>();
+
+/** Whether `entry` is a tool card drawn from a result alone: its call is on an earlier page, if anywhere. */
+export function isResultWithoutCall(entry: object): boolean {
+	return resultsWithoutCall.has(entry);
+}
+
+function isTurnStart(
+	entry: ChatMessageEntry | { role: string },
+): entry is Extract<ChatMessageEntry, { kind: "assistant" | "user" }> {
+	return isChatMessageEntry(entry) && (entry.kind === "assistant" || entry.kind === "user");
+}
+
+/**
+ * The calls of the last assistant message in `entries` that have no result there. When `entries` are a page of saved
+ * history with a later page, their results are saved after the page's end: they are not still running.
+ */
+export function callsAwaitingLaterResults(entries: readonly (ChatMessageEntry | { role: string })[]): ToolChatEntry[] {
+	const calls: ToolChatEntry[] = [];
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index]!;
+		if (isTurnStart(entry)) break;
+		if (
+			isChatMessageEntry(entry) &&
+			entry.kind === "tool" &&
+			entry.isPartial !== false &&
+			entry.result === undefined &&
+			!resultsWithoutCall.has(entry)
+		)
+			calls.unshift(entry);
+	}
+	return calls;
+}
+
+/**
+ * Whether `entry`, drawn after a page that ends with calls awaiting results, shows that their results were never
+ * saved: a call's result is saved before the next prompt and before the next reply. The entry `first` after the page
+ * may be the rest of the reply the page cut, so only a prompt shows it there.
+ */
+export function endsAwaitedResults(entry: ChatMessageEntry | { role: string }, first: boolean): boolean {
+	return isTurnStart(entry) && !(first && entry.kind === "assistant");
+}
+
+/**
+ * Draws `calls`, which `entry` showed never got results, as a whole transcript draws them: still pending, or failed
+ * with the error of the reply that ended the run.
+ */
+export function settleUnansweredCalls(
+	entry: ChatMessageEntry | { role: string },
+	calls: readonly ToolChatEntry[],
+): void {
+	const message = isChatMessageEntry(entry) && entry.kind === "assistant" ? entry.message : undefined;
+	if (message?.stopReason !== "aborted" && message?.stopReason !== "error") return;
+	const text =
+		message.stopReason === "aborted"
+			? message.errorMessage || "Operation aborted"
+			: message.errorMessage || "Unknown error";
+	for (const call of calls) {
+		call.result = {
+			role: "toolResult",
+			toolCallId: call.toolCallId,
+			toolName: call.toolName,
+			content: [{ type: "text", text }],
+			isError: true,
+			timestamp: message.timestamp,
+		};
+		call.isPartial = false;
+	}
+}
+
 function buildChatEntries(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
@@ -244,8 +315,10 @@ function buildChatEntries(
 					toolEntry.result = message;
 					toolEntry.isPartial = false;
 					pendingTools.delete(message.toolCallId);
+					// A saved card is known by its result: the same card whether a page cut fell between call and result.
+					onSourceRow?.(toolEntry, message, 0);
 				} else {
-					entries.push({
+					const card: ToolChatEntry = {
 						role: "tool",
 						kind: "tool",
 						toolName: message.toolName,
@@ -254,7 +327,9 @@ function buildChatEntries(
 						result: message,
 						isPartial: false,
 						argsComplete: true,
-					});
+					};
+					resultsWithoutCall.add(card);
+					entries.push(card);
 				}
 				break;
 			}
@@ -450,6 +525,21 @@ export class LiveChatEntriesController {
 		this.entries.splice(0, this.entries.length, ...retained);
 		this.streamingAssistantIndex =
 			streaming && retained.includes(streaming) ? retained.indexOf(streaming) : undefined;
+		this.regroup();
+	}
+	/** Put saved entries back after `after`, as `dropSavedEntries` leaves the entries around them. */
+	restoreSavedEntries(after: LiveChatEntry, restored: readonly LiveChatEntry[]): void {
+		const at = this.entries.indexOf(after);
+		if (at < 0 || restored.length === 0) return;
+		const streaming =
+			this.streamingAssistantIndex === undefined ? undefined : this.entries[this.streamingAssistantIndex];
+		this.entries.splice(at + 1, 0, ...restored);
+		if (streaming !== undefined) this.streamingAssistantIndex = this.entries.indexOf(streaming);
+		this.regroup();
+	}
+	/** Groups every entry again; a call that no longer groups is drawn on its own, not with its old role. */
+	private regroup(): void {
+		for (const entry of this.entries) if (this.isToolEntry(entry)) entry.groupRole = undefined;
 		this.tracker.reset();
 		this.carriedToolBreak = groupChatEntries(this.entries, this.tracker);
 		this.reindexPendingTools();

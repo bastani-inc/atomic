@@ -53,6 +53,7 @@ const flush = async () => {
 const CTRL_HOME = "\x1b[1;5H";
 const CTRL_END = "\x1b[1;5F";
 const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
 /** The editor's cursor marker; it is not printable text. */
 const APPLICATION_COMMAND = /\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
@@ -440,6 +441,214 @@ test("a saved task chat evicts pages outside the screen and can scroll back to t
 		await session.getSessionStore().close();
 	}
 });
+
+/** A saved session of `prompts` prompts with one reply of `calls` inserted after prompt `at`: its results follow it. */
+async function sessionWithCalls(
+	prompts: number,
+	at: number,
+	calls: readonly { id: string; name: string; args: Record<string, string>; result?: string }[],
+): Promise<SessionManager> {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < prompts; i++) {
+		await session.appendMessage({ role: "user", content: `P-${String(i).padStart(3, "0")}`, timestamp: i });
+		if (i !== at) continue;
+		await session.appendMessage(
+			assistant(
+				[
+					{ type: "text", text: "Working on it." },
+					...calls.map((call) => ({
+						type: "toolCall" as const,
+						id: call.id,
+						name: call.name,
+						arguments: call.args,
+					})),
+				],
+				"toolUse",
+			),
+		);
+		for (const call of calls) {
+			if (call.result === undefined) continue;
+			await session.appendMessage({
+				role: "toolResult",
+				toolCallId: call.id,
+				toolName: call.name,
+				content: [{ type: "text", text: call.result }],
+				isError: false,
+				timestamp: i,
+			});
+		}
+	}
+	return session;
+}
+
+async function openSavedTranscript(session: SessionManager) {
+	let chat: ChatSessionHost | undefined;
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole transcript loaded");
+			},
+		},
+		{ environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) } },
+	);
+	assert.ok(chat);
+	const shown = chat;
+	/** Every row the chat holds now, on screen or not. */
+	const held = () => {
+		host.frame();
+		return shown
+			.renderBodyRows(80, 0, shown.bodyRowCount(80))
+			.map((row) => stripVTControlCharacters(row).trimEnd())
+			.join("\n");
+	};
+	return { host, held };
+}
+
+const lines = (label: string) => Array.from({ length: 30 }, (_, i) => `${label} line ${i + 1}`).join("\n");
+
+test("a saved task chat draws calls whose results start the next page once each, finished and with their arguments (#5593)", async () => {
+	// 70 entries: the latest page holds the last 64, so the reply's results start it and its calls end the page before.
+	const session = await sessionWithCalls(67, 4, [
+		{ id: "call-a", name: "read", args: { path: "alpha.txt" }, result: lines("alpha") },
+		{ id: "call-b", name: "write", args: { path: "beta.txt", content: "new beta" }, result: "wrote" },
+	]);
+	const { host, held } = await openSavedTranscript(session);
+	try {
+		assert.match(held(), /P-066/);
+		assert.doesNotMatch(held(), /P-000/, "the call's page is not read before the reader nears it");
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		const rows = held();
+		assert.match(rows, /P-000/);
+		assert.equal(rows.match(/Read\(alpha\.txt\)/g)?.length, 1, rows);
+		assert.equal(rows.match(/Write\(beta\.txt\)/g)?.length, 1, rows);
+		assert.doesNotMatch(rows, /Read\(\)|Write\(\)/, "a result's card shows its call's arguments");
+		assert.doesNotMatch(rows, /∀/, "a call whose result is saved is not drawn as still running");
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test("a call early in a long saved reply and its result after the reply's last block are one finished card (#5593)", async () => {
+	// Pages also cut inside one reply of many blocks: here the call is in the earlier part, the result after the later.
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "P-000", timestamp: 0 });
+	await session.appendMessage(
+		assistant(
+			[
+				{ type: "toolCall", id: "call-a", name: "read", arguments: { path: "alpha.txt" } },
+				...Array.from({ length: 120 }, (_, i) => ({ type: "text" as const, text: `part-${i}` })),
+			],
+			"toolUse",
+		),
+	);
+	await session.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-a",
+		toolName: "read",
+		content: [{ type: "text", text: lines("alpha") }],
+		isError: false,
+		timestamp: 2,
+	});
+	await session.appendMessage({ role: "user", content: "P-001", timestamp: 3 });
+	const { host, held } = await openSavedTranscript(session);
+	try {
+		assert.doesNotMatch(held(), /part-0\b/, "the reply's earlier part is on an earlier page");
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		const rows = held();
+		assert.match(rows, /part-0\b/);
+		assert.equal(rows.match(/Read\(alpha\.txt\)/g)?.length, 1, rows);
+		assert.doesNotMatch(rows, /Read\(\)/, "the result's card shows its call's arguments");
+		assert.doesNotMatch(rows, /∀/, "a call whose result is saved is not drawn as still running");
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([
+	["at the end of the saved history", 69],
+	["before the next prompt", 5],
+])("a saved task chat still shows a call that never got a result %s (#5593)", async (_where, at) => {
+	const session = await sessionWithCalls(70, at, [{ id: "call-g", name: "read", args: { path: "gamma.txt" } }]);
+	const { host, held } = await openSavedTranscript(session);
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		assert.match(held(), /P-000/);
+		assert.equal(held().match(/Read\(gamma\.txt\)/g)?.length, 1, held());
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([
+	// The latest page starts at the result (entry 238); pages read forward from the start hold call and result together.
+	["whose call ends the page before", 235],
+	["on one page", 240],
+])(
+	"a click's expansion of a saved task card %s survives its page being released and read again (#5593)",
+	async (_where, at) => {
+		const session = await sessionWithCalls(299, at, [
+			{ id: "call-a", name: "read", args: { path: "alpha.txt" }, result: lines("alpha") },
+		]);
+		const { host, held } = await openSavedTranscript(session);
+		const width = 80;
+		const height = 24;
+		const screen = () => host.frame(width, height);
+		const scrollTo = async (pattern: RegExp, key: string) => {
+			for (let i = 0; i < 80; i++) {
+				if (screen().some((row) => pattern.test(row))) return;
+				host.inspector.handleInput(key);
+				await flush();
+			}
+			throw new Error(`${pattern} never scrolled into view:\n${screen().join("\n")}`);
+		};
+		try {
+			await scrollTo(/Read 30 lines/, PAGE_UP);
+			const row = screen().findIndex((line) => /Read 30 lines/.test(line));
+			const result = host.inspector.handleMouse({
+				type: "click",
+				button: "left",
+				x: screen()[row]!.indexOf("Read"),
+				y: row,
+				screenX: 0,
+				screenY: row,
+				width,
+				height,
+				shift: false,
+				alt: false,
+				ctrl: false,
+				clickCount: 1,
+			});
+			result?.whenSingleClick?.();
+			assert.match(held(), /alpha line 30/, "the click expands the card");
+
+			host.inspector.handleInput(CTRL_HOME);
+			for (let i = 0; i < 30 && !host.text().includes("P-000"); i++) await flush();
+			assert.doesNotMatch(held(), /alpha line/, "the card's page is released at the start");
+			for (let i = 0; i < 80 && !/Read\(alpha\.txt\)/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			assert.match(held(), /Read\(alpha\.txt\)/);
+			assert.match(held(), /alpha line 30/, "the card read again with its call keeps the click's expansion");
+
+			host.inspector.handleInput(CTRL_END);
+			for (let i = 0; i < 30 && !host.text().includes("P-298"); i++) await flush();
+			assert.match(held(), /alpha line 30/, "the latest page read again keeps the click's expansion");
+		} finally {
+			await host.dispose();
+			await session.getSessionStore().close();
+		}
+	},
+);
 
 test.each(["local", "worker"] as const)(
 	"paging a long failed reply in the %s transcript shows its error only after the last block (#5651)",

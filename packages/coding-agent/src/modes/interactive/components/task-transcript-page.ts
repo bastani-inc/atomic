@@ -856,7 +856,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	private attachSavedPage(page: TaskTranscriptView, edge: "latest" | "older" | "newer"): void {
 		const shown = {
-			...this.chat.showSavedPage(page.messages, edge),
+			...this.chat.showSavedPage(page.messages, edge, edge === "older" || page.newerCursor !== undefined),
 			older: page.nextCursor,
 			newer: page.newerCursor,
 		};
