@@ -113,6 +113,20 @@ export interface SessionBranchSpan {
 	readonly newer: boolean;
 }
 
+/** Body-free navigation record. The original entry and any long label stay at their sequence in the store. */
+export interface SessionTreeOutlineEntry {
+	readonly seq: number;
+	readonly id: string;
+	readonly parentId: string | null;
+	readonly timestamp: string;
+	readonly type: SessionEntry["type"];
+	readonly role?: string;
+	readonly hideAssistant?: boolean;
+	readonly leafMove?: boolean;
+	readonly labelTarget?: string;
+	readonly label?: string;
+}
+
 export interface SessionEntrySizes {
 	readonly epoch: string;
 	readonly lastSeq: number;
@@ -362,6 +376,13 @@ export interface SessionStore {
 	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
 
 	readRange?(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange>;
+	/** Project structural metadata for tree navigation; never return a message body or tool arguments. */
+	readTreeOutline?(
+		sessionId: string,
+		fromSeq: number,
+		toSeq: number,
+		epoch?: string,
+	): Promise<readonly (SessionTreeOutlineEntry | { readonly seq: number; readonly streamed: true })[]>;
 	/** Locate a contiguous range on the requested branch without reading neighboring conversation bodies. */
 	readBranchSpan?(sessionId: string, cut: SessionBranchPageCut): Promise<SessionBranchSpan | undefined>;
 	/** Metadata only; a historical page is sized before any entry is decoded. */

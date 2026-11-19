@@ -10,14 +10,20 @@ export async function captureHtmlHistory(sm: SessionManager) {
 	const store = sm.getSessionStore();
 	const id = sm.getSessionId();
 	const leafId = sm.getLeafId();
-	if (!store.readEntrySizes)
-		throw new TypeError(`Session store ${store.descriptor.adapter} must implement readEntrySizes for HTML export`);
-	const cut = await store.readEntrySizes(id, 1, 0);
-	const header = await store.readHeader(id);
+	const cut =
+		store.readEntrySizes && store.readRange
+			? await store.readEntrySizes(id, 1, 0)
+			: await (await import("../storage/session/snapshot-history.js")).snapshotHead(store, id);
+	const header =
+		"header" in cut
+			? (cut.header as import("../storage/session/types.js").SessionRecordHeader)
+			: await store.readHeader(id);
 	if (!header) throw new SessionNotFoundError(id);
-	const confirmed = await store.readEntrySizes(id, 1, 0);
-	if (cut.epoch !== confirmed.epoch || confirmed.lastSeq < cut.lastSeq)
-		throw new SessionConflictError(id, cut.lastSeq, confirmed.lastSeq);
+	if (!("header" in cut) && store.readEntrySizes) {
+		const confirmed = await store.readEntrySizes(id, 1, 0);
+		if (cut.epoch !== confirmed.epoch || confirmed.lastSeq < cut.lastSeq)
+			throw new SessionConflictError(id, cut.lastSeq, confirmed.lastSeq);
+	}
 	return {
 		header: { type: "session" as const, ...header },
 		leafId,
