@@ -140,6 +140,8 @@ async function windowsReading(directory: string, binding: typeof native, fallbac
 		const probe = probePath(directory);
 		let reading: native.WindowsClockReading | null | undefined;
 		let offset: number;
+		let wallOffset: number;
+		const before = Date.now();
 		try {
 			// Runtime fs.open namespaces Windows paths before passing them to libuv (e.g. a literal trailing dot).
 			reading = await binding.readWindowsClockProbe(toNamespacedPath(probe));
@@ -147,6 +149,9 @@ async function windowsReading(directory: string, binding: typeof native, fallbac
 			if (!reading) return ordinaryReading(directory, fallback, attempt === 0);
 			// Both ends use the worker's monotonic clock, so a pause before native entry never ages the file.
 			offset = reading.mtimeMs - reading.sampledAtMs;
+			// A relative offset keeps the ordinary wall-clock midpoint, measured before cleanup: a civil clock
+			// step during cleanup must not move the lock timestamp it converts.
+			wallOffset = reading.mtimeMs - (before + Date.now()) / 2;
 		} catch (error) {
 			if ((error as Error).message === "EEXIST") continue;
 			break;
@@ -154,8 +159,7 @@ async function windowsReading(directory: string, binding: typeof native, fallbac
 			if (reading?.pending) await reading.pending.close().catch(() => {});
 		}
 		await removeLeftoverProbes(directory, offset, clock);
-		const now = clock() + offset;
-		return fallback === undefined ? now - Date.now() : now;
+		return fallback === undefined ? wallOffset : clock() + offset;
 	}
 	return fallback ?? 0;
 }

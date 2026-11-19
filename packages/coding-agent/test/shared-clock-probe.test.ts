@@ -132,6 +132,18 @@ beforeAll(() => {
 										if (io.nativeTick) reading.sampledAtMs = io.nativeTick();
 										io.stamp = reading.mtimeMs;
 										io.onStat?.(path);
+										const pending = reading.pending;
+										// Closing the native probe deletes it, so it is the native path's unlink.
+										if (pending)
+											return {
+												...reading,
+												pending: {
+													close: () => {
+														io.beforeUnlink?.();
+														return pending.close();
+													},
+												},
+											};
 									}
 									return reading;
 								}
@@ -438,6 +450,50 @@ test("a clock step during a relative reading does not make a fresh lock thirty s
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
+
+test.each([180_000, -45_000])(
+	"a %i ms civil clock step during a renewal's probe cleanup does not move the renewed lock's timestamp (#5050)",
+	async (step) => {
+		const directory = mkdtempSync(join(tmpdir(), "clock-renew-step-"));
+		const slot = join(directory, "slot");
+		const lock = `${slot}.lock`;
+		const wall = Date.now.bind(Date);
+		let shift = 0;
+		let phase: "acquiring" | "watching" | "verified" | "stepped" = "acquiring";
+		const heartbeat = Promise.withResolvers<number>();
+		const timeout = setTimeout(() => heartbeat.reject(new Error("owner did not renew")), 10_000);
+		vi.spyOn(Date, "now").mockImplementation(() => wall() + shift);
+		let release: (() => Promise<void>) | undefined;
+		try {
+			release = await lockShared(slot, {
+				realpath: false,
+				stale: 30_000,
+				update: 1_000,
+				onCompromised: heartbeat.reject,
+			});
+			phase = "watching";
+			io.onStat = (path) => {
+				if (path !== lock) return;
+				// The owner verifies its previous stamp, then reads back the stamp it renewed.
+				if (phase === "watching") phase = "verified";
+				else if (phase === "stepped") heartbeat.resolve(wall() - statSync(lock).mtimeMs);
+			};
+			io.beforeUnlink = () => {
+				// The renewal's probe was sampled; only its cleanup remains when the civil clock steps.
+				if (phase !== "verified") return;
+				phase = "stepped";
+				shift = step;
+			};
+			const age = await heartbeat.promise;
+			assert.equal(shift, step);
+			assert.ok(Math.abs(age) < 10_000, `the renewed lock is ${age} ms old by the filesystem's clock`);
+		} finally {
+			clearTimeout(timeout);
+			await release?.();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
 
 test("a clock reading preserves a recent file on a probe name collision and still measures the directory (#5634)", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "clock-collision-"));
