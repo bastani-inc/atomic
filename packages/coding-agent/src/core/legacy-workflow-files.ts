@@ -32,7 +32,8 @@ export function findLegacyWorkflowFiles(
 	const globalSkillsDir = join(agentDir, "skills");
 	for (const resources of sources) {
 		for (const { path, enabled, metadata } of resources) {
-			if (!enabled || !/\.(?:ts|js|mjs|cjs)$/.test(path) || path.endsWith(".d.ts")) continue;
+			const fileName = process.platform === "win32" ? path.toLowerCase() : path;
+			if (!enabled || !/\.(?:ts|js|mjs|cjs)$/.test(fileName) || fileName.endsWith(".d.ts")) continue;
 			const scope = metadata.scope === "user" ? "global" : "project";
 			if (scope === "project" && !projectTrusted) continue;
 			if (metadata.borrowedProjectLocal && !trustedBorrowedSources?.has(metadata.source)) continue;
