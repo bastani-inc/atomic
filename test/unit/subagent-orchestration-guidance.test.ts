@@ -7,6 +7,9 @@ const guidance = DEFAULT_PROMPT_GUIDANCE.join("\n");
 test("the parent delegates bounded specialist work rather than every task", () => {
 	assert.match(guidance, /single subagent/);
 	assert.match(guidance, /parallel tasks for independent work/);
+	assert.match(guidance, /Honor requests to work inline/);
+	assert.match(guidance, /testing, review and evidence inline/);
+	assert.match(guidance, /Do not claim completed work was undone/);
 	assert.match(guidance, /debugger subagent for actual failures/);
 	assert.doesNotMatch(
 		guidance,
