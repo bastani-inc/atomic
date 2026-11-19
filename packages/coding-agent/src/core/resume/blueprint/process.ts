@@ -79,6 +79,7 @@ export function copiesOutputToLog(platform: NodeJS.Platform): boolean {
 const SPAWN_TRIES = 10;
 const SPAWN_RETRY_MS = 50;
 const SPAWN_RETRY_WINDOW_MS = 500;
+const MAX_TIMER_MS = 2_147_483_647;
 
 /**
  * The refusals that pass once another program lets go of the file, as an antivirus scan or the installer that just wrote
@@ -90,8 +91,7 @@ function passingRefusals(platform: NodeJS.Platform): readonly string[] {
 }
 
 /** Measures whole milliseconds, counting suspend without letting a backward wall-clock change extend a deadline. */
-export function startElapsedMs(): () => number {
-	const wallStart = Date.now();
+export function startElapsedMs(wallStart = Date.now()): () => number {
 	const monoStart = performance.now();
 	return () => {
 		// Keep the monotonic interval inside the wall interval, even if descheduled between reads.
@@ -106,7 +106,7 @@ function triesStartAgain(error: unknown, tries: number, elapsedMs: number, timeo
 		passingRefusals(process.platform).includes((error as NodeJS.ErrnoException).code ?? "") &&
 		tries < SPAWN_TRIES &&
 		elapsedMs + SPAWN_RETRY_MS <= SPAWN_RETRY_WINDOW_MS &&
-		elapsedMs + SPAWN_RETRY_MS < timeoutMs
+		elapsedMs + SPAWN_RETRY_MS < Math.ceil(timeoutMs)
 	);
 }
 
@@ -156,7 +156,7 @@ export async function runLoggedProcess(
 		if (refusal !== undefined) {
 			waitedMs = elapsedMs();
 			// A try that wakes late, as when the event loop was busy, starts nothing once the step's time is up.
-			if (waitedMs >= options.timeoutMs) {
+			if (waitedMs >= Math.ceil(options.timeoutMs)) {
 				return {
 					exitStatus: null,
 					signal: null,
@@ -222,12 +222,14 @@ export async function runLoggedProcess(
 			}
 			killChildProcessTree(child, exited);
 		};
+		// A positive fraction still admits a retry, but timers take whole milliseconds. Node turns an overflow into 1 ms.
+		const delayMs = Math.floor(options.timeoutMs - waitedMs);
 		const timer = setTimeout(
 			() => {
 				timedOut = true;
 				stop();
 			},
-			Math.max(0, options.timeoutMs - waitedMs),
+			delayMs >= 1 ? Math.min(delayMs, MAX_TIMER_MS) : 1,
 		);
 		const onAbort = () => stop();
 		if (copiesOutput) {

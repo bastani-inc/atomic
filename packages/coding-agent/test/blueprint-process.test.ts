@@ -208,6 +208,15 @@ describe("running a logged process (#4588)", () => {
 		assert.equal(exit.exitStatus === 0, false);
 	});
 
+	test("a running budget beyond the largest timer delay does not kill a short command after 1 ms (#5707)", async () => {
+		const { exit, output } = await execute(nodeProcess('setTimeout(() => console.log("finished"), 30)'), {
+			timeoutMs: 2_147_483_648.5,
+		});
+		assert.equal(exit.timedOut, false);
+		assert.equal(exit.exitStatus, 0);
+		assert.equal(output, "finished\n");
+	});
+
 	test("a command that cannot be started resolves with the spawn error instead of rejecting (#4588)", async () => {
 		const { exit } = await execute(nodeProcess("", { command: path("missing-command") }));
 		assert.equal((exit.spawnError as NodeJS.ErrnoException).code, "ENOENT");

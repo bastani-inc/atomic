@@ -324,6 +324,7 @@ const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 interface RunContext {
 	readonly options: RunActionOptions;
 	readonly elapsedMs: () => number;
+	readonly remainingMs: () => number;
 	/** What every process of the run sees; grows as actions write GITHUB_ENV and GITHUB_PATH. */
 	readonly env: Record<string, string>;
 	readonly runnerTemp: string;
@@ -800,7 +801,7 @@ async function runProcess(
 	request: ProcessRequest,
 ): Promise<{ exit: ProcessExit; outputs: Record<string, string>; state: Record<string, string> }> {
 	context.options.signal?.throwIfAborted();
-	const remaining = context.options.timeoutMs - context.elapsedMs();
+	const remaining = context.remainingMs();
 	if (remaining <= 0) return { exit: timedOut(context), outputs: {}, state: {} };
 	const files = await createFileCommands(context.runnerTemp);
 	try {
@@ -1056,7 +1057,10 @@ async function executeAction(context: RunContext, request: ActionRequest): Promi
 }
 
 async function createContext(options: RunActionOptions): Promise<RunContext> {
-	const elapsedMs = startElapsedMs();
+	const wallStart = Date.now();
+	const elapsedMs = startElapsedMs(wallStart);
+	// Add the budget at epoch precision before comparing it with the current whole millisecond.
+	const deadline = wallStart + options.timeoutMs;
 	const runnerTemp = join(options.cacheDir, "_runner", "temp");
 	const toolCache = join(options.cacheDir, "_runner", "tool");
 	await mkdir(runnerTemp, { recursive: true });
@@ -1064,6 +1068,7 @@ async function createContext(options: RunActionOptions): Promise<RunContext> {
 	return {
 		options,
 		elapsedMs,
+		remainingMs: () => deadline - (wallStart + elapsedMs()),
 		runnerTemp,
 		toolCache,
 		fetchAction: options.fetchAction ?? fetchFromGitHub,
