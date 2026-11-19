@@ -82,6 +82,7 @@ import {
 	type StorageFailureCause,
 	StorageRollbackError,
 } from "./storage/errors.js";
+import { type ChatRecordOwner, chatEpoch, type SessionChatRecords } from "./storage/session/chat-records.js";
 import {
 	SessionConflictError,
 	SessionFormatVersionError,
@@ -195,6 +196,7 @@ export class SessionManager {
 
 	private entrySeqs = new Map<string, number>();
 	private historyEpoch: string | undefined;
+	private chatEpoch: string | undefined;
 	private lastEntryId: string | null = null;
 	private compactionSeq = 0;
 	private recoveryState: SessionRecoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
@@ -298,6 +300,7 @@ export class SessionManager {
 		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
+		this.chatEpoch = chatEpoch(header);
 		this.compactionSeq = 0;
 		this.recoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
 		this.omittedTotals = partial?.omitted;
@@ -390,6 +393,18 @@ export class SessionManager {
 			this.leafId = parent;
 		}
 		return true;
+	}
+
+	/** @internal The display reader's authority. A missing generation or unsupported adapter fails closed. */
+	chatRecordScope(): { store: SessionChatRecords; owner: ChatRecordOwner } | undefined {
+		const epoch = this.historyEpoch ?? this.chatEpoch;
+		if (!epoch || this.deletedFromStore || isProxy(this.store)) return undefined;
+		try {
+			const store = this.store.chatRecords;
+			return store ? { store, owner: { id: this.sessionId, epoch, file: this.sessionFile } } : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	getEntrySeq(id: string): number | undefined {
