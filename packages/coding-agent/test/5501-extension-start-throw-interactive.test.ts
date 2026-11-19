@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -195,6 +196,64 @@ test("a failed SDK startup releases resources owned by the session's dispose ove
 	await assert.rejects(session.bindExtensions({}), { name: "ExtensionStartupError", message: /failed to start/ });
 	await assert.rejects(log.write("after rollback"), { code: "EBADF" });
 });
+
+test.each(["bindExtensions", "run"] as const)(
+	"%s rejects with SessionClosed when disposal revokes the SDK session's runner before discovery (#5697)",
+	async (entry) => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-discovery-"));
+		cleanup.push(async () => rmSync(cwd, { recursive: true, force: true }));
+		const entered = Promise.withResolvers<void>();
+		let signal: AbortSignal | undefined;
+		const services = await createAgentSessionServices({
+			cwd,
+			agentDir: cwd,
+			resourceLoaderOptions: {
+				builtinPackagePaths: [],
+				extensionFactories: [
+					(pi) => {
+						pi.on("session_start", async (_event, ctx) => {
+							signal = ctx.sessionSignal;
+							entered.resolve();
+							await once(signal, "abort");
+						});
+						pi.on("resources_discover", () => ({}));
+					},
+				],
+			},
+		});
+		class GuardedSession extends AgentSession {
+			override get extensionRunner() {
+				signal?.throwIfAborted();
+				return super.extensionRunner;
+			}
+		}
+		const session = new GuardedSession({
+			...services,
+			agent: new Agent({ streamFn: streamSimple }),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+		cleanup.push(() => session.dispose());
+		let mode: InteractiveMode | undefined;
+		if (entry === "run") {
+			const runtime = new AgentSessionRuntime(session, services, async () => {
+				throw new Error("unexpected session replacement");
+			});
+			cleanup.push(() => runtime.dispose());
+			mode = new InteractiveMode(runtime, { terminal: new FakeTerminal() });
+		}
+		try {
+			const startup = mode ? mode.run() : session.bindExtensions({});
+			await Promise.race([entered.promise, startup]);
+			await Promise.all([
+				assert.rejects(startup, { name: "Error", code: "SessionClosed", message: "SessionClosed" }),
+				session.dispose(),
+			]);
+		} finally {
+			mode?.stop();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
 
 test.each(["before run", "during session_start", "before a later runtime quit"] as const)(
 	"disposing the SDK session %s rejects interactive startup with the original error (#5697)",

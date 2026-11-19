@@ -204,7 +204,7 @@ async function extendRunnerResources(
 ): Promise<void> {
 	if (!runner.hasHandlers("resources_discover")) return;
 	// Close seals the current runner. Don't enter its discovery batch after a suspended startup hook returns.
-	if (session._disposed && runner === session.extensionRunner) throw closedExtensionBindError(session);
+	if (session._disposed && runner === session._extensionRunner) throw closedExtensionBindError(session);
 	const { skillPaths, promptPaths, themePaths } = await runner.emitResourcesDiscover(
 		session._cwd,
 		reason,
