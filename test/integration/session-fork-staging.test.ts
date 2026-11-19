@@ -19,6 +19,7 @@ import {
 	FORK_STAGING_BATCH_BYTES,
 	FORK_STAGING_CLEANUP_ROWS,
 	FORK_STAGING_OPEN_CLEANUPS,
+	forkStagingLegacyCut,
 } from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
@@ -618,8 +619,10 @@ for (const backend of storageBackends) {
 					const staged = await stagedClone(source, "src", stagingDest, header("child", "src"));
 					measuring = false;
 					assert.deepEqual(staged.created.remainingBlobs, []);
-					// A chunk row; a cut of a legacy row, which the database reads whole once per cut, is at most one batch.
-					const bound = legacy ? FORK_STAGING_BATCH_BYTES : SESSION_BLOB_CHUNK_BYTES;
+					// A chunk row; or one cut of a legacy row, which the database reads whole once per cut.
+					const bound = legacy
+						? forkStagingLegacyCut(legacyBytes.byteLength, SESSION_BLOB_CHUNK_BYTES)
+						: SESSION_BLOB_CHUNK_BYTES;
 					assert.ok(largest <= bound, `Node received ${largest} bytes at once`);
 					assert.deepEqual(
 						await stored(stagingDb, `${scope.prefix}t_`, "child"),
