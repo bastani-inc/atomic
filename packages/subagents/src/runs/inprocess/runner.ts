@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, type FileHandle, mkdir, open, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -35,6 +35,7 @@ import {
 	spanElapsedMs,
 	type TaskElapsedSpan,
 	watchHeldPromptAttention,
+	withTaskTranscriptArchive,
 } from "@bastani/atomic";
 import {
 	type Api,
@@ -1034,10 +1035,10 @@ async function historyUnavailable(sessionFile: string | undefined, cause?: unkno
  * file's directory, which every child of a run saving there shares, so a task view reading a finished child's history
  * would make them wait. The file is append-only JSON lines; a last line its writer has not finished is left out.
  */
-async function readSessionFileEntries(file: string, sessionId: string): Promise<SessionEntry[]> {
+async function readSessionFileEntries(file: string, sessionId: string, opened?: FileHandle): Promise<SessionEntry[]> {
 	let text: string;
 	try {
-		text = await readFile(file, "utf8");
+		text = await (opened ? opened.readFile("utf8") : readFile(file, "utf8"));
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(await historyUnavailable(file));
 		throw error;
@@ -1057,6 +1058,77 @@ async function readSessionFileEntries(file: string, sessionId: string): Promise<
 		}
 	}
 	return entries;
+}
+
+/** A page can ask which file it came from while that file is still open, even if its path has since been replaced. */
+function withArchivedPages(
+	source: TranscriptSource,
+	file: string | undefined,
+	sessionId: string,
+	store: ReturnType<SessionManager["getSessionStore"]> | undefined,
+	unsaved?: SessionEntry,
+): TranscriptSource {
+	if (store)
+		return withTaskTranscriptArchive(source, async (project, loadSnapshot) => {
+			let records: SessionEntry[];
+			let entries: SessionEntry[];
+			let version: string | undefined;
+			try {
+				const loaded = await loadSnapshot(store, sessionId);
+				records = [...loaded.snapshot.entries];
+				entries = withUnsavedAnswer(records, unsaved);
+				version = loaded.generation;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					ok: false,
+					error: {
+						message: message.startsWith("History unavailable:")
+							? message
+							: await historyUnavailable(undefined, error),
+					},
+				};
+			}
+			return project(
+				entries,
+				records.length,
+				async () => version && createHash("sha256").update(`store:${version}`).digest("base64url"),
+			);
+		});
+	if (file === undefined) return source;
+	return withTaskTranscriptArchive(source, async (project) => {
+		let projectionError: unknown;
+		try {
+			const handle = await open(file, "r");
+			try {
+				const records = await readSessionFileEntries(file, sessionId, handle);
+				const entries = withUnsavedAnswer(records, unsaved);
+				try {
+					return await project(entries, records.length, async () => {
+						const identity = await handle.stat({ bigint: true }).catch(() => undefined);
+						if (!identity?.isFile() || !identity.ino || !identity.birthtimeNs) return undefined;
+						return createHash("sha256")
+							.update(`${identity.dev}:${identity.ino}:${identity.birthtimeNs}`)
+							.digest("base64url");
+					});
+				} catch (error) {
+					projectionError = error;
+				}
+			} finally {
+				await handle.close();
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				ok: false,
+				error: {
+					message: message.startsWith("History unavailable:") ? message : await historyUnavailable(file, error),
+				},
+			};
+		}
+		// An SDK/rendering failure is not an unavailable archive.
+		throw projectionError;
+	});
 }
 
 /** The entry a task view shows for a final answer its child's session could not save (#5210). */
@@ -1116,7 +1188,7 @@ function settledTranscript(
 				: [...(fallbackEntries ?? [])];
 		return withUnsavedAnswer(entries, unsaved);
 	};
-	return {
+	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
 		...(last?.type === "message" && last.message.role === "assistant" ? { settledReply: last.message } : {}),
@@ -1135,6 +1207,7 @@ function settledTranscript(
 		},
 		...(commands === undefined ? {} : { commands: () => commands }),
 	};
+	return withArchivedPages(source, sessionFile, sessionId, store, unsaved);
 }
 
 /** One copy of each skill every settled child keeps, however many children loaded it. */
@@ -1190,7 +1263,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 		sessionFile === undefined && typeof manager.getSessionStore === "function"
 			? manager.getSessionStore()
 			: undefined;
-	return {
+	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
 		...(store === undefined && sessionFile === undefined
@@ -1216,6 +1289,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 				}),
 		...(commands === undefined ? {} : { commands: () => commands }),
 	};
+	return withArchivedPages(source, sessionFile, sessionId, store);
 }
 
 function nativeStatus(value: ChildStatus): NativeAgentStatus {

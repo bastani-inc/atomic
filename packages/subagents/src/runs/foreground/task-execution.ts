@@ -7,6 +7,7 @@ import {
 	ranOnModelLine,
 	sessionStartStepText,
 	spanElapsedMs,
+	withTaskTranscriptArchive,
 } from "@bastani/atomic";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import type {
@@ -389,7 +390,7 @@ function taskTranscriptSource(
 	intercomTarget: string | undefined,
 	intercomEvents: IntercomEventBus | undefined,
 ): TaskTranscriptSource {
-	return {
+	const source: TaskTranscriptSource = {
 		getSessionId: () => session.getSessionId(),
 		getEntries: () => session.getEntries(),
 		...(session.loadHistory ? { loadHistory: session.loadHistory.bind(session) } : {}),
@@ -407,6 +408,7 @@ function taskTranscriptSource(
 			? {}
 			: { sendMessage: (text: string) => sendTaskTranscriptMessage(intercomEvents, intercomTarget, text) }),
 	};
+	return withTaskTranscriptArchive(source, session);
 }
 
 type ExecutionSchedule = ExecutionScheduler;
