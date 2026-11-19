@@ -45,6 +45,11 @@ export async function* historyPages(
 	let firstSeq = start,
 		lastSeq = end;
 	let reverse = options.direction === "backward";
+	// A reader that needs only the entries next to a page it shows reads fewer per page; never more than a page holds.
+	const perPage = Math.max(
+		1,
+		Math.min(SESSION_HISTORY_PAGE_ENTRIES, Math.floor(options.limit ?? SESSION_HISTORY_PAGE_ENTRIES)),
+	);
 	let stamp = epoch;
 	let scope = epoch === undefined ? undefined : cursorScope(sessionId, epoch);
 	if (options.cursor !== undefined) {
@@ -102,8 +107,8 @@ export async function* historyPages(
 		}
 		const left = span?.start ?? start,
 			right = span?.end ?? end;
-		const from = reverse ? Math.max(left, right - SESSION_HISTORY_PAGE_ENTRIES + 1) : left;
-		const through = reverse ? right : Math.min(right, left + SESSION_HISTORY_PAGE_ENTRIES - 1);
+		const from = reverse ? Math.max(left, right - perPage + 1) : left;
+		const through = reverse ? right : Math.min(right, left + perPage - 1);
 		let page: SessionHistoryPage["items"];
 		let low: number, high: number;
 		if (packet) {
@@ -216,7 +221,12 @@ export async function* readSessionHistory(
 			if (!page) return;
 			yield page;
 			if (!page.nextCursor) return;
-			request = { cursor: page.nextCursor, signal: options.signal, adjacent: options.adjacent };
+			request = {
+				cursor: page.nextCursor,
+				signal: options.signal,
+				adjacent: options.adjacent,
+				...(options.limit === undefined ? {} : { limit: options.limit }),
+			};
 			await yieldToEventLoop();
 		}
 	}

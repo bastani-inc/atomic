@@ -27,6 +27,7 @@ import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/s
 import {
 	launchedTaskViewSource,
 	readTaskPageForView,
+	savedBoundaryCursor,
 	type TaskTranscriptView,
 	type TaskViewResult,
 	type TaskViewSource,
@@ -35,6 +36,7 @@ import { createSessionSkillAutocompleteProvider, getSkillCatalogCommands } from 
 import { theme } from "../theme/theme.js";
 import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost } from "./chat-session-host.ts";
+import type { SavedPageNeighbours } from "./chat-session-host-saved-calls.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { parseWheelReport, ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
@@ -267,6 +269,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private goToFirst = false;
 	private windowGeneration = 0;
 	private readonly savedPages: { older?: string; newer?: string; visible(): boolean; discard(): void }[] = [];
+	/** Reads of the single saved entries next to the shown window; a new window or a closed view stops them. */
+	private boundaryReads = new AbortController();
 	readonly #notices = new TaskTranscriptNotices();
 	private loading = false;
 	private reloadPending = false;
@@ -674,6 +678,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.disposed = true;
 		this.cancelAdjacent();
 		this.latestRead?.abort();
+		this.boundaryReads.abort();
 		this.savedPages.length = 0;
 		this.#notices.reset();
 		this.unsubscribePrompts();
@@ -765,12 +770,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.cancelAdjacent();
 		this.windowGeneration++;
 		this.savedPages.length = 0;
+		this.boundaryReads.abort();
+		this.boundaryReads = new AbortController();
 		this.newerCursor = undefined;
 		this.liveHistoryStart = undefined;
 		this.cursor = page.value.nextCursor;
 		const messages = page.value.messages;
 		if (page.value.savedWindow && !session) this.attachSavedPage(page.value, "latest");
-		else this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged });
+		else
+			this.chat.replaceMessages(messages, {
+				preserveUnread: !sessionChanged,
+				before: this.boundaryReader(this.cursor, true, this.boundaryReads.signal),
+			});
 		this.#notices.adopt(page, messages, this.cursor !== undefined);
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
@@ -854,9 +865,46 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		} else void this.load();
 	}
 
+	/**
+	 * Reads, one saved entry per step, the entries from `cursor` on: newest first with `calls` (replies reduced to their
+	 * calls), else oldest first. Only saved transcripts read single entries.
+	 */
+	private boundaryReader(
+		cursor: string | undefined,
+		calls: boolean,
+		signal: AbortSignal,
+	): SavedPageNeighbours["before"] | undefined {
+		if (cursor === undefined || !cursor.includes(":")) return undefined;
+		const { source, taskId } = this;
+		return () => {
+			let next: string | undefined = cursor;
+			return {
+				async next() {
+					if (next === undefined || signal.aborted) return { done: true, value: undefined };
+					const page = await readTaskPageForView(source, taskId, savedBoundaryCursor(next, calls), signal);
+					if (!page.ok) throw new Error(page.error.message);
+					next = calls ? page.value.nextCursor : page.value.newerCursor;
+					return { done: false, value: page.value.messages };
+				},
+			};
+		};
+	}
+
 	private attachSavedPage(page: TaskTranscriptView, edge: "latest" | "older" | "newer"): void {
+		const reads = new AbortController();
+		const windowReads = this.boundaryReads.signal;
+		const signal = AbortSignal.any([reads.signal, windowReads]);
+		const neighbours: SavedPageNeighbours = {
+			before: this.boundaryReader(page.nextCursor, true, signal),
+			after: this.boundaryReader(page.newerCursor, false, signal),
+		};
+		const kept = this.chat.showSavedPage(page.messages, edge, neighbours);
 		const shown = {
-			...this.chat.showSavedPage(page.messages, edge, edge === "older" || page.newerCursor !== undefined),
+			visible: kept.visible,
+			discard: () => {
+				reads.abort();
+				kept.discard();
+			},
 			older: page.nextCursor,
 			newer: page.newerCursor,
 		};

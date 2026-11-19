@@ -102,6 +102,8 @@ export interface SessionHistoryReadOptions {
 	readonly fromSeq?: number;
 	readonly toSeq?: number;
 	readonly cursor?: string;
+	/** At most this many entries per page (and never more than SESSION_HISTORY_PAGE_ENTRIES). */
+	readonly limit?: number;
 	readonly signal?: AbortSignal;
 }
 

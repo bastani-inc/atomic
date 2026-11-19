@@ -297,9 +297,17 @@ test.each([false, true])(
 	},
 );
 
-test("saved pages of the main chat draw each call once, finished, with its arguments and its click's expansion, read in either direction (#5593)", async () => {
-	const { mode, tui, transcript, terminal } = await openResumedSession(0);
-	const manager = mode.sessionManager;
+type SavedStep =
+	| { readonly call: { readonly id: string; readonly name: string; readonly args: Record<string, string> } }
+	| { readonly result: { readonly id: string; readonly name: string; readonly text: string } };
+
+/** Saves `through` entries, prompts `P-<seq>` except `steps`, then, unless `clear` is false, a clear and one prompt. */
+async function appendSavedHistory(
+	manager: SessionManager,
+	through: number,
+	steps: Readonly<Record<number, SavedStep>>,
+	clear = true,
+): Promise<void> {
 	const usage = {
 		input: 0,
 		output: 0,
@@ -308,37 +316,31 @@ test("saved pages of the main chat draw each call once, finished, with its argum
 		totalTokens: 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
-	const call = (id: string, name: string, args: Record<string, string>) =>
-		manager.appendMessage({
-			role: "assistant",
-			api: "openai-completions",
-			provider: "scripted",
-			model: "scripted",
-			usage,
-			stopReason: "toolUse",
-			timestamp: 0,
-			content: [{ type: "toolCall", id, name, arguments: args }],
-		});
-	const result = (toolCallId: string, toolName: string, text: string) =>
-		manager.appendMessage({
-			role: "toolResult",
-			toolCallId,
-			toolName,
-			content: [{ type: "text", text }],
-			isError: false,
-			timestamp: 0,
-		});
-	// Pages of 64 entries: read back from entry 140 they cut at 12|13 and 76|77; read on from the start at 64|65 and
-	// 128|129. The call of y.txt ends a page read back, that of x.txt one read on; z.txt never got a result.
-	for (let seq = 1; seq <= 140; seq++) {
-		if (seq === 12) await call("call-y", "read", { path: "y.txt" });
-		else if (seq === 13)
-			await result("call-y", "read", Array.from({ length: 30 }, (_, i) => `y line ${i + 1}`).join("\n"));
-		else if (seq === 64) await call("call-x", "write", { path: "x.txt", content: "x" });
-		else if (seq === 65) await result("call-x", "write", "wrote");
-		else if (seq === 128) await call("call-z", "read", { path: "z.txt" });
+	for (let seq = 1; seq <= through; seq++) {
+		const step = steps[seq];
+		if (step && "call" in step)
+			await manager.appendMessage({
+				role: "assistant",
+				api: "openai-completions",
+				provider: "scripted",
+				model: "scripted",
+				usage,
+				stopReason: "toolUse",
+				timestamp: 0,
+				content: [{ type: "toolCall", id: step.call.id, name: step.call.name, arguments: step.call.args }],
+			});
+		else if (step)
+			await manager.appendMessage({
+				role: "toolResult",
+				toolCallId: step.result.id,
+				toolName: step.result.name,
+				content: [{ type: "text", text: step.result.text }],
+				isError: false,
+				timestamp: 0,
+			});
 		else await manager.appendMessage({ role: "user", content: `P-${String(seq).padStart(3, "0")}`, timestamp: seq });
 	}
+	if (!clear) return;
 	await manager.appendCompaction("cut", null, 100, {
 		strategy: "verbatim-lines",
 		promptVersion: 7,
@@ -355,6 +357,21 @@ test("saved pages of the main chat draw each call once, finished, with its argum
 		form: "cleared",
 	});
 	await manager.appendMessage({ role: "user", content: "at the end", timestamp: 200 });
+}
+
+const thirtyLines = (label: string) => Array.from({ length: 30 }, (_, i) => `${label} line ${i + 1}`).join("\n");
+
+test("saved pages of the main chat draw each call once, finished, with its arguments and its click's expansion, read in either direction (#5593)", async () => {
+	const { mode, tui, transcript, terminal } = await openResumedSession(0);
+	// Pages of 64 entries: read back from entry 140 they cut at 12|13 and 76|77; read on from the start at 64|65 and
+	// 128|129. The call of y.txt ends a page read back, that of x.txt one read on; z.txt never got a result.
+	await appendSavedHistory(mode.sessionManager, 140, {
+		12: { call: { id: "call-y", name: "read", args: { path: "y.txt" } } },
+		13: { result: { id: "call-y", name: "read", text: thirtyLines("y") } },
+		64: { call: { id: "call-x", name: "write", args: { path: "x.txt", content: "x" } } },
+		65: { result: { id: "call-x", name: "write", text: "wrote" } },
+		128: { call: { id: "call-z", name: "read", args: { path: "z.txt" } } },
+	});
 	mode.renderInitialMessages();
 	tui.renderNow();
 	const held = () => stripVTControlCharacters(mode.chatContainer.render(COLUMNS).join("\n"));
@@ -396,6 +413,79 @@ test("saved pages of the main chat draw each call once, finished, with its argum
 	await scrollUntil(20, /P-140/);
 	drawnOnce(/Write\(x\.txt\)/, /Write\(\)/);
 	assert.equal(held().match(/Read\(z\.txt\)/g)?.length, 1, "a call that never got a result still shows");
+});
+
+/** The rows of the card whose header matches `header`, up to the next prompt or clear, without blank rows. */
+function cardRows(text: string, header: RegExp): string[] {
+	const lines = text.split("\n").map((line) => line.trimEnd());
+	const at = lines.findIndex((line) => header.test(line));
+	assert.notEqual(at, -1, `no card ${header}:\n${text}`);
+	const end = lines.findIndex((line, index) => index > at && /P-\d{3}|Context cleared/.test(line));
+	return lines.slice(at, end < 0 ? undefined : end).filter((line) => line.trim() !== "");
+}
+
+test("a saved page whose neighbour is not read draws its edge cards as the whole transcript does, reading one saved entry per card (#5593)", async () => {
+	// Read back from entry 140, pages cut at 76|77; read on from the start, at 64|65 and 128|129.
+	const steps: Record<number, SavedStep> = {
+		64: { call: { id: "call-x", name: "write", args: { path: "x.txt", content: "x" } } },
+		65: { result: { id: "call-x", name: "write", text: "wrote" } },
+		76: { call: { id: "call-w", name: "read", args: { path: "w.txt" } } },
+		77: { result: { id: "call-w", name: "read", text: thirtyLines("w") } },
+		128: { call: { id: "call-z", name: "read", args: { path: "z.txt" } } },
+	};
+	const whole = await openResumedSession(0);
+	await appendSavedHistory(whole.mode.sessionManager, 140, steps, false);
+	whole.mode.renderInitialMessages();
+	const main = () => stripVTControlCharacters(whole.mode.chatContainer.render(COLUMNS).join("\n"));
+	for (let i = 0; i < 60 && !/P-001/.test(main()); i++) await nextTurn();
+
+	const { mode, tui, transcript } = await openResumedSession(0);
+	const manager = mode.sessionManager;
+	await appendSavedHistory(manager, 140, steps);
+	const read = manager.readHistory.bind(manager);
+	let entryReads = 0;
+	manager.readHistory = (options) => {
+		if (options?.limit === 1) entryReads++;
+		return read(options);
+	};
+	mode.renderInitialMessages();
+	tui.renderNow();
+	const held = () => stripVTControlCharacters(mode.chatContainer.render(COLUMNS).join("\n"));
+	const settle = async (shown: RegExp) => {
+		for (let i = 0; i < 40 && !shown.test(held()); i++) {
+			await nextTurn();
+			tui.renderNow();
+		}
+		assert.match(held(), shown);
+	};
+
+	// Read back from the end, the page from entry 77 starts with the result of a call the page before ends with.
+	transcript.scrollBy(-1);
+	await settle(/Read\(w\.txt\)/);
+	assert.doesNotMatch(held(), /P-075/, "the page before is not read");
+	assert.deepEqual(cardRows(held(), /Read\(w\.txt\)/), cardRows(main(), /Read\(w\.txt\)/));
+	assert.equal(entryReads, 1, "one saved entry is read for the card");
+
+	// Read on from the start, the first page ends with a call whose result starts the next page.
+	transcript.scrollToStart();
+	await settle(/Write\(x\.txt\)/);
+	assert.doesNotMatch(held(), /P-066/, "the page after is not read");
+	assert.deepEqual(cardRows(held(), /Write\(x\.txt\)/), cardRows(main(), /Write\(x\.txt\)/));
+	assert.equal(entryReads, 2, "one saved entry is read for the card");
+
+	// The next page ends with a call that never got a result: the prompt after it shows that.
+	for (let i = 0; i < 80 && !/P-066/.test(held()); i++) {
+		transcript.scrollBy(20);
+		for (let turn = 0; turn < 4; turn++) await nextTurn();
+		tui.renderNow();
+	}
+	await settle(/Read\(z\.txt\)/);
+	assert.doesNotMatch(held(), /P-129/, "the page after is not read");
+	const pending = (text: string) => cardRows(text, /Read\(z\.txt\)/).map((row) => row.replace(/^\s*\S+ /, ""));
+	assert.deepEqual(pending(held()), pending(main()));
+	assert.match(held(), /∀ Read\(z\.txt\)/);
+	assert.equal(entryReads, 3, "one saved entry is read for the card");
+	assert.equal(held().match(/Write\(x\.txt\)/g)?.length, 1, "the finished card stands in for the result's card");
 });
 
 test("a frame after the first renders what the viewport shows, however long the resumed transcript", async () => {

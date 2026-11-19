@@ -25,6 +25,7 @@ import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/mes
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	ownerTaskViewSource,
+	readTaskPageForView,
 	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
@@ -483,6 +484,16 @@ async function sessionWithCalls(
 
 async function openSavedTranscript(session: SessionManager) {
 	let chat: ChatSessionHost | undefined;
+	/**
+	 * Reads of one saved entry next to a shown page, and of whole pages after the first. Once a page with a prompt
+	 * matching `holdAfter` is read, later page reads wait for `release`.
+	 */
+	const gate = Promise.withResolvers<void>();
+	const reads: { entries: number; pages: number; holdAfter?: RegExp; held?: Promise<void>; release(): void } = {
+		entries: 0,
+		pages: 0,
+		release: () => gate.resolve(),
+	};
 	const host = await openTranscript(
 		{
 			getSessionId: () => session.getSessionId(),
@@ -492,7 +503,28 @@ async function openSavedTranscript(session: SessionManager) {
 				throw new Error("whole transcript loaded");
 			},
 		},
-		{ environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) } },
+		{
+			environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+			source: (owner) =>
+				Object.assign(Object.create(owner) as TaskViewSource, {
+					async readTaskTranscript(id: TaskId, cursor?: string, signal?: AbortSignal) {
+						if (cursor !== undefined && /![c1]$/.test(cursor)) reads.entries++;
+						else if (cursor !== undefined) {
+							reads.pages++;
+							await reads.held;
+						}
+						const page = await readTaskPageForView(owner, id, cursor, signal ?? new AbortController().signal);
+						const hold = reads.holdAfter;
+						if (
+							hold &&
+							page.ok &&
+							page.value.messages.some((m) => m.role === "user" && hold.test(String(m.content)))
+						)
+							reads.held = gate.promise;
+						return page;
+					},
+				}),
+		},
 	);
 	assert.ok(chat);
 	const shown = chat;
@@ -504,7 +536,16 @@ async function openSavedTranscript(session: SessionManager) {
 			.map((row) => stripVTControlCharacters(row).trimEnd())
 			.join("\n");
 	};
-	return { host, held };
+	return { host, held, reads };
+}
+
+/** The rows of the card whose header matches `header`, up to the next prompt, without blank rows. */
+function cardRows(text: string, header: RegExp): string[] {
+	const rows = text.split("\n");
+	const at = rows.findIndex((row) => header.test(row));
+	assert.notEqual(at, -1, `no card ${header}:\n${text}`);
+	const end = rows.findIndex((row, index) => index > at && /P-\d{3}/.test(row));
+	return rows.slice(at, end < 0 ? undefined : end).filter((row) => row.trim() !== "");
 }
 
 const lines = (label: string) => Array.from({ length: 30 }, (_, i) => `${label} line ${i + 1}`).join("\n");
@@ -570,6 +611,79 @@ test("a call early in a long saved reply and its result after the reply's last b
 		await session.getSessionStore().close();
 	}
 });
+
+test("a saved task chat's first result card shows its call's arguments, reading only the saved reply before it (#5593)", async () => {
+	// 70 entries: the latest page holds the last 64, so the reply's results start it and its calls end the page before.
+	const session = await sessionWithCalls(67, 4, [
+		{ id: "call-a", name: "read", args: { path: "alpha.txt" }, result: lines("alpha") },
+		{ id: "call-b", name: "write", args: { path: "beta.txt", content: "new beta" }, result: "wrote" },
+	]);
+	const { host, held, reads } = await openSavedTranscript(session);
+	try {
+		for (let i = 0; i < 20 && !/Write\(beta\.txt\)/.test(held()); i++) await flush();
+		const alone = held();
+		assert.doesNotMatch(alone, /P-000/, "the page before is not read");
+		assert.match(alone, /Read\(alpha\.txt\)/, "a result's card shows its call's arguments");
+		assert.match(alone, /Write\(beta\.txt\)/, "a result's card shows its call's arguments");
+		assert.deepEqual([reads.entries, reads.pages], [1, 0], "one saved entry is read for the cards");
+		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 20 && !host.text().includes("P-000"); i++) await flush();
+		const joined = held();
+		for (const header of [/Read\(alpha\.txt\)/, /Write\(beta\.txt\)/])
+			assert.deepEqual(cardRows(alone, header), cardRows(joined, header), "the card as its call's page shows it");
+	} finally {
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([
+	["its result starts the next page", "alpha line 1"],
+	["no result was saved before the next prompt", undefined],
+])(
+	"a saved task page that ends with a call reads one saved entry to finish its card when %s (#5593)",
+	async (_case, body) => {
+		// Read back from entry 301, pages cut at 173|174: read on again after the start, the page 110..173 is shown
+		// alone at the bottom before the page from 174.
+		const session = await sessionWithCalls(body ? 299 : 300, 171, [
+			{ id: "call-a", name: "read", args: { path: "alpha.txt" }, ...(body ? { result: lines("alpha") } : {}) },
+		]);
+		const { host, held, reads } = await openSavedTranscript(session);
+		try {
+			host.inspector.handleInput(CTRL_HOME);
+			for (let i = 0; i < 30 && !host.text().includes("P-000"); i++) await flush();
+			assert.doesNotMatch(held(), /Read\(alpha\.txt\)/, "the call's page is released at the start");
+			reads.entries = 0;
+			// The page after the call's page is not read while the card settles.
+			reads.holdAfter = /P-171/;
+			for (let i = 0; i < 80 && !/P-171/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			for (let i = 0; i < 20 && !/Read\(alpha\.txt\)/.test(held()); i++) await flush();
+			const alone = held();
+			assert.doesNotMatch(alone, /P-17[2-9]/, "the page after is not shown");
+			assert.equal(alone.match(/Read\(alpha\.txt\)/g)?.length, 1, alone);
+			if (body) {
+				assert.doesNotMatch(alone, /∀/, "a call whose result is saved is not drawn as still running");
+				assert.match(alone, /Read 30 lines/);
+			} else assert.match(alone, /∀ Read\(alpha\.txt\)/, "the call shows as a whole transcript shows it");
+			assert.equal(reads.entries, 1, "one saved entry is read for the card");
+			reads.holdAfter = undefined;
+			reads.release();
+			for (let i = 0; i < 80 && !/P-180/.test(held()); i++) {
+				host.inspector.handleInput(PAGE_DOWN);
+				await flush();
+			}
+			const joined = held();
+			assert.equal(joined.match(/Read\(alpha\.txt\)/g)?.length, 1, joined);
+			assert.deepEqual(cardRows(alone, /Read\(alpha\.txt\)/), cardRows(joined, /Read\(alpha\.txt\)/));
+		} finally {
+			await host.dispose();
+			await session.getSessionStore().close();
+		}
+	},
+);
 
 test.each([
 	["at the end of the saved history", 69],
