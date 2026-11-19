@@ -274,12 +274,6 @@ const issueNavigationLabels: Record<string, string> = {
 	"/skills": "Skills",
 	"/subagents": "Subagents",
 	"/intercom": "Intercom",
-	"/workflows": "Workflows",
-	"/workflows/builtins": "Builtins",
-	"/workflows/authoring": "Authoring",
-	"/workflows/reliable-design": "Reliable design",
-	"/workflows/operations": "Operations",
-	"/workflows/api-reference": "API reference",
 	"/extensions": "Extensions",
 	"/prompt-templates": "Prompt templates",
 	"/themes": "Themes",
@@ -338,12 +332,6 @@ const issueNavigationOrder: Record<string, readonly string[]> = {
 		"/prompt-templates",
 		"/themes",
 		"/extensions",
-		"/workflows",
-		"/workflows/builtins",
-		"/workflows/authoring",
-		"/workflows/reliable-design",
-		"/workflows/operations",
-		"/workflows/api-reference",
 		"/subagents",
 		"/intercom",
 		"/packages",
@@ -392,7 +380,6 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/compaction": [
 		"/guides/configuration",
 		"/guides/orchestration",
-		"/guides/workflows",
 		"/guides/subagents",
 		"/background-tasks",
 		"/guides/intercom",
@@ -414,7 +401,6 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 		"/orchestration/migrating-workflows",
 	],
 	"/packages": ["/packages/authoring"],
-	"/workflows/reliable-design": ["/workflows/verification"],
 	"/tmux": ["/herdr"],
 	// The edit reference now lives in tools; the codemode script reference and integrations follow it.
 	"/tools": ["/codemode", "/mcp-servers", "/web-access"],
@@ -484,7 +470,6 @@ const brokenBeforeMigration = new Set(historicalChangelogAnchors);
 const promptSources = [
 	"packages/coding-agent/src/core/system-prompt.ts",
 	"packages/subagents/src/extension/prompt-guidance.ts",
-	"packages/workflows/src/extension/workflow-prompts.ts",
 ] as const;
 
 /** Reader-visible anchors, including explicit HTML IDs outside fenced examples. */
@@ -566,22 +551,23 @@ describe("docs information architecture (#2847)", () => {
 		);
 	});
 
-	// #2847: exercise the actual repaired reader page, not only a parser fixture.
-	test("all four deep workflow links depend on their precise standalone reader anchors", () => {
-		const slug = "workflows/reliable-design";
-		const text = readFileSync(join(docsDir, pathForSlug(slug)), "utf8");
-		for (const [id, title] of [
-			["3-adversarial-verification", "3. Adversarial verification"],
-			["5-tournament", "5. Tournament"],
-			["6-loop-until-done", "6. Loop until done"],
-			["stacked-implementation-slices-starter-pattern", "Stacked implementation slices starter pattern"],
+	test("retired workflow bookmarks lead to live orchestration or conversion instructions", () => {
+		const redirects = new Map(docsJson.redirects?.map(({ source, destination }) => [source, destination]));
+		for (const [destination, sources] of [
+			[
+				"/orchestration",
+				["/workflows", "/guides/workflows", "/workflows/reliable-design", "/workflows/verification"],
+			],
+			[
+				"/orchestration/migrating-workflows",
+				["/workflows/authoring", "/workflows/builtins", "/workflows/operations", "/workflows/api-reference"],
+			],
 		] as const) {
-			const anchor = `<a id="${id}" />`;
-			assert.equal(text.split(`${anchor}\n\n##### ${title}\n`).length, 2);
-			assert.ok(text.includes(`](#${id})`), `${id} retains its precise link`);
-			assert.ok(anchorResolves(`/${slug}`, id));
-			assert.equal(readerAnchors(text.replace(anchor, "")).has(id), false);
-			assert.equal(readerAnchors(text.replace(anchor, '<a id="forged" />')).has(id), false);
+			assert.ok(routeToSlug.has(destination));
+			for (const source of sources) {
+				assert.equal(redirects.get(source), destination, source);
+				assert.ok(!routeToSlug.has(source), `${source} must not also serve obsolete instructions`);
+			}
 		}
 	});
 
@@ -648,7 +634,7 @@ describe("docs information architecture (#2847)", () => {
 				.filter((route) => expectedSet.has(route));
 			assert.deepEqual(projection, expected, `${name} routes must follow #2847's proposed order`);
 		}
-		assert.equal(Object.values(issueNavigationOrder).flat().length, 56, "the 56 remaining issue pages have an order");
+		assert.equal(Object.values(issueNavigationOrder).flat().length, 50, "the 50 remaining issue pages have an order");
 	});
 
 	test("every generated page keeps its recorded insertion point", () => {
@@ -665,7 +651,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			52,
+			50,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
@@ -743,7 +729,7 @@ describe("docs information architecture (#2847)", () => {
 			const effective = frontmatter.sidebarTitle ?? frontmatter.title ?? derived();
 			if (effective !== expected) wrong.push(`${route}: renders "${effective}", #2847 specifies "${expected}"`);
 		}
-		assert.equal(Object.keys(issueNavigationLabels).length, 56, "the 56 remaining issue page labels are checked");
+		assert.equal(Object.keys(issueNavigationLabels).length, 50, "the 50 remaining issue page labels are checked");
 		assert.deepEqual(wrong, [], "navigation labels must match the issue's enumerated tree exactly");
 	});
 });
@@ -1082,7 +1068,7 @@ describe("docs references and assets (#2847)", () => {
 	});
 
 	test("every relative image reference resolves from its page", () => {
-		let checked = 0;
+		const referenced = new Set<string>();
 		for (const slug of diskSlugs) {
 			const path = pathForSlug(slug);
 			const text = readFileSync(join(docsDir, path), "utf8");
@@ -1093,10 +1079,11 @@ describe("docs references and assets (#2847)", () => {
 					existsSync(resolve(dirname(join(docsDir, path)), src)),
 					`${path} references ${src}, which does not resolve from that page's directory`,
 				);
-				checked += 1;
+				referenced.add(src);
 			}
 		}
-		assert.equal(checked, 3, "all three relative image references must still be checked");
+		assert.ok(referenced.has("images/tree-view.png"));
+		assert.ok(referenced.has("images/interactive-mode.png"));
 	});
 });
 

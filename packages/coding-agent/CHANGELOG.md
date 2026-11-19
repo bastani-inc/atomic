@@ -10,6 +10,7 @@
 - RPC no longer accepts `list_workflow_runs`, `get_workflow_run_summary`, `get_workflow_resume_entries`, `resume_workflow_from_picker` or `delete_workflow_from_picker`. `RpcClient.listWorkflowRuns()` and `getWorkflowRunSummary()` are removed. For saved conversations, use `list_sessions`, `get_session_summary` and `switch_session`.
 - `atomic storage migrate` still sets up sessions and Intercom, but no longer creates workflow or worker-pool tables. Existing workflow data is not deleted.
 - A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
+- The installed `docs/workflows.md`, `docs/guides/workflows.md`, and `docs/workflows/` guides are retired. Published bookmarks redirect to [Orchestration](docs/orchestration.md) or [Migrating workflows](docs/orchestration/migrating-workflows.md). Update local file references to the new paths.
 
 ### Added
 

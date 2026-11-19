@@ -231,15 +231,6 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.doesNotMatch(tui, /`searchMatchBg`/u);
 	});
 
-	test("workflows docs no longer document find-in-stage-chat", () => {
-		const workflows = doc("workflows/operations.md");
-		assert.doesNotMatch(workflows, /\*\*Find in stage chat\*\*/u);
-		assert.doesNotMatch(workflows, /ctrl\+shift\+f/iu);
-
-		const readme = packageFile("workflows", "README.md");
-		assert.doesNotMatch(readme, /Ctrl\+Shift\+F searches the attached stage chat/u);
-	});
-
 	test("sessions.md describes branch summarization as optional and prompt-driven", () => {
 		const sessions = doc("sessions.md");
 		// The summary is offered when `/tree` switches away from a branch, and the
