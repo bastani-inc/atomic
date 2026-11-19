@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Paged workflow run listings keep one consistent read view while other connections continue writing, rather than mixing rows from different commits ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
+
 ## [0.9.89] - 2026-11-18
 
 ### Fixed

@@ -21,6 +21,7 @@ import {
 	type JournalCatalogRunHeader,
 	type JournalShardRecord,
 	type JournalShardRegistration,
+	readSqlCatalog,
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { renderStorageIdentifiers } from "./prefix.js";
@@ -31,7 +32,6 @@ import {
 	withJournalPayloads,
 	writeJournalPayloadChunks,
 } from "./run-journal.js";
-import { readSqlCatalog } from "./sql-catalog.js";
 
 export { defaultJournalStoreDirectory } from "./file-identity.js";
 

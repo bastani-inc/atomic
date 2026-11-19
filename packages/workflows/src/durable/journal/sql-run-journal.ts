@@ -606,27 +606,38 @@ export class SqlRunJournal implements RunJournal {
 		options?.signal?.throwIfAborted();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
-			const listed: RunSummary[] = [];
-			const add = (rows: readonly HeaderRow[]) => {
-				for (const row of rows) {
-					assertRowVersion(row);
-					listed.push({
-						...(JSON.parse(row[c.headerJson]) as RunHeader),
-						status: runStatusFromRecord(row[c.status]),
-					});
-				}
-			};
-			for await (const page of readSqlCatalogPages<HeaderRow>(this.database, {
-				sql: `SELECT ${c.runId}, ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM (${this.runHeaderSource}) AS runs ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`}`,
-				params: filter?.cwd === undefined ? [] : [filter.cwd],
-				key: c.runId,
-				size: `length(${c.headerJson}) + length(${c.runId}) + length(${c.status})`,
-				signal: options?.signal,
-				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
-			}))
-				add(page);
+			let pages = 0;
+			const pageRows = this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096;
+			const listed = await this.database.transaction(
+				async (executor) => {
+					const listed: RunSummary[] = [];
+					for await (const page of readSqlCatalogPages<HeaderRow>(executor, {
+						sql: `SELECT runs.${c.runId}, runs.${c.headerJson}, runs.${c.status}, meta.${c.schemaVersion} AS ${META_VERSION}
+						FROM ${this.tables.meta} AS meta LEFT JOIN (${this.runHeaderSource}) AS runs
+						ON ${filter?.cwd === undefined ? "1 = 1" : `runs.${c.cwd} = ?`}`,
+						params: filter?.cwd === undefined ? [] : [filter.cwd],
+						key: c.runId,
+						size: `coalesce(length(${c.headerJson}) + length(${c.runId}) + length(${c.status}), 0)`,
+						signal: options?.signal,
+						pageRows,
+					})) {
+						pages++;
+						for (const row of page) {
+							assertRowVersion(row);
+							if (row[c.headerJson] === null) continue;
+							listed.push({
+								...(JSON.parse(row[c.headerJson]) as RunHeader),
+								status: runStatusFromRecord(row[c.status]),
+							});
+						}
+					}
+					options?.signal?.throwIfAborted();
+					return listed;
+				},
+				{ readOnly: true },
+			);
 			options?.signal?.throwIfAborted();
-			await this.assertVersion(this.database);
+			if (pages > 1 || listed.length >= pageRows) await this.assertVersion(this.database);
 			options?.signal?.throwIfAborted();
 			return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});

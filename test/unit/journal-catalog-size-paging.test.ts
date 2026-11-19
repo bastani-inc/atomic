@@ -16,7 +16,16 @@ describe("journal catalog paging", () => {
 		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
 		const journal = await SqlRunJournal.open(database);
 		try {
-			await journal.createRun({ runId: "run", name: "run", cwd: "/project", createdAt: 1, status: "running" });
+			// An exact page still needs the empty-page completion check; a short first page now finishes immediately.
+			for (let index = 0; index < 128; index++) {
+				await journal.createRun({
+					runId: `run-${index}`,
+					name: "run",
+					cwd: "/project",
+					createdAt: 1,
+					status: "running",
+				});
+			}
 			let upgraded: Promise<unknown> = Promise.resolve();
 			const timer = setImmediate(() => {
 				upgraded = database.run(

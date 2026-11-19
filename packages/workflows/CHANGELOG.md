@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Large workflow catalogs and run inputs no longer make run listing fail with a storage response-size error. SQL journals read headers in size-bounded pages, preserving run order and yielding between pages ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
+- Large workflow catalogs and run inputs no longer make run listing fail with a storage response-size error. SQL journals read headers from one consistent snapshot in size-bounded pages, preserving run order and yielding between pages without blocking other writers. A short catalog finishes in one SQL read ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 - Cancelling a workflow fork stops source reads, including run-prefix lookups and claim-boundary rereads, and preserves the caller's cancellation reason ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 - Legacy runs remain visible while another connection converts them to the current journal. Event pages count keys and chunked payloads in their size budget, use the same bounds for legacy events, and yield between pages ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.

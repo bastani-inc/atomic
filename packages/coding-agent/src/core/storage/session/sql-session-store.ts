@@ -1075,15 +1075,39 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async distinctCwds(query: SessionListQuery): Promise<string[]> {
-		const rows = await readSqlCatalog<SqliteRow & { cwd: string }>(this.database, {
-			sql: `SELECT DISTINCT cwd FROM ${this.tables.sessions}`,
-			key: "cwd",
-			size: "length(cwd)",
-			signal: query.signal,
-			assertOpen: () => this.assertOpen(),
-		});
+		const directories = new Set<string>();
+		let complete = true;
+		// One DISTINCT scan handles ordinary catalogs. If it does not fit, continue by the indexed session ID,
+		// not by an unindexed cwd cursor that would recompute DISTINCT over the table for every page.
+		for await (const page of readSqlCatalogPages<SqliteRow & { cwd: string; directory_count: number | bigint }>(
+			this.database,
+			{
+				sql: `SELECT cwd, count(*) OVER () AS directory_count FROM (SELECT DISTINCT cwd FROM ${this.tables.sessions}) AS directories`,
+				key: "cwd",
+				size: "length(cwd)",
+				signal: query.signal,
+				assertOpen: () => this.assertOpen(),
+			},
+		)) {
+			for (const row of page) directories.add(row.cwd);
+			complete = page.length === Number(page[0]!.directory_count);
+			break;
+		}
+		if (!complete) {
+			await yieldTurn();
+			for await (const page of readSqlCatalogPages<SqliteRow & { id: string; cwd: string }>(this.database, {
+				sql: `SELECT id, cwd FROM ${this.tables.sessions}`,
+				key: "id",
+				size: "length(id) + length(cwd)",
+				signal: query.signal,
+				assertOpen: () => this.assertOpen(),
+				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 1024 : 4_096,
+			})) {
+				for (const row of page) directories.add(row.cwd);
+			}
+		}
 		this.assertListing(query);
-		return rows.map((row) => row.cwd);
+		return [...directories];
 	}
 
 	/** Directory resolution and row filtering use one bounded matcher path. */

@@ -15,6 +15,7 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, readText, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const directories: string[] = [];
@@ -93,27 +94,13 @@ for (const method of ["listRuns", "runVersions", "getRun"] as const)
 		const writerDatabase = await openNodeSqliteDatabase(path);
 		const journal = await SqlRunJournal.open(database);
 		const writer = await SqlRunJournal.open(writerDatabase);
-		const all = database.all.bind(database);
-		const get = database.get.bind(database);
 		let converted = false;
 		const convert = async () => {
 			if (converted) return;
 			converted = true;
 			assert.equal((await writer.acquire(legacyRun.runId, "conversion-writer")).status, "acquired");
 		};
-		if (method === "getRun") {
-			database.get = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-				const row = await get<Row>(sql, ...params);
-				await convert();
-				return row;
-			};
-		} else {
-			database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-				const rows = await all<Row>(sql, ...params);
-				await convert();
-				return rows;
-			};
-		}
+		const restore = observeSqlReads(database, { after: convert });
 		try {
 			if (method === "getRun") assert.equal((await journal.getRun(legacyRun.runId))?.runId, legacyRun.runId);
 			else if (method === "runVersions")
@@ -125,8 +112,7 @@ for (const method of ["listRuns", "runVersions", "getRun"] as const)
 				);
 			assert.equal(converted, true);
 		} finally {
-			database.all = all;
-			database.get = get;
+			restore();
 			await writer.close();
 			await journal.close();
 			await writerDatabase.close();
@@ -191,6 +177,15 @@ test("inspection lists a 150,000-run legacy catalog without overflowing the call
 test("legacy catalog listings check cancellation between size-bounded pages (#5537)", async () => {
 	const path = join(tempDirectory(), "journal.sqlite");
 	writeLegacyJournal(path);
+	const database = new DatabaseSync(path);
+	try {
+		database.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 128)
+			INSERT INTO runs(run_id, name, cwd, created_at, status, header_json)
+			SELECT 'run-' || i, 'run', '/project', 1, 'running',
+			'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+	} finally {
+		database.close();
+	}
 	const journal = await openSqlRunJournal(path);
 	try {
 		const controller = new AbortController();

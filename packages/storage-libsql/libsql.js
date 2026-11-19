@@ -1374,8 +1374,8 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 				() => true,
 			);
 		},
-		async beginTransaction() {
-			const begin = async () => (await connection()).transaction("write");
+		async beginTransaction(options) {
+			const begin = async () => (await connection()).transaction(options?.readOnly === true ? "read" : "write");
 			let transaction = await waitForLock(begin);
 			// A server's transaction sends its `BEGIN IMMEDIATE` with its first statement. A server that answers that busy
 			// fails the statement and the client closes the transaction, having run nothing of it, so the statement runs

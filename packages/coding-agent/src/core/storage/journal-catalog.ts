@@ -13,7 +13,25 @@ import {
 } from "./errors.js";
 import { fileIdentityAsync } from "./file-identity.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
-import { readSqlCatalog } from "./sql-catalog.js";
+import type { SqlCatalogReadOptions } from "./sql-catalog.js";
+
+/** Loads catalog traversal only when a catalog is read, not while the storage entry loads. */
+export async function* readSqlCatalogPages<Row extends SqliteRow>(
+	executor: SqliteExecutor,
+	options: SqlCatalogReadOptions,
+): AsyncIterable<Row[]> {
+	const catalog = await import("./sql-catalog.js");
+	yield* catalog.readSqlCatalogPages<Row>(executor, options);
+}
+
+/** Collects a catalog without loading its reader during storage setup. */
+export async function readSqlCatalog<Row extends SqliteRow>(
+	executor: SqliteExecutor,
+	options: SqlCatalogReadOptions,
+): Promise<Row[]> {
+	const catalog = await import("./sql-catalog.js");
+	return catalog.readSqlCatalog<Row>(executor, options);
+}
 
 /** The catalog's file in a journal store directory. */
 export const JOURNAL_CATALOG_FILE = "catalog.sqlite";

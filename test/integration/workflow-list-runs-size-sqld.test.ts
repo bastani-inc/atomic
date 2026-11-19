@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import {
 	exportWorkflowRuns,
@@ -13,6 +12,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
@@ -173,26 +173,21 @@ for (const backend of storageBackends) {
 						'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
 					const controller = new AbortController();
 					const reason = new Error("catalog cancelled");
-					const all = database.all.bind(database);
-					const get = database.get.bind(database);
 					let readsAfterAbort = 0;
-					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						if (controller.signal.aborted) readsAfterAbort++;
-						return all<Row>(sql, ...params);
-					};
-					database.get = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						if (controller.signal.aborted) readsAfterAbort++;
-						return get<Row>(sql, ...params);
-					};
+					const restore = observeSqlReads(database, {
+						before: () => {
+							if (controller.signal.aborted) readsAfterAbort++;
+						},
+					});
 					const timer = setImmediate(() => controller.abort(reason));
 					try {
 						await expect(journal.listRuns(undefined, { signal: controller.signal })).rejects.toBe(reason);
 						expect(readsAfterAbort).toBe(0);
 					} finally {
 						clearImmediate(timer);
-						database.all = all;
-						database.get = get;
+						restore();
 					}
+					expect(await journal.listRuns()).toHaveLength(512);
 				} finally {
 					await journal.close();
 				}
@@ -207,33 +202,32 @@ for (const backend of storageBackends) {
 				const database = await scope.connect();
 				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
 				try {
-					await journal.createRun({ runId: "run", name: "run", cwd: "/project", createdAt: 1, status: "running" });
+					const count = database.descriptor.adapter === "node-sqlite" ? 128 : 4_096;
+					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${count})
+						INSERT INTO ${runJournalTables(scope.prefix).runs}(run_id, name, cwd, created_at, status, header_json)
+						SELECT 'run-' || i, 'run', '/project', 1, 'running',
+						'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
 					const controller = new AbortController();
 					const reason = new Error("catalog finished-page cancellation");
-					const all = database.all.bind(database);
-					const get = database.get.bind(database);
 					let armed = false;
 					let readsAfterAbort = 0;
-					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						if (controller.signal.aborted) readsAfterAbort++;
-						const rows = await all<Row>(sql, ...params);
-						if (rows.length === 0 && !armed) {
-							armed = true;
-							queueMicrotask(() => queueMicrotask(() => controller.abort(reason)));
-						}
-						return rows;
-					};
-					database.get = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						if (controller.signal.aborted) readsAfterAbort++;
-						return get<Row>(sql, ...params);
-					};
+					const restore = observeSqlReads(database, {
+						before: () => {
+							if (controller.signal.aborted) readsAfterAbort++;
+						},
+						after: (rows) => {
+							if (rows.length === 0 && !armed) {
+								armed = true;
+								queueMicrotask(() => queueMicrotask(() => controller.abort(reason)));
+							}
+						},
+					});
 					try {
 						await expect(journal.listRuns(undefined, { signal: controller.signal })).rejects.toBe(reason);
 						expect(armed).toBe(true);
 						expect(readsAfterAbort).toBe(0);
 					} finally {
-						database.all = all;
-						database.get = get;
+						restore();
 					}
 				} finally {
 					await journal.close();
@@ -293,23 +287,25 @@ for (const backend of storageBackends) {
 					const largestHeaderBytes = Math.max(
 						...headers.map((header) => Buffer.byteLength(JSON.stringify(header))),
 					);
-					const all = database.all.bind(database);
-					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						const rows = await all<Row>(sql, ...params);
-						const bytes = rows.reduce(
-							(total, row) =>
-								total + (typeof row.header_json === "string" ? Buffer.byteLength(row.header_json) : 0),
-							0,
-						);
-						expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024 + largestHeaderBytes);
-						return rows;
-					};
+					let pages = 0;
+					const restore = observeSqlReads(database, {
+						after: (rows) => {
+							if (rows.some((row) => typeof row.header_json === "string")) pages++;
+							const bytes = rows.reduce(
+								(total, row) =>
+									total + (typeof row.header_json === "string" ? Buffer.byteLength(row.header_json) : 0),
+								0,
+							);
+							expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024 + largestHeaderBytes);
+						},
+					});
 					try {
 						expect(await journal.listRuns()).toEqual(
 							[...headers].sort((a, b) => (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0)),
 						);
+						expect(pages).toBeGreaterThan(1);
 					} finally {
-						database.all = all;
+						restore();
 					}
 				} finally {
 					await journal.close();

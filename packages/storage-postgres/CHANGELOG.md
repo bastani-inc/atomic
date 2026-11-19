@@ -11,6 +11,7 @@
 - A URL that names no host, used with `PGHOST`, now gets the same default `sslmode=verify-full` as a URL naming that host when `PGHOST` is not this machine, instead of connecting without TLS ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 - A URL that names this machine in another spelling, such as `127.1`, `localhost.` or `[::ffff:127.0.0.1]`, no longer gets a default `sslmode=verify-full`, which a local server without TLS refused: it is treated as this machine, like `localhost` and `127.0.0.1` ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 - Wake-ups no longer turn off for the rest of the process when the check of the listening connection had to open a new pool connection that took longer than 2 seconds, as through a slow proxy or while a cloud identity issues its first token. The check now waits for its notification only once it was sent ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
+- Paged workflow run listings keep one consistent read view while other connections continue writing, rather than mixing rows from different commits ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 
 ## [0.9.88] - 2026-11-16
 

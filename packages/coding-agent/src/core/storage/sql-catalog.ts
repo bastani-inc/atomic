@@ -6,7 +6,7 @@ import { StoragePayloadTooLargeError } from "./errors.js";
 const CATALOG_PAGE_CHARS = 1024 * 1024;
 const CATALOG_PAGE_ROWS = 256;
 
-interface SqlCatalogReadOptions {
+export interface SqlCatalogReadOptions {
 	readonly sql: string;
 	readonly params?: readonly SqliteValue[];
 	readonly key: string;
@@ -33,12 +33,16 @@ export async function* readSqlCatalogPages<Row extends SqliteRow>(
 	for (;;) {
 		options.assertOpen?.();
 		signal?.throwIfAborted();
-		let page: (Row & { catalog_chars: number | bigint; catalog_row: number | bigint })[];
+		let page: (Row & {
+			catalog_chars: number | bigint;
+			catalog_row: number | bigint;
+			catalog_fetched: number | bigint;
+		})[];
 		try {
-			page = await executor.all<Row & { catalog_chars: number | bigint; catalog_row: number | bigint }>(
+			page = await executor.all<(typeof page)[number]>(
 				`SELECT * FROM (
 					SELECT page.*, sum(${size}) OVER (ORDER BY ${key}) AS catalog_chars,
-						row_number() OVER (ORDER BY ${key}) AS catalog_row
+						row_number() OVER (ORDER BY ${key}) AS catalog_row, count(*) OVER () AS catalog_fetched
 					FROM (SELECT * FROM (${sql}) AS catalog ${after === undefined ? "" : `WHERE ${key} > ?`} ORDER BY ${key} LIMIT ?) AS page
 				) AS sized WHERE catalog_chars <= ? OR catalog_row = 1 ORDER BY ${key}`,
 				...params,
@@ -55,8 +59,16 @@ export async function* readSqlCatalogPages<Row extends SqliteRow>(
 		options.assertOpen?.();
 		signal?.throwIfAborted();
 		if (page.length === 0) return;
-		after = page.at(-1)![key];
-		yield page.map(({ catalog_chars: _chars, catalog_row: _row, ...row }) => row as unknown as Row);
+		const last = page.at(-1)!;
+		const complete =
+			Number(last.catalog_fetched) < limit && Number(last.catalog_row) === Number(last.catalog_fetched);
+		after = last[key];
+		yield page.map(
+			({ catalog_chars: _chars, catalog_row: _row, catalog_fetched: _fetched, ...row }) => row as unknown as Row,
+		);
+		options.assertOpen?.();
+		signal?.throwIfAborted();
+		if (complete) return;
 		await nextTurn();
 	}
 }

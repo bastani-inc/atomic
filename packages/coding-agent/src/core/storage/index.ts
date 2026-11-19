@@ -110,7 +110,6 @@ export type {
 	SessionTail,
 	SessionUsageTotals,
 } from "./session/types.js";
-export * from "./sql-catalog.js";
 export * from "./sqlite-facade.js";
 export type {
 	JoinTeamOptions,
