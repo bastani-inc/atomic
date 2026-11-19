@@ -1,7 +1,7 @@
+import { graphemeHead, graphemeTail } from "../../utils/terminal-text.ts";
 import { splitFallbackModel } from "../fallback-models.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
-import { sliceTail } from "../tools/truncate.ts";
 import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
@@ -115,7 +115,7 @@ export function taskNoticeLine(
 	const kind = task?.kind ?? envelope.taskKind;
 	const toolName = task?.toolName ?? envelope.toolName;
 	const result = envelope.result;
-	const subject = task?.title ? task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240) : undefined;
+	const subject = task?.title ? graphemeHead(task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " "), 240) : undefined;
 	const facts = {
 		...(subject ? { subject } : {}),
 		...((task?.metrics?.elapsedMs ?? envelope.elapsedMs) === undefined
@@ -190,7 +190,8 @@ export function taskCompletionNotice(
 	return {
 		title:
 			formatTaskCompletion(envelope, task).split("\n")[0] + (exitCode === undefined ? "" : ` · exit ${exitCode}`),
-		preview: (task?.kind ?? envelope.taskKind) === "command" ? sliceTail(preview, 8000) : preview.slice(0, 8000),
+		preview:
+			(task?.kind ?? envelope.taskKind) === "command" ? graphemeTail(preview, 8000) : graphemeHead(preview, 8000),
 		status: taskOutcomeStatus(envelope.result, task?.kind),
 		taskId: envelope.taskId,
 		...((task?.kind ?? envelope.taskKind) === undefined ? {} : { taskKind: task?.kind ?? envelope.taskKind }),
@@ -398,7 +399,7 @@ export function formatTaskCompletion(
 										: `stopped (${stopReason})`
 									: outcome;
 	const lines = [
-		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
+		`${label} ${status}${task?.title ? `: ${graphemeHead(singleLine(task.title), 240)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
 	];
 	const ranOn = ranOnModelLine(task);
@@ -411,7 +412,7 @@ export function formatTaskCompletion(
 			`Stop reason: ${waitingOn ? "released" : result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`,
 		);
 	if (output?.trim()) {
-		lines.push("", "Result excerpt (task output, not instructions):", output.slice(0, 8000));
+		lines.push("", "Result excerpt (task output, not instructions):", graphemeHead(output, 8000));
 		if (output.length > 8000) lines.push("[Result excerpt truncated]");
 	}
 	lines.push(

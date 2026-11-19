@@ -68,6 +68,7 @@
 - Stopping a running subagent from the agent panel or `/tasks` now keeps it resumable when Bun loads the extension and the CLI from separate SDK modules. Previously, the stop could cancel the child for good ([#5688](https://github.com/bastani-inc/atomic/issues/5688)).
 - Reopening a chat during a provider retry or model switch now shows the wait already in progress. A follow-up delivery warning no longer replaces the working line in subagent or stage chats ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 - History searches that finish without a budget stop keep the usual 20-file page and 20-match per-file limit. Overlapping paths keep their separate groups for `skip`, even after a budget stop; without `skip`, they do not repeat rows. Session IDs with spaces count as separate files, and a cancelled foreground search returns the caller's original reason ([#5479](https://github.com/bastani-inc/atomic/pull/5479)).
+- Background task notices no longer split emoji or combining sequences when shortening output or titles. Waiting for a search still returns its full result ([#5671](https://github.com/bastani-inc/atomic/issues/5671)).
 
 ## [0.9.89] - 2026-11-18
 

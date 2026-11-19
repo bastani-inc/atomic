@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { graphemeHead } from "../../utils/terminal-text.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { formatSize } from "../tools/truncate.ts";
@@ -71,7 +72,7 @@ export function singleLine(text: string, limit: number): string {
 	const clean = stripVTControlCharacters(text)
 		.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ")
 		.trim();
-	return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
+	return clean.length > limit ? `${graphemeHead(clean, limit - 1)}…` : clean;
 }
 
 export function formatTaskHeartbeatDuration(ms: number): string {

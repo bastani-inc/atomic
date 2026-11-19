@@ -168,6 +168,22 @@ test("explicit background yields at once, and a foreground budget yields when it
 	}
 });
 
+test("a background search's shortened pattern stays whole in its task title (#5671)", async () => {
+	const owner = host(10_000);
+	try {
+		const prefix = "x".repeat(79);
+		const result = await run(
+			searchTool(owner).search,
+			{ pattern: `${prefix}e\u0301`, paths: "history://sessions", wait: { kind: "background" } },
+			pagedRouter(2).context,
+		);
+		const id = (result.details as { observation: { taskId: TaskId } }).observation.taskId;
+		assert.equal((await settledRecord(owner, id)).title, `search ${prefix} in history://sessions`);
+	} finally {
+		await owner.close("session-close");
+	}
+});
+
 test("a history:// search's execution timeout stops it with the URL to continue from", async () => {
 	const owner = host(10_000);
 	try {

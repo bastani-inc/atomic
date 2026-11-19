@@ -10,6 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { graphemeHead } from "../../utils/terminal-text.ts";
 import { formatTimeoutSeconds, longerRunAdvice } from "../tasks/cancel-reason.js";
 import { TaskOutputDecoder } from "../tasks/command-output.js";
 import type { TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
@@ -366,7 +367,7 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 	}
 	const remainingMs = Math.max(1, deadline - performance.now());
 	if (call.owner?.startToolTask !== undefined) {
-		const label = `search ${call.pattern.replace(/\s+/g, " ").slice(0, 80)} in ${call.urls.join(", ")}`;
+		const label = `search ${graphemeHead(call.pattern.replace(/\s+/g, " "), 80)} in ${call.urls.join(", ")}`;
 		const result = await executeSupervisedToolTask(call.owner, {
 			tool: "search",
 			label,
