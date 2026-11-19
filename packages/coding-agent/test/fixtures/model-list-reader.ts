@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import { closeSync, constants, openSync, renameSync, writeSync } from "node:fs";
+import { join } from "node:path";
+import { ModelRuntime } from "../../src/core/model-runtime.js";
+
+const [mode, dir] = process.argv.slice(2);
+assert.ok(dir);
+const modelsPath = join(dir, "models.json");
+const provider = "github-copilot";
+const id = "account-new";
+const entered = Promise.withResolvers<void>();
+const release = Promise.withResolvers<void>();
+let accountReads = 0;
+globalThis.fetch = async (input) => {
+	const path = new URL(input instanceof Request ? input.url : input).pathname;
+	if (path === "/catalog/api.json") return new Response(null, { status: 404 });
+	if (path !== "/account/models") throw new Error(`Unexpected request: ${path}`);
+	accountReads++;
+	if (mode === "reader") {
+		entered.resolve();
+		await release.promise;
+		throw new Error("An ordinary listing should not request the account");
+	}
+	assert.equal(mode, "writer");
+	return Response.json({
+		data: [{ id, model_picker_enabled: true, capabilities: { type: "chat", supports: { tool_calls: true } } }],
+	});
+};
+const runtime = await ModelRuntime.create({
+	authPath: join(dir, "auth.json"),
+	modelsPath,
+	catalogBaseUrl: "http://127.0.0.1:9/catalog",
+	modelRefreshTimeoutMs: mode === "fifo" ? 120 : 30_000,
+});
+if (mode === "fifo") {
+	renameSync(join(dir, "next.fifo"), modelsPath);
+	const rows = await runtime.getAvailable("openrouter");
+	assert.ok(rows.some((model) => model.provider === "openrouter"));
+	// A nonblocking writer fails with ENXIO unless a config read is holding the FIFO open.
+	let configRead = false;
+	try {
+		const fd = openSync(modelsPath, constants.O_WRONLY | constants.O_NONBLOCK);
+		try {
+			configRead = true;
+			writeSync(fd, "{}");
+		} finally {
+			closeSync(fd);
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENXIO") throw error;
+	}
+	console.log(JSON.stringify({ configRead }));
+} else if (mode === "reader") {
+	const listing = runtime.getAvailable(provider);
+	await Promise.race([listing, entered.promise]);
+	console.log("reader ready");
+	await once(process.stdin, "data");
+	process.stdin.pause();
+	release.resolve();
+	await listing;
+	console.log(JSON.stringify({ accountReads }));
+} else if (mode === "writer") {
+	const result = await runtime.refresh({ providers: [provider], allowNetwork: true, force: true });
+	assert.deepEqual([...result.errors.values()], []);
+	assert.equal(accountReads, 1);
+	assert.equal(runtime.getModel(provider, id)?.id, id);
+} else {
+	assert.equal(mode, "reopen");
+	assert.equal(runtime.getModel(provider, id)?.id, id);
+	assert.deepEqual(runtime.getCredentialSnapshot(provider)?.availableModelIds, [id]);
+}

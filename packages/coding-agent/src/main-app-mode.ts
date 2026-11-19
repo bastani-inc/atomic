@@ -52,17 +52,6 @@ export function shouldStartRpcCatalogRefresh(offline: boolean, interactiveEngine
 	return !offline && !interactiveEngineChild;
 }
 
-/** Interactive startup leaves catalogs to its background refresh. Help needs no list. */
-export function startupModelNetwork(
-	parsed: Pick<Args, "help" | "listModels">,
-	mode: AppMode,
-	engineChild: boolean,
-): false | undefined {
-	if (parsed.help) return false;
-	if (parsed.listModels !== undefined) return undefined;
-	return mode === "interactive" || engineChild ? false : undefined;
-}
-
 export async function prepareInitialMessage(
 	parsed: Args,
 	stdinContent?: string,

@@ -62,11 +62,7 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 		refreshToken: RefreshToken = unexpectedRefresh,
 		config: Partial<ProviderConfig> = {},
 	): Promise<ModelRuntime> {
-		const runtime = await ModelRuntime.create({
-			credentials: AuthStorage.create(authPath),
-			modelsPath: null,
-			allowModelNetwork: false,
-		});
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.create(authPath), modelsPath: null });
 		runtime.registerProvider(PROVIDER, { ...extensionOAuthProvider(refreshToken), ...config });
 		await runtime.getAvailable();
 		return runtime;
@@ -253,11 +249,7 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 			refresh: "copilot-refresh",
 			expires: Number.MAX_SAFE_INTEGER,
 		}));
-		const runtime = await ModelRuntime.create({
-			credentials: AuthStorage.create(authPath),
-			modelsPath: null,
-			allowModelNetwork: false,
-		});
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.create(authPath), modelsPath: null });
 		await runtime.refresh({ allowNetwork: false });
 
 		assert.ok(copilotAvailable(runtime).length > 0);
@@ -270,11 +262,7 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 			refresh: "copilot-refresh",
 			expires: Number.MAX_SAFE_INTEGER,
 		}));
-		const runtime = await ModelRuntime.create({
-			credentials: AuthStorage.create(authPath),
-			modelsPath: null,
-			allowModelNetwork: false,
-		});
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.create(authPath), modelsPath: null });
 		await runtime.refresh({ allowNetwork: false });
 		assert.ok(copilotAvailable(runtime).length > 0);
 		const requestedUrls: string[] = [];
@@ -315,11 +303,7 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 			maxTokens: 1_000,
 		};
 		await AuthStorage.create(authPath).modify(gatedProvider, async () => ({ type: "api_key", key: "fixture-key" }));
-		const runtime = await ModelRuntime.create({
-			credentials: AuthStorage.create(authPath),
-			modelsPath: null,
-			allowModelNetwork: false,
-		});
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.create(authPath), modelsPath: null });
 		let gate: Promise<void> | undefined;
 		let release = () => {};
 		let heldChecks = 0;

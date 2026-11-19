@@ -67,7 +67,7 @@ const { session } = await createAgentSession({
 });
 ```
 
-`ModelRuntime.create()` accepts custom `authPath`, `modelsPath`, credential storage, and runtime auth overrides, plus the model-catalog options `allowModelNetwork`, `modelRefreshTimeoutMs`, `modelsStorePath`, and `modelsStore` (see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh)). By default, `createAgentSession()` reads a missing GitHub Copilot or OpenRouter account list to resolve an account-only model. A selected model already in the local catalog starts without waiting for the list. `ModelRegistry` and `AuthStorage` remain available as Atomic's synchronous compatibility facades. Use `readStoredCredential(provider, authPath?)` for a lightweight read of one stored provider credential.
+`ModelRuntime.create()` accepts custom `authPath`, `modelsPath`, credential storage, and runtime auth overrides, plus the model-catalog options `allowModelNetwork`, `modelRefreshTimeoutMs`, `modelsStorePath`, and `modelsStore` (see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh)). `ModelRegistry` and `AuthStorage` remain available as Atomic's synchronous compatibility facades. Use `readStoredCredential(provider, authPath?)` for a lightweight read of one stored provider credential.
 
 Use `await resolveRestoredModelReference(provider, modelId, modelRuntime)` to resolve a saved model without selecting a settings default. It returns the authenticated exact model, reconstructs eligible custom or dynamic IDs, or returns `undefined` when restoration is unavailable. Import it from `@bastani/atomic` and check the result before creating a session when restoration must not fall back to another model.
 

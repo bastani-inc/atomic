@@ -61,7 +61,6 @@ import type {
 	TranscriptContext,
 	Usage,
 } from "./types.ts";
-import { AccountListRequests } from "./providers/account-model-list.ts";
 import { operationSignal, raceWithAbortSignal } from "./utils/abort.ts";
 import { type ClientIdentity, getOpenCodeSessionHeaders, mergeClientIdentity } from "./utils/identity.ts";
 import {
@@ -102,8 +101,6 @@ export interface ModelsPublication {
 }
 
 export interface RefreshModelsContext {
-	/** Share identical account-list requests made by concurrent missing-list refreshes. */
-	fetchAccountModelList?: AccountListRequests["get"];
 	/** Effective configured credential. OAuth credentials are refreshed before network access. */
 	credential?: Credential;
 	/** Immutable provider-scoped catalog snapshot captured before this refresh phase. */
@@ -408,22 +405,13 @@ export interface Models {
 }
 
 export interface MutableModels extends Models {
-	refresh(options?: ModelsRefreshOptions, policy?: ProviderRefreshPolicy): Promise<ModelsRefreshResult>;
 	/** Upsert/replace by provider.id. Provider ids are unique. */
 	setProvider(provider: Provider): void;
 	deleteProvider(id: string): void;
 	clearProviders(): void;
 }
 
-interface ProviderRefreshPolicy {
-	missingOnly?: boolean;
-	onProviderSettled?(id: string): void;
-	cacheOnlyProvider?: string;
-}
-
 export interface CreateModelsOptions {
-	/** Observe account-list restores and publications, including a provider's memory-only network result. */
-	onModelListPresence?(id: string, present: boolean): void;
 	credentials?: CredentialStore;
 	modelsStore?: ModelsStore;
 	authContext?: AuthContext;
@@ -488,13 +476,11 @@ class ModelsImpl implements MutableModels {
 	private refreshGenerations = new Map<string, number>();
 	private refreshControllers = new Map<string, AbortController>();
 	private publicationChains = new Map<string, Promise<unknown>>();
-	private onModelListPresence?: CreateModelsOptions["onModelListPresence"];
 
 	constructor(options?: CreateModelsOptions) {
 		this.credentials = options?.credentials ?? new InMemoryCredentialStore();
 		this.modelsStore = options?.modelsStore ?? new InMemoryModelsStore();
 		this.authContext = options?.authContext ?? defaultAuthContext();
-		this.onModelListPresence = options?.onModelListPresence;
 		this.identity = options?.identity;
 	}
 
@@ -617,7 +603,6 @@ class ModelsImpl implements MutableModels {
 			}
 
 			if (signal.aborted || this.refreshGenerations.get(providerId) !== generation) return false;
-			if (publication.persist) this.onModelListPresence?.(providerId, true);
 			publication.update?.();
 			return true;
 		})();
@@ -636,24 +621,13 @@ class ModelsImpl implements MutableModels {
 		force: boolean | undefined,
 		generation: number,
 		signal: AbortSignal,
-		requests?: AccountListRequests,
-	): Promise<boolean> {
+	): Promise<void> {
 		const stored = await this.modelsStore.read(provider.id, { signal });
-		if (!signal.aborted && provider.refreshModelsAuth !== "configured") {
-			this.onModelListPresence?.(provider.id, stored !== undefined);
-		}
-		if (requests && stored !== undefined) allowNetwork = false;
 		const refreshed = allowNetwork ? credential : undefined;
-		let publishedInMemory = false;
 		await provider.refreshModels({
-			...(requests && allowNetwork ? { fetchAccountModelList: requests.get } : {}),
 			credential,
 			stored: stored ? withKnownModelTypes(structuredClone(stored)) : undefined,
-			publish: async (publication) => {
-				const applied = await this.publishProviderModels(provider.id, generation, signal, publication);
-				if (applied && publication.update) publishedInMemory = publication.persist === undefined;
-				return applied;
-			},
+			publish: (publication) => this.publishProviderModels(provider.id, generation, signal, publication),
 			allowNetwork,
 			force: allowNetwork ? force : undefined,
 			signal,
@@ -662,9 +636,6 @@ class ModelsImpl implements MutableModels {
 				? { updateCredential: (update) => this.updateRefreshCredential(provider.id, refreshed, update, signal) }
 				: {}),
 		});
-		// A provider may publish in several steps. A listing must still join the refresh until its final result.
-		if (allowNetwork && publishedInMemory && !signal.aborted) this.onModelListPresence?.(provider.id, true);
-		return stored === undefined;
 	}
 
 	/** See `RefreshModelsContext.updateCredential`. */
@@ -686,7 +657,7 @@ class ModelsImpl implements MutableModels {
 		}
 	}
 
-	async refresh(options: ModelsRefreshOptions = {}, policy?: ProviderRefreshPolicy): Promise<ModelsRefreshResult> {
+	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
 		const allowNetwork = options.allowNetwork ?? true;
 		const callerSignal = operationSignal(options.signal);
 		const errors = new Map<string, Error>();
@@ -702,7 +673,6 @@ class ModelsImpl implements MutableModels {
 			refreshable.map(async (provider) => {
 				const { generation, controller } = this.beginProviderRefresh(provider.id);
 				const signal = AbortSignal.any([callerSignal, controller.signal]);
-				let requests: AccountListRequests | undefined;
 				const operation = (async () => {
 					let storedCredential: Credential | undefined;
 					let credentialError: unknown;
@@ -713,23 +683,12 @@ class ModelsImpl implements MutableModels {
 					}
 
 					// Restore cached provider state before auth resolution or network access.
-					const missing = await this.runProviderRefreshPhase(
-						provider, storedCredential, false, undefined, generation, signal,
-					);
+					await this.runProviderRefreshPhase(provider, storedCredential, false, undefined, generation, signal);
 					if (credentialError !== undefined) throw credentialError;
-					if (
-						!allowNetwork ||
-						signal.aborted ||
-						(!missing && (policy?.cacheOnlyProvider === provider.id || policy?.missingOnly))
-					) {
-						return;
-					}
+					if (!allowNetwork || signal.aborted) return;
 
 					const network = await this.resolveNetworkRefresh(provider, storedCredential, signal);
-					if (!network || signal.aborted) return;
-					if (policy?.missingOnly && network.credential) {
-						requests = new AccountListRequests(provider.id, provider.baseUrl, network.credential);
-					}
+					if (!network) return;
 					await this.runProviderRefreshPhase(
 						provider,
 						network.credential,
@@ -737,7 +696,6 @@ class ModelsImpl implements MutableModels {
 						options.force,
 						generation,
 						signal,
-						requests,
 					);
 				})();
 
@@ -756,8 +714,6 @@ class ModelsImpl implements MutableModels {
 					if (this.refreshControllers.get(provider.id) === controller) {
 						this.refreshControllers.delete(provider.id);
 					}
-					requests?.close();
-					policy?.onProviderSettled?.(provider.id);
 				}
 			}),
 		);

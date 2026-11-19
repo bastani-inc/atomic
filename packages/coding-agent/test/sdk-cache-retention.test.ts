@@ -85,7 +85,7 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 			key: provider === "openai" ? "sk-test-key" : "test-key",
 		}));
 	}
-	const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+	const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null });
 	const gpt4o = getModel("openai", "gpt-4o");
 	const gpt5 = getModel("openai", "gpt-5");
 	const sonnet = getModel("amazon-bedrock", "anthropic.claude-sonnet-4-5-20250929-v1:0");

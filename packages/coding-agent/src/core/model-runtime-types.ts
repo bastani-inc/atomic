@@ -7,11 +7,11 @@ export interface CreateModelRuntimeOptions {
 	modelsPath?: string | null;
 	modelsStore?: ModelsStore;
 	modelsStorePath?: string;
-	/** True refreshes all catalogs on create; false disables automatic reads. By default, only a needed missing list is fetched. */
+	/** Allow create() to refresh model catalogs over the network. Defaults to false. */
 	allowModelNetwork?: boolean;
-	/** Deadline for network catalog refresh on create or the automatic read of a missing model list. */
+	/** Timeout for the create-time network model refresh. */
 	modelRefreshTimeoutMs?: number;
-	/** Skip the initial catalog and availability refresh. No missing list is inferred until a restore observes one. */
+	/** Skip the initial catalog and availability refresh. Static models remain available. */
 	refreshOnCreate?: boolean;
 	/** Base URL of the models.dev catalog (`<url>/api.json`) refreshes read. Default: `ATOMIC_MODEL_CATALOG_URL`, else https://models.dev. */
 	catalogBaseUrl?: string;

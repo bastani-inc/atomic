@@ -148,8 +148,6 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		credentials: authStorage,
 		modelsPath: null,
 		modelsStore: new InMemoryCodingAgentModelsStore(),
-		// The faux provider can take a real provider's id; nothing here reads a model list from the network.
-		allowModelNetwork: false,
 	});
 	if (withConfiguredAuth) {
 		modelRuntime.registerProvider(model.provider, {

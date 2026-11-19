@@ -57,8 +57,6 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
-	/** Interactive hosts leave catalog I/O to their existing background refresh. */
-	allowModelNetwork?: boolean;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -199,7 +197,6 @@ async function prepareOwnedAgentSessionServices(
 		(await ModelRuntime.create({
 			authPath: join(agentDir, "auth.json"),
 			modelsPath: join(agentDir, "models.json"),
-			allowModelNetwork: options.allowModelNetwork,
 		}));
 	endTimingSpan(modelRuntimeSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
@@ -282,9 +279,10 @@ export async function createAgentSessionFromServices(
 export function createUnstartedAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 	persistInitialState = true,
+	recoverMissingModel = false,
 ): Promise<CreateAgentSessionResult> {
 	return createSessionFromServices(options, (sessionOptions) =>
-		createUnstartedAgentSession(sessionOptions, persistInitialState),
+		createUnstartedAgentSession(sessionOptions, persistInitialState, recoverMissingModel),
 	);
 }
 

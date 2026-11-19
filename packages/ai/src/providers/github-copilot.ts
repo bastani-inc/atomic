@@ -15,7 +15,6 @@ import { createProvider, type Provider, type RefreshModelsContext } from "../mod
 import type { AnyModel, Api, Model, ProviderClassifier } from "../types.ts";
 import { providerHeadersToRecord } from "../utils/headers.js";
 import { isModelType } from "../utils/model-operations.ts";
-import { fetchAccountModelList } from "./account-model-list.ts";
 import { GITHUB_COPILOT_CLASSIFIER_MODELS, GITHUB_COPILOT_MODELS } from "./github-copilot.models.js";
 import {
 	GITHUB_COPILOT_INDIVIDUAL_BASE_URL as GITHUB_COPILOT_BASE_URL,
@@ -227,7 +226,7 @@ export function parseGitHubCopilotDiscoveredModels(raw: unknown, catalog: readon
 }
 
 async function accountModelListRequest(
-	context: RefreshModelsContext,
+	context: Pick<RefreshModelsContext, "credential" | "baseUrl">,
 ): Promise<{ token: string; baseUrl: string } | undefined> {
 	const credential = context.credential;
 	if (credential?.type === "oauth") {
@@ -266,24 +265,23 @@ async function saveAccountModelLists(context: RefreshModelsContext, raw: unknown
 }
 
 /** The account's `GET /models` response and the host that answered it, or undefined when the host refuses the token. */
-async function readAccountModelList(
-	context: RefreshModelsContext,
+export async function readGitHubCopilotAccountModelList(
+	context: Pick<RefreshModelsContext, "credential" | "baseUrl" | "signal">,
 ): Promise<{ raw: unknown; baseUrl: string } | undefined> {
 	const request = await accountModelListRequest(context);
 	if (!request) return undefined;
-	const response = await (context.fetchAccountModelList ?? fetchAccountModelList)(
-		`${request.baseUrl.replace(/\/+$/, "")}/models`,
-		{
+	const response = await fetch(`${request.baseUrl.replace(/\/+$/, "")}/models`, {
+		headers: {
 			Accept: "application/json",
 			Authorization: `Bearer ${request.token}`,
 			...copilotClientHeaders(request.token),
 			"X-GitHub-Api-Version": COPILOT_API_VERSION,
 		},
-		AbortSignal.any([context.signal, AbortSignal.timeout(GITHUB_COPILOT_MODELS_TIMEOUT_MS)]),
-	);
+		signal: AbortSignal.any([context.signal, AbortSignal.timeout(GITHUB_COPILOT_MODELS_TIMEOUT_MS)]),
+	});
 	if ([400, 401, 403, 404].includes(response.status)) return undefined;
 	if (!response.ok) throw new Error(`GitHub Copilot model list request failed: ${response.status}`);
-	return { raw: response.body, baseUrl: request.baseUrl };
+	return { raw: await response.json(), baseUrl: request.baseUrl };
 }
 
 /**
@@ -303,7 +301,7 @@ export async function discoverGitHubCopilotModels(
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
 ): Promise<Model<Api>[] | undefined> {
-	const list = await readAccountModelList(context);
+	const list = await readGitHubCopilotAccountModelList(context);
 	if (!list) return undefined;
 	const models = parseGitHubCopilotDiscoveredModels(list.raw, catalog);
 	await saveAccountModelLists(context, list.raw, list.baseUrl);
@@ -318,7 +316,7 @@ export async function discoverGitHubCopilotModels(
  */
 export async function refreshGitHubCopilotAccountModelLists(context: RefreshModelsContext): Promise<void> {
 	if (!context.allowNetwork || context.credential?.type !== "api_key") return;
-	const list = await readAccountModelList(context);
+	const list = await readGitHubCopilotAccountModelList(context);
 	if (list) await saveAccountModelLists(context, list.raw, list.baseUrl);
 }
 

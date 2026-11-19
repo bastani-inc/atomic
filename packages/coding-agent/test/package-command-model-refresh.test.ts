@@ -56,26 +56,6 @@ describe("atomic update --models", () => {
 		expect(urls.some((url) => url.includes("pi.dev"))).toBe(false);
 	});
 
-	it("reads an uncached account model list only in its own forced refresh (#5685)", async () => {
-		writeFileSync(
-			join(agentDir, "auth.json"),
-			JSON.stringify({ "github-copilot": { type: "api_key", key: "github_pat_example_token" } }),
-		);
-		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			const url = (input instanceof Request ? input : new Request(input, init)).url;
-			return url.endsWith("/models")
-				? Response.json({ object: "list", data: [] })
-				: new Response("unavailable", { status: 501 });
-		});
-
-		await refreshModelCatalogs(agentDir);
-
-		const urls = fetchMock.mock.calls.map(
-			([input, init]) => (input instanceof Request ? input : new Request(input, init)).url,
-		);
-		expect(urls.filter((url) => url.endsWith("/models"))).toHaveLength(1);
-	});
-
 	it("loads and force-refreshes Atomic extension providers", async () => {
 		let factoryCalls = 0;
 		let refreshCalls = 0;

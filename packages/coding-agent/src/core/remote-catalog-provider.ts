@@ -366,7 +366,11 @@ function withSavedModels(entry: ModelsStoreEntry, saved: readonly AnyModel[]): M
  * models stay. The catalog always wins: a discovered ID the catalog also lists is dropped, so a
  * curated entry is never replaced.
  */
-export function withDiscoveredModels(provider: Provider, discover: DiscoverModels): Provider {
+export function withDiscoveredModels(
+	provider: Provider,
+	discover: DiscoverModels,
+	cache?: { missing: boolean },
+): Provider {
 	let discovered: readonly AnyModel[] = [];
 	const catalogModels = (): readonly AnyModel[] => provider.getAllModels?.() ?? provider.getModels();
 	const withDiscovered = (catalog: readonly AnyModel[]): AnyModel[] => {
@@ -392,6 +396,7 @@ export function withDiscoveredModels(provider: Provider, discover: DiscoverModel
 				!(await context.publish({
 					update: () => {
 						discovered = saved;
+						if (cache) cache.missing = !context.allowNetwork && stored === undefined;
 					},
 				}))
 			) {

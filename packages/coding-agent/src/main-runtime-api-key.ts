@@ -15,5 +15,5 @@ export async function applyCliRuntimeApiKey(
 	// caller asks for freshness explicitly for this provider. Keep startup local-only
 	// by retaining allowNetwork: false; the same operation signal governs auth and refresh.
 	await modelRuntime.refresh({ providers: [providerId], allowNetwork: false, signal });
-	await modelRuntime.getAvailable(undefined, { cacheOnly: true });
+	await modelRuntime.getAvailable();
 }

@@ -40,16 +40,10 @@ describe("ModelRuntime catalog SDK documentation", () => {
 		);
 	});
 
-	test("documented allowModelNetwork values match the implementation (#5685)", () => {
-		assert.match(
-			sdkDocs,
-			/- Omitted \(the default\): when a configured provider whose model list depends on your account/u,
-		);
-		assert.match(sdkDocs, /- `true`: create\(\) refreshes every catalog over the network\./u);
-		assert.match(sdkDocs, /- `false`: the runtime never fetches a model catalog by itself\./u);
-		// Only an explicit true refreshes every catalog; only an omitted value reads missing account lists.
-		assert.match(modelRuntimeSource, /options\.allowModelNetwork === true/u);
-		assert.match(modelRuntimeSource, /options\.allowModelNetwork === undefined/u);
+	test("documented allowModelNetwork default of false matches the implementation", () => {
+		assert.match(sdkDocs, /`allowModelNetwork` \(default `false`\)/u);
+		// Only an explicit true opts in; every other value — including omitted — stays offline.
+		assert.match(modelRuntimeSource, /const refreshFromNetwork = allowModelNetwork === true/u);
 	});
 
 	test("documented four-hour throttle matches REMOTE_CATALOG_REFRESH_INTERVAL_MS", () => {

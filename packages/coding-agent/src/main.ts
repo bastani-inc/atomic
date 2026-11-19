@@ -62,13 +62,11 @@ import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.t
 import { formatModelLabel } from "./core/model-label.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { findInitialModel, resolveModelScopeWithDiagnostics, uncachedCopilotModelHint } from "./core/model-resolver.ts";
-import { findPreferredAvailableModel, hasLocalStartupModel } from "./core/model-resolver-defaults.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { startupProjectTrust } from "./core/project-trust-state.ts";
-import { providerOfModelReference } from "./core/removed-providers.ts";
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
@@ -100,7 +98,6 @@ import {
 	resolveCliPaths,
 	resolveExcludedToolsForAppMode,
 	shouldStartRpcCatalogRefresh,
-	startupModelNetwork,
 	toPrintOutputMode,
 } from "./main-app-mode.ts";
 import {
@@ -633,7 +630,6 @@ export async function main(argv: string[], options?: MainOptions) {
 			cwd,
 			agentDir,
 			settingsManager: startupSettingsManager,
-			allowModelNetwork: startupModelNetwork(parsed, appMode, engineEnv.child === "1"),
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderOptions: {
 				additionalExtensionPaths: resolvedExtensionPaths,
@@ -665,7 +661,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				resourceLoader.getExtensions().extensions.flatMap((extension) => Array.from(extension.flags.values())),
 			);
 		} else {
-			await Promise.all(modelRuntime.getProviders().map((p) => modelRuntime.refreshMissingModelList(p.id)));
 			await listModels(
 				modelRuntime,
 				typeof parsed.listModels === "string" ? parsed.listModels : undefined,
@@ -792,8 +787,6 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const builtinPackagePaths = options?.builtinPackagePaths;
 	const trustPromptMode: AppMode = appMode;
-	let rpcSelectionRefresh: string | undefined;
-	let printCatalog: AbortController | undefined;
 	// Decisions made in this host session. An engine the host started to replace one that stopped is handed the
 	// decisions of the one it replaces, so nobody is asked twice.
 	const projectTrustByCwd = new Map<string, boolean>(Object.entries(engineEnv.trustDecisions?.projects ?? {}));
@@ -903,7 +896,6 @@ export async function main(argv: string[], options?: MainOptions) {
 			cwd,
 			agentDir,
 			settingsManager: runtimeSettingsManager,
-			allowModelNetwork: startupModelNetwork(parsed, appMode, engineEnv.child === "1"),
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions: deferExtensions
 				? { deferExtensions: true, deferResources: true }
@@ -1005,77 +997,24 @@ export async function main(argv: string[], options?: MainOptions) {
 				? undefined
 				: (parsed.models ?? settingsManager.getEnabledModels());
 			const deferModelScopeDiagnostics = deferExtensions || deferStartupTrust;
+			const { scopedModels, diagnostics: modelScopeDiagnostics } =
+				modelPatterns && modelPatterns.length > 0
+					? await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime)
+					: { scopedModels: [], diagnostics: [] };
+			if (!deferModelScopeDiagnostics) {
+				diagnostics.push(...modelScopeDiagnostics);
+			}
 			const sessionArgs = isolateInteractiveHost
 				? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined }
 				: parsed;
 			const sessionContext = sessionManager.buildSessionContext();
 			const continuingConversation = sessionContext.messages.length > 0;
-			const select = async () => {
-				const { scopedModels, diagnostics: scopeDiagnostics } = modelPatterns?.length
-					? await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime)
-					: { scopedModels: [], diagnostics: [] };
-				return {
-					...buildSessionOptions(sessionArgs, scopedModels, continuingConversation, modelRuntime, settingsManager),
-					scopeDiagnostics,
-				};
-			};
-			let selection = await select();
-			const qualified = parsed.model ?? modelPatterns?.[0];
-			const hasSelector = !!qualified || !!parsed.provider;
-			const provider =
-				selection.options.model?.provider ??
-				(hasSelector
-					? ((parsed.model ? parsed.provider : undefined) ??
-						(qualified ? providerOfModelReference(qualified) : undefined))
-					: ((continuingConversation ? sessionContext.model?.provider : undefined) ??
-						settingsManager.getDefaultProvider() ??
-						(!parsed.apiKey && (appMode === "print" || appMode === "json")
-							? findPreferredAvailableModel(modelRuntime.getAvailableSnapshot())?.provider
-							: undefined)));
-			const selectedId =
-				selection.options.model?.id ??
-				(!hasSelector
-					? ((continuingConversation ? sessionContext.model?.modelId : undefined) ??
-						settingsManager.getDefaultModel())
-					: undefined);
-			// Exact and provider-only selections use the local catalog. A synthesized model still needs its own metadata.
-			const localModel =
-				provider &&
-				hasLocalStartupModel(
-					modelRuntime,
-					provider,
-					selectedId,
-					!hasSelector && !!settingsManager.getDefaultProvider(),
-				);
-			let keyProvider: string | undefined;
-			// An unresolved single qualified CLI scope still identifies the provider for its own list.
-			const qualifiedScope =
-				!parsed.model && parsed.models?.length === 1 && providerOfModelReference(parsed.models[0]!);
-			if (
-				provider &&
-				!localModel &&
-				!deferStartupTrust &&
-				!deferExtensions &&
-				(!parsed.apiKey || selection.options.model || qualifiedScope === provider) &&
-				modelRuntime.needsModelList(provider, !!parsed.apiKey)
-			) {
-				if (parsed.apiKey) {
-					await applyCliRuntimeApiKey(
-						modelRuntime,
-						provider,
-						parsed.apiKey,
-						AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS),
-					);
-					keyProvider = provider;
-				}
-				if (await modelRuntime.refreshMissingModelList(provider)) {
-					if (appMode === "rpc") rpcSelectionRefresh = normalizeProviderId(provider);
-					selection = await select();
-				}
-			}
-			const { options: sessionOptions, cliThinkingFromModel, scopeDiagnostics: modelScopeDiagnostics } = selection;
-			if (!deferModelScopeDiagnostics) diagnostics.push(...modelScopeDiagnostics);
-			if (!deferStartupTrust) diagnostics.push(...selection.diagnostics);
+			const {
+				options: sessionOptions,
+				cliThinkingFromModel,
+				diagnostics: sessionOptionDiagnostics,
+			} = buildSessionOptions(sessionArgs, scopedModels, continuingConversation, modelRuntime, settingsManager);
+			if (!deferStartupTrust) diagnostics.push(...sessionOptionDiagnostics);
 			const retriedEagerly = eagerRetrySavedThinkingLevels.has(sessionManager);
 			const savedThinkingLevel = retriedEagerly
 				? eagerRetrySavedThinkingLevels.get(sessionManager)
@@ -1091,18 +1030,12 @@ export async function main(argv: string[], options?: MainOptions) {
 			}
 
 			if (parsed.apiKey && !isolateInteractiveHost && !deferStartupTrust) {
-				if (keyProvider && keyProvider !== sessionOptions.model?.provider) {
-					await modelRuntime.removeRuntimeApiKey(keyProvider, {
-						refreshCatalog: false,
-						signal: AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS),
-					});
-				}
 				if (!sessionOptions.model) {
 					diagnostics.push({
 						type: "error",
 						message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 					});
-				} else if (sessionOptions.model.provider !== keyProvider) {
+				} else {
 					// Bound the complete CLI key operation—from credential mutation through
 					// provider-scoped catalog refresh—with the established model-refresh budget.
 					const apiKeySignal = AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);
@@ -1130,12 +1063,14 @@ export async function main(argv: string[], options?: MainOptions) {
 					customTools: sessionOptions.customTools,
 				},
 				!isolateInteractiveHost && !deferStartupTrust,
+				appMode === "print" &&
+					!offlineMode &&
+					!parsed.model &&
+					!parsed.provider &&
+					!parsed.models &&
+					!parsed.apiKey,
 			);
 			startupSession = created.session;
-			if (localModel && (appMode === "print" || appMode === "json") && startupSession.model) {
-				printCatalog = new AbortController();
-				void modelRuntime.refreshMissingModelList(startupSession.model.provider, printCatalog.signal);
-			}
 			services.projectTrust = {
 				get pending() {
 					return startupTrustPending;
@@ -1398,7 +1333,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		// eager unbounded refresh can hold credential locks and lend its in-flight
 		// promise to later cache-only or timed refreshes.
 		if (shouldStartRpcCatalogRefresh(offlineMode, isInteractiveEngineChild())) {
-			void modelRuntime.refresh({}, rpcSelectionRefresh).catch(() => {});
+			void modelRuntime.refresh().catch(() => {});
 		}
 		printTimings();
 		await runRpcMode(runtime, {
@@ -1495,7 +1430,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
-		}).finally(() => printCatalog?.abort());
+		});
 		stopThemeWatcher();
 		restoreStdout();
 		if (exitCode !== 0) {

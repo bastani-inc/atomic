@@ -122,15 +122,12 @@ if (auto) {
 
 `ModelRuntime.create()` restores cached catalogs from local persistence but does not download
 the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_MODEL_CATALOG_URL`) to read
-`<url>/api.json` from your own models.dev mirror instead of https://models.dev.
+`<url>/api.json` from your own models.dev mirror instead of https://models.dev. `allowModelNetwork` (default `false`) enables a create-time network
+refresh, and `modelRefreshTimeoutMs` (default `15_000`) bounds how long that refresh may run
+before it is aborted. Pass `refreshOnCreate: false` to skip the initial catalog and
+availability refresh entirely; built-in models remain available.
 
-`allowModelNetwork` decides what the runtime fetches by itself:
-
-- Omitted (the default): when a configured provider whose model list depends on your account has no cached list, selecting that provider in `createAgentSession()` or listing it with `getAvailable()`, `getAllAvailable()` or `getAvailableOfType()` runs its normal catalog refresh once. When the selected model already resolves locally, the session starts while the list refreshes in the background. An existing list, even an old or empty one, makes no additional request. `ModelRuntime.create()` itself only restores the cache; a synchronous `getModel()` reads that snapshot. To discover an account-only model directly, first `await runtime.getAvailable(provider)`. Concurrent reads of the same account endpoint with identical request headers share the response. A slow restore does not keep other accounts' responses alive. A provider-scoped listing also notices a credential added since the cache was restored. Persistence, filtering and advice are the same as for an explicit refresh.
-- `true`: create() refreshes every catalog over the network.
-- `false`: the runtime never fetches a model catalog by itself.
-
-`modelRefreshTimeoutMs` (default `15_000`) bounds the create-time network refresh and each automatic missing-list wait. `createAgentSession({ signal })` and availability listings accept a caller signal. When the read times out, is cancelled, or fails, model selection still has its ordinary fallback. Offline mode does not start the read. `refreshOnCreate: false` skips the initial restore: a listing does not probe the store or start a download until a normal restore (for example during session creation) actually observes a missing row.
+If `createAgentSession()` cannot select a saved GitHub Copilot model and no catalog is cached for that provider, it tries the account's model list once. Only that session uses the result. The request does not update `models-store.json`, credential metadata or model listings. A supplied `model` is used as-is. Pass `signal` to `createAgentSession()` to stop waiting, or create the runtime with `allowModelNetwork: false` to disable this lookup. An offline, cancelled or failed lookup keeps the usual local fallback.
 
 ```typescript
 const refreshedRuntime = await ModelRuntime.create({

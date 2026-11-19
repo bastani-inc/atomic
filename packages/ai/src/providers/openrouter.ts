@@ -7,7 +7,6 @@ import { loadOpenRouterOAuth } from "../auth/oauth/load.ts";
 import { createProvider, type Provider, type RefreshModelsContext } from "../models.ts";
 import type { AnyModel } from "../types.ts";
 import { isModelType } from "../utils/model-operations.ts";
-import { fetchAccountModelList } from "./account-model-list.ts";
 import { OPENROUTER_CLASSIFIER_MODELS, OPENROUTER_IMAGE_MODELS, OPENROUTER_MODELS } from "./openrouter.models.ts";
 import { type OpenRouterModel, openRouterCost } from "./openrouter-api.ts";
 
@@ -28,14 +27,13 @@ export async function personalizeOpenRouterCatalog(
 ): Promise<readonly AnyModel[]> {
 	const key = context.credential?.type === "oauth" ? context.credential.access : context.credential?.key;
 	if (!key) return catalog;
-	const response = await (context.fetchAccountModelList ?? fetchAccountModelList)(
-		`${(context.baseUrl ?? OPENROUTER_BASE_URL).replace(/\/+$/, "")}/models/user`,
-		{ accept: "application/json", authorization: `Bearer ${key}` },
-		AbortSignal.any([context.signal, AbortSignal.timeout(OPENROUTER_USER_MODELS_TIMEOUT_MS)]),
-	);
+	const response = await fetch(`${(context.baseUrl ?? OPENROUTER_BASE_URL).replace(/\/+$/, "")}/models/user`, {
+		headers: { accept: "application/json", authorization: `Bearer ${key}` },
+		signal: AbortSignal.any([context.signal, AbortSignal.timeout(OPENROUTER_USER_MODELS_TIMEOUT_MS)]),
+	});
 	if (response.status === 401 || response.status === 403 || response.status === 404) return catalog;
 	if (!response.ok) throw new Error(`OpenRouter model list request failed: ${response.status}`);
-	const body = response.body;
+	const body: unknown = await response.json();
 	if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
 		throw new Error("Invalid OpenRouter model list response");
 	}

@@ -175,7 +175,7 @@ Keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence. 
 
 Copilot includes `github-copilot/gpt-6.1-sol` and `github-copilot/gpt-6-astra`, for example `atomic --model github-copilot/gpt-6.1-sol:high`. Their context windows and reasoning levels are in [OpenAI built-in models](/models/reference#openai-built-in-models). The account's model list still controls availability, so a bundled model does not guarantee that Copilot has enabled it for your account.
 
-Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. When no list is cached yet, `atomic -p`, JSON and RPC mode, `--list-models` and SDK sessions read it themselves. A session starts immediately on a selected model already in its local catalog; the list refreshes in the background. Selecting an account-only model can wait up to 15 seconds for the list. A cached list needs no additional request. Standalone RPC reads a missing list needed for model selection after extensions have registered their providers. Other providers keep their normal background refresh; they do not hold up the RPC session. When a refresh cannot read the list, for example because the host refuses the token, the models cached before stay. A model found this way:
+Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. When a refresh cannot read the list, for example because the host refuses the token, the models cached before stay. A model found this way:
 
 - keeps the exact ID the account advertises, which is sent upstream unchanged, and is named by the display name the account's list gives it (the ID when the list gives none); `/model` shows that name in the selected model's `Model Name` line, and in a dim column beside the ID when it adds words the ID lacks
 - is marked `discovered: true` in the catalog; its limits, image input, reasoning efforts and adaptive thinking come from the account's list, and `modelOverrides` adjusts them like any other model
@@ -183,7 +183,7 @@ Atomic reads the account's model list on every network catalog refresh (at inter
 - never replaces a bundled entry with the same ID, which keeps its curated metadata
 - is skipped when the account disables its policy, hides it from the model picker, or does not list tool-call support
 
-A Copilot fast model appears only when the account's list advertises its exact ID, and like any discovered model it takes its limits and capabilities from its own entry. It is an ordinary model unless the list names its base model in the entry's `family` field, in which case it pairs with that base as its fast variant. Each refresh also updates the model lists saved with your OAuth login or saved API key, which decide what it is offered, so a model the refresh finds is offered at once, and models found with another login are not offered to yours. If the configured default model, or the fast model of a resumed session, is a Copilot model that is not cached yet, Atomic stops with a message instead of switching models. If the cached list does not contain the model, use `atomic update --models` with network access to refresh it, or choose another model.
+A Copilot fast model appears only when the account's list advertises its exact ID, and like any discovered model it takes its limits and capabilities from its own entry. It is an ordinary model unless the list names its base model in the entry's `family` field, in which case it pairs with that base as its fast variant. Each refresh also updates the model lists saved with your OAuth login or saved API key, which decide what it is offered, so a model the refresh finds is offered at once, and models found with another login are not offered to yours. If an SDK session or `atomic -p` cannot resolve a saved Copilot model and there is no cached catalog, it reads the account list once and uses the advertised model for that session only. If the model still cannot be selected, Atomic reports it instead of silently switching. To update the shared model list, run `atomic update --models`.
 
 #### Which models are shown
 
@@ -193,7 +193,7 @@ The lists are saved with the credential: for an API key, in `auth.json` beside t
 
 Atomic hides nothing on a guess:
 
-- Until a refresh has read the list with the credential, for example an offline first start, the whole bundled catalog and any models cached before are offered. A list that cannot be read within 15 seconds counts as not read.
+- Until a refresh has read the list with the credential, for example an offline first start, the whole bundled catalog and any models cached before are offered.
 - When a refresh cannot read the list (offline, the host refuses the token with a `401`, or a network error), nothing new is hidden. A credential whose list was read earlier keeps the lists it saved.
 - An API key whose list names no usable model keeps showing the whole catalog.
 - Models you define in `models.json` are never hidden.
@@ -305,7 +305,7 @@ Authenticate with `/login openrouter` or `OPENROUTER_API_KEY`.
 
 With a key, Atomic lists only the OpenRouter chat models that key may use, with the key's context size, max output, and prices. These come from OpenRouter's `/models/user` endpoint and reflect guardrails and provider restrictions set in OpenRouter. Image and classifier models are not filtered.
 
-Atomic refreshes the list in the background at interactive startup, when `/model` opens, after `/login`, and on `atomic update --models`. The last list is saved and used offline, in `atomic -p`, and in RPC mode. When no list has been saved yet, `atomic -p`, JSON and RPC mode, `--list-models` and SDK sessions read it once before they pick a model. If you switch keys outside `/login`, the previous key's list stays until the next refresh. A session saved with a model that the current key does not list still restores.
+Atomic refreshes the list in the background at interactive startup, when `/model` opens, after `/login`, and on `atomic update --models`. The last list is saved and used offline, in `atomic -p`, and in RPC mode. If you switch keys outside `/login`, the previous key's list stays until the next refresh. A session saved with a model that the current key does not list still restores.
 
 Regional endpoints filter models to their region. To use one, set the base URL in [`models.json`](/models/reference#overriding-built-in-providers):
 
