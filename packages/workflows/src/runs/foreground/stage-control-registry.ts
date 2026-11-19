@@ -387,6 +387,8 @@ export interface StageChatTarget {
 export interface StageContextMeter extends AgentTokenMeterSnapshot {
 	/** Whether the last settled row in the request context is a user message or tool result. */
 	readonly requestSide: boolean;
+	/** Final output of the reply shown as streaming until its save is published; not included in outputTokens. */
+	readonly pendingReplyOutput?: number;
 }
 
 /** Read the display history once. A reopened meter starts from the resident context, not restored display-only rows. */
@@ -495,8 +497,17 @@ export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
 export function stageChatSnapshot(handle: StageControlHandle) {
 	const session = handle.agentSession;
 	const pending = session?.pendingReplySnapshot;
+	const history = stageChatHistory(handle, pending?.messages);
+	if (pending && history.contextMeter && session.messages.includes(pending.streamingMessage)) {
+		const { outputTokens } = new AgentTokenMeter([pending.streamingMessage]).snapshot();
+		history.contextMeter = {
+			...history.contextMeter,
+			outputTokens: history.contextMeter.outputTokens - outputTokens,
+			pendingReplyOutput: outputTokens,
+		};
+	}
 	return {
-		...stageChatHistory(handle, pending?.messages),
+		...history,
 		streamingMessage:
 			pending?.streamingMessage ?? session?.agent?.state.streamingMessage ?? handle.streamingMessage?.(),
 	};

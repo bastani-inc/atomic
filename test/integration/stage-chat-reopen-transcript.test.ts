@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { initTheme } from "@bastani/atomic";
+import { AgentTokenMeter, initTheme } from "@bastani/atomic";
 import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
@@ -287,7 +287,14 @@ test("a stage opened while its reply is being saved keeps the reply once on eith
 			},
 		],
 	});
-	fixture.stage.appendResponses([fauxAssistantMessage(reply)]);
+	const response = fauxAssistantMessage(reply);
+	response.usage = { ...response.usage, input: 100, output: 1, totalTokens: 101 };
+	fixture.stage.session.agent.streamFunction = () => {
+		const stream = createAssistantMessageEventStream();
+		stream.push({ type: "done", reason: "stop", message: structuredClone(response) });
+		stream.end();
+		return stream;
+	};
 	const turn = fixture.handle.prompt("Produce a reply");
 	let worker: ReturnType<typeof openWorkerView> | undefined;
 	try {
@@ -297,6 +304,13 @@ test("a stage opened while its reply is being saved keeps the reply once on eith
 		const pooled = fixture.mount({ handle: worker.mirror });
 		const counts = () => [attached, pooled].map((view) => text(view).split(reply).length - 1);
 		assert.deepEqual(counts(), [1, 1], "the reply is already visible");
+		const billed = new AgentTokenMeter(fixture.stage.session.messages).total();
+		const meters = () => [attached, pooled].map((view) => text(view).match(/[↑↓] [\d.kM]+ tokens/u)?.[0]);
+		assert.deepEqual(
+			meters(),
+			[`↓ ${billed} tokens`, `↓ ${billed} tokens`],
+			"the pending reply's billed output counts once",
+		);
 		const ended = Promise.withResolvers<void>();
 		worker.mirror.subscribe((event) => {
 			if (event.type === "agent_end") ended.resolve();
@@ -305,11 +319,14 @@ test("a stage opened while its reply is being saved keeps the reply once on eith
 		await turn;
 		await ended.promise;
 		assert.deepEqual(counts(), [1, 1], "saving settles the displayed reply");
+		assert.equal(meters()[0], `↓ ${billed} tokens`, "saving does not add the output a second time");
+		const settled = worker.mirror.contextMeter();
+		assert.ok(settled);
+		assert.equal(settled.outputTokens + settled.latestInputTokens, billed, "later worker attachments count it once");
 		const next = Promise.withResolvers<void>();
 		worker.mirror.subscribe((event) => {
 			if (event.type === "agent_end") next.resolve();
 		});
-		fixture.stage.appendResponses([fauxAssistantMessage(reply)]);
 		await fixture.handle.prompt("Produce the same reply again");
 		await next.promise;
 		assert.deepEqual(counts(), [2, 2], "a distinct reply with the same text still appears");

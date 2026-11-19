@@ -179,7 +179,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	handleTaskInput(data: string): boolean {
 		return this.taskInspector?.handleInput(data) === true;
 	}
-	appendMessages(messages: readonly AgentSnapshotMessage[], settledTokens?: AgentTokenMeterSnapshot): void {
+	appendMessages(
+		messages: readonly AgentSnapshotMessage[],
+		settledTokens?: AgentTokenMeterSnapshot & { readonly pendingReplyOutput?: number },
+	): void {
 		const hadFirstUser = this.state.seenFirstRawUser;
 		if (!hadFirstUser && messages.length > 0) {
 			const firstUser = firstRawUserExactText(messages);
