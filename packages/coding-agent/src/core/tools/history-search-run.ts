@@ -6,8 +6,10 @@ import { MAX_COMMAND_TIMEOUT_SECONDS } from "../tasks/cancel-reason.js";
 import type { TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
 import { type TaskLease, TOOL_TASK_OUTPUT_MAX_BYTES, type WaitLease } from "../tasks/supervisor.js";
 import { lookupOwnedTask, type SupervisedCommandOwner, validateBashWait } from "./bash-pty-native.js";
+import { collectHistoryContinuations } from "./history-search-continuations.js";
 import type { createSearchPageDefinition, SearchToolOptions } from "./search.ts";
 import type { SearchToolDetails } from "./search-details.ts";
+import { loadNativeSearchBinding } from "./search-native.ts";
 import { TaskToolError } from "./shell-task-status.ts";
 import { executeSupervisedToolTask } from "./tool-task.ts";
 
@@ -59,24 +61,6 @@ export interface SearchTaskDetails extends SearchToolDetails {
 	continueWith?: readonly string[];
 }
 
-// Read only the budget notes on the *returned* page. A normal page end, skip hint, lookahead,
-// match or context quoting a note is not a request for background work.
-function budgetCursors(page: Page): string[] {
-	const urls: string[] = [];
-	for (const block of page.content) {
-		if (block.type !== "text") continue;
-		for (const line of block.text.split("\n")) {
-			const row = /^(history:\/\/.+?)(?::(\d+): |-(\d+)- )(.*)$/.exec(line);
-			if ((row?.[2] ?? row?.[3]) !== "0") continue;
-			const note = /^\[.*\bthe (?:byte|row|time) budget ran out\b.*; continue with (history:\/\/[^\s]+?)\]$/.exec(
-				row![4]!,
-			);
-			if (note) urls.push(note[1]!);
-		}
-	}
-	return urls;
-}
-
 interface Delivery {
 	pages: Page[];
 	read: number;
@@ -109,15 +93,16 @@ export async function runSearchWithTasks(
 	if (typeof input.pattern !== "string" || input.id !== undefined || input.budgetMs !== undefined)
 		throw new Error("Invalid search: a pattern is required; id and budgetMs require action wait");
 	const { wait, timeout = DEFAULT_TIMEOUT_SECONDS, ...params } = input;
-	const first = await page.execute(id, params, signal, update, ctx);
+	const execute = () => page.execute(id, params, signal, update, ctx);
+	const { page: first, urls: pending } =
+		binding === undefined ? { page: await execute(), urls: [] } : await collectHistoryContinuations(execute);
 	if (!first.details?.scopePath?.split(", ").every((path) => path.startsWith("history://"))) return first;
 	validateBashWait(wait);
 	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_COMMAND_TIMEOUT_SECONDS)
 		throw new Error(`Invalid timeout: expected a positive number no greater than ${MAX_COMMAND_TIMEOUT_SECONDS}`);
-	if (binding === undefined) return first;
-	const pending = budgetCursors(first);
-	if (!pending.length) return first;
+	if (binding === undefined || !pending.length) return first;
 	signal?.throwIfAborted();
+	if (typeof loadNativeSearchBinding()?.TaskSupervisor !== "function") return first;
 	const bound = owner();
 	if (!bound?.startToolTask) return first;
 	const delivery: Delivery = { pages: [], read: 0, pending };
@@ -131,19 +116,22 @@ export async function runSearchWithTasks(
 		...(signal && { signal }),
 		onStarted: (lease) => deliveries.set(lease, delivery),
 		async work(write, stop) {
+			const taskCursors = new WeakMap<object, object>();
 			let retained = 0;
 			while (pending.length) {
 				await nextTurn();
 				stop.throwIfAborted();
 				const url = pending[0]!;
-				const result = await page.execute(id, { ...query, paths: url }, stop, undefined, ctx);
+				const { page: result, urls: next } = await collectHistoryContinuations(
+					() => page.execute(id, { ...query, paths: url }, stop, undefined, ctx),
+					taskCursors,
+				);
 				stop.throwIfAborted();
 				const cost = Buffer.byteLength(JSON.stringify(result));
 				if (retained + cost > TOOL_TASK_OUTPUT_MAX_BYTES) break; // Leave the entire unretained page's URL available.
 				retained += cost;
 				delivery.pages.push(result);
 				for (const block of result.content) if (block.type === "text") write(`${block.text}\n`);
-				const next = budgetCursors(result);
 				pending.splice(0, 1, ...next);
 				// No advancing cursor. The page and its exact retry URL remain available; don't poll a busy store.
 				if (next.includes(url)) break;
