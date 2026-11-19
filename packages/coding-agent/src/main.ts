@@ -922,6 +922,7 @@ export async function main(argv: string[], options?: MainOptions) {
 											onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
 										});
 										projectTrustByCwd.set(cwd, trusted);
+										engineLiveness?.trustDecision("projects", cwd, trusted);
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
 											// Before the project's settings load, so its removed routing settings are not also reported as ignored.
@@ -956,6 +957,7 @@ export async function main(argv: string[], options?: MainOptions) {
 									onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
 								});
 								borrowedExtensionSourceTrustByPath.set(source, trusted);
+								engineLiveness?.trustDecision("extensionSources", source, trusted);
 								return trusted;
 							},
 						}

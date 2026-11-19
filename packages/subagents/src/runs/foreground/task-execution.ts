@@ -6,19 +6,14 @@ import {
 	type OperationId,
 	ranOnModelLine,
 	sessionStartStepText,
-	type WaitPolicy,
 } from "@bastani/atomic";
 import type {
 	Cleanup,
 	ModelParallelResponse,
 	ModelSingleResponse,
-	Result,
 	TaskId,
 	TaskRecord,
 	TaskResult,
-	WaitOutcome,
-	YieldError,
-	YieldReason,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../agents/agents.js";
@@ -38,6 +33,7 @@ import {
 } from "../shared/start-progress.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
+import { recordSubagentAdmission } from "./released-child-resume.js";
 import {
 	forwardDetachedResults,
 	routeReleasedChildShellCompletions,
@@ -101,10 +97,10 @@ export function subagentTaskResponseText(response: ModelSingleResponse | ModelPa
 	const notStarted = outcomes.filter((outcome) => outcome.kind === "unstarted" && outcome.reason.kind === "rejected");
 	const notices = [
 		...(killed.length ? [`${killed.length} killed. These children cannot be resumed.`] : []),
-		// #4697: one child's setup failure is its own outcome; its siblings ran and report below.
+		// #4697: one child's setup failure is its own outcome; its siblings started and report on their own.
 		...(response.kind === "parallel" && notStarted.length
 			? [
-					`${notStarted.length} of ${outcomes.length} children failed to start${notStarted.length < outcomes.length ? "; the others ran" : ""}. Each slot reports its own outcome.`,
+					`${notStarted.length} of ${outcomes.length} children failed to start${notStarted.length < outcomes.length ? "; the others started" : ""}. Each slot reports its own outcome.`,
 				]
 			: []),
 	];
@@ -446,7 +442,11 @@ function wakeForResultsHeldDuringRun(
 		.catch((error: Error) => observeChildRecordFailure(ownerSessionId, wakeFailureOf(error, childId)));
 }
 
-/** Bind the real foreground runner once; only its registered observation may yield. */
+/**
+ * Launch a subagent as a task of `host`. It always runs in the background: the launch returns once the task is admitted
+ * and its observation registered, and the child reports by its completion notice. `subagent({ action: "wait" })` waits
+ * for it explicitly.
+ */
 export async function runAgentTask(input: {
 	host: AgentTaskHost;
 	cwd: string;
@@ -455,11 +455,9 @@ export async function runAgentTask(input: {
 	task: string;
 	intentTask?: string;
 	options: RunSyncOptions;
-	wait?: WaitPolicy;
 	runtime: SubagentExecutorRuntimeDeps;
 	onTerminal?: (result: SingleResult) => void;
 	schedule?: ExecutionScheduler;
-	outputText?: (result: SingleResult) => string;
 	recordChild?: SubagentChildRecordSink;
 	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
 	forked?: boolean;
@@ -470,9 +468,6 @@ export async function runAgentTask(input: {
 	/** The dispatcher a released child's results wake it through; by default the process's one dispatcher. */
 	wakeDispatcher?: AgentWakeDispatcher;
 }): Promise<ModelSingleResponse> {
-	let yieldWait: ((reason: YieldReason) => Result<WaitOutcome, YieldError>) | undefined;
-	let pendingYield = false;
-	let parentObserving = input.wait?.kind === "foreground";
 	const registered = Promise.withResolvers<void>();
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
@@ -614,13 +609,11 @@ export async function runAgentTask(input: {
 					onDetachedExit: undefined,
 					supervisorAuthorization: launch.supervisorAuthorization,
 				},
-				wait: { kind: "background" },
 				runtime: input.runtime,
 				...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 				onTerminal: launch.onTerminal,
 				// It waits for a slot in its run, as its original launch did.
 				...(runSchedule ? { schedule: runSchedule } : {}),
-				...(input.outputText ? { outputText: input.outputText } : {}),
 				recordChild: launch.recordChild,
 				forked,
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
@@ -713,14 +706,18 @@ export async function runAgentTask(input: {
 						const running = input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 							...input.options,
 							cwdVerdict,
-							// A background child is released while it waits, and its owner wakes it (#4326).
-							...(input.options.releaseWhenWaiting === undefined &&
-							ownerSessionId !== undefined &&
-							input.wait?.kind !== "foreground"
+							// A child is released while it waits, and its owner wakes it (#4326).
+							...(input.options.releaseWhenWaiting === undefined && ownerSessionId !== undefined
 								? { releaseWhenWaiting: subagentReleasePolicy() }
 								: {}),
 							onBeforeRelease: () =>
-								reserveReleasedChildTargets(input.options, childSession.childSessionId, undefined, false),
+								reserveReleasedChildTargets(
+									input.options,
+									childSession.childSessionId,
+									undefined,
+									false,
+									context.ref.taskId,
+								),
 							signal: context.signal,
 							taskExecution: {
 								signal: context.signal,
@@ -770,12 +767,6 @@ export async function runAgentTask(input: {
 											}),
 										);
 								},
-								yieldTaskWait: () => {
-									parentObserving = false;
-									if (yieldWait) yieldWait("intercom-coordination");
-									else pendingYield = true;
-								},
-								isParentObserving: () => parentObserving,
 							},
 						});
 						ticket?.onEntered();
@@ -822,6 +813,8 @@ export async function runAgentTask(input: {
 								input.options,
 								childSession.childSessionId,
 								child.released.intercomId,
+								true,
+								context.ref.taskId,
 							);
 							const holdMessages = input.recordChild?.holdMessages;
 							if (ownerSessionId !== undefined && holdMessages !== undefined)
@@ -866,7 +859,7 @@ export async function runAgentTask(input: {
 								context.ref.taskId,
 								wokenWith,
 							);
-						const text = input.outputText?.(child) ?? getSingleResultOutput(child);
+						const text = getSingleResultOutput(child);
 						if (!released) await retainTaskOutput(child, text, context.ref);
 						const bytes = Buffer.from(text);
 						context.reportActivity({
@@ -957,28 +950,21 @@ export async function runAgentTask(input: {
 		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
 		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
 	);
+	if (input.recordChild?.ownerSessionId !== undefined)
+		recordSubagentAdmission(started.value.lease, {
+			ownerSessionId: input.recordChild.ownerSessionId,
+			childId: subagentChildId(runId, index),
+			runId,
+			agent: input.agent,
+			taskId: started.value.taskId,
+			intercomTarget: input.options.intercomSessionName,
+		});
 	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
-	// A queued execution has no runSync listener yet. Release its observation too,
-	// without spending a concurrency slot or cancelling its owner-bound execution.
-	const yieldForIntercom = () => {
-		parentObserving = false;
-		if (yieldWait) yieldWait("intercom-coordination");
-		else pendingYield = true;
-	};
-	input.options.intercomDetachSignal?.addEventListener("abort", yieldForIntercom, { once: true });
-	if (input.options.intercomDetachSignal?.aborted) yieldForIntercom();
-	const observation = input.host.observeAgentLaunch(started.value.taskId, input.wait, (yieldRegistered) => {
-		yieldWait = yieldRegistered;
-		if (pendingYield) yieldRegistered("intercom-coordination");
-		registered.resolve();
-	});
+	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, () => registered.resolve());
 	registered.resolve();
 	ticket?.onObserved();
 	if (ticket) await ticket.admitted;
-	const observed = await observation.finally(() => {
-		parentObserving = false;
-		input.options.intercomDetachSignal?.removeEventListener("abort", yieldForIntercom);
-	});
+	const observed = await observation;
 	if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
 	// The one Intercom target this task's child registers under, so a send never has to guess it.
 	const admitted: ModelSingleResponse & { readonly intercomTarget?: string } = {

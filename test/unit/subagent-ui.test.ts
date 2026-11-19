@@ -240,7 +240,7 @@ test("wait and task status results use readable displays without relaunch langua
 
 test("orchestrator guidance acknowledges background subagent support", () => {
 	const guidance = DEFAULT_PROMPT_GUIDANCE.join("\n");
-	assert.match(guidance, /Background subagents are supported/);
+	assert.match(guidance, /Subagents always run in the background/);
 	assert.doesNotMatch(guidance, /Foreground execution is the only/);
 });
 
@@ -354,5 +354,8 @@ test("bundled background documentation and guidance do not reintroduce foregroun
 			path,
 		);
 	}
-	assert.match(DEFAULT_PROMPT_GUIDANCE.join("\n"), /automatically yields on budget expiry/);
+	assert.match(
+		DEFAULT_PROMPT_GUIDANCE.join("\n"),
+		/A wait ends when it reaches its budget or the user presses Esc, and the child keeps running/,
+	);
 });
