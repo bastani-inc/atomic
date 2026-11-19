@@ -10,6 +10,7 @@ import type {
 	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { isExtensionCustomState } from "../../packages/coding-agent/src/core/storage/session/session-resume.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
 // Written by main's SqlSessionStore (1a29f40c7d, resume index version 5): the session's entries, the index its
@@ -34,17 +35,20 @@ const CHUNKED = 3;
 function derivesUpgradedFields(entry: SessionEntry): boolean {
 	if (entry.type === "message") return entry.message.role === "system";
 	if (entry.type === "custom")
-		return [
-			"atomic.tool-deactivation",
-			"codemode-store",
-			"event_subscription",
-			"event_subscription_processed",
-			"event_subscription_child",
-			"intercom_released_reply_wait",
-			"subagent-child",
-			"workflow.run.start",
-			"workflow.run.end",
-		].includes(entry.customType);
+		return (
+			isExtensionCustomState(entry.customType) ||
+			[
+				"atomic.tool-deactivation",
+				"codemode-store",
+				"event_subscription",
+				"event_subscription_processed",
+				"event_subscription_child",
+				"intercom_released_reply_wait",
+				"subagent-child",
+				"workflow.run.start",
+				"workflow.run.end",
+			].includes(entry.customType)
+		);
 	return ["model_change", "thinking_level_change", "worktree_snapshot"].includes(entry.type);
 }
 
@@ -94,9 +98,13 @@ async function summaryState(database: SqliteDatabase): Promise<StoredState> {
 }
 
 /** Leave in summary_state only `older`, as main would have saved it, or no index at all. */
-async function keepOnly(database: SqliteDatabase, older: Record<string, unknown> | undefined): Promise<void> {
+async function keepOnly(
+	database: SqliteDatabase,
+	older: Record<string, unknown> | undefined,
+	count = entries.length,
+): Promise<void> {
 	const { resume: _resume, windowResume: _window, ...state } = await summaryState(database);
-	const resume = older && { ...older, epoch: state.epoch, seq: entries.length };
+	const resume = older && { ...older, epoch: state.epoch, seq: count };
 	await database.run(
 		"UPDATE session_sessions SET summary_state = ? WHERE id = ?",
 		JSON.stringify(resume ? { ...state, resume } : state),
@@ -117,29 +125,53 @@ async function firstResume(open: () => Promise<SqliteDatabase>) {
 	}
 }
 
-async function upgradeMatchesRebuild(open: () => Promise<SqliteDatabase>, older: Record<string, unknown>) {
+async function upgradeMatchesRebuild(
+	open: () => Promise<SqliteDatabase>,
+	older: Record<string, unknown>,
+	session: readonly SessionEntry[] = entries,
+) {
 	const database = await open();
 	const store = await SqlSessionStore.open(database);
 	try {
-		await store.create(header, entries);
+		await store.create(header, [...session]);
 	} finally {
 		await store.close();
 	}
-	await keepOnly(database, older);
+	await keepOnly(database, older, session.length);
 	const upgraded = await firstResume(open);
-	await keepOnly(database, undefined);
+	await keepOnly(database, undefined, session.length);
 	const rebuilt = await firstResume(open);
 
 	assert.deepEqual(upgraded.resume, rebuilt.resume);
 	assert.deepEqual(upgraded.index, rebuilt.index);
 	assert.equal(upgraded.older?.version, 5, "an older client's own index stays in place");
-	const sources = entries.filter(derivesUpgradedFields).length;
-	assert.ok(rebuilt.rows >= entries.length, `a rebuild decodes every entry (${rebuilt.rows})`);
+	const sources = session.filter(derivesUpgradedFields).length;
+	assert.ok(rebuilt.rows >= session.length, `a rebuild decodes every entry (${rebuilt.rows})`);
 	assert.ok(
 		upgraded.rows <= sources + CHUNKED,
 		`the upgrade decoded ${upgraded.rows} rows; ${sources} entries derive its fields and ${CHUNKED} are chunked`,
 	);
+	return upgraded;
 }
+
+// Two entries an extension saved with `pi.appendEntry` after the fixture's last entry, on its branch; the second is
+// stored in chunks. main's index of that session differs from the fixture's only in where it ends: extension entries
+// are history, not branch state.
+const extended: SessionEntry[] = [
+	...entries,
+	...["x1", "x2"].map(
+		(id, i) =>
+			({
+				type: "custom",
+				customType: "todo-extension",
+				id,
+				parentId: i === 0 ? entries.at(-1)!.id : "x1",
+				timestamp: header.createdAt,
+				data: { todos: [i === 0 ? id : PADDING] },
+			}) as SessionEntry,
+	),
+];
+const olderOfExtended = { ...fixture.rebuilt, lastId: "x2", leafSeq: extended.length };
 
 const directories: string[] = [];
 afterEach(() => {
@@ -164,6 +196,29 @@ describe("first resume after an upgrade from a version-5 index (#5554)", () => {
 			}
 		});
 	}
+
+	// An index saved before the extension-state field (#5500) does not list those entries. The upgrade lists them as a
+	// rebuild does, so a subagent fork reads them from the index instead of scanning the retired conversation.
+	it("lists the extension state an index from before that field leaves out", async () => {
+		const directory = makeTempDirectory("atomic-resume-upgrade-");
+		directories.push(directory);
+		const path = join(directory, "sessions.sqlite");
+		const opened: SqliteDatabase[] = [];
+		try {
+			const upgraded = await upgradeMatchesRebuild(
+				async () => {
+					const database = await openNodeSqliteDatabase(path);
+					opened.push(database);
+					return database;
+				},
+				olderOfExtended,
+				extended,
+			);
+			assert.deepEqual(upgraded.index?.extensionState, [entries.length + 1, entries.length + 2]);
+		} finally {
+			for (const database of opened) await database.close();
+		}
+	});
 
 	it("publishes no upgrade of a cut another writer extended while it read", async () => {
 		const directory = makeTempDirectory("atomic-resume-upgrade-");
@@ -220,5 +275,6 @@ describe("first resume after an upgrade from a version-5 index (#5554)", () => {
 
 	it.skipIf(postgresSkipReason !== undefined)("upgrades the same way on Postgres", async () => {
 		await withPostgresDatabase(({ open }) => upgradeMatchesRebuild(() => open(), fixture.rebuilt));
+		await withPostgresDatabase(({ open }) => upgradeMatchesRebuild(() => open(), olderOfExtended, extended));
 	});
 });

@@ -10,6 +10,17 @@ export interface CountedStatement {
 	readonly sql: string;
 	readonly params: readonly SqliteValue[];
 	readonly rows: number;
+	/** The bytes of the text and binary values in those rows. */
+	readonly bytes: number;
+}
+
+function bytesOf(result: unknown): number {
+	let bytes = 0;
+	for (const row of Array.isArray(result) ? result : result === undefined ? [] : [result])
+		for (const value of Object.values(row as SqliteRow))
+			bytes +=
+				typeof value === "string" ? Buffer.byteLength(value) : value instanceof Uint8Array ? value.byteLength : 0;
+	return bytes;
 }
 
 /** A database that records every statement it runs, inside transactions too, and how many transactions it opened. */
@@ -17,14 +28,19 @@ export function countingDatabase(database: SqliteDatabase) {
 	const statements: CountedStatement[] = [];
 	const counts = { transactions: 0 };
 	const record = <T>(sql: string, params: readonly SqliteValue[], result: T): T => {
-		statements.push({ sql, params, rows: Array.isArray(result) ? result.length : result === undefined ? 0 : 1 });
+		statements.push({
+			sql,
+			params,
+			rows: Array.isArray(result) ? result.length : result === undefined ? 0 : 1,
+			bytes: bytesOf(result),
+		});
 		return result;
 	};
 	const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
 		exec: async (sql) => record(sql, [], await executor.exec(sql)),
 		run: async (sql: string, ...params: readonly SqliteValue[]) => {
 			const result = await executor.run(sql, ...params);
-			statements.push({ sql, params, rows: 0 });
+			statements.push({ sql, params, rows: 0, bytes: 0 });
 			return result;
 		},
 		get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
