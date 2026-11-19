@@ -138,7 +138,7 @@ import type {
 	SessionStore,
 	SessionStoredEntry,
 } from "./storage/session/types.js";
-import { SESSION_HISTORY_PAGE_ENTRIES } from "./storage/session/types.js";
+import { SESSION_HISTORY_PAGE_ENTRIES, SESSION_HISTORY_SCAN_ENTRIES } from "./storage/session/types.js";
 import {
 	type AssistantAnswer,
 	archivedAnswerAt,
@@ -321,7 +321,9 @@ function exportedSessionStream(
 		kind: "complete-session",
 		async *read() {
 			const { forkSeedFields } = await import("./storage/session/chunked-resume-projection.js");
-			for await (const { items } of historyPages(history, id, file.epoch, file.lastSeq, {}))
+			for await (const { items } of historyPages(history, id, file.epoch, file.lastSeq, {
+				pageEntries: SESSION_HISTORY_SCAN_ENTRIES,
+			}))
 				for (const item of items) {
 					let row: SessionForkRow =
 						"entry" in item
@@ -2836,7 +2838,15 @@ export class SessionManager {
 					const relation = await exactDirectoryRelation(dirname(path), sessionDir);
 					const windowed = relation === "different" ? await exportedWindow(source) : undefined;
 					const store = await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false });
-					return SessionManager.constructWithStore(store, true, () => into(store, sessionDir, windowed));
+					return SessionManager.constructWithStore(store, true, async () => {
+						// A path which did not exist at validation can open as an alias of the source, or vice versa.
+						const opened = await resolveForkStoreRelation(sourceStore, store);
+						return into(
+							store,
+							sessionDir,
+							opened === "different" ? (windowed ?? (await exportedWindow(source))) : undefined,
+						);
+					});
 				}
 				const store = sessionDir ?? (await resolveSessionStore(targetCwd));
 				return SessionManager.constructWithStore(store, store !== sessionDir, async () => {

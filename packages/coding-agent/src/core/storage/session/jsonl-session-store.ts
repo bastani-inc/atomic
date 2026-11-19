@@ -101,7 +101,6 @@ import {
 	matchesSessionIdPrefix,
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
-	SESSION_HISTORY_PAGE_ENTRIES,
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
@@ -972,7 +971,9 @@ export class JsonlSessionStore implements SessionStore {
 				return { lastSeq: ids.length, epoch };
 			}, true);
 		} finally {
-			await unlink(temporary);
+			await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+				if (cause.code !== "ENOENT") throw cause;
+			});
 		}
 	}
 
@@ -1502,16 +1503,18 @@ export class JsonlSessionStore implements SessionStore {
 					},
 					{
 						descriptor: this.descriptor,
-						readEntrySizes: reading(async (_id: string, from: number, to: number) => ({
-							epoch,
-							lastSeq,
-							sizes: seqRange(from, Math.min(lastSeq, to, from + SESSION_HISTORY_PAGE_ENTRIES - 1)).map(
-								(seq) => ({
-									seq,
-									bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq),
-								}),
-							),
-						})),
+						readEntrySizes: reading(async (_id: string, from: number, to: number, limit?: number) => {
+							const sizes: { seq: number; bytes: number }[] = [];
+							let total = 0;
+							const end = Math.min(lastSeq, to, from + entrySizeLimit(limit) - 1);
+							for (let seq = from; seq <= end; seq++) {
+								const bytes = spanEnd(jsonl, seq) - spanStart(jsonl, seq);
+								sizes.push({ seq, bytes });
+								total += bytes;
+								if (total >= SESSION_HISTORY_PAGE_BYTES) break;
+							}
+							return { epoch, lastSeq, sizes };
+						}),
 						readEntryChunk: reading((ref: OversizedSessionEntry, offset: number) =>
 							readFrom(
 								handle,

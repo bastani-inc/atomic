@@ -259,6 +259,67 @@ test("a file forked into its own directory keeps every branch byte for byte; ano
 	}
 });
 
+test("a destination created as an alias of the source before opening keeps every branch (#5594)", async () => {
+	const root = await mkdtemp(join(tmpdir(), "fork-dir-created-"));
+	const src = join(root, "source"),
+		target = join(root, "target");
+	const original = JsonlSessionStore.open.bind(JsonlSessionStore);
+	try {
+		await mkdir(src);
+		const file = join(src, "parent.jsonl");
+		const body = savedLines([
+			said("first", null, "root"),
+			said("sibling", "first", "abandoned"),
+			cleared("clear", "first"),
+			said("now", "clear", "current"),
+		]);
+		await writeFile(file, `${JSON.stringify(savedHeader(root))}\n${body}`);
+		const open = vi.spyOn(JsonlSessionStore, "open").mockImplementation(async (dir, options) => {
+			if (dir === target) await fsPromises.symlink(src, target, process.platform === "win32" ? "junction" : "dir");
+			return original(dir, options);
+		});
+		try {
+			const child = await SessionManager.forkFrom(file, root, target);
+			try {
+				assert.equal(await savedBody(child.getSessionFile()!), body);
+				assert.equal(child.getHeader()?.parentInOtherStore, undefined);
+			} finally {
+				await child.getSessionStore().close();
+			}
+		} finally {
+			open.mockRestore();
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a published file clone still succeeds if its temporary link was already removed (#5594)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "fork-temp-link-"));
+	const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+	try {
+		const file = join(dir, "source.jsonl"),
+			body = savedLines([said("first", null, "source")]);
+		await writeFile(file, `${JSON.stringify(savedHeader(dir))}\n${body}`);
+		const publish = vi.spyOn(fsPromises, "link").mockImplementation(async (temp, path) => {
+			await actual.link(temp, path);
+			if (String(temp).endsWith(".tmp")) await actual.unlink(temp);
+		});
+		try {
+			const child = await SessionManager.forkFrom(file, dir, dir);
+			try {
+				assert.equal(await savedBody(child.getSessionFile()!), body);
+			} finally {
+				await child.getSessionStore().close();
+			}
+		} finally {
+			publish.mockRestore();
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("without inode identities, only disjoint directories prove a fork's destination another collection (#5594)", async () => {
 	const dir = await fsPromises.realpath(await mkdtemp(join(tmpdir(), "session-file-no-identity-")));
 	const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
