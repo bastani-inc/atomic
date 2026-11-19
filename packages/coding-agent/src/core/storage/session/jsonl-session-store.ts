@@ -1189,11 +1189,29 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	/** Read the window of this exact export file, not another file in the directory with the same session ID.
-	 * An export is an input: do not create or rewrite a sidecar beside it. */
+	 * An export is an input: do not create or rewrite a sidecar beside it. `history` reads any position of the
+	 * same open file while `use` runs; `use` awaits `file.unchanged()` before it publishes anything it read, which
+	 * rejects with a conflict when the file changed in place meanwhile. A legacy file's raw bytes are not v4 rows:
+	 * `history.readRange` upgrades its entries, `readEntryChunk` does not. */
 	[withForkFileWindow]<T>(
 		file: string,
-		use: (resume: SessionResume, history: SessionHistorySource) => Promise<T>,
+		use: (
+			resume: SessionResume,
+			history: SessionHistorySource,
+			file: { readonly legacy: boolean; unchanged(): Promise<void> },
+		) => Promise<T>,
 	): Promise<T> {
+		// What `use` throws, from the destination too, is the caller's failure, not this source's to wrap.
+		// A failure to read this file stays this store's, as when the whole file was loaded.
+		let used: { readonly error: unknown } | undefined;
+		const readFailures = new WeakSet<object>();
+		const reading =
+			<A extends unknown[], R>(read: (...args: A) => Promise<R>) =>
+			(...args: A): Promise<R> =>
+				read(...args).catch((error: unknown) => {
+					if (typeof error === "object" && error !== null) readFailures.add(error);
+					throw error;
+				});
 		return this.run(async () => {
 			const path = resolve(file);
 			const handle = await open(path, "r");
@@ -1205,42 +1223,62 @@ export class JsonlSessionStore implements SessionStore {
 				const jsonl = await this.buildIndex(path, JSON.stringify(header), stats, input);
 				const resume = await this.windowFromIndex(path, header, jsonl, jsonl.index, input);
 				const { epoch, lastSeq } = resume;
-				const result = await use(resume, {
-					descriptor: this.descriptor,
-					readEntrySizes: async (_id, from, to) => ({
-						epoch,
-						lastSeq,
-						sizes: seqRange(from, Math.min(lastSeq, to, from + SESSION_HISTORY_PAGE_ENTRIES - 1)).map((seq) => ({
-							seq,
-							bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+				const unchanged = async () => {
+					const after = await handle.stat({ bigint: true });
+					if (stats.size === after.size && stats.mtimeNs === after.mtimeNs && stats.ctimeNs === after.ctimeNs)
+						return;
+					// A writer appending after the indexed rows leaves every row read through this handle as it was.
+					if (
+						after.size > stats.size &&
+						(await boundaryHolds(handle, { witness: jsonl.witness, witnessEnd: jsonl.size }))
+					)
+						return;
+					throw new SessionConflictError(header.id, lastSeq, lastSeq);
+				};
+				return await use(
+					resume,
+					{
+						descriptor: this.descriptor,
+						readEntrySizes: reading(async (_id: string, from: number, to: number) => ({
+							epoch,
+							lastSeq,
+							sizes: seqRange(from, Math.min(lastSeq, to, from + SESSION_HISTORY_PAGE_ENTRIES - 1)).map(
+								(seq) => ({
+									seq,
+									bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+								}),
+							),
 						})),
-					}),
-					readEntryChunk: (ref, offset) =>
-						readFrom(
-							handle,
-							spanStart(jsonl, ref.seq) + offset,
-							Math.min(
-								SESSION_HISTORY_CHUNK_BYTES,
-								spanEnd(jsonl, ref.seq) - spanStart(jsonl, ref.seq) - offset,
+						readEntryChunk: reading((ref: OversizedSessionEntry, offset: number) =>
+							readFrom(
+								handle,
+								spanStart(jsonl, ref.seq) + offset,
+								Math.min(
+									SESSION_HISTORY_CHUNK_BYTES,
+									spanEnd(jsonl, ref.seq) - spanStart(jsonl, ref.seq) - offset,
+								),
 							),
 						),
-					readRange: async (_id, from, to) => ({
-						epoch,
-						lastSeq,
-						startSeq: from,
-						entries: (await this.entriesAt(path, jsonl, seqRange(from, Math.min(lastSeq, to)), input)).map(
-							(held) => held.entry,
-						),
-					}),
+						readRange: reading(async (_id: string, from: number, to: number) => ({
+							epoch,
+							lastSeq,
+							startSeq: from,
+							entries: (await this.entriesAt(path, jsonl, seqRange(from, Math.min(lastSeq, to)), input)).map(
+								(held) => held.entry,
+							),
+						})),
+					},
+					{ legacy: input.legacy !== undefined, unchanged },
+				).catch((error: unknown) => {
+					used = { error };
+					throw error;
 				});
-				const after = await handle.stat({ bigint: true });
-				if (stats.size !== after.size || stats.mtimeNs !== after.mtimeNs || stats.ctimeNs !== after.ctimeNs)
-					throw new SessionConflictError(header.id, lastSeq, lastSeq);
-				return result;
 			} finally {
 				await handle.close();
 			}
-		}, false);
+		}, false).catch((error: unknown) => {
+			throw used === undefined || readFailures.has(used.error as object) ? error : used.error;
+		});
 	}
 
 	readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
