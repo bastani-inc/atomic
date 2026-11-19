@@ -124,7 +124,6 @@ async function launchAskingSubagent(env: Awaited<ReturnType<typeof liveChildEnvi
 			index: 0,
 		},
 		wakeDispatcher: new AgentWakeDispatcher(),
-		wait: { kind: "background" },
 		runtime: { runSync },
 	});
 	assert.equal(response.kind, "admitted");
@@ -294,7 +293,6 @@ test("held forms preserve drafts when left, show paging keys, and count down tim
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		foregroundTask: async () => ({ ok: false, error: { message: "unsupported" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
 		interruptTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,

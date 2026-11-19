@@ -120,7 +120,6 @@ function treeSource(
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		foregroundTask: async () => ({ ok: true, value: { kind: "foreground" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,
 		writeTaskInput: async () => ({ ok: true, value: { acceptedBytes: 0 } }),
@@ -1024,7 +1023,6 @@ describe("a subagent's task view (#4640)", () => {
 			recentActivity: note("recentActivity", []),
 			activityOmitted: note("activityOmitted", true),
 			subscribe: note("subscribe", () => {}),
-			foregroundTask: note("foregroundTask", Promise.resolve({ ok: true as const, value: { kind: "fg" } })),
 			cancelTask: note("cancelTask", Promise.resolve({ ok: true as const, value: undefined })),
 			stdinAvailable: note("stdinAvailable", true),
 			writeTaskInput: note("writeTaskInput", Promise.resolve({ ok: true as const, value: { acceptedBytes: 3 } })),
@@ -1041,7 +1039,6 @@ describe("a subagent's task view (#4640)", () => {
 		assert.equal(child.activityOmitted(id), true);
 		const listener = () => {};
 		assert.equal(typeof child.subscribe(listener), "function");
-		assert.deepEqual(await child.foregroundTask(id), { ok: true, value: { kind: "fg" } });
 		assert.deepEqual(await child.cancelTask(id), { ok: true, value: undefined });
 		assert.equal(child.stdinAvailable(id), true);
 		assert.deepEqual(await child.writeTaskInput(id, "abc"), { ok: true, value: { acceptedBytes: 3 } });
@@ -1055,7 +1052,6 @@ describe("a subagent's task view (#4640)", () => {
 			"recentActivity:child-shell",
 			"activityOmitted:child-shell",
 			`subscribe:${String(listener)}`,
-			"foregroundTask:child-shell",
 			"cancelTask:child-shell",
 			"stdinAvailable:child-shell",
 			"writeTaskInput:child-shell,abc",

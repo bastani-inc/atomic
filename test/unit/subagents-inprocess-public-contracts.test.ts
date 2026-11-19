@@ -367,7 +367,7 @@ test("owner task cancellation reaches a real child and wait preserves raw cancel
 		try {
 			const launched = await execute.execute(
 				"launch-owner",
-				{ agent: "qa-echo", task: "hold", artifacts: false, wait: { kind: "background" } },
+				{ agent: "qa-echo", task: "hold", artifacts: false },
 				new AbortController().signal,
 				undefined,
 				ctx,
@@ -406,7 +406,7 @@ test("owner task cancellation reaches a real child and wait preserves raw cancel
 	}
 });
 
-test("owner foreground parallel cancellation preserves sibling execution and raw host records under a killed receipt", async () => {
+test("owner cancellation of one parallel child preserves its sibling's execution, and waiting reports each one's end", async () => {
 	const cwd = makeRoot();
 	const gate = Promise.withResolvers<void>();
 	const { execute } = executor(cwd, new TestEvents(), {
@@ -422,20 +422,21 @@ test("owner foreground parallel cancellation preserves sibling execution and raw
 	});
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "parallel-kill" }, authorizeLaunch() {} });
 	const ctx = { ...context(cwd), getAgentTaskHost: () => host };
-	const call = (params: Parameters<typeof execute.execute>[1]) =>
-		execute.execute("parallel-kill", params, new AbortController().signal, undefined, ctx);
-	const launch = call({
-		tasks: ["first", "second"].map((task) => ({ agent: "qa-echo", task })),
-		wait: { kind: "foreground" },
-		artifacts: false,
-	});
+	const call = (id: string, params: Parameters<typeof execute.execute>[1]) =>
+		execute.execute(id, params, new AbortController().signal, undefined, ctx);
 	try {
+		const launched = await call("parallel-kill", {
+			tasks: ["first", "second"].map((task) => ({ agent: "qa-echo", task })),
+			artifacts: false,
+		});
+		const response = launched.details.taskResponse;
+		assert.ok(response?.kind === "parallel");
+		const ids = response.slots.map(({ outcome }) => {
+			assert.ok(outcome.kind === "admitted" && outcome.observation.kind === "yielded");
+			return outcome.observation.taskId;
+		});
+		assert.equal(launched.details.taskRecords?.length, 2);
 		await waitUntil(() => ["first", "second"].every((task) => existsSync(join(cwd, `${task}.log`))));
-		const watched = host.watchOwnerTasks();
-		assert.ok(watched.ok);
-		const ids = watched.value.snapshot.tasks.map((task) => task.ref.taskId);
-		watched.value.dispose();
-		assert.equal(ids.length, 2);
 		const killed = await host.cancelTask(ids[0]!, "user");
 		assert.ok(killed.ok);
 		const stopped = await host.waitForTask(ids[0]!);
@@ -446,25 +447,12 @@ test("owner foreground parallel cancellation preserves sibling execution and raw
 		const sibling = await host.waitForTask(ids[1]!, 0);
 		assert.ok(sibling.ok && sibling.value.kind === "yielded");
 		gate.resolve();
-		const terminal = await launch;
-		assert.match(text(terminal), /1 killed.*cannot be resumed/);
-		const [, rawResponse] = text(terminal).split("\n");
-		assert.deepEqual(JSON.parse(rawResponse!), terminal.details.taskResponse);
-		assert.match(text(terminal), /Output of task-[\w-]+ \(completed, \d+ bytes\):\nFull output: /);
-		const response = terminal.details.taskResponse;
-		assert.ok(response?.kind === "parallel");
-		assert.deepEqual(
-			response.slots.map(({ outcome }) => {
-				assert.ok(outcome.kind === "admitted" && outcome.observation.kind === "settled");
-				return outcome.observation.result.kind;
-			}),
-			["cancelled", "completed"],
-		);
-		assert.equal(terminal.details.taskRecords?.length, 2);
+		assert.match(text(await call("wait-first", { action: "wait", id: ids[0]! })), /Killed.*cannot be resumed/);
+		const completed = await call("wait-second", { action: "wait", id: ids[1]! });
+		assert.match(text(completed), /Output of task-[\w-]+ \(completed, \d+ bytes\):\nFull output: /);
 	} finally {
 		gate.resolve();
 		await host.close("session-close");
-		await launch;
 	}
 });
 
@@ -495,7 +483,6 @@ test("owner foreground parallel cancellation preserves sibling execution and raw
 			const launched = await call({
 				tasks: Array.from({ length: 5 }, (_, index) => ({ agent: "qa-echo", task: `hold ${index}` })),
 				concurrency: 5,
-				wait: { kind: "background" },
 				artifacts: false,
 			});
 			const response = launched.details.taskResponse;

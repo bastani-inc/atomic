@@ -149,7 +149,7 @@ export interface OutboundEntry {
  */
 export class PooledStageHandle implements StageControlHandle {
 	readonly sessionFile = undefined;
-	private readonly listeners = new Set<AgentSessionEventListener>();
+	private readonly listeners = new Map<AgentSessionEventListener, (() => void) | undefined>();
 	private readonly rebindListeners = new Set<(redelivered: number) => void>();
 	private readonly drainedListeners = new Set<() => void>();
 	private settled: AgentMessage[] = [];
@@ -371,19 +371,20 @@ export class PooledStageHandle implements StageControlHandle {
 	/** Applies one message of the watch stream. */
 	receive(message: PooledStageWatchMessage): void {
 		if (message.kind === "ended") {
-			this.leaveWatch();
 			this.streamingNow = false;
 			if (RECONNECTABLE.has(message.reason) && !this.disposed && this.ended === undefined) this.reconnecting = true;
 			else this.end(message.reason);
+			this.leaveWatch();
 			// A rebind cut short by this end leaves the rest for the next attempt.
 			this.finishRebind(false);
+			for (const onWatchEnd of [...this.listeners.values()]) onWatchEnd?.();
 			return;
 		}
 		for (const { seq, event } of message.events) {
 			if (seq <= this.seq) continue;
 			this.seq = seq;
 			if (!this.apply(event)) continue;
-			for (const listener of [...this.listeners]) listener(event);
+			for (const listener of [...this.listeners.keys()]) listener(event);
 		}
 	}
 
@@ -408,8 +409,8 @@ export class PooledStageHandle implements StageControlHandle {
 		return done.promise;
 	}
 
-	subscribe(listener: AgentSessionEventListener): () => void {
-		this.listeners.add(listener);
+	subscribe(listener: AgentSessionEventListener, onWatchEnd?: () => void): () => void {
+		this.listeners.set(listener, onWatchEnd);
 		return () => {
 			this.listeners.delete(listener);
 		};
@@ -483,8 +484,10 @@ export class PooledStageHandle implements StageControlHandle {
 
 	/** Releases sends waiting on the current watch; the next watch gets a fresh signal. */
 	private leaveWatch(): void {
+		this.turnStart = new StageTurnStart();
 		this.publishedActivity = undefined;
 		this.pendingRetry = undefined;
+		this.taskView.withdrawChatActivity();
 		this.watchGone.resolve();
 		this.watchGone = Promise.withResolvers<void>();
 	}
@@ -583,7 +586,6 @@ export class PooledStageHandle implements StageControlHandle {
 		this.toolExecutions = new StageToolExecutionBuffer();
 		this.streaming = undefined;
 		this.streamingNow = false;
-		this.turnStart = new StageTurnStart();
 		if (undelivered > 0) this.undelivered = undelivered;
 		for (const entry of this.outbound) {
 			if (this.admitted(entry) || entry.waiter === undefined) continue;
@@ -710,7 +712,7 @@ export class PooledStageHandle implements StageControlHandle {
 									return;
 								entry.admittedBy = generation;
 								entry.unconfirmedOn = undefined;
-								for (const listener of [...this.listeners]) listener({ type: "queue_update" } as never);
+								for (const listener of [...this.listeners.keys()]) listener({ type: "queue_update" } as never);
 							},
 							() => {},
 						);
@@ -836,7 +838,7 @@ export class PooledStageHandle implements StageControlHandle {
 			// Views redraw, so the chat stops saying the stage is starting; the queue itself is unchanged.
 			const queued = this.queuedUserMessages();
 			const redraw = { type: "queue_update", steering: [...queued.steering], followUp: [...queued.followUp] };
-			for (const listener of [...this.listeners]) listener(redraw as AgentSessionEvent);
+			for (const listener of [...this.listeners.keys()]) listener(redraw as AgentSessionEvent);
 			return false;
 		}
 		if ((event.type as string) === STAGE_TASKS_EVENT) {

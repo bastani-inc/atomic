@@ -3,10 +3,13 @@
  * redelivers what the replacement attempt does not hold (#3996).
  */
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import type { AgentSessionEvent } from "@bastani/atomic";
 import { test } from "vitest";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
+import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	type OutboundEntry,
 	openPooledStageHandle,
@@ -21,6 +24,8 @@ import type {
 	WatchId,
 } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { createStore, deriveGraphTheme, makeTestTui, StageChatView, setupRun } from "./stage-chat-view-helpers.js";
 
 function snapshot(deliveredOps: readonly string[] = []): PooledStageChatSnapshot {
 	return {
@@ -589,6 +594,57 @@ test("the root handle reads as starting until the worker reports the stage's ses
 	handle.dispose();
 });
 
+for (const reason of ["stage_finished", "pool_closed", "worker_exited", "attempt_fenced", "resync"] as const) {
+	test(`an open stage chat drops the retry at ${reason} without waiting for the store (#5572)`, async () => {
+		const store = createStore();
+		setupRun(store, "child", "agent");
+		const fake = singleWatch({
+			...snapshot(),
+			waitingToRetry: true,
+			turn: { startedAt: Date.now() - 3_000, running: false, pending: true, lastAnswerFailed: true },
+		});
+		const ref = { runId: "child", stageId: "agent" };
+		const opened = await openPooledStageHandle(fake.transport, ref, "agent");
+		assert.ok(opened.ok);
+		let frames = 0;
+		const options = {
+			...ref,
+			store,
+			graphTheme: deriveGraphTheme({}),
+			workflowName: "test",
+			handle: opened.handle,
+			onDetach() {},
+			onClose() {},
+			requestRender: () => {
+				frames++;
+			},
+			piTui: makeTestTui(30),
+		};
+		const line = (chat: StageChatView) =>
+			chat
+				.render(80)
+				.map(stripVTControlCharacters)
+				.find((row) => row.includes("∀"))
+				?.trim();
+		const view = new StageChatView(options);
+		let fresh: StageChatView | undefined;
+		try {
+			assert.equal(line(view), "∀ retrying…");
+			const before = frames;
+			opened.handle.receive({ kind: "ended", reason });
+			assert.equal(opened.handle.turnStartedAt, undefined, "the retired attempt no longer owns a turn");
+			assert.equal(line(view), undefined);
+			assert.ok(frames > before, "the watch end invalidates the mounted chat");
+			fresh = new StageChatView(options);
+			assert.equal(line(fresh), undefined);
+		} finally {
+			fresh?.dispose();
+			view.dispose();
+			opened.handle.dispose();
+		}
+	});
+}
+
 test("a pooled stage exposes a pending switch from the watch and from later events, but not after the watch ends (#5572)", async () => {
 	const modelSwitch = {
 		type: "model_fallback_start",
@@ -756,6 +812,53 @@ test("a task message the worker refused can be sent again, and one whose answer 
 		assert.equal(lost.code, "delivery-unconfirmed");
 		assert.equal(lost.retryable, false);
 	} finally {
+		opened.handle.dispose();
+	}
+});
+
+test("a nested subagent and its task observers drop the retry on worker exit without losing its history (#5572)", async () => {
+	initTheme("dark");
+	const fake = singleWatch(snapshot());
+	const transport: PooledStageTransport = {
+		...fake.transport,
+		session: async () => ({ ok: true, task: { kind: "transcript", result: { ok: true, value: { messages: [] } } } }),
+	};
+	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const source = opened.handle.taskSource();
+	const task = taskRecord("nested");
+	const id = task.ref.taskId;
+	const view = new TaskAgentTranscriptPage(source, id, taskTranscriptEnvironment(), () => {});
+	const line = () =>
+		view
+			.render(80, 24)
+			.map(stripVTControlCharacters)
+			.find((row) => row.includes("∀"))
+			?.trim();
+	const observed: (string | undefined)[] = [];
+	const unsubscribe = source.subscribe(() => observed.push(line()));
+	try {
+		fake.event(1, {
+			type: "atomic_pooled_stage_tasks",
+			tasks: {
+				tasks: [task],
+				background: [id],
+				settlement: [],
+				activity: [],
+				stdin: [],
+				statuses: [],
+				chatActivity: [[id, "retrying"]],
+			},
+		} as never as AgentSessionEvent);
+		await view.load();
+		assert.equal(line(), "∀ retrying…");
+		opened.handle.receive({ kind: "ended", reason: "worker_exited" });
+		assert.equal(line(), undefined);
+		assert.deepEqual(observed, ["∀ retrying…", undefined]);
+		assert.deepEqual(source.tasks, [task]);
+	} finally {
+		unsubscribe();
+		view.dispose();
 		opened.handle.dispose();
 	}
 });

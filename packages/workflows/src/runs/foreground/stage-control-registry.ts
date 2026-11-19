@@ -190,9 +190,10 @@ export interface StageControlHandle {
 	/**
 	 * Subscribe to AgentSession events. The pending-listener semantics
 	 * from `InternalStageContext.subscribe` apply: listeners registered
-	 * before the session exists are buffered and bound on first attach.
+	 * before the session exists are buffered and bound on first attach. A worker-backed
+	 * handle also notifies the subscriber when its watched attempt stops supplying events.
 	 */
-	subscribe(listener: AgentSessionEventListener): () => void;
+	subscribe(listener: AgentSessionEventListener, onWatchEnd?: () => void): () => void;
 	/**
 	 * Subscribe to workflow-owned delivery lifecycle facts. Present only for
 	 * handles backed by a live stage runner. An accepted idle delivery reports

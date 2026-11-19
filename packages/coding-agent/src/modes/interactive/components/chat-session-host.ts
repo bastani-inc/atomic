@@ -527,13 +527,23 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return (this.taskSource?.backgroundTasks.length ?? 0) > 0;
 	}
 
+	private footerTaskSource(): TaskViewSource | undefined {
+		const agent = this.state.getAgentSession?.();
+		const session = agent ?? this.state.getChatBoxSession?.();
+		const store = session && getOwnerTaskStore(session);
+		return (
+			(agent ? undefined : this.state.getTaskSource?.()) ?? (store ? ownerTaskViewSource(store) : this.taskSource)
+		);
+	}
+
 	renderTaskFooter(width: number): string[] {
-		if (this.taskSource === undefined) return [];
-		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
+		const source = this.footerTaskSource();
+		return source ? renderTaskFooter(source, width) : [];
 	}
 	renderFooter(width: number, navigationActive = false): string[] {
 		const footer = renderChatSessionFooter(
 			this.state,
+			() => this.footerTaskSource(),
 			width,
 			navigationActive || (this.hasTaskInspector && !this.taskInspectorFullscreen),
 		);

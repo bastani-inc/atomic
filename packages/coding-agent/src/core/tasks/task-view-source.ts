@@ -10,6 +10,7 @@ import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
 import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from "./owner-store.js";
+import { scopedBackgroundTasks } from "./session-scope.js";
 import {
 	loadTaskOwnTranscriptEntries,
 	type TaskMessageDelivery,
@@ -89,7 +90,6 @@ export interface TaskViewSource {
 	recentActivity(id: TaskId): TaskActivity[];
 	activityOmitted(id: TaskId): boolean;
 	subscribe(listener: () => void): () => void;
-	foregroundTask(id: TaskId): Promise<TaskViewResult<{ readonly kind: string }>>;
 	/** Asks the task to stop; a failed request says why. */
 	cancelTask(id: TaskId): Promise<TaskViewResult<undefined>>;
 	stdinAvailable(id: TaskId): boolean;
@@ -159,7 +159,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 			return launched(root.ownerTasks ?? root.tasks);
 		},
 		get backgroundTasks() {
-			return launched(root.ownerBackgroundTasks ?? root.backgroundTasks);
+			return scopedBackgroundTasks(view, launched(root.ownerBackgroundTasks ?? root.backgroundTasks));
 		},
 		get settlementOrder() {
 			return root.settlementOrder;
@@ -174,7 +174,6 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		recentActivity: (id) => root.recentActivity(id),
 		activityOmitted: (id) => root.activityOmitted(id),
 		subscribe: (listener) => root.subscribe(listener),
-		foregroundTask: (id) => root.foregroundTask(id),
 		cancelTask: (id) => root.cancelTask(id),
 		stdinAvailable: (id) => root.stdinAvailable(id),
 		writeTaskInput: (id, text) => root.writeTaskInput(id, text),
@@ -236,14 +235,6 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		recentActivity: (id) => store.recentActivity(id),
 		activityOmitted: (id) => store.activityOmitted(id),
 		subscribe: (listener) => store.subscribe(listener),
-		async foregroundTask(id) {
-			const task = lease(id);
-			if (!task.ok) return { ok: false, error: { message: task.error.message } };
-			const result = await store.supervisor.foregroundTask(task.value);
-			return result.ok
-				? { ok: true, value: { kind: result.value.kind } }
-				: { ok: false, error: { message: result.error.message } };
-		},
 		async cancelTask(id) {
 			// A subagent stops resumably: its chat then says "Stopped · send to resume" (#5224).
 			const resumable = taskResumer(store.supervisor)?.stop?.(id);

@@ -606,6 +606,8 @@ export type RunResumeSource = "run_control" | "prompt_answer" | "stage_control" 
 export type { WorkflowWorktreeRestoreOutcome } from "./worktree-restore-outcome.js";
 
 export interface RunSnapshot extends RunExecutionState {
+	/** Sequence of this run's pause and block occurrences, retained when the run resumes under its own id. */
+	runGeneration?: number;
 	readonly label?: string;
 	readonly summary?: string;
 	readonly summarizedThrough?: number;

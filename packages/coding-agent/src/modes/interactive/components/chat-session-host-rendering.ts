@@ -2,13 +2,13 @@ import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import {
 	type ChatBoxSession,
 	loadTaskOwnTranscriptHistory,
 	taskTranscriptSource,
 } from "../../../core/tasks/supervisor.js";
+import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
@@ -295,6 +295,7 @@ export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 
 export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
+	taskSource: () => TaskViewSource | undefined,
 	width: number,
 	navigationActive = false,
 ): string[] {
@@ -303,14 +304,6 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	const session = agentSession ?? state.getChatBoxSession?.();
 	state.footerNavigationActive = navigationActive || agentSession === undefined || hasChatSessionTransientModal(state);
 	if (session && state.footerData) {
-		const taskSource = () => {
-			const currentAgent = state.getAgentSession?.();
-			const currentSession = currentAgent ?? state.getChatBoxSession?.();
-			return (
-				(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
-				(currentSession ? getOwnerTaskStore(currentSession) : undefined)
-			);
-		};
 		state.footer ??= new FooterComponent(
 			session,
 			state.footerData,
@@ -320,12 +313,7 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			() => taskSource()?.backgroundTasks ?? [],
-			undefined,
-			() => {
-				const source = taskSource();
-				return source === undefined ? undefined : taskClocksFor(source);
-			},
+			taskSource,
 		);
 		state.footer.setSession(session);
 		return state.footer.render(width);
