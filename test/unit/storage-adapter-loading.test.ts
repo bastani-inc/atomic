@@ -67,8 +67,6 @@ test("single-file builds give adapters the live host modules through virtual mod
 	loadAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 
-/** A `"type": "module"` adapter package whose own `.js` and `.mjs` files import `@bastani/atomic/workflows`. */
-
 test("concurrent imports of a type:module helper both wait for its top-level await (#3972)", async () => {
 	const agentDir = makeTempDirectory("storage-module-type-concurrent-");
 	const adapterDir = join(agentDir, "adapter");
@@ -178,11 +176,6 @@ test("a type:module helper and a TypeScript module that import each other load w
 		removeTempDirectory(agentDir);
 	}
 });
-
-/**
- * The type:module adapter loaded by the built `@bastani/atomic/storage`, with a resolvable installed copy of Atomic
- * beside it whose workflows module lacks the host's `MARK`.
- */
 
 test("the standalone broker loads host modules from the app bundle on first import only (#3856)", async () => {
 	const storage = { name: "storage" };
