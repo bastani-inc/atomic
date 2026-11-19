@@ -1578,7 +1578,7 @@ export class SessionManager {
 		return this.runMutation(async () => {
 			const path =
 				options?.history === "tail"
-					? forkContextPath(await this.contextBranch(leafId))
+					? forkContextPath(await this.contextBranch(leafId), this.sessionId)
 					: await this.fullBranch(leafId);
 			const result = createBranchedSessionState({
 				leafId,
@@ -1627,7 +1627,7 @@ export class SessionManager {
 		});
 		const leafId = entryId ?? source.getLeafId();
 		if (leafId === null || source.getEntry(leafId) === undefined) return undefined;
-		return forkContextPath(await source.contextBranch(leafId));
+		return forkContextPath(await source.contextBranch(leafId), source.getSessionId());
 	}
 
 	/** Capture only the store positions of this launch's window. A child waiting to run never holds the parent's
@@ -1636,7 +1636,7 @@ export class SessionManager {
 		const path = this.getBranch(leafId);
 		if (path.at(-1)?.id !== leafId) throw new SessionEntryError(leafId, "missing");
 		const ranges: [number, number][] = [];
-		for (const entry of forkContextPath(path)) {
+		for (const entry of forkContextPath(path, this.sessionId)) {
 			const seq = this.entrySeqs.get(entry.id);
 			if (seq === undefined) throw new SessionEntryError(entry.id, "missing");
 			const range = ranges.at(-1);
@@ -1684,7 +1684,7 @@ export class SessionManager {
 					records.push(...page.entries);
 					if (end < high) await new Promise<void>((resolve) => setImmediate(resolve));
 				}
-			const entries = forkContextPath(records);
+			const entries = forkContextPath(records, header.id);
 			const leaf = entries.at(-1);
 			if (!leaf) throw new Error("The captured fork window is empty");
 			const source = new SessionManager(store, cwd, sessionDir);
@@ -1730,7 +1730,11 @@ export class SessionManager {
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
-			const source = { store: this.store, sessionId: this.sessionId, entries: forkContextPath(this.getBranch()) };
+			const source = {
+				store: this.store,
+				sessionId: this.sessionId,
+				entries: forkContextPath(this.getBranch(), this.sessionId),
+			};
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
 			manager.markForkOrigin(source.store);
 			const hashes = sessionBlobHashes(source.store, source.entries);
@@ -1963,7 +1967,7 @@ export class SessionManager {
 		const selected = [...source.state.filter(({ onBranch }) => onBranch), ...source.branch]
 			.sort((a, b) => a.seq - b.seq)
 			.map(({ entry }) => entry);
-		const { entries, blobs } = takeInlineToolOutput(forkContextPath(selected), source.header.id);
+		const { entries, blobs } = takeInlineToolOutput(forkContextPath(selected, source.header.id), source.header.id);
 		const store =
 			typeof sessionDir === "string"
 				? await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false })

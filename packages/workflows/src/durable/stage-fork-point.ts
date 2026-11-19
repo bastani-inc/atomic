@@ -20,15 +20,21 @@ export function forkSourceCheckpointKey(replayKey: string): string {
  */
 export type ForkPoint = string | null;
 
-interface ForkSourceRecord {
+export interface ForkSourceRecord {
 	readonly sessionId: string;
 	readonly entryId: ForkPoint;
+	/** The immutable copy of this particular launch window in an explicit workflow fork. */
+	readonly windowSessionId?: string;
 }
 
 function isForkSourceRecord(value: unknown): value is ForkSourceRecord {
 	if (typeof value !== "object" || value === null) return false;
-	const { sessionId, entryId } = value as { readonly sessionId?: unknown; readonly entryId?: unknown };
-	return typeof sessionId === "string" && (typeof entryId === "string" || entryId === null);
+	const { sessionId, entryId, windowSessionId } = value as Partial<ForkSourceRecord>;
+	return (
+		typeof sessionId === "string" &&
+		(typeof entryId === "string" || entryId === null) &&
+		(windowSessionId === undefined || typeof windowSessionId === "string")
+	);
 }
 
 interface ForkableStageOptions {
@@ -52,10 +58,15 @@ export function launchForkSourceOf(options: ForkableStageOptions | undefined): s
 /** `options` forking its source at `point`; unchanged for a source that was not open at launch. */
 export function withForkPoint<TOptions extends ForkableStageOptions>(
 	options: TOptions,
-	point: ForkPoint | undefined,
+	point: ForkPoint | ForkSourceRecord | undefined,
 ): TOptions {
 	if (point === undefined) return options;
-	return point === null ? { ...options, forkFromEmptySource: true } : { ...options, forkFromEntryId: point };
+	const entryId = typeof point === "object" && point !== null ? point.entryId : point;
+	const fork =
+		typeof point === "object" && point?.windowSessionId !== undefined
+			? { ...options, forkFromSessionId: point.windowSessionId }
+			: options;
+	return entryId === null ? { ...fork, forkFromEmptySource: true } : { ...fork, forkFromEntryId: entryId };
 }
 
 /**
@@ -72,9 +83,9 @@ export interface DurableLaunchRun {
 }
 
 /** The fork points a fan-out's record holds, by source session id; undefined when there is no such record. */
-function fanOutRecord(run: DurableLaunchRun, key: string): ReadonlyMap<string, ForkPoint> | undefined {
+function fanOutRecord(run: DurableLaunchRun, key: string): ReadonlyMap<string, ForkSourceRecord> | undefined {
 	const entries = fanOutEntries(run.backend.getToolCheckpoint(run.workflowId, key)?.output);
-	return entries === undefined ? undefined : new Map(entries.map((entry) => [entry.sessionId, entry.entryId]));
+	return entries === undefined ? undefined : new Map(entries.map((entry) => [entry.sessionId, entry]));
 }
 
 function fanOutEntries(output: unknown): readonly ForkSourceRecord[] | undefined {
@@ -97,7 +108,7 @@ export function recordFanOutForkPoints(
 	run: DurableLaunchRun,
 	launchName: string,
 	sessionIds: readonly string[],
-): Promise<ReadonlyMap<string, ForkPoint>> {
+): Promise<ReadonlyMap<string, ForkSourceRecord>> {
 	const key = `${run.nextReplayKey(launchName)}${FAN_OUT_FORK_SOURCES_SUFFIX}`;
 	const recorded = fanOutRecord(run, key);
 	if (recorded !== undefined) return Promise.resolve(recorded);
@@ -117,7 +128,7 @@ export function recordFanOutForkPoints(
 		});
 		// The journal keeps the first record written under a key: a record of this launch that an earlier attempt wrote,
 		// though that attempt failed before it learned so, is the launch's point.
-		return fanOutRecord(run, key) ?? new Map(entries.map((entry) => [entry.sessionId, entry.entryId]));
+		return fanOutRecord(run, key) ?? new Map(entries.map((entry) => [entry.sessionId, entry]));
 	})();
 }
 
@@ -129,17 +140,14 @@ export function recordFanOutForkPoints(
 export function forkSourceRecordWithSessions(
 	argsHash: string,
 	output: WorkflowSerializableValue,
-	session: (sessionId: string) => string,
+	copy: (record: ForkSourceRecord) => ForkSourceRecord,
 ): WorkflowSerializableValue | undefined {
-	const copied = (record: ForkSourceRecord): ForkSourceRecord => ({ ...record, sessionId: session(record.sessionId) });
 	const recorded: unknown = output;
 	if (argsHash.endsWith(FORK_SOURCE_CHECKPOINT_SUFFIX))
-		return isForkSourceRecord(recorded) ? (copied(recorded) as unknown as WorkflowSerializableValue) : undefined;
+		return isForkSourceRecord(recorded) ? (copy(recorded) as unknown as WorkflowSerializableValue) : undefined;
 	if (!argsHash.endsWith(FAN_OUT_FORK_SOURCES_SUFFIX)) return undefined;
 	const entries = fanOutEntries(recorded);
-	return entries === undefined
-		? undefined
-		: ({ entries: entries.map(copied) } as unknown as WorkflowSerializableValue);
+	return entries === undefined ? undefined : ({ entries: entries.map(copy) } as unknown as WorkflowSerializableValue);
 }
 
 /**
@@ -169,7 +177,7 @@ export function withLaunchForkPoint<TOptions extends ForkableStageOptions>(input
 		return isForkSourceRecord(recorded) && recorded.sessionId === sessionId ? recorded : undefined;
 	};
 	const recorded = recordedPoint();
-	if (recorded !== undefined) return withForkPoint(options, recorded.entryId);
+	if (recorded !== undefined) return withForkPoint(options, recorded);
 	const entryId = liveStageSessionLeaf(sessionId);
 	if (entryId === undefined) return options;
 	const record: ForkSourceRecord = { sessionId, entryId };

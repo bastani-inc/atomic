@@ -62,7 +62,12 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
+import {
+	assertSessionWritable,
+	validateSessionEntries,
+	validateSessionHeader,
+	validateSessionText,
+} from "./validation.js";
 
 /**
  * The newest sessions schema this build reads and writes. Version 2 stores long entries in chunks (#4954), which a build
@@ -1997,6 +2002,8 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
+		if (row.header_json.includes('"forkWindowOf"'))
+			assertSessionWritable(JSON.parse(row.header_json) as SessionRecordHeader);
 		const state =
 			row.summary_state === undefined ? undefined : (JSON.parse(String(row.summary_state)) as StoredSummaryState);
 		if (row.last_seq !== options.expectSeq || (options.epoch !== undefined && state?.epoch !== options.epoch)) {

@@ -25,6 +25,7 @@ import { branchStatePages } from "./branch-state-pages.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
+	ReadOnlyForkWindowError,
 	SessionConflictError,
 	SessionExistsError,
 	SessionFormatVersionError,
@@ -87,7 +88,12 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
+import {
+	assertSessionWritable,
+	validateSessionEntries,
+	validateSessionHeader,
+	validateSessionText,
+} from "./validation.js";
 
 interface SessionFileState {
 	readonly stamp: string;
@@ -1569,6 +1575,7 @@ export class JsonlSessionStore implements SessionStore {
 			} catch (cause) {
 				if (signal?.aborted && cause === signal.reason) throw cause;
 				if (
+					cause instanceof ReadOnlyForkWindowError ||
 					cause instanceof SessionConflictError ||
 					cause instanceof SessionExistsError ||
 					cause instanceof SessionNotFoundError ||
@@ -1968,6 +1975,7 @@ export class JsonlSessionStore implements SessionStore {
 		const located = await this.locate(sessionId);
 		if (!located) throw new SessionNotFoundError(sessionId);
 		const { path, header, stored, stats } = located;
+		assertSessionWritable(header);
 		if (!isCurrentSessionHeader(stored)) throw new SessionFormatVersionError(path, stored.version);
 		let state = located.state;
 		if (!state) {

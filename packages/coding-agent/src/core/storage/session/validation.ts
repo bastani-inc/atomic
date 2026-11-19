@@ -1,5 +1,6 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import {
+	ReadOnlyForkWindowError,
 	SessionInvalidTextError,
 	SessionInvalidTimestampError,
 	type SessionTextField,
@@ -30,6 +31,10 @@ function validateSessionTimestamp(field: SessionTimestampField, value: string | 
 export function validateSessionText(field: SessionTextField, value: string): void {
 	if (value.includes("\u0000")) throw new SessionInvalidTextError(field, "nul-character");
 	if (/\p{Surrogate}/u.test(value)) throw new SessionInvalidTextError(field, "ill-formed-unicode");
+}
+
+export function assertSessionWritable(header: SessionRecordHeader): void {
+	if (typeof header.forkWindowOf === "string") throw new ReadOnlyForkWindowError(header.id);
 }
 
 export function validateSessionHeader(header: SessionRecordHeader): void {

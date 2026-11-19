@@ -361,12 +361,40 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 			output: { text: "source", stageName: "source", sessionId: sourceId },
 			completedAt: 1,
 		});
+		// A legacy boundary has no stored recovery text; the history link in its model input must keep the original ID.
+		const clear = async () => {
+			await store.append(
+				sourceId,
+				[
+					{
+						type: "compaction",
+						id: randomUUID(),
+						parentId: source.getLeafId(),
+						timestamp: new Date().toISOString(),
+						summary: "context cleared",
+						firstKeptEntryId: null,
+						tokensBefore: 100,
+						details: { strategy: "verbatim-lines" },
+					},
+				],
+				{ expectSeq: source.getLastSeq() },
+			);
+			assert.ok(await source.refreshFromStore());
+		};
+		await clear();
+		await source.appendMessage(userMessage("required at launch"));
 		const launchPoint = source.getLeafId();
+		const launchContext = source
+			.buildSessionContext()
+			.messages.map((message) => ("content" in message ? message.content : message.role));
 		await parallel(async (name, options) => {
 			assert.equal(options.forkFromEntryId, launchPoint);
 			await source.appendMessage(userMessage(`after launch, during ${name}`));
 			return { stageName: name, text: name };
 		})(STEP_PAIR, forking);
+		await source.appendMessage(userMessage("unrelated private turn".repeat(5000)));
+		await clear();
+		await source.appendMessage(userMessage("current source window"));
 		await backend.commitWorkflowStatus(run, "completed");
 		await backend.releaseWorkflow(run);
 
@@ -384,6 +412,18 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 		const copiedSource = (backend.getStageOutput(fork.runId, "stage:task:source:1") as { sessionId: string })
 			.sessionId;
 		assert.notEqual(copiedSource, sourceId);
+		await store.close();
+		const transferred = [];
+		for await (const s of copies.list({ includeInternal: true }))
+			transferred.push(...(await copies.load(s.id)).entries);
+		assert.ok(
+			!JSON.stringify(transferred).includes("unrelated private turn"),
+			"a durable fork archived unrelated retired input",
+		);
+		assert.ok(
+			!JSON.stringify(transferred).includes('"content":"before launch"'),
+			"turns before the dependency window leaked",
+		);
 		const inherited: unknown[][] = [];
 		await parallel(
 			async (name, options) => {
@@ -392,7 +432,7 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 			},
 			{ runId: fork.runId },
 		)(STEP_PAIR, { ...forking, forkFromSessionId: copiedSource });
-		assert.deepEqual(inherited, [["before launch"], ["before launch"]]);
+		assert.deepEqual(inherited, [launchContext, launchContext]);
 	});
 
 	test("a parallel launched while its live source is still empty starts every step empty, also after a resume (#5481)", async () => {

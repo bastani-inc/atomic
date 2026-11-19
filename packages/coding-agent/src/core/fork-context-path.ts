@@ -7,7 +7,7 @@ const forkSettings = new Set(["workspace_binding", TOOL_DEACTIVATION_ENTRY_TYPE,
 
 /** A new child inherits request content, not the source's admission authority or its recoverable operations.
  * Model-visible content from a notice is still the same provider input, but is no longer a deliverable card. */
-export function forkContextPath(path: SessionEntry[]): SessionEntry[] {
+export function forkContextPath(path: SessionEntry[], sourceSessionId: string): SessionEntry[] {
 	const leaf = path.at(-1);
 	if (!leaf) return [];
 	const current = buildContextEntries(path, leaf.id, undefined, path);
@@ -64,7 +64,11 @@ export function forkContextPath(path: SessionEntry[]): SessionEntry[] {
 			const ref =
 				source.customType === TOOL_OUTPUT_ENTRY_TYPE &&
 				(source.data as { toolCallId?: string } | undefined)?.toolCallId;
-			if (!forkSettings.has(source.customType) && !(ref && toolResults.has(ref))) entry = undefined;
+			if (
+				!forkSettings.has(source.customType) &&
+				!(source.customType === TOOL_OUTPUT_ENTRY_TYPE && (window.has(source.id) || (ref && toolResults.has(ref))))
+			)
+				entry = undefined;
 		} else if (source.type === "custom_message") {
 			if (!window.has(source.id) || source.excludeFromContext) entry = undefined;
 			else if (
@@ -83,6 +87,12 @@ export function forkContextPath(path: SessionEntry[]): SessionEntry[] {
 				};
 			}
 		}
+		if (
+			entry?.type === "compaction" &&
+			entry.recallSessionId === undefined &&
+			!(typeof entry.details === "object" && entry.details && "form" in entry.details)
+		)
+			entry = { ...entry, recallSessionId: sourceSessionId };
 		if (entry?.type === "context_edit" && edits.get(entry.targetId)?.id !== entry.id) entry = undefined;
 		const edit = edits.get(source.id);
 		if (edit && entry?.type === "message") {

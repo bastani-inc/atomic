@@ -287,7 +287,7 @@ export function buildSessionProjection(
 			boundary.timestamp,
 			boundary.details,
 			[...separator, ...keptTail],
-			sessionId,
+			boundary.recallSessionId ?? sessionId,
 		),
 	];
 	const projected = contextEntries.map(

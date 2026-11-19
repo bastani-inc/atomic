@@ -55,7 +55,12 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
+import {
+	assertSessionWritable,
+	validateSessionEntries,
+	validateSessionHeader,
+	validateSessionText,
+} from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
@@ -948,6 +953,7 @@ export class MemorySessionStore implements SessionStore {
 	private forWrite(sessionId: string, options: SessionWriteOptions, expected?: StoredSession): StoredSession {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
+		assertSessionWritable(decodeHeader(record));
 		if (expected !== undefined && record !== expected)
 			throw new SessionConflictError(sessionId, options.expectSeq, record.lastSeq);
 		if (

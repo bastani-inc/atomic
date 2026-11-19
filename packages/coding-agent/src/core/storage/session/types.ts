@@ -22,6 +22,8 @@ export interface SessionRecordHeader {
 	readonly parentSessionId?: string;
 	/** The parent ID refers to the source store, not necessarily a session that can be opened in this store. */
 	readonly parentInOtherStore?: true;
+	/** A durable workflow fork's private replay window, owned by this stage's copied session ID. */
+	readonly forkWindowOf?: string;
 	readonly internal?: true;
 	readonly workflow?: SessionWorkflowMetadata;
 }
