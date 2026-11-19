@@ -192,7 +192,7 @@ const getChildSessionOptions: NonNullable<RunSyncOptions["getChildSessionOptions
 	model,
 	modelRuntime,
 	parentCommandTaskOwner,
-	builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+	builtins: { subagents: false, mcp: false, "web-access": false },
 });
 const ctx = {
 	hasUI: false,

@@ -61,7 +61,7 @@ test("a forwarding SDK runtime does not admit a new workflow observer during qui
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		await session.dispose();
 		assert.deepEqual(calls, ["shutdown"]);

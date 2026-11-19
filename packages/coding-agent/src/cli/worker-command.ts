@@ -4,12 +4,11 @@
  * fleet controller that adds and removes hosts through a provisioner module.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { APP_NAME } from "../config.js";
-import { getBuiltinPackageLocations } from "../core/builtin-packages.ts";
+import { APP_NAME, getPackageDir } from "../config.js";
 import { describeStorageFailure, isTeamProfileConfigError } from "../core/storage/errors.js";
 import {
 	checkSharedDatabaseArguments,
@@ -506,15 +505,13 @@ export interface WorkerHostModule {
 	}): Promise<void>;
 }
 
-/**
- * Loads the bundled workflows package's public entry (its `main`: the source in a checkout, the shipped bundle in a
- * build), as extensions see the host's modules.
- */
+/** Loads the worker host only in a development checkout; it is no longer shipped with Atomic. */
 export async function loadWorkerHostModule(): Promise<WorkerHostModule> {
-	const workflows = getBuiltinPackageLocations().find(({ distDirName }) => distDirName === "workflows");
-	if (workflows === undefined) throw new Error("The bundled workflows package was not found.");
-	const manifest = JSON.parse(readFileSync(join(workflows.packageDir, "package.json"), "utf8")) as { main: string };
-	const modulePath = join(workflows.packageDir, manifest.main);
+	const packageDir = getPackageDir();
+	const modulePath = resolve(packageDir, "..", "workflows", "src", "index.ts");
+	if (!existsSync(join(packageDir, "src", "main.ts")) || !existsSync(modulePath)) {
+		throw new Error("Workflow workers are no longer included in Atomic.");
+	}
 	const [{ createHostModuleJiti }, { getVirtualModules }] = await Promise.all([
 		import("../core/extensions/loader-virtual-modules.js"),
 		import("../core/extensions/loader-host-modules.js"),

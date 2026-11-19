@@ -72,7 +72,6 @@ const PUBLISHED_DEPENDENCY_SECTIONS: readonly DependencySectionName[] = [
 ];
 
 const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
-	workflowsPackageJson,
 	subagentsPackageJson,
 	mcpPackageJson,
 	webAccessPackageJson,
@@ -240,7 +239,6 @@ describe("package metadata", () => {
 		assert.equal(buildTsconfig.compilerOptions?.declarationMap, undefined);
 		assert.equal(buildTsconfig.compilerOptions?.inlineSources, undefined);
 		assert.deepEqual(Object.values(INSTALLED_EXTENSION_ENTRIES), [
-			"src/extension/index.bundle.mjs",
 			"src/extension/index.bundle.mjs",
 			"index.bundle.mjs",
 			"index.bundle.mjs",

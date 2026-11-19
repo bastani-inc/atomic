@@ -159,7 +159,7 @@ async function stagePrompt(refusal: string, fallbackOnContentFilter?: boolean) {
 			const { session } = await createAgentSession({
 				cwd: process.cwd(),
 				agentDir: process.cwd(),
-				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 				modelRuntime: runtime,
 				model: runtime.getModel(requested, "m")!,
 				fallbackModels: options.fallbackModels,
@@ -286,7 +286,7 @@ async function subagentRun(refusal: string, fallbackOnContentFilter?: boolean) {
 		model: runtime.getModel("spare", "m")!,
 		settingsManager: retrySettings(fallbackOnContentFilter),
 		sessionManager: await SessionManager.create(cwd, join(cwd, "parent-sessions")),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => {

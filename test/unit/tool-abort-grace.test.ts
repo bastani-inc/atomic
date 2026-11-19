@@ -167,7 +167,7 @@ async function sessionWithStuckTool(
 	const { session } = await createAgentSession({
 		cwd: process.cwd(),
 		agentDir: process.cwd(),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		modelRuntime,
 		model: modelRuntime.getModel("p", "m")!,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),

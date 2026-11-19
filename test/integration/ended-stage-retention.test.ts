@@ -43,7 +43,7 @@ beforeAll(async () => {
 		model: current.parentModel,
 		modelRuntime: current.modelRuntime,
 		settingsManager: quietSettings(),
-		builtins: { workflows: false, mcp: false, "web-access": false },
+		builtins: { mcp: false, "web-access": false },
 	});
 	const definition = workflow({
 		name: "ended-stage-retention",

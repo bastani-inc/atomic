@@ -111,7 +111,7 @@ export default function (pi) {
 		model,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => {

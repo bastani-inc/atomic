@@ -92,7 +92,7 @@ export const child = workflow({
 			modelRuntime,
 			model: modelRuntime.getModel("pool-fixture", "fixture")!,
 			settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: false }, retry: { enabled: false } }),
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		} as never);
 		return { text: await stage.complete("Run the command") };
 	},
