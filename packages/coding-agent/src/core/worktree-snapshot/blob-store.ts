@@ -1774,9 +1774,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				turns,
 			);
 			let incomplete = false;
-			const batches = sessions.batches(candidates);
-			const initialBatches = batches.length;
-			for (const [index, batch] of batches.entries()) {
+			for (const batch of sessions.batches(candidates)) {
 				// Every delete batch starts on a turn of its own and ends with one: never a turn while it holds the write lock.
 				await turns.next();
 				const removed = await this.deleteUnretained(batch, minimumAge, options);
@@ -1786,16 +1784,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					break;
 				}
 				renewedAt = performance.now();
-				deleted.push(...removed.deleted);
-				options.onBatch?.(removed.deleted);
-				// A fork can copy a record without retaining its blob. Revisit deferred candidates outside the
-				// transaction, then use the same locked check. Do not retry a retry if more forks keep arriving.
-				if (index < initialBatches && removed.kept.size > 0) {
-					await turns.next();
-					const known = new Set(batch.sessions);
-					const deferred = await this.unretainedOf([...removed.kept], sessions, turns);
-					batches.push(...sessions.batches(deferred.filter((item) => item.sessions.some((id) => !known.has(id)))));
-				}
+				deleted.push(...removed);
+				options.onBatch?.(removed);
 			}
 			if (incomplete) {
 				if (repaired) return deleted;
@@ -1857,18 +1847,18 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * Deletes the blobs of `batch` that are still old and that no retaining run, no carried work and no session retains,
-	 * in one write transaction. Returns the hashes deleted and those the session check kept, or undefined, deleting
-	 * nothing, when the reference index is incomplete. The transaction checks the batch's blobs again in one statement,
-	 * so what it sees holds when the batch commits: the snapshots the sessions it walked for its blobs retain now,
+	 * in one write transaction, and resolves with the hashes deleted; undefined, deleting nothing, when the reference
+	 * index is incomplete. The transaction checks the batch's blobs again in one statement, so what it sees is what
+	 * holds when the batch commits: the snapshots the batch's sessions, those the sweep walked for its blobs, retain now,
 	 * and the sessions that record its blobs now. A blob a session the sweep did not walk records, such as one created
-	 * since, is kept; the sweep can revisit it outside the lock. Nothing in the transaction waits for a turn of the event
+	 * since, is kept; the next collection walks that session. Nothing in the transaction waits for a turn of the event
 	 * loop (#5530).
 	 */
 	private deleteUnretained(
 		batch: SweepDeleteBatch,
 		minimumAge: number,
 		options: SnapshotSweepOptions,
-	): Promise<{ deleted: string[]; kept: Set<string> } | undefined> {
+	): Promise<string[] | undefined> {
 		const t = this.tables;
 		return this.write(options.pace, async (transaction) => {
 			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
@@ -1876,13 +1866,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 			const kept = new Set(await this.keptBySessions(transaction, batch));
 			const unretained = batch.hashes.filter((hash) => !kept.has(hash));
-			if (unretained.length === 0) return { deleted: [], kept };
+			if (unretained.length === 0) return [];
 			const rows = await transaction.all<SqliteRow & { hash: string }>(
 				`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${this.unreferencedByRuns(`${t.blobs}.hash`)} RETURNING hash`,
 				JSON.stringify(unretained),
 				minimumAge,
 			);
-			return { deleted: rows.map((row) => row.hash), kept };
+			return rows.map((row) => row.hash);
 		});
 	}
 
