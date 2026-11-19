@@ -3,13 +3,13 @@ import { waitForInteractiveEngineProjectTrust } from "../interactive-engine/exte
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 
-/** A view drawn from saved trust before the first engine report must remove any withdrawn project values. */
+/** A view drawn from provisional saved trust must remove any withdrawn project values. */
 export function onPreliminaryCatalogWithdrawn(
 	mode: InteractiveModeBase,
 	rebuild: () => void,
 ): (() => void) | undefined {
 	const runtime = mode.runtimeHost;
-	if (mode.isInitialized || !(runtime instanceof IsolatedInteractiveRuntime)) return undefined;
+	if (!(runtime instanceof IsolatedInteractiveRuntime) || !runtime.isProjectTrustPending()) return undefined;
 	const settings = mode.settingsManager;
 	if (!settings.isProjectTrusted()) return undefined;
 	const unsubscribe = runtime.onProjectTrustChanged((changed) => {

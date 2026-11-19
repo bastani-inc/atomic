@@ -1,3 +1,4 @@
+import { forwardReleaseObservation } from "./broker/released-child-receipts.js";
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
 import { Type } from "typebox";
@@ -928,6 +929,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			const forwarded: DropReleasedChildrenRequest | AcknowledgeReleasedChildWakeRequest | MarkEndedChildrenRequest = {
 				...payload,
 			};
+			if (eventName === SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT) forwardReleaseObservation(payload, forwarded);
 			const handle = loadedHeavy;
 			payload.completion = !handle
 				? Promise.resolve()

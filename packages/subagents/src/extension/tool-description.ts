@@ -8,6 +8,7 @@ EXECUTION (use exactly ONE mode):
 • Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
 • group (string | true) sets the intercom group for spawned children so same-group subagents can intercom each other but stay isolated from other groups. Boolean true or the trimmed, case-insensitive string sentinel "true"/"auto" auto-generates one shared UUID group per parallel set; those names are reserved and cannot be literal group names. Defaults to the current session/stage's group (subagents inherit their launching stage's group). Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.
 MANAGEMENT (use action field, omit agent/task/tasks):
+• { action: "models" } - inspect configured models, their fullId and availableThinkingLevels
 • { action: "list" } - discover executable agents
 • { action: "get", agent: "name" } - full detail; packaged agents use dotted runtime names like "package.agent"
 • { action: "create", config: { name: "custom-agent", package: "code-analysis", systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, ... } }

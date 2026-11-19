@@ -179,6 +179,30 @@ describe("a click on a key hint runs its key", () => {
 		}
 	});
 
+	it("a spaced slash owns an unbound letter and its label, but separates a bound key (#5656)", () => {
+		const line = "esc / a destination";
+		assert.deepStrictEqual(hintsOn(clickableHintText(line)), ["escape: esc ", "/: / a destination"]);
+		assert.deepStrictEqual(hintsOn(clickableHintText(line, ["a"])), ["escape: esc / ", "a: a destination"]);
+	});
+
+	it("keeps horizontal label separators in the clicked text without interpreting line breaks (#5656)", () => {
+		for (const space of ["\t", "\u00a0", "\u2003", "\u202f"]) {
+			const line = `enter${space}choose`;
+			assert.strictEqual(clickableHintText(line), clickableHint(line, keyHintAction("enter")));
+			assert.strictEqual(clickableKeyTextHint(`esc${space}enter`, " label"), `esc${space}enter label`);
+		}
+		const unread = new Proxy<never[]>([], { get: () => assert.fail("prose read a binding") });
+		assert.strictEqual(clickableHintText("a\u00a0destination", unread), "a\u00a0destination");
+		assert.strictEqual(
+			clickableHintText("esc\u2003a destination", unread),
+			clickableHint("esc\u2003a destination", keyHintAction("escape")),
+		);
+		for (const separator of ["\n", "\r", "\u2028"]) {
+			const line = `enter${separator}choose`;
+			assert.strictEqual(clickableHintText(line), line);
+		}
+	});
+
 	it("a trailing slash in a space-separated key list remains a literal binding (#5528)", async () => {
 		const { view, click, tui } = await mount([
 			clickableKeyTextHint("esc /", " pick"),
@@ -225,6 +249,24 @@ describe("a click on a key hint runs its key", () => {
 		assert.deepStrictEqual(["a/file.txt", "b/file.txt"].map(clickableHintText), ["a/file.txt", "b/file.txt"]);
 		for (const ratio of ["1/10 tasks", "3/5 tasks", "3 / 5 complete"]) {
 			assert.strictEqual(clickableHintText(ratio, ["1", "3", "5", "/"]), ratio);
+		}
+	});
+
+	it("activates each key in a mixed numeric shortcut, without consulting bindings for ratios or invalid lists (#5656)", () => {
+		const line = "1/2 / esc pick";
+		assert.deepStrictEqual(hintsOn(clickableHintText(line, ["1", "2"])), ["1: 1/", "2: 2 / ", "escape: esc pick"]);
+		assert.strictEqual(clickableHintText(line, ["1"]), line);
+		const unread = new Proxy<never[]>([], { get: () => assert.fail("inert text read a binding") });
+		for (const plain of [
+			"1 / 2",
+			"1/2 / 3 complete",
+			"12/3 / esc choose",
+			"1/2 / document",
+			"1/2 / esc/bad-key",
+			"1/2 / esc/",
+			"1/2 / q finish",
+		]) {
+			assert.strictEqual(clickableHintText(plain, unread), plain);
 		}
 	});
 

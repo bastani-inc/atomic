@@ -23,6 +23,7 @@ import {
 	foreignResumeIds,
 	isSessionResumeIndex,
 	latestCompactionOf,
+	readEarlierCompletionIntents,
 	type SessionResumeIndex,
 	sessionResumeFrom,
 	sessionResumePlan,
@@ -2192,7 +2193,10 @@ export class SqlSessionStore implements SessionStore {
 								sessionId,
 								leafSeq,
 							);
-				return sessionResumeFrom(index, header, branch, state, leaf?.entry_id ?? null, plan.children);
+				const resume = sessionResumeFrom(index, header, branch, state, leaf?.entry_id ?? null, plan.children);
+				if (resume.compaction)
+					await readEarlierCompletionIntents(index, resume, (seqs) => this.readSeqs(tx, sessionId, seqs));
+				return resume;
 			}, SESSION_TRANSACTION);
 			if (resume !== undefined) return resume;
 		}

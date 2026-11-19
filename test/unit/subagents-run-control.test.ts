@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
 import { Agent } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import {
 	AgentWakeDispatcher,
@@ -26,6 +36,7 @@ import type { Sequence, TaskId } from "../../packages/coding-agent/src/core/task
 import { FINISHED_TASK_RETENTION } from "../../packages/coding-agent/src/core/tasks/eviction-error.js";
 import { taskHostStateSizesForTesting } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	formatReleasedReply,
 	RELEASED_REPLY_FORMAT_EVENT,
@@ -36,6 +47,7 @@ import {
 	type ReleasedChildReplyRequest,
 } from "../../packages/intercom/released-reply-wait.js";
 import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
+import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -73,7 +85,11 @@ import {
 	SUBAGENT_STILL_RUNNING_RESULT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
-import { holdRunWorktree, WORKTREE_REPLY_WAIT_MS } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
+import {
+	holdRunWorktree,
+	registerRunWorktrees,
+	WORKTREE_REPLY_WAIT_MS,
+} from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
 import {
 	bindSubagentChildCards,
 	observeSubagentChildRecord,
@@ -153,6 +169,7 @@ import { createStore as createWorkflowStore } from "../../packages/workflows/src
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { drained, waitForWakeCompletion } from "../helpers/wake-completion.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { theme } from "./subagents-render-stability-helpers.js";
 
 const ORIGINAL_TASK = "original task";
 /** The detached call a released child waits on in these tests. */
@@ -279,7 +296,8 @@ function newHost(): AgentTaskHost {
 	});
 }
 
-function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harness {
+function harness(options: { stage?: boolean; ownerless?: boolean; answer?: (task: string) => string } = {}): Harness {
+	const answer = options.answer;
 	const cwd = makeTempDirectory("subagent-run-control-");
 	let host = newHost();
 	const stageState = options.stage ? new Map<string, object>() : undefined;
@@ -520,7 +538,13 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		const result = await runSync(parentCwd, agents, agentName, task, {
 			...options,
 			testSession: gate
-				? { output: "finished", promptGate: gate.promise, abortResolvesPrompt: true, ...onSession, ...dispose }
+				? {
+						output: answer?.(task) ?? "finished",
+						promptGate: gate.promise,
+						abortResolvesPrompt: true,
+						...onSession,
+						...dispose,
+					}
 				: original || state.resumedRunsWait
 					? { output: "partial", promptGate: neverReleased.promise, abortResolvesPrompt: true, ...onSession }
 					: { output: "resumed", ...onSession },
@@ -2731,6 +2755,30 @@ async function waitForWorktreeCleanup(h: Harness, child: SubagentChildRecord): P
 	});
 }
 
+test("stopping a queued worktree child releases its reservation without waiting for dispatch (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const runId = randomUUID();
+	const setup = await worktrees.createWorktrees(h.cwd, runId, 1);
+	const batch = registerRunWorktrees(runId, setup);
+	batch.beginLaunches();
+	const scheduled = Promise.withResolvers<() => Promise<void>>();
+	const child = setup.worktrees[0]!;
+	const taskId = await h.admit(runId, scheduled.resolve, { cwd: child.path });
+	try {
+		const stopped = await h.call({ action: "quit", id: `${runId}:0` });
+		assert.notEqual(stopped.isError, true, text(stopped));
+		await settled(h, taskId);
+		assert.equal(h.runs.length, 0, "no child session ran in the worktree");
+		assert.equal(existsSync(child.path), false, "the queued reservation no longer keeps the sole worktree");
+		assert.match(text(stopped), /never started.*worktree/i);
+	} finally {
+		await (await scheduled.promise)();
+		await batch.release();
+		await waitForWorktreeCleanup(h, await h.waitForLatest(`${runId}:0`, (record) => record.state === "terminal"));
+	}
+});
+
 test("a queued worktree child resumed behind its cancelled dispatch starts in its worktree after the sibling finishes (#3760 run control)", async () => {
 	const h = harness();
 	initGitRepository(h.cwd);
@@ -3365,6 +3413,988 @@ test("resuming a completed worktree child starts from its saved edits, and no ex
 	assert.match(latest, /draft by A/, "the resumed execution's patch keeps the earlier draft");
 	assert.match(latest, /second pass by A/, "the resumed execution's patch has its own edits");
 });
+
+test("wait and status do not report a hold on a removed worktree when a dirty sibling resumes (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const first = Promise.withResolvers<void>();
+	const last = Promise.withResolvers<void>();
+	const resumed = Promise.withResolvers<void>();
+	h.finishOn.set("pause-this", first);
+	h.finishOn.set("finish-this", last);
+	h.finishOn.set(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, resumed);
+	const [a, b] = await launchWorktreeRun(h, ["pause-this", "finish-this"]);
+	assert.ok(a && b?.taskId);
+	let resumedId: string | undefined;
+	try {
+		await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+		await h.waitForLatest(b.childId, (record) => !!record.childSessionId);
+		writeFileSync(join(a.cwd, "draft.txt"), "still editing\n");
+		await h.call({ action: "pause", id: a.childId });
+		await h.waitForLatest(a.childId, (record) => record.terminalStatus === "paused");
+		last.resolve();
+		await settled(h, b.taskId);
+		await waitForWorktreeCleanup(h, b);
+
+		resumedId = resumedTaskId(await h.call({ action: "resume", id: a.childId }));
+		await h.waitForLatest(a.childId, (record) => record.taskId === resumedId && !!record.childSessionId);
+		assert.equal(taskExecutionKind(h, resumedId), "running");
+		assert.equal(existsSync(a.cwd), true);
+		assert.equal(existsSync(b.cwd), false);
+		for (const action of ["wait", "status"] as const) {
+			const reply = text(await h.call({ action, id: b.taskId }));
+			assert.match(reply, /\(completed, 8 bytes\):[\s\S]*finished$/);
+			assert.doesNotMatch(reply, /worktree kept until/i);
+		}
+	} finally {
+		first.resolve();
+		last.resolve();
+		resumed.resolve();
+		if (resumedId) await settled(h, resumedId);
+	}
+});
+
+test("waiting for a finished child checks a batch sweep already started by its sibling (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const first = Promise.withResolvers<void>(),
+		last = Promise.withResolvers<void>();
+	h.finishOn.set("first-child", first);
+	h.finishOn.set("last-child", last);
+	const [a, b] = await launchWorktreeRun(h, ["first-child", "last-child"]);
+	assert.ok(a?.taskId && b?.taskId);
+	await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+	first.resolve();
+	await settled(h, a.taskId);
+	const held = await h.call({ action: "wait", id: a.taskId });
+	assert.match(text(held), /worktree kept until the other children in this batch finish/i);
+	const reached = Promise.withResolvers<void>(),
+		proceed = Promise.withResolvers<void>();
+	const capture = worktrees.diffWorktrees;
+	const gate = vi.spyOn(worktrees, "diffWorktrees").mockImplementation(async (...args) => {
+		reached.resolve();
+		await proceed.promise;
+		return capture(...args);
+	});
+	try {
+		last.resolve();
+		await reached.promise;
+		const turn = new AbortController();
+		const interrupted = h.call({ action: "wait", id: a.taskId }, turn.signal);
+		setImmediate(() => turn.abort());
+		const escaped = await answeredWithin(interrupted);
+		assert.ok(escaped, "Esc ends a waiting observation even after the host task settled");
+		assert.match(text(escaped), /worktree cleanup.*background/i);
+		const observing = h.call({ action: "wait", id: a.taskId });
+		setImmediate(proceed.resolve);
+		const reply = await observing;
+		assert.equal(existsSync(a.cwd), false, "the already-running batch sweep finished before wait replied");
+		assert.doesNotMatch(text(reply), /worktree kept until/i);
+	} finally {
+		proceed.resolve();
+		gate.mockRestore();
+		last.resolve();
+		await settled(h, b.taskId);
+		await waitForWorktreeCleanup(h, a);
+	}
+});
+
+function listedWorktrees(h: Harness): string[] {
+	return gitOutput(h.cwd, ["worktree", "list", "--porcelain"])
+		.split("\n")
+		.filter((line) => line.startsWith("worktree "))
+		.map((line) => line.slice("worktree ".length).trimEnd());
+}
+
+function launchCard(h: Harness, launch: SubagentToolResult, args: Parameters<Harness["call"]>[0], expanded: boolean) {
+	initTheme("dark", false);
+	const card = renderSubagentToolResult(launch, { expanded, isPartial: false }, theme, {
+		state: {},
+		toolCallId: "launch",
+		args,
+		invalidate() {},
+		getTaskRecord: (id) => h.host.taskRecords(new Set([id]))[0],
+	});
+	return () => card.render(160).map(stripTerminalSequences).join("\n");
+}
+
+test("a batch whose children failed to start reports only their errors after both worktrees are removed (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const reasons = ["First authorization timed out", "Second authorization timed out"];
+	const requests: PromiseWithResolvers<never>[] = [];
+	const emit = h.deps.pi.events.emit.bind(h.deps.pi.events);
+	const auth = vi.spyOn(h.deps.pi.events, "emit").mockImplementation((channel, data) => {
+		if (channel !== SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT) return emit(channel, data);
+		const request = Promise.withResolvers<never>();
+		requests.push(request);
+		(data as { completion?: Promise<never> }).completion = request.promise;
+	});
+	const args = { tasks: ["first", "second"].map((task) => ({ agent: "worker", task })), worktree: true };
+	try {
+		const pending = h.call(args);
+		await vi.waitFor(() => assert.equal(requests.length, 2), { timeout: RECORD_WAIT_MS });
+		const checkouts = listedWorktrees(h);
+		assert.equal(checkouts.length, 3);
+		requests[0]!.reject(new Error(reasons[0]));
+		await new Promise<void>((resolve) => setImmediate(resolve)); // The second reservation still holds both trees.
+		requests[1]!.reject(new Error(reasons[1]));
+		const launch = await pending;
+		assert.equal(launch.isError, true);
+		assert.equal(h.runs.length, 0);
+		assert.equal(listedWorktrees(h).length, 1);
+		assert.equal(checkouts.filter((path) => existsSync(path)).length, 1);
+		const response = launch.details?.taskResponse;
+		assert.ok(response?.kind === "parallel");
+		assert.deepEqual(
+			response.slots.map(({ outcome }) => outcome),
+			reasons.map((message) => ({
+				kind: "unstarted",
+				reason: { kind: "rejected", error: { code: "SpawnFailed", message } },
+			})),
+		);
+		for (const observed of [text(launch), launchCard(h, launch, args, true)()]) {
+			for (const reason of reasons) assert.ok(observed.includes(reason), observed);
+			assert.doesNotMatch(observed, /worktree kept until/i);
+		}
+	} finally {
+		auth.mockRestore();
+	}
+});
+
+test("a failed launch reports the worktree hold separately and drops it when its sibling finishes (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	bindSubagentChildCards(h.ctx);
+	const reason = "Launch not authorized";
+	h.host.updateBinding({
+		authorizeLaunch(intent) {
+			if (intent.task === "refused") throw new Error(reason);
+		},
+	});
+	const finish = Promise.withResolvers<void>();
+	h.finishOn.set("admitted", finish);
+	const args = { tasks: ["refused", "admitted"].map((task) => ({ agent: "worker", task })), worktree: true };
+	const hold = /Worktree kept until the other children in this batch finish\./;
+	try {
+		const launch = await h.call(args);
+		assert.notEqual(launch.isError, true, text(launch));
+		const response = launch.details?.taskResponse;
+		assert.ok(response?.kind === "parallel");
+		const sibling = response.slots[1]?.outcome;
+		assert.ok(sibling?.kind === "admitted");
+		const checkouts = listedWorktrees(h);
+		assert.equal(checkouts.length, 3);
+		const cards = [false, true].map((expanded) => launchCard(h, launch, args, expanded));
+		assert.match(text(launch), hold);
+		for (const paint of cards) assert.match(paint(), hold);
+		finish.resolve();
+		await settled(h, sibling.observation.taskId);
+		assert.equal(listedWorktrees(h).length, 1);
+		assert.equal(checkouts.filter((path) => existsSync(path)).length, 1);
+		for (const paint of cards) {
+			const replay = paint();
+			assert.match(replay, /Launch not authorized/);
+			assert.match(replay, /Done/);
+			assert.doesNotMatch(replay, hold);
+		}
+		assert.deepEqual(response.slots[0]?.outcome, {
+			kind: "unstarted",
+			reason: { kind: "rejected", error: { code: "SpawnFailed", message: reason } },
+		});
+	} finally {
+		finish.resolve();
+	}
+});
+
+test("the original launch card shows the answers after the last sibling releases the batch worktrees (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	bindSubagentChildCards(h.ctx);
+	initTheme("dark", false);
+	const first = Promise.withResolvers<void>();
+	const last = Promise.withResolvers<void>();
+	h.finishOn.set("first-to-finish", first);
+	h.finishOn.set("last-to-finish", last);
+	const args = {
+		tasks: ["first-to-finish", "last-to-finish"].map((task) => ({ agent: "worker", task })),
+		worktree: true,
+	};
+	const launch = await h.call(args);
+	assert.notEqual(launch.isError, true, text(launch));
+	try {
+		const [a, b] = await vi.waitFor(
+			() => {
+				const records = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+					(a, b) => a.index - b.index,
+				);
+				assert.equal(records.filter((record) => record.childSessionId).length, 2);
+				return records;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		assert.ok(a?.taskId && b?.taskId);
+		writeFileSync(join(a.cwd, "first-result.txt"), "first child's deliverable\n");
+		first.resolve();
+		await settled(h, a.taskId);
+		assert.ok(existsSync(a.cwd));
+		last.resolve();
+		await settled(h, b.taskId);
+		assert.equal(existsSync(a.cwd) || existsSync(b.cwd), false);
+		const card = renderSubagentToolResult(launch, { expanded: true, isPartial: false }, theme, {
+			state: {},
+			toolCallId: "launch",
+			args,
+			invalidate() {},
+			getTaskRecord: (id) => h.host.taskRecords(new Set([id]))[0],
+		})
+			.render(160)
+			.map(stripTerminalSequences)
+			.join("\n");
+		assert.equal(occurrences(card, "Done"), 2);
+		assert.equal(occurrences(card, "finished"), 2);
+		assert.doesNotMatch(card, /worktree kept until the other children in this batch finish/i);
+		for (const action of ["wait", "status"] as const) {
+			const reply = text(await h.call({ action, id: a.taskId }));
+			assert.doesNotMatch(reply, /worktree kept until/i);
+			assert.match(reply, /\(completed, 8 bytes\):[\s\S]*finished$/);
+			assert.match(reply, /"byteCount":"8"/, "the output reference counts only the child's answer");
+		}
+	} finally {
+		first.resolve();
+		last.resolve();
+	}
+});
+
+test(
+	"coalesced SDK calls return only their own answers while Git is saving a worktree patch (#5600)",
+	async () => {
+		const h = harness({
+			ownerless: true,
+			answer: (task) => (task.includes("first-child") ? "answer alpha" : "answer beta"),
+		});
+		initGitRepository(h.cwd);
+		const first = Promise.withResolvers<void>();
+		const last = Promise.withResolvers<void>();
+		h.finishOn.set("first-child", first);
+		h.finishOn.set("last-child", last);
+		const { execute } = createSubagentExecutor(h.deps);
+		const signal = new AbortController().signal;
+		const replies = Promise.all(
+			["first-child", "last-child"].map((task) =>
+				execute(task, { agent: "worker", task, worktree: true }, signal, undefined, h.ctx),
+			),
+		);
+		try {
+			const [a, b] = await vi.waitFor(
+				() => {
+					const records = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+						(a, b) => a.index - b.index,
+					);
+					assert.equal(records.filter((record) => record.childSessionId).length, 2);
+					return records;
+				},
+				{ timeout: RECORD_WAIT_MS },
+			);
+			assert.ok(a && b);
+			assert.equal(a.runId, b.runId);
+			const marker = join(h.cwd, ".git", "filtered").replaceAll("\\", "/");
+			gitOutput(h.cwd, [
+				"config",
+				"filter.slow.clean",
+				`if ! test -f '${marker}'; then touch '${marker}'; sleep 12; fi; cat`,
+			]);
+			writeFileSync(join(h.cwd, ".git", "info", "attributes"), "*.slow filter=slow\n");
+			writeFileSync(join(a.cwd, "result.slow"), "save this edit\n");
+			first.resolve();
+			await h.waitForLatest(a.childId, (record) => record.state === "terminal");
+			last.resolve();
+			const results = await replies;
+			await waitForWorktreeCleanup(h, a);
+			await waitForWorktreeCleanup(h, b);
+			assert.equal(existsSync(marker), true);
+			for (const [index, reply] of results.entries()) {
+				assert.deepEqual(
+					reply.details.results.map((child) => child.finalOutput),
+					[index ? "answer beta" : "answer alpha"],
+				);
+				// The first child released its hold while its sibling ran. Only the last child's
+				// public result is still pending when this observation hits its cleanup deadline.
+				assert.match(text(reply), index ? /^0\/1 succeeded/ : /^1\/1 succeeded/);
+				assert.match(text(reply), /worktree cleanup continues in the background/i);
+				assert.match(text(reply), index ? /answer beta/ : /answer alpha/);
+				assert.doesNotMatch(text(reply), index ? /answer alpha/ : /answer beta/);
+			}
+		} finally {
+			first.resolve();
+			last.resolve();
+			await replies;
+		}
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
+
+test("an SDK foreground batch reports when its child's worktree sweep is still running (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("sdk-sweeping", done);
+	const batch = h.call({ tasks: [{ agent: "worker", task: "sdk-sweeping" }], worktree: true });
+	const child = await vi.waitFor(
+		() => {
+			const record = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+				(r) => r.childSessionId,
+			);
+			assert.ok(record);
+			return record;
+		},
+		{ timeout: RECORD_WAIT_MS },
+	);
+	const capture = worktrees.diffWorktrees;
+	const reached = Promise.withResolvers<void>(),
+		proceed = Promise.withResolvers<void>();
+	const gate = vi.spyOn(worktrees, "diffWorktrees").mockImplementation(async (...args) => {
+		reached.resolve();
+		await proceed.promise;
+		return capture(...args);
+	});
+	try {
+		const quitting = h.call({ action: "quit", id: child.childId });
+		await reached.promise;
+		const [reply, stopped] = await Promise.all([batch, quitting]);
+		assert.match(text(stopped), /worktree cleanup.*background/i);
+		assert.match(text(reply), /worktree cleanup.*background/i);
+		assert.equal(reply.details.results[0]?.status, "continued");
+		assert.equal(h.latest(child.childId)?.state, "running");
+	} finally {
+		proceed.resolve();
+		gate.mockRestore();
+		done.resolve();
+		await waitForWorktreeCleanup(h, child);
+	}
+});
+
+test("an SDK foreground batch reports its children's final worktree state, not a hold from when the first one finished (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const first = Promise.withResolvers<void>(),
+		second = Promise.withResolvers<void>();
+	h.finishOn.set("first-to-finish", first);
+	h.finishOn.set("second-to-finish", second);
+	const batch = h.call({
+		tasks: [
+			{ agent: "worker", task: "first-to-finish" },
+			{ agent: "worker", task: "second-to-finish" },
+		],
+		worktree: true,
+	});
+	try {
+		const [a, b] = await vi.waitFor(
+			() => {
+				const records = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].sort(
+					(left, right) => left.index - right.index,
+				);
+				assert.equal(records.filter((record) => record.childSessionId).length, 2);
+				return records;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		assert.ok(a && b);
+		writeFileSync(join(a.cwd, "first-result.txt"), "first child's deliverable\n");
+		first.resolve();
+		await h.waitForLatest(a.childId, (record) => record.state === "terminal");
+		second.resolve();
+		const reply = text(await batch);
+		assert.equal(existsSync(a.cwd) || existsSync(b.cwd), false, "both worktrees are gone at reply");
+		assert.match(reply, /^2\/2 succeeded/);
+		assert.match(reply, /Worktree Changes[\s\S]*first-result\.txt/);
+		assert.doesNotMatch(reply, /worktree kept until the other children in this batch finish/i);
+	} finally {
+		first.resolve();
+		second.resolve();
+		await batch;
+	}
+});
+
+// A successful clean filter that waits for the test to release it, once, before copying stdin to stdout.
+function holdGitFilter(cwd: string, pattern: string) {
+	const marker = join(cwd, ".git", "filter-started").replaceAll("\\", "/");
+	const release = join(cwd, ".git", "filter-release").replaceAll("\\", "/");
+	writeFileSync(join(cwd, ".git", "info", "attributes"), `${pattern} filter=hold\n`);
+	gitOutput(cwd, [
+		"config",
+		"filter.hold.clean",
+		`printf '%s' "$ATOMIC_SUBAGENT_WORKTREE_PHASE" > '${marker}'; while ! test -f '${release}'; do sleep 0.1; done; cat`,
+	]);
+	return {
+		started: () => vi.waitFor(() => assert.ok(existsSync(marker)), { timeout: RECORD_WAIT_MS, interval: 10 }),
+		phase: () => readFileSync(marker, "utf8"),
+		release: () => writeFileSync(release, "release"),
+	};
+}
+
+test("a filter helper can use finishing without waiting for the child's completed task (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("filtered", done);
+	const [child] = await launchWorktreeRun(h, ["filtered"]);
+	assert.ok(child?.taskId);
+	const taskId = child.taskId;
+	await h.waitForLatest(child.childId, (record) => !!record.childSessionId);
+	const filter = holdGitFilter(h.cwd, "*.slow");
+	writeFileSync(join(child.cwd, "deliverable.slow"), "preserve this edit\n");
+	const phases: unknown[] = [];
+	const events = h.deps.pi.events;
+	const emit = events.emit.bind(events);
+	const observer = vi.spyOn(events, "emit").mockImplementation((channel, data) => {
+		emit(channel, data);
+		if (channel === "subagent:finishing") phases.push(data);
+	});
+	const completion = settled(h, taskId);
+	done.resolve();
+	try {
+		await filter.started();
+		assert.deepEqual(phases, [{ runId: child.runId, index: child.index, taskId, cwd: child.cwd, status: "ok" }]);
+		assert.equal(filter.phase(), "finishing");
+		const saved = h.sessionManager
+			.getEntries()
+			.filter(isSubagentChildRecord)
+			.findLast((entry) => entry.data?.taskId === taskId);
+		assert.equal(
+			saved?.data?.terminalStatus,
+			"ok",
+			"a restart has the original outcome and never relaunches the child",
+		);
+		assert.notEqual(taskExecutionKind(h, taskId), "settled");
+		assert.equal(h.latest(child.childId)?.state, "running");
+		const script = createSubagentExecutor(h.deps);
+		const scriptContext = { ...h.ctx, parentToolCallId: "codemode" };
+		const scriptWait = (budgetMs: number) =>
+			script.execute(
+				"script-wait",
+				{ action: "wait", id: taskId, budgetMs },
+				new AbortController().signal,
+				undefined,
+				scriptContext,
+			);
+		const pending = JSON.parse(text(await scriptWait(0)));
+		assert.equal(pending.outcome, "running");
+		assert.match(pending.worktreeNote, /cleanup continues in the background/i);
+		const status = await script.execute(
+			"script-status",
+			{ action: "status", id: taskId },
+			new AbortController().signal,
+			undefined,
+			scriptContext,
+		);
+		const [scriptChild] = JSON.parse(text(status)).children;
+		assert.equal(scriptChild.state, "finishing");
+		assert.equal(scriptChild.resumable, false);
+		const lateStop = h.host.cancelTask(taskId as TaskId, "user");
+		filter.release();
+		await completion;
+		assert.equal(existsSync(child.cwd), false);
+		const stopped = await lateStop;
+		assert.ok(
+			stopped.ok && stopped.value.decision !== "cancellation-requested",
+			"a finished runner cannot be killed during Git",
+		);
+		const published = await h.host.waitForTask(taskId as TaskId);
+		assert.ok(published.ok && published.value.kind === "settled" && published.value.result.kind === "completed");
+		const scriptReply = JSON.parse(text(await scriptWait(0)));
+		assert.equal(scriptReply.outcome, "settled");
+		assert.equal(scriptReply.result.output, "finished");
+		assert.equal(scriptReply.worktreeNote, undefined);
+		assert.match(readFileSync(savedPatches(child)[0]!, "utf8"), /\+preserve this edit/);
+	} finally {
+		filter.release();
+		await completion;
+		await waitForWorktreeCleanup(h, child);
+		observer.mockRestore();
+	}
+});
+
+test("closing the owner during Git leaves the child finishing without holding the session open (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("close-during-capture", done);
+	const [a] = await launchWorktreeRun(h, ["close-during-capture"]);
+	assert.ok(a?.taskId);
+	await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+	const filter = holdGitFilter(h.cwd, "*.slow");
+	writeFileSync(join(a.cwd, "result.slow"), "keep this answer\n");
+	const terminal = settled(h, a.taskId);
+	done.resolve();
+	await filter.started();
+	const closing = h.host.close("session-close");
+	try {
+		const closed = await answeredWithin(closing);
+		assert.ok(closed?.ok, "the owner's session closes while Git is still waiting");
+		const finishing = closed.value.tasks.find((task) => task.taskId === a.taskId);
+		assert.equal(finishing?.decision, "already-finishing");
+		assert.notEqual(finishing?.execution.kind, "settled");
+		assert.ok(existsSync(a.cwd));
+	} finally {
+		filter.release();
+		await Promise.all([closing, terminal]);
+	}
+	assert.equal(existsSync(a.cwd), false);
+});
+
+function rejectChildInput(h: Harness, prepare?: (cwd: string) => void) {
+	const refused = Promise.withResolvers<{ childId: string; error: Error; span: RunSyncOptions["elapsedSpan"] }>();
+	const storage = vi.spyOn(artifactStorage, "getArtifactsDir").mockResolvedValue(join(h.cwd, "artifacts"));
+	cleanups.push(async () => {
+		storage.mockRestore();
+	});
+	const runSync = h.deps.runtime!.runSync!;
+	const { execute } = createSubagentExecutor({
+		...h.deps,
+		runtime: {
+			...h.deps.runtime,
+			async runSync(cwd, agents, agent, task, options) {
+				if (!task.includes("refuse-input")) return runSync(cwd, agents, agent, task, options);
+				assert.ok(options.artifactsDir && options.cwd);
+				const paths = artifactStorage.getArtifactPaths(options.artifactsDir, options.runId, agent, options.index);
+				mkdirSync(paths.inputPath, { recursive: true });
+				prepare?.(options.cwd);
+				try {
+					return await runSync(cwd, agents, agent, task, options);
+				} catch (error) {
+					assert.ok(error instanceof Error);
+					refused.resolve({
+						childId: `${options.runId}:${options.index}`,
+						error,
+						span: options.elapsedSpan && { ...options.elapsedSpan },
+					});
+					throw error;
+				}
+			},
+		},
+	});
+	return {
+		launch: (...tasks: string[]) =>
+			execute(
+				"input",
+				{ tasks: tasks.map((task) => ({ agent: "worker", task })), worktree: true },
+				new AbortController().signal,
+				undefined,
+				h.ctx,
+			),
+		refused: refused.promise,
+	};
+}
+
+for (const sibling of ["finishes", "hands off"] as const)
+	test(`an SDK startup rejection keeps its original reason when a sibling ${sibling} (#5600)`, async () => {
+		const h = harness({ ownerless: true });
+		initGitRepository(h.cwd);
+		const done = Promise.withResolvers<void>();
+		h.finishOn.set("live-sibling", done);
+		const sdk = rejectChildInput(h);
+		const batch = sdk.launch("refuse-input", "live-sibling");
+		const { childId, error } = await sdk.refused;
+		const failed = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
+		try {
+			if (sibling === "finishes") done.resolve();
+			else {
+				await h.waitForLatest(`${failed.runId}:1`, (r) => !!r.childSessionId);
+				const handoff = h.runs.find((r) => r.task.includes("live-sibling"))?.options.onIntercomDetachCommit;
+				assert.ok(handoff);
+				handoff();
+			}
+			const reply = await batch;
+			const rejection = reply.details.results[0]?.taskResponse;
+			assert.match(error.message, /EISDIR|EPERM/);
+			assert.deepEqual(rejection, {
+				kind: "unstarted",
+				reason: { kind: "rejected", error: { code: "SpawnFailed", message: error.message } },
+			});
+			const hold = /worktree kept until/i;
+			assert.equal(hold.test(text(reply)), sibling === "hands off");
+			const args = {
+				tasks: ["refuse-input", "live-sibling"].map((task) => ({ agent: "worker", task })),
+				worktree: true,
+			};
+			const cards = [false, true].map((expanded) => launchCard(h, reply, args, expanded));
+			for (const paint of cards) assert.equal(hold.test(paint()), sibling === "hands off");
+			done.resolve();
+			await waitForWorktreeCleanup(h, failed);
+			for (const paint of cards) assert.doesNotMatch(paint(), hold);
+		} finally {
+			done.resolve();
+			await batch;
+			await waitForWorktreeCleanup(h, failed);
+		}
+	});
+
+test("an admitted host failure keeps the original error after its sibling releases the worktrees (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("live-sibling", done);
+	const host = rejectChildInput(h);
+	const launch = host.launch("refuse-input", "live-sibling");
+	try {
+		await launch;
+		const { childId, error } = await host.refused;
+		assert.match(error.message, /EISDIR|EPERM/);
+		const failed = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
+		assert.ok(failed.taskId);
+		const held = await h.call({ action: "wait", id: failed.taskId });
+		done.resolve();
+		await waitForWorktreeCleanup(h, failed);
+		const replay = await h.call({ action: "wait", id: failed.taskId });
+		for (const reply of [replay, held]) {
+			const response = reply.details.taskResponse;
+			assert.ok(response?.kind === "admitted" && response.observation.kind === "settled");
+			assert.deepEqual(response.observation.result, {
+				kind: "failed",
+				code: "RunnerFailed",
+				message: error.message,
+			});
+		}
+		assert.match(text(held), /worktree kept until/i);
+		assert.doesNotMatch(text(replay), /worktree kept until/i);
+	} finally {
+		done.resolve();
+		await launch;
+	}
+});
+
+test("an SDK input write failure stops the execution clock before Git captures the worktree (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const filter = holdGitFilter(h.cwd, "*.slow");
+	const sdk = rejectChildInput(h, (cwd) => writeFileSync(join(cwd, "edited.slow"), "save this edit\n"));
+	const batch = sdk.launch("refuse-input");
+	try {
+		const { childId, error, span } = await sdk.refused;
+		assert.match(error.message, /EISDIR|EPERM/);
+		await filter.started();
+		const duringCleanup = Date.now();
+		await vi.waitFor(() => assert.ok(Date.now() > duringCleanup));
+		filter.release();
+		await batch;
+		const record = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
+		assert.deepEqual(record.elapsedSpan, span, "publication preserves the runner's original span");
+		assert.ok(record.elapsedSpan && record.elapsedMs !== undefined);
+		assert.ok(
+			record.elapsedMs <= duringCleanup - record.elapsedSpan.dispatchedAt,
+			`recorded ${record.elapsedMs} ms, but Git was already running ${duringCleanup - record.elapsedSpan.dispatchedAt} ms after dispatch`,
+		);
+	} finally {
+		filter.release();
+		await batch;
+	}
+});
+
+for (const action of ["pause", "quit"] as const)
+	test.each([false, true])(
+		`${action} all keeps a sibling's answer while an earlier native stop is still settling (worktree: %s, #5600)`,
+		async (managed) => {
+			const h = harness();
+			if (managed) initGitRepository(h.cwd);
+			const first = Promise.withResolvers<void>();
+			const second = Promise.withResolvers<void>();
+			h.stuckOn.set("opening-session", first);
+			h.finishOn.set("finishing-sibling", second);
+			if (managed) await launchWorktreeRun(h, ["opening-session"]);
+			else await h.call({ agent: "worker", task: "opening-session" });
+			await vi.waitFor(() => assert.ok(h.runs.some((run) => run.task.includes("opening-session"))));
+			const [earlier] = readSubagentChildRecords(h.sessionManager.getEntries()).values();
+			assert.ok(earlier?.taskId);
+			await h.call({ agent: "worker", task: "finishing-sibling" });
+			const later = await vi.waitFor(
+				() => {
+					const row = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+						(r) => r.childId !== earlier.childId && r.childSessionId,
+					);
+					assert.ok(row);
+					return row;
+				},
+				{ timeout: RECORD_WAIT_MS },
+			);
+			const stop = h.call({ action, all: true });
+			try {
+				await vi.waitFor(() => assert.equal(taskExecutionKind(h, earlier.taskId!), "cancelling"));
+				second.resolve();
+				const finished = await h.waitForLatest(later.childId, (r) => r.state === "terminal");
+				assert.equal(taskExecutionKind(h, earlier.taskId), "cancelling");
+				assert.equal(finished.terminalStatus, "ok");
+			} finally {
+				first.resolve();
+				second.resolve();
+				await stop;
+			}
+		},
+	);
+
+for (const action of ["pause", "quit"] as const)
+	test(`${action} all stops a plain child before waiting for a different child's Git cleanup (#5600)`, async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const first = Promise.withResolvers<void>();
+		const second = Promise.withResolvers<void>();
+		h.finishOn.set("managed-child", first);
+		h.finishOn.set("plain-child", second);
+		const [managed] = await launchWorktreeRun(h, ["managed-child"]);
+		assert.ok(managed?.taskId);
+		await h.waitForLatest(managed.childId, (record) => !!record.childSessionId);
+		const launch = await h.call({ agent: "worker", task: "plain-child" });
+		assert.notEqual(launch.isError, true, text(launch));
+		const plain = await vi.waitFor(
+			() => {
+				const row = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(r) => r.childId !== managed.childId && r.childSessionId,
+				);
+				assert.ok(row?.taskId);
+				return row;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const file = join(managed.cwd, "seed.txt");
+		writeFileSync(file, readFileSync(file, "utf8").replace("seed", "tide"));
+		utimesSync(file, 0, 0); // Same byte length, different mtime: git status must inspect its contents.
+		const filter = holdGitFilter(h.cwd, "seed.txt");
+		const stop = h.call({ action, all: true });
+		try {
+			await filter.started();
+			second.resolve();
+			const stopped = await h.waitForLatest(plain.childId, (r) => r.state === "terminal");
+			assert.equal(stopped.terminalStatus, action === "pause" ? "paused" : "quit");
+		} finally {
+			filter.release();
+			first.resolve();
+			second.resolve();
+			await stop;
+		}
+	});
+
+test.each(["acknowledged", "pending"] as const)(
+	"pause-all starts a %s reservation at finishing, without bypassing its acknowledgement (#5600)",
+	async (ack) => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const first = Promise.withResolvers<void>();
+		const second = Promise.withResolvers<void>();
+		h.finishOn.set("managed-first", first);
+		h.finishOn.set("plain-peer", second);
+		const [managed] = await launchWorktreeRun(h, ["managed-first"]);
+		assert.ok(managed?.taskId);
+		const a = await h.waitForLatest(managed.childId, (record) => !!record.childSessionId);
+		await h.call({ agent: "worker", task: "plain-peer" });
+		const b = await vi.waitFor(
+			() => {
+				const plain = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(record) => record.childId !== a.childId && record.childSessionId,
+				);
+				assert.ok(plain?.taskId);
+				return plain;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const seed = join(a.cwd, "seed.txt");
+		writeFileSync(seed, readFileSync(seed, "utf8").replace("seed", "tide"));
+		utimesSync(seed, 0, 0);
+		const filter = holdGitFilter(h.cwd, "seed.txt");
+		const phase = Promise.withResolvers<void>(),
+			broker = Promise.withResolvers<void>();
+		let requested = false;
+		const events = h.deps.pi.events,
+			emit = events.emit.bind(events);
+		const watcher = vi.spyOn(events, "emit").mockImplementation((channel, data) => {
+			emit(channel, data);
+			if (channel === "subagent:finishing" && (data as { taskId: string }).taskId === a.taskId) phase.resolve();
+			if (channel !== SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) return;
+			const request = data as SubagentReserveRestoringChildRequest;
+			if (request.holdMs !== undefined || !request.aliases.includes(a.childSessionId!)) return;
+			requested = true;
+			request.completion = Promise.all([phase.promise, broker.promise]).then(() => {});
+		});
+		const stopping = h.call({ action: "pause", all: true });
+		try {
+			await filter.started();
+			await vi.waitFor(() => assert.ok(requested), { timeout: RECORD_WAIT_MS });
+			if (ack === "acknowledged") {
+				broker.resolve();
+				await vi.waitFor(() => assert.notEqual(taskExecutionKind(h, b.taskId!), "running"));
+			}
+			second.resolve();
+			const result = await h.waitForLatest(b.childId, (r) => r.state === "terminal");
+			assert.equal(result.terminalStatus, ack === "acknowledged" ? "paused" : "ok");
+			assert.notEqual(taskExecutionKind(h, managed.taskId), "settled");
+		} finally {
+			phase.resolve();
+			broker.resolve();
+			filter.release();
+			first.resolve();
+			second.resolve();
+			await stopping;
+			watcher.mockRestore();
+		}
+	},
+);
+
+test("pausing after an SDK handoff preserves local settings and staged and unstaged edits in the retained worktree (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const settings = join(".atomic", "settings.local.json");
+	mkdirSync(join(h.cwd, ".atomic"), { recursive: true });
+	writeFileSync(join(h.cwd, settings), '{"theme":"light"}');
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("handoff", done);
+	const launch = h.call({ tasks: [{ agent: "worker", task: "handoff" }], worktree: true });
+	try {
+		const child = await vi.waitFor(
+			() => {
+				const row = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(r) => r.childSessionId,
+				);
+				assert.ok(row);
+				return row;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const file = join(child.cwd, "seed.txt");
+		writeFileSync(file, "staged draft\n");
+		gitOutput(child.cwd, ["add", "seed.txt"]);
+		writeFileSync(file, "unstaged edit\n");
+		assert.equal(readFileSync(join(child.cwd, settings), "utf8"), '{"theme":"light"}');
+		writeFileSync(join(child.cwd, settings), '{"theme":"dark"}');
+		assert.ok(h.runs[0]?.options.onIntercomDetachCommit);
+		h.runs[0].options.onIntercomDetachCommit();
+		assert.ok((await launch).details.results[0]?.detached);
+		const staged = gitOutput(child.cwd, ["show", ":seed.txt"]);
+		assert.equal(staged.trim(), "staged draft");
+		const paused = await h.call({ action: "pause", id: child.childId });
+		assert.notEqual(paused.isError, true, text(paused));
+		assert.equal(gitOutput(child.cwd, ["show", ":seed.txt"]), staged);
+		assert.equal(readFileSync(file, "utf8"), "unstaged edit\n");
+		assert.equal(readFileSync(join(child.cwd, settings), "utf8"), '{"theme":"dark"}');
+		h.finishOn.set("read settings", done);
+		const resumed = await h.call({ action: "resume", id: child.childId, message: "read settings" });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		try {
+			await vi.waitFor(() => assert.ok(h.runs.some((run) => run.task.includes("read settings"))));
+			assert.equal(readFileSync(join(child.cwd, settings), "utf8"), '{"theme":"dark"}');
+		} finally {
+			done.resolve();
+			await waitForWorktreeCleanup(h, child);
+		}
+	} finally {
+		done.resolve();
+		await launch;
+	}
+});
+
+test("an SDK pause waits for its worktree sweep without waiting on the foreground batch reply (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const finish = Promise.withResolvers<void>();
+	h.finishOn.set("sdk-swept", finish);
+	const batch = h.call({ tasks: [{ agent: "worker", task: "sdk-swept" }], worktree: true });
+	try {
+		const child = await vi.waitFor(
+			() => {
+				const record = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(r) => r.childSessionId,
+				);
+				assert.ok(record);
+				return record;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const paused = await h.call({ action: "pause", id: child.childId });
+		assert.notEqual(paused.isError, true, text(paused));
+		assert.equal(existsSync(child.cwd), false, "the SDK stop replies after the sweep, not before the batch returns");
+	} finally {
+		finish.resolve();
+		await batch;
+	}
+});
+
+for (const waiting of ["Esc", "deadline"] as const)
+	test(`${waiting} releases a pause waiting on worktree cleanup with a note, without stopping the sweep (#5600)`, async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		h.finishOn.set("stalled-cleanup", Promise.withResolvers<void>());
+		const [child] = await launchWorktreeRun(h, ["stalled-cleanup"]);
+		assert.ok(child?.taskId);
+		await h.waitForLatest(child.childId, (record) => !!record.childSessionId);
+		const reached = Promise.withResolvers<void>(),
+			proceed = Promise.withResolvers<void>();
+		const check = worktrees.worktreeHasUnsavedWork;
+		const gate = vi.spyOn(worktrees, "worktreeHasUnsavedWork").mockImplementation(async (...args) => {
+			reached.resolve();
+			await proceed.promise;
+			return check(...args);
+		});
+		const turn = new AbortController();
+		const stop = h.call({ action: "pause", id: child.childId }, turn.signal);
+		try {
+			await reached.promise;
+			if (waiting === "Esc") {
+				const watched = h.host.watchOwnerTasks();
+				assert.ok(watched.ok);
+				try {
+					assert.notEqual(
+						watched.value.snapshot.tasks.find((t) => t.ref.taskId === child.taskId)?.execution.kind,
+						"settled",
+					);
+				} finally {
+					watched.value.dispose();
+				}
+				assert.equal(h.latest(child.childId)?.state, "running");
+				turn.abort();
+				assert.ok(await settlesWithin(stop), "Esc must not wait for the sweep deadline");
+			}
+			const reply = await stop;
+			assert.match(text(reply), /worktree cleanup.*background/i);
+			assert.equal(reply.isError === true, waiting === "Esc");
+			assert.equal(existsSync(child.cwd), true);
+			assert.notEqual(taskExecutionKind(h, child.taskId), "settled");
+			assert.equal(h.latest(child.childId)?.state, "running");
+			if (waiting === "deadline") {
+				assert.equal(reply.details.runControl?.children[0]?.state, "finishing");
+				assert.doesNotMatch(text(reply), /^Paused /m);
+			}
+		} finally {
+			proceed.resolve();
+			gate.mockRestore();
+			await settled(h, child.taskId);
+			await waitForWorktreeCleanup(h, child);
+		}
+	});
+
+for (const action of ["completion", "pause", "quit", "pause after completion"] as const)
+	test(`${action} reports only after the child's worktree sweep (#5600)`, async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const finish = Promise.withResolvers<void>();
+		h.finishOn.set("last-worker", finish);
+		const [child] = await launchWorktreeRun(h, ["last-worker"]);
+		assert.ok(child?.taskId);
+		await h.waitForLatest(child.childId, (record) => !!record.childSessionId);
+		if (action === "completion") {
+			finish.resolve();
+			await settled(h, child.taskId);
+		} else if (action === "pause after completion") {
+			duringCancelOf(h, child.taskId, async () => {
+				finish.resolve();
+				await settled(h, child.taskId!);
+			});
+			assert.match(text(await h.call({ action: "pause", id: child.childId })), /completed \(ok\)/);
+		} else {
+			const reply = await h.call({ action, id: child.childId });
+			assert.notEqual(reply.isError, true, text(reply));
+		}
+		const existedAtReply = existsSync(child.cwd);
+		await waitForWorktreeCleanup(h, child);
+		assert.equal(existedAtReply, false, "the last child's clean worktree is gone at reply, not afterwards");
+	});
 
 test("pausing a worktree child that finished on its own as the pause reached it leaves no park or stop behind: its edits are saved and its worktree removed (#5172)", async () => {
 	const h = harness();
@@ -5073,7 +6103,7 @@ test("status reports a failed child-record append to its owner, not another owne
 const RESUME_ANSWER_MS = 5_000;
 
 /** `call`'s result, or undefined when it has not answered within {@link RESUME_ANSWER_MS}. */
-async function answeredWithin(call: Promise<SubagentToolResult>): Promise<SubagentToolResult | undefined> {
+async function answeredWithin<T>(call: Promise<T>): Promise<T | undefined> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([
@@ -5882,7 +6912,7 @@ function taskExecutionKind(h: Harness, taskId: string): string | undefined {
 }
 
 for (const action of ["pause", "quit"] as const) {
-	test(`interrupting the parent's turn ends a ${action} still waiting for a child that has not stopped yet, and the ${action} goes on (#5485)`, async () => {
+	test(`interrupting the parent's turn ends a ${action} still waiting for a plain child with just the stop and status guidance (#5485, #5600)`, async () => {
 		const h = harness();
 		const stuck = Promise.withResolvers<void>();
 		h.stuckOn.set(ORIGINAL_TASK, stuck);
@@ -5900,9 +6930,9 @@ for (const action of ["pause", "quit"] as const) {
 				await settlesWithin(turn.waitForIdle()),
 				`the interrupted turn ends while the ${action} still waits`,
 			);
-			assert.match(
+			assert.equal(
 				parentToolResultText(turn),
-				new RegExp(`Interrupted before ${action} finished: the stop was requested and goes on`),
+				`Interrupted before ${action} finished: the stop was requested and goes on. subagent({ action: "status", id: "${childId}" }) shows where the child stands.`,
 			);
 		} finally {
 			stuck.resolve();
@@ -6213,6 +7243,29 @@ for (const action of ["pause", "quit"] as const) {
 		await settled(h, resumedTaskId(resumed));
 		assert.equal(h.runs.length, runsBefore + 1);
 		assert.equal(h.runs.at(-1)?.task, lateToolResultMessage(green), "resume delivers the held result once");
+	});
+}
+
+for (const action of ["pause", "quit"] as const) {
+	test(`${action} all holds a released child's result when it arrives during a later live stop (#5600)`, async () => {
+		const h = harness();
+		const runId = "released-first";
+		const childId = `${runId}:0`;
+		const dispatcher = await releasedWithWakes(h, runId);
+		const later = await h.launch("later-live");
+		const before = h.runs.length;
+		const green = waitResult("CI green");
+		duringCancelOf(h, later.taskId, () =>
+			dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
+				id: "tool-result:ci-1",
+				kind: "tool-result",
+				toolResult: green,
+			}),
+		);
+		await h.call({ action, all: true });
+		assert.equal(h.runs.length, before, "a result arriving after the child's stop does not wake it");
+		assert.equal(h.latest(childId)?.terminalStatus, action === "pause" ? "paused" : "quit");
+		assert.deepEqual(h.latest(childId)?.heldToolResults, [green]);
 	});
 }
 

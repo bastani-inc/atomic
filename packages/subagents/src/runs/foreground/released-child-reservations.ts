@@ -1,6 +1,15 @@
 import { isStaleExtensionContextError } from "@bastani/atomic";
+import type { ConfirmedRelease, ReleaseObservation } from "../../../../intercom/broker/released-child-receipts.js";
 import type { IntercomEventBus, RunSyncOptions } from "../../shared/types.js";
 import {
+	checkBeforeRetirement,
+	type HoldNoticeEpisode,
+	holdNoticeEpisode,
+	newerRelease,
+	observeRelease,
+} from "./released-child-receipts.js";
+import {
+	childReleaseKey,
 	reservationRecordLookup,
 	subagentChildRecordsOf,
 	subagentChildStandingsOf,
@@ -66,6 +75,17 @@ export interface ReleasedChildHoldFailure {
 	handled?: boolean;
 }
 
+// The reloaded extension may receive a refusal whose check began in its predecessor. Keep the payload's
+// public shape unchanged and never send that diagnostic to a different session that later bound the bus.
+interface PendingHoldNotice {
+	readonly sessionId: string;
+	readonly episode: HoldNoticeEpisode;
+}
+const EPISODES = Symbol.for("@bastani/subagents/pending-hold-notice-episodes@1");
+const noticeState = globalThis as { [EPISODES]?: WeakMap<ReleasedChildHoldFailure, PendingHoldNotice> };
+noticeState[EPISODES] ??= new WeakMap();
+export const pendingHoldNoticeEpisodes = noticeState[EPISODES];
+
 export interface ReleasedChildHoldRecovery {
 	readonly childNames: readonly string[];
 }
@@ -91,6 +111,7 @@ function recordHoldFailure(
 	error: Error,
 	taskIds?: ReadonlyMap<string, string>,
 	recordOf?: ReleasedChildHoldFailure["recordOf"],
+	notice?: PendingHoldNotice,
 ): void {
 	if (closedOwnerSession(error)) return;
 	const failure: ReleasedChildHoldFailure = {
@@ -99,6 +120,7 @@ function recordHoldFailure(
 		...(recordOf === undefined ? {} : { recordOf }),
 		error,
 	};
+	if (notice) pendingHoldNoticeEpisodes.set(failure, notice);
 	if (!emitToOwner(events, SUBAGENT_HOLD_FAILURE_EVENT, failure)) return;
 	if (!failure.handled) console.error("Released subagent reservation failed (hold-failed); no owner is listening");
 }
@@ -187,15 +209,32 @@ const RESERVATION_FRAME_MAX = 500;
  * one for the same child overtook leaves that child to the later one (#5551). Holds only children with a request in flight.
  */
 const latestReservations = new WeakMap<IntercomEventBus, Map<string, object>>();
-const reservationOwners = new WeakMap<IntercomEventBus, { sessionId: string }>();
+// Keep a release key live only for its pending confirmation or reconnect request. The record index only borrows it.
+const interestedReleases = new WeakMap<ReleasedChildReservation, object>();
+interface ReservationOwner {
+	readonly sessionId: string;
+	readonly repairs: WeakMap<object, ConfirmedRelease>;
+	readonly notices: Map<string, HoldNoticeEpisode>;
+	checks?: Set<() => void>;
+}
+const reservationOwners = new WeakMap<IntercomEventBus, ReservationOwner>();
 
 /** An in-flight retry must not use a release, or an owner session, that ended while the broker answered. */
-export function bindReleasedChildReservationOwner(events: IntercomEventBus, sessionId: string): () => void {
-	const owner = { sessionId };
-	reservationOwners.set(events, owner);
-	return () => {
-		if (reservationOwners.get(events) === owner) reservationOwners.delete(events);
+export function bindReleasedChildReservationOwner(
+	events: IntercomEventBus,
+	sessionId: string,
+	notices: Map<string, HoldNoticeEpisode>,
+): () => void {
+	const retire = (binding: ReservationOwner) => {
+		if (reservationOwners.get(events) === binding) reservationOwners.delete(events);
+		// With no answer yet, preserve the native refusal while the original owner can still receive it.
+		for (const cancel of binding.checks ?? []) cancel();
 	};
+	const previous = reservationOwners.get(events);
+	if (previous) retire(previous);
+	const owner: ReservationOwner = { sessionId, repairs: new WeakMap(), notices };
+	reservationOwners.set(events, owner);
+	return () => retire(owner);
 }
 
 /** The child of `frame` the broker refused the whole frame for, when the refusal names one of them. */
@@ -223,9 +262,18 @@ async function reserveFrame(
 	let asked = frame;
 	while (asked.length > 0) {
 		let error: Error | undefined;
+		const owner = reservationOwners.get(events);
+		let receipts: Map<ReleasedChildReservation, ReleaseObservation> | undefined;
 		try {
-			// The task id stays in this process: the broker holds a child by name and ids.
-			const children = asked.map(({ taskId: _taskId, ...child }) => child);
+			// Associate the serialized item (not its name or the outer promise) with a native receipt.
+			const children = asked.map((item) => {
+				const { taskId: _taskId, ...child } = item;
+				if (owner && interestedReleases.has(item)) {
+					receipts ??= new Map();
+					receipts.set(item, observeRelease(child, child.childName));
+				}
+				return child;
+			});
 			await emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children });
 		} catch (caught) {
 			error = caught as Error;
@@ -233,6 +281,12 @@ async function reserveFrame(
 		if (error === undefined) {
 			const recovered = asked.filter(current);
 			if (recovered.length > 0) {
+				if (owner && receipts)
+					for (const item of recovered) {
+						const receipt = receipts.get(item)?.repair;
+						const key = interestedReleases.get(item);
+						if (receipt && key) owner.repairs.set(key, receipt);
+					}
 				const recovery: ReleasedChildHoldRecovery = { childNames: recovered.map((child) => child.childName) };
 				emitToOwner(events, SUBAGENT_HOLD_RECOVERED_EVENT, recovery);
 			}
@@ -319,18 +373,64 @@ export function acknowledgeReleasedChildWake(
 	ownerEvents: IntercomEventBus,
 	childName: string,
 	taskId?: string,
+	childId?: string,
 ): Promise<void> {
 	const events = subagentChildRequestEvents(ownerEvents);
 	if (!events) return Promise.resolve();
-	return emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName }).catch(
-		(error: Error) =>
+	const request = { childName };
+	const owner = reservationOwners.get(events);
+	const release =
+		owner && childId !== undefined && taskId !== undefined
+			? childReleaseKey(childId, owner.sessionId, childName, taskId, true)
+			: undefined;
+	const observation = release ? observeRelease(request, childName) : undefined;
+	return emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, request).catch((error: Error) => {
+		const report = (notice?: PendingHoldNotice) =>
 			recordHoldFailure(
 				events,
 				[childName],
 				error,
 				taskId === undefined ? undefined : new Map([[childName, taskId]]),
-			),
-	);
+				undefined,
+				notice,
+			);
+		const refusal = observation?.refusal;
+		if (
+			refusal &&
+			refusal.error.deref() === error &&
+			owner &&
+			release &&
+			reservationOwners.get(events) === owner &&
+			childId !== undefined &&
+			taskId !== undefined &&
+			childReleaseKey(childId, owner.sessionId, childName, taskId, false) === release
+		) {
+			const repair = owner.repairs.get(release);
+			if (repair && newerRelease(refusal.stamp, repair.stamp)) {
+				const verify = repair.verify.deref();
+				if (verify) {
+					// Decide which episode this refusal belonged to now, not a network round trip later.
+					const episode = holdNoticeEpisode(owner.notices, childName, taskId);
+					episode.checks++;
+					owner.checks ??= new Set();
+					return checkBeforeRetirement(
+						owner.checks,
+						(signal) => verify(childName, repair.stamp, signal),
+						(current) => {
+							try {
+								if (!current) report({ sessionId: owner.sessionId, episode });
+							} finally {
+								episode.checks--;
+								if (!episode.checks && !episode.told && owner.notices.get(childName) === episode)
+									owner.notices.delete(childName);
+							}
+						},
+					);
+				}
+			}
+		}
+		report();
+	});
 }
 
 /**
@@ -365,7 +465,12 @@ export function reserveReleasedChildrenOf(events: IntercomEventBus, ownerSession
 	const reservations: ReleasedChildReservation[] = [];
 	for (const record of subagentChildRecordsOf(ownerSessionId)) {
 		const reservation = releasedChildReservation(record);
-		if (reservation !== undefined) reservations.push(reservation);
+		if (reservation === undefined) continue;
+		if (reservation.wake && reservation.taskId !== undefined) {
+			const key = childReleaseKey(record.childId, ownerSessionId, reservation.childName, reservation.taskId, true);
+			if (key) interestedReleases.set(reservation, key);
+		}
+		reservations.push(reservation);
 	}
 	return reserveReleasedChildren(events, reservations);
 }

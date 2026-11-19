@@ -359,7 +359,7 @@ export type ClientMessage =
    */
   | { type: "release_restoring_recipient"; requestId: string; capability: string; gone?: string; refusal?: string }
   /** #4326: reserve released subagents by child name, in a frame of at most 500; this connection becomes their owner. */
-  | { type: "reserve_released_children"; requestId: string; children: ReleasedChildReservationFrame[] }
+  | { type: "reserve_released_children"; requestId: string; children: ReleasedChildReservationFrame[]; releaseStamp?: true }
   /** #4326: end the reservations this connection made for these child names. */
   | { type: "drop_released_children"; requestId: string; childNames: string[]; gone?: string; refusal?: string }
   /**
@@ -368,7 +368,8 @@ export type ClientMessage =
    */
   | { type: "mark_ended_children"; requestId: string; children: EndedChildFrame[] }
   /** #4326: the owner is waking this child; the broker extends the sends held for it once per wake. */
-  | { type: "acknowledge_released_child_wake"; requestId: string; childName: string }
+  | { type: "acknowledge_released_child_wake"; requestId: string; childName: string; releaseStamp?: true }
+  | { type: "verify_released_child"; requestId: string; childName: string; broker: string; order: number }
   /** #4326: the owner answers one `released_child_reply` handoff; an ack that names another handoff is ignored. */
   /**
    * #4751: `deliverToChild`: the released child has no call waiting for this reply (its `ask` already returned), so the
@@ -495,6 +496,8 @@ export type BrokerMessage =
 			extendsSaves?: true;
 			/** #4639: this broker accepts `mark_ended_children`; absent on older brokers, which drop a client that sends it. */
 			marksEndedChildren?: true;
+			/** This connection accepts stamped release requests and read-only checks of a stamped hold. */
+			stampsReleasedChildren?: true;
 			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
 			multiNodeRouting?: BrokerMultiNodeStatus["status"];
 			/** #4538: the wire protocol versions this broker accepts; absent on brokers of protocol 1. */
@@ -584,7 +587,7 @@ export type BrokerMessage =
 	 * database within the broker's bound; the broker keeps writing it there until it lands or the reservation ends.
 	 */
 	| { type: "restoring_recipient_ack"; requestId: string; error?: string; published?: boolean }
-	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal; published?: boolean }
+	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal; published?: boolean; releaseStamp?: { broker: string; order: number }; current?: boolean }
 	| { type: "hosted_sessions_ack"; requestId: string; sessions?: HostedSessionAssignment[]; refusal?: HostedSessionRefusal }
 	| {
 			type: "delivery_failed";

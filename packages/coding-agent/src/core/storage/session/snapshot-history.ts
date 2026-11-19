@@ -13,12 +13,13 @@ export async function snapshotWindow(
 	leaf?: string,
 	through?: number,
 	expected?: string,
+	isProxy?: import("../../tasks/reopened-completion.js").CompletionProxyCheck,
 ) {
 	const snapshot = await store.load(sessionId);
 	const cut = through ?? snapshot.lastSeq;
 	assertSnapshotCut(snapshot, expected, cut);
 	const entries = cut === snapshot.entries.length ? snapshot.entries : snapshot.entries.slice(0, cut);
-	const resume = sessionResumeOf(snapshot.header, entries, leaf);
+	const resume = sessionResumeOf(snapshot.header, entries, leaf, undefined, isProxy);
 	const childArchive = new ChildCatalog();
 	const branchIds = new Set(resume.branch.map(({ entry }) => entry.id));
 	childArchive.retire(

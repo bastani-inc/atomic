@@ -34,7 +34,8 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import {
 	DEFAULT_SVG_AUTHOR_MODEL,
@@ -99,7 +100,8 @@ export const generateImages: ImagesFunction<OpenAIImagesOptions> = async (
 		if (!options?.apiKey) {
 			throw new Error(`No API key for provider: ${model.provider}`);
 		}
-		const client = createClient(model, options.apiKey, options.headers, options.fetch);
+		const retryTransport = ProviderRetryTransport.for(options);
+		const client = createClient(model, options.apiKey, options.headers, retryTransport?.fetch ?? options.fetch);
 		let params = await buildParams(model, context, options);
 		validateOpenAIImagesRequest(model, params);
 		const nextParams = await options?.onPayload?.(params, model);
@@ -123,6 +125,7 @@ export const generateImages: ImagesFunction<OpenAIImagesOptions> = async (
 					signal: options.signal,
 					noRetry: (error) => classifyImageApiError(error, state)?.retryable === false,
 				},
+				retryTransport,
 			);
 			return { params: body, data, response };
 		};
@@ -147,7 +150,7 @@ export const generateImages: ImagesFunction<OpenAIImagesOptions> = async (
 
 		return output;
 	} catch (error) {
-		const aborted = options?.signal?.aborted === true;
+		const aborted = options?.signal?.aborted === true || error instanceof RetryDeadlineError;
 		output.stopReason = aborted ? "aborted" : "error";
 		output.errorMessage = formatProviderError(normalizeProviderError(error));
 		if (!aborted) {

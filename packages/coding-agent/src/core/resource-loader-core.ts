@@ -5,6 +5,7 @@ import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.js";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
+import type { LegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import { registerHostStoragePackagesAsync } from "./package-manager-storage-adapters.js";
@@ -88,6 +89,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private systemPromptSourcePath?: string;
 	private appendSystemPrompt: string[];
 	private appendSystemPromptSourcePaths: string[];
+	private legacyWorkflowFiles?: LegacyWorkflowFiles;
 	private workflowResources: ResolvedResource[];
 	private mcpServerContributions: McpServerContribution[];
 	private trustedBorrowedProjectLocalSources?: Set<string>;
@@ -237,6 +239,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getAppendSystemPromptSources(): Array<{ path: string }> {
 		return this.appendSystemPromptSourcePaths.map((path) => ({ path }));
+	}
+
+	getLegacyWorkflowFiles(): LegacyWorkflowFiles | undefined {
+		return this.legacyWorkflowFiles;
 	}
 
 	getWorkflowResources(): ResolvedResource[] {
@@ -450,6 +456,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.systemPromptSourcePath = candidate.systemPromptSourcePath;
 		this.appendSystemPrompt = candidate.appendSystemPrompt;
 		this.appendSystemPromptSourcePaths = candidate.appendSystemPromptSourcePaths;
+		this.legacyWorkflowFiles = candidate.legacyWorkflowFiles;
 		this.workflowResources = candidate.workflowResources;
 		this.mcpServerContributions = candidate.mcpServerContributions;
 		this.trustedBorrowedProjectLocalSources = candidate.trustedBorrowedProjectLocalSources;

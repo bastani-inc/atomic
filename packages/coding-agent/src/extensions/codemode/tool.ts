@@ -86,7 +86,7 @@ Top-level await and return work. Use tools.name(args), or tools["raw-name"](args
 No Node, filesystem, network, timers, modules or credentials are available directly. Calls go through session validation and permission hooks. They have real side effects and are not undone after script failure.
 Tools with output schemas resolve to structuredContent; others resolve to text. Failed or blocked calls throw, except that a tool with an output schema resolves with its structuredContent on failure too when it returned one; check its fields. Scripts have a 256 MB memory limit.
 Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), await searchTools(query, {limit?, namespace?}), await describeTool(name), await describeNamespace(name).
-tools, ALL_TOOLS and searchTools() matches cover only script-callable tools. Model-only tools such as subagent, workflow, and ask_user_question are excluded from them and cannot be called from inside a codemode script (nor can intercom's model-only actions); when one is needed and available in the session, call the separate top-level subagent or workflow tool (or other model-only tool) directly instead, and never try to reach it through codemode. A model-only tool that offers scripts part of its actions, such as intercom, is included only for those actions, and its script description names the actions scripts may use. searchTools() and describeTool() answer the exact name of an active model-only tool with a hint to call it directly as a top-level tool, not from a script.
+tools, ALL_TOOLS and searchTools() matches cover only script-callable tools. Tools without script access, such as ask_user_question, cannot be called from inside a codemode script: call the separate top-level tool directly. Tools with partial script access, such as subagent and intercom, describe the actions scripts may use. searchTools() and describeTool() answer the exact name of an active model-only tool with a hint to call it directly as a top-level tool, not from a script.
 With several text items, each starts with a ==> text N/M <== line. Console calls follow the other output in one <console_output> block, with one line per call.
 image() also saves each image to a temp file and the result names its path before the image.
 Successful scripts persist store writes on the current session branch; failed scripts discard writes. Unawaited calls are cancelled when the script ends.
@@ -293,7 +293,7 @@ export function createCodemodeToolDefinition(
 		defaultActive: false,
 		promptSnippet: "Run JavaScript that calls script-callable tools, filters results, or batches independent calls",
 		promptGuidelines: [
-			"The `subagent` and `workflow` tools (and other model-only tools, such as `ask_user_question`, plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script; when one is needed and available in the session, call the separate top-level `subagent` or `workflow` tool directly instead, never through `codemode`.",
+			"Use `tools.subagent` for background launches and owned child control. For model-only actions (such as defining agents or asking users questions), call the separate top-level tool directly, not from a `codemode` script.",
 		],
 		prepareLoadout: (loadout) => prepareLoadout(loadout, options),
 		constrainedSampling: { type: "grammar", variants: { openai_lark: CODEMODE_SOURCE_GRAMMAR } },

@@ -129,7 +129,6 @@ const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> 
 		...WORKFLOWS_LOCAL_WORKER_ENTRIES,
 		workflowsAuthoringDeclaration,
 		"src/shared/authoring-contract.d.ts",
-		"skills/",
 	],
 	subagents: [
 		"package.json",

@@ -50,7 +50,6 @@
     "src/**/*.mjs",
     "builtin/**/*.ts",
     "builtin/**/*.d.ts",
-    "skills/**/*",
     "prompts/**/*",
     "themes/*.json",
     "assets/**/*",
@@ -72,9 +71,6 @@
     ],
     "builtin": [
       "./builtin"
-    ],
-    "skills": [
-      "./skills"
     ],
     "prompts": []
   },

@@ -556,6 +556,7 @@ export async function chunkedChildHeading(chunks: AsyncIterable<Uint8Array>): Pr
 					stillRunning: hasItems,
 					heldToolResults: hasItems,
 					wakeFailure: { taskId: "string" },
+					worktree: { named: "truth" },
 					heldMessages: { taskId: "string", messages: hasItems },
 					version: "number",
 					childId: "string",

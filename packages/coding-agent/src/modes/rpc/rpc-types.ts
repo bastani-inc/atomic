@@ -303,6 +303,8 @@ export interface RpcSessionState {
 	 * included. They are never saved; the interactive host hands them to an engine it starts to replace this one.
 	 */
 	trustDecisions?: SessionTrustDecisions;
+	/** Interactive engine only: number of trusted legacy recipes after discovery, including temporary packages. */
+	legacyWorkflowFileCount?: number;
 	resourceOverlaps?: ResourceOverlap[];
 	resourceExtensions?: RpcResourceExtension[];
 	/** Extensions that failed to load in the last (re)load; absent on older RPC peers. */

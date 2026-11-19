@@ -27,9 +27,10 @@ import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../share
 import { subagentStartHoldMs } from "../shared/start-progress.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
 import { runOwnerlessChild } from "./ownerless-children.js";
+import { boundedWorktreeReply, type registerRunWorktrees } from "./run-worktrees.js";
 import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
-import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
+import { isScriptSubagentCall, type SubagentExecutorRuntimeDeps, type TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 import { runAgentTask } from "./task-execution.js";
 
@@ -81,6 +82,7 @@ interface ForegroundParallelRunInput {
 	onDetachedExit?: (index: number, result: SingleResult) => void;
 	onExecution?: (index: number, runtimeCwd: string, options: RunSyncOptions) => void;
 	worktreeSetup?: WorktreeSetup;
+	runWorktrees?: ReturnType<typeof registerRunWorktrees>;
 	runtime: Pick<SubagentExecutorRuntimeDeps, "runSync">;
 }
 
@@ -335,6 +337,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			runOptions.intercomDetachSignal = undefined;
 			runOptions.onIntercomDetachCommit = undefined;
 			let terminalChild: SingleResult | undefined;
+			if (isScriptSubagentCall(input.ctx)) input.signal.throwIfAborted();
 			const response = await runAgentTask({
 				host,
 				cwd: input.ctx.cwd,
@@ -389,19 +392,27 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			}
 		});
 	};
+	input.runWorktrees?.beginLaunches();
 	return mapConcurrent(input.tasks, input.tasks.length, async (task, index) => {
 		const ticket = tickets[index];
+		let result: SingleResult;
 		try {
-			return await runChild(task, index, ticket);
+			result = await runChild(task, index, ticket);
 		} catch (error) {
 			// A launch that fails before its child starts ends its hold.
 			startHolds.get(index)?.settle();
 			// Cancelling the parent cancels the call; any other failure ends only this child.
-			if (input.signal.aborted) throw error;
-			return unstartedChildResult(task, error);
+			if (input.signal.aborted) {
+				void input.runWorktrees?.abandonLaunch(index);
+				throw error;
+			}
+			result = unstartedChildResult(task, error);
 		} finally {
 			ticket?.release();
 		}
+		const abandoned = input.runWorktrees?.abandonLaunch(index);
+		if (abandoned) result.worktreeNote = await boundedWorktreeReply(input.runId, abandoned);
+		return result;
 	}).finally(() => {
 		for (const ticket of tickets) ticket?.release();
 	});
