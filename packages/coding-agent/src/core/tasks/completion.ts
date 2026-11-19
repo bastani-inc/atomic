@@ -84,6 +84,16 @@ export type TaskCompletionNotice = {
 	line?: TaskNoticeLine;
 };
 
+export function completionTitleText(text: string): string {
+	return text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+}
+
+/** The description after `: ` in a saved title: at most 240 UTF-16 code units, with controls folded to spaces. */
+export function completionTitleDescription(text: string): string {
+	// The saved subject can outlive a much larger string that the task title was sliced from.
+	return Buffer.from(completionTitleText(text.slice(0, 240)), "utf16le").toString("utf16le");
+}
+
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
 export function taskNoticeLine(
 	envelope: TaskCompletionEnvelope,
@@ -91,7 +101,7 @@ export function taskNoticeLine(
 ): TaskNoticeLine {
 	const kind = task?.kind ?? envelope.taskKind;
 	const result = envelope.result;
-	const subject = task?.title ? task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240) : undefined;
+	const subject = task?.title ? completionTitleDescription(task.title) : undefined;
 	const facts = {
 		...(subject ? { subject } : {}),
 		...((task?.metrics?.elapsedMs ?? envelope.elapsedMs) === undefined
@@ -334,11 +344,10 @@ export function formatTaskCompletion(
 	output?: string,
 	omissions?: readonly OmissionSpan[],
 ): string {
-	const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 	const kind = task?.kind ?? envelope.taskKind;
 	const label =
 		kind === "agent"
-			? `Subagent ${singleLine(task?.agentName ?? "agent")}`
+			? `Subagent ${completionTitleText(task?.agentName ?? "agent")}`
 			: kind === "command"
 				? "Background shell"
 				: "Background task";
@@ -380,7 +389,7 @@ export function formatTaskCompletion(
 										: `stopped (${stopReason})`
 									: outcome;
 	const lines = [
-		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
+		`${label} ${status}${task?.title ? `: ${completionTitleDescription(task.title)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
 	];
 	const ranOn = ranOnModelLine(task);
