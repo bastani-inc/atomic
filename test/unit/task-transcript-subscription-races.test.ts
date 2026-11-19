@@ -54,13 +54,14 @@ const assistant = (text: string): AssistantMessage => ({
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 const rendered = (inspector: TaskInspector) => stripVTControlCharacters(inspector.renderViewport(100, 100).join("\n"));
 
-test("opening a transcript receives the final message queued during its history read", async () => {
+test("opening a transcript with a saved diagnostic receives the final message queued during its history read (#5649)", async () => {
 	initTheme("dark");
 	const keys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Inspect the subscription race", timestamp: 0 });
+	await session.appendCustomEntry("atomic.turn-outcome.v1", { level: "error", text: "Compaction failed" });
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	let finalDuringRead: string | undefined;
 	let listenersAtFinal = -1;
