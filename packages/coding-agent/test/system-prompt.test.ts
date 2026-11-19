@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -261,6 +261,24 @@ describe("buildSystemPrompt", () => {
 			assert.ok(prompt.includes(`docs/${topic}.md`), `Missing documentation route for ${topic}`);
 			assert.match(readFileSync(join(getDocsPath(), `${topic}.md`), "utf8"), /^# /m);
 		}
+	});
+
+	test("every docs path the built prompt names ships in the docs folder", () => {
+		const docsRoot = getDocsPath();
+		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
+		const named = [
+			...prompt.matchAll(/(?<![\w/])docs\/([\w./-]+\.mdx?)/gu),
+			...prompt
+				.split(`${docsRoot}/`)
+				.slice(1)
+				.map((rest) => /^[\w./-]+\.mdx?/u.exec(rest)),
+		]
+			.map((match) => (match === null ? undefined : (match[1] ?? match[0])))
+			.filter((path): path is string => path !== undefined && path !== "foo.md");
+		assert.ok(named.includes("verification.md"), "the prompt names the verification guide");
+		assert.ok(named.includes("computer-use.md"), "the prompt names the computer-use guide");
+		const missing = [...new Set(named)].filter((path) => !existsSync(join(docsRoot, path)));
+		assert.deepEqual(missing, [], "every docs path the prompt names exists in the shipped docs folder");
 	});
 
 	test("routes automation requests to domain-specific tools and sends no one to model benchmarks", () => {
@@ -553,6 +571,34 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("continue fully autonomously on best judgment");
 			expect(prompt).toContain("Tool unavailability alone is not a blocker");
 			expect(prompt).not.toContain("ask_user_question");
+		});
+
+		const questionToolRule =
+			"- When `ask_user_question` or an equivalent question tool is available, all agent-authored questions to the user must use that tool instead of plain text, including clarifications, choices, confirmations, and permission to proceed. Prefer `ask_user_question` when available; otherwise use the equivalent tool's supported schema. In these sessions, never end a status or final message with a prose-only question. Intercom questions are for agents, not a substitute for user approval.";
+		const noHumanInputRule =
+			"- When human input is unavailable because no usable question tool exists or the session is headless, do not stall on a question. Choose the interpretation best supported by the stated objective and repository evidence: mine git history, commits, PRs, issues, and the user's own comments to infer how they would decide, record the assumption and rationale, and continue fully autonomously on best judgment. Tool unavailability alone is not a blocker. Preserve explicit approval gates, safety, authorization, and budget limits. A cancelled or unanswered available question is not permission to use this fallback.";
+		const build = (tools: { selectedTools?: string[]; excludedTools?: string[] }) =>
+			buildSystemPrompt({ ...tools, contextFiles: [], skills: [], cwd: process.cwd() });
+
+		test("routes every question through an available question tool and never stalls without one", () => {
+			const prompt = build({});
+			expect(prompt).toContain(questionToolRule);
+			expect(prompt).toContain(noHumanInputRule);
+		});
+
+		test.each([{ excludedTools: ["ask_user_question"] }, { selectedTools: ["read", "bash"] }])(
+			"keeps only the no-human-input rule beside the fallback without ask_user_question: %j",
+			(tools) => {
+				const prompt = build(tools);
+				expect(prompt).toContain(noHumanInputRule);
+				expect(prompt).not.toContain(questionToolRule);
+			},
+		);
+
+		test("adds no question rules when the session has no tools", () => {
+			const prompt = build({ selectedTools: [] });
+			expect(prompt).not.toContain(questionToolRule);
+			expect(prompt).not.toContain(noHumanInputRule);
 		});
 
 		test("omits the fallback guideline when ask_user_question is selected", () => {

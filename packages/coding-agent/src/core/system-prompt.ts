@@ -146,7 +146,8 @@ function buildRules(
 	const hasPowerShell = tools.includes("powershell");
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
-	const shouldIncludeAskUserFallbackGuidance = tools.length > 0 && !tools.includes("ask_user_question");
+	const hasAskUserQuestion = tools.includes("ask_user_question");
+	const shouldIncludeAskUserFallbackGuidance = tools.length > 0 && !hasAskUserQuestion;
 	const addGuideline = addRule;
 	if ((hasBash || hasPowerShell) && !hasFind && !hasLs) {
 		if (hasBash && hasPowerShell) {
@@ -160,6 +161,16 @@ function buildRules(
 	if (shouldIncludeAskUserFallbackGuidance) {
 		addGuideline(
 			"If an equivalent user-question tool is available, use it for all questions to the user instead of plain text, including confirmations and approvals, following its supported schema. When no usable question tool or human-input channel exists, do not stall on a question: choose the interpretation best supported by the repository and the stated objective, state the assumption in your response, and continue fully autonomously on best judgment. Tool unavailability alone is not a blocker. Preserve safety and authorization constraints.",
+		);
+	}
+	if (hasAskUserQuestion) {
+		addGuideline(
+			"When `ask_user_question` or an equivalent question tool is available, all agent-authored questions to the user must use that tool instead of plain text, including clarifications, choices, confirmations, and permission to proceed. Prefer `ask_user_question` when available; otherwise use the equivalent tool's supported schema. In these sessions, never end a status or final message with a prose-only question. Intercom questions are for agents, not a substitute for user approval.",
+		);
+	}
+	if (tools.length > 0) {
+		addGuideline(
+			"When human input is unavailable because no usable question tool exists or the session is headless, do not stall on a question. Choose the interpretation best supported by the stated objective and repository evidence: mine git history, commits, PRs, issues, and the user's own comments to infer how they would decide, record the assumption and rationale, and continue fully autonomously on best judgment. Tool unavailability alone is not a blocker. Preserve explicit approval gates, safety, authorization, and budget limits. A cancelled or unanswered available question is not permission to use this fallback.",
 		);
 	}
 	if (hasBash || hasPowerShell) {
