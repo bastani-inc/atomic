@@ -11,7 +11,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { ExtensionAPI, InlineExtension } from "../src/index.js";
 import { createTestResourceLoader } from "./utilities.ts";
 
-const builtins = { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } as const;
+const builtins = { subagents: false, mcp: false, intercom: false, "web-access": false } as const;
 function deferred() {
 	let resolve!: () => void;
 	const promise = new Promise<void>((done) => {

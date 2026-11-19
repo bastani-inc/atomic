@@ -8,7 +8,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** createAgentSession composes the session's extension runtime before it returns. */
 const SESSION_CREATION_TIMEOUT_MS = 60_000;
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 let root: string;
 let agentDir: string;

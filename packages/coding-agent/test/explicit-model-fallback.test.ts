@@ -143,7 +143,7 @@ async function runSession(
 		settingsManager,
 		sessionManager,
 		resourceLoader: createTestResourceLoader(),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => session.dispose());

@@ -1,26 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
-const workflow = process.argv[4] === "workflow";
-if (workflow) {
- const home = process.env.ATOMIC_MANAGED_TEST_HOME;
- assert.ok(home && resolve(homedir()) === resolve(home) && process.env.USERPROFILE === home, "retained workflow fixture requires a disposable managed HOME");
- assert.ok(home.startsWith(tmpdir()) && home.includes("atomic-journal-"), "requires a disposable journal home");
-}
 const { createAgentSession, createAgentSessionRuntime, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = await import("@bastani/atomic");
 
 // #3105: factories remain concurrent; publication never abandons an admitted owner.
 const operation = process.argv[2] ?? "new";
 const outcome = process.argv[3] ?? "success";
 const root = mkdtempSync(join(tmpdir(), "atomic-concurrent-replacement-"));
-if (workflow) {
- process.env.ATOMIC_FAULT_TEST_HOME = root;
- const directory = join(root, ".atomic", "workflows");
- mkdirSync(directory, { recursive: true });
- writeFileSync(join(directory, "sdk-host-durable.ts"), readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url)));
-}
 const agentDir = join(root, "agent");
 const settingsManager = SettingsManager.inMemory();
 const modelRuntime = await ModelRuntime.create({ authPath: join(root, "auth"), modelsPath: null, allowModelNetwork: false });
@@ -42,7 +30,7 @@ async function factory({ cwd, agentDir, sessionManager, sessionStartEvent }) {
   pi.on("session_shutdown", () => { active.delete(id); if (outcome === "cleanup" && id === 3) throw new Error("displaced cleanup failed"); });
  }] });
  await resourceLoader.reload();
- const result = await createAgentSession({ cwd, agentDir, settingsManager, modelRuntime, resourceLoader, sessionManager, sessionStartEvent, builtins: { workflows: workflow, subagents: false, mcp: false, intercom: false, "web-access": false } });
+ const result = await createAgentSession({ cwd, agentDir, settingsManager, modelRuntime, resourceLoader, sessionManager, sessionStartEvent, builtins: { subagents: false, mcp: false, intercom: false, "web-access": false } });
  sessions.set(id, result.session);
  return { ...result, services: { cwd, agentDir, settingsManager, modelRuntime, resourceLoader, diagnostics: [] }, diagnostics: [] };
 }
@@ -54,18 +42,6 @@ const imports = operation === "import" ? [await SessionManager.create(root, join
 let importIndex = 0;
 runtime.setRebindSession(async session => { await tick(); assert.equal(runtime.session, session); rebound.push(session); });
 const invoke = () => operation === "fork" ? runtime.fork(entry) : operation === "resume" ? runtime.switchSession(source) : operation === "import" ? runtime.importFromJsonl(imports[importIndex++].getSessionFile()) : runtime.newSession();
-if (workflow) {
- const tool = runtime.session.agent.state.tools.find(tool => tool.name === "workflow");
- await tool.execute("run", { action: "run", workflow: "sdk-host-durable", inputs: {} }, new AbortController().signal);
- let status;
- const deadline = Date.now() + 10_000;
- do {
-  status = (await tool.execute("pending", { action: "status" }, new AbortController().signal)).details;
-  if (status.runs[0]?.awaitingInputCount === 1) break;
-  await new Promise(resolve => setTimeout(resolve, 20));
- } while (Date.now() < deadline);
- assert.equal(status.runs[0]?.awaitingInputCount, 1);
-}
 const a = invoke().catch(error => error);
 await entered[0].promise;
 const b = invoke().catch(error => error);
@@ -92,15 +68,6 @@ try {
  } else if (outcome === "dispose") assert.equal(first.code, "SessionClosed");
  else if (outcome === "cleanup") { assert.equal(first.code, "ShutdownFailed"); assert.equal(active.size, 0, "failed publication must unwind its candidate immediately"); }
  else { assert.match(first.message, /factory 2 failed/); assert.match(second.message, /factory 3 failed/); }
- if (workflow && (outcome === "success" || outcome === "failure" || outcome === "startup")) {
-  const tool = runtime.session.agent.state.tools.find(tool => tool.name === "workflow");
-  const status = (await tool.execute("retained", { action: "status" }, new AbortController().signal)).details;
-  // #3203: switching sessions quits the run at a resumable checkpoint instead of leaving it detached.
-  assert.equal(status.runs[0]?.status, "paused", JSON.stringify(status));
-  assert.equal(status.runs[0]?.exitReason, "quit", JSON.stringify(status));
-  assert.equal(status.snapshots[0]?.resumable, true, JSON.stringify(status));
-  assert.equal(status.runs[0]?.awaitingInputCount, 1, JSON.stringify(status));
- }
  if (outcome === "cleanup") await assert.rejects(runtime.dispose(), { code: "ShutdownFailed" });
  else await (closing ?? runtime.dispose());
  assert.equal(active.size, 0);

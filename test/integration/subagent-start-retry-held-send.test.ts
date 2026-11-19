@@ -192,7 +192,7 @@ for (const { stallAt, resume } of [
 				thinkingLevel: "medium",
 				settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, defaultThinkingLevel: "medium" }),
 				sessionManager: await SessionManager.create(cwd, join(cwd, "parent-sessions")),
-				builtins: { workflows: false, subagents: false, intercom: true, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: true, mcp: false, "web-access": false },
 				tools: ["read", "intercom", "contact_supervisor"],
 			});
 			fixture.onCleanup(() => optionsSource.dispose());

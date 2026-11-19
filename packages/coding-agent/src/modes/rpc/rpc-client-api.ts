@@ -12,11 +12,6 @@ import type {
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionRecoveryReason } from "../../core/extensions/index.js";
-import type {
-	WorkflowRunDetail,
-	WorkflowRunFilterStatus,
-	WorkflowRunSummary,
-} from "../../core/extensions/workflow-run-control.js";
 import type { AtomicProviderCompat } from "../../core/model-capabilities.ts";
 import type { SaveCredentialOptions } from "../../core/model-runtime.js";
 import type { SessionEntry, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -93,14 +88,6 @@ export abstract class RpcClientApi {
 	}
 	async listSessions(): Promise<RpcSessionInfo[]> {
 		return this.data<{ sessions: RpcSessionInfo[] }>(await this.request({ type: "list_sessions" })).sessions;
-	}
-	async listWorkflowRuns(status?: WorkflowRunFilterStatus): Promise<readonly WorkflowRunSummary[]> {
-		return this.data<{ runs: readonly WorkflowRunSummary[] }>(
-			await this.request({ type: "list_workflow_runs", status }),
-		).runs;
-	}
-	async getWorkflowRunSummary(runId: string): Promise<WorkflowRunDetail> {
-		return this.data(await this.request({ type: "get_workflow_run_summary", runId }));
 	}
 	async setModel(
 		provider: string,

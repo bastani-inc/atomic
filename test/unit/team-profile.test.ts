@@ -68,7 +68,7 @@ const VARIABLES = [
 	"ATOMIC_TEAM_PREFIX",
 ];
 const TEAM_URL = "libsql://team.example.turso.io";
-const NO_BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const NO_BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 let root: string;
 let agentDir: string;
