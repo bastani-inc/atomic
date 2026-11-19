@@ -352,59 +352,6 @@ interface GraphemeCellRange {
 	end: number;
 }
 
-/** Bound the source units used for label hit testing independently of invisible text and styling. */
-export function labelSourceBudget(cells: number): number {
-	return 128 + 16 * cells;
-}
-
-/** Whether a column is on printed label text, including a space between two printed cells. */
-export function isOnLabelCell(line: string, column: number, complete = true): boolean {
-	// Look only near the clicked cell. If an unusually long escape or cluster exhausts the budget,
-	// it cannot establish a hit. In particular, never segment an invisible tail to test a left margin.
-	const budget = labelSourceBudget(column + 1);
-	if (column < 0 || !Number.isSafeInteger(budget)) return false;
-	// Plain padding before a button needs no segmentation, even if the rest of the line is huge.
-	let padding = 0;
-	while (padding <= column && line.charCodeAt(padding) === 32) padding++;
-	if (padding > column) return false;
-	if (line.length > budget) {
-		line = line.slice(0, budget);
-		complete = false;
-	}
-	let col = 0;
-	let style: AnsiCodeTracker | undefined;
-	let inkBefore = false;
-	for (let i = 0; i < line.length; ) {
-		if (line[i] === "\x1b") {
-			const code = extractAnsiCode(line, i);
-			if (!code) return false;
-			if (code.code.startsWith("\x1b[")) {
-				if (!/^\x1b\[[\d;]*m$/u.test(code.code)) return false;
-				style ??= new AnsiCodeTracker();
-				style.process(code.code);
-			}
-			i += code.length;
-			continue;
-		}
-		const end = nextAnsiCode(line, i + 1);
-		for (const { segment, index } of graphemeSegmenter.segment(line.slice(i, end))) {
-			if (!complete && i + index + segment.length === line.length) return false;
-			const width = graphemeWidth(segment);
-			if (!width) continue;
-			const ink = !style?.isHidden && !/^[\s\u2800\p{Default_Ignorable_Code_Point}]+$/u.test(segment);
-			if (col > column && ink) return inkBefore;
-			if (col <= column && column < col + width) {
-				if (ink) return true;
-				if (!inkBefore || style?.isHidden) return false;
-			}
-			if (ink && col <= column) inkBefore = true;
-			col += width;
-		}
-		i = end;
-	}
-	return false;
-}
-
 /** Return the terminal-cell range occupied by the grapheme at a visible column. */
 export function getGraphemeCellRange(line: string, column: number): GraphemeCellRange | undefined {
 	let currentCol = 0;
@@ -708,10 +655,6 @@ class AnsiCodeTracker {
 	private activeHyperlink: ActiveHyperlink | null = null;
 	/** The opening marker of the key hint the text is inside, closed at a line's end and re-opened on the next. */
 	private activeHint: string | null = null;
-
-	get isHidden(): boolean {
-		return this.hidden;
-	}
 
 	process(ansiCode: string): void {
 		if (ansiCode.startsWith(HINT_OPEN)) {

@@ -4,8 +4,8 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
-import { mountRendererControls, rendererRows, unmountRendererControls } from "./renderer-click-area.ts";
-import type { RowRange } from "./transcript-block-clicks.ts";
+import { RendererMouseControls } from "./renderer-mouse-controls.js";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
@@ -13,13 +13,15 @@ export class CustomEntryComponent extends Container {
 	private expanded = false;
 	private outputPad: number;
 
+	private readonly controls?: RendererMouseControls;
 	private readonly entry: CustomEntry<unknown>;
 	private readonly renderer: EntryRenderer;
 
-	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer, outputPad = 1) {
+	constructor(entry: CustomEntry<unknown>, renderer: EntryRenderer, outputPad = 1, localMouseControls = false) {
 		super();
 		this.entry = entry;
 		this.renderer = renderer;
+		if (localMouseControls) this.controls = new RendererMouseControls(this, 1);
 		this.outputPad = outputPad;
 		this.rebuild();
 	}
@@ -41,7 +43,7 @@ export class CustomEntryComponent extends Container {
 	clickArea(width: number): RowRange | undefined {
 		const [spacer] = this.children;
 		if (this.customComponent === undefined || spacer === undefined) return undefined;
-		return rendererRows(this, spacer.render(width).length, this.render(width));
+		return rowsFrom(spacer.render(width).length, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -61,13 +63,16 @@ export class CustomEntryComponent extends Container {
 	}
 
 	private rebuild(): void {
-		unmountRendererControls(this);
 		this.clear();
 		this.customComponent = undefined;
 		let component: Component | undefined;
 		try {
-			component = this.renderer(this.entry, { expanded: this.expanded, keyText, keyHint }, theme);
-			if (component) mountRendererControls(this, this, [component]);
+			const options = { expanded: this.expanded, keyText, keyHint };
+			component = this.controls
+				? this.controls.render((bindMouseControl) =>
+						this.renderer(this.entry, { ...options, bindMouseControl }, theme),
+					)
+				: this.renderer(this.entry, options, theme);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const box = new Box(this.outputPad, 1, (text) => theme.bg("customMessageBg", text));

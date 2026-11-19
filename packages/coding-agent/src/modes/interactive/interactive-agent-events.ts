@@ -140,6 +140,7 @@ function createToolComponent(
 				args,
 				{
 					...options,
+					localMouseControls: mode.usesFullscreenRenderer,
 					getTaskRecord,
 					getToolDefinition: (name) => mode.getRegisteredToolDefinition(name),
 				},

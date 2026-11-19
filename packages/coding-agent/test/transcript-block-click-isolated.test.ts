@@ -254,7 +254,14 @@ test("the isolated host displays an extension's own row data as text and does no
 			return { handled: true };
 		}
 	}
-	const chat = await mountIsolatedChat({ badge: () => new Badge("Badge ready", 0, 0) });
+	const chat = await mountIsolatedChat({
+		badge: (_message, { bindMouseControl }) => {
+			const badge = new Badge("Badge ready", 0, 0);
+			const mark = bindMouseControl?.(badge.handleMouse.bind(badge));
+			badge.setText(mark ? "Unexpected local control capability" : "Badge ready");
+			return badge;
+		},
+	});
 	chat.message({ ...intercomMessage("ready"), customType: "badge" });
 	await chat.waitFor(/Badge ready/);
 	await chat.click(/Badge ready/, "Badge");

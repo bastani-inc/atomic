@@ -25,8 +25,8 @@ import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
-import { mountRendererControls, rendererRows, unmountRendererControls } from "./renderer-click-area.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
+import { RendererMouseControls } from "./renderer-mouse-controls.js";
 import {
 	collapseToolBlockLines,
 	componentNeedsWorkingClock,
@@ -37,12 +37,13 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
-import { blockRenderTime, type RowRange } from "./transcript-block-clicks.ts";
+import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
 
 export interface ToolExecutionOptions {
+	localMouseControls?: boolean;
 	showImages?: boolean;
 	imageWidthCells?: number;
 	outputPad?: number;
@@ -86,6 +87,9 @@ export class ToolExecutionComponent extends Container {
 	private disposed = false;
 	private executionStartedAt: number | undefined;
 	private elapsedMs: number | undefined;
+	private readonly localMouseControls: boolean;
+	private callControls?: RendererMouseControls;
+	private resultControls?: RendererMouseControls;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: Record<string, unknown> = {};
@@ -126,6 +130,7 @@ export class ToolExecutionComponent extends Container {
 		this.toolCallId = toolCallId;
 		this.args = args;
 		this.toolDefinition = toolDefinition;
+		this.localMouseControls = options.localMouseControls === true && toolDefinition !== undefined;
 		this.builtInToolDefinition = allToolNames.has(toolName as ToolName)
 			? createLoadedToolDefinition(toolName as ToolName, cwd)
 			: undefined;
@@ -297,7 +302,7 @@ export class ToolExecutionComponent extends Container {
 
 	/** Every row of the block, below the blank row it leads with. */
 	clickArea(width: number): RowRange | undefined {
-		return rendererRows(this, 1, this.render(width));
+		return rowsFrom(1, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -354,7 +359,9 @@ export class ToolExecutionComponent extends Container {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		unmountRendererControls(this);
+		this.callControls?.clear();
+		this.resultControls?.clear();
+		this.callControls = this.resultControls = undefined;
 		this.stopWorkingClock?.();
 		this.stopWorkingClock = undefined;
 		this.disposeRendererComponent(this.callRendererComponent);
@@ -486,7 +493,6 @@ export class ToolExecutionComponent extends Container {
 
 	private updateDisplay(): void {
 		if (this.disposed) return;
-		unmountRendererControls(this);
 		this.argsPending = false;
 		this.hideComponent = false;
 		this.contentContainer.clear();
@@ -514,7 +520,14 @@ export class ToolExecutionComponent extends Container {
 			this.callRendererComponent = undefined;
 		} else if (callRenderer) {
 			try {
-				call = callRenderer(this.args, theme, this.getRenderContext(this.callRendererComponent));
+				// Row zero is the spacer and row one is the tool title: a click there always toggles the block.
+				if (this.localMouseControls) this.callControls ??= new RendererMouseControls(this, 2);
+				const context = this.getRenderContext(this.callRendererComponent);
+				call = this.callControls
+					? this.callControls.render((bindMouseControl) =>
+							callRenderer(this.args, theme, { ...context, bindMouseControl }),
+						)
+					: callRenderer(this.args, theme, context);
 				this.callRendererComponent = call;
 			} catch {
 				this.callRendererComponent = undefined;
@@ -528,12 +541,19 @@ export class ToolExecutionComponent extends Container {
 		} else if (this.result) {
 			if (resultRenderer) {
 				try {
-					details = resultRenderer(
-						{ content: this.result.content, details: this.result.details, terminate: this.result.terminate },
-						{ expanded: this.expanded, isPartial: this.isPartial },
-						theme,
-						this.getRenderContext(this.resultRendererComponent),
-					);
+					const result = {
+						content: this.result.content,
+						details: this.result.details,
+						terminate: this.result.terminate,
+					};
+					const options = { expanded: this.expanded, isPartial: this.isPartial };
+					if (this.localMouseControls) this.resultControls ??= new RendererMouseControls(this, 2);
+					const context = this.getRenderContext(this.resultRendererComponent);
+					details = this.resultControls
+						? this.resultControls.render((bindMouseControl) =>
+								resultRenderer(result, options, theme, { ...context, bindMouseControl }),
+							)
+						: resultRenderer(result, options, theme, context);
 					this.resultRendererComponent = details;
 				} catch {
 					this.resultRendererComponent = undefined;
@@ -572,21 +592,6 @@ export class ToolExecutionComponent extends Container {
 		else if (selfRendered) {
 			this.contentContainer.addChild(call);
 			if (details) this.contentContainer.addChild(details);
-			if (this.toolDefinition)
-				mountRendererControls(
-					this,
-					this.contentContainer,
-					[
-						!canonicalCall && callRenderer && !isBuiltinToolCallRenderer(callRenderer)
-							? this.callRendererComponent
-							: undefined,
-						!canonicalResult && resultRenderer && !isBuiltinToolResultRenderer(resultRenderer)
-							? this.resultRendererComponent
-							: undefined,
-					],
-					1,
-					1,
-				);
 		} else if (isToolBlock(call)) {
 			if (this.result === undefined) this.contentContainer.addChild(call);
 			else {

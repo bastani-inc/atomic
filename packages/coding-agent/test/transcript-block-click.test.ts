@@ -27,6 +27,7 @@ import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
 import type { ToolRenderers } from "../src/core/extensions/tool-types.js";
 import type { MessageRenderer } from "../src/core/extensions/types.js";
+import type { ChatControlOptions } from "../src/core/extensions/ui-types.js";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
@@ -76,6 +77,7 @@ function makeMode(
 	const proto = (name: string) => Reflect.get(InteractiveMode.prototype, name);
 	return {
 		isInitialized: true,
+		usesFullscreenRenderer: true,
 		programStatus: { handleEvent: vi.fn() },
 		resetTranscriptSelection: vi.fn(),
 		footer: { invalidate: vi.fn() },
@@ -1203,17 +1205,28 @@ function extensionButton(lines: readonly string[]) {
 	return button;
 }
 
+function markedButton(
+	button: ReturnType<typeof extensionButton>,
+	{ bindMouseControl }: ChatControlOptions,
+	label: string,
+) {
+	const mark = bindMouseControl?.((event) => button.handleMouse(event));
+	return { ...button, render: () => [mark?.(label) ?? label] };
+}
+
 describe("controls an extension draws inside a block of the main chat (#5696)", () => {
 	test("a button in an extension's message gets the clicks it takes, and a click it leaves still opens the message (#5696)", async () => {
 		const button = extensionButton(["[ Approve ]"]);
-		const renderer: MessageRenderer = (_message, { expanded }) => {
-			const drawn = extensionButton(
-				expanded
-					? ["[ Approve ]", "Plan: rename the cache keys", "Step 2 detail"]
-					: ["[ Approve ]", "Plan: rename the cache keys"],
-			);
-			drawn.handleMouse = (event) => button.handleMouse(event);
-			return drawn as never;
+		const renderer: MessageRenderer = (_message, { expanded, bindMouseControl }) => {
+			const label = bindMouseControl?.((event) => button.handleMouse(event));
+			return {
+				invalidate() {},
+				render: () => [
+					label?.("[ Approve ]") ?? "[ Approve ]",
+					"Plan: rename the cache keys",
+					...(expanded ? ["Step 2 detail"] : []),
+				],
+			};
 		};
 		const chat = await mountChat(100, 60, { messageRenderers: { approval: renderer } });
 		try {
@@ -1234,6 +1247,38 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			chat.click(chat.columnOf(plan, "rename"), plan);
 			assert.equal(button.clicks, 2, "a row the button does not draw is not its click");
 			assert.ok(opened(), `a click nothing inside takes opens the message:\n${chat.screen().join("\n")}`);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a marked control that declines a click doesn't expand a message with nothing more to show (#5696)", async () => {
+		const declined = vi.fn(() => ({ handled: false }));
+		const chat = await mountChat(100, 60, {
+			messageRenderers: {
+				status: (_m, { bindMouseControl }) => {
+					const mark = bindMouseControl?.(declined);
+					return new Text(mark?.("Already approved") ?? "Already approved", 0, 0);
+				},
+			},
+		});
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "status",
+				content: "status",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Already approved/);
+			chat.click(chat.columnOf(row, "approved"), row);
+			assert.equal(declined.mock.calls.length, 1);
+			assert.equal(
+				chat.transcript.isFollowingEnd,
+				true,
+				"different control bindings alone are not new visible rows",
+			);
 		} finally {
 			chat.tui.stop();
 		}
@@ -1339,7 +1384,7 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 	test("a renderer's button class gets a click on its label but not on the margin beside it (#5696)", async () => {
 		class Button {
 			clicks = 0;
-			private readonly child = new Text("[ Save ]", 4, 0);
+			readonly child = new Text("[ Save ]", 4, 0);
 			render(width: number) {
 				return this.child.render(width);
 			}
@@ -1353,7 +1398,15 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			}
 		}
 		const button = new Button();
-		const chat = await mountChat(100, 60, { messageRenderers: { save: () => button } });
+		const chat = await mountChat(100, 60, {
+			messageRenderers: {
+				save: (_m, { bindMouseControl }) => {
+					const mark = bindMouseControl?.(button.handleMouse.bind(button));
+					button.child.setText(mark?.("[ Save ]") ?? "[ Save ]");
+					return button;
+				},
+			},
+		});
 		try {
 			mode(chat).addMessageToChat({
 				role: "custom",
@@ -1379,10 +1432,11 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		const cancel = extensionButton([label]);
 		const chat = await mountChat(100, 60, {
 			messageRenderers: {
-				order: (_message, { expanded }) => ({
-					...cancel,
-					render: () => (expanded ? [label, "Order details"] : [label]),
-				}),
+				order: (_message, { expanded, bindMouseControl }) => {
+					const mark = bindMouseControl?.((event) => cancel.handleMouse(event));
+					const row = label.replace("[ Cancel ]", mark?.("[ Cancel ]") ?? "[ Cancel ]");
+					return { ...cancel, render: () => (expanded ? [row, "Order details"] : [row]) };
+				},
 			},
 		});
 		try {
@@ -1414,7 +1468,9 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			mode(chat).chatContainer.addChild(
 				new CustomEntryComponent(
 					{ type: "custom", customType: "save", data: {}, id: "save", parentId: null, timestamp: "" },
-					() => button,
+					(_entry, options) => markedButton(button, options, "[ Save entry ]"),
+					1,
+					true,
 				),
 			);
 			chat.tui.renderNow();
@@ -1428,7 +1484,9 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 
 	test("a renderer can keep its own mouse layout state and still take clicks (#5696)", async () => {
 		const button = Object.assign(extensionButton(["[ Save ]"]), { mouseLayout: { current: { column: 2 } } });
-		const chat = await mountChat(100, 60, { messageRenderers: { save: () => button } });
+		const chat = await mountChat(100, 60, {
+			messageRenderers: { save: (_m, options) => markedButton(button, options, "[ Save ]") },
+		});
 		try {
 			mode(chat).addMessageToChat({
 				role: "custom",
@@ -1451,10 +1509,17 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			const summary = ["Review this order", "Order summary"];
 			const cancel = extensionButton(["[ Cancel order ]"]);
 			const panel = new Container();
-			panel.addChild({ render: () => summary, invalidate() {} });
-			panel.addChild(cancel);
 			const component = wrapped ? new MouseRegion(panel, () => undefined) : panel;
-			const chat = await mountChat(100, 60, { messageRenderers: { order: () => component } });
+			const chat = await mountChat(100, 60, {
+				messageRenderers: {
+					order: (_m, options) => {
+						panel.clear();
+						panel.addChild({ render: () => summary, invalidate() {} });
+						panel.addChild(markedButton(cancel, options, "[ Cancel order ]"));
+						return component;
+					},
+				},
+			});
 			try {
 				mode(chat).addMessageToChat({
 					role: "custom",
@@ -1487,8 +1552,19 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		const original = extensionButton(["[ Approve ]"]);
 		const replacement = extensionButton(["[ Approve ]"]);
 		const box = new Box(2, 1);
-		box.addChild(original);
-		const chat = await mountChat(100, 60, { messageRenderers: { approval: () => box } });
+		let first = original;
+		let second = replacement;
+		const chat = await mountChat(100, 60, {
+			messageRenderers: {
+				approval: (_m, options) => {
+					first = markedButton(original, options, "[ Approve ]");
+					second = markedButton(replacement, options, "[ Approve ]");
+					box.clear();
+					box.addChild(first);
+					return box;
+				},
+			},
+		});
 		try {
 			mode(chat).addMessageToChat({
 				role: "custom",
@@ -1502,11 +1578,12 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			const col = chat.columnOf(row, "Approve");
 			chat.press(col, row);
 			box.clear();
-			box.addChild(replacement);
+			box.addChild(second);
 			chat.tui.renderNow();
 			box.clear();
-			box.addChild(original);
+			box.addChild(first);
 			chat.release(col, row);
+			chat.settle();
 			assert.deepEqual([original.clicks, replacement.clicks], [0, 0]);
 		} finally {
 			chat.tui.stop();
@@ -1518,9 +1595,19 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			const label = ["[ Approve ]"];
 			const button = extensionButton(label);
 			const panel = new Container();
-			panel.addChild(new Text("Approval request", 0, 0));
-			panel.addChild(button);
-			const chat = await mountChat(100, 60, { messageRenderers: { approval: () => panel } });
+			let drawn = button;
+			const chat = await mountChat(100, 60, {
+				messageRenderers: {
+					approval: (_m, { bindMouseControl }) => {
+						const mark = bindMouseControl?.((event) => button.handleMouse(event));
+						drawn = { ...button, render: () => label.map((s) => mark?.(s) ?? s) };
+						panel.clear();
+						panel.addChild(new Text("Approval request", 0, 0));
+						panel.addChild(drawn);
+						return panel;
+					},
+				},
+			});
 			try {
 				mode(chat).addMessageToChat({
 					role: "custom",
@@ -1534,7 +1621,7 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 				const column = chat.columnOf(row, "Approve");
 				chat.press(column, row);
 				setTimeout(() => {
-					if (change === "removed") panel.removeChild(button);
+					if (change === "removed") panel.removeChild(drawn);
 					else label.length = 0;
 					chat.tui.requestRender();
 				}, 1);
@@ -1674,11 +1761,12 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 	test("a second widget's measurement cannot change which account was painted (#5696)", async () => {
 		let account = "A";
 		let measured = account;
+		let labels: Record<string, string> = {};
 		const opened: string[] = [];
 		const widget = {
 			render() {
 				measured = account;
-				return ["Open account"];
+				return [labels[account] ?? "Open account"];
 			},
 			invalidate() {},
 			paintedRowKey: () => measured,
@@ -1691,7 +1779,25 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		};
 		const block = new CustomMessageComponent(
 			{ role: "custom", customType: "accounts", content: "accounts", display: true, timestamp: 1 },
-			() => widget,
+			(_m, { bindMouseControl }) => {
+				labels = Object.fromEntries(
+					["A", "B"].map((id) => [
+						id,
+						bindMouseControl?.(() => {
+							opened.push(id);
+							return { handled: true };
+						})("Open account") ?? "Open account",
+					]),
+				);
+				return widget;
+			},
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ localMouseControls: true },
 		);
 		const chat = await mountChat(100, 60);
 		try {
@@ -1733,15 +1839,18 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 						render: () => (moved ? ["Recent orders"] : ["Recent orders", "Order 407"]),
 						invalidate() {},
 					}),
-					renderResult: () => ({
-						render: orders,
-						invalidate() {},
-						handleMouse(event) {
-							if (event.type !== "click") return;
-							opened.push(orders()[event.y]!);
-							return { handled: true };
-						},
-					}),
+					renderResult: (_r, _o, _t, { bindMouseControl }) => {
+						const labels = new Map(
+							["Order 407", "Order 408"].map((id) => [
+								id,
+								bindMouseControl?.(() => {
+									opened.push(id);
+									return { handled: true };
+								})(id) ?? id,
+							]),
+						);
+						return { render: () => orders().map((id) => labels.get(id)!), invalidate() {} };
+					},
 				},
 			},
 		});
@@ -1776,10 +1885,13 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 							render: () => (short ? ["Order"] : ["Order", "Read-only summary"]),
 							invalidate() {},
 						}),
-						renderResult: () => ({
-							...cancel,
-							render: () => (short && keepHeight ? ["[ Cancel order ]", "Notes"] : ["[ Cancel order ]"]),
-						}),
+						renderResult: (_r, _o, _t, options) => {
+							const button = markedButton(cancel, options, "[ Cancel order ]");
+							return {
+								...button,
+								render: () => [...button.render(), ...(short && keepHeight ? ["Notes"] : [])],
+							};
+						},
 					},
 				},
 			});
@@ -1868,15 +1980,13 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			// A tool whose renderers draw the whole block, so the components they return are the block's own rows.
 			deploy: {
 				renderShell: "self",
-				renderCall: () => call as never,
-				renderResult: (_result, { expanded }) => {
-					const drawn = extensionButton(
-						expanded
-							? ["[ Roll back ]", "deployed 3 services", "service list"]
-							: ["[ Roll back ]", "deployed 3 services"],
-					);
-					drawn.handleMouse = (event) => result.handleMouse(event);
-					return drawn as never;
+				renderCall: (_args, _theme, options) => markedButton(call, options, "\u25cf Deploy(staging)"),
+				renderResult: (_result, { expanded }, _theme, options) => {
+					const button = markedButton(result, options, "[ Roll back ]");
+					return {
+						...button,
+						render: () => [...button.render(), "deployed 3 services", ...(expanded ? ["service list"] : [])],
+					};
 				},
 			},
 		};

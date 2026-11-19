@@ -1,13 +1,6 @@
 import { type ScrollView, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
-import { observeWindowMouseRows } from "@bastani/atomic-tui/dist/components/windowed-container.js";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
-import {
-	captureRendererRow,
-	measureRendererClick,
-	type PaintedRendererRow,
-	sameRendererCell,
-} from "./components/renderer-click-area.ts";
 import { type ContainerMouseResult, handleTranscriptBlockClick } from "./components/transcript-block-clicks.ts";
 import type { Component, Container } from "./interactive-mode-deps.ts";
 
@@ -18,8 +11,6 @@ import type { Component, Container } from "./interactive-mode-deps.ts";
  */
 export class StartupChatContainer extends WindowedContainer {
 	private startupOutputReleased = false;
-	readonly #paintedRenderer = observeWindowMouseRows(this, captureRendererRow);
-	#pressedRenderer?: PaintedRendererRow;
 	private renderedWidth?: number;
 	private counted: { children: Component[]; length: number; count: number } | undefined;
 	private readonly isCounted: (child: Component) => boolean;
@@ -40,9 +31,6 @@ export class StartupChatContainer extends WindowedContainer {
 	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
 		if (event.type === "press" || event.type === "click") {
-			const painted = this.#paintedRenderer(event);
-			const pressed = this.#pressedRenderer;
-			this.#pressedRenderer = event.type === "press" ? painted : undefined;
 			const handled = handleTranscriptBlockClick(
 				this,
 				this,
@@ -53,13 +41,6 @@ export class StartupChatContainer extends WindowedContainer {
 					const view = this.transcriptView();
 					if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
 				},
-				event.type === "click" && painted && pressed
-					? () =>
-							sameRendererCell(pressed, painted, event.x)
-								? (block, y, height, attached) =>
-										measureRendererClick(block, painted, { ...event, y, height }, attached)
-								: undefined
-					: undefined,
 			);
 			if (handled) return handled;
 		}
@@ -126,7 +107,6 @@ export class StartupChatContainer extends WindowedContainer {
 
 	/** A cleared transcript is rebuilt from new rows; the engine-rendered rows it drops are disposed. */
 	override clear(): void {
-		this.#pressedRenderer = undefined;
 		disposeRemoteRenderers(this.children);
 		super.clear();
 		this.counted = { children: this.children, length: 0, count: 0 };

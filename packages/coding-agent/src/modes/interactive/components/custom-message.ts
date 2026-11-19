@@ -9,12 +9,12 @@ import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
-import { mountRendererControls, rendererRows, unmountRendererControls } from "./renderer-click-area.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
+import { RendererMouseControls } from "./renderer-mouse-controls.js";
 import { TaskCompletionMessage, type TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
-import type { RowRange } from "./transcript-block-clicks.ts";
+import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -36,6 +36,7 @@ export class CustomMessageComponent extends Container {
 	private disposed = false;
 	private message: CustomMessage<unknown>;
 	private customRenderer?: MessageRenderer;
+	private controls?: RendererMouseControls;
 	private box: Box;
 	private spacer?: Spacer;
 	private customComponent?: Component;
@@ -57,11 +58,12 @@ export class CustomMessageComponent extends Container {
 		markdownTransformers: readonly MarkdownTransformer[] = [],
 		messageId?: string,
 		timestamp?: string,
-		completionOptions?: TaskCompletionMessageOptions,
+		completionOptions?: TaskCompletionMessageOptions & { localMouseControls?: boolean },
 	) {
 		super();
 		this.message = message;
 		this.customRenderer = customRenderer;
+		if (completionOptions?.localMouseControls && customRenderer) this.controls = new RendererMouseControls(this, 1);
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
 		this.renderLatex = renderLatex;
@@ -92,8 +94,8 @@ export class CustomMessageComponent extends Container {
 
 	/** Every row of the card, under the blank row this message leads with. */
 	clickArea(width: number): RowRange | undefined {
-		if (!this.spacer) return undefined;
-		return rendererRows(this, this.spacer.render(width).length, this.render(width));
+		if (this.spacer === undefined) return undefined;
+		return rowsFrom(this.spacer.render(width).length, this.render(width).length);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -111,11 +113,12 @@ export class CustomMessageComponent extends Container {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		unmountRendererControls(this);
 		disposeRenderer(this.customComponent);
 		this.customComponent = undefined;
 		this.completionOptions = undefined;
 		this.customRenderer = undefined;
+		this.controls?.clear();
+		this.controls = undefined;
 		this.box.clear();
 		this.clear();
 	}
@@ -135,7 +138,6 @@ export class CustomMessageComponent extends Container {
 
 	private rebuild(): void {
 		if (this.disposed) return;
-		unmountRendererControls(this);
 		const previous = this.customComponent;
 		this.customComponent = undefined;
 		if (previous) this.removeChild(previous);
@@ -181,17 +183,19 @@ export class CustomMessageComponent extends Container {
 		// Try custom renderer first - it handles its own styling
 		if (this.customRenderer) {
 			try {
-				const component = this.customRenderer(
-					this.message,
-					{
-						expanded: this._expanded,
-						outputPad: this.outputPad,
-						cwd: this.completionOptions?.cwd,
-						keyText,
-						keyHint,
-					},
-					theme,
-				);
+				const options = {
+					expanded: this._expanded,
+					outputPad: this.outputPad,
+					cwd: this.completionOptions?.cwd,
+					keyText,
+					keyHint,
+				};
+				const renderer = this.customRenderer;
+				const component = this.controls
+					? this.controls.render((bindMouseControl) =>
+							renderer(this.message, { ...options, bindMouseControl }, theme),
+						)
+					: renderer(this.message, options, theme);
 				// Explicit null = "handled; render nothing". Skip the leading spacer
 				// and the default box entirely so the entry occupies zero rows. The
 				// workflows inline-form renderer returns null for a rehydrated
@@ -209,7 +213,6 @@ export class CustomMessageComponent extends Container {
 					this.addChild(this.spacer);
 					this.customComponent = component;
 					this.addChild(component);
-					mountRendererControls(this, this, [component]);
 					return;
 				}
 			} catch {

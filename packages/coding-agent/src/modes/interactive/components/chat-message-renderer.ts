@@ -97,6 +97,7 @@ export interface ChatMessageRenderOptions {
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
 	loadTaskTranscript?: TaskCompletionMessageOptions["loadTranscript"];
 	hasTaskTranscript?: (taskId: TaskId) => boolean;
+	localMouseControls?: boolean;
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	createToolComponent?: (
 		entry: Extract<ChatMessageEntry, { kind: "tool" }>,
@@ -842,6 +843,7 @@ export function renderHostedChatEntry(
 					outputPad: options.outputPad,
 					getTaskRecord: options.getTaskRecord,
 					getToolDefinition: options.getToolDefinition,
+					localMouseControls: options.localMouseControls,
 				},
 				options.getToolDefinition?.(messageEntry.toolName),
 				ui as TUI,
@@ -917,6 +919,7 @@ export function renderHostedChatEntry(
 					requestRender: () => options.ui.requestRender(),
 					getToolDefinition: options.getToolDefinition,
 					cwd: options.cwd,
+					localMouseControls: options.localMouseControls,
 				},
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);

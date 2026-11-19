@@ -1,18 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { isOnLabelCell, visibleWidth } from "../src/utils.ts";
-
-describe("label cells", () => {
-	it("distinguishes pale or colored button text from concealed text and blank padding (#5696)", () => {
-		for (const color of ["38;5;8", "38;2;8;150;20"]) {
-			assert.equal(isOnLabelCell(`\x1b[${color}m[ 保存 ]\x1b[0m`, 3), true);
-		}
-		const label = "\x1b[8mX\x1b[28m\u2800   [ Save ]";
-		assert.equal(isOnLabelCell(label, 0), false);
-		assert.equal(isOnLabelCell(label, 3), false);
-		assert.equal(isOnLabelCell(label, 7), true);
-	});
-});
+import { visibleWidth } from "../src/utils.ts";
 
 describe("visibleWidth", () => {
 	it("measures styled ASCII without counting escape sequences", () => {

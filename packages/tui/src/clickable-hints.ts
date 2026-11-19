@@ -224,6 +224,49 @@ export function slashCommandHint(text: string): string {
 	return command === undefined ? text : clickableHint(text, commandHintAction(command));
 }
 
+let localControlPrefix: string | undefined;
+
+/** A local control's opaque receipt and a function that marks its label without adding columns. Rows from another
+ * process carry no mouse authority, even when both processes use this version of the TUI. */
+export function createMouseControl(): { readonly token: string; label(text: string): string } {
+	localControlPrefix ??= `m:${crypto.randomUUID()}:`;
+	const token = crypto.randomUUID();
+	const open = `${HINT_OPEN}${localControlPrefix}${token}\x07`;
+	return { token, label: (text) => text && `${open}${text}${HINT_CLOSE}` };
+}
+
+function isLocalControl(payload: string): boolean {
+	return (
+		localControlPrefix !== undefined &&
+		payload.length === localControlPrefix.length + 36 &&
+		payload.startsWith(localControlPrefix)
+	);
+}
+
+/** Strip control receipts for a display comparison, preserving styles, hyperlinks and ordinary key hints. */
+export function stripMouseControlMarkers(line: string): string {
+	if (!localControlPrefix || !line.includes(`${HINT_OPEN}${localControlPrefix}`)) return line;
+	let control = false;
+	return line.replace(
+		/\x1b_pi:(?:h:([^\x07\x1b]*)(?:\x07|\x1b\\)|\/h\x07)/g,
+		(marker, payload: string | undefined) => {
+			if (payload !== undefined) {
+				control = isLocalControl(payload);
+				return control ? "" : marker;
+			}
+			const closing = control;
+			control = false;
+			return closing ? "" : marker;
+		},
+	);
+}
+
+export interface MouseControlSpan {
+	readonly start: number;
+	readonly end: number;
+	readonly token: string;
+}
+
 /** Whether `line` has hint markers. */
 export function hasHintMarkers(line: string): boolean {
 	return line.includes(HINT_OPEN) || line.includes(HINT_CLOSE);
@@ -238,15 +281,24 @@ export function stripHintMarkers(line: string): string {
  * `line` without its hint markers, and the columns each marked hint covers. A hint whose closing marker was cut off,
  * by truncation for example, ends at the end of the line; a closing marker whose opening one was cut off is dropped.
  */
-export function readHintSpans(line: string): { readonly line: string; readonly spans: readonly HintSpan[] } {
+export function readHintSpans(line: string): {
+	readonly line: string;
+	readonly spans: readonly HintSpan[];
+	readonly controls?: readonly MouseControlSpan[];
+} {
 	if (!hasHintMarkers(line)) return { line, spans: [] };
 	const spans: HintSpan[] = [];
 	let text = "";
 	let column = 0;
-	let open: { start: number; action: HintAction | undefined } | undefined;
+	let controls: MouseControlSpan[] | undefined;
+	let open: { start: number; action?: HintAction; token?: string } | undefined;
 	const close = () => {
 		if (open?.action !== undefined && column > open.start)
 			spans.push({ start: open.start, end: column, action: open.action });
+		else if (open?.token !== undefined && column > open.start) {
+			controls ??= [];
+			controls.push({ start: open.start, end: column, token: open.token });
+		}
 		open = undefined;
 	};
 	let index = 0;
@@ -257,7 +309,9 @@ export function readHintSpans(line: string): { readonly line: string; readonly s
 			if (ansi.code.startsWith(HINT_OPEN)) {
 				close();
 				const payload = ansi.code.slice(HINT_OPEN.length).replace(/(?:\x07|\x1b\\)$/, "");
-				open = { start: column, action: decodeAction(payload) };
+				open = isLocalControl(payload)
+					? { start: column, token: Buffer.from(payload.slice(-36), "utf8").toString("utf8") }
+					: { start: column, action: decodeAction(payload) };
 			} else if (ansi.code === HINT_CLOSE) {
 				close();
 			} else {
@@ -273,7 +327,7 @@ export function readHintSpans(line: string): { readonly line: string; readonly s
 		index = next;
 	}
 	close();
-	return { line: text, spans };
+	return controls ? { line: text, spans, controls } : { line: text, spans };
 }
 
 /** The action of the hint painted at `column`, among a row's `spans`. */

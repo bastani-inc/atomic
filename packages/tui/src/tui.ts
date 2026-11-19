@@ -3,7 +3,13 @@
  */
 
 import { performance } from "node:perf_hooks";
-import { type HintAction, hintKeyInput, runAsHintActivation, stripHintMarkers } from "./clickable-hints.ts";
+import {
+	type HintAction,
+	hintKeyInput,
+	type MouseControlSpan,
+	runAsHintActivation,
+	stripHintMarkers,
+} from "./clickable-hints.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { Terminal } from "./terminal.ts";
 import {
@@ -50,6 +56,8 @@ export interface TuiMouseEvent {
 	wheelDelta?: number;
 	/** Consecutive click count when type is click. */
 	clickCount?: number;
+	/** The marked control under a completed single click, in absolute terminal columns. */
+	paintedControl?: MouseControlSpan;
 }
 
 export interface TuiMouseEventResult {

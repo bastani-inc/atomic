@@ -35,6 +35,23 @@ export interface ClickExpandableBlock extends Component {
 	expandByClick?(expanded: boolean, changed: () => void, width: number, signal?: AbortSignal): void;
 }
 
+interface LocalControlSlot {
+	handle(event: TuiMouseEvent, row: number): boolean;
+	comparableLine(line: string): string;
+}
+
+// Only blocks whose local extension actually bound a control have slots. Do not probe arbitrary components.
+let controlSlots: WeakMap<Component, Set<LocalControlSlot>> | undefined;
+export function registerBlockControlSlot(block: Component, slot: LocalControlSlot): void {
+	controlSlots ??= new WeakMap();
+	let slots = controlSlots.get(block);
+	if (!slots) {
+		slots = new Set();
+		controlSlots.set(block, slots);
+	}
+	slots.add(slot);
+}
+
 export function isClickExpandableBlock(component: Component | undefined): component is ClickExpandableBlock {
 	return component !== undefined && (component as Partial<ClickExpandableBlock>).expandsOnClick === true;
 }
@@ -133,7 +150,17 @@ export function expandIfItChangesRows(block: ClickExpandableBlock, width: number
 	return withBlockRenderTime(() => {
 		const before = block.render(width);
 		block.setExpanded(expanded);
-		if (!sameRows(before, block.render(width))) return true;
+		const after = block.render(width);
+		if (!sameRows(before, after)) {
+			// Fresh bindings can have new receipts even when the renderer shows exactly the same rows.
+			const slot = controlSlots?.get(block)?.values().next().value;
+			if (
+				!slot ||
+				before.length !== after.length ||
+				before.some((line, i) => line !== after[i] && slot.comparableLine(line) !== slot.comparableLine(after[i]!))
+			)
+				return true;
+		}
 		block.setExpanded(!expanded);
 		return false;
 	});
@@ -170,45 +197,31 @@ export function toggleClickedBlocks(
  * The blocks a click on row `row` of `container`, drawn at `width`, expands or collapses: among its children or, for a
  * child that is a plain container of blocks, among that child's children.
  */
-type RendererOffer = (
-	block: ClickExpandableBlock,
-	row: number,
-	height: number,
-	attached: (settling?: boolean) => boolean,
-) => { area?: RowRange; handled?: ContainerMouseResult } | undefined;
-
 function clickUnitAt(
 	container: Container,
 	width: number,
 	row: number,
-	offer?: RendererOffer,
-	parentAttached?: (settling?: boolean) => boolean,
-): (() => readonly ClickExpandableBlock[] | undefined) | ContainerMouseResult {
+	event: TuiMouseEvent,
+): (() => readonly ClickExpandableBlock[] | undefined) | undefined {
 	const hit = container.childAtRow(width, row);
-	if (!hit) return undefined;
-	const component = hit.component;
-	let attached: ((settling?: boolean) => boolean) | undefined;
-	if (offer) {
-		// Use one membership pass, as for a passive block. After a renderer call, recheck its slot in constant time.
-		const siblings = container.children;
-		let index = 0;
-		const end = siblings.length;
-		while (index < end && siblings[index] !== component) index++;
-		if (index === end) return undefined;
-		attached = (settling) =>
-			(container.children[index] === component || (!!settling && container.children.includes(component))) &&
-			(parentAttached?.(settling) ?? true);
-	} else if (!container.children.includes(component)) return undefined;
-	if (isClickExpandableBlock(component)) {
-		const measured = attached && offer?.(component, hit.row, hit.height, attached);
-		const area = measured ? measured.area : component.clickArea(width);
+	if (!hit || !container.children.includes(hit.component)) return undefined;
+	if (isClickExpandableBlock(hit.component)) {
+		const area = hit.component.clickArea(width);
 		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
-		return measured?.handled ?? (() => clickUnit(container.children, container.children.indexOf(component)));
+		const block = hit.component;
+		if (!event.paintedControl) return () => clickUnit(container.children, container.children.indexOf(block));
+		return () => {
+			const slots = controlSlots?.get(block);
+			if (slots && container.children.includes(block)) {
+				for (const slot of slots) if (slot.handle(event, hit.row)) return undefined;
+			}
+			return clickUnit(container.children, container.children.indexOf(block));
+		};
 	}
-	const nested = component as Container;
+	const nested = hit.component as Container;
 	if (!nested.children || !nested.childAtRow) return undefined;
-	const unit = clickUnitAt(nested, width, hit.row, offer, attached);
-	return typeof unit === "function" ? () => (container.children.includes(nested) ? unit() : undefined) : unit;
+	const unit = clickUnitAt(nested, width, hit.row, event);
+	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
 }
 
 // A global expansion supersedes only transcript toggles, not other controls' single-click actions.
@@ -227,7 +240,6 @@ export function handleTranscriptBlockClick(
 	event: TuiMouseEvent,
 	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
-	prepareOffer?: () => RendererOffer | undefined,
 ): ContainerMouseResult {
 	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
 	let scope = clickScopes.get(container);
@@ -243,16 +255,16 @@ export function handleTranscriptBlockClick(
 	pressedScopes.delete(container);
 	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
-	const unit = clickUnitAt(container, event.width, event.y, prepareOffer?.());
-	if (typeof unit !== "function") return unit;
+	const unit = clickUnitAt(container, event.width, event.y, event);
+	if (!unit) return undefined;
 	return {
 		handled: true,
 		whenSingleClick: () => {
 			if (signal.aborted) return;
-			const blocks = unit();
 			const width = currentWidth();
-			if (blocks && width !== undefined)
-				toggleClickedBlocks(blocks, width, (expanded) => onToggled?.(expanded), signal);
+			if (width === undefined) return;
+			const blocks = unit();
+			if (blocks && !signal.aborted) toggleClickedBlocks(blocks, width, (expanded) => onToggled?.(expanded), signal);
 		},
 		target: {
 			component: owner,

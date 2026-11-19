@@ -2,7 +2,7 @@ import type { Component } from "@bastani/atomic-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { CustomMessage } from "../messages.ts";
 import type { CustomEntry } from "../session-manager.ts";
-import type { KeybindingHints } from "./ui-types.js";
+import type { ChatControlOptions, KeybindingHints } from "./ui-types.js";
 
 export type CustomMessageDelivery = "steer" | "followUp" | "nextTurn" | "interrupt";
 
@@ -71,7 +71,7 @@ export type SendMessagesOptions = Omit<
 	stageAdmissionKeys?: readonly (string | undefined)[];
 };
 
-export interface MessageRenderOptions extends KeybindingHints {
+export interface MessageRenderOptions extends KeybindingHints, ChatControlOptions {
 	expanded: boolean;
 	cwd?: string;
 	/** Horizontal padding configured by the outputPad setting. */
@@ -110,7 +110,7 @@ export interface MarkdownTransformerRegistration {
 	messageTypes: ReadonlySet<MarkdownMessageType>;
 }
 
-export interface EntryRenderOptions extends KeybindingHints {
+export interface EntryRenderOptions extends KeybindingHints, ChatControlOptions {
 	expanded: boolean;
 }
 

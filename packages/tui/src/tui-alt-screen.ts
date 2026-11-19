@@ -4,16 +4,16 @@ import {
 	type AltScreenSearchMatch,
 	getAltScreenSearchMatchKey,
 } from "./alt-screen-search.ts";
-import { type HintAction, type HintSpan, hintActionAt, readHintSpans } from "./clickable-hints.ts";
+import {
+	type HintAction,
+	type HintSpan,
+	hintActionAt,
+	type MouseControlSpan,
+	readHintSpans,
+} from "./clickable-hints.ts";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
-import {
-	WindowedContainer,
-	type WindowMouseFrame,
-	type WindowMousePaint,
-	type WindowRows,
-	withWindowMouseFrame,
-} from "./components/windowed-container.ts";
+import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
 import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease } from "./keys.ts";
 import {
@@ -157,6 +157,7 @@ interface ClickTarget {
 interface PointerFrame {
 	readonly line: string | undefined;
 	readonly hint: HintAction | undefined;
+	readonly control?: MouseControlSpan;
 	/** Before the text selection was painted, including the row's original styling and links. */
 	readonly unselectedLine: string | undefined;
 	readonly highlighted: boolean;
@@ -213,6 +214,31 @@ function sameDrawnAtPointer(a: PointerFrame | undefined, b: PointerFrame): boole
 /** The same geometry at the pointer, and the same painted row under it, drawn by the same components. */
 function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
 	return a !== undefined && a.line === b.line && sameDrawnAtPointer(a, b);
+}
+
+/** A re-bound label drops its authority, not the ordinary click an unchanged block would have received. */
+function attachControl(
+	event: TuiMouseEvent,
+	button: number,
+	press: PointerFrame | undefined,
+	release: PointerFrame,
+): void {
+	const from = press?.control;
+	const to = release.control;
+	if (
+		from &&
+		to &&
+		button === 0 &&
+		event.button === "left" &&
+		!event.alt &&
+		!event.shift &&
+		!event.ctrl &&
+		event.clickCount === 1 &&
+		from.token === to.token &&
+		from.start === to.start &&
+		from.end === to.end
+	)
+		event.paintedControl = to;
 }
 
 /** Bounds the walk into nested containers when recording what a frame drew at the pointer. */
@@ -343,7 +369,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	/** The last layout drawn had image lines, which an overlay does not cover. */
 	private coveredLayoutHasImages = false;
 	private layoutRoot: Component | undefined;
-	#paintedWindowRows?: WindowMouseFrame;
 	private currentLayout: LayoutFrame | undefined;
 	private readonly implicitDocument: Component;
 	private readonly implicitScrollView: ScrollView;
@@ -372,6 +397,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private hintGestureActive = false;
 	/** The key hints the last frame painted, by screen row. */
 	private paintedHints: (readonly HintSpan[] | undefined)[] = [];
+	private paintedControls?: (readonly MouseControlSpan[] | undefined)[];
 	/** What the screen showed under the pointer when the left button went down. */
 	private pressFrame?: PointerFrame;
 	/** Rows of the primary transcript that a drawn-over row covers: the pinned prompt and the jump-to-latest row. */
@@ -478,7 +504,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	setLayoutRoot(component: Component | undefined): void {
 		if (this.layoutRoot === component) return;
 		this.layoutRoot = component;
-		this.#paintedWindowRows = undefined;
 		this.currentLayout = undefined;
 		this.requestRender();
 	}
@@ -521,6 +546,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.pressedHint = undefined;
 		this.hintGestureActive = false;
 		this.paintedHints = [];
+		this.paintedControls = undefined;
 		this.selectionDragged = false;
 		this.clearComponentMouseGesture();
 		this.resetRenderState();
@@ -549,6 +575,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.stopScrollbarDrag();
 		this.clearComponentMouseGesture();
 		this.flashes.dispose();
+		this.paintedControls = undefined;
 		if (!this.altScreenActive) return;
 		this.terminal.write(
 			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
@@ -715,7 +742,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override resetRenderState(): void {
-		this.#paintedWindowRows = undefined;
 		this.previousScreen = [];
 		this.previousScreenWidth = 0;
 		this.previousScreenHeight = 0;
@@ -1086,17 +1112,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (visited.has(box.component)) continue;
 			if (getLayoutNode(box.component) && box.component.handleMouse === Container.prototype.handleMouse) continue;
 			visited.add(box.component);
-			const local = {
+			const result = dispatchMouseEvent(box.component, {
 				...event,
 				x: event.screenX - box.rect.x,
 				y: event.screenY - box.rect.y,
 				width: box.rect.width,
 				height: box.rect.height,
-			};
-			const result =
-				this.#paintedWindowRows && (event.type === "press" || event.type === "click")
-					? withWindowMouseFrame(this.#paintedWindowRows, () => dispatchMouseEvent(box.component, local))
-					: dispatchMouseEvent(box.component, local);
+			});
 			if (result) return result;
 		}
 		return undefined;
@@ -1215,16 +1237,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				// The release always reaches the target, so it can end what its press started. The click needs the
 				// same target still drawn where it was pressed, not another that took its place.
 				const click = this.lastClick;
-				if (
-					click &&
-					!this.mousePressMoved &&
-					this.mousePressPoint?.x === raw.x &&
-					this.mousePressPoint.y === raw.y &&
-					sameDrawnAtPointer(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
-				) {
+				const releaseFrame =
+					click && !this.mousePressMoved && this.mousePressPoint?.x === raw.x && this.mousePressPoint.y === raw.y
+						? this.pointerFrame(raw.x, raw.y)
+						: undefined;
+				if (click && releaseFrame && sameDrawnAtPointer(this.mousePressFrame, releaseFrame)) {
 					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
 						clickCount: click.count,
 					});
+					attachControl(clickEvent, click.button, this.mousePressFrame, releaseFrame);
 					const clickResult = this.dispatchMouseToTarget(clickEvent, target);
 					if (clickResult) {
 						render = this.applyMouseDispatchResult(clickEvent, clickResult) || render;
@@ -1586,7 +1607,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const overlay = this.overlayAt(x, y);
 		const boxes = this.currentLayout ? getLayoutBoxesAt(this.currentLayout, x, y) : [];
 		const innermost = boxes[0];
+		const control = this.paintedControls?.[y]?.find((span) => span.start <= x && x < span.end);
 		return {
+			...(control && this.takesKeysAt(x, y) ? { control } : {}),
 			line: this.previousScreen[y],
 			hint: this.hintAt(x, y),
 			unselectedLine: this.unselectedScreen[y],
@@ -1699,6 +1722,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.selectionAnchor.col === point.col;
 			// A click acts on what the screen showed when it was pressed: a repaint that changed what is under the
 			// pointer before the release makes it no click at all.
+			const pressFrame = this.pressFrame;
 			this.pressFrame = undefined;
 			const clickedUrl = isClick && unchanged ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
@@ -1728,6 +1752,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
 					clickCount: click.count,
 				});
+				attachControl(clickEvent, click.button, pressFrame, releaseFrame);
 				const overlay = this.dispatchMouseToOverlay(clickEvent);
 				const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(clickEvent));
 				if (result) {
@@ -2092,11 +2117,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	 * full-screen view's frames cost only the view. A layout with images is always drawn, because an image line
 	 * shows through an overlay.
 	 */
-	private renderScreen(
-		width: number,
-		height: number,
-		mouseFrame?: WindowMousePaint,
-	): { layout: LayoutFrame; screen: string[] } {
+	private renderScreen(width: number, height: number): { layout: LayoutFrame; screen: string[] } {
 		const covered = this.currentLayout;
 		if (
 			covered !== undefined &&
@@ -2113,21 +2134,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			// An overlay that shrank or hid in this frame shows the layout after all.
 			if (this.overlaysCoverScreen(width, height)) return { layout: covered, screen };
 		}
-		const layout = this.renderLayout(width, height, mouseFrame);
+		const layout = this.renderLayout(width, height);
 		return { layout, screen: this.compositeOverlays(this.composeLayout(layout, width), width, height) };
 	}
 
-	private renderLayout(width: number, height: number, mouseFrame?: WindowMousePaint): LayoutFrame {
+	private renderLayout(width: number, height: number): LayoutFrame {
 		if (this.activeSearch?.query.trim()) this.settleScrollContent(this.getPrimaryScrollView());
 		const root = this.layoutRoot ?? this.implicitScrollView;
-		let layout = renderLayoutFrame(root, width, height, () => this.requestRender(), mouseFrame);
-		if (this.refreshSearch(layout)) {
-			if (mouseFrame) {
-				mouseFrame.rows = undefined;
-				mouseFrame.staged = undefined;
-			}
-			layout = renderLayoutFrame(root, width, height, () => this.requestRender(), mouseFrame);
-		}
+		let layout = renderLayoutFrame(root, width, height, () => this.requestRender());
+		if (this.refreshSearch(layout)) layout = renderLayoutFrame(root, width, height, () => this.requestRender());
 		this.coveredLayoutHasImages = layout.lines.some(isImageLine);
 		return layout;
 	}
@@ -2186,8 +2201,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
-		const mouseFrame: WindowMousePaint | undefined = this.mouseEnabled ? {} : undefined;
-		const rendered = this.renderScreen(width, height, mouseFrame);
+		const rendered = this.renderScreen(width, height);
 		const nextLayout = rendered.layout;
 		let screen = rendered.screen;
 		if (screen.length > height) screen = screen.slice(screen.length - height);
@@ -2197,12 +2211,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 		const cursorPos = this.extractCursorPosition(screen, height);
 		const paintedHints: (readonly HintSpan[] | undefined)[] = [];
+		let controls: (readonly MouseControlSpan[] | undefined)[] | undefined;
 		screen = screen.map((line, row) => {
 			const read = readHintSpans(line);
 			if (read.spans.length > 0) paintedHints[row] = read.spans;
+			if (read.controls) {
+				controls ??= [];
+				controls[row] = read.controls;
+			}
 			return read.line;
 		});
 		this.paintedHints = paintedHints;
+		this.paintedControls = controls;
 		screen = this.applyLineResets(screen).map((line) => {
 			if (isImageLine(line) || visibleWidth(line) <= width) return line;
 			return sliceByColumn(line, 0, width, true);
@@ -2284,8 +2304,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		buffer += END_SYNCHRONIZED_OUTPUT;
 		this.terminal.write(buffer);
 
-		// Unpublished layout and offscreen measurement cannot authorize a click on the display.
-		this.#paintedWindowRows = mouseFrame?.rows;
 		this.previousScreen = screen;
 		this.previousScreenWidth = width;
 		this.previousScreenHeight = height;

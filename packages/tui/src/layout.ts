@@ -1,12 +1,6 @@
 import type { ScrollView } from "./components/scroll-view.ts";
 import { allocateStackSizes, visibleStackEntries } from "./components/stack.ts";
-import {
-	captureWindowRow,
-	layoutWindowForPaint,
-	WindowedContainer,
-	type WindowMousePaint,
-	type WindowRows,
-} from "./components/windowed-container.ts";
+import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
 import { getLayoutNode } from "./layout-node.ts";
 import { cropKittyImageLine, getKittyImageMetadata, getMaxKittyImageRows, isImageLine } from "./terminal-image.ts";
 import { type Component, CURSOR_MARKER, compositeTuiLine } from "./tui.ts";
@@ -64,7 +58,6 @@ interface LayoutContext {
 	renderCache: Map<Component, Map<number, string[]>>;
 	requestRender: () => void;
 	primaryScrollView: ScrollView | undefined;
-	mousePaint?: WindowMousePaint;
 }
 
 function intersect(a: LayoutRect, b: LayoutRect): LayoutRect {
@@ -273,17 +266,13 @@ function layoutWindowedScroll(
 	scrollView: ScrollView,
 	area: { x: number; y: number; width: number; height: number; contentWidth: number; clip: LayoutRect },
 ): LayoutBox {
-	const rows = layoutWindowForPaint(
-		content,
-		{
-			width: area.contentWidth,
-			top: scrollView.scrollTop,
-			height: area.height,
-			followEnd: scrollView.isFollowingEnd,
-			requestRender: context.requestRender,
-		},
-		context.mousePaint,
-	);
+	const rows = content.layoutWindow({
+		width: area.contentWidth,
+		top: scrollView.scrollTop,
+		height: area.height,
+		followEnd: scrollView.isFollowingEnd,
+		requestRender: context.requestRender,
+	});
 	scrollView.updateLayout(rows.length, area.height, context.requestRender, rows.top);
 	if (scrollView.primary || !context.primaryScrollView) context.primaryScrollView = scrollView;
 	const rect = { x: area.x, y: area.y, width: area.width, height: area.height };
@@ -396,18 +385,15 @@ function paintScrollbar(box: LayoutBox, screen: string[], totalWidth: number): v
 	}
 }
 
-function paintBox(box: LayoutBox, screen: string[], totalWidth: number, mouseFrame?: WindowMousePaint): void {
+function paintBox(box: LayoutBox, screen: string[], totalWidth: number): void {
 	const source = box.lines ?? box.rows;
 	if (source) {
 		const offset = box.lineOffset ?? 0;
 		const firstRow = Math.max(box.rect.y, box.clip.y, 0);
 		const lastRow = Math.min(box.rect.y + box.rect.height, box.clip.y + box.clip.height, screen.length);
-		const window = mouseFrame && box.rows && box.component instanceof WindowedContainer ? box.component : undefined;
 		for (let row = firstRow; row < lastRow; row++) {
-			const at = offset + row - box.rect.y;
-			const sourceLine = source.at(at);
+			const sourceLine = source.at(offset + row - box.rect.y);
 			if (sourceLine === undefined) continue;
-			if (window && mouseFrame) window[captureWindowRow](mouseFrame, at, sourceLine, box.rect.x, row);
 			let line = sourceLine.replace(OSC133_ZONE_PREFIX, "");
 			const imageMetadata = getKittyImageMetadata(line);
 			if (imageMetadata) {
@@ -427,7 +413,7 @@ function paintBox(box: LayoutBox, screen: string[], totalWidth: number, mouseFra
 			}
 		}
 	}
-	for (const child of box.children) paintBox(child, screen, totalWidth, mouseFrame);
+	for (const child of box.children) paintBox(child, screen, totalWidth);
 
 	const scrollContent = getScrollContentRows(box);
 	if (box.scrollView && scrollContent && box.scrollView.scrollTop > 0 && box.rect.height > 0) {
@@ -459,14 +445,12 @@ export function renderLayoutFrame(
 	width: number,
 	height: number,
 	requestRender: () => void,
-	mouseFrame?: WindowMousePaint,
 ): LayoutFrame {
 	const safeWidth = Math.max(1, Math.floor(width));
 	const safeHeight = Math.max(1, Math.floor(height));
 	const context: LayoutContext = {
 		viewport: { width: safeWidth, height: safeHeight },
 		renderCache: new Map(),
-		mousePaint: mouseFrame,
 		requestRender,
 		primaryScrollView: undefined,
 	};
@@ -477,7 +461,7 @@ export function renderLayoutFrame(
 		height: safeHeight,
 	});
 	const lines = Array.from({ length: safeHeight }, () => "");
-	paintBox(rootBox, lines, safeWidth, mouseFrame);
+	paintBox(rootBox, lines, safeWidth);
 	return {
 		root: rootBox,
 		width: safeWidth,
