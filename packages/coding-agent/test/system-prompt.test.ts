@@ -412,6 +412,7 @@ describe("buildSystemPrompt", () => {
 			assert.ok(prompt.includes("the default store is SQLite, which `rg` cannot read"));
 			assert.ok(prompt.includes("`read history://sessions` lists"));
 			assert.ok(prompt.includes("`read history://sessions/<id>:N-M` opens"));
+			assert.doesNotMatch(prompt, /history:\/\/workflows/);
 			assert.ok(prompt.includes("`search` accepts the same URLs, or `history://` for session search"));
 			assert.ok(prompt.includes("the user refers to earlier or recent work or asks what was being worked on"));
 			assert.ok(prompt.includes("when a task resembles one done before"));

@@ -150,6 +150,8 @@ describe("internal URL schemes (#4252)", () => {
 		assertIncludes(text(await read("history://")), "history://sessions");
 		assert.equal(text(await search("sessions", "history://sessions")), "No matches found");
 		assert.equal(text(await search("sessions", "history://")), "No matches found");
+		assertIncludes(text(await read("history://workflows/old-run")), "no longer available");
+		assertIncludes(text(await search("missing", "history://workflows")), "no longer available");
 		await assert.rejects(write("history://sessions", "x"), /read-only/);
 		await assert.rejects(find("history://sessions"), /find cannot list history:\/\/ URLs/);
 	});
