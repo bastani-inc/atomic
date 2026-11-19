@@ -20,6 +20,7 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 ```
 
 - **Each row shows** the status, the agent's name (a workflow's name for a run), what it works on, and how long it has run. Agents and workflow runs also show the tokens they have used. A workflow row shows stage progress; a waiting row shows its question instead.
+- The task title in the panel and in an attached chat header stops at a whole character. A shortened title ends in `…`.
 - **Status glyphs:**
   - `∀` running
   - `◆` needs input, with its question when it waits on one
@@ -31,7 +32,7 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 - **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent, and a workflow run that is paused or blocked on a failed stage, stays while another subagent, workflow run or background shell is still running, and leaves once nothing is running. Switching chats or starting unrelated work does not bring it back. If it resumes and stops again while other work is running, it reappears as one row, even if the panel was closed during the resume. `/tasks` and `/workflows` still list a paused run. A stopped row, and a finished workflow run, read dim after 30 seconds. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The main row does not count toward either.
 
-The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place.
+The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place. If a paused or blocked workflow run has left the panel, `/workflows to see runs` points to it until it runs again or is gone. This extra hint appears only when there is room beside the status and the other hints. You can still type `/workflows` when the hint is hidden.
 
 Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
 
@@ -44,7 +45,7 @@ Press **↓** on an empty prompt to focus the panel. It then works like every li
 - **x** stops the selected item when pressed again within 3 seconds, and dismisses a finished row.
 - **Esc** or **←**, or ↑ past `● main` (past the first row when there is no main row), returns to the prompt. **?** shows the keys.
 
-In fullscreen mode you can also click a row, focused or not, to open it as Enter does. Clicking `● main` in the focused panel returns to the prompt. The hints click too: `↓ N agents` focuses the panel, `/tasks to manage` and `/tasks to see subagents` open `/tasks`, and each key in a hint row does what pressing it does.
+In fullscreen mode you can also click a row, focused or not, to open it as Enter does. Clicking `● main` in the focused panel returns to the prompt. The hints click too: `↓ N agents` focuses the panel, `/tasks to manage` and `/tasks to see subagents` open `/tasks`, `/workflows to see runs` opens `/workflows`, and each key in a hint row does what pressing it does.
 
 Going back from what you opened returns to the main chat with the panel focused on the same row. The subagent chat's hint reads `← main chat`; press **←** on its empty prompt. A workflow graph uses **Esc** to return.
 
@@ -73,6 +74,7 @@ Run `/tasks` to inspect work without stopping it:
 - Enter or Right on a row opens it: a workflow run's graph, a subagent's chat or a shell's output, or its detail page when no transcript is available.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it. Up or Down selects a row and keeps the filter.
 - Paused workflow runs remain in Working with a `‖ paused` status. Their elapsed time stays frozen, and `x` twice stops them rather than dismissing them as finished.
+- A shell's completion notice and output page take the last 8 KiB of retained output. If that window starts partway through a UTF-8 character, the excerpt starts at the next character. If the completion notice must shorten the output further, it keeps whole graphemes and shows an omission label only if the entire label fits.
 - Detail and transcript pages use the full screen. A shell's input stays in the sheet, under `Input to <command>`, with `enter send · ← back to list`.
 - Escape returns to the picker with your selection preserved, then to chat.
 - Completed background work remains available, including after a later wait for it. A shell command its tool call still waits on is excluded.

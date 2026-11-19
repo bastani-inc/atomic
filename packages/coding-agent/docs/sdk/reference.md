@@ -1435,7 +1435,7 @@ Only Atomic's interactive hosts with a task inspector hold child prompts automat
 
 ### Task transcript references
 
-Task inspectors show references to the bound child conversation: prompts, responses, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
+Task inspectors show references to the bound child conversation: prompts, responses, provider errors, thinking blocks, tool calls and results, shell commands and their output, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
 
 `TaskViewSource.sendTaskMessage(id, text)` sends text typed into an agent task's transcript to that task through its Intercom target and resolves once Intercom confirms delivery. A task view that cannot message tasks omits the method. A failure rejects with a `TaskMessageError`:
 
