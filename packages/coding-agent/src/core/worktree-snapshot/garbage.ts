@@ -3,6 +3,7 @@ import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { StoreClosedError } from "../storage/errors.js";
 import {
 	BackgroundCollectionPace,
+	type PendingChunkMove,
 	runningSnapshotCollectionOf,
 	type SnapshotCollectionOutcome,
 	type SnapshotCollectionSkipReason,
@@ -56,17 +57,25 @@ export interface CollectSnapshotGarbageOptions {
 export async function collectSnapshotGarbage(
 	store: SnapshotBlobStore | undefined,
 	options: CollectSnapshotGarbageOptions = {},
-): Promise<{ readonly deleted: readonly string[] }> {
+): Promise<{ readonly deleted: readonly string[]; readonly pendingChunkMove?: PendingChunkMove }> {
 	if (!(store instanceof SqlSnapshotBlobStore))
 		throw new WorkspaceSnapshotError("blob-store-unsupported", "non-SQLite");
 	const graceSeconds = options.graceSeconds ?? DEFAULT_BLOB_GRACE_SECONDS;
 	if (!Number.isSafeInteger(graceSeconds) || graceSeconds < 0) {
 		throw new WorkspaceConfigError("sdk", "graceSeconds", "a non-negative integer number of seconds");
 	}
-	return { deleted: await store.collectGarbage({ graceSeconds, signal: options.signal }) };
+	let pendingChunkMove: PendingChunkMove | undefined;
+	const deleted = await store.collectGarbage({
+		graceSeconds,
+		signal: options.signal,
+		onPendingChunkMove: (pending) => {
+			pendingChunkMove = pending;
+		},
+	});
+	return pendingChunkMove ? { deleted, pendingChunkMove } : { deleted };
 }
 
-export type { SnapshotCollectionOutcome, SnapshotCollectionSkipReason };
+export type { PendingChunkMove, SnapshotCollectionOutcome, SnapshotCollectionSkipReason };
 
 export interface ScheduleSnapshotCollectionOptions {
 	/**
@@ -187,7 +196,11 @@ async function collectIfDue(
 		phase = "index";
 		await store.completeIndex({ holder, pace, signal });
 		phase = "sweep";
+		let pendingChunkMove: PendingChunkMove | undefined;
 		await store.sweep({
+			onPendingChunkMove: (pending) => {
+				pendingChunkMove = pending;
+			},
 			graceSeconds: settings.graceSeconds,
 			holder,
 			pace,
@@ -196,7 +209,7 @@ async function collectIfDue(
 		});
 		phase = "record";
 		await store.recordCollection(holder, { deleted: deleted.length, errorCode: null }, pace);
-		return { status: "collected", deleted };
+		return pendingChunkMove ? { status: "collected", deleted, pendingChunkMove } : { status: "collected", deleted };
 	} catch (cause) {
 		if (cause instanceof StoreClosedError) return { status: "interrupted", deleted };
 		const error = new WorkspaceCollectionError(
