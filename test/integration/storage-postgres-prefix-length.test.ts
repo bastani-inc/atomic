@@ -6,8 +6,10 @@ import { postgresDialect } from "../../packages/coding-agent/src/core/storage/di
 import {
 	POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
 	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
+	POSTGRES_POOL_SESSION_PREFIX,
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 } from "../../packages/coding-agent/src/core/storage/prefix.js";
+import { ensureForkStagingTable } from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
@@ -93,6 +95,10 @@ const INTERCOM_STORES = [
 async function openEveryStore(scope: PostgresScope, prefix: string): Promise<void> {
 	const database = await scope.open();
 	await (await SqlSessionStore.open(database, { prefix })).close();
+	// The fork staging table, which the first full-session clone from an unproven handle creates (#5594), for the
+	// sessions and for the pool's sessions.
+	for (const sessions of [prefix, `${prefix}${POSTGRES_POOL_SESSION_PREFIX}`])
+		await ensureForkStagingTable(database, postgresDialect, `${sessions}session_fork_staging`);
 	const journal = await SqlRunJournal.open(database, { prefix });
 	try {
 		// The worker pool's stores, which live beside the run journal (#4793).

@@ -118,6 +118,12 @@ export const SESSION_TABLES = Object.freeze({
 	entryChunks: "entry_chunks",
 });
 
+/**
+ * The staging table of full-session clones from a handle this store cannot prove to be its own connection (#5594):
+ * `<prefix>session_fork_staging`, created by the first such clone, never by an open, and not part of the sessions schema.
+ */
+const SESSION_FORK_STAGING_TABLES = Object.freeze({ forkStaging: "fork_staging" });
+
 /** The schema domain, in the prefix's migration ledger, of the table of open sessions (#4971). */
 export const SESSION_PRESENCE_DOMAIN = "session-presence";
 export const SESSION_PRESENCE_TABLES = Object.freeze({ open: "open" });
@@ -403,6 +409,7 @@ export class SqlSessionStore implements SessionStore {
 		string,
 		{ readonly revision: string; readonly index: SessionResumeIndex }
 	>();
+	private readonly forkStagingTable: string;
 
 	private constructor(
 		database: SqliteDatabase,
@@ -425,6 +432,7 @@ export class SqlSessionStore implements SessionStore {
 		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;
+		this.forkStagingTable = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, prefix).forkStaging;
 	}
 
 	/** Bind an existing transcript for the storage search command. No schema setup, markers or search index. */
@@ -603,7 +611,21 @@ export class SqlSessionStore implements SessionStore {
 			await entryByteLengthOf(database),
 		);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
+		if (database.readOnly !== true) await store.cleanupForkStaging();
 		return store;
+	}
+
+	/**
+	 * Removes, in a bounded number of short transactions, the staged rows of clones that stopped mid-copy and whose lease
+	 * lapsed (#5594). Housekeeping: nothing reads those rows, so a failure leaves them to a later open or clone.
+	 */
+	private async cleanupForkStaging(): Promise<void> {
+		try {
+			const probe = this.dialect.tableExists(this.forkStagingTable);
+			if ((await this.database.get(probe.sql, ...probe.params)) === undefined) return;
+			const { cleanupForkStaging, FORK_STAGING_OPEN_CLEANUPS } = await import("./fork-staging.js");
+			await cleanupForkStaging(this.database, this.dialect, this.forkStagingTable, FORK_STAGING_OPEN_CLEANUPS);
+		} catch {}
 	}
 
 	/**
@@ -742,6 +764,90 @@ export class SqlSessionStore implements SessionStore {
 				if (!(await this.copyForkBlob(tx, source.sessionId, header.id, hash))) remainingBlobs.push(hash);
 			return { lastSeq: entries.length, epoch, remainingBlobs };
 		}, SESSION_TRANSACTION);
+	}
+
+	/**
+	 * Clone a complete session, as `create` with every source entry and blob would, from a store on a handle this one
+	 * cannot prove to be its own connection (#5594). The source is read a page at a time into the staging table, never
+	 * while a transaction of this store is open, and the child is published in one transaction: see `fork-staging.ts`.
+	 * `remainingBlobs` names the blobs left to copy with `copySessionBlobs`: those the source no longer holds.
+	 */
+	async createStagedFork(
+		header: SessionRecordHeader,
+		stream: SessionForkStream,
+		source: ForkArchiveSource,
+	): Promise<SessionWriteResult & { readonly remainingBlobs: readonly string[] }> {
+		this.assertOpen();
+		validateSessionHeader(header);
+		const { createStagedFork } = await import("./fork-staging.js");
+		return createStagedFork(this.forkStagingTarget(), header, stream, source);
+	}
+
+	private forkStagingTarget(): import("./fork-staging.js").ForkStagingTarget {
+		return {
+			database: this.database,
+			dialect: this.dialect,
+			table: this.forkStagingTable,
+			tables: this.tables,
+			legacyBlobData: this.legacyBlobData,
+			entryChunkBytes: SESSION_ENTRY_CHUNK_BYTES,
+			blobChunkBytes: SESSION_BLOB_CHUNK_BYTES,
+			unchunkedSchemaVersion: SESSION_SCHEMA_VERSION_UNCHUNKED,
+			chunkedSchemaVersion: SESSION_SCHEMA_VERSION,
+			ownsBlobs:
+				this.getBlob === SqlSessionStore.prototype.getBlob && this.putBlob === SqlSessionStore.prototype.putBlob,
+			transaction: (body) => this.transaction(body, SESSION_TRANSACTION),
+			saveSummary: (tx, header, lastSeq, summary, index) =>
+				this.saveSummary(tx, header.id, { header, entries: [], lastSeq }, summary, index),
+			rebuildResume: async (sessionId) => {
+				await this.prepareResume(sessionId);
+			},
+			storedEntry,
+			encode: (value) => this.encode(value),
+			sourceEntryChunks: (store) =>
+				store instanceof SqlSessionStore && store.readEntryChunk === SqlSessionStore.prototype.readEntryChunk
+					? (reference) => store.readStoredChunks(reference)
+					: undefined,
+			sourceBlobParts: (store) =>
+				store instanceof SqlSessionStore && store.getBlob === SqlSessionStore.prototype.getBlob
+					? (sessionId, hash, index) => store.readBlobPart(sessionId, hash, index)
+					: undefined,
+		};
+	}
+
+	/** How many chunks the entry `reference` names is stored in, 0 when it is stored whole, in its generation. */
+	private async readStoredChunks(reference: OversizedSessionEntry): Promise<number> {
+		this.assertOpen();
+		return this.transaction(async (tx) => {
+			const { sessionId, epoch, seq } = reference;
+			const head = await this.historyHead(tx, sessionId);
+			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
+			const row = await tx.get<SqliteRow & { chunks: number }>(
+				`SELECT chunks FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+				sessionId,
+				seq,
+			);
+			if (!row) throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
+			return Number(row.chunks);
+		}, SESSION_TRANSACTION);
+	}
+
+	/** One stored row of a blob, so a staged clone holds one chunk at a time; `chunks` -1 is the legacy layout. */
+	private async readBlobPart(
+		sessionId: string,
+		hash: string,
+		index: number,
+	): Promise<{ readonly bytes: number; readonly chunks: number; readonly data?: Uint8Array } | undefined> {
+		this.assertOpen();
+		const row = await this.database.get<SqliteRow & { bytes: number; chunks: number; data: Uint8Array | null }>(
+			`SELECT b.bytes, b.chunks, c.data FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
+				ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = ? WHERE b.session_id = ? AND b.hash = ?`,
+			index,
+			sessionId,
+			hash,
+		);
+		if (row === undefined) return undefined;
+		return { bytes: Number(row.bytes), chunks: Number(row.chunks), ...(row.data == null ? {} : { data: row.data }) };
 	}
 
 	private async copyForkBlob(tx: SqliteExecutor, sessionId: string, childId: string, hash: string): Promise<boolean> {
