@@ -16,6 +16,7 @@ export function subagentLaunchCard(
 	cwd: string,
 	args: SubagentParamsLike,
 	host?: AgentTaskHost,
+	sessionId?: string,
 ): ToolExecutionComponent {
 	initTheme("dark");
 	const definition: ToolDefinition<typeof SubagentParams, Details, SubagentResultRenderState> = {
@@ -34,6 +35,7 @@ export function subagentLaunchCard(
 		"elapsed-card",
 		args,
 		{
+			sessionId,
 			getTaskRecord: (id) => host?.taskRecords().find((task) => task.ref.taskId === id),
 		},
 		definition,

@@ -82,6 +82,11 @@ export type TaskCompletionNotice = {
 	requestedModel?: string;
 	/** The notice's line; notices saved by earlier versions lack it and show their title. */
 	line?: TaskNoticeLine;
+	/**
+	 * The operation that launched the task, such as a subagent's child id. A later process numbers its tasks from the
+	 * start again, so the task id alone can name another task; this names the one the notice is about.
+	 */
+	launchId?: string;
 };
 
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
@@ -151,7 +156,7 @@ export function ranOnModelLine(
 export function taskCompletionNotice(
 	envelope: TaskCompletionEnvelope,
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking"> &
-		Partial<Pick<TaskRecord, "requestedModel" | "metrics">>,
+		Partial<Pick<TaskRecord, "requestedModel" | "metrics" | "launchOperationId">>,
 	output?: string,
 ): TaskCompletionNotice {
 	const exitCode =
@@ -171,6 +176,7 @@ export function taskCompletionNotice(
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
 		line: taskNoticeLine(envelope, task),
+		...(task?.launchOperationId === undefined ? {} : { launchId: task.launchOperationId }),
 	};
 }
 

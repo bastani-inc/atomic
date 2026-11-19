@@ -77,25 +77,22 @@ test("the runtime notebook edit wrapper preserves canonical tool blocks (#5350)"
 	}
 });
 
-test("codemode keeps its header on one row without flattening the full script (#5350)", () => {
+test("codemode shows the script's first lines in its call and every line expanded, one source line per row (#5350)", () => {
 	const code = [
 		"const template = ```` value`;",
 		...Array.from({ length: 18 }, (_, i) => `console.log("line ${i}");`),
 	].join("\n");
 	for (const width of [24, 80, 160]) {
 		const ctx = context({ code });
-		const call = codemodeRenderers.renderCall!({ code }, theme, ctx);
-		const rows = plain(call, width);
-		assert.equal(rows.length, 1);
-		assert.match(rows[0], /^codemode\(.*\)$/u);
-		assert.doesNotMatch(rows[0], /line 17/u);
-		const expanded = codemodeRenderers.renderResult!(
-			{ content: [], details: { calls: [] } },
-			{ expanded: true, isPartial: false },
-			theme,
-			{ ...ctx, expanded: true },
-		);
-		const body = plain(expanded, width).join("\n");
+		const rows = plain(codemodeRenderers.renderCall!({ code }, theme, ctx), width);
+		assert.deepEqual([rows[0], rows.at(-1)], ["codemode(", ")"]);
+		assert.ok(rows.length <= 13, `collapsed scripts stay bounded: ${rows.length}`);
+		assert.match(rows[1] ?? "", /^ {2}const template/u);
+		assert.match(rows.at(-2) ?? "", width >= 80 ? /^ {2}… \+9 lines \(ctrl\+e to expand\)$/u : /^ {2}… \+9 lines/u);
+		for (const row of rows) assert.ok(visibleWidth(row) <= width, `${width}: ${row}`);
+		assert.doesNotMatch(rows.join("\n"), /line 17/u);
+		const expanded = plain(codemodeRenderers.renderCall!({ code }, theme, { ...ctx, expanded: true }), width);
+		const body = expanded.join("\n");
 		assert.match(body, /line\s+17/u);
 		assert.match(body, /````/u);
 		assert.doesNotMatch(body, /Took|Elapsed/u);

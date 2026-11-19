@@ -134,7 +134,7 @@ export async function prepareExecutionContext(input: {
 	const parallelAgentConfigs = intercomBridge.active
 		? resolvedTaskAgents?.map((agent) => applyIntercomBridgeToAgent(agent, intercomBridge))
 		: resolvedTaskAgents;
-	const runId = randomUUID().slice(0, 8);
+	const runId = randomUUID();
 	const shareEnabled = effectiveParams.share === true;
 	const hasTasks = (effectiveParams.tasks?.length ?? 0) > 0;
 	const hasSingle = !hasTasks && Boolean(effectiveParams.agent);

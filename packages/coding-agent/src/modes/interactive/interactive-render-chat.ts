@@ -9,7 +9,7 @@ import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { hasTaskTranscript, loadTaskTranscript, noticeTranscriptQuery } from "../../core/tasks/saved-transcripts.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
@@ -453,6 +453,7 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 	this: InteractiveModeBase,
 ): ChatMessageRenderOptions {
 	const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime;
+	const sessionId = isolated ? undefined : this.session.sessionId;
 	return {
 		ui: this.ui,
 		cwd: this.sessionManager.getCwd(),
@@ -466,19 +467,16 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 		renderLatex: this.settingsManager.getLatexRenderingEnabled(),
 		markdownTransformers: this.getMarkdownTransformers(),
 		getToolDefinition: isolated ? undefined : (toolName) => this.getRegisteredToolDefinition(toolName),
+		sessionId,
 		getTaskRecord: isolated ? undefined : (taskId) => getOwnerTaskStore(this.session)?.getTask(taskId),
 		hasTaskTranscript: isolated
 			? undefined
-			: (taskId) => {
-					const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
-					return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
-				},
+			: (taskId, notice) =>
+					hasTaskTranscript(getOwnerTaskStore(this.session), noticeTranscriptQuery(taskId, notice, sessionId)),
 		loadTaskTranscript: isolated
 			? undefined
-			: async (taskId) => {
-					const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
-					return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
-				},
+			: (taskId, notice) =>
+					loadTaskTranscript(getOwnerTaskStore(this.session), noticeTranscriptQuery(taskId, notice, sessionId)),
 		getCustomMessageRenderer: isolated
 			? undefined
 			: (customType) => this.session.extensionRunner.getMessageRenderer(customType),
@@ -604,6 +602,8 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 		}
 		case "custom": {
 			if (message.display) {
+				const sessionId =
+					this.runtimeHost instanceof IsolatedInteractiveRuntime ? undefined : this.session.sessionId;
 				const component =
 					this.runtimeHost instanceof IsolatedInteractiveRuntime
 						? new RemoteCustomMessageComponent(
@@ -622,14 +622,16 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								undefined,
 								undefined,
 								{
-									hasTranscript: (taskId) => {
-										const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
-										return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
-									},
-									loadTranscript: async (taskId) => {
-										const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
-										return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
-									},
+									hasTranscript: (taskId, notice) =>
+										hasTaskTranscript(
+											getOwnerTaskStore(this.session),
+											noticeTranscriptQuery(taskId, notice, sessionId),
+										),
+									loadTranscript: (taskId, notice) =>
+										loadTaskTranscript(
+											getOwnerTaskStore(this.session),
+											noticeTranscriptQuery(taskId, notice, sessionId),
+										),
 									getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
 									cwd: this.sessionManager.getCwd(),
 									requestRender: () => this.ui.requestRender(),

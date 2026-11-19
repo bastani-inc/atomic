@@ -420,7 +420,7 @@ test.each(["one failure event", "a multi-frame reservation"] as const)(
 				Object.defineProperty(bulk, "intercomTarget", countedTarget);
 				observeSubagentChildRecord(bulk);
 				// Count reads from either the index or the full record, including repeated passes for later frames.
-				const indexed = subagentChildIndexEntry(bulk.childId);
+				const indexed = subagentChildIndexEntry(ownerSessionId, bulk.childId);
 				assert.ok(indexed);
 				Object.defineProperty(indexed, "intercomTarget", countedTarget);
 				names.push(name);

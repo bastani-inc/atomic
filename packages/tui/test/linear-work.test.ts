@@ -86,6 +86,15 @@ describe("text measurement does work linear in its input", () => {
 		});
 	});
 
+	it("truncateToWidth reads only the start of printable text that runs past the width", () => {
+		const width = 80;
+		const work = (length: number) => measureStringWork(() => truncateToWidth("x".repeat(length), width)).work;
+		const short = work(2_000);
+		const long = work(2_000_000);
+		assert.equal(long, short, `2,000,000 characters: ${long} string work, 2,000 characters: ${short}`);
+		assert.ok(short <= 4 * (width + 1), `${short} string work for a width of ${width}`);
+	});
+
 	it("wrapTextWithAnsi reads each character a bounded number of times", () => {
 		assertLinear(WRAP_SCANS, (make, length) => {
 			const text = make(length);

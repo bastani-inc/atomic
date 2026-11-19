@@ -232,7 +232,7 @@ test(
 		const saved = readSubagentChildRecords(at.sessionManager.getEntries(), ownerSessionId);
 		const entryBytesByTaskIdLength = new Map<number, Set<number>>();
 		for (const childId of childIds) {
-			const entry = subagentChildIndexEntry(childId);
+			const entry = subagentChildIndexEntry(ownerSessionId, childId);
 			assert.ok(entry?.taskId);
 			assert.equal(entry.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
 			assert.ok(entry.entryId, "the entry points at the session entry that holds the child's latest record");
@@ -252,8 +252,8 @@ test(
 		const small = `released-${padded(10 * LARGE_HISTORY_EVERY + 1)}:0`;
 		const bytes = (value: object | undefined) => v8.serialize(value).byteLength;
 		assert.equal(
-			bytes(subagentChildIndexEntry(large)),
-			bytes(subagentChildIndexEntry(small)),
+			bytes(subagentChildIndexEntry(ownerSessionId, large)),
+			bytes(subagentChildIndexEntry(ownerSessionId, small)),
 			"a child with a large task, held messages, held results and more saves has an entry the size of one without",
 		);
 		assert.ok(
@@ -261,7 +261,7 @@ test(
 				LARGE_PAYLOAD_CHARS * 3,
 			"its history is in its session's records, not in the index",
 		);
-		const last = subagentChildIndexEntry(childIds.at(-1) ?? "");
+		const last = subagentChildIndexEntry(ownerSessionId, childIds.at(-1) ?? "");
 		assertPlainData(last);
 		assert.deepEqual(structuredClone(last), last);
 	},
