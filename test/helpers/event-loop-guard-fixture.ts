@@ -5,9 +5,7 @@ import { type ChatRequest, messageText, type ScriptedReply } from "./scripted-ch
 
 export const STREAM_MARKER = "GUARD-STREAM";
 export const SUBAGENTS_MARKER = "GUARD-SUBAGENTS";
-export const WORKFLOW_MARKER = "GUARD-WORKFLOW";
 const CHILD_MARKER = "GUARD-CHILD";
-const STAGE_MARKER = "GUARD-STAGE";
 const PROVIDER = "guard-loopback";
 const MODEL = "guard-model";
 
@@ -25,7 +23,7 @@ function longMarkdown(sections: number): string {
 }
 
 export type GuardReply = ScriptedReply & {
-	readonly label: "stream" | "parent" | "parent-final" | "child" | "stage" | "other";
+	readonly label: "stream" | "parent" | "parent-final" | "child" | "other";
 };
 
 export function guardReply(request: ChatRequest): GuardReply {
@@ -34,18 +32,6 @@ export function guardReply(request: ChatRequest): GuardReply {
 	const prompt = messageText(lastUser);
 	if (last?.role === "tool" && prompt.includes(SUBAGENTS_MARKER)) {
 		return { label: "parent-final", text: `${SUBAGENTS_MARKER}-DONE.`, chunks: 4, chunkDelayMs: 20 };
-	}
-	if (last?.role === "tool" && prompt.includes(WORKFLOW_MARKER)) {
-		return { label: "other", text: `${WORKFLOW_MARKER}-STARTED.`, chunks: 1, chunkDelayMs: 0 };
-	}
-	if (prompt.includes(WORKFLOW_MARKER)) {
-		return {
-			label: "other",
-			text: "Running the workflow.",
-			chunks: 1,
-			chunkDelayMs: 0,
-			toolCalls: [{ name: "workflow", arguments: { action: "run", workflow: GUARD_WORKFLOW, inputs: {} } }],
-		};
 	}
 	if (prompt.includes(STREAM_MARKER)) {
 		return { label: "stream", text: `${longMarkdown(24)}\n\n${STREAM_MARKER}-END`, chunks: 300, chunkDelayMs: 20 };
@@ -72,32 +58,11 @@ export function guardReply(request: ChatRequest): GuardReply {
 		};
 	}
 	if (prompt.includes(CHILD_MARKER)) return { label: "child", text: longMarkdown(6), chunks: 120, chunkDelayMs: 20 };
-	if (prompt.includes(STAGE_MARKER)) return { label: "stage", text: longMarkdown(6), chunks: 120, chunkDelayMs: 20 };
 	return { label: "other", text: "ok", chunks: 1, chunkDelayMs: 0 };
 }
 
-export const GUARD_WORKFLOW = "event-loop-guard";
-export const GUARD_WORKFLOW_STAGES = 5;
-
-const WORKFLOW_SOURCE = `import { workflow } from "@bastani/atomic/workflows";
-
-export default workflow({
-	name: "${GUARD_WORKFLOW}",
-	description: "Four parallel stages and a summary, for the event-loop guard.",
-	inputs: {},
-	outputs: {},
-	run: async (ctx) => {
-		await ctx.parallel(
-			[1, 2, 3, 4].map((index) => ({ name: \`branch-\${index}\`, prompt: \`${STAGE_MARKER} branch \${index}\`, context: "fresh" })),
-		);
-		await ctx.task("summary", { prompt: "${STAGE_MARKER} summary", context: "fresh" });
-		return {};
-	},
-});
-`;
-
 export function prepareAgentDir(agentDir: string, baseUrl: string): void {
-	mkdirSync(join(agentDir, "workflows"), { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
 	const model = {
 		id: MODEL,
 		name: MODEL,
@@ -120,7 +85,6 @@ export function prepareAgentDir(agentDir: string, baseUrl: string): void {
 			sessionSummary: { enabled: false },
 		}),
 	);
-	writeFileSync(join(agentDir, `workflows/${GUARD_WORKFLOW}.ts`), WORKFLOW_SOURCE);
 }
 
 export function prepareInstalledPackage(packageRoot: string, target: string): void {

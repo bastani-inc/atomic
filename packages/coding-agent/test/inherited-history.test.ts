@@ -18,7 +18,7 @@ import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
 import type { WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
-const BUILTINS_OFF = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const BUILTINS_OFF = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const STARTED_AT = Date.parse("2026-10-01T00:00:00.000Z");
 
 const sessions: AgentSession[] = [];

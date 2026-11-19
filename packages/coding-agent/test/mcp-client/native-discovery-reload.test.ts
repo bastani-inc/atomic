@@ -61,7 +61,7 @@ it.each([
 			resourceLoader,
 			model: getModel("openai", "gpt-6.1-sol-fast"),
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		});
 		try {
 			await session.bindExtensions({
@@ -136,7 +136,7 @@ it("candidate tool inspection and activation honor permissions and remain isolat
 		resourceLoader,
 		model: getModel("openai", "gpt-6.1-sol-fast"),
 		sessionManager: SessionManager.inMemory(cwd),
-		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		tools: ["read", "candidate_tool", "excluded_tool", "hidden_tool"],
 		excludedTools: ["excluded_tool"],
 	});
