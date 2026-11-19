@@ -14,6 +14,7 @@ import {
 	SNAPSHOT_INDEX_BACKFILL_BATCH,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { createSession, messageEntry, syntheticSnapshot } from "../helpers/snapshot-reference-index.js";
 
 /** The snapshot blob store of Atomic 0.9.87, vendored unmodified (test/fixtures/snapshot-store-0.9.87/README.md). */
@@ -510,5 +511,116 @@ describe("0.9.87 and a released build that indexes degraded pins on one store (#
 
 		assert.equal(counted.transactions, 0, "this build trusts the index 0.9.89 built");
 		assert.equal((await store.collectGarbage({ graceSeconds: 0 })).includes(hash), false);
+	});
+});
+
+/** The session triggers whose SQL 0.9.87 and 0.9.89 write alike: losing one leaves the reference trigger in place. */
+const SHARED_TRIGGERS = ["session_entries_snapshot_links", "session_entries_snapshot_refs_delete"] as const;
+
+const drivers = {
+	"node:sqlite": open,
+	libSQL: async () => {
+		const database = await openLibsqlDatabase({ url: pathToFileURL(join(directory, "store.sqlite")).href });
+		databases.push(database);
+		return database;
+	},
+};
+
+/**
+ * A session whose first entries hold a degraded pin, followed by more entries than one backfill batch indexes: this
+ * build's first batch indexes the pin. Resolves with the bundle only the pin keeps.
+ */
+async function pinnedThenMore(database: SqliteDatabase) {
+	const created = await SqlSessionStore.open(database);
+	const start = messageEntry("pinned start") as SessionEntry;
+	await createSession(created, "pinned", [start]);
+	const pinned = await appendDegradedRestore(created, "pinned", start.id, 1);
+	await createSession(created, "newer", chain("newer", SNAPSHOT_INDEX_BACKFILL_BATCH + 20));
+	return pinned;
+}
+
+describe("0.9.87 installing again one session trigger that every build writes alike (#5558)", () => {
+	for (const [driver, openWith] of Object.entries(drivers)) {
+		for (const lost of SHARED_TRIGGERS) {
+			test(`on ${driver}, 0.9.87 installing ${lost} again during this build's backfill does not leave the entries this build indexed indexed its way (#5558)`, async () => {
+				const database = await openWith();
+				const { hash, bundle } = await pinnedThenMore(database);
+				// This build installs its index over the entries, indexes a first batch, which holds the pin, and exits.
+				await dropSessionIndex(database);
+				const upgraded = await SqlSnapshotBlobStore.open(database);
+				await stopAfterFirstBatch(upgraded);
+				assert.equal(await indexedPin(database), "S-lacked", "this build indexed the pin");
+				// The table loses that one trigger. 0.9.87 opens first: it empties the index, installs the trigger again, keeps
+				// this build's other triggers, and indexes every entry its way.
+				await database.exec(`DROP TRIGGER ${lost}`);
+				await (await release0987.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 1_000_000 });
+				assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+				const deleted = await upgraded.collectGarbage({ graceSeconds: 0 });
+
+				assert.equal(deleted.includes(hash), false, "the bundle the pin keeps was collected");
+				assert.deepEqual(await upgraded.getBlob(hash), bundle);
+				assert.equal(await indexedPin(database), "S-lacked", "this build indexed the pin again");
+			});
+		}
+	}
+
+	test("0.9.87 installing a lost trigger again and indexing part of the entries during this build's backfill does not leave them indexed its way (#5558)", async () => {
+		const database = await open();
+		const { hash, bundle } = await pinnedThenMore(database);
+		await dropSessionIndex(database);
+		const upgraded = await SqlSnapshotBlobStore.open(database);
+		await stopAfterFirstBatch(upgraded);
+		await database.exec("DROP TRIGGER session_entries_snapshot_links");
+		// 0.9.87 installs the trigger again, indexes its first batch, which holds the pin, and exits.
+		const controller = new AbortController();
+		const stopping: SqliteDatabase = {
+			exec: (sql) => database.exec(sql),
+			run: (sql, ...params) => database.run(sql, ...params),
+			get: (sql, ...params) => database.get(sql, ...params),
+			all: (sql, ...params) => database.all(sql, ...params),
+			descriptor: database.descriptor,
+			close: () => database.close(),
+			transaction: async (callback, options) => {
+				const result = await database.transaction(callback, options);
+				if ((await entriesProgress(database)).backfilled > 0) controller.abort(new Error("Atomic 0.9.87 exits"));
+				return result;
+			},
+		};
+		await assert.rejects(
+			(await release0987.SqlSnapshotBlobStore.open(stopping)).collectGarbage({
+				graceSeconds: 1_000_000,
+				signal: controller.signal,
+			} as { graceSeconds: number }),
+		);
+		const progress = await entriesProgress(database);
+		assert.ok(progress.backfilled > 0 && progress.backfilled < progress.watermark, "0.9.87 indexed part of it");
+		assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+		const deleted = await upgraded.collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "the bundle the pin keeps was collected");
+		assert.deepEqual(await upgraded.getBlob(hash), bundle);
+		assert.equal(await indexedPin(database), "S-lacked");
+	});
+
+	test("0.9.87 installing a lost trigger again over this build's finished index and indexing it its way does not leave it trusted (#5558)", async () => {
+		const database = await open();
+		const { hash, bundle } = await pinnedThenMore(database);
+		await dropSessionIndex(database);
+		const upgraded = await SqlSnapshotBlobStore.open(database);
+		await upgraded.completeIndex();
+		assert.equal(await indexedPin(database), "S-lacked", "this build indexed the pin");
+		// No entry is written after the index is finished. The table loses one trigger, and 0.9.87 installs it again
+		// and indexes every entry its way.
+		await database.exec("DROP TRIGGER session_entries_snapshot_refs_delete");
+		await (await release0987.SqlSnapshotBlobStore.open(database)).collectGarbage({ graceSeconds: 1_000_000 });
+		assert.equal(await indexedPin(database), null, "0.9.87 indexed the entry without its pin");
+
+		const deleted = await upgraded.collectGarbage({ graceSeconds: 0 });
+
+		assert.equal(deleted.includes(hash), false, "the bundle the pin keeps was collected");
+		assert.deepEqual(await upgraded.getBlob(hash), bundle);
+		assert.equal(await indexedPin(database), "S-lacked");
 	});
 });
