@@ -257,7 +257,7 @@ describe("buildSystemPrompt", () => {
 	test("routes bundled extension questions to readable guides under the docs root", () => {
 		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
 		assert.ok(prompt.includes(`Additional docs: ${getDocsPath()}`));
-		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "workflows"]) {
+		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "orchestration"]) {
 			assert.ok(prompt.includes(`docs/${topic}.md`), `Missing documentation route for ${topic}`);
 			assert.match(readFileSync(join(getDocsPath(), `${topic}.md`), "utf8"), /^# /m);
 		}
@@ -277,7 +277,7 @@ describe("buildSystemPrompt", () => {
 		);
 		assert.match(
 			prompt,
-			/When workflow TypeScript code owns the sequence and postcondition, call the CLI from inside ctx\.tool, one process per command, parsing its JSON envelope, forwarding the signal, with a finite timeoutMs/,
+			/When a script owns the sequence and postcondition, call the CLI from the script, parse its JSON response, and use a finite timeout/,
 		);
 		assert.match(prompt, /make one bounded `npm install -g agent-desktop` attempt and report its side effects/);
 		assert.match(prompt, /never run `npx skills add` for it or copy a skill into other agent directories/);
