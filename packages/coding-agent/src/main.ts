@@ -47,6 +47,7 @@ import type { AgentSession } from "./core/agent-session.js";
 import type { CreateAgentSessionRuntimeFactory } from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
+	type CreateAgentSessionServicesOptions,
 	createUnstartedAgentSessionFromServices,
 	prepareAgentSessionServices,
 } from "./core/agent-session-services.ts";
@@ -72,7 +73,7 @@ import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
 import { recordResumeTimings } from "./core/resume/timings.ts";
 import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
-import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
+import { isSessionQuitting, ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "./core/session-manager-errors.js";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
@@ -892,7 +893,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			if (parsed.name !== undefined) await sessionManager.appendSessionInfo(parsed.name.trim());
 			storageFinalized = true;
 		};
-		const completeServices = await prepareAgentSessionServices({
+		const serviceOptions: CreateAgentSessionServicesOptions = {
 			cwd,
 			agentDir,
 			settingsManager: runtimeSettingsManager,
@@ -978,7 +979,11 @@ export async function main(argv: string[], options?: MainOptions) {
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories: isolateInteractiveHost ? undefined : extensionFactories,
 			},
-		});
+		};
+		const completeServices = await prepareAgentSessionServices(
+			serviceOptions,
+			deferStartupTrust ? () => startupSession !== undefined && isSessionQuitting(startupSession) : undefined,
+		);
 		return async () => {
 			if (migrateAfterTrust) await runMigrationsAsync(cwd, { projectTrusted: true });
 			const services = await completeServices();
