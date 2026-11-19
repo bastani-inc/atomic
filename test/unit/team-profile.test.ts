@@ -57,9 +57,7 @@ const packageRoot = resolve(moduleDir(import.meta.url), "../../packages/storage-
 const VARIABLES = [
 	"ATOMIC_STORAGE",
 	"ATOMIC_SESSIONS_STORAGE",
-	"ATOMIC_WORKFLOWS_JOURNAL",
 	"ATOMIC_CODING_AGENT_SESSION_DIR",
-	"ATOMIC_WORKFLOW_JOURNAL_PATH",
 	"ATOMIC_PROFILE",
 	"ATOMIC_TEAM_URL",
 	"ATOMIC_TEAM_TOKEN",
@@ -112,8 +110,11 @@ function rejects(
 }
 
 describe("ATOMIC_PROFILE=ci (#4320)", () => {
-	test("selects the team database for sessions, workflow runs and Intercom without writing settings (#4320)", async () => {
+	test("selects the team database for sessions and Intercom without writing settings (#4320)", async () => {
 		ciProfile({ ATOMIC_TEAM_URL: TEAM_URL, ATOMIC_TEAM_TOKEN: "ci-secret-token", ATOMIC_TEAM_PREFIX: "team_" });
+		// The workflow journal variables of earlier releases select nothing, so they never make the profile custom.
+		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", JSON.stringify({ dir: "runs" }));
+		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", join(root, "legacy.sqlite"));
 		const expected = {
 			adapter: LIBSQL_ADAPTER_PACKAGE,
 			options: { url: TEAM_URL },
@@ -128,7 +129,7 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 			prefix: "team_",
 		};
 		validateProcessStorage(agentDir);
-		for (const domain of ["sessions", "journal"] as const) {
+		for (const domain of ["sessions", "shared"] as const) {
 			assert.deepEqual(selectProcessStorage(domain, agentDir, project), {
 				selection,
 				source: "env",
@@ -147,14 +148,12 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 			status.domains.map((domain) => [domain.domain, domain.source, domain.selection]),
 			[
 				["sessions", "ATOMIC_PROFILE=ci", `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`],
-				["journal", "ATOMIC_PROFILE=ci", `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`],
 				["intercom", "ATOMIC_PROFILE=ci", `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`],
 			],
 		);
 		assert.deepEqual(await getTeamProfile({ agentDir, cwd: project }), {
 			profile: "ci",
 			sessions: `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`,
-			journal: `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`,
 			intercom: `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`,
 		});
 		assert.deepEqual(readdirSync(agentDir), []);
@@ -218,12 +217,12 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 
 		ciProfile({ ATOMIC_TEAM_URL: TEAM_URL, ATOMIC_TEAM_TOKEN: "t" });
 		vi.stubEnv("ATOMIC_STORAGE", JSON.stringify({ path: join(root, "explicit.sqlite") }));
-		assert.equal(selectProcessStorage("journal", agentDir)?.field, "ATOMIC_STORAGE");
+		assert.equal(selectProcessStorage("shared", agentDir)?.field, "ATOMIC_STORAGE");
 		assert.deepEqual(JSON.parse(processSharedStorageSelection() ?? "null"), { path: join(root, "explicit.sqlite") });
 		vi.stubEnv("ATOMIC_STORAGE", "");
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify({ dir: join(root, "sessions") }));
 		assert.equal(selectProcessStorage("sessions", agentDir)?.field, "ATOMIC_SESSIONS_STORAGE");
-		assert.equal(selectProcessStorage("journal", agentDir)?.field, "ATOMIC_PROFILE");
+		assert.equal(selectProcessStorage("shared", agentDir)?.field, "ATOMIC_PROFILE");
 		assert.equal((await getTeamProfile({ agentDir, cwd: project })).profile, "custom");
 	});
 
@@ -456,7 +455,6 @@ describe("teamProfileSelection (#4320)", () => {
 
 	test("a missing adapter fails createAgentSession before any store opens (#4320)", async () => {
 		const opens = vi.spyOn(StorageProvider.prototype, "openSessionStore");
-		const loads = vi.spyOn(StorageProvider.prototype, "openRunJournal");
 		const attempt = (options: CreateAgentSessionOptions) =>
 			createAgentSession({ cwd: project, agentDir, ...options }).then(
 				() => assert.fail("created a session without the adapter"),
@@ -478,14 +476,13 @@ describe("teamProfileSelection (#4320)", () => {
 		});
 		assert.ok(isTeamProfileError(fromStorage));
 		assert.match(fromStorage.hint, /^The storage selection opens the team database through it\./);
-		assert.equal(opens.mock.calls.length + loads.mock.calls.length, 0);
+		assert.equal(opens.mock.calls.length, 0);
 		assert.deepEqual(readdirSync(agentDir), []);
 	});
 
 	test("an SDK storage selection that no store uses needs no adapter, while one store using it still does (#4320)", async () => {
 		const storage = teamProfileSelection({ profile: "ci", url: TEAM_URL, token: "t" });
 		const sessionStore = { kind: "memory" } as const;
-		const journal = { memory: true } as const;
 		const adapterFailure = (options: CreateAgentSessionOptions) =>
 			createAgentSession({ cwd: project, agentDir, storage, builtins: NO_BUILTINS, ...options }).then(
 				async ({ session }) => {
@@ -495,10 +492,9 @@ describe("teamProfileSelection (#4320)", () => {
 				(error: Error) => (isTeamProfileError(error) ? error.code : `${error}`),
 			);
 
-		assert.equal(await adapterFailure({ sessionStore, journal }), undefined);
-		assert.equal(await adapterFailure({ sessionManager: SessionManager.inMemory(project), journal }), undefined);
-		assert.equal(await adapterFailure({ sessionStore }), "adapter-not-installed");
-		assert.equal(await adapterFailure({ journal }), "adapter-not-installed");
+		assert.equal(await adapterFailure({ sessionStore }), undefined);
+		assert.equal(await adapterFailure({ sessionManager: SessionManager.inMemory(project) }), undefined);
+		assert.equal(await adapterFailure({}), "adapter-not-installed");
 	});
 
 	test("an in-memory secret reaches the adapter's options, and secret order never changes the connection key (#4320)", async () => {

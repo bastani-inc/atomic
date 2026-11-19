@@ -204,13 +204,13 @@ test("bare adapter package specifiers resolve from the supplied agent directory"
 		`export { default } from ${JSON.stringify(pathToFileURL(join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts")).href)};\n`,
 	);
 	try {
-		const journal = await provider.openSessionStore(
-			{ kind: "adapter", module: "@atomic-test/storage", options: { path: join(root, "runs.sqlite") } },
+		const store = await provider.openSessionStore(
+			{ kind: "adapter", module: "@atomic-test/storage", options: { path: join(root, "sessions.sqlite") } },
 			{ agentDir: root, domain: "sessions" },
 		);
-		await journal.create({ id: "module", version: 4, cwd: root, createdAt: new Date(0).toISOString() }, []);
-		assert.equal((await journal.readHeader("module"))?.id, "module");
-		await journal.close();
+		await store.create({ id: "module", version: 4, cwd: root, createdAt: new Date(0).toISOString() }, []);
+		assert.equal((await store.readHeader("module"))?.id, "module");
+		await store.close();
 	} finally {
 		removeTempDirectory(root);
 	}
@@ -218,7 +218,7 @@ test("bare adapter package specifiers resolve from the supplied agent directory"
 
 test("a schema failure closes its owned database and evicts the failed selection for retry", async () => {
 	const root = makeTempDirectory("storage-retry-");
-	const path = join(root, "runs.sqlite");
+	const path = join(root, "sessions.sqlite");
 	const lifecycle = join(root, "lifecycle.txt");
 	const database = await openNodeSqliteDatabase(path);
 	await database.exec("CREATE TABLE session_meta (schema_version INTEGER); INSERT INTO session_meta VALUES (99)");
@@ -238,9 +238,9 @@ test("a schema failure closes its owned database and evicts the failed selection
 		const repair = await openNodeSqliteDatabase(path);
 		await repair.run("UPDATE session_meta SET schema_version = ?", 1);
 		await repair.close();
-		const journal = await provider.openSessionStore(selection, { agentDir: root, domain: "sessions" });
-		assert.deepEqual(await Array.fromAsync(journal.list({})), []);
-		await journal.close();
+		const store = await provider.openSessionStore(selection, { agentDir: root, domain: "sessions" });
+		assert.deepEqual(await Array.fromAsync(store.list({})), []);
+		await store.close();
 		assert.equal(await readText(lifecycle), "open\nclose\nopen\nclose\n");
 	} finally {
 		removeTempDirectory(root);
@@ -388,7 +388,7 @@ for (const kind of ["memory", "jsonl", "database", "sqlite", "adapter-domain", "
 					assert.ok(error instanceof StorageSchemaVersionError);
 					assert.equal(error.domain, domain);
 					assert.equal(error.found, 99);
-					// Sessions are at version 2 since long entries are stored in chunks (#4954), the journal since large events are (#4965).
+					// Sessions are at version 2 since long entries are stored in chunks (#4954).
 					assert.equal(error.supported, 2);
 					assert.ok(error.cleanupCause instanceof adapter.cleanupErrorType);
 					assert.equal(error.cleanupCause, adapter.cleanupFailure);

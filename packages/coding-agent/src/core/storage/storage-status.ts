@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV_SESSION_DIR, isBunBinary } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
@@ -10,24 +10,14 @@ import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
 import { openAdapterSelectionDatabase } from "./adapter-open.js";
 import type { SqliteDatabase, SqliteRow } from "./database.js";
-import {
-	describeStorageError,
-	JournalShardUnavailableError,
-	type JournalShardUnavailableErrorCode,
-	StorageAdapterLoadError,
-} from "./errors.js";
+import { describeStorageError, StorageAdapterLoadError } from "./errors.js";
 import { defaultSharedStoragePath, storagePathBaseDir, takeStorageAdoptionNotice } from "./file-identity.js";
-import { defaultJournalStoreDirectory } from "./journal-adoption.js";
-import { JOURNAL_CATALOG_FILE } from "./journal-catalog.js";
-import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import {
 	processSharedStorageSelection,
 	processStorageEnvironment,
 	SESSIONS_STORAGE_ENV,
 	STORAGE_ENV,
 	selectProcessStorage,
-	WORKFLOW_JOURNAL_PATH_ENV,
-	WORKFLOWS_JOURNAL_ENV,
 } from "./process-selection.js";
 import {
 	loadStorageAdapter,
@@ -43,75 +33,7 @@ import {
 	TEAM_PROFILE_ENV,
 } from "./selection.js";
 
-/** A shard file the catalog registers that cannot be used: it is gone, or it exists and does not open as a database. */
-async function unavailableShardFiles(
-	shards: readonly { readonly id: number; readonly path: string; readonly kind: "native" | "adopted" }[],
-	directory: string,
-): Promise<JournalStoreStatus["unavailable"]> {
-	const unavailable: JournalStoreStatus["unavailable"][number][] = [];
-	const refused = (
-		shard: { readonly id: number; readonly kind: "native" | "adopted" },
-		path: string,
-		code: JournalShardUnavailableErrorCode,
-		cause?: Error,
-	) => {
-		const error = new JournalShardUnavailableError({
-			code,
-			shardId: shard.id,
-			shardPath: path,
-			...(cause ? { cause } : {}),
-		});
-		const detail = error.fields.detail;
-		unavailable.push({
-			path,
-			kind: shard.kind,
-			code,
-			message: error.message,
-			hint: error.hint,
-			...(typeof detail === "string" ? { detail } : {}),
-		});
-	};
-	for (const shard of shards) {
-		const path = resolve(directory, shard.path);
-		if (!existsSync(path)) {
-			refused(shard, path, "shard-missing");
-			continue;
-		}
-		try {
-			const database = await openNodeSqliteDatabase(path, { readOnly: true });
-			try {
-				await database.get("SELECT count(*) FROM sqlite_master");
-			} finally {
-				await database.close();
-			}
-		} catch (cause) {
-			refused(shard, path, "shard-open-failed", cause as Error);
-		}
-	}
-	return unavailable;
-}
-
-/** What the journal store's catalog lists, read without changing it. */
-async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string): Promise<JournalStoreStatus> {
-	const shards = await catalog.all<SqliteRow & { id: number; path: string; kind: "native" | "adopted" }>(
-		"SELECT id, path, kind FROM catalog_shards ORDER BY id",
-	);
-	const runs = await catalog.get<SqliteRow & { count: number }>("SELECT count(*) AS count FROM catalog_runs");
-	const skipped = await catalog.all<SqliteRow & { path: string; reason: string }>(
-		"SELECT path, COALESCE(reason, 'unknown') AS reason FROM catalog_discovery WHERE outcome = 'skipped' ORDER BY path",
-	);
-	const adopted = shards.filter((shard) => shard.kind === "adopted");
-	return {
-		catalog: join(directory, JOURNAL_CATALOG_FILE),
-		shards: shards.length - adopted.length,
-		adopted: adopted.length,
-		runs: Number(runs!.count),
-		unavailable: await unavailableShardFiles(shards, directory),
-		skipped: skipped.map((record) => ({ path: record.path, reason: record.reason })),
-	};
-}
-
-export type StorageStatusDomain = "sessions" | "journal" | "intercom";
+export type StorageStatusDomain = "sessions" | "intercom";
 
 /** How long one database connectivity check may take, from opening the database to the answer of its `SELECT 1`. */
 export const STORAGE_PROBE_TIMEOUT_MS = 15_000;
@@ -146,30 +68,6 @@ export interface DomainStatus {
 	readonly multiNode?: string;
 	/** Intercom: host names of the brokers live in the shared database, when it could be read. */
 	readonly liveBrokers?: readonly string[];
-	/** Workflow runs in the journal store: its shards, adopted journals and runs, read from its catalog. */
-	readonly journalStore?: JournalStoreStatus;
-}
-
-export interface JournalStoreStatus {
-	readonly catalog: string;
-	/** The store's own shard files. */
-	readonly shards: number;
-	/** Journal files adopted in place. */
-	readonly adopted: number;
-	readonly runs: number;
-	/** Shard files, native or adopted, that no longer exist or cannot be opened; their runs cannot be used. */
-	readonly unavailable: readonly {
-		readonly path: string;
-		readonly kind: "native" | "adopted";
-		readonly code: JournalShardUnavailableErrorCode;
-		/** The typed error's message and hint, as the runtime reports them. */
-		readonly message: string;
-		readonly hint: string;
-		/** The driver's reason, for a file that cannot be opened. */
-		readonly detail?: string;
-	}[];
-	/** Journals the store considered adopting and skipped, with the `JournalAdoptError` code. */
-	readonly skipped: readonly { readonly path: string; readonly reason: string }[];
 }
 
 export interface BrokerStatusSection {
@@ -239,8 +137,6 @@ export function describeStorageSelection(selection: StorageSelection): string {
 				return `PostgreSQL ${server} via ${selection.module}${prefixSuffix(selection.prefix)}`;
 			return `adapter ${selection.module}${prefixSuffix(selection.prefix)}`;
 		}
-		case "sharded":
-			return `journal store ${selection.dir}`;
 	}
 }
 
@@ -287,18 +183,6 @@ async function probeSelection(
 		};
 	}
 	if (selection.kind === "database") return { connection: { status: "skipped", detail: "caller-owned database" } };
-	if (selection.kind === "sharded") {
-		const catalog = join(selection.dir, JOURNAL_CATALOG_FILE);
-		if (!existsSync(catalog)) {
-			return {
-				connection: {
-					status: "skipped",
-					detail: "journal store not created yet; Atomic creates it on first use",
-				},
-			};
-		}
-		return probeSelection({ kind: "sqlite", path: catalog }, context, inspect, timeoutMs);
-	}
 	if (selection.kind === "sqlite") {
 		if (selection.path === "" || selection.path === ":memory:") {
 			return { connection: { status: "skipped", detail: "in memory; nothing to open" } };
@@ -465,15 +349,16 @@ function sourceOf(layers: readonly Layer[]): { source: string; overridden: strin
 /** The source label of the `ATOMIC_PROFILE=ci` team database. */
 export const TEAM_PROFILE_SOURCE = `${TEAM_PROFILE_ENV}=ci`;
 
-/** The journal selection exactly as the workflows extension makes it from these settings. */
-export function selectJournal(agentDir: string, settings: Settings): StorageSelection {
-	const processChoice = selectProcessStorage("journal", agentDir, undefined, settings);
+/**
+ * The shared selection this process and these settings make: `--storage`, `ATOMIC_STORAGE` or the
+ * `ATOMIC_PROFILE=ci` team database, else the `storage` setting; `undefined` when none of them is set.
+ */
+export function selectSharedStorage(agentDir: string, settings: Settings): StorageSelection | undefined {
+	const processChoice = selectProcessStorage("shared", agentDir, undefined, settings);
 	if (processChoice !== undefined) return processChoice.selection;
-	if (settings.storage === undefined)
-		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir, settings) };
-	const selection = selectStorage(settings.storage, "settings", "storage", () =>
-		defaultSharedStoragePath(agentDir, settings),
-	);
+	const value = settings.storage;
+	if (value === undefined) return undefined;
+	const selection = selectStorage(value, "settings", "storage", () => defaultSharedStoragePath(agentDir, settings));
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
 		? { ...selection, path: join(storagePathBaseDir(selection.path, agentDir, settings), selection.path) }
 		: selection;
@@ -521,16 +406,16 @@ export function projectTrust(cwd: string, agentDir: string): boolean {
 	);
 }
 
-/** The workflow journal this directory's sessions select, with the precedence the workflows extension applies. */
-export function effectiveJournalSelection(cwd: string, agentDir: string): StorageSelection {
+/** The shared selection {@link selectSharedStorage} makes in this directory, with its trusted project settings. */
+export function effectiveSharedSelection(cwd: string, agentDir: string): StorageSelection | undefined {
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: projectTrust(cwd, agentDir) });
-	return selectJournal(agentDir, manager.getSettings());
+	return selectSharedStorage(agentDir, manager.getSettings());
 }
 
 /**
  * Which storage each domain selects and where that selection comes from, following the same precedence as
- * sessions, the workflows extension and the Intercom broker; with `probe`, whether each adapter loads and each
- * database answers, and what the running broker uses.
+ * sessions and the Intercom broker; with `probe`, whether each adapter loads and each database answers, and what the
+ * running broker uses.
  */
 export async function collectStorageStatus(options: StorageStatusOptions): Promise<StorageStatus> {
 	const { cwd, agentDir } = options;
@@ -571,13 +456,6 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 			...settingLayers(global, project, projectTrusted, sessionsSetting, "sessions.storage"),
 			...settingLayers(global, project, projectTrusted, storageSetting, "storage"),
 		],
-		journal: [
-			env(WORKFLOWS_JOURNAL_ENV),
-			env(WORKFLOW_JOURNAL_PATH_ENV),
-			env(STORAGE_ENV),
-			teamProfile,
-			...settingLayers(global, project, projectTrusted, storageSetting, "storage"),
-		],
 		intercom: [
 			env(STORAGE_ENV),
 			teamProfile,
@@ -606,37 +484,26 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 	};
 
 	const domains: DomainStatus[] = [];
-	for (const domain of ["sessions", "journal"] as const) {
-		const { source, overridden } = sourceOf(layers[domain]);
-		try {
-			const chosen =
-				domain === "sessions"
-					? selectSessionStorageWithSettings(cwd, { agentDir, settings: merged })
-					: selectJournal(agentDir, merged);
-			const selection = chosen as StorageSelection;
-			if (selection.kind === "sqlite" || selection.kind === "jsonl" || selection.kind === "sharded")
-				usesLocalStorage = true;
-			let journalStore: JournalStoreStatus | undefined;
-			const probe = await probeOnce(
-				domain,
-				selection,
-				selection.kind === "sharded"
-					? async (database) => {
-							journalStore = await readJournalStoreStatus(database, selection.dir);
-						}
-					: undefined,
-			);
-			domains.push({
-				domain,
-				selection: describeStorageSelection(selection),
-				source,
-				overridden,
-				...(probe === undefined ? {} : { probe }),
-				...(journalStore === undefined ? {} : { journalStore }),
-			});
-		} catch (error) {
-			domains.push({ domain, selection: "invalid", source, overridden, error: errorText(error as Error) });
-		}
+	const sessions = sourceOf(layers.sessions);
+	try {
+		const selection = selectSessionStorageWithSettings(cwd, { agentDir, settings: merged }) as StorageSelection;
+		if (selection.kind === "sqlite" || selection.kind === "jsonl") usesLocalStorage = true;
+		const probe = await probeOnce("sessions", selection);
+		domains.push({
+			domain: "sessions",
+			selection: describeStorageSelection(selection),
+			source: sessions.source,
+			overridden: sessions.overridden,
+			...(probe === undefined ? {} : { probe }),
+		});
+	} catch (error) {
+		domains.push({
+			domain: "sessions",
+			selection: "invalid",
+			source: sessions.source,
+			overridden: sessions.overridden,
+			error: errorText(error as Error),
+		});
 	}
 
 	const intercom = sourceOf(layers.intercom);
@@ -763,6 +630,6 @@ export async function checkSharedStorageAdapter(
 	} catch (error) {
 		const executable = isBunBinary ? process.execPath : (process.argv[1] ?? process.execPath);
 		const cause = error instanceof StorageAdapterLoadError && error.cause instanceof Error ? error.cause : error;
-		return `Storage adapter "${module}" cannot be loaded by this Atomic (${executable}): ${errorText(cause as Error)}. Intercom multi-node routing stays off, and sessions or workflow runs that select this adapter fail to open. Run "atomic storage status" for details.`;
+		return `Storage adapter "${module}" cannot be loaded by this Atomic (${executable}): ${errorText(cause as Error)}. Intercom multi-node routing stays off, and sessions that select this adapter fail to open. Run "atomic storage status" for details.`;
 	}
 }

@@ -306,9 +306,7 @@ const SNAPSHOT_SUMMARIES: Record<WorkspaceSnapshotErrorCode, (subject: string) =
 	],
 	"blob-store-unsupported": (subject) => [
 		`Worktree snapshot unavailable: ${subject} storage cannot hold snapshot blobs`,
-		subject === "workflow journal"
-			? 'Select a SQLite workflow journal, for example `"workflows": { "journal": { "path": "workflows/journal.sqlite" } }` in settings.json, to record snapshots.'
-			: 'Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
+		'Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
 	],
 	"blob-store-failed": (subject) => [
 		`Worktree snapshot not recorded: the ${subject} storage could not store or read its blobs`,

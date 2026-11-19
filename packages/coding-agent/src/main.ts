@@ -691,7 +691,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// starts and is never subject to project trust. An invalid selection prints its message and exits 1.
 	try {
 		setCliStorageSelection(parsed.storage, cwd);
-		selectProcessStorage("journal", agentDir, cwd);
+		selectProcessStorage("shared", agentDir, cwd);
 		if (engineEnv.child !== "1") {
 			const { assertTeamAdapterInstalled } = await import("./core/storage/team.js");
 			await assertTeamAdapterInstalled(agentDir);

@@ -101,7 +101,6 @@ interface SettledStorageHome {
 	readonly home: string;
 	readonly defaultHome?: boolean;
 	readonly workflowsDir: string;
-	readonly journalStoreDir: string;
 	readonly sessionDatabasePath: string;
 	readonly sharedStoragePath: string;
 	readonly adoptedClaim?: string;
@@ -514,7 +513,6 @@ function createStorageHomeEntry(
 	return {
 		home,
 		workflowsDir,
-		journalStoreDir: join(workflowsDir, "journal"),
 		sessionDatabasePath: join(workflowsDir, "journal.sqlite"),
 		sharedStoragePath: join(home, "storage.sqlite"),
 		...(adoptedClaim === undefined ? {} : { adoptedClaim }),
@@ -795,6 +793,8 @@ function* configuredRelativeTargetsSteps(
 			home,
 		);
 	}
+	// The workflow journal selections of earlier releases select nothing now, but a store they pointed at still marks
+	// where this agent directory's earlier stores are.
 	const workflows = cli?.value ?? environment.ATOMIC_WORKFLOWS_JOURNAL ?? environment.ATOMIC_STORAGE;
 	if (workflows !== undefined) {
 		pushSelectionTargets(targets, workflows, home, workflows === shared);
@@ -1875,24 +1875,6 @@ export function workflowsStorageDir(agentDir?: string, settings?: StorageHomeSet
 
 export async function workflowsStorageDirAsync(agentDir?: string, settings?: StorageHomeSettings): Promise<string> {
 	return (await resolveStorageHomeEntryAsync(agentDir, settings)).workflowsDir;
-}
-
-export function defaultJournalStoreDirectory(agentDir: string, settings?: StorageHomeSettings): string {
-	return runStorageStepsSync(resolveStorageHomeEntrySteps(agentDir, settings)).journalStoreDir;
-}
-
-export async function defaultJournalStoreDirectoryAsync(
-	agentDir: string,
-	settings?: StorageHomeSettings,
-): Promise<string> {
-	return (await resolveStorageHomeEntryAsync(agentDir, settings)).journalStoreDir;
-}
-
-export function* defaultJournalStoreDirectorySteps(
-	agentDir: string,
-	settings?: StorageHomeSettings,
-): StorageSteps<string> {
-	return (yield* resolveStorageHomeEntrySteps(agentDir, settings)).journalStoreDir;
 }
 
 export function defaultSessionDatabasePath(agentDir?: string, settings?: StorageHomeSettings): string {

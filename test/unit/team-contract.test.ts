@@ -633,7 +633,7 @@ describe("the profile in effect (#4320)", () => {
 		options: { url: "libsql://team.example" },
 		secrets: { authToken: { env: "TEAM_DB_TOKEN" } },
 	};
-	test("compares the effective selections of the three domains (#4320)", () => {
+	test("compares the effective selections of sessions and Intercom (#4320)", () => {
 		const cases: [object, string][] = [
 			[{}, "individual"],
 			[{ sessions: { storage: LOCAL_SESSIONS_STORAGE } }, "individual"],
@@ -641,14 +641,12 @@ describe("the profile in effect (#4320)", () => {
 			[{ storage: team, sessions: { storage: {} } }, "team"],
 			[{ storage: team }, "ci"],
 			[{ storage: team, sessions: { storage: { path: "workflows/journal.sqlite", prefix: "s_" } } }, "custom"],
+			// The workflow journal selection of earlier releases selects nothing.
 			[{ storage: team, workflows: { journal: { path: "workflows/journal.sqlite" } } }, "ci"],
 			[{ storage: team, sessions: { storage: LOCAL_SESSIONS_STORAGE }, workflows: { journal: {} } }, "team"],
 			[{ storage: { path: "shared.sqlite" }, sessions: { storage: LOCAL_SESSIONS_STORAGE } }, "custom"],
 			[{ storage: { path: "shared.sqlite" } }, "custom"],
-			[
-				{ storage: { memory: true }, sessions: { storage: LOCAL_SESSIONS_STORAGE }, workflows: { journal: {} } },
-				"custom",
-			],
+			[{ storage: { memory: true }, sessions: { storage: LOCAL_SESSIONS_STORAGE } }, "custom"],
 			[{ sessions: { storage: { dir: "sessions" } } }, "custom"],
 			[{ workflows: { journal: { path: "other.sqlite" } } }, "individual"],
 		];
@@ -660,7 +658,6 @@ describe("the profile in effect (#4320)", () => {
 		assert.deepEqual(selectTeamProfile({ agentDir, cwd: project }), {
 			profile: "ci",
 			sessions: `adapter ${LIBSQL_ADAPTER_PACKAGE}`,
-			journal: `adapter ${LIBSQL_ADAPTER_PACKAGE}`,
 			intercom: `adapter ${LIBSQL_ADAPTER_PACKAGE}`,
 		});
 		vi.spyOn(process, "cwd").mockReturnValue(project);
@@ -755,9 +752,9 @@ describe("the team adapter check at startup (#4320)", () => {
 
 		assert.equal(await startup(), "adapter-not-installed", "the profile alone selects every store");
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", memory);
-		assert.equal(await startup(), "adapter-not-installed", "workflow runs and Intercom still use the profile");
-		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", memory);
 		assert.equal(await startup(), "adapter-not-installed", "the Intercom broker still uses the profile");
+		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", memory);
+		assert.equal(await startup(), "adapter-not-installed", "the removed workflow journal variable changes nothing");
 
 		vi.stubEnv("ATOMIC_TEAM_URL", "");
 		vi.stubEnv("ATOMIC_STORAGE", memory);

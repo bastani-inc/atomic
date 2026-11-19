@@ -209,7 +209,7 @@ describe("atomic team output (#4320)", () => {
 				"Stopping the Intercom broker (pid 101)",
 				"Restarted the Intercom broker: pid 101 → 202.",
 				"",
-				"Profile: team (sessions on this machine; workflow runs and Intercom on the team database)",
+				"Profile: team (sessions on this machine; Intercom on the team database)",
 				'Intercom group: sessions in <root>/project join "project:acme/alpha" unless ATOMIC_INTERCOM_GROUP or the Intercom config sets a group; sessions that are already running keep theirs until they restart.',
 				"",
 				"Agent directory: <root>/agent",
@@ -286,7 +286,8 @@ describe("atomic team output (#4320)", () => {
 				"Stopping the Intercom broker (pid 101)",
 				"Kept the token file <root>/agent/storage-token.<id>: another setting still references it.",
 				"No Intercom broker was running; the next session that uses Intercom starts one with these settings.",
-				"Profile: individual (sessions and workflow runs on this machine; Intercom on this machine only)",
+				// The journal selection an earlier release kept still holds its token file, and selects nothing.
+				"Profile: individual (sessions on this machine; Intercom on this machine only)",
 			]);
 
 			writeSettings({
@@ -300,7 +301,7 @@ describe("atomic team output (#4320)", () => {
 				"Nothing to remove: <root>/agent/settings.json holds no settings that `atomic team join` wrote.",
 				"Left `storage` in place: it holds something other than what team join writes.",
 				"Left `sessions.storage` in place: `storage` is still set, and without it new sessions would move to that store.",
-				"Profile: team (sessions on this machine; workflow runs and Intercom on the team database)",
+				"Profile: team (sessions on this machine; Intercom on the team database)",
 			]);
 			assert.deepEqual(restarts, [agentDir, agentDir]);
 
@@ -312,7 +313,7 @@ describe("atomic team output (#4320)", () => {
 			assert.deepEqual(none.out.split("\n"), [
 				"Nothing to remove: <root>/agent/settings.json holds no settings that `atomic team join` wrote.",
 				"Left `storage` in place: it holds something other than what team join writes.",
-				"Profile: ci (sessions, workflow runs and Intercom on the team database)",
+				"Profile: ci (sessions and Intercom on the team database)",
 			]);
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
@@ -330,10 +331,7 @@ describe("atomic team output (#4320)", () => {
 				/^Could not restart the Intercom broker: <root>\/agent \(broker-restart-failed\): socket refused\./,
 			);
 			assert.match(left.out, /^Deleted the token file <root>\/agent\/storage-token\.<id>\.$/m);
-			assert.match(
-				left.out,
-				/^Profile: individual \(sessions and workflow runs on this machine; Intercom on this machine only\)$/m,
-			);
+			assert.match(left.out, /^Profile: individual \(sessions on this machine; Intercom on this machine only\)$/m);
 			assert.deepEqual(
 				readdirSync(agentDir).filter((name) => name.startsWith("storage-token.")),
 				[],
@@ -370,7 +368,6 @@ describe("atomic team output (#4320)", () => {
 		assert.deepEqual(parsed.profile, {
 			profile: "individual",
 			sessions: `SQLite ${join(agentDir, "workflows", "journal.sqlite")}`,
-			journal: `journal store ${join(agentDir, "workflows", "journal")}`,
 			intercom: "off",
 		});
 		assert.deepEqual(parsed.broker, { state: "unknown", error: "intercom package missing" });
@@ -535,7 +532,6 @@ describe("atomic storage join and broker reports (#4320)", () => {
 			]),
 			[
 				["sessions", undefined],
-				["journal", false],
 				["intercom", false],
 			],
 		);
