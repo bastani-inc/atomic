@@ -12,8 +12,7 @@ import {
 	STORAGE_ENV,
 	selectProcessStorage,
 	setCliStorageSelection,
-	WORKFLOW_JOURNAL_PATH_ENV,
-	WORKFLOWS_JOURNAL_ENV,
+	validateProcessStorage,
 } from "../../packages/coding-agent/src/core/storage/process-selection.js";
 import { buildInteractiveEngineArgs } from "../../packages/coding-agent/src/modes/interactive-engine/engine-args.js";
 import { restartCliArgs } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
@@ -22,6 +21,9 @@ import { resolvePath } from "../../packages/coding-agent/src/utils/paths.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const SESSION_DIR_ENV = "ATOMIC_CODING_AGENT_SESSION_DIR";
+/** The workflow journal variables of earlier releases, which select nothing now. */
+const WORKFLOWS_JOURNAL_ENV = "ATOMIC_WORKFLOWS_JOURNAL";
+const WORKFLOW_JOURNAL_PATH_ENV = "ATOMIC_WORKFLOW_JOURNAL_PATH";
 const ADAPTER = join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts");
 
 let root: string;
@@ -149,7 +151,7 @@ test("--storage and --storage-file are exclusive, need a value, and read files r
 		"--storage-file",
 		"unreadable-file",
 	);
-	assert.equal(hasProcessStorageSelection("journal"), false);
+	assert.equal(hasProcessStorageSelection("shared"), false);
 });
 
 test("invalid JSON and invalid selections name their variable or flag without echoing the value (#3783)", async () => {
@@ -213,18 +215,13 @@ test("a set storage variable outranked by another selection still fails when inv
 	const misspelled = JSON.stringify({ adpater: "x", options: { token: secret } });
 	const selections: Array<[string, () => object]> = [
 		["sessions", () => selectProcessStorage("sessions", agentDir, project) ?? {}],
-		["journal", () => selectProcessStorage("journal", agentDir, project) ?? {}],
+		["shared", () => selectProcessStorage("shared", agentDir, project) ?? {}],
 		["SDK sessions", () => selectSessionStorage(project, { agentDir })],
 	];
 	const scenarios: Array<[string, Record<string, string>, boolean]> = [
 		[STORAGE_ENV, {}, true],
-		[
-			STORAGE_ENV,
-			{ [SESSIONS_STORAGE_ENV]: JSON.stringify({ memory: true }), [WORKFLOWS_JOURNAL_ENV]: JSON.stringify({}) },
-			false,
-		],
+		[STORAGE_ENV, { [SESSIONS_STORAGE_ENV]: JSON.stringify({ memory: true }) }, false],
 		[SESSIONS_STORAGE_ENV, {}, true],
-		[WORKFLOWS_JOURNAL_ENV, {}, true],
 	];
 	for (const [name, others, withFlag] of scenarios) {
 		for (const [text, reason] of [
@@ -252,7 +249,7 @@ test("a set storage variable outranked by another selection still fails when inv
 test("an invalid storage prefix names its variable or flag, even when another selection outranks it (#3783)", () => {
 	const selections: Array<[string, () => object]> = [
 		["sessions", () => selectProcessStorage("sessions", agentDir, project) ?? {}],
-		["journal", () => selectProcessStorage("journal", agentDir, project) ?? {}],
+		["shared", () => selectProcessStorage("shared", agentDir, project) ?? {}],
 	];
 	for (const prefix of ["bad-prefix", "sqlite_reserved"]) {
 		vi.stubEnv(STORAGE_ENV, JSON.stringify({ path: "store.sqlite", prefix }));
@@ -277,6 +274,22 @@ test("an invalid storage prefix names its variable or flag, even when another se
 	}
 });
 
+test("the workflow journal variables of earlier releases select nothing and are never validated", () => {
+	for (const text of ["{ not json", JSON.stringify({ adpater: "x" }), JSON.stringify({ dir: "runs" })]) {
+		vi.stubEnv(WORKFLOWS_JOURNAL_ENV, text);
+		vi.stubEnv(WORKFLOW_JOURNAL_PATH_ENV, join(root, "legacy.sqlite"));
+		validateProcessStorage(agentDir);
+		assert.equal(selectProcessStorage("shared", agentDir, project), undefined);
+		assert.equal(selectProcessStorage("sessions", agentDir, project), undefined);
+		assert.equal(hasProcessStorageSelection("shared"), false);
+		storageFlag({ memory: true });
+		assert.deepEqual(selectProcessStorage("shared", agentDir, project)?.selection, { kind: "memory" });
+		setCliStorageSelection(undefined);
+	}
+	vi.stubEnv(STORAGE_ENV, JSON.stringify({ path: "shared.sqlite" }));
+	assert.equal(selectProcessStorage("shared", agentDir, project)?.field, STORAGE_ENV);
+});
+
 test("explicit overrides of one domain conflict instead of one silently winning (#3783)", () => {
 	vi.stubEnv(SESSIONS_STORAGE_ENV, JSON.stringify({ memory: true }));
 	vi.stubEnv(SESSION_DIR_ENV, "legacy-sessions");
@@ -286,11 +299,7 @@ test("explicit overrides of one domain conflict instead of one silently winning 
 		`${SESSIONS_STORAGE_ENV}, ${SESSION_DIR_ENV}`,
 		"conflicting-overrides",
 	);
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({ memory: true }));
-	vi.stubEnv(WORKFLOW_JOURNAL_PATH_ENV, join(root, "legacy.sqlite"));
-
 	vi.stubEnv(SESSIONS_STORAGE_ENV, "");
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, "");
 	storageFlag({ memory: true });
 	assertConfigError(
 		() => selectSessionStorage(project, { agentDir }),
@@ -312,7 +321,6 @@ test("process adapter selections resolve { env } and { file } secrets and never 
 	await writeFileEnsuringDir(join(agentDir, "password.txt"), fileSecret);
 	const adapter = (path: string, secrets: object) => JSON.stringify({ adapter: ADAPTER, options: { path }, secrets });
 	vi.stubEnv(SESSIONS_STORAGE_ENV, adapter(join(root, "sessions.sqlite"), { token: { env: "ISSUE_3783_TOKEN" } }));
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, adapter(join(root, "journal.sqlite"), { password: { file: "password.txt" } }));
 	const sessions = await resolveSessionStore(project, { agentDir });
 	vi.stubEnv(SESSIONS_STORAGE_ENV, adapter(join(root, "file-secret.sqlite"), { password: { file: "password.txt" } }));
 	const withFile = await resolveSessionStore(project, { agentDir });
@@ -339,7 +347,6 @@ test("process adapter selections resolve { env } and { file } secrets and never 
 
 	setCliStorageSelection(undefined);
 	vi.stubEnv(SESSIONS_STORAGE_ENV, "");
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, "");
 	vi.stubEnv(
 		STORAGE_ENV,
 		adapter(join(root, "missing.sqlite"), {
