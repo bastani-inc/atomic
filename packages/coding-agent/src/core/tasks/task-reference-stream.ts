@@ -313,6 +313,12 @@ export async function streamedEarlierMatches(
 		)
 		.map((w) => w.key);
 }
+export async function visibleStreamedItem(chunks: Source, index?: number): Promise<boolean> {
+	const h = await describe(chunks, index ?? Infinity, 0);
+	return index === undefined
+		? singleKind(h) !== undefined
+		: h.type === "message" && h.role === "assistant" && h.anchor;
+}
 function singleKind(h: Header): TaskTranscriptItem["kind"] | undefined {
 	if (h.type === "compaction") return h.strategy === "verbatim-lines" ? "compaction" : undefined;
 	if (h.type === "branch_summary") return h.summary ? "branch-summary" : undefined;
@@ -391,11 +397,13 @@ export async function streamedTaskReferences(
 	budget: number,
 	empty: boolean,
 	before?: string,
-): Promise<{ matched: boolean; items: TaskTranscriptItem[]; more: boolean }> {
+	beforeIndex?: number,
+	allowLarge?: (index?: number) => Promise<boolean>,
+): Promise<{ matched: boolean; items: TaskTranscriptItem[]; more: boolean; skipBefore?: number }> {
 	const split = before?.lastIndexOf(":") ?? -1;
 	const suffix = split >= 0 ? before!.slice(split + 1) : "";
 	const at = /^(?:0|[1-9]\d{0,15})$/.test(suffix) && Number.isSafeInteger(Number(suffix)) ? Number(suffix) : Infinity;
-	const h = await describe(chunks, at, limit);
+	const h = await describe(chunks, beforeIndex ?? at, limit);
 	const kind = singleKind(h),
 		assistant = h.type === "message" && h.role === "assistant" && h.total > 0;
 	if (before !== undefined) {
@@ -407,11 +415,20 @@ export async function streamedTaskReferences(
 	if (!n || limit === 0) return { matched: before !== undefined, items: [], more: n > 0 };
 	if (kind && !empty && h.idBytes + (kind === "tool-result" ? h.resultIdBytes : 0) > budget)
 		return { matched: before !== undefined, items: [], more: true };
+	if (
+		kind &&
+		h.idBytes + (kind === "tool-result" ? h.resultIdBytes : 0) > budget &&
+		allowLarge &&
+		!(await allowLarge())
+	)
+		return { matched: before !== undefined, items: [], more: false };
 	const selected: Block[] = [];
 	if (assistant)
 		for (const b of h.blocks.reverse()) {
 			const size = h.idBytes + 1 + String(b.i).length + (b.type === "toolCall" ? b.toolIdBytes : 0);
 			if (size > budget && (!empty || selected.length)) break;
+			if (size > budget && allowLarge && !(await allowLarge(b.i)))
+				return { matched: before !== undefined, items: [], more: n > 1, skipBefore: b.i };
 			selected.push(b);
 			budget -= size;
 		}

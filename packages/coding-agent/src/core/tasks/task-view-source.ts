@@ -5,6 +5,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { transcriptCursorWithin } from "../storage/session/history-pages.js";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
@@ -25,7 +26,7 @@ import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
 import type { FileTaskPage } from "./task-file-history.js";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
-import { bindSavedTaskOrigins } from "./transcript-origin.js";
+import { bindSavedTaskOrigins, noteSavedSeq } from "./transcript-origin.js";
 
 export type TaskViewResult<T> =
 	| { readonly ok: true; readonly value: T }
@@ -652,6 +653,36 @@ function savedTaskScope(taskId: string, sessionId: string): string {
 		.digest("base64url")}:`;
 }
 
+/**
+ * The saved-row origin of a live task message stored at `seq`: what the saved page that shows it again calls it.
+ * Known once the session has saved history before its live context, which is when a row can leave the window.
+ */
+export function liveTaskRowOrigin(session: TaskTranscriptSource, taskId: string, seq: number): string | undefined {
+	const generation = session.getEarlierCursor?.()?.split(".", 1)[0];
+	return generation ? `${savedTaskScope(taskId, session.getSessionId())}${generation}:${seq}` : undefined;
+}
+
+/**
+ * Cursors of a live task's saved prefix before and after the saved sequences `first` to `last`, which a page the
+ * reader keeps on screen shows. Reading on from either continues through the whole prefix.
+ */
+export function taskCursorsAround(
+	session: TaskTranscriptSource,
+	taskId: string,
+	first: number,
+	last: number,
+): { readonly older?: string; readonly newer?: string } {
+	const earlier = session.getEarlierCursor?.();
+	if (earlier === undefined) return {};
+	const scope = savedTaskScope(taskId, session.getSessionId());
+	const older = transcriptCursorWithin(earlier, 1, first - 1, true);
+	const newer = transcriptCursorWithin(earlier, last + 1, Number.MAX_SAFE_INTEGER, false);
+	return {
+		...(older === undefined ? {} : { older: `${scope}${older}~b` }),
+		...(newer === undefined ? {} : { newer: `${scope}${newer}~f` }),
+	};
+}
+
 /** One saved page at a time; skipping a page of invisible bookkeeping doesn't keep that page alive. */
 async function savedTranscriptView(
 	session: TaskTranscriptSource,
@@ -745,6 +776,8 @@ async function savedTranscriptView(
 			{
 				storedRows: entries.length,
 				origin(row, message, fragment) {
+					const seq = page.items[row]?.seq;
+					if (!file && seq !== undefined) noteSavedSeq(message, seq);
 					const record = file
 						? createHash("sha256").update(JSON.stringify(entries[row])).digest("base64url")
 						: page.adjacent?.current?.split(".", 1)[0];
@@ -868,6 +901,14 @@ function transcriptView(
 	const messages = entries.flatMap<AgentMessage>((entry, row) => {
 		const id = entry.id;
 		if (!entryIds.has(id)) return [];
+		// A live row keeps where its message was saved: the saved page that shows it again keeps its stateful renderer.
+		const seq = archive ? undefined : session.getEntrySeq?.(id);
+		const shown = projectEntry(entry, row);
+		if (seq !== undefined) for (const message of shown) noteSavedSeq(message, seq);
+		return shown;
+	});
+	function projectEntry(entry: (typeof entries)[number], row: number): AgentMessage[] {
+		const id = entry.id;
 		if (entry.type !== "message") {
 			const projected = sessionEntryToContextMessages(entry);
 			nextMessageIndex += projected.length;
@@ -908,7 +949,7 @@ function transcriptView(
 		}
 		archive?.origin?.(row, projected, fragment ?? 0);
 		return [projected];
-	});
+	}
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
 	const activeToolStarts =

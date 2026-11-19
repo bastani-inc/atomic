@@ -11,9 +11,20 @@ import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages }
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
+import {
+	carryRowSource,
+	noteRowSource,
+	noteSavedSeq,
+	savedRowKey,
+	savedSeqOf,
+} from "../../core/tasks/transcript-origin.js";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
-import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import {
+	disposeRemoteRenderers,
+	RemoteCustomMessageComponent,
+	RemoteToolExecutionComponent,
+} from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import {
@@ -65,6 +76,9 @@ import {
 } from "./interactive-mode-deps.ts";
 import {
 	installSavedChatHistory,
+	noteShownContext,
+	type ParkedViewport,
+	parkViewport,
 	releaseSavedChatHistory,
 	type SavedRendererInstances,
 } from "./interactive-saved-chat-history.js";
@@ -404,7 +418,13 @@ InteractiveModeBase.prototype.expectStartedUserInput = function (
 
 /** Show a user message from the session: in place of its echo, or of the echo of the run it started, or as new. */
 InteractiveModeBase.prototype.showSessionUserMessage = function (this: InteractiveModeBase, message: Message): void {
-	if (this.consumeDeferredRenderedUserInput(this.getUserMessageText(message))) return;
+	const text = this.getUserMessageText(message);
+	const echo = this.deferredRenderedUserInputComponents.get(text)?.[0];
+	if (this.consumeDeferredRenderedUserInput(text)) {
+		// The echo stays as the session's message: its rows are that message's rows.
+		for (const component of echo ?? []) noteRowSource(component, { message, part: 0 });
+		return;
+	}
 	const started = this.startedDeferredUserInput;
 	if (started !== undefined) {
 		const renderer = this.ui as AltScreenMessageCounterHost;
@@ -541,6 +561,7 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	entry: ChatMessageEntry,
 ): Component {
 	const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
+	carryRowSource(entry, component);
 	if (entry.kind !== "system" && !(entry.kind === "custom" && isVerbatimCompactionMessage(entry.message))) {
 		messageComponents.add(component);
 	}
@@ -585,6 +606,9 @@ InteractiveModeBase.prototype.addCustomEntryToChat = function (this: Interactive
 	component.setExpanded(this.toolOutputExpanded);
 	if (!component.hasContent()) return;
 	messageComponents.add(component);
+	const seq = this.sessionManager.getEntrySeq?.(entry.id);
+	if (seq !== undefined) noteSavedSeq(entry, seq);
+	noteRowSource(component, { message: entry, part: 0 });
 	const streamingIndex = this.streamingComponent ? this.chatContainer.children.indexOf(this.streamingComponent) : -1;
 	if (streamingIndex >= 0) this.chatContainer.children.splice(streamingIndex, 0, component);
 	else this.chatContainer.addChild(component);
@@ -619,6 +643,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				message.fullOutputPath,
 			);
 			messageComponents.add(component);
+			noteRowSource(component, { message, part: 0 });
 			this.chatContainer.addChild(component);
 			break;
 		}
@@ -657,6 +682,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 							);
 				component.setExpanded(this.toolOutputExpanded);
 				messageComponents.add(component);
+				noteRowSource(component, { message, part: 0 });
 				this.chatContainer.addChild(component);
 			}
 			break;
@@ -672,6 +698,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 			);
 			component.setExpanded(this.toolOutputExpanded);
 			messageComponents.add(component);
+			noteRowSource(component, { message, part: 0 });
 			this.chatContainer.addChild(component);
 			break;
 		}
@@ -693,6 +720,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 					);
 					component.setExpanded(this.toolOutputExpanded);
 					if (!skillBlock.userMessage) messageComponents.add(component);
+					noteRowSource(component, { message, part: 0 });
 					this.chatContainer.addChild(component);
 					// Render user message separately if present
 					if (skillBlock.userMessage) {
@@ -704,6 +732,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 							this.settingsManager.getLatexRenderingEnabled(),
 						);
 						messageComponents.add(userComponent);
+						noteRowSource(userComponent, { message, part: 0 });
 						this.chatContainer.addChild(userComponent);
 					}
 				} else {
@@ -715,6 +744,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						this.settingsManager.getLatexRenderingEnabled(),
 					);
 					messageComponents.add(userComponent);
+					noteRowSource(userComponent, { message, part: 0 });
 					this.chatContainer.addChild(userComponent);
 				}
 				if (options?.populateHistory) {
@@ -735,6 +765,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				this.settingsManager.getLatexRenderingEnabled(),
 			);
 			messageComponents.add(assistantComponent);
+			noteRowSource(assistantComponent, { message, part: 0 });
 			this.chatContainer.addChild(assistantComponent);
 			break;
 		}
@@ -850,13 +881,17 @@ function planTranscript(
 		if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.
 			if (!mode.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
+			const seq = options.saved ? options.saved.seqs.get(entry) : mode.sessionManager?.getEntrySeq?.(entry.id);
+			if (seq !== undefined) noteSavedSeq(entry, seq);
 			flushMessages();
 			if (options.saved) options.saved.owners.set(entry, `${options.saved.seqs.get(entry)}:entry`);
 			steps.push({ kind: "custom", entry });
 		} else {
 			const messages = sessionEntryToContextMessages(entry);
+			const seq = options.saved ? options.saved.seqs.get(entry) : mode.sessionManager?.getEntrySeq?.(entry.id);
 			for (const message of messages) {
 				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+				if (seq !== undefined) noteSavedSeq(message, seq);
 				if (options.saved) messageSeq?.set(message, options.saved.seqs.get(entry)!);
 			}
 			messageBuffer.push(...messages);
@@ -875,9 +910,33 @@ function planTranscript(
 	return steps;
 }
 
+/** The rows a parked reader sees of entries a new context keeps, while that context is being drawn. */
+const adoptions = new WeakMap<InteractiveModeBase, ParkedViewport & { inserted: boolean }>();
+
+function stepKey(step: TranscriptStep): string | undefined {
+	if (step.kind === "entry") return savedRowKey(step.entry);
+	// A custom entry draws one row, from the entry itself.
+	const seq = step.kind === "custom" ? savedSeqOf(step.entry) : undefined;
+	return seq === undefined ? undefined : `${seq}:0`;
+}
+
+/** A kept entry the reader sees keeps its drawn rows: the first such step puts them all where it belongs. */
+function adoptStep(mode: InteractiveModeBase, step: TranscriptStep): Component | undefined {
+	const adoption = adoptions.get(mode);
+	const key = adoption && stepKey(step);
+	const component = key === undefined ? undefined : adoption?.keys.get(key);
+	if (!adoption || !component) return undefined;
+	if (!adoption.inserted) {
+		for (const row of adoption.adopted) mode.chatContainer.addChild(row);
+		adoption.inserted = true;
+	}
+	return component;
+}
+
 function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, latest = true, saved = false): void {
+	const adopted = saved ? undefined : adoptStep(mode, step);
 	if (step.kind === "custom") {
-		mode.addCustomEntryToChat(step.entry);
+		if (!adopted) mode.addCustomEntryToChat(step.entry);
 		return;
 	}
 	if (step.kind === "cost") {
@@ -885,7 +944,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 		return;
 	}
 	const { entry } = step;
-	const component = mode.addRenderedChatEntry(entry);
+	const component = adopted ?? mode.addRenderedChatEntry(entry);
 	if (!saved && entry.kind === "tool" && isGroupedToolComponent(component)) {
 		const grouping = mainToolGrouping(mode);
 		grouping.tracker.bind(entry.toolCallId, (role) => {
@@ -894,7 +953,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 		});
 		if (latest) grouping.lastMember = component;
 	}
-	if (entry.kind === "assistant") addServiceTierWarnings(mode, entry.message);
+	if (entry.kind === "assistant" && !adopted) addServiceTierWarnings(mode, entry.message);
 	if (!saved && entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
 		mode.pendingTools.set(entry.toolCallId, component);
 	}
@@ -909,8 +968,9 @@ function savedChatComponents(
 	entries: SessionEntry[],
 	seqs: number[],
 	exceptions: SavedRendererInstances,
-	newer: boolean,
+	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 ): Component[] {
+	const newer = adjacent?.newer !== undefined;
 	const scratch = new Container();
 	const chat = mode.chatContainer;
 	try {
@@ -1007,24 +1067,48 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		populateHistory?: boolean;
 		preserveViewportInput?: boolean;
 		suppressCompactionBoundary?: VerbatimCompactionResult;
+		/** @internal The rows a reader parked above the end sees, taken out of the chat this replaces. */
+		parked?: ParkedViewport;
 	} = {},
 ): void {
-	if (!options.preserveViewportInput) this.resetTranscriptSelection();
+	if (!options.preserveViewportInput && !options.parked) this.resetTranscriptSelection();
 	this.pendingTools.clear();
 	const pendingEchoes = takeDeferredEchoes(this);
 	if (options.updateFooter) {
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}
-	installSavedChatHistory(this, sessionEntries, savedChatComponents);
+	const parked = options.parked;
+	installSavedChatHistory(this, sessionEntries, savedChatComponents, parked?.parked);
+	noteShownContext(this, sessionEntries);
 	const steps = planTranscript(this, sessionEntries, options);
-	const tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
+	let tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
+	if (parked?.keys.size) {
+		// The reader's kept rows are drawn now, in place, so the first frame shows them where they were.
+		const adopted = steps.findIndex((step) => {
+			const key = stepKey(step);
+			return key !== undefined && parked.keys.has(key);
+		});
+		if (adopted >= 0) {
+			tailStart = Math.min(tailStart, adopted);
+			adoptions.set(this, { ...parked, inserted: false });
+		}
+	}
 	if (tailStart > 0) {
 		const historyEnd = new Spacer(0);
 		this.chatContainer.addChild(historyEnd);
 		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
 	}
-	for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
+	try {
+		for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
+	} finally {
+		const adoption = adoptions.get(this);
+		adoptions.delete(this);
+		const unused = [...(adoption?.inserted ? [] : (parked?.adopted ?? [])), ...(parked?.parked?.rows ?? [])].filter(
+			(row) => !this.chatContainer.children.includes(row),
+		);
+		disposeRemoteRenderers(unused);
+	}
 	if (this.settingsManager.getShowCacheMissNotices()) {
 		for (const miss of collectCacheMisses(
 			sessionEntries,
@@ -1250,12 +1334,18 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
+	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
+	// Count what arrived unread before the rows the reader sees leave the chat with the rest.
+	if (this.chatContainer.children.length > 0) {
+		renderer.newMessages?.observe(renderer.isFollowingOutput !== false, countChatMessages(this.chatContainer));
+	}
+	// A compaction while the reader is above the end keeps what they see, their selection and their place.
+	const parked = parkViewport(this, entries);
 	clearChatForRerender(this);
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();
 	showNativeHistoryHint(this);
-	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
-	this.renderSessionEntries(entries, options);
+	this.renderSessionEntries(entries, parked ? { ...options, parked } : options);
 	// A caller that suppresses the persisted boundary appends the live one, then the warning (appendProjectTrustWarning).
 	if (!options.suppressCompactionBoundary) renderProjectTrustWarningIfNeeded(this);
 	renderer.newMessages?.replaced(countChatMessages(this.chatContainer));

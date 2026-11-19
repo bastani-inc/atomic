@@ -32,6 +32,26 @@ export function earlierTranscriptCursor(sessionId: string, epoch: string, throug
 	return `${cursorScope(sessionId, epoch)}.1.${through}.b.1.${through}`;
 }
 
+/**
+ * The cursor of an append-order transcript's saved prefix (`earlierTranscriptCursor`), narrowed to visit `[start, end]`
+ * in one direction. Its pages keep the prefix's bounds, so reading on from them continues past `[start, end]`.
+ * Undefined when nothing of the prefix lies in that range.
+ */
+export function transcriptCursorWithin(
+	earlier: string,
+	start: number,
+	end: number,
+	backward: boolean,
+): string | undefined {
+	const match = /^([A-Za-z0-9_-]+)\.\d+\.\d+\.b\.(\d+)\.(\d+)$/.exec(earlier);
+	if (!match) return undefined;
+	const first = Number(match[2]);
+	const last = Number(match[3]);
+	const from = Math.max(first, start);
+	const to = Math.min(last, end);
+	return from <= to ? `${match[1]}.${from}.${to}${backward ? ".b" : ""}.${first}.${last}` : undefined;
+}
+
 /** A lazy sequence of pages of the generation and watermark the caller observed. Metadata is sized before any
  * payload read. A new generation is rejected by readRange inside the same snapshot that reads the payload. */
 export async function* historyPages(

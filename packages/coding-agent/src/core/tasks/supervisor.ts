@@ -96,6 +96,10 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 
 	/** Cursor leading from the live context to its preceding saved branch. */
 	getEarlierCursor?(): string | undefined;
+	/** Where the session stored a retained entry, while it is in memory. */
+	getEntrySeq?(id: string): number | undefined;
+	/** The save receipt of a message the session emitted: where it was stored. Absent while the message is unsaved. */
+	entryReceipt?(message: AgentMessage): { readonly seq: number } | undefined;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */

@@ -5,6 +5,8 @@ import type {
 	SessionHistoryPage,
 	SessionHistoryReadOptions,
 } from "../../core/storage/session/types.js";
+import { savedRowKey } from "../../core/tasks/transcript-origin.js";
+import { parkedRun } from "./components/parked-rows.ts";
 import { SavedRendererInstances } from "./components/saved-renderer-instances.js";
 
 export type { SavedRendererInstances } from "./components/saved-renderer-instances.js";
@@ -20,7 +22,7 @@ type Draw = (
 	entries: SessionEntry[],
 	seqs: number[],
 	exceptions: SavedRendererInstances,
-	newer: boolean,
+	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 ) => Component[];
 
 const exceptionsByHost = new WeakMap<
@@ -31,6 +33,26 @@ interface MountedPage {
 	readonly children: Component[];
 	readonly older?: string;
 	readonly newer?: string;
+	/** The saved sequences the page shows, and the range of the read it came from. A page without cursors at an edge
+	 * of a narrower range continues past it with a range read, so pages stay contiguous around a parked anchor. */
+	readonly first: number;
+	readonly last: number;
+	readonly from: number;
+	readonly to: number;
+}
+interface PageRequest {
+	readonly options: SessionHistoryReadOptions;
+	readonly from: number;
+	readonly to: number;
+}
+/**
+ * What a live compaction leaves of a reader parked above the end: the rows they see of the window it retired, which
+ * stay as one page between the saved history and the new context, with the saved sequences those rows show.
+ */
+export interface ParkedRows {
+	readonly rows: readonly Component[];
+	readonly first: number;
+	readonly last: number;
 }
 const mounts = new WeakMap<InteractiveModeBase, SavedChatHistory>();
 
@@ -44,7 +66,12 @@ export function releaseSavedChatHistory(mode: InteractiveModeBase, closed = fals
 }
 
 /** A clear can retain some entries from before its boundary. Don't repeat them above the boundary. */
-export function installSavedChatHistory(mode: InteractiveModeBase, context: SessionEntry[], draw: Draw): void {
+export function installSavedChatHistory(
+	mode: InteractiveModeBase,
+	context: SessionEntry[],
+	draw: Draw,
+	parked?: ParkedRows,
+): void {
 	const old = exceptionsByHost.get(mode);
 	const changed =
 		old !== undefined && (old.manager !== mode.sessionManager || old.id !== mode.sessionManager.getSessionId());
@@ -73,7 +100,106 @@ export function installSavedChatHistory(mode: InteractiveModeBase, context: Sess
 		exceptionsByHost.set(mode, kept);
 	}
 	const history = new SavedChatHistory(mode, manager, chat, view, draw, leaf, first - 1, kept.exceptions);
+	if (parked && parked.last < first) history.park(parked);
 	mounts.set(mode, history);
+}
+
+/** The context the chat last drew: its boundary and the last saved sequence in it. */
+const shownContexts = new WeakMap<
+	InteractiveModeBase,
+	{ manager: SessionManager; id: string; boundary: string | undefined; through: number }
+>();
+export function noteShownContext(mode: InteractiveModeBase, context: readonly SessionEntry[]): void {
+	const manager = mode.sessionManager;
+	// Only a fullscreen chat keeps a parked reader's rows: nothing else needs to know what it drew.
+	if (
+		mode.ui.mode !== "fullscreen" ||
+		!mode.transcriptScrollView ||
+		!(mode.chatContainer instanceof StartupChatContainer)
+	) {
+		shownContexts.delete(mode);
+		return;
+	}
+	let through = 0;
+	for (const entry of context) through = Math.max(through, manager.getEntrySeq?.(entry.id) ?? 0);
+	const boundary = context[0]?.type === "compaction" ? context[0].id : undefined;
+	shownContexts.set(mode, { manager, id: manager.getSessionId(), boundary, through });
+}
+
+/** What the next drawing of a context does with the rows a parked reader sees. */
+export interface ParkedViewport {
+	/** Rows of the retired window, mounted as a page above the new context. */
+	readonly parked: ParkedRows | undefined;
+	/** Rows of entries the new context keeps, in order, which its drawing puts where the first of them belongs. */
+	readonly adopted: readonly Component[];
+	/** The adopted rows by saved row key, `${seq}:${part}`. */
+	readonly keys: ReadonlyMap<string, Component>;
+}
+
+/**
+ * A live compaction retires the window a reader parked above the end is reading. Take the rows they see out of the
+ * chat before it is cleared: rows of the retired window, widened to every row of the messages they show, become a page
+ * between the saved history and the new context; rows of entries the new context keeps are handed to its drawing.
+ * Everything else of the old window is released as before. Undefined when the reader follows the end, when this is not
+ * a new compaction of the drawn context, or when a row the reader sees cannot be placed among the saved entries.
+ */
+export function parkViewport(mode: InteractiveModeBase, context: readonly SessionEntry[]): ParkedViewport | undefined {
+	const view = mode.transcriptScrollView;
+	const chat = mode.chatContainer;
+	const manager = mode.sessionManager;
+	const boundary = context[0];
+	const shown = shownContexts.get(mode);
+	if (
+		mode.ui.mode !== "fullscreen" ||
+		!view ||
+		view.isFollowingEnd ||
+		!(chat instanceof StartupChatContainer) ||
+		boundary?.type !== "compaction" ||
+		!shown ||
+		shown.manager !== manager ||
+		shown.id !== manager.getSessionId() ||
+		shown.boundary === boundary.id
+	)
+		return undefined;
+	const boundarySeq = manager.getEntrySeq?.(boundary.id);
+	if (boundarySeq === undefined || boundarySeq <= shown.through) return undefined;
+	let current = boundarySeq;
+	for (const entry of context) current = Math.min(current, manager.getEntrySeq(entry.id) ?? current);
+	const fixed = new Set<Component>([mode.resourceDisclosureContainer, mode.startupNoticesContainer]);
+	const marker = mounts.get(mode)?.markerRow();
+	if (marker) fixed.add(marker);
+	const children = chat.children;
+	const top = view.scrollTop;
+	const bottom = top + view.viewportHeight;
+	let first = -1;
+	let last = -1;
+	for (let index = 0; index < children.length; index++) {
+		const span = chat.windowRowSpan(children[index]!);
+		if (!span || span.bottom <= top || span.top >= bottom || fixed.has(children[index]!)) continue;
+		if (first < 0) first = index;
+		last = index;
+	}
+	if (first < 0) return undefined;
+	const run = parkedRun(children, first, last, current, {
+		fixed: (child) => fixed.has(child),
+		message: isChatMessageComponent,
+	});
+	if (!run) return undefined;
+	const retired = run.retired.filter((child) => !fixed.has(child));
+	const kept = run.adopted.filter((child) => !fixed.has(child));
+	const adopted = new Map<string, Component>();
+	for (const child of kept) {
+		const key = savedRowKey(child);
+		if (key !== undefined && !adopted.has(key)) adopted.set(key, child);
+	}
+	const moving = new Set([...retired, ...kept]);
+	mounts.get(mode)?.keep(moving);
+	for (const child of moving) chat.removeChild(child);
+	return {
+		parked: retired.length ? { rows: retired, first: run.first, last: run.last } : undefined,
+		adopted: kept,
+		keys: adopted,
+	};
 }
 
 function entryForDisplay(item: SessionHistoryItem): SessionEntry {
@@ -108,11 +234,12 @@ function requestPage(
 	owner: WeakRef<SavedChatHistory>,
 	signal: AbortSignal,
 	direction: Direction,
+	range: { readonly from: number; readonly to: number },
 	read: Promise<SessionHistoryPage | undefined>,
 ): void {
 	void read.then(
 		(page) => {
-			if (!signal.aborted) owner.deref()?.publish(direction, page);
+			if (!signal.aborted) owner.deref()?.publish(direction, page, range);
 		},
 		(error) => {
 			if (!signal.aborted) owner.deref()?.failed(error);
@@ -169,8 +296,8 @@ class SavedChatHistory {
 		}
 		if (direction === "start" || (direction === "newer" && this.view.isFollowingEnd)) this.cancel();
 		else if (this.pending) return;
-		const cursor = direction === "older" ? this.pages[0]?.older : this.pages.at(-1)?.newer;
-		if ((direction === "newer" && !cursor) || (direction === "older" && this.pages.length && !cursor)) return;
+		const request = this.request(direction);
+		if (!request) return;
 		const top = this.view.scrollTop,
 			height = this.view.viewportHeight;
 		if (direction === "older" && top > (this.chat.windowRowSpan(this.marker)?.bottom ?? 1) + height) return;
@@ -180,23 +307,78 @@ class SavedChatHistory {
 		}
 		const controller = new AbortController();
 		this.pending = controller;
-		const options: SessionHistoryReadOptions =
-			direction === "start" || !cursor
-				? {
-						branchLeafSeq: this.leaf,
-						toSeq: this.through,
-						direction: direction === "start" ? "forward" : "backward",
-					}
-				: { cursor };
 		requestPage(
 			new WeakRef(this),
 			controller.signal,
 			direction,
-			readVisiblePage(this.manager, { ...options, adjacent: true, signal: controller.signal }),
+			request,
+			readVisiblePage(this.manager, { ...request.options, adjacent: true, signal: controller.signal }),
 		);
 	}
 
-	publish(direction: Direction, page: SessionHistoryPage | undefined): void {
+	/** The read that continues the mounted pages in `direction`: a page's cursor, else a range past its edge. */
+	private request(direction: Direction): PageRequest | undefined {
+		const leaf = this.leaf;
+		const all = { from: 1, to: this.through };
+		if (direction === "start")
+			return { ...all, options: { branchLeafSeq: leaf, toSeq: this.through, direction: "forward" } };
+		const edge = direction === "older" ? this.pages[0] : this.pages.at(-1);
+		if (!edge) {
+			return direction === "older"
+				? { ...all, options: { branchLeafSeq: leaf, toSeq: this.through, direction: "backward" } }
+				: undefined;
+		}
+		const range = { from: edge.from, to: edge.to };
+		if (direction === "older") {
+			if (edge.older) return { ...range, options: { cursor: edge.older } };
+			return edge.from > 1 && edge.first > 1
+				? {
+						from: 1,
+						to: edge.first - 1,
+						options: { branchLeafSeq: leaf, toSeq: edge.first - 1, direction: "backward" },
+					}
+				: undefined;
+		}
+		if (edge.newer) return { ...range, options: { cursor: edge.newer } };
+		return edge.to < this.through && edge.last < this.through
+			? {
+					from: edge.last + 1,
+					to: this.through,
+					options: { branchLeafSeq: leaf, fromSeq: edge.last + 1, toSeq: this.through, direction: "forward" },
+				}
+			: undefined;
+	}
+
+	/**
+	 * Mount the rows a reader parked above the end saw of the window a compaction just retired, as the page they are
+	 * on. They are already drawn, so the reader keeps their place, selection and stateful renderers; reads continue
+	 * past either edge of the saved sequences they show.
+	 */
+	park(parked: ParkedRows): void {
+		const children = [...parked.rows];
+		this.chat.insertChildren(this.chat.children.indexOf(this.marker) + 1, children);
+		this.pages.push({ children, first: parked.first, last: parked.last, from: parked.first, to: parked.last });
+	}
+
+	markerRow(): Component {
+		return this.marker;
+	}
+
+	/** Forget pages whose rows move on, releasing only their rows that do not. */
+	keep(rows: ReadonlySet<Component>): void {
+		for (let index = this.pages.length - 1; index >= 0; index--) {
+			const page = this.pages[index]!;
+			if (!page.children.some((child) => rows.has(child))) continue;
+			this.pages.splice(index, 1);
+			this.drop({ ...page, children: page.children.filter((child) => !rows.has(child)) });
+		}
+	}
+
+	publish(
+		direction: Direction,
+		page: SessionHistoryPage | undefined,
+		range: { readonly from: number; readonly to: number },
+	): void {
 		this.pending = undefined;
 		const at = this.chat.children.indexOf(this.marker);
 		if (!page || at < 0 || this.mode.sessionManager !== this.manager) return;
@@ -206,11 +388,19 @@ class SavedChatHistory {
 			page.items.map(entryForDisplay),
 			page.items.map((item) => item.seq),
 			this.exceptions,
-			page.adjacent?.newer !== undefined,
+			page.adjacent,
 		);
-		const mounted: MountedPage = { children, older: page.adjacent?.older, newer: page.adjacent?.newer };
+		const mounted: MountedPage = {
+			children,
+			older: page.adjacent?.older,
+			newer: page.adjacent?.newer,
+			first: page.items[0]?.seq ?? range.from,
+			last: page.items.at(-1)?.seq ?? range.to,
+			from: range.from,
+			to: range.to,
+		};
 		if (direction === "newer") {
-			const previous = this.pages.at(-1)?.children.at(-1);
+			const previous = this.pages.findLast((mountedPage) => mountedPage.children.length)?.children.at(-1);
 			this.chat.insertChildren(previous ? this.chat.children.indexOf(previous) + 1 : at + 1, children);
 			this.pages.push(mounted);
 		} else {

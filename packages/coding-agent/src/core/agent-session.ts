@@ -337,6 +337,15 @@ class AgentSessionBase {
 		this.settingsManager.setCacheWarmingMode(mode);
 		this._cacheWarmer?.onModeChanged();
 	}
+	/**
+	 * The save receipt of a message this session emitted: the sequence its entry was stored at, read while the entry is
+	 * in the session's memory, as at its `message_end`. Undefined for a message that was not saved.
+	 */
+	entryReceipt(message: object): { readonly entryId: string; readonly seq: number } | undefined {
+		const entryId = this._entryIdsByMessage.get(message);
+		const seq = entryId === undefined ? undefined : this.sessionManager.getEntrySeq?.(entryId);
+		return seq === undefined ? undefined : { entryId: entryId!, seq };
+	}
 
 	constructor(config: AgentSessionConfig) {
 		registerSessionWorkOwner(this);

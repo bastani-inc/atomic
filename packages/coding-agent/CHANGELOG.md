@@ -11,6 +11,10 @@
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - `SessionManager.getWorktreeSnapshotRecords()` returns only the snapshot records the session holds: all of them while `hasFullHistory()` is true, otherwise the ones its resume needs (the latest snapshot of each checkout on the active branch and the snapshots its restores name) and those recorded in its window. Replace a lookup of an older record with `await manager.loadWorktreeSnapshotRecords(ids)`, or read every snapshot entry with `for await (const page of manager.readWorktreeSnapshotPages())`; both reject with the store's error instead of returning an empty map. `getLatestWorktreeSnapshots()` is unchanged ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
+### Added
+
+- RPC `message_end` events carry `entryId` and `seq` when the session saved the message, so a client can tell which saved entry it shows ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+
 ### Changed
 
 - Non-fullscreen chats show where to read or export older messages that were never printed in the terminal's scrollback ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
@@ -19,6 +23,7 @@
 ### Fixed
 
 - A hidden subagent or stage chat releases the rendered rows of a replaced transcript without waiting to be shown again ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- A compaction while you are scrolled up in the main chat or a live subagent chat keeps the rows you are reading, your selection and the unread count where they were, releases the rest of the earlier conversation, and reads it again page by page on either side as you scroll. A stateful extension card keeps its instance when a compaction keeps or retires it ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 
 ## [0.9.90] - 2026-11-19
 

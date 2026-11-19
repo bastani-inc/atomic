@@ -2445,6 +2445,12 @@ export class SubagentControlRuntime {
 						sessionManager.getTaskTranscriptEntries?.() ?? sessionManager.getEntries(),
 						unsavedAnswer,
 					),
+				...(typeof sessionManager.getEntrySeq === "function"
+					? { getEntrySeq: (id: string) => sessionManager.getEntrySeq(id) }
+					: {}),
+				...(typeof transcriptSession.entryReceipt === "function"
+					? { entryReceipt: (message) => transcriptSession.entryReceipt(message) }
+					: {}),
 				...(typeof sessionManager.readHistory === "function"
 					? {
 							getEarlierCursor: () => sessionManager.getEarlierCursor(),

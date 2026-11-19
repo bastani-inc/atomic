@@ -5,10 +5,16 @@ import type { ReferenceCut } from "../storage/session/history-snapshot.js";
 import {
 	SESSION_HISTORY_PAGE_BYTES as BUDGET,
 	SESSION_HISTORY_PAGE_ENTRIES as PACKET,
+	type SessionTaskReferenceCandidate,
 } from "../storage/session/types.js";
 import type { Failure, Result } from "./contracts.js";
 import type { TaskTranscriptSource } from "./supervisor.js";
-import { streamedEarlierMatches, streamedTaskReferences, type WantedReference } from "./task-reference-stream.js";
+import {
+	streamedEarlierMatches,
+	streamedTaskReferences,
+	visibleStreamedItem,
+	type WantedReference,
+} from "./task-reference-stream.js";
 import {
 	TASK_TRANSCRIPT_PAGE_ITEMS as LIMIT,
 	type TaskTranscriptItem,
@@ -71,7 +77,12 @@ function visible(entry: SessionEntry, index?: number): boolean {
 		);
 	return !taskEntryReferences(entry, "", false).next().done;
 }
-async function* metadata(cut: ReferenceCut, batch: readonly Candidate[], max: number): AsyncGenerator<RawRow, void> {
+async function* metadata(
+	cut: ReferenceCut,
+	batch: readonly Candidate[],
+	max: number,
+	explicit?: readonly SessionTaskReferenceCandidate[],
+): AsyncGenerator<RawRow, void> {
 	const { store, sessionId, epoch, through } = cut;
 	const rows = async function* (from: number, to: number, selected?: Set<number>) {
 		const head = await store.readEntrySizes!(sessionId, from, to);
@@ -85,12 +96,14 @@ async function* metadata(cut: ReferenceCut, batch: readonly Candidate[], max: nu
 	};
 	const find = store.findTaskReferenceDuplicateCandidates;
 	if (find && batch.every((c) => c.seq <= through)) {
-		const candidates = batch.map(({ seq, item }) => ({
-			seq,
-			...(item.source.contentIndex === undefined
-				? { suffixChars: suffix(item.id)?.chars }
-				: { contentIndex: item.source.contentIndex }),
-		}));
+		const candidates =
+			explicit ??
+			batch.map(({ seq, item }) => ({
+				seq,
+				...(item.source.contentIndex === undefined
+					? { suffixChars: suffix(item.id)?.chars }
+					: { contentIndex: item.source.contentIndex }),
+			}));
 		let afterSeq: number | undefined;
 		for (;;) {
 			const page = await find.call(store, sessionId, {
@@ -241,6 +254,41 @@ function detached(item: TaskTranscriptItem): TaskTranscriptItem {
 		...(typeof item.toolCallId === "string" ? { toolCallId: copy(item.toolCallId) } : {}),
 	};
 }
+/** A giant ID or tool-call ID is an exception only for an item actually returned. An out-of-order duplicate
+ * must not cause an unrequested giant ID to be collected even transiently. Hashes reject unlike names; a hit
+ * is compared against the two original streams before deciding it is a duplicate. */
+async function canonicalLargeItem(
+	reader: RawTaskReader,
+	cut: ReferenceCut | undefined,
+	row: RawRow,
+	at: string | undefined,
+	index?: number,
+): Promise<boolean> {
+	if (row.seq <= 1) return true;
+	const { identityViews, literalIdentity, equalIdentity } = await import("./task-reference-identity.js");
+	const expected = await identityViews(row.chunks!, index);
+	const shadow = async (prior: RawRow) => {
+		if (prior.seq >= row.seq) return false;
+		const root = prior.entry ? literalIdentity(prior.entry.id) : (await identityViews(prior.chunks!)).root;
+		for (const [target, part] of [
+			[expected.compound, undefined],
+			[expected.base, expected.block],
+		] as const) {
+			if (!target || !(await equalIdentity(root, target))) continue;
+			if (prior.entry ? visible(prior.entry, part) : await visibleStreamedItem(prior.chunks!, part)) return true;
+		}
+		return false;
+	};
+	if (cut?.store.readEntrySizes && cut.store.readEntryChunk && row.seq <= cut.through) {
+		const spec = {
+			seq: row.seq,
+			...(index === undefined ? { suffixChars: expected.suffixChars } : { contentIndex: index }),
+		};
+		for await (const prior of metadata(cut, [], row.seq, [spec])) if (await shadow(prior)) return false;
+	} else
+		for await (const page of reader(at, true)) for (const prior of page.rows) if (await shadow(prior)) return false;
+	return true;
+}
 const weight = (item: TaskTranscriptItem) => Buffer.byteLength(item.id) + Buffer.byteLength(item.toolCallId ?? "");
 /** The continuation remains the legacy task/session/item tuple. Nothing is retained between calls. */
 export async function savedTaskReferences(
@@ -306,7 +354,8 @@ export async function savedTaskReferences(
 				for (const item of taskEntryReferences(e, sessionId, true)) if (!(await push(item, row, page))) break outer;
 			} else if (row.chunks) {
 				if (batch.length) await flush();
-				let within = seek;
+				let within = seek,
+					beforeIndex: number | undefined;
 				for (;;) {
 					const run = await streamedTaskReferences(
 						row.chunks,
@@ -315,10 +364,18 @@ export async function savedTaskReferences(
 						budget,
 						!out.length,
 						within,
+						beforeIndex,
+						(index) => canonicalLargeItem(reader, cut, row, page.current, index),
 					);
 					if (seek !== undefined) {
 						if (!run.matched) break;
 						seek = undefined;
+					}
+					if (run.skipBefore !== undefined) {
+						if (!run.more) break;
+						beforeIndex = run.skipBefore;
+						within = undefined;
+						continue;
 					}
 					if (!run.items.length) {
 						if (run.more) {
@@ -329,7 +386,8 @@ export async function savedTaskReferences(
 					}
 					for (const item of run.items) if (!(await push(item, row, page))) break outer;
 					if (!run.more) break;
-					within = run.items.at(-1)!.id;
+					beforeIndex = run.items.at(-1)!.source.contentIndex;
+					within = beforeIndex === undefined ? run.items.at(-1)!.id : undefined;
 					await flush();
 					if (out.length === LIMIT || budget <= 0) {
 						more = true;
