@@ -683,6 +683,71 @@ export function taskCursorsAround(
 	};
 }
 
+const BOUNDARY_MARKS = /!([c1])$/;
+
+/**
+ * The cursor that reads only the one saved entry next to a shown page, toward `cursor`'s page: a view that finishes a
+ * tool card cut at a page's edge reads that entry, not the page. With `calls`, a reply keeps only its tool calls and
+ * a result only its call's identity. A reader that cannot read one entry reads the page, as `cursor` does.
+ */
+export function savedBoundaryCursor(cursor: string, calls: boolean): string {
+	return `${cursor}!${calls ? "c" : "1"}`;
+}
+
+/** What a boundary read keeps of a saved message: a reply's calls and outcome, a result, and only the role of the rest. */
+function boundaryMessage(message: AgentMessage, calls: boolean): AgentMessage | undefined {
+	switch (message.role) {
+		case "assistant":
+			return { ...message, content: calls ? message.content.filter((block) => block.type === "toolCall") : [] };
+		case "toolResult":
+			return calls ? { ...message, content: [] } : message;
+		case "user":
+			return { ...message, content: [] };
+		default:
+			return undefined;
+	}
+}
+
+async function savedBoundaryView(
+	read: (
+		options: Parameters<NonNullable<TaskTranscriptSource["readHistory"]>>[0],
+	) => AsyncIterable<import("../storage/session/types.js").SessionHistoryPage | FileTaskPage>,
+	raw: string,
+	scope: string,
+	calls: boolean,
+	file: FileArchive | undefined,
+	signal: AbortSignal | undefined,
+): Promise<TaskViewResult<TaskTranscriptView>> {
+	for await (const page of read({ cursor: raw, adjacent: true, limit: 1, ...(signal ? { signal } : {}) })) {
+		signal?.throwIfAborted();
+		const messages: AgentMessage[] = [];
+		const origins = new Map<AgentMessage, string>();
+		for (const item of page.items) {
+			if (!("entry" in item) || item.entry.type !== "message") continue;
+			const message = boundaryMessage(item.entry.message, calls);
+			if (message === undefined) continue;
+			messages.push(message);
+			const record = file
+				? createHash("sha256").update(JSON.stringify(item.entry)).digest("base64url")
+				: page.adjacent?.current?.split(".", 1)[0];
+			if (record) origins.set(message, `${scope}${record}:${item.seq}:0`);
+		}
+		bindSavedTaskOrigins(messages, origins);
+		const older = page.adjacent?.older;
+		const newer = page.adjacent?.newer;
+		return {
+			ok: true,
+			value: {
+				messages,
+				savedWindow: true,
+				...(older ? { nextCursor: `${scope}${older}~b` } : {}),
+				...(newer ? { newerCursor: `${scope}${newer}~f` } : {}),
+			},
+		};
+	}
+	return { ok: true, value: { messages: [], savedWindow: true } };
+}
+
 /** One saved page at a time; skipping a page of invisible bookkeeping doesn't keep that page alive. */
 async function savedTranscriptView(
 	session: TaskTranscriptSource,
@@ -698,7 +763,9 @@ async function savedTranscriptView(
 	const scope = savedTaskScope(taskId, sessionId);
 	if (cursor !== undefined && !cursor.startsWith(scope))
 		return { ok: false, error: { message: "Transcript cursor belongs to another task or session" } };
-	const encoded = cursor?.slice(scope.length);
+	const marked = cursor?.slice(scope.length);
+	const boundary = marked === undefined ? undefined : BOUNDARY_MARKS.exec(marked)?.[1];
+	const encoded = boundary === undefined ? marked : marked!.slice(0, -2);
 	// Also page within a single saved entry: a reply can contain hundreds of independently shown blocks.
 	const slice = encoded === undefined ? undefined : /^(.*)~([fb])(\d*)$/.exec(encoded);
 	const raw = slice ? slice[1] : encoded;
@@ -706,6 +773,9 @@ async function savedTranscriptView(
 	let offset = slice?.[3] ? Number(slice[3]) : undefined;
 	if (offset !== undefined && !Number.isSafeInteger(offset))
 		return { ok: false, error: { message: "Invalid transcript cursor" } };
+	// A cut inside one saved reply continues in the same saved entry: that is read as a page, as before.
+	if (boundary !== undefined && raw !== undefined && offset === undefined)
+		return savedBoundaryView(read, raw, scope, boundary === "c", file, signal);
 	for await (const page of read({
 		...(raw === undefined ? { direction: "backward" as const } : { cursor: raw }),
 		adjacent: true,

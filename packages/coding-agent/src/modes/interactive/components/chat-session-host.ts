@@ -11,13 +11,6 @@ import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/ta
 import { savedRowKey } from "../../../core/tasks/transcript-origin.js";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import {
-	callsAwaitingLaterResults,
-	endsAwaitedResults,
-	isResultWithoutCall,
-	settleUnansweredCalls,
-	type ToolChatEntry,
-} from "./chat-message-renderer.ts";
-import {
 	abortChatSessionBash,
 	abortChatSessionCompaction,
 	interruptChatSession,
@@ -66,6 +59,7 @@ import {
 	stopChatSessionWorkingLifecycle,
 	syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
+import { SavedPageCalls, type SavedPageNeighbours } from "./chat-session-host-saved-calls.ts";
 import { ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
 import type {
 	AgentSnapshotMessage,
@@ -85,11 +79,9 @@ import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
 import { isClickedGroup } from "./transcript-block-clicks.ts";
 import { type AgentTokenMeterSnapshot, type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
-/** One saved page a transcript shows: kept while on screen, discarded after the reader leaves it. */
 export interface SavedPageHandle {
 	visible(): boolean;
 	discard(): void;
-	/** The page's last row in the transcript, which a newer saved page follows. */
 	lastRow(): object | undefined;
 }
 
@@ -122,11 +114,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		transcriptRows: Number.POSITIVE_INFINITY,
 	};
 	private historyHydrated = false;
-	/** Calls each shown page ends with that wait for the entries after the page; see `holdCallsAwaitingResults`. */
-	private heldCalls: {
-		readonly page: Set<ChatSessionHostEntry<TExtraEntry>>;
-		readonly calls: Map<string, ToolChatEntry>;
-	}[] = [];
+	/** The tool cards shown saved pages cut at their edges. */
+	private readonly savedCalls: SavedPageCalls<TExtraEntry>;
 	private readonly taskTranscriptEnvironment: () => TaskTranscriptEnvironment;
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>) {
@@ -150,6 +139,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			renderEntry: (state, entry) => renderChatSessionEntry(state, entry),
 			transcriptCacheKey: (state, entry) => transcriptCacheKey(state, entry),
 		});
+		this.savedCalls = new SavedPageCalls(this.state);
 		this.state.editor = createChatSessionEditor(
 			this.state,
 			opts.tui,
@@ -220,10 +210,13 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
 	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
-		this.prependPage(messages);
+		this.prependPage(messages, {});
 	}
 
-	private prependPage(messages: readonly AgentSnapshotMessage[]): Set<ChatSessionHostEntry<TExtraEntry>> {
+	private prependPage(
+		messages: readonly AgentSnapshotMessage[],
+		neighbours: SavedPageNeighbours,
+	): Set<ChatSessionHostEntry<TExtraEntry>> {
 		const firstUser = firstRawUserExactText(messages);
 		if (firstUser.seenUser) {
 			this.state.seenFirstRawUser = true;
@@ -235,8 +228,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (notices?.card) this.state.assistantCard = notices.card;
 		this.state.liveChat.prependMessages(messages);
 		// Entries above the earliest one shown end where it starts: their open calls may have results shown below.
-		const page = this.holdCallsAwaitingResults(
+		const page = this.savedCalls.show(
 			new Set(this.state.transcript.slice(0, this.state.transcript.length - before)),
+			neighbours,
 			true,
 		);
 		if (firstUser.seenUser || this.state.firstUserEntry === undefined) {
@@ -248,74 +242,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * A page ends with calls whose results may be saved after its end: they are hidden, not drawn as still running,
-	 * until the entries after the page show their results (whose cards then take the calls' arguments) or a new turn
-	 * without them (then the calls show as a whole transcript shows them). A page with nothing after it keeps them.
-	 */
-	private holdCallsAwaitingResults(
-		page: Set<ChatSessionHostEntry<TExtraEntry>>,
-		continues: boolean,
-	): Set<ChatSessionHostEntry<TExtraEntry>> {
-		const { state } = this;
-		const calls = continues ? callsAwaitingLaterResults(state.transcript.filter((entry) => page.has(entry))) : [];
-		if (calls.length > 0) {
-			for (const call of calls) page.delete(call);
-			state.liveChat.dropSavedEntries(new Set(calls));
-			this.heldCalls.push({ page, calls: new Map(calls.map((call) => [call.toolCallId, call])) });
-		}
-		this.joinHeldCalls();
-		return page;
-	}
-
-	/** Joins every held call with the entries shown after its page. */
-	private joinHeldCalls(): void {
-		const { state } = this;
-		for (const held of this.heldCalls) {
-			if (held.calls.size === 0) continue;
-			let end = -1;
-			for (let index = state.transcript.length - 1; index >= 0 && end < 0; index--)
-				if (held.page.has(state.transcript[index]!)) end = index;
-			if (end < 0) continue;
-			const answered = new Set<string>();
-			let first = true;
-			for (let index = end + 1; index < state.transcript.length && answered.size < held.calls.size; index++) {
-				const entry = state.transcript[index]!;
-				if (state.extraEntries.includes(entry as TExtraEntry) || !("kind" in entry) || entry.kind === "task")
-					continue;
-				const after = first;
-				first = false;
-				if (entry.kind === "tool") {
-					const call = isResultWithoutCall(entry) ? held.calls.get(entry.toolCallId) : undefined;
-					if (call === undefined) continue;
-					answered.add(call.toolCallId);
-					if (entry.args === call.args) continue;
-					entry.args = call.args;
-					const key = state.rowKey(entry);
-					const kept = key === undefined ? undefined : state.savedRenderers?.get(key)?.[0];
-					if (kept && "updateArgs" in kept && typeof kept.updateArgs === "function") kept.updateArgs(call.args);
-					state.entryRevisions.set(entry, (state.entryRevisions.get(entry) ?? 0) + 1);
-					continue;
-				}
-				if (!endsAwaitedResults(entry, after)) continue;
-				const unanswered = [...held.calls.values()].filter((call) => !answered.has(call.toolCallId));
-				settleUnansweredCalls(entry, unanswered);
-				for (const call of unanswered) {
-					held.calls.delete(call.toolCallId);
-					held.page.add(call);
-				}
-				state.liveChat.restoreSavedEntries(state.transcript[end]!, unanswered);
-				break;
-			}
-		}
-	}
-
-	/**
-	 * Replaces the conversation with `messages`, keeping the host's own extra entries, and the rows a reader parked
-	 * above the end sees when `parked` names them (`parkedRows`).
+	 * Replaces the conversation with `messages`, keeping the host's own extra entries. `before` reads the saved entries
+	 * before them, for result cards whose calls are saved there.
 	 */
 	replaceMessages(
 		messages: readonly AgentSnapshotMessage[],
-		options: { preserveUnread?: boolean; parked?: ParkedTaskRows } = {},
+		options: { preserveUnread?: boolean; before?: SavedPageNeighbours["before"]; parked?: ParkedTaskRows } = {},
 	): void {
 		if (options.preserveUnread && this.state.bodyViewport.getScrollFromBottom() > 0) {
 			this.state.newMessages.observe(false, countableTranscriptLength(this.state));
@@ -325,34 +257,29 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.firstUserEntryExactText = firstUser.exactText;
 		const notices = pagedNotices.get(this);
 		if (notices) pagedNotices.set(this.state.transcript, notices);
-		this.heldCalls = [];
+		this.savedCalls.reset();
 		this.state.replaceTranscriptWindow(messages, options.parked);
+		if (options.before) this.savedCalls.show(this.shownWindow(), { before: options.before }, false);
 		syncFirstUserEntry(this.state);
 		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
 		else this.state.newMessages.reset();
 		this.state.requestRender?.();
 	}
 
-	/**
-	 * The rows a reader parked above the end sees, for a replacement of the window that now starts at saved sequence
-	 * `current` to keep: the rows of the window it retires, widened to every row of the messages they show, and the rows
-	 * of entries it keeps. Undefined while the reader follows the end, or when a row they see is unsaved and cannot be
-	 * placed among the saved entries.
-	 */
+	/** Keep painted occurrences when a saved context is replaced; never infer a stored position from text. */
 	parkedRows(current: number): ParkedTaskRows | undefined {
 		const { state } = this;
 		if (state.bodyViewport.getScrollFromBottom() === 0) return undefined;
-		const painted = new Set(state.bodyViewport.paintedSegments(state.transcriptComponent));
-		const rows: readonly object[] = state.transcript;
-		let first = -1;
-		let last = -1;
-		for (let index = 0; index < rows.length; index++) {
-			if (!painted.has(rows[index])) continue;
-			if (first < 0) first = index;
-			last = index;
+		const painted = new Set(state.bodyViewport.paintedSegments(state.transcriptComponent)),
+			rows: readonly object[] = state.transcript;
+		let first = -1,
+			last = -1;
+		for (let i = 0; i < rows.length; i++) {
+			if (!painted.has(rows[i])) continue;
+			if (first < 0) first = i;
+			last = i;
 		}
 		if (first < 0) return undefined;
-		// The host's own entries stay through any replacement, at its end.
 		const own = new Set<object>(state.extraEntries);
 		const run = parkedRun(rows, first, last, current, {
 			fixed: (row) => own.has(row),
@@ -366,53 +293,55 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		}
 		return { rows: run.retired.filter((row) => !own.has(row)), first: run.first, last: run.last, adopted };
 	}
-
-	/** Own rows already in the transcript as one saved page, such as rows a reader kept through a compaction. */
 	keptPage(rows: readonly object[]): SavedPageHandle {
 		return this.savedPageHandle(new Set(rows) as Set<ChatSessionHostEntry<TExtraEntry>>);
 	}
 
-	/** Own one page displayed by a saved transcript. A page is discarded only after the viewport leaves it. */
+	private shownWindow(): Set<ChatSessionHostEntry<TExtraEntry>> {
+		const { state } = this;
+		return new Set(state.transcript.filter((e) => !state.extraEntries.includes(e as TExtraEntry)));
+	}
+
+	/**
+	 * Own one page displayed by a saved transcript. A page is discarded only after the viewport leaves it. `neighbours`
+	 * read the saved entries around it, one at a time; `after` is present when a later page follows it.
+	 */
 	showSavedPage(
 		messages: readonly AgentSnapshotMessage[],
 		edge: "latest" | "older" | "newer",
+		neighbours: SavedPageNeighbours = {},
 		after?: object,
-		continues = edge === "older",
 	): SavedPageHandle {
 		const { state } = this;
 		const before = state.transcript.length;
-		// A newer page of a live chat's saved history goes between the page before it and the live window.
 		const at = after === undefined ? -1 : state.transcript.indexOf(after as ChatSessionHostEntry<TExtraEntry>) + 1;
-		if (edge === "older") return this.savedPageHandle(this.prependPage(messages));
-		if (edge === "latest") {
+		let owned: Set<ChatSessionHostEntry<TExtraEntry>>;
+		if (edge === "older") owned = this.prependPage(messages, neighbours);
+		else if (edge === "latest") {
 			this.replaceMessages(messages);
-			return this.savedPageHandle(
-				this.holdCallsAwaitingResults(
-					new Set(state.transcript.filter((e) => !state.extraEntries.includes(e as TExtraEntry))),
-					continues,
-				),
+			owned = this.savedCalls.show(this.shownWindow(), neighbours, neighbours.after !== undefined);
+		} else {
+			const count = countableTranscriptLength(state);
+			if (at > 0) state.liveChat.insertMessages(at, messages);
+			else this.appendMessages(messages);
+			const added = state.transcript.length - before;
+			owned = this.savedCalls.show(
+				new Set(at > 0 ? state.transcript.slice(at, at + added) : state.transcript.slice(before)),
+				neighbours,
+				neighbours.after !== undefined,
 			);
+			state.newMessages.historyPrepended(countableTranscriptLength(state) - count);
 		}
-		const count = countableTranscriptLength(state);
-		if (at > 0) state.liveChat.insertMessages(at, messages);
-		else this.appendMessages(messages);
-		const added = state.transcript.length - before;
-		const owned = this.holdCallsAwaitingResults(
-			new Set(at > 0 ? state.transcript.slice(at, at + added) : state.transcript.slice(before)),
-			continues,
-		);
-		state.newMessages.historyPrepended(countableTranscriptLength(state) - count);
 		return this.savedPageHandle(owned);
 	}
-
 	private savedPageHandle(owned: Set<ChatSessionHostEntry<TExtraEntry>>): SavedPageHandle {
 		const { state } = this;
 		return {
 			lastRow: () => state.transcript.findLast((entry) => owned.has(entry)),
 			visible: () => state.bodyViewport.paintsSegments(state.transcriptComponent, owned),
 			discard: () => {
-				this.heldCalls = this.heldCalls.filter((held) => held.page !== owned);
 				state.liveChat.dropSavedEntries(owned);
+				this.savedCalls.discard(owned);
 				state.releaseRetiredRows();
 				syncFirstUserEntry(state);
 				state.firstUserEntryExactText = state.firstUserEntry?.text;

@@ -160,6 +160,7 @@ async function filePage(
 	detail?: { throughId?: string },
 	metadataOnly = false,
 	expectedGeneration?: string,
+	entries = LIMIT,
 ): Promise<FileTaskPage> {
 	const source = digest(JSON.stringify([path, id]));
 	const cut = cursor === undefined ? undefined : decode(cursor, source);
@@ -217,7 +218,7 @@ async function filePage(
 				high = at,
 				lowAfter = after,
 				highAfter = after;
-			for (let visited = 0; visited < LIMIT && (backward ? at > header.next : at < limit); visited++) {
+			for (let visited = 0; visited < entries && (backward ? at > header.next : at < limit); visited++) {
 				signal?.throwIfAborted();
 				const span = backward ? await lines.backward(at, header.next) : await lines.forward(at, limit);
 				const bytes = span.end - span.start;
@@ -314,9 +315,12 @@ export async function* taskFilePages(
 		signal?: AbortSignal;
 		direction?: "forward" | "backward";
 		detail?: { throughId?: string };
+		/** At most this many entries per page, never more than a page holds. */
+		limit?: number;
 	},
 ): AsyncGenerator<FileTaskPage, void> {
 	let cursor = options.cursor;
+	const entries = Math.max(1, Math.min(LIMIT, Math.floor(options.limit ?? LIMIT)));
 	for (;;) {
 		options.signal?.throwIfAborted();
 		const page = await filePage(
@@ -328,6 +332,7 @@ export async function* taskFilePages(
 			options.detail,
 			options.metadataOnly,
 			options.expectedGeneration,
+			entries,
 		);
 		yield page;
 		if (!page.nextCursor) return;

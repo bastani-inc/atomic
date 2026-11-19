@@ -961,7 +961,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 
 /**
  * Render an archived page on its own. Never register historical tools as pending in the live turn. When a later page
- * follows (`newer`), calls the page ends with wait for it: their results start that page.
+ * follows (`adjacent.newer`), calls the page ends with wait for it: their results start that page.
  */
 function savedChatComponents(
 	mode: InteractiveModeBase,
@@ -970,7 +970,6 @@ function savedChatComponents(
 	exceptions: SavedRendererInstances,
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 ): Component[] {
-	const newer = adjacent?.newer !== undefined;
 	const scratch = new Container();
 	const chat = mode.chatContainer;
 	try {
@@ -978,9 +977,11 @@ function savedChatComponents(
 		const saved = { seqs: new Map(entries.map((e, i) => [e, seqs[i]!])), owners: new WeakMap<object, string>() };
 		const steps = planTranscript(mode, entries, { saved });
 		const held = new Set(
-			newer ? callsAwaitingLaterResults(steps.flatMap((step) => (step.kind === "entry" ? [step.entry] : []))) : [],
+			adjacent?.newer
+				? callsAwaitingLaterResults(steps.flatMap((step) => (step.kind === "entry" ? [step.entry] : [])))
+				: [],
 		);
-		const calls = new SavedPageCallsBuilder(seqs, exceptions);
+		const calls = new SavedPageCallsBuilder(mode, chat, seqs, exceptions);
 		for (const step of steps) {
 			const key = step.kind === "cost" ? undefined : saved.owners.get(step.entry);
 			if (step.kind === "entry" && step.entry.kind === "tool" && held.has(step.entry)) {
@@ -1003,10 +1004,11 @@ function savedChatComponents(
 			const drawn = scratch.children.slice(index);
 			if (key) followChosenExpansion(mode, exceptions, key, drawn);
 			if (step.kind !== "entry") continue;
-			if (step.entry.kind === "tool" && isResultWithoutCall(step.entry)) calls.drewResult(step.entry, drawn);
+			if (key && step.entry.kind === "tool" && isResultWithoutCall(step.entry))
+				calls.drewResult(step.entry, drawn, key);
 			calls.drew(step.entry);
 		}
-		if (scratch.children.length > 0) scratch.children.unshift(calls.finish(mode, chat));
+		if (scratch.children.length > 0) scratch.children.unshift(calls.finish(mode.sessionManager, adjacent));
 		return scratch.children;
 	} finally {
 		mode.chatContainer = chat;

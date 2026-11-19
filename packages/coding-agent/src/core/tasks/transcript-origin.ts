@@ -62,3 +62,8 @@ export function savedRowKey(row: object): string | undefined {
 	const seq = savedSeqOf(source?.message);
 	return seq === undefined ? undefined : `${seq}:${source!.part}`;
 }
+
+/** Gives `entry` the saved row of another entry that draws the same saved record, such as a card standing in for it. */
+export function bindSavedTaskRowKey(entry: object, key: string): void {
+	rendered.set(entry, key);
+}
