@@ -1012,7 +1012,6 @@ async function constructAgentSession(
 	);
 	const childHistory: ProjectHistory = {
 		sessionStore: () => session.extensionRunner.getProjectHistory().sessionStore(),
-		workflows: () => session.extensionRunner.getProjectHistory().workflows(),
 	};
 	try {
 		// One sink per session, so every resolved child configuration carries the same callback identity.

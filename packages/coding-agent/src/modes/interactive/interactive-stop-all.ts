@@ -20,7 +20,7 @@ export interface StopAllChordHost {
 
 /**
  * Ctrl+X Ctrl+K anywhere: the chord key, then the stop-all key, pressed twice within three seconds, stops every
- * background subagent, shell and workflow run of the session. The chord key itself still reaches whatever has the
+ * background subagent and shell of the session. The chord key itself still reaches whatever has the
  * keyboard (nothing binds it by default); only the stop-all key right after it is taken. Any other key ends the chord.
  * Returns the input listener to register.
  */

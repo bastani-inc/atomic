@@ -14,7 +14,7 @@ import {
 } from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
-	/** Every row the panel lists, workflow runs included. */
+	/** Every row the panel lists. */
 	readonly agentRows?: number;
 	/** The subagent rows among them; defaults to `agentRows`. */
 	readonly agents?: number;
@@ -23,12 +23,11 @@ export interface MainComposerKeyState {
 	readonly shells?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not. */
 	readonly subagents?: number;
-	readonly hiddenWorkflow?: boolean;
 	readonly working: boolean;
 }
 
 export type MainComposerHintSource =
-	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents" | "hiddenWorkflow">
+	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents">
 	| (AgentPanelSession & object)
 	| (() => AgentPanelCounts);
 
@@ -51,7 +50,6 @@ function resolveAgentCounts(
 				needsInput: source.needsInput ?? 0,
 				shells: source.shells ?? 0,
 				subagents: source.subagents ?? 0,
-				hiddenWorkflow: source.hiddenWorkflow,
 			};
 		}
 		return agentPanelCounts(source as AgentPanelSession & object);
@@ -107,11 +105,9 @@ export function mainComposerFooterHints(
 		if (segment.kind === "tasks") return slashCommandHint(segment.text);
 		return segment.text;
 	});
-	const optionalIndex = counts.hiddenWorkflow ? segments.length : undefined;
-	if (counts.hiddenWorkflow) segments.push(slashCommandHint("/workflows to see runs"));
 	const helpKeys = navEntryKeyParts(promptKeys, { action: "app.keys.help", label: "" });
 	if (helpKeys.length > 0) segments.push(clickableKeysHint(helpKeys, " keys"));
-	return { segments, optionalIndex };
+	return { segments };
 }
 
 function finiteCount(value: number): number {

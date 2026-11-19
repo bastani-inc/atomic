@@ -57,7 +57,7 @@ function viewOf(store: OwnerTaskStore, sendTaskMessage?: (id: string, text: stri
 function waitingItem(id: string, promptId: string, question: string, choices?: readonly string[]): AgentPanelItem {
 	return {
 		id,
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: id.replace(/^run:/, ""),
 		task: question,
@@ -363,7 +363,7 @@ test("confirming x with peek open, single x after unseen finish, and confirming 
 		const fixture = taskFixture();
 		let item: AgentPanelItem = {
 			id: "run:ralph",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "ralph",
 			task: "stage build",
@@ -413,7 +413,7 @@ test("confirming x with peek open, single x after unseen finish, and confirming 
 		const nativeId = fixture.store.tasks[0]!.ref.taskId;
 		let item: AgentPanelItem = {
 			id: "run:build",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "build",
 			task: "stage build",
@@ -458,8 +458,8 @@ test("confirming x with peek open, single x after unseen finish, and confirming 
 	{
 		const fixture = taskFixture();
 		let items: AgentPanelItem[] = [
-			{ id: "run:a", kind: "workflow", state: "running", name: "a", task: "stage a", elapsedMs: 1_000 },
-			{ id: "run:b", kind: "workflow", state: "done", name: "b", task: "stage b", elapsedMs: 1_000, endedAt: 1_000 },
+			{ id: "run:a", kind: "agent", state: "running", name: "a", task: "stage a", elapsedMs: 1_000 },
+			{ id: "run:b", kind: "agent", state: "done", name: "b", task: "stage b", elapsedMs: 1_000, endedAt: 1_000 },
 		];
 		const listeners = new Set<() => void>();
 		const dismissed: string[] = [];
@@ -735,8 +735,8 @@ test("metrics-only store updates reuse sorted sections and key-to-paint reads bo
 		items: () => {
 			itemReads++;
 			return [
-				{ id: "run:one", kind: "workflow", state: "running", name: "one", task: "stage 1", elapsedMs: 1_000 },
-				{ id: "run:two", kind: "workflow", state: "running", name: "two", task: "stage 2", elapsedMs: 2_000 },
+				{ id: "run:one", kind: "agent", state: "running", name: "one", task: "stage 1", elapsedMs: 1_000 },
+				{ id: "run:two", kind: "agent", state: "running", name: "two", task: "stage 2", elapsedMs: 2_000 },
 			];
 		},
 		subscribe: (listener) => {

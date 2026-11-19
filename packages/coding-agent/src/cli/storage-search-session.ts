@@ -91,7 +91,7 @@ export async function searchStoredSession(
 			const revision = async () => (await db.get(`SELECT revision FROM ${table} WHERE id = ?`, sessionId))?.revision;
 			const initial = await revision();
 			if (initial === undefined) throw new Error(`Session not found in the named database: ${sessionId}`);
-			const history = createHistoryRouter({ cwd, sessionStore: () => store, workflows: () => undefined });
+			const history = createHistoryRouter({ cwd, sessionStore: () => store });
 			const search = createSearchToolDefinition(cwd);
 			const base = `history://sessions/${sessionId}`;
 			for (;;) {

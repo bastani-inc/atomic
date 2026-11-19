@@ -20,7 +20,6 @@ import {
 	agentPanelKeys,
 	formatPanelElapsed,
 	formatPanelTokens,
-	panelProgressBar,
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
@@ -76,13 +75,12 @@ const ROWS: AgentPanelRow[] = [
 	},
 	{
 		id: "run:r",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "ralph",
 		task: "stage implement",
 		elapsedMs: 12 * 60_000,
 		tokens: 61_000,
-		progress: { done: 3, total: 5 },
 	},
 	{ id: "task:c", kind: "agent", state: "done", name: "worker", task: "picker clamp", elapsedMs: 6 * 60_000 },
 ];
@@ -189,7 +187,7 @@ test("panel rows show glyph, name, task, elapsed and tokens, right-aligned at 16
 		[
 			"  ∀ worker  fix shipping batches  41m · ↓ 96.1k tokens",
 			"  ∀ debugger  #5220 spawn lock  18m · ↓ 87.4k tokens",
-			"  ∀ ralph  ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages  12m · ↓ 61.0k tokens",
+			"  ∀ ralph  stage implement  12m · ↓ 61.0k tokens",
 			"  ✓ worker  picker clamp  done · 6m",
 		],
 	);
@@ -200,7 +198,7 @@ test("panel rows show glyph, name, task, elapsed and tokens, right-aligned at 16
 	}
 	const narrow = renderAgentPanelRows(ROWS, 56, plain);
 	assert.match(narrow[0]!, /41m$/, "narrow rows drop tokens");
-	assert.match(narrow[2]!, /stage implement/, "narrow rows drop the stage bar");
+	assert.match(narrow[2]!, /stage implement/, "narrow rows retain the task text");
 	const tiny = renderAgentPanelRows(ROWS, 30, plain);
 	assert.deepEqual(tiny[0], "  ∀ worker", "very narrow rows keep the glyph and name");
 });
@@ -239,7 +237,7 @@ test("rows sort needing input, running, then finished; kept finished rows fade, 
 	const rows: AgentPanelRow[] = [
 		stopped,
 		{ ...ROWS[0]! },
-		{ id: "run:q", kind: "workflow", state: "input", name: "ralph", task: "approve the plan?" },
+		{ id: "run:q", kind: "agent", state: "input", name: "ralph", task: "approve the plan?" },
 	];
 	assert.deepEqual(
 		model.rows(rows).map((row) => row.id),
@@ -253,14 +251,6 @@ test("rows sort needing input, running, then finished; kept finished rows fade, 
 		model.rows([{ ...ROWS[3]! }, { ...ROWS[0]! }]).map((row) => row.id),
 		["task:a"],
 		"a done subagent leaves at once",
-	);
-	const finishedRun: AgentPanelRow = { ...ROWS[2]!, id: "run:done", state: "done" };
-	assert.deepEqual(model.rows([finishedRun]), [], "a finished run nobody keeps leaves at once");
-	now += 24 * 60 * 60_000;
-	assert.deepEqual(
-		model.rows([finishedRun], () => true).map((row) => row.id),
-		["run:done"],
-		"a finished run stays until it has been viewed",
 	);
 });
 
@@ -555,15 +545,6 @@ test("rows whose name, task or stage label starts with combining marks stay with
 			elapsedMs: 18_000,
 			tokens: 87_400,
 		},
-		{
-			id: "run:mark-stage",
-			kind: "workflow",
-			state: "running",
-			name: "\u093E\u0301ralph",
-			task: "stage \u093E\u302Eimplement",
-			elapsedMs: 12_000,
-			progress: { done: 3, total: 5 },
-		},
 	];
 	try {
 		for (const themeName of ["dark", "light"] as const) {
@@ -616,17 +597,6 @@ test("formatPanelTokens rounds fractional values and rejects malformed counts (#
 	}
 });
 
-test("progress bars clamp invalid and out-of-range values without throwing (#5224, #5239)", () => {
-	assert.equal(panelProgressBar(-1, 3), "▱".repeat(16));
-	assert.equal(panelProgressBar(9, 3), "▰".repeat(16));
-	for (const value of [NaN, Infinity, Symbol("done"), Object.create(null)]) {
-		assert.equal(panelProgressBar(value as number, 3), "▱".repeat(16));
-		assert.equal(panelProgressBar(1, value as number), "▱".repeat(16));
-	}
-	assert.equal(panelProgressBar(1, 3, -1), "");
-	assert.equal(panelProgressBar(1, 3, Infinity), "");
-});
-
 test("panel time and token formats (#5224)", () => {
 	assert.equal(formatPanelElapsed(9_000), "9s");
 	assert.equal(formatPanelElapsed(41 * 60_000), "41m");
@@ -645,7 +615,7 @@ test("the panel lists a session's extension items and background tasks together,
 		const hub = new AgentPanelSourceHub();
 		let run: AgentPanelItem = {
 			id: "run:r1",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "ralph",
 			task: "stage implement",
@@ -657,7 +627,7 @@ test("the panel lists a session's extension items and background tasks together,
 		bindOwnerTaskStore(session, fixture.store);
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => `${row.name}:${row.task}`),
-			["ralph:stage implement", "worker:second task", "worker:first task"],
+			["worker:second task", "worker:first task", "ralph:stage implement"],
 		);
 		assert.equal(openAgentPanelItem(session, "run:r1"), true);
 		assert.deepEqual(opened, ["run:r1"]);
@@ -735,7 +705,7 @@ test("a workflow row opens through its source with a way back to the panel (#522
 	let returned = 0;
 	const opened: Array<{ id: string; onReturn?: () => void }> = [];
 	hub.register({
-		items: () => [{ id: "run:r", kind: "workflow", state: "running", name: "ralph", task: "" }],
+		items: () => [{ id: "run:r", kind: "agent", state: "running", name: "ralph", task: "" }],
 		subscribe: () => () => {},
 		open: (id, options) => opened.push({ id, ...(options?.onReturn ? { onReturn: options.onReturn } : {}) }),
 	});
@@ -751,7 +721,7 @@ test("a burst of source changes rebuilds the mounted panel's rows once, then fol
 	const hub = new AgentPanelSourceHub();
 	const listeners = new Set<() => void>();
 	let reads = 0;
-	let items: AgentPanelItem[] = [{ id: "run:r", kind: "workflow", state: "running", name: "ralph", task: "" }];
+	let items: AgentPanelItem[] = [{ id: "run:r", kind: "agent", state: "running", name: "ralph", task: "" }];
 	hub.register({
 		items: () => {
 			reads++;
@@ -862,7 +832,7 @@ test("a source that throws is left out of the panel, reported once, and never cr
 	hub.register({
 		items: () => {
 			if (broken) throw new Error("source exploded");
-			return [{ id: "run:ok", kind: "workflow", state: "running", name: "ralph", task: "" }];
+			return [{ id: "run:ok", kind: "agent", state: "running", name: "ralph", task: "" }];
 		},
 		subscribe: (listener) => {
 			listeners.add(listener);
@@ -870,7 +840,7 @@ test("a source that throws is left out of the panel, reported once, and never cr
 		},
 	});
 	hub.register({
-		items: () => [{ id: "run:other", kind: "workflow", state: "running", name: "other", task: "" }],
+		items: () => [{ id: "run:other", kind: "agent", state: "running", name: "other", task: "" }],
 		subscribe: () => () => {},
 	});
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };

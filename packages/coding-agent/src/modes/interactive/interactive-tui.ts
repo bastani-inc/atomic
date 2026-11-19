@@ -368,7 +368,7 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 	 * Last stop before pi-tui turns the composited screen into bytes, and where
 	 * it already removes its own `CURSOR_MARKER`. Every component tree that this
 	 * renderer paints converges here, so one strip covers the overlay, inline,
-	 * widget, and workflows stage-chat mounts at once — including hosts that
+	 * and widget mounts at once — including hosts that
 	 * never call `ReservedBottomOverlay.takeActiveRow`. It also removes OSC 133
 	 * marks, which pi-tui strips only from base lines at column 0, so overlay
 	 * transcripts cannot make the terminal drop the OSC 7501 status. Both marks
