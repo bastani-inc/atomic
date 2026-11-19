@@ -708,3 +708,34 @@ test("sibling calls that merge share one concurrency limit, also when only one o
 	while (started.length < 2 && Date.now() < settled) await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.deepEqual(started, ["A", "B"]);
 });
+
+test.each([
+	{ name: "a shared output file", maxTasks: 50, shared: true, error: /same path/ },
+	{ name: "the combined task limit", maxTasks: 1, shared: false, error: /Too many parallel tasks/ },
+])(
+	"sibling calls that can merge still fail together on $name when only one passes a wait (#5686)",
+	async ({ maxTasks, shared, error }) => {
+		const started: string[] = [];
+		const { call, cwd } = harness(
+			async (_cwd, _agents, _agent, task) => {
+				started.push(task);
+				return childResult(task);
+			},
+			undefined,
+			4,
+			{ maxTasks },
+		);
+		const output = shared ? { output: join(cwd, "report.md") } : {};
+		// A caller that still passes the removed launch `wait`.
+		const withWait = { agent: "echo", task: "A", ...output, wait: { kind: "background" } };
+		const answers = await Promise.all([
+			call("with-wait", withWait as SubagentParamsLike),
+			call("without-wait", { agent: "echo", task: "B", ...output }),
+		]);
+		for (const answer of answers) {
+			assert.equal(answer.isError, true, text(answer));
+			assert.match(text(answer), error);
+		}
+		assert.deepEqual(started, []);
+	},
+);
