@@ -190,7 +190,7 @@ Atomic reports its state with the [Program Status Protocol (OSC 7501)](https://w
 | State | When |
 |---|---|
 | `working` | An agent run or compaction is in progress. The message is the session name, or `Compacting context`. |
-| `blocked` | An extension dialog or login is waiting for you. The message is the dialog title. |
+| `blocked` | A dialog, question, or login waits for you. |
 | `done` | The agent run finished successfully. The message is the session name. |
 | `error` | A run ended with an error that is not retried. The message is the first line of the error. |
 | `idle` | Atomic started, or you cancelled the run. |

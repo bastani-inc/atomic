@@ -7,7 +7,6 @@ import {
 	type AgentPanelAnswerOptions,
 	type AgentPanelItem,
 	AgentPanelSourceHub,
-	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
@@ -20,11 +19,7 @@ import {
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { taskDisplayText } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import {
-	agentPanelHasRows,
-	agentPanelRows,
-	bindAgentPanel,
-} from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { agentPanelRows, bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -155,7 +150,7 @@ test("settling a background task freezes its elapsed clock at the store settleme
 test("agent panel rank cache refreshes extension row text at group-offset slots and respects the idle row cap (#5224)", () => {
 	const hub = new AgentPanelSourceHub();
 	let items: AgentPanelItem[] = [
-		{ id: "run:w", kind: "workflow", state: "input", name: "wf", task: "ask", question: "Go?" },
+		{ id: "run:w", kind: "agent", state: "input", name: "wf", task: "ask", question: "Go?" },
 		{ id: "ext:a", kind: "agent", state: "running", name: "helper", task: "stage build" },
 		{ id: "ext:b", kind: "agent", state: "running", name: "helper2", task: "work2" },
 	];
@@ -170,7 +165,7 @@ test("agent panel rank cache refreshes extension row text at group-offset slots 
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	const firstIds = agentPanelRows(session).map((row) => row.id);
 	items = [
-		{ id: "run:w", kind: "workflow", state: "input", name: "wf", task: "ask", question: "Go?" },
+		{ id: "run:w", kind: "agent", state: "input", name: "wf", task: "ask", question: "Go?" },
 		{ id: "ext:a", kind: "agent", state: "running", name: "helper", task: "stage deploy" },
 		{ id: "ext:b", kind: "agent", state: "running", name: "helper2", task: "work2" },
 	];
@@ -185,8 +180,7 @@ test("agent panel rank cache refreshes extension row text at group-offset slots 
 	const cappedItems: AgentPanelItem[] = [
 		...Array.from(
 			{ length: AGENT_PANEL_IDLE_ROWS },
-			(_, i) =>
-				({ id: `run:w${i}`, kind: "workflow", state: "done", name: `wf${i}`, task: "done" }) as AgentPanelItem,
+			(_, i) => ({ id: `run:w${i}`, kind: "agent", state: "done", name: `wf${i}`, task: "done" }) as AgentPanelItem,
 		),
 		...Array.from(
 			{ length: AGENT_PANEL_IDLE_ROWS },
@@ -235,35 +229,6 @@ test("AgentPanelModel drops unkept finished rows at once, forgets absent native 
 	model.endPass(pass);
 	assert.equal(model.finishedSince("X", true), undefined);
 	assert.equal(model.finishedSince("ext:y"), 1_000);
-
-	const hub = new AgentPanelSourceHub();
-	const finished: AgentPanelItem = {
-		id: "run:helper",
-		kind: "workflow",
-		name: "helper",
-		task: "check",
-		state: "done",
-	};
-	let items: AgentPanelItem[] = [finished];
-	let changed = () => {};
-	hub.register({
-		items: () => items,
-		subscribe: (listener) => {
-			changed = listener;
-			return () => {};
-		},
-		open: () => true,
-	});
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	assert.equal(agentPanelHasRows(session), true, "an unopened finished run stays");
-	assert.equal(openAgentPanelItem(session, finished.id), true);
-	assert.equal(agentPanelHasRows(session), false, "an opened finished run leaves");
-	items = [];
-	changed();
-	agentPanelRows(session);
-	items = [finished];
-	changed();
-	assert.equal(agentPanelHasRows(session), true, "a new unopened run with the same id stays again");
 });
 
 test("taskDisplayText replaces Unicode line and paragraph separators with spaces (#5224)", () => {
@@ -274,7 +239,7 @@ test("/tasks keeps a started reply bound to its original prompt, ignores unbound
 	const fixture = taskFixture();
 	let item: AgentPanelItem = {
 		id: "run:deploy",
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: "deploy?",
 		task: "stage ask",

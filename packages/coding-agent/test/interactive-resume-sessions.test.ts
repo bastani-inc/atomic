@@ -125,3 +125,36 @@ test.each(["exact", "prefix"])("direct resume switches to the saved session with
 	assert.deepEqual(f.resumedSessions, [id]);
 	assert.deepEqual(f.errors, []);
 });
+
+test("picker refresh progress retains the selected session when partial session pages omit it until the final list settles (#5256)", async () => {
+	const f = await fixture();
+	const sessionId = f.manager.getSessionId();
+	InteractiveModeBase.prototype.showSessionSelector.call(f.mode);
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Chat objective/));
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), sessionId);
+
+	let resolveSessions!: (rows: Awaited<ReturnType<typeof SessionManager.list>>) => void;
+	vi.spyOn(SessionManager, "list").mockImplementationOnce((_cwd, _store, onProgress) => {
+		onProgress?.(0, 1, []);
+		return new Promise((resolve) => {
+			resolveSessions = resolve;
+		});
+	});
+	void f.selector.refreshSessions();
+	await vi.waitFor(() => assert.ok(resolveSessions));
+	const duringPartial = f.selector.render(160).join("\n");
+	assert.match(duringPartial, /Chat objective/);
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), sessionId);
+
+	resolveSessions([]);
+	await vi.waitFor(() => assert.doesNotMatch(f.selector.render(160).join("\n"), /Chat objective/));
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), undefined);
+});
+
+test("direct resume opens an exact saved session (#5256)", async () => {
+	const f = await fixture();
+	const id = f.manager.getSessionId();
+	await InteractiveModeBase.prototype.handleResumeTarget.call(f.mode, id);
+	assert.deepEqual(f.resumedSessions, [id]);
+	assert.deepEqual(f.errors, []);
+});

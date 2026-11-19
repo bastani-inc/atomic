@@ -40,7 +40,7 @@ describe("Session memory in a subagent's own prompt (#4648)", () => {
 		assert.ok(!prompt.includes("Guidelines:"), "the agent's prompt still replaces the default rules");
 		const section = prompt.slice(prompt.indexOf("<session_memory>\n"), prompt.indexOf("</session_memory>"));
 		assert.ok(section.startsWith("<session_memory>\n- **Session memory**: Atomic records past sessions"), section);
-		assert.ok(section.includes("`read history://sessions` and `read history://workflows`"), section);
+		assert.ok(section.includes("`read history://sessions` lists"), section);
 		assert.ok(section.includes("`search` accepts the same URLs"), section);
 		assert.ok(section.includes("With a shell, also search the repository's source control"), section);
 	});

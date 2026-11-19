@@ -464,7 +464,7 @@ test("strict Bun child contains frozen species, non-configurable constructor get
 	}
 });
 
-test("strict Bun child contains rejected promises, species-hostile promises, and throwing getters in promptId, viewed, and every row field (#5239)", () => {
+test("strict Bun child contains rejected promises, species-hostile promises, and throwing getters in promptId and every row field (#5239)", () => {
 	const script = `
 		const {
 			AgentPanelSourceHub,
@@ -490,7 +490,6 @@ test("strict Bun child contains rejected promises, species-hostile promises, and
 			"choices",
 			"promptId",
 			"reason",
-			"viewed",
 			"queued",
 			"endedAt",
 		];
@@ -499,13 +498,12 @@ test("strict Bun child contains rejected promises, species-hostile promises, and
 			for (const kind of ["rejected", "species", "frozen_species", "getter_throws_promise"]) {
 				const base = {
 					id: "bad-" + field,
-					kind: "workflow",
+					kind: "agent",
 					state: "input",
 					name: "n",
 					task: "t",
 					question: "q?",
 					promptId: "p1",
-					viewed: false,
 				};
 				let badRow;
 				if (kind === "getter_throws_promise") {
