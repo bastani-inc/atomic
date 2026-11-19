@@ -85,6 +85,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	transcript: ChatSessionHostEntry<TExtraEntry>[] = [];
 	extraEntries: TExtraEntry[] = [];
 	statusMessage = "";
+	/** A delivery notice belongs beside the transcript, independently of the turn's working line. */
+	noticeMessage = "";
 	/** Explicit diagnostics survive busy-state cleanup, but are not restored after later input. */
 	lastWarningMessage: string | undefined;
 	isBashMode = false;

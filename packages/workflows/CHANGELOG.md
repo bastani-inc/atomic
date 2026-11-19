@@ -35,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Running and awaiting-input stage borders now pulse in their own status colour instead of fading through the graph connector colour ([#5596](https://github.com/bastani-inc/atomic/issues/5596)).
 - A paged workflow listing no longer shows a deleted run alongside a replacement that never coexisted with it. Reloading a long run keeps the same catalog order as reloading a short one. Folding an earlier checkpoint shipment no longer makes a worker's newer acknowledged result look stale ([#5480](https://github.com/bastani-inc/atomic/issues/5480)).
 - Nested workflows that finish or fail on a worker now appear with their final state in the parent graph, even if they finish before the first progress update. A failed or skipped workflow call keeps the stages and tools of the child it actually started inspectable ([#5616](https://github.com/bastani-inc/atomic/issues/5616)).
+- A stage chat opened during a provider backoff or model switch shows `retrying…` or `switching model…` even when the session still reads as streaming, including on a worker. When the worker exits or is replaced, the stage and its subagent chats clear the old wait; a remote stage reopens on the replacement’s own session ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 
 ## [0.9.89] - 2026-11-18
 
