@@ -53,8 +53,6 @@ import type {
 	ToolDefinition,
 	ToolInfo,
 } from "./extensions/index.js";
-import type { SessionWorkflows } from "./extensions/workflow-run-control.js";
-import type { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ExtensionProviderTransaction, ModelRuntime } from "./model-runtime.js";
 import type { PathMetadata } from "./package-manager.ts";
@@ -161,8 +159,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly isBashRunning: boolean;
 	readonly hasPendingBashMessages: boolean;
 	readonly extensionRunner: ExtensionRunner;
-	/** Typed management of the workflow runs this session owns. */
-	readonly workflows: SessionWorkflows;
 
 	_handleAgentEvent(event: AgentEvent): Promise<void> | void;
 	_getRequiredRequestAuth(
@@ -504,7 +500,6 @@ export interface AgentSessionPublicSurface
 		| "isBashRunning"
 		| "hasPendingBashMessages"
 		| "extensionRunner"
-		| "workflows"
 		| "queuedMessagesPaused"
 		| "pauseQueuedMessages"
 		| "resumeQueuedMessages"
@@ -662,7 +657,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_pendingBashMessages: BashExecutionMessage[];
 	_runOnlyBashMessages?: WeakSet<object>;
 	_extensionRunner: ExtensionRunner;
-	_workflows?: SessionWorkflowsHandle;
 	_turnIndex: number;
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;
@@ -697,7 +691,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_allowedTools?: (name: string) => boolean;
 	_excludedTools?: (name: string) => boolean;
 	_childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
-	_workflowJournal?: import("./storage/provider.js").RunJournalOption;
 	_storageAgentDir?: string;
 	_baseToolsOverride?: Record<string, AgentTool>;
 	_sessionStartEvent: SessionStartEvent;

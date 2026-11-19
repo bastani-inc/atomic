@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings, stripHintMarkers, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
-import type { WorkflowRunSummary } from "../../packages/coding-agent/src/core/extensions/workflow-run-control.js";
 import { KeybindingsManager, migrateKeybindingsConfig } from "../../packages/coding-agent/src/core/keybindings.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
@@ -131,7 +130,7 @@ function chordHost(chordAllowed = true) {
 	const statuses: string[] = [];
 	const warnings: string[] = [];
 	let stops = 0;
-	let outcome: StopAllBackgroundOutcome = { agents: 2, shells: 1, workflowRuns: 1, failures: [] };
+	let outcome: StopAllBackgroundOutcome = { agents: 2, shells: 1, failures: [] };
 	const host = {
 		keybindings: new KeybindingsManager(),
 		chordAllowed: () => chordAllowed,
@@ -167,7 +166,7 @@ test("Ctrl+X Ctrl+K stops all background work only after a second press within t
 	listener(CTRL_K);
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(h.stops(), 1);
-	assert.equal(h.statuses.at(-1), "Stopped 2 subagents, 1 shell and 1 workflow run.");
+	assert.equal(h.statuses.at(-1), "Stopped 2 subagents and 1 shell.");
 	// A late second press arms again instead of stopping.
 	listener(CTRL_X);
 	listener(CTRL_K);
@@ -235,7 +234,7 @@ test("stop-all chord never consumes physical Escape even when remapped, and disa
 			chordAllowed: () => allowed,
 			stopAll: async () => {
 				stops += 1;
-				return { agents: 1, shells: 0, workflowRuns: 0, failures: [] };
+				return { agents: 1, shells: 0, failures: [] };
 			},
 			showStatus: (msg) => statuses.push(msg),
 			showWarning: (msg) => statuses.push(msg),
@@ -277,17 +276,14 @@ test("stop-all chord never consumes physical Escape even when remapped, and disa
 });
 
 test("a stop-all that cannot stop everything says what is left (#5224)", () => {
+	assert.equal(stopAllBackgroundMessage({ agents: 0, shells: 0, failures: [] }), "No background work to stop.");
 	assert.equal(
-		stopAllBackgroundMessage({ agents: 0, shells: 0, workflowRuns: 0, failures: [] }),
-		"No background work to stop.",
-	);
-	assert.equal(
-		stopAllBackgroundMessage({ agents: 1, shells: 0, workflowRuns: 0, failures: ["workflow abc: pause_failed"] }),
-		"Stopped 1 subagent. Could not stop: workflow abc: pause_failed",
+		stopAllBackgroundMessage({ agents: 1, shells: 0, failures: ["shell abc: owner unavailable"] }),
+		"Stopped 1 subagent. Could not stop: shell abc: owner unavailable",
 	);
 });
 
-test("stop-all stops the session's background subagents and shells and quits its workflow runs (#5224)", async () => {
+test("stop-all stops the session's background subagents and shells (#5224)", async () => {
 	const fixture = taskFixture();
 	try {
 		await fixture.start("first agent");
@@ -297,33 +293,8 @@ test("stop-all stops the session's background subagents and shells and quits its
 		(fixture.store.tasks[2] as { kind: string }).kind = "command";
 		const session = {};
 		bindOwnerTaskStore(session, fixture.store);
-		const quits: unknown[] = [];
-		const running: WorkflowRunSummary = {
-			runId: "run-1",
-			name: "ralph",
-			status: "running",
-			startedAt: 0,
-			elapsedMs: 1,
-			activeStages: [],
-			awaitingInputCount: 0,
-			awaitingInput: [],
-		};
-		const outcome = await stopAllBackgroundWork(
-			Object.assign(session, {
-				workflows: {
-					listRuns: async () => [
-						running,
-						{ ...running, runId: "run-2", status: "completed" as const, endedAt: 1 },
-					],
-					quit: async (target: unknown) => {
-						quits.push(target);
-						return { action: "quit" as const, runId: "--all", status: "ok" as const, message: "" };
-					},
-				},
-			}),
-		);
-		assert.deepEqual(outcome, { agents: 2, shells: 1, workflowRuns: 1, failures: [] });
-		assert.deepEqual(quits, [{ all: true }]);
+		const outcome = await stopAllBackgroundWork(session);
+		assert.deepEqual(outcome, { agents: 2, shells: 1, failures: [] });
 		fixture.store.drain();
 		assert.ok(fixture.runners.every((runner) => runner.context.signal.aborted));
 	} finally {
