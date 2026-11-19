@@ -208,6 +208,7 @@ async function launchInterruptedChild(
 		intercomGroup: group,
 		orchestratorIntercomTarget: "parent-session",
 	};
+	const recordChild = createSubagentChildRecordSink(parent.pi, parent.ctx(host));
 	const response = await runAgentTask({
 		host,
 		cwd,
@@ -215,7 +216,7 @@ async function launchInterruptedChild(
 		agent: "worker",
 		task: "original task",
 		options,
-		recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(host)),
+		recordChild,
 		runtime: {
 			runSync: (...args) =>
 				runSync(args[0], args[1], args[2], args[3], {
@@ -228,6 +229,8 @@ async function launchInterruptedChild(
 	// The launch model and thinking level follow the first record once the child's session exists.
 	const running = await waitForRecord(parent, "running", (record) => record.launchLeafId !== undefined);
 	await host.close("session-close");
+	// Closing records the child's last state after it returns; a copy of the session must see that record.
+	await recordChild.flushed?.();
 	return running;
 }
 
