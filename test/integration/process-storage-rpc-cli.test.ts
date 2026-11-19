@@ -5,23 +5,19 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.js";
-import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	bunExecutable,
-	copyFileSync,
 	fileExistsSync,
 	makeTempDirectory,
 	moduleDir,
 	readText,
-	sleep,
 	spawnSyncCollect,
 	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
 
 /**
- * Structural: two real source CLI children each load every builtin extension and then run a project
- * workflow, followed by four more children that must fail during startup.
+ * Structural: two real source CLI children each load every builtin extension and persist a conversation, followed by four more children that must fail during startup.
  */
 const REAL_RPC_CHILDREN_TIMEOUT_MS = 240_000;
 /** Per-step deadline once a child answers. */
@@ -30,8 +26,6 @@ const STEP_TIMEOUT_MS = 60_000;
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
 const cliPath = join(repositoryRoot, "packages/coding-agent/src/cli.ts");
 const adapterPath = join(repositoryRoot, "test/fixtures/storage-adapter.ts");
-const workflowFixture = join(moduleDir(import.meta.url), "fixtures/issue-3783-storage-workflow.ts");
-const WORKFLOW_NAME = "issue-3783-storage";
 const SECRET = "issue-3783-secret-value";
 
 /** Inherited storage selections would decide the outcome instead of the scenario. */
@@ -46,41 +40,15 @@ const CLEARED_STORAGE_ENV = {
 interface ChildEvidence {
 	readonly sessionId: string;
 	readonly listedSessions: readonly string[];
-	readonly runId: string;
-	readonly listedRuns: readonly string[];
-}
-
-async function waitFor<T>(read: () => Promise<T | undefined>, label: string, client: RpcClient): Promise<T> {
-	const deadline = Date.now() + STEP_TIMEOUT_MS;
-	for (;;) {
-		const value = await read();
-		if (value !== undefined) return value;
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}.\nCLI stderr:\n${client.getStderr()}`);
-		await sleep(100);
-	}
 }
 
 async function driveChild(client: RpcClient, label: string): Promise<ChildEvidence> {
 	await client.start();
 	await client.setSessionName(`${label} conversation`);
 	const { sessionId } = await client.getState();
-	await client.prompt(`run ${WORKFLOW_NAME}`);
-	const run = await waitFor(
-		async () => {
-			const runs = await client.listWorkflowRuns();
-			const finished = runs.find(
-				(candidate) =>
-					candidate.name === WORKFLOW_NAME && candidate.status !== "pending" && candidate.status !== "running",
-			);
-			return finished;
-		},
-		`${label}'s workflow run to finish`,
-		client,
-	);
-	assert.equal(run.status, "completed", `${label} run ${run.runId}: ${run.error ?? ""}\n${client.getStderr()}`);
+	await client.promptAndWait("Say hello");
 	const listedSessions = (await client.listSessions()).map((session) => session.id);
-	const listedRuns = (await client.listWorkflowRuns()).map((summary) => summary.runId);
-	return { sessionId, listedSessions, runId: run.runId, listedRuns };
+	return { sessionId, listedSessions };
 }
 
 async function storedSessions(project: string, path: string): Promise<string[]> {
@@ -92,17 +60,8 @@ async function storedSessions(project: string, path: string): Promise<string[]> 
 	}
 }
 
-async function storedRuns(path: string): Promise<string[]> {
-	const journal = await resolveRunJournal({ journal: { path } });
-	try {
-		return (await journal.listRuns()).map((run) => run.runId);
-	} finally {
-		await journal.close();
-	}
-}
-
 test(
-	"an RPC child keeps sessions and workflow runs in its ATOMIC_STORAGE adapter while a sibling keeps its settings (#3783)",
+	"an RPC child keeps sessions in its ATOMIC_STORAGE adapter while a sibling keeps its settings (#3783)",
 	async () => {
 		const root = makeTempDirectory("process-storage-rpc-");
 		const atomicHome = join(root, "atomic");
@@ -115,8 +74,6 @@ test(
 			settingsPath,
 			`${JSON.stringify({ onboardedVersion: "0.0.0", storage: { path: "settings-store.sqlite" } }, null, 2)}\n`,
 		);
-		await writeFileEnsuringDir(join(project, ".atomic/workflows/.keep"), "");
-		copyFileSync(workflowFixture, join(project, ".atomic/workflows/issue-3783-storage-workflow.ts"));
 		await writeFileEnsuringDir(
 			join(project, ".atomic/extensions/issue-3783-provider.ts"),
 			[
@@ -127,13 +84,11 @@ test(
 				'    apiKey: "fixture-only",',
 				'    baseUrl: "http://127.0.0.1:1/unused",',
 				'    models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],',
-				"    streamSimple(model, context) {",
+				"    streamSimple(model) {",
 				"      const stream = createAssistantMessageEventStream();",
-				'      const hasToolResult = context.messages.some((m) => m.role === "toolResult");',
 				"      const message = {",
 				'        role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),',
-				'        content: hasToolResult ? [{ type: "text", text: "done" }] : [{ type: "toolCall", id: "run-1", name: "workflow", arguments: { action: "run", workflow: "issue-3783-storage", inputs: {} } }],',
-				'        stopReason: hasToolResult ? "stop" : "toolUse",',
+				'        content: [{ type: "text", text: "hello" }], stopReason: "stop",',
 				"        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },",
 				"      };",
 				'      queueMicrotask(() => { stream.push({ type: "done", reason: message.stopReason, message }); stream.end(); });',
@@ -174,20 +129,16 @@ test(
 			assert.notEqual(fromEnv.sessionId, fromSettings.sessionId);
 			assert.deepEqual(fromEnv.listedSessions, [fromEnv.sessionId]);
 			assert.deepEqual(fromSettings.listedSessions, [fromSettings.sessionId]);
-			assert.deepEqual(fromEnv.listedRuns, [fromEnv.runId]);
-			assert.deepEqual(fromSettings.listedRuns, [fromSettings.runId]);
 			await Promise.all([selected.stop(), unselected.stop()]);
 
 			assert.deepEqual(await storedSessions(project, selectedStore), [fromEnv.sessionId]);
 			assert.deepEqual(await storedSessions(project, settingsStore), [fromSettings.sessionId]);
-			assert.deepEqual(await storedRuns(selectedStore), [fromEnv.runId]);
-			assert.deepEqual(await storedRuns(settingsStore), [fromSettings.runId]);
 			const database = await openNodeSqliteDatabase(selectedStore);
 			try {
 				// The account's one Intercom broker opens the same adapter for multi-node routing (domain "intercom")
 				// when the selected child is the one that started it; it is a separate process, not a child domain.
 				const probes = await database.all("SELECT options FROM adapter_probe WHERE domain <> 'intercom'");
-				assert.equal(probes.length, 1, "sessions and the journal share one adapter database");
+				assert.equal(probes.length, 1, "sessions use the selected adapter database");
 				assert.ok(String(probes[0]?.options).includes(SECRET), "the { env } secret reached the adapter");
 			} finally {
 				await database.close();

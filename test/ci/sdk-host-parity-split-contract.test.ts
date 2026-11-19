@@ -8,9 +8,6 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const integrationDir = join(root, "test/integration");
 const FAMILY = "sdk-builtin-host-parity";
 const TOPICS = [
-	"host-routing-prompt-nodes",
-	"host-routing-stage-questionnaire",
-	"host-routing-across-hosts",
 	"host-routing-children",
 	"shared-siblings",
 	"retirement",

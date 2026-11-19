@@ -1,4 +1,5 @@
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { retryCancelHint, retryWaitFromEvent, retryWaitMessage } from "./components/retry-status-line.ts";
 import { compactionMeta } from "./components/working-run-meter.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import type { AgentSessionEvent } from "./interactive-mode-deps.ts";
@@ -6,6 +7,14 @@ import { CountdownTimer, keyText, theme } from "./interactive-mode-deps.ts";
 
 type RetryEvent = Extract<AgentSessionEvent, { type: `summarization_retry_${string}` }>;
 const activeSources = new WeakMap<InteractiveModeBase, "branchSummary" | "compaction">();
+/** Modes whose Esc cancels the summary they wait on, so a retry of it names the key. */
+const cancellableSummaries = new WeakSet<InteractiveModeBase>();
+
+/** Esc cancels the summary `mode` makes until this is called again with `false`. */
+export function setSummaryCancellable(mode: InteractiveModeBase, cancellable: boolean): void {
+	if (cancellable) cancellableSummaries.add(mode);
+	else cancellableSummaries.delete(mode);
+}
 
 export function handleSummarizationRetryEvent(mode: InteractiveModeBase, event: RetryEvent): void {
 	if (event.type === "summarization_retry_scheduled") {
@@ -14,8 +23,10 @@ export function handleSummarizationRetryEvent(mode: InteractiveModeBase, event: 
 		mode.autoCompactionLoader?.stop();
 		mode.autoCompactionLoader = undefined;
 		mode.retryCountdown?.dispose();
-		const retryMessage = (seconds: number) =>
-			`Retrying summary (${event.attempt}/${event.maxAttempts}) in ${seconds}s...`;
+		const wait = retryWaitFromEvent(event, "summary");
+		const cancel = cancellableSummaries.has(mode) ? retryCancelHint() : undefined;
+		// The line fits the columns its row leaves it when it renders, so it never wraps.
+		const retryMessage = (seconds: number) => (columns: number) => retryWaitMessage(wait, seconds, cancel, columns);
 		mode.retryLoader = new AtomicWorkingLoader(
 			mode.ui,
 			undefined,

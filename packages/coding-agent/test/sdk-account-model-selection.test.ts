@@ -22,7 +22,7 @@ const accountList = {
 		},
 	],
 };
-const builtins = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const builtins = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 let cwd: string;
 const storedLogin = JSON.stringify({ [provider]: { type: "api_key", key: "github_pat_example" } });
 

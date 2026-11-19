@@ -168,7 +168,7 @@ describe("extension transpile cache follows the agent directory", () => {
 			settingsManager: SettingsManager.create(cwd, sessionAgentDir, { projectTrusted: true }),
 			sessionManager: SessionManager.inMemory(cwd),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		});
 		sessions.push(session);
 

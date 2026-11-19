@@ -56,7 +56,7 @@ async function newSession(root: string, options: CreateAgentSessionOptions = {})
 		sessionManager: SessionManager.inMemory(root),
 		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		tools: ["ask_user_question"],
 		...options,
 	});

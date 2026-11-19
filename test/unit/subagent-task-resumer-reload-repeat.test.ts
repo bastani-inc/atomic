@@ -90,7 +90,7 @@ test(
 				settingsManager,
 				sessionManager,
 				resourceLoader,
-				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 				orchestrationContext: {
 					kind: "workflow-stage",
 					workflowRunId: "reload-workflow",

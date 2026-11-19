@@ -311,7 +311,7 @@ test("built Node MCP ownership is scored against its declared timeout expression
 test("built Node table cases retain their existing structural budgets", () => {
 	const cases = [
 		[
-			"built Node shared-subclass sibling reload and disposal preserve a pending workflow and exit naturally",
+			"built Node shared-subclass sibling reload and disposal preserve the other listener and exit naturally",
 			28_140,
 			60_000,
 		],
@@ -370,14 +370,13 @@ test("literal table budgets stay scoped and dynamic tables cannot borrow them", 
 	);
 });
 
-test("real edited-flow CLI cases keep their structural budgets without lending them to other tests", () => {
-	const file = "test/integration/workflow-tool-node-quit-cli.test.ts";
+test("real SDK retirement cases keep their structural budgets without lending them to other tests", () => {
+	const file = "test/integration/sdk-builtin-host-parity-retirement.test.ts";
 	const titles = [
-		"built Node runtime refuses return after changed flow omits the interrupted tool",
-		"built Node runtime refuses completed after changed flow omits the interrupted tool",
+		"built Node finalizes failed 'new' retirement with 'none' failure",
+		"built Node finalizes failed 'new' retirement with 'cleanup' failure",
 	];
-	// Windows run 34249560629: both cases passed, but their curried declarations
-	// hid the existing 240s budget from the guard, which falsely used 30s.
+	// A curried table declaration names both cases and their budget, not the unrelated tests below.
 	const durations = [22_625.2187, 24_011.3266];
 	const scored = evaluateDurations(
 		report([
@@ -389,18 +388,21 @@ test("real edited-flow CLI cases keep their structural budgets without lending t
 	assert.equal(scored.samples.length, 2);
 	for (const [index, title] of titles.entries()) {
 		const sample = scored.samples.find((entry) => entry.name === title);
-		assert.equal(sample?.timeoutMs, 240_000);
+		assert.equal(sample?.timeoutMs, 60_000);
 		assert.equal(sample?.explicit, true);
-		assert.equal(sample?.ratio, durations[index]! / 240_000);
+		assert.equal(sample?.ratio, durations[index]! / 60_000);
 	}
-	assert.deepEqual(scored.warnings, []);
+	assert.deepEqual(
+		scored.warnings.map((sample) => sample.name),
+		[titles[1]],
+	);
 
 	const unbudgeted = evaluateDurations(
 		report([
 			{
 				file,
 				tests: [
-					{ title: "the driver and the fixture agree on the state file name", status: "passed", duration: 24_000 },
+					{ title: "an unrelated SDK case", status: "passed", duration: 24_000 },
 					{ scopes: ["unrelated scope"], title: titles[0]!, status: "passed", duration: 24_000 },
 				],
 			},

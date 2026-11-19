@@ -11,7 +11,7 @@ import { SessionManager } from "../../../src/core/session-manager.js";
 import { SettingsManager } from "../../../src/core/settings-manager.js";
 import { assistantMsg, createTestResourceLoader, userMsg } from "../../utilities.js";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 // Issue #11520: summaries in SDK sessions passed the resolved OAuth token back to the
 // ModelRuntime as an explicit API key, so provider auth took the API-key override branch.

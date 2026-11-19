@@ -51,7 +51,6 @@ const declarations = new Map([
 	["packages/mcp", []],
 	["packages/subagents", ["@bastani/atomic-agent-core", "@bastani/atomic-ai", "@bastani/atomic-tui"]],
 	["packages/web-access", ["@bastani/atomic-tui"]],
-	["packages/workflows", ["@bastani/atomic-tui"]],
 ]);
 
 const publishArtifactTest = existsSync(distBuiltinDir) ? test : test.skip;

@@ -48,7 +48,7 @@ export async function limitedStageOptions(cwd: string, baseUrl: string, model: s
 		model: modelRuntime.getModel(LIMITED_PROVIDER, model)!,
 		fallbackModels: fallbacks.map((id) => `${LIMITED_PROVIDER}/${id}`),
 		settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: false }, retry: { enabled: false } }),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	};
 }
 

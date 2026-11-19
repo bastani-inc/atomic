@@ -168,7 +168,7 @@ describe("subagent usage inside a stage (#5053)", () => {
 								retry: { enabled: false },
 								compaction: { enabled: false },
 							}),
-							builtins: { workflows: false, subagents: true, intercom: false, mcp: false, "web-access": false },
+							builtins: { subagents: true, intercom: false, mcp: false, "web-access": false },
 						})
 						.prompt(STAGE_PROMPT);
 					return {};
