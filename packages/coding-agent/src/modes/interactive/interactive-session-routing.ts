@@ -5,7 +5,6 @@ import type { SessionInfo } from "../../core/session-manager.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
 import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
-import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -327,24 +326,20 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 
 InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		const close = () => {
-			selector.dispose();
-			done();
-		};
 		const selector = new SessionSelectorComponent(
 			(onProgress) =>
 				SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), onProgress),
 			(onProgress) => SessionManager.listAll(this.sessionManager.getSessionStore(), onProgress),
 			async (selected) => {
-				close();
+				done();
 				await resumeCatalogSelection(this, selected);
 			},
 			() => {
-				close();
+				done();
 				this.ui.requestRender();
 			},
 			() => {
-				close();
+				done();
 				void this.shutdown();
 			},
 			() => this.ui.requestRender(),

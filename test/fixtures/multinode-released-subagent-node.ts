@@ -152,7 +152,7 @@ async function release(args: ReleaseArgs): Promise<void> {
 				model,
 				modelRuntime,
 				customTools: [ciTool()],
-				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, mcp: false, "web-access": false },
 			}),
 		},
 		recordChild: createSubagentChildRecordSink(pi, ctx),
@@ -271,7 +271,7 @@ async function wake(args: WakeArgs): Promise<void> {
 			agentDir,
 			model,
 			modelRuntime,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 		}),
 	} as unknown as ExtensionContext;
 	const deps: ExecutorDeps = {

@@ -57,7 +57,7 @@ function sessionRoots(prefix: string): { cwd: string; agentDir: string } {
 
 /**
  * Structural cost, not a slow test: the case performs a full builtin-package
- * loader reload (workflows, subagents, mcp, web-access, intercom)
+ * loader reload (subagents, mcp, web-access, intercom)
  * and creates a real agent session from the result. Do not reuse this budget
  * for a test that merely inspects data.
  */
@@ -66,7 +66,6 @@ const BUILTIN_PACKAGE_SESSION_TIMEOUT_MS = 120_000;
 /** Every tool contributed by Atomic's builtin extension packages. */
 // #3105: the normal factory composes all shipped extensions, even with a custom loader.
 const BUILTIN_EXTENSION_TOOLS = [
-	"workflow",
 	"subagent",
 	"intercom",
 	"web_search",

@@ -246,7 +246,7 @@ async function fixture(options: FixtureOptions) {
 			fallbackModels: [OTHER_FAMILY],
 		}),
 		sessionManager: parentSessions,
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: options.childWorkspace ? ["read", "bash"] : ["read"],
 		...(options.parentAllowsOnly
 			? {

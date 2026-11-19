@@ -12,7 +12,7 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const CHAT = "anthropic/claude-sonnet-4-5";
 const CLASSIFIER = "openai-decisions/gpt-6-luna";
 const COMPACTOR = "morph/morph-compactor";

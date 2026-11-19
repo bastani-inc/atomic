@@ -21,7 +21,7 @@ test("following each printed history cursor reads each page once without opening
 			sessionManager: manager,
 			settingsManager: SettingsManager.inMemory(),
 			resourceLoader: createTestResourceLoader(),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		});
 		try {
 			const sessionId = "searched-transcript";

@@ -42,8 +42,6 @@ export const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 	"navigate_tree",
 	"invoke_shortcut",
 	"start_pending_recovery",
-	"resume_workflow_from_picker",
-	"delete_workflow_from_picker",
 ]);
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;

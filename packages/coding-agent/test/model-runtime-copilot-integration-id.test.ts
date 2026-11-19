@@ -10,7 +10,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { isSyntheticPath } from "../src/core/source-info.ts";
 import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const RAW_TOKEN = "github_pat_runtime_test_token";
 const EXCHANGED_TOKEN = "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com";
 const tempDirs: string[] = [];

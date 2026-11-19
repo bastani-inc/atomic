@@ -111,7 +111,7 @@ async function stagePrompt(stageOptions: { model: string; fallbackModels?: strin
 			const { session } = await createAgentSession({
 				cwd: process.cwd(),
 				agentDir: process.cwd(),
-				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 				modelRuntime: runtime,
 				model: runtime.getModel(requested, "m")!,
 				fallbackModels: options.fallbackModels,

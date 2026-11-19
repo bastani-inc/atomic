@@ -32,7 +32,7 @@ it("session requests serialize long caching, retain overrides and obey provider 
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
-		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		tools: [],
 	});
 	try {
@@ -97,7 +97,7 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory(),
 		resourceLoader: createTestResourceLoader(),
-		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		tools: [],
 	});
 	try {

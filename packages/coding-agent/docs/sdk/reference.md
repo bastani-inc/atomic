@@ -223,7 +223,8 @@ Specify which tools to expose by name:
 
 - Built-in tool names enabled by default: `read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`
 - `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
-- `builtins` selects shipped packages independently of tools: keys are `workflows`, `subagents`, `mcp`, `web-access`, and `intercom`. Omitted, `{}`, and omitted keys enable packages. A `false` value removes that package's extensions and resources, including on reload; `true` enables it.
+- `builtins` selects shipped packages independently of tools: keys are `subagents`, `mcp`, `web-access`, and `intercom`. Omitted, `{}`, and omitted keys enable packages. A `false` value removes that package's extensions and resources, including on reload; `true` enables it.
+- The `subagents` builtin ships `bro`, `create-spec`, `how`, `impeccable`, `prompt-engineer`, `research-codebase`, `show-me`, `skill-creator`, `teach`, `unslop`, and `why`. If you want the skills but not the delegation tool, leave the package enabled and set `excludedTools: ["subagent"]`. If you disable the whole package, install independent copies of the skills you need in your [skills directory](/skills#locations).
 - `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. `tools: []` exposes none, including Intercom. A list containing only `+name`/`-name` entries instead changes the resolved defaults, for example `tools: ["+codemode", "-write"]`. Modifiers take exact names, cannot be mixed with plain entries, and apply to reloaded defaults too. Invalid lists throw. Extension/custom tools and MCP exposure retain their default behavior with modifiers.
 - `excludedTools` removes matching names from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
 - `noTools: "all"` exposes no tools, even with a nonempty `tools` allowlist or modifiers. It does not remove package resources or authorize services.
@@ -926,6 +927,28 @@ Package workflows returned by `DefaultResourceLoader` are available through the 
 Custom `ResourceLoader` implementations can optionally provide `getWorkflowResources()` returning `ResolvedResource[]` and `refreshWorkflowResources()` returning `Promise<ResolvedResource[]>`. Refresh should return the current trust-filtered resources. If refresh is omitted, workflow reload uses the getter's current snapshot. If both are omitted, shipped workflows and normal workflow-directory discovery remain available.
 
 Package MCP servers from `DefaultResourceLoader` remain available through the session's `mcp` tool when the factory adds the shipped MCP extension. Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
+
+### Copying extension handlers in `extensionsOverride`
+
+If your override rebuilds a discovered extension without changing its `resources_discover` handler, keep the callback supplied by the loader on **that load**. You can copy the handler map without wrapping its functions:
+
+```typescript
+const loader = new DefaultResourceLoader({
+  cwd,
+  agentDir: getAgentDir(),
+  extensionsOverride: (base) => ({
+    ...base,
+    extensions: base.extensions.map((extension) => ({
+      ...extension,
+      handlers: new Map(extension.handlers),
+    })),
+  }),
+});
+```
+
+During interactive startup, deferred resource loading can run discovery twice. Both calls run, but if the same registration reports the same error, the terminal shows it once. A later `/reload` reports the failure again.
+
+Creating `(...args) => handler(...args)` on every load registers a new callback each time, so you can see two startup errors. Keep separate callbacks when your override changes the handler, adds a step that can fail, or forwards on behalf of separate installations. Don't cache a previous load's handler or share a forwarder by extension name.
 
 ## Return Value
 

@@ -12,7 +12,7 @@ import { MemorySessionStore } from "../src/core/storage/session/memory-session-s
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
 import { createTestResourceLoader } from "./utilities.ts";
 
-const BUILTINS_OFF = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const BUILTINS_OFF = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const STARTED_AT = Date.parse("2026-10-01T00:00:00.000Z");
 
 const sessions: AgentSession[] = [];

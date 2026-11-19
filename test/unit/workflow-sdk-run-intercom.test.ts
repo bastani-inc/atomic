@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
-import {
-	INSTALLED_EXTENSION_ENTRIES,
-	WORKFLOWS_SDK_BUNDLE_ENTRY,
-} from "../../packages/coding-agent/src/core/builtin-install-layout.js";
-import type { ExtensionAPI } from "../../packages/workflows/src/extension/index.js";
 import type { StageSessionCreateOptions } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { IntercomWireProxy } from "../helpers/intercom-wire-proxy.js";
 import { testRunId } from "../helpers/run-id.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
+import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
 const directory = makeTempDirectory("sdk-run-intercom-");
@@ -22,7 +16,6 @@ broker.overrideAgentDir();
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
-const { existsSync } = await import("node:fs");
 const { run, workflow } = await import("../../packages/workflows/src/sdk-surface.js");
 const { createStore } = await import("../../packages/workflows/src/shared/store.js");
 const proxy = new IntercomWireProxy(getBrokerSocketPath(), getBrokerSocketPath(process.platform, brokerDirectory));
@@ -330,7 +323,7 @@ test("the default run() session adapter gives a stage working builtin Intercom (
 					modelRuntime,
 					agentDir: join(directory, "agent"),
 					settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
-					builtins: { workflows: false, subagents: false, intercom: true, mcp: false, "web-access": false },
+					builtins: { subagents: false, intercom: true, mcp: false, "web-access": false },
 					tools: ["intercom"],
 				});
 				return { reply: result.text };
@@ -345,17 +338,6 @@ test("the default run() session adapter gives a stage working builtin Intercom (
 	} finally {
 		faux.unregister();
 	}
-});
-
-test("the bundled standalone SDK can start its own Intercom broker (#3863)", () => {
-	const result = spawnSyncCollect(
-		[process.execPath, join(moduleDir(import.meta.url), "../fixtures/workflow-sdk-intercom-standalone.mjs")],
-		{
-			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: join(directory, "bundled"), PI_CODING_AGENT_DIR: undefined },
-			timeout: 20_000,
-		},
-	);
-	assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
 });
 
 test("SDK run reuses an extension's adopted-store Intercom owner (#3863)", async () => {
@@ -402,105 +384,6 @@ test("SDK run reuses an extension's adopted-store Intercom owner (#3863)", async
 		bridge();
 		await owner.closeGroup(`workflow:${runId}`);
 		adoptStore(previousScope);
-	}
-});
-
-test("separately built SDK and extension bundles share one Intercom route owner registry (#3863)", async () => {
-	const { createWorkflowRouteOwner } = await import("../../packages/intercom/workflow-route-owner.js");
-	const builtinWorkflows = join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/builtin/workflows");
-	const importBuilt = (relativePath: string) => {
-		const path = join(builtinWorkflows, relativePath);
-		assert.ok(existsSync(path), `Missing built artifact ${path}. Run \`npm --workspace=@bastani/atomic run build\`.`);
-		return import(/* @vite-ignore */ pathToFileURL(path).href);
-	};
-	const sdk = (await importBuilt(
-		WORKFLOWS_SDK_BUNDLE_ENTRY,
-	)) as typeof import("../../packages/workflows/src/sdk-surface.js");
-	const extension = (await importBuilt(INSTALLED_EXTENSION_ENTRIES.workflows)) as {
-		default(pi: ExtensionAPI): void;
-	};
-	const owner = createWorkflowRouteOwner(directory);
-	const received: string[] = [];
-	let extensionOwned = false;
-	owner.events.on("atomic:workflow-pending-stage-message", () => {
-		extensionOwned = true;
-	});
-	// The extension registers several session_shutdown handlers (its pending-stage bridge among them); a host runs
-	// every one. Keeping only the last left the bridge live, and its batched route announcement then re-registered
-	// this run's route after closeGroup, leaking a control connection into the next test.
-	const shutdownHandlers: NonNullable<Parameters<NonNullable<ExtensionAPI["on"]>>[1]>[] = [];
-	extension.default({
-		events: owner.events,
-		registerTool: () => undefined,
-		registerCommand: () => undefined,
-		registerMessageRenderer: () => undefined,
-		registerFlag: () => undefined,
-		registerShortcut: () => undefined,
-		on: (event, handler) => {
-			if (event === "session_shutdown") shutdownHandlers.push(handler);
-		},
-		disableAsyncDiscovery: true,
-	});
-	const runId = testRunId("bundled-sdk-extension-intercom");
-	try {
-		const result = await sdk.run(
-			sdk.workflow({
-				name: "bundled-extension-intercom",
-				description: "",
-				inputs: {},
-				outputs: {},
-				async run(ctx) {
-					await ctx.task("worker", { prompt: "List the workflow peers" });
-					await ctx.task("later", { prompt: "Receive the queued instruction" });
-					return {};
-				},
-			}),
-			{},
-			{
-				runId,
-				cwd: directory,
-				journal: { memory: true },
-				adapters: {
-					agentSession: {
-						async create(options) {
-							const { client, context, delivery } = await connectStage(options);
-							await delivery.deliverPending((_from, message) => {
-								received.push(message.content.text);
-							});
-							return makeMockSession({
-								async prompt() {
-									await client.listDirectory();
-									if (context.workflowStageName === "worker") {
-										const observer = await connectClient(`workflow:${runId}`);
-										const queued = await observer.send(`workflow:${runId}/later`, {
-											text: "queued instruction",
-										});
-										assert.equal(queued.queued, true, JSON.stringify(queued));
-									}
-									return "done";
-								},
-							}).session;
-						},
-					},
-				},
-			},
-		);
-		assert.equal(result.status, "completed", result.error);
-		assert.deepEqual(received, ["queued instruction"]);
-		assert.equal(extensionOwned, true, "the extension's route owner handled the SDK run's pending-stage message");
-		const routeOwners = new Set(
-			proxy.toBroker
-				.filter(
-					({ frame }) =>
-						frame.type === "register" &&
-						String(frame.returnAddress).endsWith(`:pending-stage-route:workflow:${runId}`),
-				)
-				.map(({ frame }) => String(frame.returnAddress)),
-		);
-		assert.equal(routeOwners.size, 1, `one route owner connected for the run: ${[...routeOwners].join(", ")}`);
-	} finally {
-		for (const handler of shutdownHandlers) await handler({ reason: "quit" });
-		await owner.closeGroup(`workflow:${runId}`);
 	}
 });
 

@@ -34,7 +34,7 @@ vi.mock("../src/utils/shell.js", async (importOriginal) => {
 	};
 });
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const launchShell = process.platform === "win32" ? "powershell" : "bash";
 const commands = {
 	powershell: "$value = [Console]::ReadLine(); Write-Output 'registry completed once'; exit 7",

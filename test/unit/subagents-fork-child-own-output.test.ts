@@ -124,7 +124,7 @@ async function forkFixture(reply: Reply) {
 		model,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager: parentManager,
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => {

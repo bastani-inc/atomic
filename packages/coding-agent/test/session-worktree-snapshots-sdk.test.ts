@@ -27,7 +27,7 @@ afterEach(async () => {
 	sandbox.dispose();
 });
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 async function fauxSession(options: {
 	settings?: Record<string, unknown>;
