@@ -1,7 +1,7 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { durableForkTarget } from "../durable/fork-run.js";
 import { isWorkflowRunResumable, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
-import { hasActiveLiveRun, withResumeAdmissionMark } from "../durable/run-claims.js";
+import { bindResumeAdmission, hasActiveLiveRun, withResumeAdmissionMark } from "../durable/run-claims.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
 import { pauseRun, resumeRun } from "../runs/background/status.js";
@@ -176,6 +176,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 				const hadPausedStageState = workflowHasPausedStages(owner.store, runId);
 				const isPaused = workflowHasPausedState(owner.store, runId);
 				const backend = availableStoreDurableBackend(owner.store, runId);
+				if (backend !== undefined) bindResumeAdmission(admissionMark, backend, runId);
 				const isDurableAuthorExit = run.exited === true && run.status === "failed" && run.resumable === true;
 				const isResumableContinuation =
 					!isPaused &&

@@ -34,6 +34,7 @@ import { forkDurableRun } from "./fork-run.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import {
+	bindResumeAdmission,
 	claimsOf,
 	hasActiveLiveRun,
 	hasForkClaim,
@@ -206,6 +207,7 @@ async function resumeAtMark(
 	deps = { ...deps, jobs, baseRunOpts: { ...deps.baseRunOpts, store } };
 	let selected = selectedResumeEntry(workflowId, catalog, store, jobs);
 	const backend = resumeBackend(deps, workflowId);
+	bindResumeAdmission(resumed, backend, workflowId);
 	let id = workflowId;
 	if (!isFullRunId(id)) {
 		const stored = isRunIdPrefix(id)
@@ -220,6 +222,7 @@ async function resumeAtMark(
 		if (resolution.kind === "malformed" || resolution.kind === "ambiguous")
 			return { ok: false, reason: "not_registered", message: resolution.message };
 		id = resolution.runId;
+		bindResumeAdmission(resumed, backend, id);
 		await raceAbort(backend.hydrateWorkflow(id, { checkHeader: true }), deps.signal);
 	}
 	let handle = backend.getWorkflow(id);

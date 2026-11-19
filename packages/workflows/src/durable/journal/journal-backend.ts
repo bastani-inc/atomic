@@ -941,7 +941,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		// An explicit lookup may be a miss. Drop even an old cached projection without reading a missing history.
 		const missing = checkHeader && (yield* invoke(() => this.journal.getRun(runId))) === undefined;
 		const entries = missing ? [] : yield* this.entries(runId, undefined, stop);
-		if (entries.length > DIRECT_FOLD_EVENTS) return yield* this.rebuildStaged(runId, entries, stop);
+		const previous = this.projection.resumeObservationKey(runId);
+		if (entries.length > DIRECT_FOLD_EVENTS) yield* this.rebuildStaged(runId, entries, stop);
+		else this.rebuildDirect(runId, entries);
+		this.projection.preserveRefreshedRow(runId, previous);
+	}
+	private rebuildDirect(runId: string, entries: readonly JournalEntry[]): void {
 		void this.projection.deleteWorkflow(runId);
 		this.reconciledPendingStages.delete(runId);
 		this.sequences.delete(runId);
@@ -1669,6 +1674,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (own === undefined || keys === undefined) return;
 		own.retained.delete(scope);
 		this.projection.forgetCheckpoints(runId, keys);
+	}
+	resumeObservationKey(runId: string): object | undefined {
+		return this.projection.resumeObservationKey(runId);
 	}
 	getWorkflow(runId: string) {
 		return this.projection.getWorkflow(runId);

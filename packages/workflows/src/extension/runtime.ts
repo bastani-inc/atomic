@@ -499,8 +499,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		},
 
 		resumeFailedRun: (sourceRunId, stageId, options) =>
-			withResumeAdmissionMark(sourceRunId, options?.admissionMark, (mark) =>
-				raceWorkflowRequestAbort(resumeFailedRun(sourceRunId, mark, stageId, options), options?.signal),
+			withResumeAdmissionMark(
+				sourceRunId,
+				options?.admissionMark,
+				(mark) => raceWorkflowRequestAbort(resumeFailedRun(sourceRunId, mark, stageId, options), options?.signal),
+				options?.signal,
+				availableRunDurableBackend(activeStore, sourceRunId) ?? backendRef.current,
 			),
 		...createDurableResumeRuntime({
 			registry,

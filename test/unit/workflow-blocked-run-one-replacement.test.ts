@@ -375,7 +375,7 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 		}
 	});
 
-	test("a short id resumes its only candidate while a different matching run is starting (#5534)", async () => {
+	test("a starting run still makes a shared prefix ambiguous but does not stop an exact resume (#5534, #5569)", async () => {
 		const { backend, store, jobs, def, attempts, deps } = await retryFixture();
 		const prefix = "abcdef01";
 		const a = `${prefix}-0000-4000-8000-000000000001`;
@@ -417,11 +417,15 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 				[a],
 			);
 			const runtime = createExtensionRuntime({ registry: deps.registry, store, jobs });
-			const retry = await runtime.resumeDurableWorkflow(prefix, {
-				actor: "user",
-				definition: def,
-				durableBackend: backend,
-			});
+			const options = { actor: "user", definition: def, durableBackend: backend } as const;
+			const ambiguous = await runtime.resumeDurableWorkflow(prefix, options);
+			assert.equal(ambiguous.ok, false);
+			assert.equal(
+				ambiguous.message,
+				`Run id prefix "${prefix}" is ambiguous; matches: ${a}, ${b}. Use the full UUID.`,
+			);
+			assert.equal(attempts.count, 1, "the ambiguous request started nothing");
+			const retry = await runtime.resumeDurableWorkflow(a, options);
 			assert.ok(retry.ok, retry.message);
 			await jobs.get(a)?.promise;
 			assert.equal(attempts.count, 2);

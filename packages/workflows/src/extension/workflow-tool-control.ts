@@ -1,7 +1,8 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
-import { type ResumeAdmissionMark, withResumeAdmissionMark } from "../durable/run-claims.js";
+import { bindResumeAdmission, type ResumeAdmissionMark, withResumeAdmissionMark } from "../durable/run-claims.js";
 import { runNotFoundResumeResult } from "../durable/run-not-found.js";
+import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
@@ -565,6 +566,11 @@ async function resolveExplicitDurableTarget(
 	liveRuns: readonly RunSnapshot[] = [],
 ): Promise<WorkflowToolResult> {
 	const runtime = deps.getRuntime();
+	const bindJournal = () => {
+		const known = runtime.readyResumeBackend?.(target);
+		if (known && deps.admissionMark) bindResumeAdmission(deps.admissionMark, known, target);
+	};
+	bindJournal();
 	let durable: readonly ResumableWorkflowEntry[];
 	let completed: readonly ResumableWorkflowEntry[];
 	let storedIds: readonly string[] | undefined;
@@ -572,7 +578,7 @@ async function resolveExplicitDurableTarget(
 		await deps.ensureWorkflowResourcesLoaded();
 		deps.signal?.throwIfAborted();
 		if (isFullRunId(target) && runtime.prepareDurableResumableForIds !== undefined) {
-			durable = await runtime.prepareDurableResumableForIds([target]);
+			durable = await runtime.prepareDurableResumableForIds([target], bindJournal);
 			const handle = runtime.durableBackend().getLoadableWorkflow(target);
 			const historical =
 				handle !== undefined &&
@@ -581,7 +587,7 @@ async function resolveExplicitDurableTarget(
 				(handle.status === "completed" || (handle.status === "failed" && !isDurableWorkflowResumable(handle)));
 			completed = historical ? [resumableEntryFromHandle(handle)] : [];
 		} else {
-			const catalog = await runtime.prepareDurableCatalog?.();
+			const catalog = await runtime.prepareDurableCatalog?.(undefined, bindJournal);
 			storedIds = catalog?.inspectableIds;
 			durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
 			completed =
@@ -606,8 +612,20 @@ async function resolveExplicitDurableTarget(
 	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message, code: "run_not_found" };
 	}
-	if (resolved.kind === "durable" || resolved.kind === "live" || resolved.kind === "completed")
-		await deps.authorize?.(resolved.workflowId);
+	if (
+		resolved.kind === "durable" ||
+		resolved.kind === "live" ||
+		resolved.kind === "completed" ||
+		resolved.kind === "stored"
+	) {
+		if (deps.admissionMark)
+			bindResumeAdmission(
+				deps.admissionMark,
+				runtime.readyResumeBackend?.(resolved.workflowId) ?? runtime.durableBackend(),
+				resolved.workflowId,
+			);
+		if (resolved.kind !== "stored") await deps.authorize?.(resolved.workflowId);
+	}
 	if (resolved.kind === "durable") {
 		const refusal = refuseStageScopedDurableResume(resolved.workflowId, args);
 		if (refusal !== undefined) return refusal;
@@ -688,6 +706,7 @@ export async function workflowResumeAction(
 			deps.admissionMark,
 			(admissionMark) => resolveExplicitDurableTarget(id, args, { ...deps, admissionMark }, liveRuns),
 			deps.signal,
+			availableRunDurableBackend(store, id),
 		);
 	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
 		// #2603: resume prefixes must see both live and durable candidates before
@@ -711,6 +730,7 @@ export async function workflowResumeAction(
 		deps.admissionMark,
 		(admissionMark) => resumeLiveTarget(target, args, { ...deps, admissionMark }, owner),
 		deps.signal,
+		availableRunDurableBackend(store, target.runId),
 	);
 }
 
