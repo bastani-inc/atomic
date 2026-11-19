@@ -800,6 +800,50 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.equal(await layoutOf(database), "rowid", "room enough: the move");
 			});
 
+			test("a file with room for one copy and a bounded write-ahead log moves the chunk table (#5700)", async () => {
+				const database = await release0989Store();
+				const large = blob(32 * SNAPSHOT_BLOB_CHUNK_BYTES, 77);
+				await (await release0989.SqlSnapshotBlobStore.open(database, prefix)).putBlobs([large]);
+				const row = await database.get<{ rows: number }>(`SELECT count(*) AS rows FROM ${chunks}`);
+				reportedFree.bytes =
+					SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + (Number(row!.rows) + 16) * SNAPSHOT_BLOB_CHUNK_BYTES;
+				const store = await SqlSnapshotBlobStore.open(database, prefix);
+				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+				assert.equal(await layoutOf(database), "rowid");
+				await assertEveryBlobReads(store, [large], "moved");
+			});
+
+			test("a reader holding the log pauses a tight-space move before it can copy the table into the log (#5700)", async () => {
+				const database = await release0989Store();
+				const large = blob(32 * SNAPSHOT_BLOB_CHUNK_BYTES, 78);
+				await (await release0989.SqlSnapshotBlobStore.open(database, prefix)).putBlobs([large]);
+				const row = await database.get<{ rows: number }>(`SELECT count(*) AS rows FROM ${chunks}`);
+				reportedFree.bytes =
+					SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + (Number(row!.rows) + 16) * SNAPSHOT_BLOB_CHUNK_BYTES;
+				const file =
+					adapter === "libsql" ? fileURLToPath(database.descriptor.location) : database.descriptor.location;
+				assert.equal((await database.get("PRAGMA journal_mode=WAL"))?.journal_mode, "wal");
+				const reader = await openDatabase(file);
+				{
+					const store = await SqlSnapshotBlobStore.open(database, prefix);
+					await database.get("PRAGMA wal_checkpoint(TRUNCATE)");
+					await reader.transaction(
+						async (tx) => {
+							await tx.get(`SELECT hash FROM ${chunks} LIMIT 1`);
+							await store.collectGarbage({ graceSeconds: 3600 });
+							assert.equal(await layoutOf(database), "WITHOUT ROWID");
+							const log = await database.get<{ log: number }>("PRAGMA wal_checkpoint(PASSIVE)");
+							const page = await database.get<{ page_size: number }>("PRAGMA page_size");
+							assert.ok(Number(log!.log) * (Number(page!.page_size) + 24) <= 16 * SNAPSHOT_BLOB_CHUNK_BYTES);
+						},
+						{ readOnly: true },
+					);
+					await store.collectGarbage({ graceSeconds: 3600 });
+					assert.equal(await layoutOf(database), "rowid");
+					await assertEveryBlobReads(store, [large], "resumed");
+				}
+			});
+
 			test("a database whose free-space reading fails is collected as one whose disk Atomic cannot see (#5694)", async () => {
 				const database = await release0989Store();
 				const before = await chunkRows(database);

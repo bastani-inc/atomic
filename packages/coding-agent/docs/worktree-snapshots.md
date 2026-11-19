@@ -213,7 +213,7 @@ Collection timers do not keep an otherwise idle process running. When the last s
 
 **Disk space.** SQLite reuses the space of deleted content for new content but does not shrink the file. Run `VACUUM` on the database while no Atomic process uses it to return the space to the operating system.
 
-To collect immediately, for example after deleting many sessions, call `collectSnapshotGarbage` from the SDK (see below).
+To collect immediately, for example after deleting many sessions, call `collectSnapshotGarbage` from the SDK (see below). If a session is forked during the scan, collection revisits the affected blobs once: a fork through an old snapshot keeps its content; a fork through a newer snapshot does not keep superseded content merely because it copied the old record. Further forks during that revisit can leave a blob for the next collection.
 
 ## SDK
 
