@@ -10,6 +10,11 @@
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
+- Codemode scripts can launch single or parallel children with `tools.subagent`, wait with a budget, check status, and pause, quit or resume children their session launched. Scripts can `list` and `get` agent definitions, but `create`, `update` and `delete` still require direct calls. The new `models` action lists configured models and their supported thinking levels, both directly and from scripts ([#5927](https://github.com/bastani-inc/atomic/pull/5927)).
+
+### Changed
+
+- Codemode is now active in the default tool set. Its tool description adds to the model's prompt; `codemode.inlineBudget` bounds the inline declarations (default: 3000 estimated tokens). To opt out, set `"defaultTools": ["-codemode"]`. Explicit tool lists must name `codemode` to select it. An explicit `-codemode` also prevents MCP from turning it back on.
 
 ### Fixed
 

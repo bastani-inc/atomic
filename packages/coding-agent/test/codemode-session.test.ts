@@ -357,14 +357,16 @@ test("codemode only hides direct declarations, snippets and guidelines without d
 	}
 });
 
-test("codemode exposes hidden tool guidelines through describeTool and ALL_TOOLS at zero inline budget (#10343)", async () => {
+test("default-active codemode exposes hidden tool guidelines through describeTool and ALL_TOOLS at zero inline budget (#10343)", async () => {
 	const harness = await createHarness({
-		extensionFactories: [createCodemodeExtension({ mode: "only", inlineBudget: 0 })],
-		initialActiveToolNames: ["read", "codemode"],
+		extensionFactories: [
+			{ path: "builtin:codemode", factory: createCodemodeExtension({ mode: "only", inlineBudget: 0 }) },
+		],
 	});
 	try {
 		const codemode = harness.session.agent.state.tools.find((tool) => tool.name === "codemode");
-		assert(!codemode?.description.includes("### `read`"));
+		assert.ok(codemode, "codemode is active without explicit selection");
+		assert(!codemode.description.includes("### `read`"));
 		harness.setResponses([
 			(context) => {
 				assert(

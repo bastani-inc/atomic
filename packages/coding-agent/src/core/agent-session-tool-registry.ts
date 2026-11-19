@@ -21,7 +21,7 @@ import {
 } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
 import { createHistoryRouter } from "./tools/history-protocol.ts";
-import { createToolDefinitionsFor, defaultToolNamesFor } from "./tools/index.js";
+import { createToolDefinitionsFor, defaultToolSelectionFor } from "./tools/index.js";
 import { rejectMalformedToolArguments } from "./tools/malformed-tool-arguments.ts";
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
 import { createSessionHistoryToolDefinition } from "./tools/session-history.ts";
@@ -367,7 +367,7 @@ export function _buildRuntime(
 
 	const defaultActiveToolNames = this._baseToolsOverride
 		? Object.keys(this._baseToolsOverride)
-		: [...defaultToolNamesFor(options.powerShellAvailable)];
+		: [...defaultToolSelectionFor(options.powerShellAvailable, this._resourceLoader)];
 	const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 	this._refreshToolRegistry({
 		activeToolNames: baseActiveToolNames,
