@@ -25,6 +25,7 @@ import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
 import { type Component, getKeybindings, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { TaskResult, WaitOutcome } from "../../../coding-agent/src/core/tasks/contracts.js";
+import { currentChildWorktreeNote } from "../runs/foreground/run-worktrees.js";
 import {
 	clearSubagentChildTranscriptCache,
 	type SubagentChildToolCallEntry,
@@ -571,15 +572,7 @@ class SectionRecord implements Component {
 	}
 }
 
-function extractInlineSettledOutput(
-	result: AgentToolResult<Details>,
-	taskId: string,
-	ownerId?: string,
-): string | undefined {
-	if (ownerId) {
-		const kept = retainedTaskOutput(ownerId, taskId);
-		if (kept?.head?.trim()) return kept.head.trim();
-	}
+function extractInlineSettledOutput(result: AgentToolResult<Details>, taskId: string): string | undefined {
 	const textPart = result.content.find((part) => part.type === "text");
 	if (textPart?.type !== "text") return undefined;
 	const prefix = `Output of ${taskId} (`;
@@ -698,6 +691,7 @@ function releasedWaitingTools(result: TaskResult): string | undefined {
 }
 
 function buildOutcomeToolBlock(input: {
+	readonly slot: number;
 	readonly outcome:
 		| { readonly kind: "sdk-handoff"; readonly childId: string; readonly taskId: string }
 		| Extract<NonNullable<Details["taskResponse"]>, { kind: "admitted" | "unstarted" }>
@@ -716,10 +710,20 @@ function buildOutcomeToolBlock(input: {
 		if (outcome.reason.kind === "rejected") {
 			const reason = firstDisplayLine(outcome.reason.error.message || "Not started");
 			const statusLine = theme.fg("error", ["Failed", reason].filter(Boolean).join(" · "));
+			const tree = result.details?.rejectedWorktrees?.[input.slot];
 			const block = new ToolBlock({
 				status: "failure",
 				title: "Agent",
 				args,
+				body: tree
+					? {
+							invalidate() {},
+							render(width) {
+								const note = currentChildWorktreeNote(tree.runId, tree.index);
+								return note ? new Text(theme.fg("dim", note), 0, 0).render(width) : [];
+							},
+						}
+					: undefined,
 				details: expanded
 					? buildExpandedDetails({
 							statusLine,
@@ -939,7 +943,11 @@ function buildOutcomeToolBlock(input: {
 
 		const ownerId =
 			task?.ref.ownerId ?? (observation.kind === "settled" ? observation.result.output?.ownerId : undefined);
-		const resultText = hydrated?.result ?? extractInlineSettledOutput(result, activeTaskId, ownerId);
+		const kept = ownerId ? retainedTaskOutput(ownerId, activeTaskId) : undefined;
+		const answer = hydrated?.result ?? (kept?.head.trim() || extractInlineSettledOutput(result, activeTaskId));
+		const tree = kept?.worktree ?? record;
+		const note = !isRunningNow && tree ? currentChildWorktreeNote(tree.runId, tree.index) : undefined;
+		const resultText = note ? [note, answer].filter(Boolean).join("\n\n") : answer;
 		const toolCallsUnavailable =
 			hydrated?.unavailable ??
 			((task?.metrics?.toolCount ?? 0) > 0 && (!hydrated || hydrated.toolCalls.length === 0)
@@ -1181,7 +1189,7 @@ export function renderSubagentToolResult(
 					? theme.fg("success", `✓ Resumed · ${displayText(child.agent)}`)
 					: theme.fg(
 							"muted",
-							`${child.state === "paused" ? "⏸ Paused" : "◼ Quit (resumable)"} · ${displayText(child.agent)}`,
+							`${child.state === "finishing" ? "Finishing worktree cleanup" : child.state === "paused" ? "⏸ Paused" : "◼ Quit (resumable)"} · ${displayText(child.agent)}`,
 						);
 			const identity = theme.fg(
 				"dim",
@@ -1241,6 +1249,7 @@ export function renderSubagentToolResult(
 		const labels = request && !burst ? expandParallelTasks(request) : [];
 		const blocks = outcomes.map((outcome, index) =>
 			buildOutcomeToolBlock({
+				slot: index,
 				outcome,
 				identity: labels[index],
 				result,
@@ -1287,10 +1296,22 @@ export function renderSubagentToolResult(
 			const blocks = Array.from({ length: count }, (_, index) => {
 				const child = children.get(index);
 				const progress = progressBySlot.get(index);
+				if (d.rejectedWorktrees?.[index] && child?.taskResponse?.kind === "unstarted") {
+					return buildOutcomeToolBlock({
+						slot: index,
+						outcome: child.taskResponse,
+						identity: child,
+						result,
+						expanded: options.expanded,
+						theme,
+						context,
+					});
+				}
 				if (child?.detached && d.runId) {
 					const record = subagentChildIndexEntry(`${d.runId}:${child.progress?.index ?? index}`);
 					if (record?.taskId)
 						return buildOutcomeToolBlock({
+							slot: index,
 							outcome: { kind: "sdk-handoff", childId: record.childId, taskId: record.taskId },
 							identity: child,
 							result,

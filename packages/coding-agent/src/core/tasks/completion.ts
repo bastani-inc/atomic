@@ -454,6 +454,26 @@ export interface TaskCompletionOutboxOptions {
  * ended between saving it and its acknowledgement, is acknowledged without a second admission.
  */
 export class TaskCompletionOutbox {
+	/** In-process only. After a crash an old-format saved intent replays exactly as before. */
+	private static readonly finishing = new Map<string, { reopen?: WeakRef<TaskCompletionOutbox> }>();
+
+	async saveFinishing(ownerId: OwnerId, receipt: SettlementReceipt, released: Promise<void>): Promise<void> {
+		if (TaskCompletionOutbox.finishing.has(receipt.completionId)) return;
+		const handoff: { reopen?: WeakRef<TaskCompletionOutbox> } = {};
+		TaskCompletionOutbox.finishing.set(receipt.completionId, handoff);
+		const release = () => {
+			TaskCompletionOutbox.finishing.delete(receipt.completionId);
+			// If this owner closed during Git, recovery on the reopened session already ran but
+			// could not deliver. Wake that outbox, not the closed session or its retired writer.
+			const reopened = handoff.reopen?.deref();
+			if (reopened && reopened !== this && !this.isOpen() && reopened.isOpen()) {
+				reopened.adoptSavedIntents();
+				void reopened.flushRestored();
+			}
+		};
+		void released.then(release, release);
+		await this.session.appendCustomEntry("task-completion-intent", taskCompletionEnvelope(ownerId, receipt, "agent"));
+	}
 	private readonly entries = new Map<string, TaskCompletionEnvelope>();
 	private readonly restored = new Set<string>();
 	/** Admitted intents whose notice waits to be saved before they are acknowledged. */
@@ -484,15 +504,17 @@ export class TaskCompletionOutbox {
 		this.canAdmit = canAdmit;
 		this.restoredDelivered = restoredDelivered;
 		this.admitBatch = options.admitBatch;
-		for (const envelope of pendingTaskCompletionIntents(session)) {
-			this.entries.set(envelope.completionId, envelope);
-			this.restored.add(envelope.completionId);
-		}
+		this.adoptSavedIntents();
 	}
 	/** Take in, as restored, the intents saved in the session since this outbox opened it (#5079). */
 	adoptSavedIntents(): void {
 		for (const envelope of pendingTaskCompletionIntents(this.session)) {
 			if (this.entries.has(envelope.completionId)) continue;
+			const handoff = TaskCompletionOutbox.finishing.get(envelope.completionId);
+			if (handoff) {
+				handoff.reopen = new WeakRef(this);
+				continue;
+			}
 			this.entries.set(envelope.completionId, envelope);
 			this.restored.add(envelope.completionId);
 		}
