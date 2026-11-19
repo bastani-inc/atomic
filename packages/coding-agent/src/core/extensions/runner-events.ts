@@ -8,7 +8,12 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
-import { startupRegistrationTokens } from "./loader-bindings.ts";
+import {
+	discoveryCalls,
+	forwardedDiscoveryId,
+	startupRegistrationTokens,
+	watchDiscoveryCall,
+} from "./loader-bindings.ts";
 import type {
 	AgentBeforeSettleEvent,
 	BeforeAgentStartEvent,
@@ -136,6 +141,7 @@ function shutdownErrorMessage(error: unknown): string {
 
 /** Local dispatch metadata; extension error listeners and the engine transport do not need the registration token. */
 export const startupErrorHandlerTokens = new WeakMap<ExtensionError, string>();
+export const forwardedDiscoveryTokens = new WeakMap<ExtensionError, string>();
 
 const emitCaughtError = (
 	emitError: EmitExtensionError,
@@ -143,6 +149,7 @@ const emitCaughtError = (
 	event: string,
 	error: unknown,
 	token?: string,
+	forwardedToken?: string,
 ): void => {
 	const failure: ExtensionError = {
 		extensionPath,
@@ -156,6 +163,7 @@ const emitCaughtError = (
 		stack: error instanceof Error ? error.stack : undefined,
 	};
 	if (token !== undefined) startupErrorHandlerTokens.set(failure, token);
+	if (forwardedToken !== undefined) forwardedDiscoveryTokens.set(failure, forwardedToken);
 	emitError(failure);
 };
 
@@ -617,13 +625,22 @@ export async function runResourcesDiscoverHandlers(
 	const themePaths: ResourcesDiscoverCombinedResult["themePaths"] = [];
 
 	const copies = new Map<string, number>();
-	for (const { ext, handlers } of snapshotEventHandlers(extensions, "resources_discover")) {
+	for (const [extensionIndex, { ext, handlers }] of snapshotEventHandlers(
+		extensions,
+		"resources_discover",
+	).entries()) {
 		const tokens = startupRegistrationTokens(ext, handlers, copies);
 		for (const [index, handler] of handlers.entries()) {
+			const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
+			const call = reason === "startup" ? watchDiscoveryCall(handler, event) : undefined;
+			let returned: unknown;
 			try {
-				const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
-				const result = (await runCallback({ kind: "extension.hook", name: event.type, sourcePath: ext.path }, () =>
-					handler(event, ctx),
+				const result = (await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => {
+						returned = handler(event, ctx);
+						return returned;
+					},
 				)) as ResourcesDiscoverResult | undefined;
 				if (result?.skillPaths?.length) {
 					skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
@@ -635,7 +652,12 @@ export async function runResourcesDiscoverHandlers(
 					themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
 			} catch (error) {
-				emitCaughtError(emitError, ext.path, "resources_discover", error, tokens[index]);
+				const delegate = forwardedDiscoveryId(call, returned, error);
+				// Two installations of the same forwarding function are still two registrations.
+				const forwarded = delegate === undefined ? undefined : JSON.stringify([extensionIndex, index, delegate]);
+				emitCaughtError(emitError, ext.path, "resources_discover", error, tokens[index], forwarded);
+			} finally {
+				if (call) discoveryCalls.delete(event);
 			}
 		}
 	}

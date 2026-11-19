@@ -42,9 +42,9 @@ async function configuredClient(ctx: ExtensionCommandContext): Promise<LlamaClie
 	return new LlamaClient(serverUrl, result.auth.apiKey);
 }
 
-export default function llamaExtension(pi: ExtensionAPI): void {
+export default function llamaExtension(pi: ExtensionAPI): Promise<void> {
 	const provider = createLlamaProvider();
-	pi.registerProvider(provider.provider);
+	const registration = pi.registerProvider(provider.provider);
 
 	const syncCatalog = async (
 		ctx: ExtensionCommandContext,
@@ -183,7 +183,7 @@ export default function llamaExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Downloaded ${model}`);
 	};
 
-	pi.registerCommand("llama", {
+	const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
 		description: "Manage llama.cpp router models",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
@@ -229,5 +229,13 @@ export default function llamaExtension(pi: ExtensionAPI): void {
 				}
 			});
 		},
-	});
+	};
+	try {
+		pi.registerCommand("llama", command);
+	} catch (error) {
+		// Preserve the synchronous command failure without leaving a second rejection unhandled during shutdown.
+		void Promise.resolve(registration).catch(() => {});
+		throw error;
+	}
+	return registration;
 }

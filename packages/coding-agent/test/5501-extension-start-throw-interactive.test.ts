@@ -234,6 +234,78 @@ test(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
+test.each(["throw", "reject", "replace"] as const)(
+	"a rebuilt discovery callback reports the original failure once but a replacement separately (%s), and /reload reports again (#5657)",
+	async (failure) => {
+		let calls = 0;
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", () => {
+					calls++;
+					const error = new Error("directory unavailable");
+					if (failure === "reject") return Promise.reject(error);
+					throw error;
+				});
+			},
+			{
+				extensionsOverride: (base) => ({
+					...base,
+					extensions: base.extensions.map((ext) => {
+						const discovered = ext.handlers.get("resources_discover");
+						if (!discovered) return ext;
+						// Project public fields only, including a new map with new forwarding functions each time.
+						const {
+							path,
+							resolvedPath,
+							sourceInfo,
+							tools,
+							commands,
+							flags,
+							shortcuts,
+							messageRenderers,
+							entryRenderers,
+						} = ext;
+						const handlers = new Map(ext.handlers);
+						handlers.set(
+							"resources_discover",
+							discovered.map((original) => (...args) => {
+								if (failure !== "replace") return original(...args);
+								try {
+									return original(...args);
+								} catch {
+									throw new Error("directory unavailable");
+								}
+							}),
+						);
+						return {
+							path,
+							resolvedPath,
+							sourceInfo,
+							tools,
+							commands,
+							flags,
+							shortcuts,
+							messageRenderers,
+							entryRenderers,
+							handlers,
+						};
+					}),
+				}),
+			},
+		);
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const row = 'Extension "<inline:1>" error: directory unavailable';
+		const startupRows = failure === "replace" ? 2 : 1;
+		assert.equal(calls, 2);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), startupRows);
+		await mode.handleReloadCommand();
+		assert.equal(calls, 3);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), startupRows + 1);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
 test(
 	"startup reports distinct discovery handlers with the same error but not a repeat of the same handler (#5501)",
 	async () => {
