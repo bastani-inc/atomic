@@ -12,6 +12,7 @@ export * from "./types-output.js";
 export * from "./types-results.js";
 export * from "./types-runtime.js";
 
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import type {
 	ActivityReport,
 	Cleanup,
@@ -27,7 +28,7 @@ export interface TaskExecutionHooks {
 	readonly taskId?: TaskId;
 	signal: AbortSignal;
 	reportActivity(report: ActivityReport): void;
-	bindTranscript?(source: TaskTranscriptSource): void;
+	bindTranscript?(source: TaskTranscriptSource & { readonly settledReply?: AssistantMessage }): void;
 	/** Record (or, with `undefined`, remove) one extension status written by the child session's extensions. */
 	setExtensionStatus?(statusKey: string, text: string | undefined): void;
 	/** The child session ended: drop the statuses it set. */
