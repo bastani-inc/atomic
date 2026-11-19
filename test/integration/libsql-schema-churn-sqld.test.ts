@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, describe, test } from "vitest";
+import { afterAll, beforeAll, describe, test, vi } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { dropLibsqlScope } from "../helpers/storage-backends.js";
@@ -27,12 +27,45 @@ const WRITES = 60;
 const ROW_BYTES = 512 * 1024;
 /** Sixty large writes to a real server under schema churn, and the churn's own requests: the server's cost, not a slow test. */
 const SCHEMA_CHURN_TIMEOUT_MS = 300_000;
+/**
+ * Texts of one `exec` that hold a trigger, writes that add to a count and another trigger, run while the schema keeps
+ * changing. Each text holds enough writes that the server often refuses one of them after the ones before it committed.
+ */
+const SEVERAL_STATEMENT_TEXTS = 20;
+const WRITES_PER_TEXT = 30;
 
 const prefix = `churn_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
 const open = () => {
 	const authToken = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8").trim();
 	return openLibsqlDatabase({ url: serverUrl!, ...(authToken === undefined ? {} : { authToken }) });
 };
+
+/**
+ * Starts connections that keep creating, indexing and dropping tables of their own; the function it returns stops them
+ * and closes them.
+ */
+async function churnSchema(): Promise<() => Promise<void>> {
+	const changers = await Promise.all(Array.from({ length: SCHEMA_CHANGERS }, open));
+	let stop = false;
+	const churn = Promise.all(
+		changers.map(async (changer, index) => {
+			for (let round = 0; !stop; round++) {
+				const table = `${prefix}churn_${index}_${round % 8}`;
+				// The changers only stir the schema: one of their own statements that gives up under the churn they cause is
+				// no part of what the tests check.
+				await changer.exec(`CREATE TABLE IF NOT EXISTS ${table} (x)`).catch(() => undefined);
+				await changer.exec(`CREATE INDEX IF NOT EXISTS ${table}_x ON ${table}(x)`).catch(() => undefined);
+				await changer.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => undefined);
+				await new Promise((resolve) => setTimeout(resolve, SCHEMA_CHANGE_PAUSE_MS));
+			}
+		}),
+	);
+	return async () => {
+		stop = true;
+		await churn;
+		for (const changer of changers) await changer.close();
+	};
+}
 
 let database: SqliteDatabase;
 beforeAll(async () => {
@@ -52,21 +85,7 @@ describe.skipIf(serverUrl === undefined)(
 		test(
 			"every write lands once while other connections keep creating and dropping their tables",
 			async () => {
-				const changers = await Promise.all(Array.from({ length: SCHEMA_CHANGERS }, open));
-				let stop = false;
-				const churn = Promise.all(
-					changers.map(async (changer, index) => {
-						for (let round = 0; !stop; round++) {
-							const table = `${prefix}churn_${index}_${round % 8}`;
-							// The changers only stir the schema: one of their own statements that gives up under the churn they
-							// cause is no part of what this test checks.
-							await changer.exec(`CREATE TABLE IF NOT EXISTS ${table} (x)`).catch(() => undefined);
-							await changer.exec(`CREATE INDEX IF NOT EXISTS ${table}_x ON ${table}(x)`).catch(() => undefined);
-							await changer.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => undefined);
-							await new Promise((resolve) => setTimeout(resolve, SCHEMA_CHANGE_PAUSE_MS));
-						}
-					}),
-				);
+				const stopChurn = await churnSchema();
 				const data = new Uint8Array(ROW_BYTES).fill(7);
 				try {
 					for (let index = 0; index < WRITES; index++) {
@@ -78,12 +97,62 @@ describe.skipIf(serverUrl === undefined)(
 							});
 					}
 				} finally {
-					stop = true;
-					await churn;
-					for (const changer of changers) await changer.close();
+					await stopChurn();
 				}
 				const row = await database.get<{ count: number }>(`SELECT COUNT(*) AS count FROM ${prefix}rows`);
 				assert.equal(row?.count, WRITES);
+			},
+			SCHEMA_CHURN_TIMEOUT_MS,
+		);
+
+		test(
+			"a trigger whose name ends in a combining accent, writes and another trigger in one exec are sent once and write at most once while other connections keep changing the schema (#5509)",
+			async () => {
+				const table = `${prefix}counts`;
+				await database.exec(`CREATE TABLE ${table} (n INTEGER NOT NULL, "case\u0301" TEXT)`);
+				await database.run(`INSERT INTO ${table} (n) VALUES (0)`);
+				const count = async () => Number((await database.get<{ n: number | bigint }>(`SELECT n FROM ${table}`))?.n);
+				// Every request that carries a text, counted by the name of the text's first trigger.
+				const sent = new Map<string, number>();
+				const real = globalThis.fetch;
+				vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+					const request = new Request(input, init);
+					const body = await request.clone().text();
+					for (const marker of body.match(new RegExp(`${prefix}first_\\d+`, "g")) ?? [])
+						sent.set(marker, (sent.get(marker) ?? 0) + 1);
+					return real(request);
+				});
+				const stopChurn = await churnSchema();
+				const outcomes: { readonly marker: string; readonly failed: boolean; readonly added: number }[] = [];
+				try {
+					for (let round = 0; round < SEVERAL_STATEMENT_TEXTS; round++) {
+						const marker = `${prefix}first_${round}`;
+						// SQLite reads `case` followed by a combining accent (U+0301) as one name, not as the keyword CASE: the
+						// first trigger ends at its own END, and every write and the second trigger are statements of their own.
+						const sql =
+							`CREATE TRIGGER IF NOT EXISTS ${marker} AFTER INSERT ON ${table} BEGIN SELECT new.case\u0301; END; ` +
+							`UPDATE ${table} SET n = n + 1; `.repeat(WRITES_PER_TEXT) +
+							`CREATE TRIGGER IF NOT EXISTS ${prefix}last_${round} AFTER DELETE ON ${table} BEGIN SELECT 1; END;`;
+						const before = await count();
+						const failed = await database.exec(sql).then(
+							() => false,
+							() => true,
+						);
+						outcomes.push({ marker, failed, added: (await count()) - before });
+					}
+				} finally {
+					await stopChurn();
+					vi.unstubAllGlobals();
+				}
+				for (const { marker, failed, added } of outcomes) {
+					assert.equal(
+						sent.get(marker),
+						1,
+						`${marker} was sent once, never again after the server refused part of it`,
+					);
+					if (failed) assert.ok(added <= WRITES_PER_TEXT, `${marker} wrote ${added} times, at most once each`);
+					else assert.equal(added, WRITES_PER_TEXT);
+				}
 			},
 			SCHEMA_CHURN_TIMEOUT_MS,
 		);

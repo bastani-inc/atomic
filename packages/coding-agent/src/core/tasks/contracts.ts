@@ -29,9 +29,6 @@ export type WaitError = Failure<
 	"UnknownTask" | "TaskEvicted" | "OwnerClosed" | "EnvironmentClosing" | "ScopeMismatch" | "ObserverCancelled"
 >;
 export type YieldError = Failure<"UnknownWait" | "StaleGeneration" | "ObserverCancelled">;
-export type ForegroundError = Failure<
-	"TaskTerminal" | "OwnerClosing" | "UnknownTask" | "TaskEvicted" | "ObserverCancelled"
->;
 export type CancelError = Failure<"UnknownTask" | "TaskEvicted" | "CleanupFailed">;
 /** A hold on a task record its owner already evicted, which no hold brings back; see `TaskEvictedError`. */
 export type RetainError = Failure<"TaskEvicted">;
