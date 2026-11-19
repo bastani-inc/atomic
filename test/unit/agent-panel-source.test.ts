@@ -1517,18 +1517,17 @@ test("dismissed finished items stay dismissed across a failed source read (#5239
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	try {
 		assert.deepEqual(
-			agentPanelRows(session).map((row) => row.id),
+			agentPanelItems(session).map((row) => row.id),
 			["run:done1"],
 		);
 		dismissedAgentPanelItems(session).add("run:done1");
-		assert.deepEqual(agentPanelRows(session), []);
+		assert.deepEqual(agentPanelItems(session), []);
 		fail = true;
 		notify();
-		assert.deepEqual(agentPanelRows(session), []);
+		assert.deepEqual(agentPanelItems(session), []);
 		assert.deepEqual([...dismissedAgentPanelItems(session)], ["run:done1"]);
 		fail = false;
 		notify();
-		assert.deepEqual(agentPanelRows(session), []);
 		assert.deepEqual(agentPanelItems(session), []);
 	} finally {
 		hub.dispose();

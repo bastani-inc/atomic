@@ -20,7 +20,7 @@ const cwd = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const { AgentTaskHost } = await import("../../packages/coding-agent/src/core/tasks/agent-adapter.js");
 const { TaskCompletionOutbox } = await import("../../packages/coding-agent/src/core/tasks/completion.js");
 const { SessionManager } = await import("../../packages/coding-agent/src/core/session-manager.js");
-const { WorkflowStageAdmissionBoundary } = await import("../../packages/coding-agent/src/core/workflow-stage-admission.js");
+const { MessageAdmissionBoundary } = await import("../../packages/coding-agent/src/core/message-admission.js");
 const { runAgentTask } = await import("../../packages/subagents/src/runs/foreground/task-execution.js");
 const { runSync } = await import("../../packages/subagents/src/runs/foreground/execution.js");
 const { ForegroundDetachHandoff } = await import("../../packages/intercom/foreground-detach-handoff.js");
@@ -34,14 +34,14 @@ const receiver = new IntercomClient();
 sender.on("error", () => {}); receiver.on("error", () => {});
 const gate = Promise.withResolvers<void>();
 const started = Promise.withResolvers<TaskExecutionHooks>();
-const boundary = new WorkflowStageAdmissionBoundary();
+const boundary = MessageAdmissionBoundary.restore([]);
 const session = SessionManager.inMemory(cwd);
 const outbox = new TaskCompletionOutbox(session, () => boundary.isOpen(), async (envelope) => {
 	await boundary.admit(envelope.completionId, async () => {
 		(await session.appendCustomMessageEntry("task-completion", JSON.stringify(envelope), false, envelope));
 
 		console.log(`COMPLETION ${JSON.stringify(envelope)}`);
-	}, () => { throw new Error("stage closed"); }).completion;
+	}, () => { throw new Error("session closed"); }).completion;
 });
 const host = new AgentTaskHost({scope: {kind: "session", sessionId: session.getSessionId()}, authorizeLaunch() {}, onTaskSettled: (ref, receipt) => outbox.record(ref.ownerId, receipt)});
 const emitter = new EventEmitter();
@@ -104,7 +104,7 @@ try {
 	assert.equal(starts, 1);
 	console.log(`STARTS ${starts}`);
 } finally {
-	gate.resolve(); await host.close("session-close"); await boundary.close();
+	gate.resolve(); await host.close("session-close"); boundary.seal(); await boundary.waitForPendingDeliveries();
 	await sender.disconnect(); await receiver.disconnect();
 	if (broker.exitCode === null) {const exited = once(broker, "exit"); broker.kill("SIGTERM"); await exited;}
 	rmSync(root, {recursive: true, force: true});
