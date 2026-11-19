@@ -186,6 +186,60 @@ test.each(["shared connection", "separate databases"])(
 	15_000,
 );
 
+test("a raw in-window receipt may point to a label without severing the visible turn before it (#5594)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		const p = await SessionManager.create(store, process.cwd());
+		const turn = await p.appendMessage({ role: "user", content: "keep this turn", timestamp: 1 });
+		const label = await p.appendLabelChange(turn, "important");
+		await sessionBlobOutput(p, "saved")!("result");
+		const receipt = p.getLeafEntry()!;
+		assert.equal(receipt.parentId, label);
+		const leaf = await p.appendMessage({ role: "user", content: "after", timestamp: 2 });
+		const c = await p.captureFork(leaf)();
+		assert.deepEqual(c.buildSessionContext(), p.buildSessionContext());
+		assert.deepEqual(c.getEntry(receipt.id), receipt);
+		assert.equal(c.getLabel(turn), "important");
+	} finally {
+		await store.close();
+	}
+});
+
+test("an archived receipt with an omitted parent stays off the live child's settings path (#5594)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		const p = await SessionManager.create(store, process.cwd());
+		await p.appendThinkingLevelChange("high");
+		await p.appendModelChange("anthropic", "chosen");
+		await p.appendMessage({ role: "user", content: "retired receipt parent", timestamp: 1 });
+		const r = await sessionBlobOutput(p, "old")!("selected");
+		const receipt = p.getLeafEntry()!;
+		await p.appendMessage({ role: "user", content: "also retired", timestamp: 2 });
+		await p.appendCompaction("clear", null, 100, {
+			strategy: "verbatim-lines",
+			form: "cleared",
+			promptVersion: 7,
+			parameters: { query: "clear" },
+			stats: {
+				linesBefore: 1,
+				linesDeleted: 1,
+				linesKept: 0,
+				rangeCount: 0,
+				tokensBefore: 100,
+				tokensAfter: 0,
+				percentReduction: 100,
+			},
+		});
+		const leaf = await p.appendMessage({ role: "user", content: `Inspect ${r.location}`, timestamp: 3 });
+		const expected = p.buildSessionContext();
+		const c = await p.captureFork(leaf)();
+		assert.deepEqual(c.buildSessionContext(), expected);
+		assert.deepEqual(await c.readEntry(receipt.id), receipt);
+	} finally {
+		await store.close();
+	}
+});
+
 test("a fork keeps an archived receipt after its original settings, including when reopening at the receipt (#5594)", async () => {
 	const store = new MemorySessionStore();
 	try {

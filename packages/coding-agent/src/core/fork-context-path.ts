@@ -52,6 +52,7 @@ export async function includeNamedForkOutputs(
 	}
 	if (!wanted.size) return entries;
 	const found: SessionEntry[] = [];
+	const ancestors = new Set<string>();
 	const positions = new Map(entries.map((entry) => [entry.id, 0]));
 	let next: string | null = leaf;
 	search: for await (const { items } of historyPages(store, sessionId, epoch, through, { direction: "backward" })) {
@@ -122,6 +123,7 @@ export async function includeNamedForkOutputs(
 				}
 				if (candidate && hashOf(candidate) === links.hash) {
 					positions.set(candidate.id, item.seq);
+					if (ancestor) ancestors.add(candidate.id);
 					found.push(candidate);
 					wanted.delete(links.hash);
 				}
@@ -151,11 +153,32 @@ export async function includeNamedForkOutputs(
 	const detached = [...archived.values()];
 	if (!detached.length) return branch;
 	const ordered: SessionEntry[] = [];
-	let i = 0;
+	const available = new Set([...branch, ...detached].map((e) => e.id));
+	let i = 0,
+		prior: string | null = null;
 	for (const entry of branch) {
 		const position = entry === branch.at(-1) ? Infinity : (positions.get(entry.id) ?? 0);
-		while (i < detached.length && positions.get(detached[i]!.id)! < position) ordered.push(detached[i++]!);
+		while (i < detached.length && positions.get(detached[i]!.id)! < position) {
+			const receipt = detached[i++]!;
+			// An archived ancestor may itself point to a retired turn. Keep the link, not its
+			// payload: otherwise a resume at this receipt (or an active descendant) loses its settings.
+			if (ancestors.has(receipt.id)) {
+				if (receipt.parentId !== null && !available.has(receipt.parentId)) {
+					ordered.push({
+						type: "custom",
+						customType: "atomic.fork-anchor",
+						id: receipt.parentId,
+						parentId: prior,
+						timestamp: receipt.timestamp,
+					});
+					available.add(receipt.parentId);
+				}
+				prior = receipt.id;
+			}
+			ordered.push(receipt);
+		}
 		ordered.push(entry);
+		prior = entry.id;
 	}
 	return ordered;
 }

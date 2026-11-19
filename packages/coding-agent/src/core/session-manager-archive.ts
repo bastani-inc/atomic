@@ -16,6 +16,8 @@ export interface BranchedSessionStateInput {
 	parentSessionId: string;
 	workflow?: SessionWorkflowMetadata;
 	path: SessionEntry[];
+	/** A bounded new child copies opaque receipt records verbatim. */
+	preserveReceiptLinks?: boolean;
 	labelsById: ReadonlyMap<string, string>;
 	labelTimestampsById: ReadonlyMap<string, string>;
 }
@@ -65,10 +67,27 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 	const pathWithoutLabels: SessionEntry[] = [];
 	const replacementByLabelId = new Map<string, string>();
 	const pendingLabelIds: string[] = [];
+	const linkedLabels = new Set<string>();
+	if (input.preserveReceiptLinks)
+		for (const e of input.path) {
+			if (e.type === "custom" && e.customType === TOOL_OUTPUT_ENTRY_TYPE && e.parentId !== null)
+				linkedLabels.add(e.parentId);
+			if (e.type === "compaction" && e.coveredThroughEntryId !== undefined)
+				linkedLabels.add(e.coveredThroughEntryId);
+		}
 	let pathParentId: string | null = null;
 	for (const entry of input.path) {
 		if (entry.type === "label") {
-			pendingLabelIds.push(entry.id);
+			if (linkedLabels.has(entry.id)) {
+				pathWithoutLabels.push({
+					type: "custom",
+					customType: "atomic.fork-anchor",
+					id: entry.id,
+					parentId: pathParentId,
+					timestamp: entry.timestamp,
+				});
+				pathParentId = entry.id;
+			} else pendingLabelIds.push(entry.id);
 			continue;
 		}
 		for (const labelId of pendingLabelIds) replacementByLabelId.set(labelId, entry.id);
@@ -83,7 +102,7 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 								? null
 								: (replacementByLabelId.get(entry.firstKeptEntryId) ?? entry.firstKeptEntryId),
 					}
-				: entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
+				: input.preserveReceiptLinks && entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
 					? entry
 					: { ...entry, parentId: pathParentId },
 		);
