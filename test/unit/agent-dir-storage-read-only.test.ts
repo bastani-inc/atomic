@@ -158,18 +158,18 @@ vi.resetModules();
 
 const {
 	coLocatesWorkflowStore,
-	defaultJournalStoreDirectory,
 	defaultSessionDatabasePath,
 	defaultSharedStoragePath,
 	resetStorageHomeCacheForTests,
 	storageHomeDir,
 	storagePathBaseDir,
 	takeStorageAdoptionNotice,
+	workflowsStorageDir,
 } = await import("../../packages/coding-agent/src/core/storage/file-identity.js");
 const { resolveSessionStore, selectSessionStorage } = await import(
 	"../../packages/coding-agent/src/core/session-storage.js"
 );
-const { collectStorageStatus, selectJournal } = await import(
+const { collectStorageStatus } = await import(
 	"../../packages/coding-agent/src/core/storage/storage-status.js"
 );
 
@@ -244,12 +244,11 @@ test.each(PERMISSION_CODES)(
 		fsFaults.readOnlyDirs.set(agent, code);
 
 		const expectedSessionDb = join(atomicHome, "workflows", "journal.sqlite");
-		const expectedJournalDir = join(atomicHome, "workflows", "journal");
 		const expectedSharedDb = join(atomicHome, "storage.sqlite");
 
 		assert.equal(storageHomeDir(agent, {}), atomicHome);
 		assert.equal(defaultSessionDatabasePath(agent, {}), expectedSessionDb);
-		assert.equal(defaultJournalStoreDirectory(agent, {}), expectedJournalDir);
+		assert.equal(workflowsStorageDir(agent, {}), join(atomicHome, "workflows"));
 		assert.equal(defaultSharedStoragePath(agent, {}), expectedSharedDb);
 		assert.equal(coLocatesWorkflowStore(agent, {}), false);
 		assert.equal(
@@ -270,11 +269,6 @@ test.each(PERMISSION_CODES)(
 				path: join(atomicHome, "team.sqlite"),
 			},
 		);
-		assert.deepEqual(selectJournal(agent, {}), {
-			kind: "sharded",
-			dir: expectedJournalDir,
-		});
-
 		resetStorageHomeCacheForTests();
 		const store = await resolveSessionStore(root, { agentDir: agent });
 		try {
@@ -289,10 +283,8 @@ test.each(PERMISSION_CODES)(
 			assert.equal(domain.error, undefined, `unexpected ${domain.domain} error: ${domain.error}`);
 		}
 		const sessionsDomain = status.domains.find((domain) => domain.domain === "sessions");
-		const journalDomain = status.domains.find((domain) => domain.domain === "journal");
 		assert.equal(sessionsDomain?.selection, `SQLite ${expectedSessionDb}`);
 		assert.equal(sessionsDomain?.probe?.connection.status, "ok");
-		assert.equal(journalDomain?.selection, `journal store ${expectedJournalDir}`);
 		assert.equal(existsSync(join(agent, ".atomic-storage-home")), false);
 	},
 );
@@ -309,7 +301,6 @@ test.each(PERMISSION_CODES)(
 		mkdirSync(sibling, { recursive: true });
 		mkdirSync(join(parent, "workflows"), { recursive: true });
 		const legacyDb = join(parent, "workflows", "journal.sqlite");
-		const legacyJournalDir = join(parent, "workflows", "journal");
 		const legacyRelative = join(parent, "history.sqlite");
 		writeFileSync(legacyDb, "");
 		writeFileSync(legacyRelative, "history");
@@ -319,7 +310,7 @@ test.each(PERMISSION_CODES)(
 
 		assert.equal(storageHomeDir(agent, {}), parent);
 		assert.equal(defaultSessionDatabasePath(agent, {}), legacyDb);
-		assert.equal(defaultJournalStoreDirectory(agent, {}), legacyJournalDir);
+		assert.equal(workflowsStorageDir(agent, {}), join(parent, "workflows"));
 		assert.equal(defaultSharedStoragePath(agent, {}), join(parent, "storage.sqlite"));
 		assert.equal(coLocatesWorkflowStore(agent, {}), false);
 		assert.deepEqual(selectSessionStorage(root, { agentDir: agent, settings: {} }), {
@@ -365,10 +356,6 @@ test.each(PERMISSION_CODES)(
 			assert.equal(domain.error, undefined, `unexpected ${domain.domain} error: ${domain.error}`);
 		}
 		assert.equal(status.domains.find((domain) => domain.domain === "sessions")?.selection, `SQLite ${legacyDb}`);
-		assert.equal(
-			status.domains.find((domain) => domain.domain === "journal")?.selection,
-			`journal store ${legacyJournalDir}`,
-		);
 
 		resetStorageHomeCacheForTests();
 		assert.equal(storageHomeDir(sibling, {}), sibling);
@@ -533,10 +520,9 @@ test.each(REFRESH_FAULT_CODES)(
 		resetStorageHomeCacheForTests();
 
 		const expectedSessionDb = join(moved, "workflows", "journal.sqlite");
-		const expectedJournalDir = join(moved, "workflows", "journal");
 		assert.equal(storageHomeDir(current, {}), moved);
 		assert.equal(defaultSessionDatabasePath(current, {}), expectedSessionDb);
-		assert.equal(defaultJournalStoreDirectory(current, {}), expectedJournalDir);
+		assert.equal(workflowsStorageDir(current, {}), join(moved, "workflows"));
 		assert.deepEqual(selectSessionStorage(root, { agentDir: current, settings: {} }), {
 			kind: "sqlite",
 			path: expectedSessionDb,
