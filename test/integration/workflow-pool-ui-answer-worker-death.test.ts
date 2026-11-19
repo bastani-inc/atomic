@@ -38,6 +38,9 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+	// Restoring alone keeps each spy, with its record of every call (`this`, arguments and result), for the rest of
+	// the file: about 11 MB a test here, since each call's `this` is a whole worker pool. Resetting first drops them.
+	vi.resetAllMocks();
 	vi.restoreAllMocks();
 });
 

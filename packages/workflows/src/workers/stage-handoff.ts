@@ -28,7 +28,7 @@ import {
 	type StaleWorkLeaseReason,
 } from "../shared/worker-pool-errors.js";
 import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
-import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
+import { authoritativeWorkflowChildRunId, publishRunForOwner } from "../shared/workflow-run-ownership.js";
 import { stageInputRefusal, stageInputRefusedReason } from "./placement-errors.js";
 import type { PooledRunResult, StageReceipts } from "./protocol.js";
 import { isRunChanges, type PublishedRun, type RunChanges, type RunHeader } from "./run-changes.js";
@@ -104,6 +104,7 @@ interface Attempt {
 type Execution = NonNullable<StageSnapshot["workerExecution"]>;
 
 export class PoolStageHandoff {
+	private readonly attachmentOwner = Symbol();
 	private readonly attempts = new Map<string, Attempt>();
 	private readonly owners = new Map<string, string>();
 	private readonly publications = new Map<string, Promise<void>>();
@@ -461,7 +462,7 @@ export class PoolStageHandoff {
 							latest === undefined || execution.renewedAt > latest.renewedAt ? execution : latest,
 						undefined,
 					);
-				this.store.recordRunStart({
+				this.publishRun({
 					...run,
 					stages: result.stages.map((stage) => {
 						const execution = executions.get(stage.id) ?? attempt;
@@ -588,6 +589,10 @@ export class PoolStageHandoff {
 		return written;
 	}
 
+	private publishRun(run: RunSnapshot): void {
+		this.store.recordRunStart(publishRunForOwner(run, this.attachmentOwner));
+	}
+
 	/** Replaces the store's copy of a run published in full. */
 	private replace(
 		attempt: Attempt,
@@ -618,7 +623,7 @@ export class PoolStageHandoff {
 		// Whether a chat in this process is attached to a stage is the root's own state: a worker's
 		// republished run never knows it, and dropping it would stop the chat answering prompts.
 		for (const stage of published.stages) if (previous.get(stage.id)?.attached === true) stage.attached = true;
-		this.store.recordRunStart(published);
+		this.publishRun(published);
 		open(attempt, run.id, viewOf(published));
 		return { changed, written: published.stages.length + published.toolNodes.length };
 	}
@@ -901,7 +906,7 @@ export class PoolStageHandoff {
 		for (const id of attempt.runs) {
 			const run = this.store.run(id);
 			if (run?.stages.some((stage) => isLive(stage)) !== true) continue;
-			this.store.recordRunStart({
+			this.publishRun({
 				...run,
 				stages: run.stages.map((stage) => {
 					if (!isLive(stage)) return stage;
