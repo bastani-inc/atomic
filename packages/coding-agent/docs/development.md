@@ -58,7 +58,7 @@ The process that draws the UI (`host`) and the engine that runs the agent and ex
 
 Records hold function names and file paths, never prompts or message text. Atomic never trims the file, so delete it before reproducing a problem.
 
-Stack collection is enabled by default for this diagnostic. Both the npm package and standalone binary use a sampling CPU profile, not debugger pauses. A `debugger;` statement does not stop the application just because the diagnostic is on, and an attached debugger keeps control of its own breakpoints. Profiles rotate every five seconds while the event loop runs, and completed profile data is discarded after the relevant stall's samples are extracted. Sampling adds some CPU overhead, so use delay-only mode for latency comparisons.
+Stack collection is enabled by default for this diagnostic. Both the npm package and standalone binary use a sampling CPU profile, not debugger pauses. A `debugger;` statement does not stop the application just because the diagnostic is on, and an attached debugger keeps control of its own breakpoints. Profiles rotate every five seconds while the event loop runs. Completed profile data stays available until every overlapping stall window has been read, including a stall discovered just after a startup/session boundary, and is then discarded. Functions sharing a name are listed separately by their definition's source location. Sampling adds some CPU overhead, so use delay-only mode for latency comparisons.
 
 For delay measurements without sampling overhead, disable stack collection:
 

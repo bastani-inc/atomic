@@ -100,13 +100,19 @@ export function summarizeStacks(samples: readonly (readonly string[])[]): EventL
 	return [...counts.values()].sort((left, right) => right.count - left.count).slice(0, MAX_BLOCK_STACKS);
 }
 
+// CPU-profile frames already name the function's definition, not the sampled instruction's location.
+const definitionLocatedStacks = new WeakSet<readonly string[]>();
+
 export function hotFrames(samples: readonly (readonly string[])[]): EventLoopHotFrame[] {
 	const frames = new Map<string, { frame: string; count: number; depth: number }>();
 	for (const stack of samples) {
 		const counted = new Set<string>();
 		for (const [depth, frame] of stack.entries()) {
 			if (frame.startsWith("… ")) continue;
-			const key = frame.startsWith("(anonymous)") ? frame : frame.replace(/:\d+:\d+\)$/, ")");
+			const key =
+				definitionLocatedStacks.has(stack) || frame.startsWith("(anonymous)")
+					? frame
+					: frame.replace(/:\d+:\d+\)$/, ")");
 			if (counted.has(key)) continue;
 			counted.add(key);
 			const seen = frames.get(key);
@@ -140,7 +146,9 @@ export function profileStacksBetween(profile: Profiler.Profile, fromUs: number, 
 			const { functionName, url, lineNumber, columnNumber } = node.callFrame;
 			frames.push(formatStackFrame(functionName, url, lineNumber, columnNumber));
 		}
-		stacks.push(trimStack(frames));
+		const stack = trimStack(frames);
+		definitionLocatedStacks.add(stack);
+		stacks.push(stack);
 	}
 	return stacks;
 }
@@ -156,13 +164,22 @@ interface StackSampler {
 class ProfileSampler implements StackSampler {
 	readonly source = "profiler";
 	private startedUs = 0;
-	private queue: Promise<unknown> = Promise.resolve();
+	private observedUs: number;
+	private queue: Promise<void> = Promise.resolve();
+	private collectionScheduled = false;
+	private completed: Profiler.Profile[] = [];
+	private readonly requests: {
+		readonly sinceUs: number;
+		readonly untilUs: number;
+		readonly settle: (stacks: readonly (readonly string[])[]) => void;
+	}[] = [];
 
 	private readonly session: Session;
 	private readonly profileTimeOffsetUs: number;
 
 	constructor(session: Session, nowUs: number) {
 		this.session = session;
+		this.observedUs = nowUs;
 		// Node profiles use the monotonic process clock; Bun profiles already use epoch microseconds.
 		this.profileTimeOffsetUs = isBunRuntime ? 0 : epochUs() - Number(process.hrtime.bigint() / 1000n);
 		session.post("Profiler.enable");
@@ -171,25 +188,49 @@ class ProfileSampler implements StackSampler {
 	}
 
 	beat(nowUs: number): void {
-		if (nowUs - this.startedUs < PROFILE_WINDOW_MS * 1000) return;
-		this.startedUs = nowUs;
-		this.queue = this.queue.then(() => this.stop()).then(() => this.restart(nowUs));
+		this.observedUs = nowUs;
+		if (!this.collectionScheduled && this.requests.length === 0) this.releaseObservedProfiles();
+		if (nowUs - this.startedUs >= PROFILE_WINDOW_MS * 1000) this.scheduleCollection();
 	}
 
 	stacksOf(sinceUs: number, untilUs: number): Promise<readonly (readonly string[])[]> {
-		const stacks = this.queue
-			.then(() => this.stop())
-			.then((profile) => {
-				this.restart(untilUs);
-				return profile === undefined
-					? []
-					: profileStacksBetween(profile, sinceUs - this.profileTimeOffsetUs, untilUs - this.profileTimeOffsetUs);
-			});
-		this.queue = stacks.then(() => undefined);
-		return stacks;
+		return new Promise((settle) => {
+			this.requests.push({ sinceUs, untilUs, settle });
+			this.scheduleCollection();
+		});
 	}
 
 	exit(): void {}
+
+	private scheduleCollection(): void {
+		if (this.collectionScheduled) return;
+		this.collectionScheduled = true;
+		this.queue = this.queue
+			.then(() => this.stop())
+			.then((profile) => {
+				if (profile !== undefined) this.completed.push(profile);
+				for (const request of this.requests.splice(0)) {
+					request.settle(
+						this.completed.flatMap((completed) =>
+							profileStacksBetween(
+								completed,
+								request.sinceUs - this.profileTimeOffsetUs,
+								request.untilUs - this.profileTimeOffsetUs,
+							),
+						),
+					);
+				}
+				this.releaseObservedProfiles();
+				this.collectionScheduled = false;
+			});
+	}
+
+	private releaseObservedProfiles(): void {
+		// A phase can end before the next timer discovers a later stall in the same task. Keep that unread tail,
+		// including a rotation's tail, until every window through the last observed heartbeat has been served.
+		const nextWindowUs = this.observedUs + HEARTBEAT_MS * 1000;
+		this.completed = this.completed.filter((profile) => profile.endTime + this.profileTimeOffsetUs >= nextWindowUs);
+	}
 
 	private restart(nowUs: number): void {
 		this.startedUs = nowUs;
@@ -197,8 +238,24 @@ class ProfileSampler implements StackSampler {
 	}
 
 	private stop(): Promise<Profiler.Profile | undefined> {
+		if (isBunRuntime) {
+			// Bun's optional callback is deferred even though post returns its result synchronously.
+			const stopProfile = this.session.post as unknown as (method: "Profiler.stop") => {
+				readonly profile: Profiler.Profile;
+			};
+			let profile: Profiler.Profile | undefined;
+			try {
+				profile = stopProfile.call(this.session, "Profiler.stop").profile;
+			} catch {}
+			this.restart(epochUs());
+			return Promise.resolve(profile);
+		}
 		return new Promise((settle) =>
-			this.session.post("Profiler.stop", (error, result) => settle(error ? undefined : result.profile)),
+			this.session.post("Profiler.stop", (error, result) => {
+				// Resume collection before another user microtask can run between stop and result processing.
+				this.restart(epochUs());
+				settle(error ? undefined : result.profile);
+			}),
 		);
 	}
 }
@@ -242,6 +299,7 @@ class EventLoopMonitor {
 	private lastBeatUs: number;
 	private phase: EventLoopPhase = "startup";
 	private phaseStartedUs: number;
+	private maxBeatDelayMs = 0;
 
 	private readonly role: EventLoopProcessRole;
 	private readonly thresholdMs: number;
@@ -286,6 +344,7 @@ class EventLoopMonitor {
 		else this.write(ended);
 		this.histogram.disable();
 		this.histogram = startDelayHistogram();
+		this.maxBeatDelayMs = 0;
 		this.phase = next;
 		this.phaseStartedUs = epochUs();
 	}
@@ -295,6 +354,7 @@ class EventLoopMonitor {
 		const sinceUs = this.lastBeatUs;
 		this.lastBeatUs = nowUs;
 		const durationMs = (nowUs - sinceUs) / 1000 - HEARTBEAT_MS;
+		this.maxBeatDelayMs = Math.max(this.maxBeatDelayMs, durationMs);
 		if (durationMs >= this.thresholdMs) {
 			void this.sampler
 				.stacksOf(sinceUs + HEARTBEAT_MS * 1000, nowUs)
@@ -332,7 +392,7 @@ class EventLoopMonitor {
 			ticks,
 			p50Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(50)),
 			p99Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(99)),
-			maxMs: Math.max(ticks === 0 ? 0 : lagMs(this.histogram.max), roundMs(lateMs)),
+			maxMs: Math.max(ticks === 0 ? 0 : lagMs(this.histogram.max), roundMs(this.maxBeatDelayMs), roundMs(lateMs)),
 		};
 	}
 
