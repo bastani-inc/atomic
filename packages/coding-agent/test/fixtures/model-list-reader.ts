@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { closeSync, constants, openSync, renameSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { setImmediate } from "node:timers/promises";
+import { AuthStorage } from "../../src/core/auth-storage.js";
 import { ModelRuntime } from "../../src/core/model-runtime.js";
 
 const [mode, dir] = process.argv.slice(2);
@@ -36,7 +38,24 @@ const runtime = await ModelRuntime.create({
 	catalogBaseUrl: "http://127.0.0.1:9/catalog",
 	modelRefreshTimeoutMs: mode === "fifo" ? 120 : 30_000,
 });
-if (mode === "account-fifo") {
+if (mode === "borrowed") {
+	const borrow = async () => {
+		const credentials = AuthStorage.inMemory();
+		const owner = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+		return {
+			refresh: owner.getProvider(provider)?.refreshModels,
+			owner: new WeakRef(owner),
+			credentials: new WeakRef(credentials),
+		};
+	};
+	const borrowed = await borrow();
+	for (let i = 0; i < 12; i++) {
+		await setImmediate();
+		Bun.gc(true);
+	}
+	assert.equal(typeof borrowed.refresh, "function");
+	console.log(JSON.stringify({ runtime: !!borrowed.owner.deref(), credentials: !!borrowed.credentials.deref() }));
+} else if (mode === "account-fifo") {
 	const { createAgentSession } = await import("../../src/core/sdk.js");
 	const { SessionManager } = await import("../../src/core/session-manager.js");
 	const { SettingsManager } = await import("../../src/core/settings-manager.js");

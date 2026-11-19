@@ -39,6 +39,11 @@ function run(mode: string) {
 	});
 }
 
+it("a borrowed catalog refresh function does not keep its runtime or credential store alive (#5685)", async () => {
+	const { stdout } = await run("borrowed");
+	assert.deepEqual(JSON.parse(stdout), { runtime: false, credentials: false });
+}, 60_000);
+
 it("an ordinary listing leaves another process's explicitly refreshed catalog and account IDs intact (#5685)", async () => {
 	await writeFile(
 		join(dir, "auth.json"),
