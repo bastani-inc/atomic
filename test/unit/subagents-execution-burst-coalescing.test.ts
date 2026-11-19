@@ -1299,6 +1299,66 @@ test("rejects differing call-level cwd values for one coalesced worktree before 
 	}
 });
 
+test.each([
+	{ name: "foreground", wait: { kind: "foreground", budgetMs: 600_000 } },
+	{ name: "background", wait: { kind: "background" } },
+])(
+	"a call that passes a $name wait and a sibling that passes none launch apart, so a field they do not share fails neither (#5686)",
+	async ({ wait }) => {
+		const launches: string[] = [];
+		const harness = makeHarness({
+			runSync: async (_parentCwd, _agents, agentName, task) => {
+				launches.push(task);
+				return result(agentName, task);
+			},
+		});
+		try {
+			const outputs = await Promise.all([
+				execute(harness, "with-wait", { agent: "echo", task: "A", concurrency: 1, wait } as SubagentParamsLike),
+				execute(harness, "without-wait", { agent: "echo", task: "B" }),
+			]);
+			const texts = outputs.map((output) => (output.content[0]?.type === "text" ? output.content[0].text : ""));
+			assert.deepEqual(
+				outputs.map((output) => output.isError === true),
+				[false, false],
+				texts.join(" | "),
+			);
+			assert.deepEqual(launches.sort(), ["A", "B"]);
+			assert.match(texts[0]!, /output:A/);
+			assert.match(texts[1]!, /output:B/);
+		} finally {
+			harness.cleanup();
+		}
+	},
+);
+
+test("calls that pass the same wait still merge, and still fail together on a field they do not share (#5686)", async () => {
+	let launches = 0;
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			launches += 1;
+			return result(agentName, task);
+		},
+	});
+	try {
+		const wait = { kind: "background" };
+		const outputs = await Promise.all([
+			execute(harness, "first", { agent: "echo", task: "A", concurrency: 1, wait } as SubagentParamsLike),
+			execute(harness, "second", { agent: "echo", task: "B", concurrency: 2, wait } as SubagentParamsLike),
+		]);
+		assert.equal(launches, 0);
+		for (const output of outputs) {
+			assert.equal(output.isError, true);
+			assert.equal(
+				output.content[0]?.type === "text" ? output.content[0].text : "",
+				"Cannot coalesce sibling subagent calls: incompatible top-level field 'concurrency'.",
+			);
+		}
+	} finally {
+		harness.cleanup();
+	}
+});
+
 test("rejects the full burst before launch when run-wide fields conflict", async () => {
 	const cases: Array<{
 		field: "concurrency" | "worktree" | "context";

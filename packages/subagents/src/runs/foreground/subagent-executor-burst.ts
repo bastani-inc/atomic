@@ -33,6 +33,8 @@ interface BurstItem {
 	settled: boolean;
 	resolve: (result: SubagentToolResult) => void;
 	reject: (reason?: unknown) => void;
+	/** The `wait` the call passed, undefined when it passed none; see {@link byLegacyWait}. */
+	legacyWait?: unknown;
 }
 
 interface ResultRoute {
@@ -47,6 +49,31 @@ type ExecuteSubagent = (
 	onUpdate: ((result: SubagentToolResult) => void) | undefined,
 	ctx: ExtensionContext,
 ) => Promise<SubagentToolResult>;
+
+/** A launch into the burst, with the `wait` the call passed (undefined when none): see {@link byLegacyWait}. */
+export type ExecuteBurstLaunch = (
+	id: string,
+	params: SubagentParamsLike,
+	signal: AbortSignal,
+	onUpdate: ((result: SubagentToolResult) => void) | undefined,
+	ctx: ExtensionContext,
+	legacyWait?: unknown,
+) => Promise<SubagentToolResult>;
+
+/**
+ * The burst's calls by the `wait` each passed, in order of first appearance. Before every launch ran in the background,
+ * calls with different waits launched as separate runs; calls that still pass one keep doing so, so that a field such
+ * as `concurrency` they do not share cannot fail them together (#5686). Calls that pass none form one group.
+ */
+function byLegacyWait(items: BurstItem[]): BurstItem[][] {
+	const groups: BurstItem[][] = [];
+	for (const item of items) {
+		const group = groups.find((candidate) => isDeepStrictEqual(candidate[0]!.legacyWait, item.legacyWait));
+		if (group) group.push(item);
+		else groups.push([item]);
+	}
+	return groups;
+}
 
 type SharedField =
 	| "concurrency"
@@ -411,7 +438,7 @@ export function createExecutionBurstDispatcher(input: {
 		ctx: ExtensionContext,
 		preparedTasks?: TaskParam[],
 	) => Promise<SubagentToolResult | undefined>;
-}): ExecuteSubagent {
+}): ExecuteBurstLaunch {
 	let queue: BurstItem[] = [];
 	let flushScheduled = false;
 
@@ -518,9 +545,19 @@ export function createExecutionBurstDispatcher(input: {
 		if (retry !== undefined) await run(retry, finish);
 	};
 
-	const runBurst = (items: BurstItem[]): void => {
+	const runGroup = (items: BurstItem[]): Promise<void> =>
+		new Promise((done) => {
+			run(items.length > 1 ? items.map(collectMixedCall) : items, done).catch(() => done());
+		});
+
+	const runBurst = async (items: BurstItem[]): Promise<void> => {
 		input.setActive(true);
-		void run(items.length > 1 ? items.map(collectMixedCall) : items, () => input.setActive(false));
+		try {
+			// Each group is its own run, one after another; within a group, calls merge as any burst's do.
+			for (const group of byLegacyWait(items)) await runGroup(group);
+		} finally {
+			input.setActive(false);
+		}
 	};
 
 	const flush = (): void => {
@@ -530,10 +567,10 @@ export function createExecutionBurstDispatcher(input: {
 		void runBurst(items);
 	};
 
-	return (id, params, signal, onUpdate, ctx) => {
+	return (id, params, signal, onUpdate, ctx, legacyWait) => {
 		if (input.isActive()) return Promise.resolve(input.duplicateResult(params));
 		return new Promise<SubagentToolResult>((resolve, reject) => {
-			queue.push({ id, params, signal, onUpdate, ctx, settled: false, resolve, reject });
+			queue.push({ id, params, signal, onUpdate, ctx, settled: false, resolve, reject, legacyWait });
 			if (!flushScheduled) {
 				flushScheduled = true;
 				setImmediate(flush);
