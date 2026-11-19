@@ -180,6 +180,65 @@ describe("history:// continuation chains cover each entry once", () => {
 		},
 	);
 
+	it.each(["router", "search tool"])(
+		"a %s forwarded through a 1 KiB extension page keeps all ten matches",
+		async (source) => {
+			const ids = Array.from({ length: 20 }, (_, i) => `flow-summary-${String(i).padStart(3, "0")}-abc`);
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => ids.map((id) => summary(id, BASE)),
+				getRun: async (id) => detail(id, BASE),
+			};
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => undefined,
+				workflows: () => workflows,
+			});
+			const tool = createSearchToolDefinition(PROJECT, { contextBefore: 0, contextAfter: 0 });
+			const catalog = "history://workflows?limit=10";
+			const result = await tool.execute(
+				"extension",
+				{ pattern: "needle", paths: "artifact://workflow-catalog" },
+				undefined,
+				undefined,
+				{
+					cwd: PROJECT,
+					internalResourceRouter: {
+						async search(_url: string, query: InternalSearchRequest) {
+							let text: string;
+							if (source === "router") text = (await router.search!(catalog, query))!;
+							else {
+								const inner = await tool.execute(
+									"inner",
+									{ pattern: query.pattern, paths: catalog },
+									undefined,
+									undefined,
+									{ cwd: PROJECT, internalResourceRouter: router } as never,
+								);
+								const block = inner.content[0];
+								assert.ok(block?.type === "text");
+								text = block.text;
+							}
+							const page: string[] = [];
+							let bytes = 0;
+							for (const line of text.split("\n")) {
+								bytes += Buffer.byteLength(line) + (page.length ? 1 : 0);
+								if (bytes > 1_024) break;
+								page.push(line);
+							}
+							return page.join("\n");
+						},
+					},
+				} as never,
+			);
+			const text = result.content[0];
+			assert.ok(text?.type === "text");
+			assert.deepEqual(
+				[...text.text.matchAll(/summary: needle (.+)$/gm)].map((hit) => hit[1]),
+				ids.slice(0, 10),
+			);
+		},
+	);
+
 	it.each(["sessions", "workflows"] as const)(
 		"read of a printed %s cursor still fits the listing's own budget",
 		async (domain) => {
@@ -230,6 +289,56 @@ describe("history:// continuation chains cover each entry once", () => {
 		const next = continuation((await router.search!(path, request("needle")))!)!;
 		farthest = 2;
 		assert.match((await router.search!(next, request("needle")))!, /summary: needle r1$/m);
+	});
+
+	it("an old run cursor reads both the next detail and its continuation from the live listing", async () => {
+		const slots = ["r4", "r3", "r2", "r1"];
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const reads: string[] = [];
+		const workflows: WorkflowRunHistory = {
+			listRuns: async () =>
+				slots.flatMap((id, i) =>
+					id
+						? [
+								{
+									...summary(id, BASE - i),
+									get runId() {
+										return slots[i]!;
+									},
+								},
+							]
+						: [],
+				),
+			getRun: async (id) => {
+				reads.push(id);
+				if (id === "r3") {
+					entered.resolve();
+					await release.promise;
+				}
+				if (!slots.includes(id)) throw new Error("run retired");
+				return detail(id, BASE);
+			},
+		};
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
+		const pending = router.search!("history://workflows?offset=1&limit=2&run=r3", request("needle"));
+		await entered.promise;
+		slots[0] = "";
+		slots[2] = "r2-new";
+		slots[3] = "r1-new";
+		release.resolve();
+		const first = (await pending)!;
+		const next = continuation(first)!;
+		const second = (await router.search!(next, request("needle")))!;
+		assert.deepEqual(
+			{ reads, next },
+			{
+				reads: ["r3", "r2-new", "r1-new"],
+				next: "history://workflows?offset=3&limit=2&run=r1-new",
+			},
+		);
+		assert.match(first, /summary: needle r2-new/);
+		assert.match(second, /summary: needle r1-new/);
 	});
 
 	it("finishing a workflow search releases its listing while the sessions half of a root search waits", async () => {
@@ -305,6 +414,17 @@ describe("history:// continuation chains cover each entry once", () => {
 		assert.match((await router.search!("history://workflows/one", request("needle")))!, /summary: needle one/);
 	});
 
+	it("validates an ordinary history URL before asking a retired extension for its cancellation signal", async () => {
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => undefined });
+		const query = {
+			...request("needle"),
+			get signal(): AbortSignal {
+				throw new Error("retired extension context");
+			},
+		};
+		await assert.rejects(router.search!("history://sessions?limit=0", query), /history limit must be/);
+	});
+
 	it("an abandoned chain does not need its original router or a free slot in a process cache", async () => {
 		const store = new MemorySessionStore();
 		for (let i = 0; i < 4; i++) await addSession(store, `s${i}`, BASE + i, [`needle s${i}`]);
@@ -374,6 +494,53 @@ describe("history:// continuation chains cover each entry once", () => {
 			} as never,
 		);
 		assert.equal(result.details?.matchCount, 3);
+	});
+
+	it.each([
+		["history://sessions?offset=1&limit=1&release=weekly", "searched sessions 2-2 of 4"],
+		["history://sessions?offset=1&limit=1", "searched sessions 2-2 of 4; release candidates compared by hand"],
+		["history://sessions?offset=1&limit=1", "searched sessions 2-1 of 4"],
+	])("preserves stored annotations with a foreign label or description: %s %s", async (label, description) => {
+		const links = [
+			"history://sessions?offset=2&limit=1&after=mppy1i4j..s3&o=c!!!!!!!!!!!!!!",
+			"history://sessions?offset=2&limit=1&after=1780000000003.1780000000003.s3",
+		];
+		const notes = links.map((url) => `${label}:0: [${description}; continue with ${url}]`);
+		const result = await createSearchToolDefinition(PROJECT).execute(
+			"stored",
+			{ pattern: "release", paths: ["artifact://one", "artifact://two"] },
+			undefined,
+			undefined,
+			{
+				cwd: PROJECT,
+				internalResourceRouter: {
+					search: (url: string) => `${notes[url.endsWith("one") ? 0 : 1]}\nhistory://sessions/source:1: release`,
+				},
+			} as never,
+		);
+		assert.equal(result.details?.matchCount, 3);
+		const text = result.content[0];
+		assert.ok(text?.type === "text");
+		assert.deepEqual(
+			text.text.split("\n").filter((line) => line.includes("; continue with")),
+			notes,
+		);
+	});
+
+	it("when a tied run finishes and the pin disappears, neither visited run appears again", async () => {
+		let ids = ["A", "B", "C", "D", "E"];
+		const workflows: WorkflowRunHistory = {
+			listRuns: async () => ids.map((id) => summary(id, BASE)),
+			getRun: async (id) => detail(id, BASE),
+		};
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
+		const first = (await router.search!("history://workflows?limit=2", request("needle")))!;
+		// With identical start times the provider lists still-running B before now-completed A.
+		ids = ["B", "A", "D", "E"];
+		const second = (await router.search!(continuation(first)!, request("needle")))!;
+		const hits = (page: string) => [...page.matchAll(/summary: needle (.+)$/gm)].map((hit) => hit[1]);
+		assert.deepEqual([...hits(first), ...hits(second)], ["A", "B", "D", "E"]);
+		assert.equal(continuation(second), undefined);
 	});
 
 	it("removing the pin does not bring back tied runs excluded by the initial offset", async () => {

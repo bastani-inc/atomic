@@ -1,6 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { types } from "node:util";
 import { clockText, compactTemplate, compactUrl, MAX_POSITION_LENGTH } from "./history-search-wire.js";
+import type { HistoryNoteWindow } from "./resource-selectors.ts";
 
 // A length check before encoding bounds both allocation and URL size, even for long or malformed UTF-16 IDs.
 export function packIds<T>(
@@ -106,13 +106,14 @@ export function runPosition(
 	room: number,
 ): string | undefined {
 	const head = fromStart ? clockText(time) : "p";
-	const base = prior ? `${head}~${prior}` : head;
-	if (!completed) return base;
-	const added = packIds(window, (id) => id, room - base.length - 1, 0, completed);
-	if (added !== undefined) return `${base}${prior ? "." : "~"}${added}`;
-	// On a long chain keep a nearby predecessor if it fits. Without the full prefix, do not infer a time boundary.
-	const last = packIds(window, (id) => id, room - 2, completed - 1, completed);
-	return last ? `p~${last}` : undefined;
+	if (!completed) return prior ? `${head}~${prior}` : head;
+	const prefix = prior ? `${prior}.` : "";
+	// A single predecessor cannot stand in for the visited group: tied runs may switch order when one
+	// finishes. Drop the optional clock first, then fall back to the ordinary pin if the IDs do not fit.
+	const added = packIds(window, (id) => id, room - 2 - prefix.length, 0, completed);
+	if (added === undefined) return undefined;
+	const ids = `${prefix}${added}`;
+	return `${head.length + 1 + ids.length <= room ? head : "p"}~${ids}`;
 }
 
 /** A manual read uses the legacy position, including for its byte reserve and any line cursor it returns. */
@@ -124,54 +125,23 @@ export function withoutSearchPosition(url: string): string {
 	return url.slice(0, query) + (remaining ? `?${remaining}` : "");
 }
 
-// A search tool and its builtin router can come from independent package copies. Share only the current
-// provider call, never a cursor cache or listing. Don't add an observable field to extension requests.
-type RecordNote = (extended: string, original: string) => void;
-export interface HistoryNoteWindow {
-	first: number;
-	end: number;
-	includes: (lines: readonly string[], note: string) => boolean;
-}
-type Selector = { record?: RecordNote; window?: HistoryNoteWindow };
-const scopeKey = Symbol.for("atomic.history-search-selector.v1");
-const host = globalThis as typeof globalThis & { [scopeKey]?: AsyncLocalStorage<Selector> };
-host[scopeKey] ??= new AsyncLocalStorage<Selector>();
-const scope = host[scopeKey];
-
-export async function collectHistorySearchNotes<T>(
-	read: () => Promise<T>,
-	record?: RecordNote,
-	window?: HistoryNoteWindow,
-): Promise<T> {
-	const selector: Selector = { record, window };
-	try {
-		return await scope.run(selector, read);
-	} finally {
-		// A parked store operation can outlive the selector.
-		delete selector.record;
-		delete selector.window;
-	}
-}
-
 /** Only protocol-generated line-zero notes are eligible, never a match or arbitrary text containing a URL. */
 export class HistorySearchPositions {
 	private additions?: Map<string, string>;
 	private uncertain?: string;
-	private grows = false;
 	private readonly rootSessionGroups: number;
-	constructor(rootSessionGroups: number) {
+	private readonly selection?: HistoryNoteWindow;
+	constructor(rootSessionGroups: number, selection?: HistoryNoteWindow) {
 		this.rootSessionGroups = rootSessionGroups;
+		this.selection = selection;
 	}
 
 	offer(
 		note: string | undefined,
 		domain: "sessions" | "workflows",
 		make: (room: number, scalarOnly: boolean) => string | undefined,
-		room: () => number,
 	): void {
-		const selector = scope.getStore();
-		if (selector && !selector.record) return;
-		const selection = selector?.window;
+		const selection = this.selection;
 		const maxBefore = domain === "workflows" ? this.rootSessionGroups : 0;
 		if (selection && (selection.first > maxBefore || selection.end <= 0)) return;
 		// A root's workflow branch may finish while its session branch is stalled. If the result still depends
@@ -189,35 +159,25 @@ export class HistorySearchPositions {
 		const end = range < 0 ? note.length - 1 : range;
 		const start = at + "; continue with ".length;
 		const compact = compactTemplate(note.slice(start, end), note.includes(" budget ran out"));
-		const available = Math.min(
-			Math.max(compact?.room ?? 0, selector ? room() - "&order=".length : 0),
-			MAX_POSITION_LENGTH,
-		);
-		if (available <= 0) return;
+		// Any caller can forward this text through another, smaller budget. Only spend room reclaimed
+		// from the original URL itself; the enclosing page's spare bytes do not belong to this field.
+		if (!compact) return;
+		const available = Math.min(compact.room, MAX_POSITION_LENGTH);
 		const value = make(available, uncertain);
 		if (!value || value.length > available) return;
-		const changed =
-			compact && value.length <= compact.room
-				? `${note.slice(0, start)}${compactUrl(compact, value)}${note.slice(end)}`
-				: `${note.slice(0, end)}&order=${value}${note.slice(end)}`;
-		this.grows ||= changed.length > note.length;
+		const changed = `${note.slice(0, start)}${compactUrl(compact, value)}${note.slice(end)}`;
 		this.additions ??= new Map();
 		this.additions.set(note, changed);
 		if (uncertain) this.uncertain = note;
 	}
 
-	render(lines: string[], bytes: number): string {
+	render(lines: string[]): string {
 		if (this.additions) {
-			let room = bytes + 1;
-			if (this.grows) for (const line of lines) room -= Buffer.byteLength(line) + 1;
 			for (let i = 0; i < lines.length; i++) {
 				const original = lines[i]!;
 				const extended = this.additions.get(original);
-				if (!extended || extended.length - original.length > room) continue;
-				if (original === this.uncertain && !scope.getStore()?.window?.includes(lines, original)) continue;
-				room -= extended.length - original.length;
+				if (!extended || (original === this.uncertain && !this.selection?.includes(lines, original))) continue;
 				lines[i] = extended;
-				scope.getStore()?.record?.(extended, original);
 			}
 		}
 		return lines.join("\n");

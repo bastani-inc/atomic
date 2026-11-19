@@ -72,6 +72,7 @@ import { entryLines, timestamp, transcriptHeaderLines, wrapLine } from "./histor
 import { mergeReadRanges, splitReadLineSelector } from "./read-selectors.ts";
 import {
 	formatSearchTextLine,
+	historyNoteWindows,
 	type InternalReadSelection,
 	type InternalResourceRouter,
 	type InternalSearchRequest,
@@ -1739,14 +1740,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					`${pageUrl("sessions", target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
 				),
 			];
-			return (room) => {
-				if (target.order)
-					positions?.offer(
-						lines[0],
-						"sessions",
-						() => target.order,
-						() => room + 1 - linesBytes(lines),
-					);
+			return () => {
+				if (target.order) positions?.offer(lines[0], "sessions", () => target.order);
 				return lines;
 			};
 		}
@@ -2012,7 +2007,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				lines[0],
 				"sessions",
 				(available) => target.order ?? sessionPosition(candidateKeys, available),
-				() => room + 1 - linesBytes(lines),
 			);
 			return lines;
 		};
@@ -2172,20 +2166,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const runs = await recentRuns(budget);
 		const [clock, prior] = target.order?.split("~") ?? [];
 		const fence = clockValue(clock);
-		const ranks = prior ? new Map(unpackIds(prior).map((id, rank) => [id, rank])) : undefined;
-		let previous = -1,
-			lastRank = -1;
+		const predecessors = prior ? new Set(unpackIds(prior)) : undefined;
+		let previous = -1;
 		const pinnedAt =
 			target.run === undefined
 				? -1
 				: runs.findIndex((run, i) => {
 						const id = run.runId;
 						if (id === target.run) return true;
-						const rank = ranks?.get(id);
-						if (rank !== undefined && rank > lastRank) {
-							lastRank = rank;
-							previous = i;
-						}
+						if (predecessors?.has(id)) previous = i;
 						return false;
 					});
 		const pinnedGone = target.run !== undefined && pinnedAt === -1;
@@ -2210,9 +2199,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const resumeCursor = resume === undefined || target.cursor === undefined ? undefined : cursorText(target.cursor);
 		const window = runs.slice(scope.offset, scope.offset + scope.limit);
 		const nextRun = runs[scope.offset + window.length];
-		const windowIds = window.map((run) => run.runId);
-		const nextId = nextRun?.runId;
-		budget.spend(Math.max(0, ...windowIds.map(runPinBytes), nextId === undefined ? 0 : runPinBytes(nextId)));
+		// Reserving bytes is not a snapshot: a live provider may replace a listed row during a detail read.
+		budget.spend(Math.max(0, ...[...window, ...(nextRun ? [nextRun] : [])].map((run) => runPinBytes(run.runId))));
+		let visited: string[] | undefined = positions && (target.order || !target.run) ? [] : undefined;
 		const notes = pinnedGone
 			? [
 					charged(
@@ -2225,33 +2214,28 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		let unreadable = 0;
 		const withPosition = (lines: string[], next: WorkflowRunSummary | undefined, complete: number) => {
 			if (!positions || !next || (!target.order && target.run)) return lines;
-			positions.offer(
-				lines[0],
-				"workflows",
-				(room, scalarOnly) => {
-					const time = storedRunStart(next);
-					const previousTime = complete > 0 ? storedRunStart(window[complete - 1]!) : undefined;
-					// No completed run is in the new time cohort. Its start time alone locates the boundary, even
-					// if the next run disappears. Equal times keep the provider's order and may need predecessors.
-					if (
-						time !== undefined &&
-						((previousTime !== undefined && previousTime > time) ||
-							(!complete && !prior && (scope.offset === 0 || fence === time)))
-					)
-						return clockText(time);
-					return scalarOnly
-						? undefined
-						: runPosition(
-								prior,
-								windowIds,
-								complete,
-								time,
-								clock === undefined ? target.offset === 0 : clock !== "p",
-								room,
-							);
-				},
-				() => limits.bytes + 1 - linesBytes(lines),
-			);
+			positions.offer(lines[0], "workflows", (room, scalarOnly) => {
+				const time = storedRunStart(next);
+				const previousTime = complete > 0 ? storedRunStart(window[complete - 1]!) : undefined;
+				// No completed run is in the new time cohort. Its start time alone locates the boundary, even
+				// if the next run disappears. Equal times keep the provider's order and may need predecessors.
+				if (
+					time !== undefined &&
+					((previousTime !== undefined && previousTime > time) ||
+						(!complete && !prior && (scope.offset === 0 || fence === time)))
+				)
+					return clockText(time);
+				return scalarOnly || !visited
+					? undefined
+					: runPosition(
+							prior,
+							visited,
+							complete,
+							time,
+							clock === undefined ? target.offset === 0 : clock !== "p",
+							room,
+						);
+			});
 			return lines;
 		};
 		const stoppedAt = (
@@ -2277,8 +2261,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 									searched,
 									unreadable,
 									reason,
-									pageUrl("workflows", scope, scope.offset + index, cursor, request.ranges, windowIds[index]!),
-									`${inRun ? ` in history://workflows/${windowIds[index]}` : ""}${clause}`,
+									pageUrl("workflows", scope, scope.offset + index, cursor, request.ranges, run.runId),
+									`${inRun ? ` in history://workflows/${run.runId}` : ""}${clause}`,
 								),
 							skipped,
 							limits.bytes - linesBytes([...notes, ...out]),
@@ -2291,10 +2275,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				index,
 			);
 		};
-		for (const [index, id] of windowIds.entries()) {
+		for (const [index, run] of window.entries()) {
 			const spent = budget.spent();
 			if (spent && index > 0) return stoppedAt(index, index, spent, false);
 			try {
+				const id = run.runId;
+				visited?.push(id);
 				const found = await searchRun(
 					id,
 					request,
@@ -2319,12 +2305,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				if (budget.signal?.aborted) throw error;
 				if (isHistoryDeadlineError(error))
 					return stoppedAt(index, index, "time", true, index === 0 ? resumeCursor : undefined);
+				if (visited?.length === index) visited = undefined; // The ID getter itself failed.
 				unreadable++;
 			}
 		}
 		return withPosition(
 			[
-				...coverage("workflows", scope, runs.length, window.length, unreadable, request.ranges, nextId).map(
+				...coverage("workflows", scope, runs.length, window.length, unreadable, request.ranges, nextRun?.runId).map(
 					(line) => charged(budget, line),
 				),
 				...notes,
@@ -2384,11 +2371,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (!rawUrl.startsWith("history://")) return undefined;
 			const { url: input, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			// Don't expand a search position on a cancelled call. Plain URLs retain their original validation order.
-			if (
-				request.signal?.aborted &&
-				/^history:\/\/(?:sessions\/?\?(?:[^&]*&)*(?:o|order)=|workflows\/?\?(?:[^&]*&)*(?:p|order)=)/.test(input)
-			)
-				request.signal.throwIfAborted();
+			if (/^history:\/\/(?:sessions\/?\?(?:[^&]*&)*(?:o|order)=|workflows\/?\?(?:[^&]*&)*(?:p|order)=)/.test(input))
+				request.signal?.throwIfAborted();
 			const expanded = expandSearchUrl(input);
 			const plain = parseTarget(expanded?.url ?? input);
 			const target = expanded ? { ...plain, order: searchPosition(expanded.state, plain.domain) } : plain;
@@ -2402,9 +2386,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			const positions =
-				target.id === undefined ? new HistorySearchPositions(target.domain ? 0 : target.limit + 1) : undefined;
-			const render = (lines: string[]) =>
-				bounded(positions ? positions.render(lines, limits.bytes) : lines.join("\n"));
+				target.id === undefined
+					? new HistorySearchPositions(target.domain ? 0 : target.limit + 1, historyNoteWindows.get(rawRequest))
+					: undefined;
+			const render = (lines: string[]) => bounded(positions ? positions.render(lines) : lines.join("\n"));
 			try {
 				if (target.domain === "sessions")
 					return render((await searchSessions(target, request, prefilter, budget, positions))(limits.bytes));
@@ -2415,13 +2400,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					const ranges =
 						request.ranges !== undefined && request.ranges.length > 0 ? `:${rangeText(request.ranges)}` : "";
 					const note = `${url}:0: [the time budget ran out waiting for the store; continue with ${url}${ranges}]`;
-					if (target.domain && target.order)
-						positions?.offer(
-							note,
-							target.domain,
-							() => target.order,
-							() => limits.bytes - Buffer.byteLength(note),
-						);
+					if (target.domain && target.order) positions?.offer(note, target.domain, () => target.order);
 					return render([note]);
 				}
 				throw error;

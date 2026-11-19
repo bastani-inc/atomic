@@ -9,11 +9,11 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
-import { collectHistorySearchNotes } from "./history-search-position.js";
 import { originalHistoryNote } from "./history-search-wire.js";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
+	type HistoryNoteWindow,
 	type InternalResourceContext,
 	isInternalUrl,
 	parseArchiveSelector,
@@ -22,7 +22,7 @@ import {
 	resolveInternalSelector,
 	type SqliteSelector,
 	searchArchiveSelector,
-	searchInternalSelector as searchResource,
+	searchInternalSelector,
 	searchSqliteSelector,
 	sqliteSelectorForPath,
 } from "./resource-selectors.ts";
@@ -179,7 +179,6 @@ interface SearchTarget {
 interface SearchOutputGroup {
 	path: string;
 	lines: string[];
-	historyNotes?: Map<string, string>;
 }
 
 interface PagedSearchOutputGroup {
@@ -355,11 +354,25 @@ async function searchFileLineRanges(
 
 const SEARCH_ROW_PATH = /^(.+?)(?::\d+: |-\d+- |:(?!\/\/)[^:]+: )/;
 
-function groupSearchOutput(
-	text: string,
-	historyNotes?: ReadonlyMap<string, string>,
-	internal = false,
-): SearchOutputGroup[] {
+function historyWindow(first: number, end: number): HistoryNoteWindow {
+	return {
+		first,
+		end,
+		includes(lines, note) {
+			const wanted = SEARCH_ROW_PATH.exec(note)?.[1];
+			const paths = new Set<string>();
+			for (const line of lines) {
+				const path = SEARCH_ROW_PATH.exec(line)?.[1];
+				if (!path || paths.has(path)) continue;
+				if (path === wanted) return paths.size >= first && paths.size < end;
+				paths.add(path);
+			}
+			return false;
+		},
+	};
+}
+
+function groupSearchOutput(text: string): SearchOutputGroup[] {
 	const groups: SearchOutputGroup[] = [];
 	const byPath = new Map<string, SearchOutputGroup>();
 	for (const line of text.split("\n")) {
@@ -372,12 +385,7 @@ function groupSearchOutput(
 			byPath.set(filePath, current);
 			groups.push(current);
 		}
-		const original = historyNotes?.get(line) ?? (internal ? originalHistoryNote(line) : undefined);
-		if (original !== undefined) {
-			current.historyNotes ??= new Map();
-			current.historyNotes.set(original, line);
-		}
-		if (filePath.startsWith("history://") || !current.lines.includes(line)) current.lines.push(original ?? line);
+		if (filePath.startsWith("history://") || !current.lines.includes(line)) current.lines.push(line);
 	}
 	return groups;
 }
@@ -477,20 +485,10 @@ function sliceGroupLinesByMatchCount(lines: readonly string[], matchLimit: numbe
 	}
 	return output;
 }
-function formatSearchGroups(
-	groups: SearchOutputGroup[],
-	limit: number,
-	perFileLimit = 20,
-	selectedNotes?: Map<string, string>,
-): string {
+function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileLimit = 20): string {
 	return groups
 		.slice(0, Math.max(0, limit))
-		.flatMap((group) => {
-			// Line-zero notes survive per-file match clipping. Only their selected groups can spend page space.
-			if (selectedNotes && group.historyNotes)
-				for (const [original, extended] of group.historyNotes) selectedNotes.set(original, extended);
-			return sliceGroupLinesByMatchCount(group.lines, perFileLimit);
-		})
+		.flatMap((group) => sliceGroupLinesByMatchCount(group.lines, perFileLimit))
 		.join("\n");
 }
 
@@ -527,8 +525,9 @@ function dedupeRenderedSearchOutput(content: string): string {
 		const row = line.match(/^(.+?)(?::(\d+): |-(\d+)- )/);
 		let key = "";
 		if (row) {
+			const comparable = row[2] === "0" && row[1]!.startsWith("history://") ? originalHistoryNote(line) : undefined;
 			const base = row[1]!.startsWith("history://")
-				? `${row[1]}:${row[2] ?? row[3]}:${line.slice(row[0].length)}`
+				? `${row[1]}:${row[2] ?? row[3]}:${(comparable ?? line).slice(row[0].length)}`
 				: `${row[1]}:${row[2] ?? row[3]}`;
 			if (row[1]!.startsWith("history://")) {
 				const count = (blockCounts.get(base) ?? 0) + 1;
@@ -612,32 +611,11 @@ export function createSearchToolDefinition(
 			const groups: PagedSearchOutputGroup[] = [];
 			const skippedMissingPaths: string[] = [];
 			const scopePath = targets.map((target) => target.path).join(", ") || ".";
-			let selectedNotes: Map<string, string> | undefined;
-			const fitOutput = (text: string, keepUncut = false) => {
-				const page = truncateHead(text, { maxLines: Number.MAX_SAFE_INTEGER });
-				if (!page.truncated && keepUncut) page.content = text;
-				if (!selectedNotes?.size) return page;
-				let room = page.truncated ? 0 : Math.max(0, DEFAULT_MAX_BYTES - page.totalBytes);
-				const lines = page.content.split("\n");
-				let changed = false;
-				for (let i = 0; i < lines.length; i++) {
-					const original = lines[i]!;
-					const extended = selectedNotes.get(original);
-					if (!extended || extended.length - original.length > room) continue;
-					room -= extended.length - original.length;
-					lines[i] = extended;
-					changed = true;
-				}
-				if (changed) page.content = lines.join("\n");
-				return page;
-			};
 			let pageFullWithMore = false,
 				internalSearchCapped = false;
 			let remaining = limit;
 			const targetHasMatch = async (target: SearchTarget): Promise<boolean> => {
 				if (target.archive || target.sqlite || target.internal) {
-					const searchInternalSelector = (...args: Parameters<typeof searchResource>) =>
-						collectHistorySearchNotes(() => searchResource(...args));
 					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
 					const text = archive
 						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
@@ -662,6 +640,7 @@ export function createSearchToolDefinition(
 										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
 										...(signal === undefined ? {} : { signal }),
 									},
+									historyWindow(0, 0),
 								);
 					return groupSearchOutput(filterTargetLineRanges(text, target, contextBefore, contextAfter)).length > 0;
 				}
@@ -714,33 +693,6 @@ export function createSearchToolDefinition(
 				}
 				if (target.archive || target.sqlite || target.internal) {
 					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
-					let notes: Map<string, string> | undefined;
-					const searchInternalSelector = (...args: Parameters<typeof searchResource>) => {
-						const first = Math.max(0, skip - groups.length);
-						const end = skip > 0 ? skip + limit - groups.length : remaining;
-						return collectHistorySearchNotes(
-							() => searchResource(...args),
-							(extended, original) => {
-								notes ??= new Map();
-								notes.set(extended, original);
-							},
-							{
-								first,
-								end,
-								includes(lines, note) {
-									const wanted = SEARCH_ROW_PATH.exec(note)?.[1];
-									const paths = new Set<string>();
-									for (const line of lines) {
-										const path = SEARCH_ROW_PATH.exec(line)?.[1];
-										if (!path || paths.has(path)) continue;
-										if (path === wanted) return paths.size >= first && paths.size < end;
-										paths.add(path);
-									}
-									return false;
-								},
-							},
-						);
-					};
 					let text = archive
 						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
@@ -764,6 +716,10 @@ export function createSearchToolDefinition(
 										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
 										...(signal === undefined ? {} : { signal }),
 									},
+									historyWindow(
+										Math.max(0, skip - groups.length),
+										skip > 0 ? skip + limit - groups.length : remaining,
+									),
 								);
 					if (archive && target.archive) text = text.split(archive.archivePath).join(target.archive.archivePath);
 					if (target.sqlite)
@@ -772,9 +728,7 @@ export function createSearchToolDefinition(
 							.join(target.path.match(/^(.+?\.(?:sqlite3?|db3?))/i)?.[1] ?? target.sqlite.databasePath);
 					text = text || "No matches found";
 					text = filterTargetLineRanges(text, target, contextBefore, contextAfter);
-					const outputGroups = groupSearchOutput(text, notes, target.internal !== undefined);
-					if (notes || (target.internal && outputGroups.some((group) => group.historyNotes)))
-						selectedNotes ??= new Map();
+					const outputGroups = groupSearchOutput(text);
 					if (skip > 0)
 						groups.push(
 							...outputGroups.map((group) => ({
@@ -785,7 +739,7 @@ export function createSearchToolDefinition(
 						);
 					else if (outputGroups.length > 0) {
 						const hadMore = outputGroups.length > remaining;
-						text = formatSearchGroups(outputGroups, remaining, 20, selectedNotes);
+						text = formatSearchGroups(outputGroups, remaining);
 						if (hadMore) {
 							text += `\n\n${continuationHint(limit, skip)}`;
 							pageFullWithMore = true;
@@ -891,7 +845,7 @@ export function createSearchToolDefinition(
 				let remainingMatches = limit;
 				for (const item of groups.slice(skip)) {
 					if (remainingMatches <= 0) break;
-					const raw = formatSearchGroups([item.group], 1, 20, selectedNotes);
+					const raw = formatSearchGroups([item.group], 1);
 					remainingMatches--;
 					if (raw)
 						renderedPages.push(
@@ -903,7 +857,7 @@ export function createSearchToolDefinition(
 				const capNotice = internalSearchCapped && !hasMorePages ? `\n\n${internalCapHint()}` : "";
 				const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}${capNotice}`;
 				if (hasMorePages || cappedBeforeRequestedPage || capNotice) markFileLimit(details, limit);
-				const truncation = fitOutput(output);
+				const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
 				let content = truncation.content;
 				if (truncation.truncated) {
 					details.truncation = truncation;
@@ -934,7 +888,7 @@ export function createSearchToolDefinition(
 						? text
 						: await cwdRelativeSearchOutput(text, executionCwd, targets[0]?.path ?? ".");
 					const pagedText = `${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`;
-					const truncation = fitOutput(pagedText, true);
+					const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
 					if (truncation.truncated)
 						return {
 							...result,
@@ -954,14 +908,8 @@ export function createSearchToolDefinition(
 						};
 					return {
 						...result,
-						content: [{ type: "text", text: truncation.content }],
-						details: buildSearchDetails(
-							result.details,
-							truncation.content,
-							executionCwd,
-							scopePath,
-							skippedMissingPaths,
-						),
+						content: [{ type: "text", text: pagedText }],
+						details: buildSearchDetails(result.details, pagedText, executionCwd, scopePath, skippedMissingPaths),
 					};
 				}
 				return {
@@ -995,7 +943,7 @@ export function createSearchToolDefinition(
 				`${renderedResults.join("\n\n")}${skippedMissingPaths.length > 0 ? `\n\n[Skipped missing paths: ${skippedMissingPaths.join(", ")}]` : ""}${pageFullWithMore ? `\n\n${continuationHint(limit, skip)}` : ""}${internalSearchCapped && !pageFullWithMore ? `\n\n${internalCapHint()}` : ""}`,
 			);
 			if (pageFullWithMore || internalSearchCapped) markFileLimit(details, limit);
-			const truncation = fitOutput(content);
+			const truncation = truncateHead(content, { maxLines: Number.MAX_SAFE_INTEGER });
 			let output = truncation.content;
 			if (truncation.truncated) {
 				details.truncation = truncation;

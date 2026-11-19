@@ -123,20 +123,56 @@ export function expandSearchUrl(url: string): { url: string; state: string } | u
 	return undefined;
 }
 
-/** Independent new routers can return only text, not the current SDK call's note metadata. Expand their compact
- * protocol notes for deduplication too. Malformed or ordinary extension text is never rewritten or rejected.
- */
-export function originalHistoryNote(line: string): string | undefined {
-	const label =
-		/^history:\/\/(sessions|workflows)(?:\?[^:\n]*)?:0: \[(?:searched (sessions|workflows|workflow runs) (?:(?:none|\d+-\d+) of \d+|0 of \d+\+)[,;]|the time budget ran out waiting for the store;)/.exec(
-			line,
-		);
+/** Check the whole notice, not just its opening words: other resources can quote or annotate a history URL. */
+function isCoverageNotice(domain: string, label: string, description: string, next: URLSearchParams): boolean {
+	const params = new URLSearchParams(label);
+	const page = new URLSearchParams();
+	const offset = params.get("offset");
+	if (offset !== null && /^[1-9]\d*$/.test(offset)) page.set("offset", offset);
+	for (const key of domain === "sessions" ? ["limit", "project"] : ["limit"]) {
+		const value = next.get(key);
+		if (value !== null) page.set(key, value);
+	}
+	if (String(page) !== label) return false;
 	if (
-		!label ||
-		!line.endsWith("]") ||
-		(label[2] && label[1] !== (label[2] === "workflow runs" ? "workflows" : label[2]))
+		/^searched sessions 0 of (\d+)\+; the (?:time|row|byte) budget ran out after scanning \1 sessions$/.test(
+			description,
+		)
 	)
-		return undefined;
+		return domain === "sessions";
+	const coverage =
+		/^searched (sessions|workflows|workflow runs) (?:none|([1-9]\d*)-([1-9]\d*)) of (0|[1-9]\d*)(?:, [1-9]\d* unreadable)?/.exec(
+			description,
+		);
+	if (!coverage || (coverage[1] === "workflow runs" ? "workflows" : coverage[1]) !== domain) return false;
+	const begin = Number(offset),
+		end = coverage[3] === undefined ? begin : Number(coverage[3]),
+		total = Number(coverage[4]);
+	if (coverage[2] !== undefined && (Number(coverage[2]) !== begin + 1 || end <= begin || end > total)) return false;
+	const rest = description.slice(coverage[0].length);
+	if (!rest) return coverage[1] === domain && Number(next.get("offset")) === end && end < total;
+	const stop = /^; the (?:time|row|byte) budget ran out(?: at entry \d+(?: of \d+)?)?/.exec(rest);
+	if (!stop) return false;
+	const where = rest.slice(stop[0].length);
+	if (!where) return !stop[0].includes(" at entry ");
+	const id = next.get(domain === "sessions" ? "session" : "run");
+	if (id === null) return false;
+	const project = domain === "sessions" ? next.get("project") : null;
+	const location = ` in history://${domain}/${id}${project === null ? "" : `?project=${encodeURIComponent(project)}`}`;
+	if (!where.startsWith(location)) return false;
+	const skipped = where.slice(location.length);
+	return (
+		!skipped ||
+		/^; entry \d+(?: in history:\/\/sessions\/[^\n]+)? not searched(?:: the pattern ran past the time budget on it)?$/.test(
+			skipped,
+		)
+	);
+}
+
+/** An independent router can return only text. Compare its canonical protocol notes on their original URLs. */
+export function originalHistoryNote(line: string): string | undefined {
+	const label = /^history:\/\/(sessions|workflows)(?:\?([^:\n]+))?:0: \[/.exec(line);
+	if (!label || !line.endsWith("]")) return undefined;
 	const marker = "; continue with ";
 	const at = line.lastIndexOf(marker);
 	if (at < 0) return undefined;
@@ -145,6 +181,7 @@ export function originalHistoryNote(line: string): string | undefined {
 	const r = line.indexOf(":", start + "history://".length);
 	const end = r < 0 ? line.length - 1 : r;
 	const url = line.slice(start, end);
+	if (r >= 0 && !/^:\d+-\d+(?:,\d+-\d+)*\]$/.test(line.slice(end))) return undefined;
 	try {
 		const expanded = expandSearchUrl(url);
 		const domain = url.startsWith("history://sessions?")
@@ -157,12 +194,12 @@ export function originalHistoryNote(line: string): string | undefined {
 			domain === "sessions"
 				? ["offset", "limit", "project", "session", "cursor", "after"]
 				: ["offset", "limit", "run", "cursor"];
-		if (
-			[...new URLSearchParams(expanded.url.slice(expanded.url.indexOf("?") + 1)).keys()].some(
-				(key) => !allowed.includes(key),
-			)
-		)
-			return undefined;
+		const next = new URLSearchParams(expanded.url.slice(expanded.url.indexOf("?") + 1));
+		if ([...next.keys()].some((key) => !allowed.includes(key))) return undefined;
+		const description = line.slice(label[0].length, at);
+		if (description === "the time budget ran out waiting for the store") {
+			if (line.slice(0, label[0].length - 5) !== expanded.url) return undefined;
+		} else if (!isCoverageNotice(domain, label[2] ?? "", description, next)) return undefined;
 		searchPosition(expanded.state, domain);
 		const template = compactTemplate(expanded.url, url.includes("&run="));
 		if (!template || expanded.state.length > template.room || compactUrl(template, expanded.state) !== url)
