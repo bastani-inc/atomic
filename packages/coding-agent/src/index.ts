@@ -166,8 +166,13 @@ export {
 	taskResumedTurns,
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
+export {
+	registerSavedTaskTranscripts,
+	type SavedTaskTranscripts,
+	type TaskTranscriptQuery,
+} from "./core/tasks/saved-transcripts.ts";
 export { belongsToSession, scopedBackgroundTasks, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
-export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
+export { automaticWaitBudgetMs, type TaskTranscriptHistory } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
 	ownerTaskViewSource,
@@ -234,7 +239,12 @@ export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactiv
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
 	collapseToolBlockLines,
+	drawsWithMargin,
 	isToolBlock,
+	type RowStream,
+	SlicedRows,
+	streamRows,
+	streamSeparated,
 	TOOL_BLOCK_LIMITS,
 	ToolBlock,
 	ToolBlockGroup,

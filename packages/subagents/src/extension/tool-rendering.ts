@@ -1,6 +1,7 @@
 import {
 	builtinToolBlockPresentation,
 	clickableKeyTextHint,
+	drawsWithMargin,
 	formatTokenSegment,
 	initTheme,
 	isTaskTurnInterrupted,
@@ -9,8 +10,11 @@ import {
 	keyHintIfBound,
 	keyText,
 	navEntryKeys,
+	SlicedRows,
 	slashCommandHint,
 	spanElapsedMs,
+	streamRows,
+	streamSeparated,
 	type TaskId,
 	type TaskRecord,
 	ToolBlock,
@@ -61,6 +65,8 @@ type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & {
 	getTaskRecord?: ToolRenderContext["getTaskRecord"];
 	getElapsedMs?: () => number | undefined;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	requestRender?: () => void;
+	waitForLoad?: (load: Promise<unknown>) => void;
 };
 
 const SHORT_TITLE_CHARS = 60;
@@ -94,7 +100,8 @@ interface TaskElapsedBaseline {
 interface CachedExpandedSections {
 	readonly key: string;
 	readonly hydratedRef: unknown;
-	readonly sections: readonly Component[];
+	/** The prompt, tool call and result sections, drawn a slice per turn and kept for the width they were drawn at. */
+	readonly sections: SlicedRows;
 }
 
 const taskElapsedBaselines = new WeakMap<object, Map<string, TaskElapsedBaseline>>();
@@ -142,6 +149,9 @@ class DynamicToolBlock implements Component {
 	render(width: number): string[] {
 		return this.evaluate().block.render(width);
 	}
+	streamRows(width: number): Iterable<string> {
+		return this.evaluate().block.streamRows(width);
+	}
 }
 
 class DynamicToolBlockGroup implements Component {
@@ -154,14 +164,10 @@ class DynamicToolBlockGroup implements Component {
 		for (const block of this.blocks) block.invalidate();
 	}
 	render(width: number): string[] {
-		const rows: string[] = [];
-		for (const block of this.blocks) {
-			const rendered = block.render(width);
-			if (rendered.length === 0) continue;
-			if (rows.length > 0) rows.push("");
-			rows.push(...rendered);
-		}
-		return rows;
+		return [...this.streamRows(width)];
+	}
+	streamRows(width: number): Iterable<string> {
+		return streamSeparated(this.blocks, width);
 	}
 }
 
@@ -288,35 +294,47 @@ class ComponentList implements Component {
 		for (const item of this.items) item.invalidate();
 	}
 	render(width: number): string[] {
-		const rows: string[] = [];
-		for (const item of this.items) {
-			const rendered = item.render(width);
-			if (rendered.length === 0) continue;
-			if (rows.length > 0) rows.push("");
-			rows.push(...rendered);
-		}
-		return rows;
+		return [...this.streamRows(width)];
+	}
+	streamRows(width: number): Iterable<string> {
+		return streamSeparated(this.items, width);
 	}
 }
 
+/** A tool block drawn without its output pad, which the card's own indent already gives it. */
 class UnpaddedBlockComponent implements Component {
 	constructor(private readonly inner: Component) {}
 	invalidate(): void {
 		this.inner.invalidate();
 	}
 	render(width: number): string[] {
-		if (width < 1) return [];
-		const lines = this.inner.render(width + 1);
-		if (lines.length > 0 && lines.every((line) => line.startsWith(" "))) {
-			return lines.map((line) => truncateToWidth(line.slice(1), width, "…"));
+		return [...this.streamRows(width)];
+	}
+	*streamRows(width: number): Generator<string> {
+		if (width < 1) return;
+		const inner = this.inner;
+		// A block whose rows all start with its margin is drawn a column wider without that column, row by row.
+		if (drawsWithMargin(inner, width + 1)) {
+			for (const line of inner.streamRows(width + 1)) yield truncateToWidth(line.slice(1), width, "…");
+			return;
 		}
-		return this.inner.render(width);
+		const lines = inner.render(width + 1);
+		if (lines.length > 0 && lines.every((line) => line.startsWith(" "))) {
+			for (const line of lines) yield truncateToWidth(line.slice(1), width, "…");
+			return;
+		}
+		yield* inner.render(width);
 	}
 }
 
+/**
+ * One of the child's tool calls inside the card. It is drawn expanded when the card is, as the main chat draws a call
+ * after Ctrl+O: the card's own expansion is the only one these calls have.
+ */
 function innerToolBlockFromEntry(
 	entry: SubagentChildToolCallEntry,
 	parentRunning: boolean,
+	parentExpanded: boolean,
 	theme: Theme,
 	context?: Pick<RenderContext, "cwd" | "getToolDefinition">,
 ): Component {
@@ -345,7 +363,7 @@ function innerToolBlockFromEntry(
 					durationMs: entry.durationMs,
 				}
 			: undefined,
-		expanded: false,
+		expanded: parentExpanded,
 		isPartial,
 		cwd,
 		executionStarted: true,
@@ -374,7 +392,7 @@ function innerToolBlockFromEntry(
 			executionStarted: true,
 			argsComplete: true,
 			isPartial,
-			expanded: false,
+			expanded: parentExpanded,
 			showImages: false,
 			isError,
 			durationMs: isPartial ? undefined : entry.durationMs,
@@ -399,7 +417,7 @@ function innerToolBlockFromEntry(
 						content: resultContent as AgentToolResult<unknown>["content"],
 						details: entry.resultDetails,
 					},
-					{ expanded: false, isPartial },
+					{ expanded: parentExpanded, isPartial },
 					theme,
 					innerContext,
 				);
@@ -570,7 +588,30 @@ class SectionRecord implements Component {
 		this.content.invalidate();
 	}
 	render(width: number): string[] {
-		return [this.heading, ...this.content.render(width)];
+		return [...this.streamRows(width)];
+	}
+	*streamRows(width: number): Generator<string> {
+		yield this.heading;
+		yield* streamRows(this.content, width);
+	}
+}
+
+/**
+ * The details of an expanded card: its status line, drawn on every render, and its prompt, tool call and result
+ * sections, which can run to thousands of rows and are drawn a slice per turn.
+ */
+class ExpandedDetails implements Component {
+	readonly toolBlockKind = "records" as const;
+	constructor(
+		private readonly status: ToolBlockRecords,
+		private readonly sections: SlicedRows,
+	) {}
+	invalidate(): void {
+		this.status.invalidate();
+		this.sections.invalidate();
+	}
+	render(width: number): string[] {
+		return [...this.status.render(width), ...this.sections.render(width)];
 	}
 }
 
@@ -614,7 +655,9 @@ function buildExpandedDetails(input: {
 	readonly resultText?: string;
 	readonly failureText?: string;
 	readonly theme: Theme;
-}): ToolBlockRecords {
+	/** Asks for the next slice of the sections; without it, as in an HTML export, they are drawn at once. */
+	readonly requestRender?: () => void;
+}): ExpandedDetails {
 	const {
 		state,
 		cacheId,
@@ -627,10 +670,38 @@ function buildExpandedDetails(input: {
 		resultText,
 		failureText,
 		theme,
+		requestRender,
 	} = input;
 	const cleanPrompt = unwrapSubagentPrompt(promptText);
 	const runningKey = status === "running" ? "1" : "0";
 	const key = `${runningKey}\u0000${cleanPrompt}\u0000${toolCallsUnavailable ?? ""}\u0000${resultText ?? ""}\u0000${failureText ?? ""}`;
+	const statusRecord = new ToolBlockRecords([new OneLine(statusLine)]);
+	const buildSections = (): SlicedRows => {
+		const toolBlocks = buildToolBlocks();
+		return new SlicedRows(
+			new ToolBlockRecords([
+				new SectionRecord(
+					theme.bold("Prompt"),
+					cleanPrompt ? new ToolBlockMarkdown(cleanPrompt) : new Text(theme.fg("dim", "(none)"), 0, 0),
+				),
+				new SectionRecord(
+					theme.bold("Tool calls"),
+					toolBlocks.length > 0
+						? new ComponentList(toolBlocks)
+						: new Text(theme.fg("dim", toolCallsUnavailable || "(none)"), 0, 0),
+				),
+				new SectionRecord(
+					theme.bold("Result"),
+					resultText
+						? new ToolBlockMarkdown(resultText)
+						: failureText
+							? new Text(theme.fg("error", displayText(failureText)), 0, 0)
+							: new Text(theme.fg("dim", status === "running" ? "Running…" : "(no output)"), 0, 0),
+				),
+			]),
+			requestRender,
+		);
+	};
 	if (state && cacheId) {
 		let cache = expandedSectionCaches.get(state);
 		if (!cache) {
@@ -639,54 +710,13 @@ function buildExpandedDetails(input: {
 		}
 		const existing = cache.get(cacheId);
 		if (existing && existing.key === key && existing.hydratedRef === hydratedRef) {
-			return new ToolBlockRecords([new OneLine(statusLine), ...existing.sections]);
+			return new ExpandedDetails(statusRecord, existing.sections);
 		}
-		const toolBlocks = buildToolBlocks();
-		const sections: readonly Component[] = [
-			new SectionRecord(
-				theme.bold("Prompt"),
-				cleanPrompt ? new ToolBlockMarkdown(cleanPrompt) : new Text(theme.fg("dim", "(none)"), 0, 0),
-			),
-			new SectionRecord(
-				theme.bold("Tool calls"),
-				toolBlocks.length > 0
-					? new ComponentList(toolBlocks)
-					: new Text(theme.fg("dim", toolCallsUnavailable || "(none)"), 0, 0),
-			),
-			new SectionRecord(
-				theme.bold("Result"),
-				resultText
-					? new ToolBlockMarkdown(resultText)
-					: failureText
-						? new Text(theme.fg("error", displayText(failureText)), 0, 0)
-						: new Text(theme.fg("dim", status === "running" ? "Running…" : "(no output)"), 0, 0),
-			),
-		];
+		const sections = buildSections();
 		cache.set(cacheId, { key, hydratedRef, sections });
-		return new ToolBlockRecords([new OneLine(statusLine), ...sections]);
+		return new ExpandedDetails(statusRecord, sections);
 	}
-	const toolBlocks = buildToolBlocks();
-	return new ToolBlockRecords([
-		new OneLine(statusLine),
-		new SectionRecord(
-			theme.bold("Prompt"),
-			cleanPrompt ? new ToolBlockMarkdown(cleanPrompt) : new Text(theme.fg("dim", "(none)"), 0, 0),
-		),
-		new SectionRecord(
-			theme.bold("Tool calls"),
-			toolBlocks.length > 0
-				? new ComponentList(toolBlocks)
-				: new Text(theme.fg("dim", toolCallsUnavailable || "(none)"), 0, 0),
-		),
-		new SectionRecord(
-			theme.bold("Result"),
-			resultText
-				? new ToolBlockMarkdown(resultText)
-				: failureText
-					? new Text(theme.fg("error", displayText(failureText)), 0, 0)
-					: new Text(theme.fg("dim", status === "running" ? "Running…" : "(no output)"), 0, 0),
-		),
-	]);
+	return new ExpandedDetails(statusRecord, buildSections());
 }
 
 /** A released child's status words: what it waits on, by tool name, as `/tasks` and the agent panel name it. */
@@ -773,7 +803,8 @@ function buildOutcomeToolBlock(input: {
 		const activeTaskId = record?.taskId ?? observation.taskId;
 		const freshTask = context.getTaskRecord?.(activeTaskId as TaskId);
 		const task = freshTask ?? (savedTask?.ref.taskId === activeTaskId ? savedTask : undefined);
-		const hydrated = expanded && record ? subagentChildTranscriptDetails(context.state, record) : undefined;
+		const hydrated =
+			expanded && record ? subagentChildTranscriptDetails(context.state, record, context.waitForLoad) : undefined;
 		const recordTask = record ? subagentChildCardTask(record) : undefined;
 		const agentName = identity?.agent || task?.agentName || record?.agent || "agent";
 		const headerTask = task?.title || recordTask || identity?.task || hydrated?.prompt || "";
@@ -981,8 +1012,9 @@ function buildOutcomeToolBlock(input: {
 					promptText,
 					buildToolBlocks: () =>
 						(hydrated?.toolCalls ?? []).map((entry) =>
-							innerToolBlockFromEntry(entry, status === "running", theme, context),
+							innerToolBlockFromEntry(entry, status === "running", expanded, theme, context),
 						),
+					requestRender: context.requestRender,
 					toolCallsUnavailable,
 					resultText,
 					failureText: failure,
@@ -1007,7 +1039,7 @@ function buildForegroundChildToolBlock(input: {
 	readonly now?: number;
 	readonly theme: Theme;
 	readonly outputPad?: number;
-	readonly context?: Pick<RenderContext, "cwd" | "getToolDefinition" | "getTaskRecord">;
+	readonly context?: Pick<RenderContext, "cwd" | "getToolDefinition" | "getTaskRecord" | "requestRender">;
 }): ToolBlock {
 	const { child, progress, identity, taskRecord, expanded, now, theme, outputPad, context } = input;
 	const activeProgress = child?.progress ?? progress;
@@ -1100,7 +1132,7 @@ function buildForegroundChildToolBlock(input: {
 	const messageEntries = toolEntriesFromMessages(child?.messages);
 	const toolBlocks: readonly Component[] =
 		messageEntries.length > 0
-			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, status === "running", theme, context))
+			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, status === "running", expanded, theme, context))
 			: toolBlocksFromSummaries(child?.toolCalls, activeProgress);
 
 	return new ToolBlock({
@@ -1112,6 +1144,7 @@ function buildForegroundChildToolBlock(input: {
 			status,
 			promptText: rawTask,
 			buildToolBlocks: () => toolBlocks,
+			requestRender: context?.requestRender,
 			resultText: output || undefined,
 			failureText: child?.status === "error" ? child.error : undefined,
 			theme,
@@ -1162,7 +1195,9 @@ export function renderSubagentToolResult(
 	context: RenderContext,
 ): Component {
 	ensureGlobalTheme();
-	if (!options.expanded) {
+	// A folded card lets go of the transcript it read. A view that draws the card once, folded and expanded side by side
+	// as an HTML export does, keeps it for the expanded drawing.
+	if (!options.expanded && context.waitForLoad === undefined) {
 		clearSubagentChildTranscriptCache(context.state);
 		expandedSectionCaches.delete(context.state);
 	}

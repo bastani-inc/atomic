@@ -6,7 +6,8 @@ import type { CustomMessage } from "../../core/messages.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { hasTaskTranscript, loadTaskTranscript, noticeTranscriptQuery } from "../../core/tasks/saved-transcripts.ts";
+import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { disposeRenderer, runRendererCleanup } from "../interactive/components/renderer-disposal.js";
@@ -345,14 +346,16 @@ export class EngineRenderService {
 				undefined,
 				undefined,
 				{
-					hasTranscript: (taskId) => {
-						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
-						return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
-					},
-					loadTranscript: async (taskId) => {
-						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
-						return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
-					},
+					hasTranscript: (taskId, notice) =>
+						hasTaskTranscript(
+							getOwnerTaskStore(session),
+							noticeTranscriptQuery(taskId, notice, session.sessionManager.getSessionId()),
+						),
+					loadTranscript: (taskId, notice) =>
+						loadTaskTranscript(
+							getOwnerTaskStore(session),
+							noticeTranscriptQuery(taskId, notice, session.sessionManager.getSessionId()),
+						),
 					getToolDefinition: (name) =>
 						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
 					cwd: session.sessionManager.getCwd(),
