@@ -127,6 +127,8 @@ export function bindReleasedChildWakes(
 	const pruned = new WeakSet<ReturnType<typeof reservationRecordLookup>>();
 	const unsubscribeHoldFailure = events.on(SUBAGENT_HOLD_FAILURE_EVENT, (payload) => {
 		const failure = payload as ReleasedChildHoldFailure;
+		const pendingNotice = pendingHoldNoticeEpisodes.get(failure);
+		if (pendingNotice && pendingNotice.sessionId !== ownerSessionId) return;
 		indexSubagentChildOwner(ctx);
 		const recordOf = failure.recordOf ?? reservationRecordLookup(ownerSessionId);
 		// Prune notices for obsolete releases once per batch, not once for every failed frame.
@@ -156,8 +158,7 @@ export function bindReleasedChildWakes(
 					{ cause: failure.error },
 				),
 			);
-			const episode =
-				pendingHoldNoticeEpisodes.get(failure) ?? holdNoticeEpisode(holdFailuresTold, childName, record.taskId);
+			const episode = pendingNotice?.episode ?? holdNoticeEpisode(holdFailuresTold, childName, record.taskId);
 			if (episode.told) continue;
 			episode.told = true;
 			untold.push({ childName, record });

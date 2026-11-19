@@ -583,8 +583,9 @@ async function reservingOwner(label: string) {
 		{ appendEntry: async (customType, data) => void (await sessionManager.appendCustomEntry(customType, data)) },
 		ctx,
 	);
-	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
-	brokerFixture.onCleanup(stop);
+	const bind = () => bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	let stop = bind();
+	brokerFixture.onCleanup(() => stop());
 	const record = (
 		childName: string,
 		taskId = "task-1",
@@ -621,6 +622,10 @@ async function reservingOwner(label: string) {
 			return client;
 		},
 		reconnect,
+		rebind() {
+			stop();
+			stop = bind();
+		},
 		events,
 		notices,
 		record,
@@ -917,11 +922,11 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-test(
-	"a delayed reservation check cannot silence the next failed hold after a recovery (#5641)",
-	async () => {
-		const owner = await reservingOwner("recovery-while-checking");
-		const name = "subagent-checking-1";
+test.each(["recovery", "owner reload"] as const)(
+	"a delayed reservation check cannot silence a lost hold or the next failure after %s (#5641)",
+	async (duringCheck) => {
+		const owner = await reservingOwner(`recovery-while-checking-${duringCheck}`);
+		const name = `subagent-checking-${duringCheck.replaceAll(" ", "-")}`;
 		await owner.record(name);
 		owner.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (data) => {
 			const request = data as { childName: string; completion?: Promise<void> };
@@ -943,7 +948,12 @@ test(
 		try {
 			hold.release();
 			const check = await verification.promise;
-			await reserve();
+			if (duringCheck === "owner reload") {
+				const recovered = Promise.withResolvers<void>();
+				owner.events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => recovered.resolve());
+				owner.rebind();
+				await recovered.promise;
+			} else await reserve();
 			await owner.client.dropReleasedChildren([name]);
 			check();
 			await started;

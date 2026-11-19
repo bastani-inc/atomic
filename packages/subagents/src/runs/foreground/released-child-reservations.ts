@@ -64,7 +64,16 @@ export interface ReleasedChildHoldFailure {
 	handled?: boolean;
 }
 
-export const pendingHoldNoticeEpisodes = new WeakMap<ReleasedChildHoldFailure, HoldNoticeEpisode>();
+// The reloaded extension may receive a refusal whose check began in its predecessor. Keep the payload's
+// public shape unchanged and never send that diagnostic to a different session that later bound the bus.
+interface PendingHoldNotice {
+	readonly sessionId: string;
+	readonly episode: HoldNoticeEpisode;
+}
+const EPISODES = Symbol.for("@bastani/subagents/pending-hold-notice-episodes@1");
+const noticeState = globalThis as { [EPISODES]?: WeakMap<ReleasedChildHoldFailure, PendingHoldNotice> };
+noticeState[EPISODES] ??= new WeakMap();
+export const pendingHoldNoticeEpisodes = noticeState[EPISODES];
 
 export interface ReleasedChildHoldRecovery {
 	readonly childNames: readonly string[];
@@ -91,7 +100,7 @@ function recordHoldFailure(
 	error: Error,
 	taskIds?: ReadonlyMap<string, string>,
 	recordOf?: ReleasedChildHoldFailure["recordOf"],
-	episode?: HoldNoticeEpisode,
+	notice?: PendingHoldNotice,
 ): void {
 	if (closedOwnerSession(error)) return;
 	const failure: ReleasedChildHoldFailure = {
@@ -100,7 +109,7 @@ function recordHoldFailure(
 		...(recordOf === undefined ? {} : { recordOf }),
 		error,
 	};
-	if (episode) pendingHoldNoticeEpisodes.set(failure, episode);
+	if (notice) pendingHoldNoticeEpisodes.set(failure, notice);
 	if (!emitToOwner(events, SUBAGENT_HOLD_FAILURE_EVENT, failure)) return;
 	if (!failure.handled) console.error("Released subagent reservation failed (hold-failed); no owner is listening");
 }
@@ -359,14 +368,14 @@ export function acknowledgeReleasedChildWake(
 			: undefined;
 	const observation = release ? observeRelease(request, childName) : undefined;
 	return emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, request).catch((error: Error) => {
-		const report = (episode?: HoldNoticeEpisode) =>
+		const report = (notice?: PendingHoldNotice) =>
 			recordHoldFailure(
 				events,
 				[childName],
 				error,
 				taskId === undefined ? undefined : new Map([[childName, taskId]]),
 				undefined,
-				episode,
+				notice,
 			);
 		const refusal = observation?.refusal;
 		if (
@@ -388,7 +397,7 @@ export function acknowledgeReleasedChildWake(
 					episode.checks++;
 					const finish = (current: boolean) => {
 						try {
-							if (!current && reservationOwners.get(events) === owner) report(episode);
+							if (!current) report({ sessionId: owner.sessionId, episode });
 						} finally {
 							episode.checks--;
 							if (!episode.checks && !episode.told && owner.notices.get(childName) === episode)
