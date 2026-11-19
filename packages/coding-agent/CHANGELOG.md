@@ -52,6 +52,7 @@
 - Switching between subagent chats no longer brings a stopped child back into its chat footer. A workflow that resumes and blocks again between panel updates reappears alongside active work, even within the same millisecond ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
 - On Windows, a `!command` config value or a blueprint step that is stopped has its process tree terminated once. Atomic no longer terminates it again when the command's exit arrives, or when an abort comes after its timeout ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 - On Windows, a blueprint step stopped after its command exited, while a process the step started still writes its output, no longer kills by the command's pid, which may already name another process. This applies when the step's processes could not be contained ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
+- A pending block click uses the block’s current output, group and width, even after a resize. A block with nothing more to show leaves the chat following new output. Ctrl+O takes precedence over an earlier click, and a burst of single clicks in an isolated chat no longer loses toggles ([#5562](https://github.com/bastani-inc/atomic/issues/5562)).
 
 ## [0.9.89] - 2026-11-18
 
