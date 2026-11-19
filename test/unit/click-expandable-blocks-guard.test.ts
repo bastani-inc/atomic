@@ -13,7 +13,6 @@ import { repositoryRoot } from "../../vitest.base.js";
  */
 const SCANNED = [
 	"packages/coding-agent/src",
-	"packages/workflows/src",
 	"packages/subagents/src",
 	"packages/intercom",
 	"packages/web-access",

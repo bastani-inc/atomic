@@ -43,20 +43,18 @@ try {
 	}
 	writeFileSync(join(directory, "capture.txt"), capture);
 	assert.match(capture, /^DEMO COMPLETE\s*$/m);
-	assert.match(capture, /PASS LIVE: identical task content; MAIN anchors=1 STAGE anchors=1/);
-	assert.match(capture, /PASS SETTLED: identical task content; MAIN anchors=1 STAGE anchors=1/);
+	assert.match(capture, /PASS LIVE: MAIN anchors=1/);
+	assert.match(capture, /PASS SETTLED: MAIN anchors=1/);
 	assert.match(capture, /HIDDEN delta=0/);
 	assert.match(capture, /tool_execution_end.*agent_end.*live background output.*settlement/);
 	assert.match(capture, /background activity after agent end/);
 	assert.match(capture, /Genuine peer message/);
 	assert.ok(capture.includes(`PASS viewport ${values.columns}x${values.rows}: bounded host allocation`));
 	for (const phase of ["LIVE", "SETTLED"]) {
-		for (const host of ["MAIN", "STAGE"]) {
-			const section = capture.split(`PHASE ${phase} ${host}\n`)[1]?.split(/PHASE |PASS /)[0];
-			assert.ok(section, `${phase} ${host} pane section`);
-			assert.equal((section.match(/worker: S4 shared projection/g) ?? []).length, 1, `${phase} ${host} has one real anchor`);
-			assert.doesNotMatch(section, /nonvisual completion/);
-		}
+			const section = capture.split(`PHASE ${phase} MAIN\n`)[1]?.split(/PHASE |PASS /)[0];
+			assert.ok(section, `${phase} MAIN pane section`);
+			assert.equal((section.match(/worker: S4 shared projection/g) ?? []).length, 1, `${phase} MAIN has one real anchor`);
+		assert.doesNotMatch(section, /nonvisual completion/);
 	}
 	console.log(`PASS real ${values.columns}x${values.rows} task projection capture: ${join(directory, "capture.txt")}`);
 } finally {

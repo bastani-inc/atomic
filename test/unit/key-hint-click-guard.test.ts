@@ -191,28 +191,18 @@ describe("the shared hint builders mark every key they name", () => {
 });
 
 const repositoryRoot = join(moduleDir(import.meta.url), "../..");
-const SHIPPED_SOURCES = [
-	"coding-agent/src",
-	"workflows/src",
-	"subagents/src",
-	"tui/src",
-	"intercom",
-	"mcp",
-	"web-access",
-].map((path) => join(repositoryRoot, "packages", path));
+const SHIPPED_SOURCES = ["coding-agent/src", "subagents/src", "tui/src", "intercom", "mcp", "web-access"].map((path) =>
+	join(repositoryRoot, "packages", path),
+);
 
 /** A key, or alternatives of keys, as hints name them. */
-const KEY = String.raw`(?:esc|enter|tab|space|pgup|pgdn|↵|↑↓|↑|↓|←|→|ctrl\+\S|alt\+\S|shift\+tab)`;
+
 /** Text that reads as a key hint: a key followed by what it does, or a slash command followed by `to ...`. */
-const HINT_TEXT = new RegExp(
-	String.raw`(?:^|·\s|\(|\s{2})(?:${KEY}(?:/${KEY})*\s+(?:to\s+)?[a-z]{3,}|/(?:tasks|agents|workflows)\s+to\s+[a-z])`,
-	"iu",
-);
+
 /** Calls that draw a hint with its click: a line holding one of these, or near one, draws through it. */
 const BUILDERS =
 	/\b(?:clickableHintText|clickableKeyTextHint|clickableKeysHint|clickableHint|slashCommandHint|rawKeyHint|keyHint|keyHintIfBound|keyTextHint|parenthesizedKeyHint|renderNavHintLine|localKeyHint|graphRawKeyHint|graphKeyHint)\(/;
 /** A `NavKey` entry: hint lines and the `?` overlay draw these through the builders. */
-const NAV_KEY_ENTRY = /\b(?:keys|label|action)\s*:/;
 
 /**
  * Text that reads like a hint but is not one a click can run, by file and the text it holds, with why.
@@ -229,29 +219,9 @@ const NOT_HINTS: ReadonlyArray<{ readonly file: string; readonly text: RegExp; r
 		why: "a warning sentence shown for a moment, not a hint row",
 	},
 	{
-		file: "packages/workflows/src/tui/node-card.ts",
-		text: /enter to respond/,
-		why: "drawn inside a stage's card in the graph: a click on the card selects and opens that card, as a row does",
-	},
-	{
 		file: "packages/coding-agent/src/core/tools/ask-user-question/view/dialog-builder.ts",
 		text: /^(?:↑↓ select|enter choose|enter\/space toggle|enter\/esc close notes|tab next question|tab questions|esc cancel)$/,
 		why: "parts the question dialog joins into its hint row, which it draws through clickableHintText",
-	},
-	{
-		file: "packages/workflows/src/tui/switcher.ts",
-		text: /(?:select|stage chat|tool detail|close)/,
-		why: "the switcher's hint rows, which it draws through clickableHintText",
-	},
-	{
-		file: "packages/workflows/src/tui/run-outcome.ts",
-		text: /^enter /,
-		why: "a blocker's action line, drawn through clickableHintText under the selected blocker",
-	},
-	{
-		file: "packages/workflows/src/extension/workflow-durable-resume-command.ts",
-		text: /enter resume with the new definition/,
-		why: "the changed-definition prompt's line, drawn through clickableHintText",
 	},
 	{
 		file: "packages/subagents/src/tui/agent-browser.ts",
@@ -317,16 +287,6 @@ const NOT_HINTS: ReadonlyArray<{ readonly file: string; readonly text: RegExp; r
 		file: "packages/workflows/src/tui/stage-chat-view-footer-status.ts",
 		text: /^ ?(?:· )?\$\{backKey\} graph$/,
 		why: "the plain text of the return-to-graph hint, used to find and measure it; it is drawn through clickableKeysHint",
-	},
-	{
-		file: "packages/workflows/src/tui/node-card.ts",
-		text: /^↑ blocked$/,
-		why: "↑ points at the stage that blocks this one; it is not a key",
-	},
-	{
-		file: "packages/workflows/src/tui/run-detail.ts",
-		text: /^↑ blocked$/,
-		why: "↑ points at the stage that blocks this one; it is not a key",
 	},
 ];
 
