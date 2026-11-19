@@ -508,10 +508,44 @@ export async function chunkedTreeOutline(
 				}
 			: {}),
 		...(e.type === "custom" && e.customType === "atomic.leaf" ? { leafMove: true } : {}),
+		...(e.type === "custom" && e.customType === "subagent-child" ? { childRecord: true } : {}),
 		...(e.type === "label"
 			? { labelTarget: String(e.targetId), label: typeof e.label === "string" ? e.label : undefined }
 			: {}),
 	};
+}
+
+export async function chunkedChildHeading(chunks: AsyncIterable<Uint8Array>): Promise<SessionEntry> {
+	const e = await read(
+		chunks,
+		(function* (): Reader<Json> {
+			return yield* readValue(yield, {
+				id: "string",
+				type: "short",
+				customType: "short",
+				data: {
+					version: "number",
+					childId: "string",
+					runId: "string",
+					index: "number",
+					agent: "string",
+					cwd: "string",
+					state: "short",
+					owner: { kind: "short", sessionId: "string" },
+					terminalStatus: "string",
+					taskId: "string",
+					childSessionId: "string",
+					childSessionFile: "string",
+					intercomTarget: "string",
+					intercomGroup: "string",
+					releasedIntercomId: "string",
+					elapsedMs: "number",
+					elapsedSpan: { dispatchedAt: "number", endedAt: "number" },
+				},
+			});
+		})(),
+	);
+	return e as unknown as SessionEntry;
 }
 
 export async function chunkedAnswerHeader(chunks: AsyncIterable<Uint8Array>) {

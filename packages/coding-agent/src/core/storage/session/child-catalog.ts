@@ -1,0 +1,207 @@
+import { hash } from "fast-sha256";
+import type { SessionEntry } from "../../session-manager-types.ts";
+import type { ArchivedChildCatalogEntry, SessionStoredEntry } from "./types.js";
+
+type Obj = Record<string, unknown>;
+const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
+const keyOf = (owner: string, child: string) => JSON.stringify([owner, child]);
+// Unknown legacy fields must survive a later partial observation, but their field names are not addresses.
+const fieldKey = (k: string) =>
+	k.length <= 128 ? `:${k}` : `#${Buffer.from(hash(Buffer.from(k, "utf16le"))).toString("base64url")}`;
+const strings = [
+	"terminalStatus",
+	"taskId",
+	"childSessionId",
+	"childSessionFile",
+	"intercomTarget",
+	"intercomGroup",
+	"releasedIntercomId",
+] as const;
+interface Child {
+	heading: ArchivedChildCatalogEntry;
+	ownerKind?: string;
+	latest: number;
+	first: number;
+	fields: Map<string, number>;
+	waits: Set<string>;
+	wakeTask?: string;
+	wake: boolean;
+	heldTask?: string;
+	held: boolean;
+	eligible: boolean;
+}
+
+/** A catalogue contains no arbitrary entry data, launch prompts, messages or tool results. The locations
+ * of contributing observations are enough to recover even partial records written by older clients. */
+export class ChildCatalog {
+	private groups = new Map<string, Child>();
+	private byEntry = new Map<string, Child>();
+	private published: readonly ArchivedChildCatalogEntry[] = [];
+	static inspect(entry: SessionEntry) {
+		if (entry.type !== "custom" || entry.customType !== "subagent-child") return;
+		const d = obj(entry.data),
+			o = obj(d.owner);
+		if (
+			d.version !== 1 ||
+			typeof d.childId !== "string" ||
+			typeof d.runId !== "string" ||
+			typeof d.index !== "number" ||
+			typeof d.agent !== "string" ||
+			typeof d.cwd !== "string" ||
+			(d.state !== "running" && d.state !== "terminal") ||
+			typeof o.sessionId !== "string"
+		)
+			return;
+		return {
+			d,
+			o,
+			key: keyOf(o.sessionId, d.childId),
+			owner: o.sessionId,
+			child: d.childId,
+			run: d.runId,
+			index: d.index,
+			agent: d.agent,
+			cwd: d.cwd,
+			state: d.state as "running" | "terminal",
+		};
+	}
+	private observe(entry: SessionEntry, seq: number): string | undefined {
+		const s = ChildCatalog.inspect(entry);
+		if (!s) return;
+		const { key, d, o } = s;
+		let record = this.groups.get(key);
+		if (record && seq <= record.latest) return key;
+		const p = record?.heading;
+		const taskIds = p ? [...p.taskIds] : [];
+		if (typeof d.taskId === "string" && !taskIds.includes(d.taskId)) taskIds.push(d.taskId);
+		const heading: ArchivedChildCatalogEntry = {
+			...p,
+			entryId: entry.id,
+			firstSeq: record?.first ?? seq,
+			childId: s.child,
+			ownerSessionId: s.owner,
+			runId: s.run,
+			index: s.index,
+			agent: s.agent,
+			cwd: s.cwd,
+			state: s.state,
+			taskIds,
+		};
+		const extras: Record<string, unknown> = {};
+		let valid = true;
+		for (const k of strings)
+			if (Object.hasOwn(d, k)) {
+				if (typeof d[k] === "string") extras[k] = d[k];
+				else valid = false;
+			}
+		if (Object.hasOwn(d, "elapsedMs")) {
+			if (typeof d.elapsedMs === "number") extras.elapsedMs = d.elapsedMs;
+			else valid = false;
+		}
+		if (Object.hasOwn(d, "elapsedSpan")) {
+			const span = obj(d.elapsedSpan);
+			if (d.elapsedSpan === null) extras.elapsedSpan = null;
+			else if (
+				typeof span.dispatchedAt === "number" &&
+				(span.endedAt === undefined || typeof span.endedAt === "number")
+			)
+				extras.elapsedSpan = {
+					dispatchedAt: span.dispatchedAt,
+					...(span.endedAt === undefined ? {} : { endedAt: span.endedAt }),
+				};
+			else valid = false;
+		}
+		Object.assign(heading, extras);
+		if (heading.taskId) {
+			const released = new Set(p?.releasedTaskIds);
+			if (heading.state === "terminal" && heading.terminalStatus === "released") released.add(heading.taskId);
+			else released.delete(heading.taskId);
+			Object.assign(heading, { releasedTaskIds: released.size ? [...released] : undefined });
+		}
+		if (!record) {
+			record = {
+				heading,
+				latest: seq,
+				first: seq,
+				fields: new Map(),
+				waits: new Set(),
+				wake: false,
+				held: false,
+				eligible: true,
+			};
+			this.groups.set(key, record);
+		}
+		record.latest = seq;
+		record.heading = heading;
+		record.ownerKind = typeof o.kind === "string" ? o.kind : undefined;
+		record.eligible &&= valid;
+		for (const k of Object.keys(d)) record.fields.set(fieldKey(k), seq);
+		for (const k of ["waitingOn", "heldToolResults", "stillRunning"])
+			if (Object.hasOwn(d, k)) {
+				if (Array.isArray(d[k]) && d[k].length) record.waits.add(k);
+				else record.waits.delete(k);
+			}
+		if (Object.hasOwn(d, "wakeFailure")) {
+			record.wake = !!d.wakeFailure;
+			const t = obj(d.wakeFailure).taskId;
+			record.wakeTask = typeof t === "string" ? t : undefined;
+		}
+		if (Object.hasOwn(d, "heldMessages")) {
+			const h = obj(d.heldMessages);
+			record.held = Array.isArray(h.messages) && h.messages.length > 0;
+			record.heldTask = typeof h.taskId === "string" ? h.taskId : undefined;
+		}
+		return key;
+	}
+	/** Ingest saved state, preserving any older contributing positions already retired by this manager.
+	 * Never retire a current-window entry, a live/released/paused/quit child or its unsettled deliveries. */
+	retire(state: readonly SessionStoredEntry[], branch: readonly SessionStoredEntry[]): Set<string> {
+		const current = new Set<string>(),
+			candidates = new Map<string, string[]>();
+		for (const { entry } of branch) {
+			const s = ChildCatalog.inspect(entry);
+			if (s) current.add(s.key);
+		}
+		for (const { entry, seq } of state) {
+			const s = ChildCatalog.inspect(entry);
+			if (!s || current.has(s.key)) continue;
+			const key = this.observe(entry, seq)!;
+			const ids = candidates.get(key) ?? [];
+			ids.push(entry.id);
+			candidates.set(key, ids);
+		}
+		const retired = new Set<string>();
+		for (const [key, ids] of candidates) {
+			const c = this.groups.get(key)!;
+			const h = c.heading;
+			if (
+				c.eligible &&
+				c.ownerKind === "session" &&
+				h.state === "terminal" &&
+				!["released", "paused", "quit", "stage-paused"].includes(h.terminalStatus ?? "") &&
+				!c.waits.size &&
+				!(c.wake && c.wakeTask === h.taskId) &&
+				!(c.held && c.heldTask === h.taskId)
+			)
+				for (const id of ids) retired.add(id);
+			else this.groups.delete(key);
+		}
+		this.publish();
+		return retired;
+	}
+	/** Direct, read-only catalogue scans include live children as well. */
+	add(entry: SessionEntry, seq: number) {
+		this.observe(entry, seq);
+	}
+	publish() {
+		this.byEntry = new Map([...this.groups.values()].map((child) => [child.heading.entryId, child]));
+		this.published = [...this.groups.values()].sort((a, b) => a.first - b.first).map((child) => child.heading);
+	}
+	rows(): readonly ArchivedChildCatalogEntry[] {
+		return this.published;
+	}
+	positions(id: string): readonly number[] | undefined {
+		const c = this.byEntry.get(id);
+		return c ? [...new Set([c.first, ...c.fields.values()])].sort((a, b) => a - b) : undefined;
+	}
+}

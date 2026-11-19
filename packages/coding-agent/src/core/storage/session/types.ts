@@ -133,6 +133,7 @@ export interface SessionTreeOutlineEntry {
 	/** Addresses only; the arguments for a visible result are read from its call on demand. */
 	readonly callIds?: readonly string[];
 	readonly leafMove?: boolean;
+	readonly childRecord?: boolean;
 	readonly labelTarget?: string;
 	readonly label?: string;
 }
@@ -184,6 +185,31 @@ export interface SessionCompactionPoint {
 
 	readonly leafId: string;
 	readonly lastSeq: number;
+}
+
+/** Body-free child state for launch cards and explicit action lookup. Full launch, held messages and results
+ * are fetched from the saved observation only if the child is explicitly opened or continued. */
+export interface ArchivedChildCatalogEntry {
+	readonly firstSeq: number;
+	readonly entryId: string;
+	readonly childId: string;
+	readonly ownerSessionId: string;
+	readonly runId: string;
+	readonly index: number;
+	readonly agent: string;
+	readonly cwd: string;
+	readonly state: "running" | "terminal";
+	readonly terminalStatus?: string;
+	readonly taskId?: string;
+	readonly taskIds: readonly string[];
+	readonly releasedTaskIds?: readonly string[];
+	readonly childSessionId?: string;
+	readonly childSessionFile?: string;
+	readonly intercomTarget?: string;
+	readonly intercomGroup?: string;
+	readonly releasedIntercomId?: string;
+	readonly elapsedMs?: number;
+	readonly elapsedSpan?: { dispatchedAt: number; endedAt?: number } | null;
 }
 
 export interface SessionRecoveryState {

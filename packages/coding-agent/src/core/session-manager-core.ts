@@ -85,6 +85,7 @@ import {
 	type StorageFailureCause,
 	StorageRollbackError,
 } from "./storage/errors.js";
+import { ChildCatalog } from "./storage/session/child-catalog.js";
 import { validateSessionEntryStructure } from "./storage/session/entry-structure.js";
 import {
 	SessionConflictError,
@@ -142,7 +143,11 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
 }
 
-type SelectedWindow = SessionResume & { readonly priorAnswer?: AssistantAnswer; readonly archiveOnlyEpoch?: true };
+type SelectedWindow = SessionResume & {
+	readonly priorAnswer?: AssistantAnswer;
+	readonly archiveOnlyEpoch?: true;
+	readonly childArchive?: ChildCatalog;
+};
 type OpenedSession = { readonly resume: SelectedWindow } | { readonly snapshot: SessionSnapshot };
 async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Promise<SelectedWindow> {
 	return Object.hasOwn(resume, "priorAnswer")
@@ -243,6 +248,7 @@ export class SessionManager {
 	private historyStartSeq = 1;
 	private answerWindowStart = 1;
 	private priorAnswer?: AssistantAnswer;
+	private childArchive = new ChildCatalog();
 	private archiveOnlyEpoch = false;
 
 	private entrySeqs = new Map<string, number>();
@@ -309,7 +315,10 @@ export class SessionManager {
 			return;
 		}
 		const resume = opened.resume;
-		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
+		const catalog = resume.childArchive ?? new ChildCatalog();
+		const archived = catalog.retire(resume.state, resume.branch);
+		const state = resume.state.filter(({ entry }) => !archived.has(entry.id));
+		const held = [...state, ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.restoreHistory(
 			resume.header,
 			held.map(({ entry }) => entry),
@@ -317,6 +326,7 @@ export class SessionManager {
 			location,
 		);
 		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
+		this.childArchive = catalog;
 		this.historyEpoch = resume.epoch;
 		this.archiveOnlyEpoch = resume.archiveOnlyEpoch === true;
 		this.answerWindowStart = resume.branch[0]?.seq ?? 1;
@@ -333,7 +343,7 @@ export class SessionManager {
 		this.historyStartSeq = held.length < resume.lastSeq ? (resume.branch[0]?.seq ?? resume.lastSeq + 1) : 1;
 		if (held.length < resume.lastSeq && this.historyStartSeq === 1) this.historyStartSeq = 2;
 		this.omittedTotals = held.length < resume.lastSeq ? resume.omitted : undefined;
-		const path = [...resume.state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
+		const path = [...state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.branchLinks = new Map(path.slice(1).map((held, i) => [held.entry.id, path[i]!.entry.id]));
 		this.leafId = resume.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
@@ -351,6 +361,7 @@ export class SessionManager {
 			readonly links: ReadonlyMap<string, string>;
 		},
 	): void {
+		this.childArchive = new ChildCatalog();
 		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
 		this.lastSeq = lastSeq;
@@ -506,6 +517,35 @@ export class SessionManager {
 	getSessionRecoveryState(): SessionRecoveryState {
 		return { ...this.recoveryState, admissionDigests: this.admissionKeys.serialize() };
 	}
+	/** @internal Body-free terminal child headings. A newer resident observation supersedes its archived heading. */
+	getArchivedChildCatalog() {
+		return this.childArchive.rows();
+	}
+	/** @internal An explicit terminal action obtains one logical child record, including legacy partial observations. */
+	async readArchivedChildRecord(entryId: string): Promise<SessionEntry | undefined> {
+		const seqs = this.childArchive.positions(entryId);
+		if (!seqs) return;
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		let result: Extract<SessionEntry, { type: "custom" }> | undefined;
+		for (const seq of seqs) {
+			const page = await readSessionRange(store, sessionId, seq, seq, historyEpoch);
+			const entry = page.entries[0];
+			if (
+				page.lastSeq < lastSeq ||
+				(historyEpoch !== undefined && historyEpoch !== page.epoch) ||
+				entry?.type !== "custom" ||
+				entry.customType !== "subagent-child"
+			)
+				throw new SessionConflictError(sessionId, lastSeq, page.lastSeq);
+			result = {
+				...entry,
+				data: { ...(result?.data as Record<string, unknown>), ...(entry.data as Record<string, unknown>) },
+			};
+		}
+		if (result?.id !== entryId) throw new SessionConflictError(sessionId, lastSeq, lastSeq);
+		return result;
+	}
+
 	/** Read the identities of interrupted runs from their saved starts only when recovery is requested. */
 	async readOpenWorkflowIds(): Promise<string[]> {
 		const { store, sessionId, historyEpoch, lastSeq } = this;
@@ -944,7 +984,15 @@ export class SessionManager {
 				...new Set([...(this.recoveryState.deliveryOpIds ?? []), ...(resume.recovery.deliveryOpIds ?? [])]),
 			],
 		};
-		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
+		const branchIds = new Set(resume.branch.map(({ entry }) => entry.id));
+		const actual = entries.map((entry) => ({ entry, seq: this.entrySeqs.get(entry.id)! }));
+		const archived = this.childArchive.retire(
+			actual.filter(({ entry }) => !branchIds.has(entry.id)),
+			actual.filter(({ entry }) => branchIds.has(entry.id)),
+		);
+		const keep = new Set(
+			[...resume.branch, ...resume.state].map(({ entry }) => entry.id).filter((id) => !archived.has(id)),
+		);
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
 		const leaf = this.leafId;
 		const current = this.getBranch();
@@ -1245,6 +1293,7 @@ export class SessionManager {
 			header: this.recordHeader(),
 			epoch: this.historyEpoch!,
 			archiveOnlyEpoch: this.archiveOnlyEpoch ? true : undefined,
+			childArchive: this.childArchive,
 			lastSeq: this.lastSeq,
 			lastEntryId: this.lastEntryId,
 			leafId: this.leafId,

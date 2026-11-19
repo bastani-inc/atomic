@@ -238,6 +238,38 @@ it("copy uses the last visible edited answer across a clear and reopen, not an o
 	}
 });
 
+it("a cleared parent keeps completed children's addresses rather than their launch and result payloads (#5554)", async () => {
+	const store = await sqlStore();
+	const manager = await SessionManager.create(store, "/project");
+	const owner = { kind: "session", sessionId: manager.getSessionId() };
+	const base = { version: 1, childId: "child", runId: "run", index: 0, agent: "worker", cwd: "/project", owner };
+	await manager.appendCustomEntry("subagent-child", {
+		...base,
+		state: "running",
+		taskId: "previous",
+		launch: { task: "old input" },
+	});
+	const id = await manager.appendCustomEntry("subagent-child", {
+		...base,
+		state: "terminal",
+		taskId: "last",
+		terminalStatus: "ok",
+		extra: "old result",
+	});
+	await manager.appendCompaction("clear", null, 10, details);
+	for (const view of [manager, await SessionManager.open(store, manager.getSessionId())]) {
+		expect(view.getEntries().filter((e) => e.type === "custom" && e.customType === "subagent-child")).toEqual([]);
+		expect(view.getArchivedChildCatalog()).toMatchObject([
+			{ entryId: id, childId: "child", taskIds: ["previous", "last"] },
+		]);
+		expect(await view.readArchivedChildRecord(id)).toMatchObject({
+			type: "custom",
+			data: { launch: { task: "old input" }, extra: "old result", state: "terminal", taskId: "last" },
+		});
+		expect(view.getEntry(id)).toBeUndefined();
+	}
+});
+
 it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store);

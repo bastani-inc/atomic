@@ -2006,6 +2006,7 @@ export class SqlSessionStore implements SessionStore {
 				`SELECT CASE WHEN ${role}='assistant' AND ${ctype}='array' THEN ${callIds} END calls,seq,entry_id,chunks,${j("type")} kind,${j("parentId")} parent,${j("timestamp")} stamp,${role} role,
 				CASE WHEN ${role}='assistant' AND COALESCE(${j("message", "stopReason")},'') IN ('','toolUse','stop') AND CASE WHEN ${ctype}='array' THEN NOT ${hasText} WHEN ${ctype}='${sqlite ? "text" : "string"}' THEN length(${trim}(${content},?))=0 ELSE TRUE END THEN 1 ELSE 0 END hidden,
 				CASE WHEN ${j("type")}='custom' AND ${j("customType")}='atomic.leaf' THEN 1 ELSE 0 END leaf_move,
+				CASE WHEN ${j("type")}='custom' AND ${j("customType")}='subagent-child' THEN 1 ELSE 0 END child_record,
 				CASE WHEN ${j("type")}='label' THEN ${j("targetId")} END target,CASE WHEN ${j("type")}='label' THEN substr(${j("label")},1,128) END label
 				FROM ${this.tables.entries} WHERE session_id=? AND seq BETWEEN ? AND ? ORDER BY seq LIMIT ?`,
 				whites,
@@ -2030,6 +2031,7 @@ export class SqlSessionStore implements SessionStore {
 								? { callIds: JSON.parse(row.calls) as string[] }
 								: {}),
 							...(Number(row.leaf_move) === 1 ? { leafMove: true } : {}),
+							...(Number(row.child_record) === 1 ? { childRecord: true } : {}),
 							...(typeof row.target === "string"
 								? { labelTarget: row.target, label: typeof row.label === "string" ? row.label : undefined }
 								: {}),
