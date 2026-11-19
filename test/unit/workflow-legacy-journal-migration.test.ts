@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { inspectJournalFile } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/backend.js";
@@ -14,6 +15,7 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, readText, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const directories: string[] = [];
@@ -83,6 +85,121 @@ function writeLegacyJournal(path: string): void {
 		database.close();
 	}
 }
+
+for (const method of ["listRuns", "runVersions", "getRun"] as const)
+	test(`${method} does not lose a legacy run converted by another connection at its first read boundary (#5537)`, async () => {
+		const path = join(tempDirectory(), `conversion-${method}.sqlite`);
+		writeLegacyJournal(path);
+		const database = await openNodeSqliteDatabase(path);
+		const writerDatabase = await openNodeSqliteDatabase(path);
+		const journal = await SqlRunJournal.open(database);
+		const writer = await SqlRunJournal.open(writerDatabase);
+		let converted = false;
+		const convert = async () => {
+			if (converted) return;
+			converted = true;
+			assert.equal((await writer.acquire(legacyRun.runId, "conversion-writer")).status, "acquired");
+		};
+		const restore = observeSqlReads(database, { after: convert });
+		try {
+			if (method === "getRun") assert.equal((await journal.getRun(legacyRun.runId))?.runId, legacyRun.runId);
+			else if (method === "runVersions")
+				assert.deepEqual([...(await journal.runVersions()).keys()], [legacyRun.runId]);
+			else
+				assert.deepEqual(
+					(await journal.listRuns()).map((run) => run.runId),
+					[legacyRun.runId],
+				);
+			assert.equal(converted, true);
+		} finally {
+			restore();
+			await writer.close();
+			await journal.close();
+			await writerDatabase.close();
+			await database.close();
+		}
+	});
+
+test("legacy event reads honor the same size budget as current event reads (#5537)", async () => {
+	const path = join(tempDirectory(), "large-legacy-events.sqlite");
+	writeLegacyJournal(path);
+	const payload = JSON.stringify({ inputs: { text: '"'.repeat(1_000_000) } });
+	const raw = new DatabaseSync(path);
+	try {
+		const insert = raw.prepare(
+			"INSERT INTO events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, 3, NULL, ?, ?, ?)",
+		);
+		for (let seq = 2; seq <= 7; seq++)
+			insert.run(legacyRun.runId, seq, RUN_EVENT_TYPES.runStarted, payload, legacyRun.createdAt + seq);
+	} finally {
+		raw.close();
+	}
+	const database = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(database);
+	const all = database.all.bind(database);
+	database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+		const rows = await all<Row>(sql, ...params);
+		const bytes = rows.reduce(
+			(total, row) => total + (typeof row.payload === "string" ? Buffer.byteLength(row.payload) : 0),
+			0,
+		);
+		assert.ok(bytes <= 4 * 1024 * 1024 + Buffer.byteLength(payload), `legacy payload response was ${bytes} bytes`);
+		return rows;
+	};
+	try {
+		const seqs: number[] = [];
+		for await (const entry of journal.read(legacyRun.runId)) seqs.push(entry.seq);
+		assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6, 7]);
+	} finally {
+		database.all = all;
+		await journal.close();
+		await database.close();
+	}
+});
+
+test("inspection lists a 150,000-run legacy catalog without overflowing the call stack (#5537)", async () => {
+	const path = join(tempDirectory(), "large-legacy.sqlite");
+	writeLegacyJournal(path);
+	const database = new DatabaseSync(path);
+	try {
+		database.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 150000)
+			INSERT INTO runs(run_id, name, cwd, created_at, status, header_json)
+			SELECT 'run-' || i, 'run', '/project', 1, 'running',
+			'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+	} finally {
+		database.close();
+	}
+	const inspection = await inspectJournalFile(path);
+	assert.equal(inspection.runs.length, 150_001);
+	assert.equal(new Set(inspection.runs.map((run) => run.runId)).size, 150_001);
+});
+
+test("legacy catalog listings check cancellation between size-bounded pages (#5537)", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+	const database = new DatabaseSync(path);
+	try {
+		database.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 128)
+			INSERT INTO runs(run_id, name, cwd, created_at, status, header_json)
+			SELECT 'run-' || i, 'run', '/project', 1, 'running',
+			'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+	} finally {
+		database.close();
+	}
+	const journal = await openSqlRunJournal(path);
+	try {
+		const controller = new AbortController();
+		const reason = new Error("legacy catalog cancelled");
+		const timer = setImmediate(() => controller.abort(reason));
+		try {
+			await assert.rejects(journal.listRuns(undefined, { signal: controller.signal }), (error) => error === reason);
+		} finally {
+			clearImmediate(timer);
+		}
+	} finally {
+		await journal.close();
+	}
+});
 
 async function readAll(iterable: AsyncIterable<JournalEntry>): Promise<JournalEntry[]> {
 	const entries: JournalEntry[] = [];

@@ -21,6 +21,7 @@ import {
 	type JournalCatalogRunHeader,
 	type JournalShardRecord,
 	type JournalShardRegistration,
+	readSqlCatalog,
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { renderStorageIdentifiers } from "./prefix.js";
@@ -193,7 +194,11 @@ async function hasSqliteHeader(path: string): Promise<boolean> {
 }
 
 async function tableNames(executor: SqliteExecutor): Promise<ReadonlySet<string>> {
-	const rows = await executor.all<SqliteRow & { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'");
+	const rows = await readSqlCatalog<SqliteRow & { name: string }>(executor, {
+		sql: "SELECT name FROM sqlite_master WHERE type = 'table'",
+		key: "name",
+		size: "length(name)",
+	});
 	return new Set(rows.map((row) => row.name));
 }
 
@@ -272,7 +277,11 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 					header_json: string;
 				})[];
 				const rows: RunRows = current
-					? await database.all(`SELECT run_id, name, cwd, status, header_json FROM ${TABLES.runs} ORDER BY run_id`)
+					? await readSqlCatalog<RunRows[number]>(database, {
+							sql: `SELECT run_id, name, cwd, status, header_json FROM ${TABLES.runs}`,
+							key: "run_id",
+							size: "length(run_id) + length(name) + length(cwd) + length(status) + length(header_json)",
+						})
 					: [];
 				const copiedAll =
 					names.has(MIGRATIONS) &&
@@ -285,11 +294,12 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 						names.has(TABLES.runs) ? `AND run_id NOT IN (SELECT run_id FROM ${TABLES.runs})` : "",
 						names.has(LEGACY_DELETED) ? `AND run_id NOT IN (SELECT run_id FROM ${LEGACY_DELETED})` : "",
 					].join(" ");
-					rows.push(
-						...(await database.all<RunRows[number]>(
-							`SELECT run_id, name, cwd, status, header_json FROM ${LEGACY_RUNS} WHERE 1 = 1 ${converted} ORDER BY run_id`,
-						)),
-					);
+					for (const row of await readSqlCatalog<RunRows[number]>(database, {
+						sql: `SELECT run_id, name, cwd, status, header_json FROM ${LEGACY_RUNS} WHERE 1 = 1 ${converted}`,
+						key: "run_id",
+						size: "length(run_id) + length(name) + length(cwd) + length(status) + length(header_json)",
+					}))
+						rows.push(row);
 				}
 				const references = new Set<string>();
 				for (const row of rows) {
@@ -586,7 +596,12 @@ async function ensureJournalTables(source: SqliteExecutor, target: SqliteExecuto
 
 /** A run's events in sequence order, each payload read whole, from its chunks when it is stored in chunks (#4965). */
 async function readEvents(executor: SqliteExecutor, runId: string): Promise<EventRow[]> {
-	const rows = await executor.all<EventRow>(`SELECT * FROM ${TABLES.events} WHERE run_id = ? ORDER BY seq`, runId);
+	const rows = await readSqlCatalog<EventRow>(executor, {
+		sql: `SELECT * FROM ${TABLES.events} WHERE run_id = ?`,
+		params: [runId],
+		key: "seq",
+		size: "length(run_id) + length(type) + length(payload) + coalesce(length(key), 0)",
+	});
 	return withJournalPayloads(executor, TABLES.eventChunks, rows);
 }
 
@@ -1050,10 +1065,12 @@ async function returnStrandedRuns(
 ): Promise<JournalConsolidationRun[]> {
 	const skipped: JournalConsolidationRun[] = [];
 	const listed = new Set((await catalog.runs({ shard: from.id })).map((run) => run.runId));
-	const unfenced = await source.all<SqliteRow & { run_id: string }>(
-		`SELECT run_id FROM ${TABLES.runs} WHERE run_id NOT IN (SELECT run_id FROM ${TABLES.leases} WHERE holder_id LIKE ?) ORDER BY run_id`,
-		`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}%`,
-	);
+	const unfenced = await readSqlCatalog<SqliteRow & { run_id: string }>(source, {
+		sql: `SELECT run_id FROM ${TABLES.runs} WHERE run_id NOT IN (SELECT run_id FROM ${TABLES.leases} WHERE holder_id LIKE ?)`,
+		params: [`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}%`],
+		key: "run_id",
+		size: "length(run_id)",
+	});
 	for (const { run_id: runId } of unfenced.filter((row) => !listed.has(row.run_id))) {
 		const destination = (await catalog.locate(runId))?.shard;
 		if (destination === undefined) continue;
@@ -1110,10 +1127,12 @@ async function finishInterruptedMoves(
 	target: (record: JournalShardRecord) => Promise<SqliteDatabase>,
 ): Promise<JournalConsolidationRun[]> {
 	const skipped: JournalConsolidationRun[] = [];
-	const fenced = await source.all<LeaseRow>(
-		`SELECT * FROM ${TABLES.leases} WHERE holder_id LIKE ?`,
-		`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}%`,
-	);
+	const fenced = await readSqlCatalog<LeaseRow>(source, {
+		sql: `SELECT * FROM ${TABLES.leases} WHERE holder_id LIKE ?`,
+		params: [`${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}%`],
+		key: "run_id",
+		size: "length(run_id) + coalesce(length(holder_id), 0)",
+	});
 	for (const lease of fenced) {
 		// Where the catalog names the run now, not where it did when this consolidation began: another consolidation may
 		// have repointed it since, and a fence it left on this file is then not an interrupted move to finish.

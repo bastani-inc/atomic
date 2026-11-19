@@ -2,6 +2,8 @@ import {
 	dialectOf,
 	JOURNAL_COPIED_ALL_MARKER,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
+	readSqlCatalog,
+	readSqlCatalogPages,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
@@ -28,7 +30,7 @@ const LEGACY_COLUMNS: Readonly<Record<LegacyTable, readonly string[]>> = {
 };
 
 /** Legacy runs that have not been converted into `wf_runs` or deleted since. */
-const PENDING_LEGACY_RUNS = `SELECT ${c.runId}, ${c.headerJson}, ${c.status} FROM ${JOURNAL_TABLES.runs}
+const PENDING_LEGACY_RUNS = `SELECT ${c.runId}, ${c.headerJson}, ${c.status}, ${c.cwd} FROM ${JOURNAL_TABLES.runs}
 	WHERE ${c.runId} NOT IN (SELECT ${c.runId} FROM ${CURRENT.runs})
 	AND ${c.runId} NOT IN (SELECT ${c.runId} FROM ${CURRENT.legacyDeleted})`;
 
@@ -107,11 +109,23 @@ export class LegacyJournalRuns {
 		}, JOURNAL_TRANSACTION);
 	}
 
-	async pending(executor: SqliteExecutor, filter?: { cwd?: string }): Promise<LegacyRunRow[]> {
-		return executor.all<LegacyRunRow>(
-			`${PENDING_LEGACY_RUNS}${filter?.cwd === undefined ? "" : ` AND ${c.cwd} = ?`}`,
-			...(filter?.cwd === undefined ? [] : [filter.cwd]),
-		);
+	/** Included in the same statement as current rows, so conversion cannot move a run between two reads. */
+	get pendingSource(): string {
+		return PENDING_LEGACY_RUNS;
+	}
+
+	get versionSource(): string {
+		return `SELECT pending.${c.runId}, ${latestEventColumns(JOURNAL_TABLES.events, "pending")} FROM (${PENDING_LEGACY_RUNS}) AS pending`;
+	}
+
+	pending(executor: SqliteExecutor, filter?: { cwd?: string }, stop?: AbortSignal): AsyncIterable<LegacyRunRow[]> {
+		return readSqlCatalogPages<LegacyRunRow>(executor, {
+			sql: `${PENDING_LEGACY_RUNS}${filter?.cwd === undefined ? "" : ` AND ${c.cwd} = ?`}`,
+			params: filter?.cwd === undefined ? [] : [filter.cwd],
+			key: c.runId,
+			size: `length(${c.headerJson}) + length(${c.runId}) + length(${c.status})`,
+			signal: stop,
+		});
 	}
 
 	async find(executor: SqliteExecutor, runId: string): Promise<LegacyRunRow | undefined> {
@@ -119,20 +133,13 @@ export class LegacyJournalRuns {
 	}
 
 	/** Latest event of each pending legacy run; the legacy tables are never modified. */
-	async versions(executor: SqliteExecutor): Promise<RunVersionRow[]> {
-		return executor.all<RunVersionRow>(
-			`SELECT pending.${c.runId}, ${latestEventColumns(JOURNAL_TABLES.events, "pending")} FROM (${PENDING_LEGACY_RUNS}) AS pending`,
-		);
-	}
-
-	/** Events of an unconverted legacy run, read in place. */
-	async events(executor: SqliteExecutor, runId: string, fromSeq: number, limit: number): Promise<LegacyEventRow[]> {
-		return executor.all<LegacyEventRow>(
-			`SELECT ${LEGACY_COLUMNS.events.join(", ")} FROM ${JOURNAL_TABLES.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
-			runId,
-			fromSeq,
-			limit,
-		);
+	async versions(executor: SqliteExecutor, stop?: AbortSignal): Promise<RunVersionRow[]> {
+		return readSqlCatalog<RunVersionRow>(executor, {
+			sql: this.versionSource,
+			key: c.runId,
+			size: `length(${c.runId})`,
+			signal: stop,
+		});
 	}
 
 	async eventByKey(executor: SqliteExecutor, runId: string, key: string): Promise<LegacyEventRow | undefined> {

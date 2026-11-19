@@ -40,6 +40,7 @@ import {
 	withJournalPayloads,
 	writeJournalPayloadChunks,
 } from "./run-journal.js";
+import { readSqlCatalog } from "./sql-catalog.js";
 import {
 	readTransferDirectory,
 	StorageImportIncompleteError,
@@ -252,6 +253,7 @@ async function openExportSource(
 	t: Tables,
 	shardId: number | undefined,
 	open?: () => Promise<SqliteDatabase>,
+	selectedRunId?: string,
 ): Promise<ExportSource | UnreadableSource> {
 	if (open === undefined && !existsSync(path))
 		return { path, reason: "the journal file no longer exists", oldFormat: false };
@@ -272,7 +274,17 @@ async function openExportSource(
 			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}
-		const runs = await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} ORDER BY run_id`);
+		// An explicit single run needs an indexed lookup, not a scan of unrelated headers.
+		const runs =
+			selectedRunId !== undefined
+				? await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} WHERE run_id = ?`, selectedRunId)
+				: await readSqlCatalog<JournalRunTableRow>(database, {
+						sql: `SELECT * FROM ${t.runs}`,
+						inSnapshot: open === undefined,
+						pageRows: 4096,
+						key: "run_id",
+						size: "length(run_id) + length(name) + length(cwd) + length(status) + length(header_json)",
+					});
 		return {
 			path,
 			database,
@@ -458,6 +470,7 @@ export async function exportWorkflowRuns(
 						t,
 						undefined,
 						storage.kind === "database" ? storage.open : undefined,
+						options.runs?.length === 1 ? options.runs[0] : undefined,
 					);
 					if ("database" in opened) single = opened;
 					// A named database that cannot be read fails the export: an empty export would pass for a backup.
@@ -511,23 +524,29 @@ export async function exportWorkflowRuns(
 					withJournalPayloads(
 						executor,
 						t.eventChunks,
-						await executor.all<JournalEventTableRow>(
-							`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
-							listedRun.run_id,
-						),
+						await readSqlCatalog<JournalEventTableRow>(executor, {
+							sql: `SELECT * FROM ${t.events} WHERE run_id = ?`,
+							inSnapshot: true,
+							params: [listedRun.run_id],
+							key: "seq",
+							size: "length(run_id) + length(type) + length(payload) + coalesce(length(key), 0)",
+						}),
 					);
 				// A source without a read snapshot reads each run's row and events together, in one transaction, so a
 				// run that finishes meanwhile is exported with the status its events reach.
 				const { run, events } = source.snapshot
 					? { run: listedRun, events: await readEvents(source.database) }
-					: await source.database.transaction(async (tx) => ({
-							run:
-								(await tx.get<JournalRunTableRow>(
-									`SELECT * FROM ${t.runs} WHERE run_id = ?`,
-									listedRun.run_id,
-								)) ?? listedRun,
-							events: await readEvents(tx),
-						}));
+					: await source.database.transaction(
+							async (tx) => ({
+								run:
+									(await tx.get<JournalRunTableRow>(
+										`SELECT * FROM ${t.runs} WHERE run_id = ?`,
+										listedRun.run_id,
+									)) ?? listedRun,
+								events: await readEvents(tx),
+							}),
+							{ readOnly: true, retryTransientFailures: true },
+						);
 				const outcome = await writeLinesAtomically(
 					transferFile(directory, run.run_id),
 					exportLines(run, events, source.path),
@@ -717,7 +736,12 @@ async function readStoredRun(
 	const events = await withJournalPayloads(
 		executor,
 		t.eventChunks,
-		await executor.all<JournalEventTableRow>(`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`, runId),
+		await readSqlCatalog<JournalEventTableRow>(executor, {
+			sql: `SELECT * FROM ${t.events} WHERE run_id = ?`,
+			params: [runId],
+			key: "seq",
+			size: "length(run_id) + length(type) + length(payload) + coalesce(length(key), 0)",
+		}),
 	);
 	const lease = (await hasTable(executor, t.leases, dialect))
 		? await executor.get<JournalLeaseTableRow & { age_ms: number }>(
