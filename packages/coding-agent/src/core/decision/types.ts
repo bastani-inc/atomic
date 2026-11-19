@@ -1,4 +1,4 @@
-import type { Api, Model, RetryPolicy } from "@bastani/atomic-ai";
+import type { Api, Model, RetryDeadline, RetryPolicy } from "@bastani/atomic-ai";
 import type { DecisionModelSelectionOptions } from "../structured-output/types.js";
 import type { JsonObject } from "../tools/structured-output.ts";
 
@@ -77,6 +77,8 @@ export interface DecisionRequest<Q extends DecisionQuestions = DecisionQuestions
 	 * integer. Default: the `httpIdleTimeoutMs` setting.
 	 */
 	readonly deadline?: number;
+	/** An enclosing caller's absolute local deadline for provider retries; the earlier deadline wins. */
+	readonly retryDeadline?: RetryDeadline;
 	/** Cancels the decision; it rejects with the signal's reason. */
 	readonly signal?: AbortSignal;
 	/**

@@ -166,6 +166,9 @@ export interface ProviderResponse {
 	headers: Record<string, string>;
 }
 
+/** Absolute local `performance.now()` timestamp. A timer owner can deliver its own timeout when a retry is refused. */
+export type RetryDeadline = number | { readonly at: number; readonly onExpired: () => void };
+
 /** Authentication, HTTP transport, and lifecycle callbacks shared by provider requests. */
 export interface ProviderRequestOptions<TModel = Model<Api>> {
 	signal?: AbortSignal;
@@ -225,6 +228,12 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 * Default: 60000 (60 seconds). Set to 0 to disable the cap.
 	 */
 	maxRetryDelayMs?: number;
+	/**
+	 * Do not start a provider backoff retry at or after this absolute `performance.now()` timestamp.
+	 * Local to the calling process. Does not limit the initial attempt or cancel a request in flight;
+	 * pass `signal` as well to interrupt active work and backoff waits.
+	 */
+	retryDeadline?: RetryDeadline;
 }
 
 export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {

@@ -1,4 +1,12 @@
-import type { Api, ClassifierAnswer, ClassifierApi, ClassifierModel, Model, RetryPolicy } from "@bastani/atomic-ai";
+import type {
+	Api,
+	ClassifierAnswer,
+	ClassifierApi,
+	ClassifierModel,
+	Model,
+	RetryDeadline,
+	RetryPolicy,
+} from "@bastani/atomic-ai";
 import type { Static, TSchema } from "typebox";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SettingsManager } from "../settings-manager.ts";
@@ -67,6 +75,8 @@ export interface StructuredOutputRequest<T extends TSchema> {
 	readonly signal?: AbortSignal;
 	readonly maxTokens?: number;
 	readonly retry?: RetryPolicy;
+	/** An enclosing caller's absolute local deadline for provider retries; the earlier deadline wins. */
+	readonly retryDeadline?: RetryDeadline;
 	/**
 	 * Wall-clock limit in milliseconds for the whole decision: every repair attempt, transport retry and model
 	 * candidate together. A positive integer. When omitted, the `structured_output` tool uses its session's

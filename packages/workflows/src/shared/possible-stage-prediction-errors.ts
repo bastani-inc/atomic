@@ -1,4 +1,4 @@
-import type { WorkflowSerializableObject } from "./authoring-contract-stage.js";
+import type { WorkflowDecisionRequest, WorkflowSerializableObject } from "./authoring-contract-stage.js";
 
 /**
  * Probability policy for decision-model stage-name predictions. These are tunable policy values, not calibrated
@@ -31,6 +31,8 @@ export interface StageDecisionRequest {
 	readonly instructions: string;
 	/** Wall-clock limit in milliseconds for the whole decision. */
 	readonly deadline: number;
+	/** The prediction's deadline, on the host's local performance.now() clock. */
+	readonly retryDeadline?: WorkflowDecisionRequest["retryDeadline"];
 	/**
 	 * Aborts when the session that launched the run shuts down or the prediction deadline passes. An answer that arrives
 	 * after the run ended is not recorded on it.

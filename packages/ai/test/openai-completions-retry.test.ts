@@ -109,13 +109,8 @@ describe("openai-completions provider retries", () => {
 		await vi.advanceTimersByTimeAsync(99);
 		expect(mockState.requestOptions).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(1);
-		// The backoff elapsed. Dispatch follows on the next turn so a due cancellation can win.
-		expect(mockState.requestOptions).toHaveLength(1);
-		await vi.advanceTimersByTimeAsync(1);
 		expect(mockState.requestOptions).toHaveLength(2);
 		await vi.advanceTimersByTimeAsync(99);
-		expect(mockState.requestOptions).toHaveLength(2);
-		await vi.advanceTimersByTimeAsync(1);
 		expect(mockState.requestOptions).toHaveLength(2);
 		await vi.advanceTimersByTimeAsync(1);
 		await result;

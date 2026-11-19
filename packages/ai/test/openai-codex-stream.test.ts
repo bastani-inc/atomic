@@ -3486,6 +3486,7 @@ describe("openai-codex SSE retry backoff", () => {
 				transport: "sse",
 				maxRetries: 1,
 				signal: controller.signal,
+				retryDeadline: performance.now() + 1000,
 			}).result();
 			await vi.advanceTimersByTimeAsync(0);
 			expect(fetch).toHaveBeenCalledTimes(1);

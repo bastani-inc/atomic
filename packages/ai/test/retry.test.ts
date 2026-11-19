@@ -410,7 +410,8 @@ describe("retryAssistantCall", () => {
 		const onRetryAttemptStart = vi.fn();
 		const onRetryFinished = vi.fn();
 		const scheduled = Promise.withResolvers<void>();
-		const result = retryAssistantCall(produce, { ...enabled, baseDelayMs: 50 }, AbortSignal.timeout(60), {
+		const result = retryAssistantCall(produce, { ...enabled, baseDelayMs: 50 }, new AbortController().signal, {
+			retryDeadline: performance.now() + 60,
 			onRetryScheduled: () => scheduled.resolve(),
 			onRetryAttemptStart,
 			onRetryFinished,
@@ -424,6 +425,33 @@ describe("retryAssistantCall", () => {
 		expect(message.stopReason).toBe("aborted");
 		expect(onRetryAttemptStart).not.toHaveBeenCalled();
 		expect(onRetryFinished).toHaveBeenCalledWith(false, 1, "terminated");
+	});
+
+	it("rechecks the deadline after an asynchronous attempt-start callback (#5627)", async () => {
+		const produce = vi
+			.fn()
+			.mockResolvedValueOnce(fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }))
+			.mockResolvedValue(fauxAssistantMessage("ok"));
+		const entered = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const clock = vi.spyOn(performance, "now").mockReturnValue(10);
+		try {
+			const result = retryAssistantCall(produce, enabled, undefined, {
+				retryDeadline: 60,
+				onRetryAttemptStart: () => {
+					entered.resolve();
+					return resume.promise;
+				},
+			});
+			await entered.promise;
+			clock.mockReturnValue(60);
+			resume.resolve();
+			expect((await result).stopReason).toBe("aborted");
+			expect(produce).toHaveBeenCalledTimes(1);
+		} finally {
+			resume.resolve();
+			clock.mockRestore();
+		}
 	});
 
 	it("aborts backoff sleep via signal, returns an aborted message, and emits onRetryFinished(false)", async () => {

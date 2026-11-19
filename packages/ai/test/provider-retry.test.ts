@@ -103,7 +103,11 @@ describe("provider request retries", () => {
 			.fn<() => Promise<string>>()
 			.mockRejectedValueOnce(providerError(429, { "retry-after-ms": "50" }))
 			.mockResolvedValue("ok");
-		const result = retryProviderRequest(request, { maxRetries: 1, signal: controller.signal });
+		const result = retryProviderRequest(request, {
+			maxRetries: 1,
+			signal: controller.signal,
+			retryDeadline: performance.now() + 50,
+		});
 		await vi.advanceTimersByTimeAsync(0);
 		setTimeout(() => controller.abort(), 50);
 		await Promise.all([
@@ -112,6 +116,32 @@ describe("provider request retries", () => {
 		]);
 		expect(request).toHaveBeenCalledTimes(1);
 	});
+
+	it.each([undefined, 50.5])(
+		"sends an eligible retry in its backoff timer's turn (deadline %s, #5627)",
+		async (deadline) => {
+			vi.useFakeTimers();
+			const order: string[] = [];
+			const controller = new AbortController();
+			const request = vi
+				.fn<() => Promise<string>>()
+				.mockRejectedValueOnce(providerError(429, { "retry-after-ms": "50" }))
+				.mockImplementation(async () => {
+					order.push("retry");
+					return "ok";
+				});
+			const result = retryProviderRequest(request, {
+				maxRetries: 1,
+				signal: controller.signal,
+				...(deadline !== undefined ? { retryDeadline: performance.now() + deadline } : {}),
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			setTimeout(() => order.push("unrelated work"), 50);
+			await vi.advanceTimersByTimeAsync(51);
+			expect(await result).toBe("ok");
+			expect(order).toEqual(["retry", "unrelated work"]);
+		},
+	);
 
 	it("aborts a provider-requested retry delay", async () => {
 		vi.useFakeTimers();

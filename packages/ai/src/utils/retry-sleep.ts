@@ -1,4 +1,22 @@
-/** Wait out the backoff without racing a caller's deadline in the same timer pass. */
+import type { RetryDeadline } from "../types.ts";
+
+/** Refuse an expired retry and let the timer owner deliver its usual timeout before returning. */
+export function retryDeadlineReached(deadline: RetryDeadline | undefined): boolean {
+	const at = typeof deadline === "number" ? deadline : deadline?.at;
+	if (typeof at !== "number" || !(performance.now() >= at)) return false;
+	if (typeof deadline === "object") deadline.onExpired();
+	return true;
+}
+
+/** Distinguish a refused retry from an unrelated provider error when no abort event has fired. */
+export class RetryDeadlineError extends Error {
+	constructor(message = "Request aborted") {
+		super(message);
+		this.name = "AbortError";
+	}
+}
+
+/** Resolve directly from the backoff timer; ordinary retries must not yield to other due timers. */
 export function sleepForRetry(ms: number, signal: AbortSignal | undefined, abortError: () => Error): Promise<void> {
 	if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
 	return new Promise((resolve, reject) => {
@@ -10,15 +28,9 @@ export function sleepForRetry(ms: number, signal: AbortSignal | undefined, abort
 			signal.removeEventListener("abort", onAbort);
 			resolve();
 		};
-		let turn: ReturnType<typeof setImmediate> | undefined;
-		let timer = setTimeout(() => {
-			// Other timers already due must be able to cancel the retry before it starts.
-			if (typeof setImmediate === "function") turn = setImmediate(finish);
-			else timer = setTimeout(finish, 0);
-		}, ms);
+		const timer = setTimeout(finish, ms);
 		const onAbort = () => {
 			clearTimeout(timer);
-			if (turn !== undefined) clearImmediate(turn);
 			reject(abortError());
 		};
 		signal.addEventListener("abort", onAbort, { once: true });

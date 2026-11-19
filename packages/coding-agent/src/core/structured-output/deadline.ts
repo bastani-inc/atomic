@@ -1,3 +1,4 @@
+import type { RetryDeadline } from "@bastani/atomic-ai";
 import { type DecisionPhase, DecisionTimeoutError } from "../decision/errors.js";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 
@@ -69,6 +70,11 @@ export class DecisionAttempt {
 /** How every generation of one decision ended and how long it took, across repairs, retries and candidates. */
 export class DecisionTrace {
 	private readonly attempts: DecisionAttempt[] = [];
+	readonly retryDeadline?: RetryDeadline;
+
+	constructor(retryDeadline?: RetryDeadline) {
+		this.retryDeadline = retryDeadline;
+	}
 
 	get size(): number {
 		return this.attempts.length;
@@ -112,26 +118,29 @@ export interface DecisionRun {
 export async function withinDecisionDeadline<T>(
 	callerSignal: AbortSignal | undefined,
 	timeoutMs: number,
+	parentRetryDeadline: RetryDeadline | undefined,
 	run: (decision: DecisionRun) => Promise<T>,
 ): Promise<T> {
 	const controller = new AbortController();
-	const trace = new DecisionTrace();
 	const forwardCallerAbort = () => controller.abort(callerSignal?.reason);
 	if (callerSignal?.aborted) forwardCallerAbort();
 	else callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
 	const startedAt = performance.now();
-	const timer = setTimeout(
-		() =>
-			controller.abort(
-				new DecisionTimeoutError({
-					timeoutMs,
-					elapsedMs: Math.round(performance.now() - startedAt),
-					phase: trace.phase,
-					attempts: trace.describe(),
-				}),
-			),
-		timeoutMs,
+	const expire = () =>
+		controller.abort(
+			new DecisionTimeoutError({
+				timeoutMs,
+				elapsedMs: Math.round(performance.now() - startedAt),
+				phase: trace.phase,
+				attempts: trace.describe(),
+			}),
+		);
+	const at = startedAt + timeoutMs;
+	const parentAt = typeof parentRetryDeadline === "number" ? parentRetryDeadline : parentRetryDeadline?.at;
+	const trace = new DecisionTrace(
+		parentAt !== undefined && parentAt <= at ? parentRetryDeadline : { at, onExpired: expire },
 	);
+	const timer = setTimeout(expire, timeoutMs);
 	try {
 		return await run({ signal: controller.signal, trace });
 	} finally {

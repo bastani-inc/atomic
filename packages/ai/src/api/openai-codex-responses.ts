@@ -32,7 +32,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
-import { sleepForRetry } from "../utils/retry-sleep.ts";
+import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -432,8 +432,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						throw new Error("Request was aborted");
 					}
 
+					if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
+						throw new RetryDeadlineError("Request was aborted");
 					try {
 						const fetch = await admitFetch(options?.fetch, streamDeadline.signal);
+						if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
+							throw new RetryDeadlineError("Request was aborted");
 						const headerTimeoutSignal =
 							httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
 						const combinedSignal = combineAbortSignals([streamDeadline.signal, headerTimeoutSignal]);
@@ -486,6 +490,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							{ status: response.status, retryAfterMs: getRetryAfterMs(response.headers, errorText) },
 						);
 					} catch (error) {
+						if (error instanceof RetryDeadlineError) throw error;
 						if (error instanceof Error) {
 							if (error.name === "AbortError" || error.message === "Request was aborted") {
 								throw new Error("Request was aborted");
@@ -573,7 +578,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;

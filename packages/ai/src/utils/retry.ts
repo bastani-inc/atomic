@@ -1,7 +1,7 @@
 import { getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
-import type { AssistantMessage } from "../types.ts";
+import type { AssistantMessage, RetryDeadline } from "../types.ts";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "./provider-retry.ts";
-import { sleepForRetry } from "./retry-sleep.ts";
+import { retryDeadlineReached } from "./retry-sleep.ts";
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
@@ -209,10 +209,33 @@ export interface RetryCallbacks {
 	onRetryFinished?: (success: boolean, attempt: number, finalError?: string) => void | Promise<void>;
 }
 
+export interface RetryCallOptions extends RetryCallbacks {
+	/** Do not start a retry at or after this performance.now() timestamp. Does not cancel a running call. */
+	retryDeadline?: RetryDeadline;
+}
+
 class RetrySleepAbortError extends Error {
 	constructor() {
 		super("Aborted");
 	}
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(new RetrySleepAbortError());
+			return;
+		}
+		const timeout = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timeout);
+				reject(new RetrySleepAbortError());
+			},
+			{ once: true },
+		);
+	});
 }
 
 /**
@@ -238,7 +261,7 @@ export async function retryAssistantCall(
 	produce: () => Promise<AssistantMessage>,
 	policy: RetryPolicy | undefined,
 	signal: AbortSignal | undefined,
-	callbacks?: RetryCallbacks,
+	callbacks?: RetryCallOptions,
 ): Promise<AssistantMessage> {
 	const maxAttempts = policy?.enabled ? policy.maxRetries : 0;
 
@@ -273,7 +296,7 @@ export async function retryAssistantCall(
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as
 		// provider stream aborts, so callers do not need to care when cancellation happened.
 		try {
-			await sleepForRetry(delayMs, signal, () => new RetrySleepAbortError());
+			await sleep(delayMs, signal);
 		} catch (error) {
 			await callbacks?.onRetryFinished?.(false, attempt, lastRetry.errorMessage);
 			if (error instanceof RetrySleepAbortError) {
@@ -281,7 +304,13 @@ export async function retryAssistantCall(
 			}
 			throw error;
 		}
-		await callbacks?.onRetryAttemptStart?.();
+		if (!retryDeadlineReached(callbacks?.retryDeadline)) {
+			await callbacks?.onRetryAttemptStart?.();
+			// The callback can itself wait past the deadline.
+			if (!retryDeadlineReached(callbacks?.retryDeadline)) continue;
+		}
+		await callbacks?.onRetryFinished?.(false, attempt, lastRetry.errorMessage);
+		return { ...response, stopReason: "aborted", errorMessage: undefined };
 	}
 }
 
