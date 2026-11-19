@@ -163,9 +163,9 @@ describe("set_debug RPC (#4360)", () => {
 			command: "set_debug",
 			success: true,
 		});
-		assert.equal(isDebugEnabled("workflow", {}), true);
+		assert.equal(isDebugEnabled("engine", {}), true);
 		await handler({ type: "set_debug", enabled: false });
-		assert.equal(isDebugEnabled("workflow", {}), false);
+		assert.equal(isDebugEnabled("engine", {}), false);
 	});
 
 	it("the engine refuses anything but true or false, changing nothing", async () => {

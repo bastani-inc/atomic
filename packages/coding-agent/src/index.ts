@@ -355,7 +355,6 @@ export {
 	PACKAGE_NAME,
 	setEnvValue,
 	VERSION,
-	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
 } from "./config.js";
 export {
 	AgentRehydrateError,
@@ -852,10 +851,6 @@ export {
 	type WorktreeRestoreHostWarning,
 	type WorktreeSnapshotEntry,
 } from "./core/session-manager.ts";
-export {
-	WORKFLOW_SESSION_METADATA_ENV,
-	workflowSessionMetadataFromEnv,
-} from "./core/session-manager-classification.ts";
 export {
 	type PublishedChatActivity,
 	retryStatusUpdate,
