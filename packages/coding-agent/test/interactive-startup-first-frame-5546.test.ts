@@ -141,7 +141,8 @@ test("the interface's first frame replaces the startup status line in one write,
 	showStartupStatus(stream, { streams: [], console: {} });
 	const ui = new TuiAltScreen(new StreamTerminal(stream));
 	try {
-		assert.deepEqual((await screenAfter(writes))[0], "Starting Atomic…");
+		// The line is a row of its own, below the row the cursor was on.
+		assert.ok((await screenAfter(writes)).includes("Starting Atomic…"));
 
 		const init = createMode(ui).init();
 		// Every write the terminal could show on its own: on a busy machine, or a runtime that writes each call at once,

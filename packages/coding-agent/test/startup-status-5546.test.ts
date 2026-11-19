@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { afterEach, test } from "vitest";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import {
 	clearStartupStatus,
 	leaveStartupStatusLine,
+	replaceStartupStatus,
 	restoreStartupStatus,
 	showStartupStatus,
 } from "../src/cli/startup-status.ts";
@@ -11,10 +13,13 @@ import { runCommand } from "../src/core/package-manager-command.ts";
 import { withEarlyInputHeldForStartupDialog } from "../src/main-early-input.ts";
 import { refreshColorEnvironment } from "../src/modes/interactive/theme/color-utils.ts";
 
-/** The line as a finished row of its own: the cursor waits at the start of the row below it. */
-const line = (text: string) => `${text}\r\n`;
-/** From the row below the line: up to the line's row, and erase it. */
-const ERASE = "\r\x1b[1A\x1b[2K";
+/**
+ * The line as a finished row of its own below the cursor's row: room for two rows below it (index twice, reverse index
+ * twice), the cursor saved, down to the start of the next row; the cursor then waits at the start of the row below it.
+ */
+const line = (text: string) => `\x1bD\x1bD\x1bM\x1bM\x1b7\x1b[1B\r${text}\r\n`;
+/** From the row below the line: up to the line's row, erase it, and the cursor back where it was. */
+const ERASE = "\r\x1b[1A\x1b[2K\x1b8";
 const STATUS = line("Starting Atomic…");
 
 /** A terminal that records what each writer sends it, in order. */
@@ -39,6 +44,127 @@ function terminal(columns: number) {
 afterEach(() => {
 	clearStartupStatus();
 	refreshColorEnvironment();
+});
+
+/** A terminal emulator behind a terminal stream whose size the test changes, as a resize does. */
+function emulated(columns: number, rows: number) {
+	const screen = new VirtualTerminal(columns, rows);
+	const size = { columns, rows };
+	const writes: string[] = [];
+	/** What reaches the terminal, as one write. */
+	const direct = (data: string) => {
+		writes.push(data);
+		screen.write(data);
+		return true;
+	};
+	const output = Object.assign(new EventEmitter(), {
+		isTTY: true,
+		columns,
+		rows,
+		write: (data: string | Uint8Array) => direct(typeof data === "string" ? data : Buffer.from(data).toString()),
+		// The stream asks the terminal for its size, as Node's and Bun's terminal streams do.
+		_refreshSize() {
+			output.columns = size.columns;
+			output.rows = size.rows;
+		},
+	});
+	return {
+		screen,
+		writes,
+		direct,
+		output,
+		neighbors: { streams: [], console: {} },
+		/** The terminal changes size; the process hears of it later. */
+		resize(columns: number) {
+			size.columns = columns;
+			screen.resize(columns, rows);
+		},
+	};
+}
+
+test("what a launcher printed without ending its row stays, and the next output follows it as if the line had never been there (#5546)", async () => {
+	refreshColorEnvironment({ NO_COLOR: "1" });
+	// Rows above the launcher's: room below it, the launcher's row at the bottom (the terminal scrolls to make room), and
+	// a terminal too short for the line.
+	for (const [rows, above] of [
+		[8, 0],
+		[8, 6],
+		[2, 0],
+	] as const) {
+		for (const end of ["cancel", "first screen"] as const) {
+			const { screen, output, neighbors } = emulated(30, rows);
+			output.write(`${"earlier\r\n".repeat(above)}$ atomic\r\n界面: é`);
+			showStartupStatus(output, neighbors);
+			const shown = await screen.flushAndGetViewport();
+
+			if (end === "cancel") clearStartupStatus();
+			else
+				replaceStartupStatus(
+					() => {},
+					() => output.write(""),
+				);
+			output.write("!");
+			const after = await screen.flushAndGetViewport();
+			const context = `${rows} rows, ${above} above, after the ${end}:\n${after.join("\n")}`;
+			const launcherRow = after.indexOf("界面: é!");
+			assert.ok(launcherRow >= 0, context);
+			if (launcherRow > 0) assert.equal(after[launcherRow - 1], "$ atomic", context);
+			assert.ok(!screen.getScrollBuffer().some((row) => row.includes("Starting")), context);
+			// While it showed, the line was a row of its own, below the launcher's.
+			assert.ok(shown.includes("界面: é"), shown.join("\n"));
+			if (rows >= 3) assert.ok(shown.includes("Starting Atomic…"), shown.join("\n"));
+		}
+	}
+});
+
+test("a terminal that changes size while the first screen is drawn keeps the whole line, not a piece of it (#5546)", async () => {
+	refreshColorEnvironment({ NO_COLOR: "1" });
+	const { screen, writes, output, neighbors, resize } = emulated(30, 8);
+	output.write("$ atomic\r\n");
+	showStartupStatus(output, neighbors);
+	writes.length = 0;
+
+	replaceStartupStatus(
+		() => {},
+		() => {
+			// Drawing the first frame takes a while; the terminal narrows meanwhile and rewraps the line.
+			resize(4);
+			output.write("frame");
+		},
+	);
+	assert.equal(writes.length, 1);
+	// Erasing a row of a rewrapped line would leave the rest of it behind: the write only draws the frame.
+	assert.ok(!writes[0]!.includes("\x1b[2K"), JSON.stringify(writes[0]));
+	resize(30);
+	const rows = (await screen.flushAndGetViewport()).map((row) => row.trimEnd());
+	assert.ok(
+		rows.filter((row) => /Start|Atomic|…/.test(row)).every((row) => row.startsWith("Starting Atomic…")),
+		rows.join("\n"),
+	);
+});
+
+test("something else that writes while the first screen is drawn keeps its output, and the line stays whole (#5546)", async () => {
+	refreshColorEnvironment({ NO_COLOR: "1" });
+	const { screen, writes, direct, output } = emulated(30, 8);
+	// Another stream on the same terminal.
+	const stderr = { isTTY: true, write: direct };
+	output.write("$ atomic\r\n");
+	showStartupStatus(output, { streams: [stderr], console: {} });
+	writes.length = 0;
+
+	// What the interface writes while it takes the terminal goes out in one write; a warning on stderr reaches the
+	// terminal at once, below the line, before it.
+	replaceStartupStatus(
+		() => {},
+		() => {
+			stderr.write("Warning: slow\r\n");
+			output.write("frame");
+		},
+	);
+	assert.deepEqual(writes, ["Warning: slow\r\n", "frame"]);
+	const rows = (await screen.flushAndGetViewport()).map((row) => row.trimEnd());
+	assert.ok(rows.includes("Warning: slow"), rows.join("\n"));
+	assert.ok(rows.includes("Starting Atomic…"), rows.join("\n"));
 });
 
 test("the startup status line is a finished line of its own, fits a narrow terminal and follows NO_COLOR (#5546)", () => {
@@ -126,7 +252,7 @@ test("a startup dialog's first frame erases the line in the same write, and the 
 			output.write("\x1b[?2026l");
 		});
 		assert.equal(restored, true);
-		assert.deepEqual(writes.slice(5), [`bytes:\x1b[?2026h\r\x1b[2K\x1b[?2026l\r${STATUS}`]);
+		assert.deepEqual(writes.slice(5), [`bytes:\x1b[?2026h\r\x1b[2K\x1b[?2026l${STATUS}`]);
 		// What the dialog writes as it lets go of the terminal leaves the line alone.
 		output.write("\x1b[?25h\x1b[?2004l");
 	});
@@ -148,14 +274,14 @@ test("the line comes back when a dialog that took its place closes, below what a
 	await withEarlyInputHeldForStartupDialog(async () => {
 		output.write("\x1b[?2026hPick one");
 	});
-	// The dialog left the cursor at the start of the rows it used.
-	assert.deepEqual(writes.slice(1), [`\x1b[?2026h${ERASE}Pick one`, `\r${STATUS}`]);
+	// The line comes back below the row the dialog left the cursor on.
+	assert.deepEqual(writes.slice(1), [`\x1b[?2026h${ERASE}Pick one`, STATUS]);
 
 	await withEarlyInputHeldForStartupDialog(async () => {
 		output.write("\x1b[?2026hPick another");
 		stderr.write("Warning: slow");
 	});
-	assert.deepEqual(writes.slice(3), [`\x1b[?2026h${ERASE}Pick another`, "stderr:Warning: slow", `\r\n${STATUS}`]);
+	assert.deepEqual(writes.slice(3), [`\x1b[?2026h${ERASE}Pick another`, "stderr:Warning: slow", STATUS]);
 });
 
 test("a dialog draws below a line that is no longer Atomic's alone, and brings no second line (#5546)", async () => {
@@ -213,7 +339,7 @@ test("a package command, which writes to the terminal itself, leaves the line as
 	assert.deepEqual(writes, [STATUS]);
 });
 
-test("extension code running in the interactive process leaves the line as it is (#5546)", async () => {
+test("once something may write to the terminal past Atomic's streams, the line is left as it is (#5546)", async () => {
 	refreshColorEnvironment({ NO_COLOR: "1" });
 	const { writes, output, neighbors } = terminal(80);
 	showStartupStatus(output, neighbors);

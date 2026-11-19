@@ -32,7 +32,7 @@ import {
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
-import { clearStartupStatus, leaveStartupStatusLine, showStartupStatus } from "./cli/startup-status.ts";
+import { clearStartupStatus, showStartupStatus } from "./cli/startup-status.ts";
 import {
 	ENV_DEBUG,
 	ENV_OFFLINE,
@@ -779,16 +779,9 @@ export async function main(argv: string[], options?: MainOptions) {
 	isolateInteractiveHost &&= storagePinned || selectedProjectTrusted;
 	// An interactive host draws nothing until its first screen, which in a folder without a trust decision the isolated
 	// host holds until its engine asks the trust question; until then the terminal says that atomic is starting (#5546).
-	if (
-		appMode === "interactive" &&
-		engineEnv.child !== "1" &&
-		!isPlainRuntimeMetadataCommand(parsed) &&
-		options?.internalInteractiveHarness?.terminal === undefined
-	) {
-		showStartupStatus();
-		// Extensions that run in this process can write to the terminal where Atomic cannot see it; the line then stays.
-		if (!isolateInteractiveHost) leaveStartupStatusLine();
-	}
+	// A host that runs extensions in its own process shows no line: their code, and the processes they start, can move
+	// the cursor anywhere on the terminal and write over part of it.
+	if (isolateInteractiveHost && options?.internalInteractiveHarness?.terminal === undefined) showStartupStatus();
 	startupEarlyInputCapture ??= beginStartupInputCapture(sessionCwd, true, deprecationWarnings.length);
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;

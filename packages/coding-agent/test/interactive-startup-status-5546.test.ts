@@ -23,6 +23,35 @@ const ENTER_ALT_SCREEN = "\x1b[?1049h";
 /** The prompt of the interface's composer. */
 const INTERFACE_PROMPT = "❯";
 const sourceDir = resolve(cliPath, "..");
+/** The built CLI, which runs under Node; CI builds the package before its tests. */
+const builtCliPath = resolve(sourceDir, "..", "dist", "cli.js");
+const builtCliAvailable = existsSync(builtCliPath);
+/**
+ * Loaded before atomic: holds the process, without letting it run anything else, from when it starts handing the
+ * terminal from the status line to the interface's first frame until the test creates `painted`.
+ */
+const HOLD_FIRST_PAINT = `const { existsSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const gate = process.env.STATUS_PROBE_GATE;
+if (gate && process.stdout.isTTY) {
+	const stream = process.stdout;
+	let current = stream.write;
+	let held = false;
+	Object.defineProperty(stream, "write", {
+		configurable: true,
+		get: () => current,
+		set(next) {
+			current = next;
+			if (held || !/replaceStartupStatus/.test(new Error().stack ?? "")) return;
+			held = true;
+			writeFileSync(join(gate, "painting"), "");
+			const deadline = Date.now() + 60000;
+			while (!existsSync(join(gate, "painted")) && Date.now() < deadline)
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+		},
+	});
+}
+`;
 
 const tmuxAvailable =
 	process.platform !== "win32" && spawnSync("tmux", ["-V"], { timeout: TMUX_COMMAND_TIMEOUT_MS }).status === 0;
@@ -73,6 +102,12 @@ interface ProbeOptions {
 	readonly script?: string;
 	/** Startup is not held. */
 	readonly released?: boolean;
+	/** The runtime atomic runs on: Bun runs the source, Node the built package. */
+	readonly runtime?: "Bun" | "Node";
+	/** Printed without ending its row right before atomic starts, as a launcher script reporting something may. */
+	readonly launcher?: string;
+	/** Hold the host while it hands the terminal to the interface's first frame, until `releasePaint`. */
+	readonly holdFirstPaint?: boolean;
 }
 
 /**
@@ -125,6 +160,8 @@ function startProbe(options: ProbeOptions) {
 	const socket = join(root, "tmux.sock");
 	const config = join(root, "tmux.conf");
 	writeFileSync(config, "set -g remain-on-exit on\n");
+	const holdFirstPaint = join(root, "hold-first-paint.cjs");
+	writeFileSync(holdFirstPaint, HOLD_FIRST_PAINT);
 	const env = {
 		HOME: home,
 		USERPROFILE: home,
@@ -134,13 +171,17 @@ function startProbe(options: ProbeOptions) {
 		ATOMIC_CODING_AGENT_DIR: agentDir,
 		ATOMIC_SKIP_VERSION_CHECK: "1",
 		ATOMIC_TELEMETRY: "0",
+		...(options.holdFirstPaint ? { STATUS_PROBE_GATE: gate } : {}),
 	};
+	const runtime = options.runtime ?? "Bun";
+	const preload = options.holdFirstPaint ? [runtime === "Bun" ? "--preload" : "--require", quote(holdFirstPaint)] : [];
 	const program =
 		options.script !== undefined
 			? [quote(bunExecutable()), quote(script)]
 			: [
-					quote(bunExecutable()),
-					quote(cliPath),
+					...(runtime === "Bun"
+						? [quote(bunExecutable()), ...preload, quote(cliPath)]
+						: ["node", ...preload, quote(builtCliPath)]),
 					"--offline --no-mcp",
 					...(options.host === "isolated" ? [`--session-dir ${quote(join(root, "sessions"))}`] : []),
 					`-e ${quote(extension)}`,
@@ -174,7 +215,7 @@ function startProbe(options: ProbeOptions) {
 		project,
 		"sh",
 		"-c",
-		`${options.commandLine ? "echo '$ atomic'; " : ""}${command}; code=$?; echo; echo ${EXIT_MARK}$code`,
+		`${options.commandLine ? "echo '$ atomic'; " : ""}${options.launcher === undefined ? "" : `printf '%s' ${quote(options.launcher)}; `}${command}; code=$?; echo; echo ${EXIT_MARK}$code`,
 	);
 	const waitForScreen = (what: string, timeoutMs: number, matches: (pane: string) => boolean) =>
 		waitFor(
@@ -198,11 +239,24 @@ function startProbe(options: ProbeOptions) {
 				screen,
 			),
 		release: () => writeFileSync(join(gate, "release"), ""),
+		waitForPaintHeld: () =>
+			waitFor(
+				"the interface's first frame to be held",
+				STARTUP_TIMEOUT_MS,
+				() => (existsSync(join(gate, "painting")) ? true : undefined),
+				screen,
+			),
+		releasePaint: () => writeFileSync(join(gate, "painted"), ""),
 		/** Answer the trust question for this session only (its first choice), wait for the prompt and quit. */
 		async quit() {
 			await waitForScreen("the trust question", STARTUP_TIMEOUT_MS, (pane) => pane.includes(TRUST_QUESTION));
 			tmux("send-keys", "-t", "status", "Enter");
 			await waitForScreen("the prompt", STARTUP_TIMEOUT_MS, (pane) => !pane.includes(TRUST_QUESTION));
+			return this.quitInterface();
+		},
+		/** Wait for the interface's prompt and quit. */
+		async quitInterface() {
+			await waitForScreen("the prompt", STARTUP_TIMEOUT_MS, (pane) => pane.includes(INTERFACE_PROMPT));
 			tmux("send-keys", "-t", "status", "-l", "/quit");
 			// Enter may first only pick the command from the completion list; it is pressed again until atomic exits.
 			let pressed = 0;
@@ -273,6 +327,122 @@ async function expectNeverBlank(writes: readonly string[]): Promise<void> {
 	}
 }
 
+describe.skipIf(!tmuxAvailable).each(["Bun", "Node"] as const)(
+	"the startup status line leaves the rest of the terminal as it was, on %s (#5546)",
+	(runtime) => {
+		const unavailable = runtime === "Node" && !builtCliAvailable;
+
+		it.skipIf(unavailable).each(["Ctrl+C", "/quit"] as const)(
+			"keeps what a launcher printed without ending its row, through %s",
+			async (end) => {
+				const probe = startProbe({
+					host: "isolated",
+					runtime,
+					launcher: WIDE_TEXT,
+					trusted: end === "/quit",
+					released: end === "/quit",
+				});
+				try {
+					let waiting: string | undefined;
+					let exited: string;
+					if (end === "Ctrl+C") {
+						await probe.waitForLoading();
+						waiting = await probe.waitForScreen("the startup status", STATUS_TIMEOUT_MS, (pane) =>
+							pane.includes("Atomic…"),
+						);
+						probe.tmux("send-keys", "-t", "status", "C-c");
+						exited = await probe.waitForScreen("atomic to exit", STARTUP_TIMEOUT_MS, (pane) =>
+							pane.includes(EXIT_MARK),
+						);
+						expect(exited).toContain(`${EXIT_MARK}130`);
+					} else {
+						exited = await probe.quitInterface();
+						expect(exited).toContain(`${EXIT_MARK}0`);
+					}
+					// Erasing the line took nothing else: the launcher's text is still there, on its row, as without the line.
+					expect(rowsOf(exited)).toContain(WIDE_TEXT);
+					expect(statusRows(exited)).toEqual([]);
+					if (waiting !== undefined) {
+						// While it showed, the line was a row of its own, and the launcher's row stayed as it printed it.
+						expect(rowsOf(waiting)).toContain(WIDE_TEXT);
+						expect(statusRows(waiting)).toEqual([STATUS_TEXT]);
+					}
+				} finally {
+					probe.stop();
+				}
+			},
+			STARTUP_TIMEOUT_MS * 2 + STATUS_TIMEOUT_MS,
+		);
+
+		it.skipIf(unavailable)(
+			"erases no part of the line when the terminal narrows while the interface's first frame is drawn",
+			async () => {
+				const probe = startProbe({
+					host: "isolated",
+					runtime,
+					trusted: true,
+					released: true,
+					commandLine: true,
+					holdFirstPaint: true,
+				});
+				try {
+					await probe.waitForPaintHeld();
+					expect(statusRows(probe.screen())).toEqual([STATUS_TEXT]);
+					// The terminal rewraps the line over several rows while the first frame is being drawn.
+					probe.tmux("resize-window", "-t", "status", "-x", "4", "-y", "30");
+					await new Promise((resolve) => setTimeout(resolve, 300));
+					probe.releasePaint();
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					probe.tmux("resize-window", "-t", "status", "-x", "100", "-y", "30");
+					const exited = await probe.quitInterface();
+					expect(exited).toContain(`${EXIT_MARK}0`);
+					// The line was not erased after the terminal rewrapped it: whatever is left of it is all of it, in order.
+					// tmux does not rewrap the normal screen while the interface's screen is shown, so after widening it may
+					// show the line over two rows, as it does any long line there.
+					const left = statusRows(exited);
+					if (left.length > 0) expect(left.join("")).toBe(STATUS_TEXT);
+					expect(rowsOf(exited)).toContain("$ atomic");
+				} finally {
+					probe.stop();
+				}
+			},
+			STARTUP_TIMEOUT_MS * 2 + STATUS_TIMEOUT_MS,
+		);
+
+		it.skipIf(unavailable).each([
+			["a row", "ok\\r\\n"],
+			// Over the line, had it been drawn.
+			["a row after moving the cursor up one", "\\u001b[1Aok\\r\\n"],
+		])(
+			"draws no line where extensions run in the interactive process, so what their child prints (%s) stays as printed",
+			async (_kind, printed) => {
+				const probe = startProbe({
+					host: "in-process",
+					runtime,
+					extension: [`spawnSync("printf", ["${printed}"], { stdio: "inherit" });`],
+				});
+				try {
+					await probe.waitForLoading();
+					const screen = await probe.waitForScreen("the child's output", STATUS_TIMEOUT_MS, (pane) =>
+						pane.includes("ok"),
+					);
+					expect(rowsOf(screen)).toContain("ok");
+					expect(statusRows(screen)).toEqual([]);
+					probe.tmux("send-keys", "-t", "status", "C-c");
+					const exited = await probe.waitForScreen("atomic to exit", STARTUP_TIMEOUT_MS, (pane) =>
+						pane.includes(EXIT_MARK),
+					);
+					expect(rowsOf(exited)).toContain("ok");
+					expect(statusRows(exited)).toEqual([]);
+				} finally {
+					probe.stop();
+				}
+			},
+			STARTUP_TIMEOUT_MS + STATUS_TIMEOUT_MS * 2,
+		);
+	},
+);
+
 describe.skipIf(!tmuxAvailable)("the startup status line in a real terminal (#5546)", () => {
 	it(
 		"shows that it is starting while the isolated host waits for the engine's trust question, which replaces it",
@@ -304,72 +474,59 @@ describe.skipIf(!tmuxAvailable)("the startup status line in a real terminal (#55
 		STARTUP_TIMEOUT_MS * 4 + STATUS_TIMEOUT_MS,
 	);
 
+	/** A process that shows the status line, as the isolated host does, then runs `writes` while startup waits. */
+	const statusScript = (...writes: string[]) =>
+		[
+			'import { showStartupStatus, clearStartupStatus } from "$SRC/cli/startup-status.ts";',
+			"showStartupStatus();",
+			...writes,
+			"$HOLD",
+			// Startup ends.
+			"clearStartupStatus();",
+		].join("\n");
+
 	it(
-		"keeps an extension's console output and the whole status line on rows of their own through /quit",
+		"keeps console output and the whole status line on rows of their own until startup ends",
 		async () => {
 			const probe = startProbe({
-				host: "in-process",
-				extension: [
+				host: "isolated",
+				script: statusScript(
 					`console.log(${JSON.stringify(EXTENSION_OUTPUT)});`,
 					`console.log(${JSON.stringify(WIDE_TEXT)});`,
-				],
+				),
 			});
 			try {
 				await probe.waitForLoading();
-				const printed = await probe.waitForScreen("the extension's output", STATUS_TIMEOUT_MS, (pane) =>
+				const printed = await probe.waitForScreen("the console output", STATUS_TIMEOUT_MS, (pane) =>
 					pane.includes(WIDE_TEXT),
 				);
 				expect(rowsOf(printed)).toEqual(expect.arrayContaining([EXTENSION_OUTPUT, WIDE_TEXT]));
 				expect(statusRows(printed)).toEqual([STATUS_TEXT]);
 
 				probe.release();
-				const exited = await probe.quit();
-				expect(exited).toContain(`${EXIT_MARK}0`);
-				expect(rowsOf(exited)).toEqual(expect.arrayContaining([EXTENSION_OUTPUT, WIDE_TEXT]));
-				// The extension wrote after the line, so the line stays, whole: removing it could take their output too.
-				expect(statusRows(exited).every((row) => row === STATUS_TEXT)).toBe(true);
-			} finally {
-				probe.stop();
-			}
-		},
-		STARTUP_TIMEOUT_MS * 4 + STATUS_TIMEOUT_MS,
-	);
-
-	it(
-		"never merges with what a child process of an extension prints straight to the terminal",
-		async () => {
-			const probe = startProbe({
-				host: "in-process",
-				extension: ['spawnSync("printf", ["ok\\\\n"], { stdio: "inherit" });'],
-			});
-			try {
-				await probe.waitForLoading();
-				const printed = await probe.waitForScreen("the child's output", STATUS_TIMEOUT_MS, (pane) =>
-					rowsOf(pane).includes("ok"),
+				const exited = await probe.waitForScreen("the script to exit", STARTUP_TIMEOUT_MS, (pane) =>
+					pane.includes(EXIT_MARK),
 				);
-				expect(statusRows(printed)).toEqual([STATUS_TEXT]);
-
-				probe.release();
-				const exited = await probe.quit();
-				expect(rowsOf(exited)).toContain("ok");
-				expect(statusRows(exited).every((row) => row === STATUS_TEXT)).toBe(true);
+				expect(rowsOf(exited)).toEqual(expect.arrayContaining([EXTENSION_OUTPUT, WIDE_TEXT]));
+				// Others wrote after the line, so the line stays, whole: removing it could take their output too.
+				expect(statusRows(exited)).toEqual([STATUS_TEXT]);
 			} finally {
 				probe.stop();
 			}
 		},
-		STARTUP_TIMEOUT_MS * 4 + STATUS_TIMEOUT_MS,
+		STARTUP_TIMEOUT_MS * 2 + STATUS_TIMEOUT_MS,
 	);
 
 	it(
 		"keeps output that has not ended its row when a console call prints nothing",
 		async () => {
 			const probe = startProbe({
-				host: "in-process",
-				extension: [
+				host: "isolated",
+				script: statusScript(
 					`process.stdout.write(${JSON.stringify(WIDE_TEXT)});`,
 					"console.assert(true);",
 					'process.stdout.write(" suffix\\n");',
-				],
+				),
 			});
 			try {
 				await probe.waitForLoading();
@@ -393,9 +550,9 @@ describe.skipIf(!tmuxAvailable)("the startup status line in a real terminal (#55
 			WIDE_TEXT,
 		],
 	])(
-		"still shows that it is starting after an extension writes %s",
+		"still shows that it is starting after %s are written",
 		async (_kind, write, output) => {
-			const probe = startProbe({ host: "in-process", extension: [write] });
+			const probe = startProbe({ host: "isolated", script: statusScript(write) });
 			try {
 				await probe.waitForLoading();
 				// Long enough for the write to reach the terminal; the status line must be there for as long as startup waits.
