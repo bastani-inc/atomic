@@ -87,6 +87,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
+An HTML export reads saved entries in pages. If extensions render tool calls or results, memory use during the export can also grow with the arguments and results passed to those renderers. They share mutable objects, so the exported conversation reflects their final values without changing the saved session. For an independent backup that does not invoke chat renderers, use `atomic storage export`.
+
 ## Resuming and Deleting Sessions
 
 `/resume` opens an interactive picker titled **Resume**. It shows the current folder's sessions under **Sessions**, then, when at least one workflow run can be resumed, the saved workflow runs under **Workflow runs**, including runs left by an earlier session or interrupted by a restart. Each group shows its count and lists its newest entries first. ↑ and ↓ move across both groups, and typing filters both. The hint reads `space preview · enter resume · type to search · esc cancel`, followed by as many of the selected row's other keys as fit, such as `tab scope`, `ctrl+r rename` and `ctrl+d delete`. When some keys do not fit, the line ends with `? keys`, and `?` lists every key that works. While you type a search, `?` is part of the search, so the line shows `f1 keys` and F1 opens the list instead. Tab and Ctrl+N work whichever row is selected; they change only the Sessions list, so the workflow runs stay listed. `atomic -r` opens the same picker at startup with sessions only.
