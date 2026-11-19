@@ -425,15 +425,19 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 		await store.append("a", [message("a-late", "later activity", 3)], { expectSeq: 1 });
 		const router = sessionsRouter(store);
 		const first = textOf(await search(router, { paths: "history://sessions?limit=1", pattern: "needle" }));
+		const legacy = "history://sessions?offset=1&limit=1&after=1770076800000.1769904000000.a";
+		const token = /&order=([A-Za-z0-9_-]{22})\]/.exec(first)?.[1];
+		assert.ok(token);
+		const next = `${legacy}&order=${token}`;
 		assert.equal(
 			first,
-			"history://sessions?limit=1:0: [searched sessions 1-1 of 2; continue with history://sessions?offset=1&limit=1&after=1770076800000.1769904000000.a]\nhistory://sessions/a:1: needle a",
+			`history://sessions?limit=1:0: [searched sessions 1-1 of 2; continue with ${next}]\nhistory://sessions/a:1: needle a`,
 		);
-		const next = /continue with (\S+?)\]/.exec(first)?.[1];
-		assert.equal(
-			textOf(await search(router, { paths: next, pattern: "needle" })),
-			"history://sessions?offset=1&limit=1:0: [searched sessions 2-2 of 2]\nhistory://sessions/b:1: needle b",
-		);
+		for (const paths of [legacy, next])
+			assert.equal(
+				textOf(await search(router, { paths, pattern: "needle" })),
+				"history://sessions?offset=1&limit=1:0: [searched sessions 2-2 of 2]\nhistory://sessions/b:1: needle b",
+			);
 	});
 
 	it("lists and searches workflow runs that started together in the order their source gives (#5479)", async () => {
@@ -467,15 +471,19 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 			"# workflow runs 1-1 of 2 in this project, newest first; next page: history://workflows?offset=1&limit=1\nhistory://workflows/z-run | 2026-02-01T00:00:00.000Z | completed | flow-z-run",
 		);
 		const first = textOf(await search(router, { paths: "history://workflows?limit=1", pattern: "needle" }));
+		const legacy = "history://workflows?offset=1&limit=1&run=a-run";
+		const token = /&order=([A-Za-z0-9_-]{22})\]/.exec(first)?.[1];
+		assert.ok(token);
+		const next = `${legacy}&order=${token}`;
 		assert.equal(
 			first,
-			"history://workflows?limit=1:0: [searched workflows 1-1 of 2; continue with history://workflows?offset=1&limit=1&run=a-run]\nhistory://workflows/z-run:6: summary: needle z-run",
+			`history://workflows?limit=1:0: [searched workflows 1-1 of 2; continue with ${next}]\nhistory://workflows/z-run:6: summary: needle z-run`,
 		);
-		const next = /continue with (\S+?)\]/.exec(first)?.[1];
-		assert.equal(
-			textOf(await search(router, { paths: next, pattern: "needle" })),
-			"history://workflows?offset=1&limit=1:0: [searched workflows 2-2 of 2]\nhistory://workflows/a-run:6: summary: needle a-run",
-		);
+		for (const paths of [legacy, next])
+			assert.equal(
+				textOf(await search(router, { paths, pattern: "needle" })),
+				"history://workflows?offset=1&limit=1:0: [searched workflows 2-2 of 2]\nhistory://workflows/a-run:6: summary: needle a-run",
+			);
 	});
 
 	it("keeps a matching line's text exactly, trailing spaces included (#5479)", async () => {

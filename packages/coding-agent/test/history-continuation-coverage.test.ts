@@ -168,6 +168,64 @@ describe("history:// continuation chains cover each entry once", () => {
 		assert.match((await router.search!(next, request("needle")))!, /:1: needle/);
 	});
 
+	it("a session that moves ahead of a search between pages is still searched once (#5692)", async () => {
+		const store = new MemorySessionStore();
+		for (let n = 1; n <= 6; n++) await addSession(store, `s${n}`, BASE + n * 60_000, [`needle s${n}`]);
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+		const pages: string[] = [];
+		let url: string | undefined = "history://sessions?limit=2";
+		while (url && pages.length < 10) {
+			const page = (await router.search!(url, request("needle")))!;
+			pages.push(page);
+			if (pages.length === 1)
+				await store.append("s1", [message("s1-late", "more activity", BASE + 1_000_000)], { expectSeq: 1 });
+			url = continuation(page);
+		}
+		assert.equal(url, undefined);
+		assert.deepEqual(
+			pages.flatMap((page) => [...page.matchAll(/: needle (s\d)$/gm)].map((hit) => hit[1])),
+			["s6", "s5", "s4", "s3", "s2", "s1"],
+			pages.join("\n"),
+		);
+	});
+
+	it("a page keeps the legacy URL rather than dropping a match to fit an order token (#5692)", async () => {
+		const store = new MemorySessionStore();
+		for (let n = 1; n <= 2; n++) await addSession(store, `s${n}`, BASE + n * 60_000, [`needle s${n}`]);
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { bytes: 181 },
+		});
+		const page = (await router.search!("history://sessions?limit=1", request("needle")))!;
+		const legacy = "history://sessions?offset=1&limit=1&after=1793491320000.1793491320000.s2";
+		assert.equal(
+			page,
+			`history://sessions?limit=1:0: [searched sessions 1-1 of 2; continue with ${legacy}]\nhistory://sessions/s2:1: needle s2`,
+		);
+		assert.match((await router.search!(legacy, request("needle")))!, /:1: needle s1$/m);
+	});
+
+	it("an evicted order resumes exactly like the standalone session position (#5692)", async () => {
+		const store = new MemorySessionStore();
+		for (let n = 1; n <= 3; n++) await addSession(store, `s${n}`, BASE + n * 60_000, [`needle s${n}`]);
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+		const first = "history://sessions?limit=1";
+		const next = continuation((await router.search!(first, request("needle")))!)!;
+		assert.match(next, /&order=[A-Za-z0-9_-]{22}$/);
+		for (let abandoned = 0; abandoned < 32; abandoned++) await router.search!(first, request("needle"));
+		await store.append("s2", [message("s2-late", "more activity", BASE + 1_000_000)], { expectSeq: 1 });
+		const afterEviction = await router.search!(next, request("needle"));
+		assert.equal(afterEviction, await router.search!(next.split("&order=")[0]!, request("needle")));
+		assert.match(afterEviction!, /:1: needle s1$/m);
+		assert.doesNotMatch(afterEviction!, /:1: needle s2$/m);
+		await assert.rejects(
+			router.search!(`${first}&order=${"a".repeat(23)}`, request("needle")),
+			/history order must be the token/,
+		);
+	});
+
 	it("a session created after a search chain started is left out of it", async () => {
 		const store = new MemorySessionStore();
 		for (let n = 1; n <= 4; n++) await addSession(store, `s${n}`, BASE + n * 60_000, [`needle s${n}`]);

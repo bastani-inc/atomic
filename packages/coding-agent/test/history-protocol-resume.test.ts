@@ -1394,6 +1394,39 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 		assert.deepEqual(failures, []);
 	});
 
+	for (const change of ["remove a searched run", "start a run"] as const) {
+		it(`a removed workflow pin does not skip or repeat runs when we ${change} (#5692)`, async () => {
+			// Ties deliberately differ from run ID order: the listing's order is authoritative.
+			const runs = ["z", "a", "pin", "d", "c"].map((id) => summary(id, BASE));
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => runs,
+				listProjectRuns: async () => runs,
+				getRun: async (id) => detail(id, BASE, `needle ${id}`),
+			};
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => undefined,
+				workflows: () => workflows,
+			});
+			const chain = await follow(async (url) => {
+				const page = (await router.search!(url, request("needle")))!;
+				if (url === "history://workflows?limit=2") {
+					runs.splice(2, 1);
+					if (change === "remove a searched run") runs.shift();
+					else runs.unshift(summary("new", BASE + 1));
+				}
+				return page;
+			}, "history://workflows?limit=2");
+			assert.ok(chain.finished);
+			assert.match(chain.outputs.join("\n"), /run pin is no longer listed/);
+			assert.deepEqual(
+				found(chain.outputs, /summary: needle (\w+)$/gm),
+				["z", "a", "d", "c"],
+				chain.outputs.join("\n"),
+			);
+		});
+	}
+
 	it("a workflow search pinned to a run that is no longer listed says so and searches the runs at its offset from their start (#5250)", async () => {
 		const runs = [summary("run-b", BASE + 2000), summary("run-c", BASE + 1000)];
 		const workflows: WorkflowRunHistory = {
