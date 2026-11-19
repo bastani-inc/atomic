@@ -68,6 +68,7 @@
 - Reopening a chat during a provider retry or model switch now shows the wait already in progress. A follow-up delivery warning no longer replaces the working line in subagent or stage chats ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 - Selecting a workflow in `/resume` after another caller has resumed it and it has blocked again now asks you to refresh the list instead of retrying the newer attempt ([#5569](https://github.com/bastani-inc/atomic/issues/5569)).
 - Pressing Esc while a chat switches to a fallback model now ends the turn without sending the pending request. A new message can still retry normally, and `abort_retry` during the first request does not disable a later retry ([#5564](https://github.com/bastani-inc/atomic/issues/5564)).
+- `atomic --export <session.jsonl>` now shows subagents, workflows and other built-in extension tools as cards. A subagent card shows the prompt, tool calls and result saved in the file; a background child whose history was not included is marked as such. The original arguments and result remain available beneath each card ([#5658](https://github.com/bastani-inc/atomic/issues/5658)).
 
 ## [0.9.89] - 2026-11-18
 

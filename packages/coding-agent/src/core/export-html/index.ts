@@ -145,8 +145,8 @@ interface SessionData {
 	leafId: string | null;
 	systemPrompt?: string;
 	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
-	/** A file export draws codemode's saved text separately from its rendered nested activity. */
-	savedCodemode?: boolean;
+	/** Keep the recorded arguments and result accessible alongside a standalone export's rendered cards. */
+	savedToolCards?: boolean;
 	/** Pre-rendered HTML for custom tool calls/results, keyed by tool call ID */
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
@@ -368,8 +368,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	const sm = await SessionManager.open(resolvedInputPath);
 	const entries = sm.getEntries();
 
-	// Without a running session, the tools Atomic ships still draw their calls as the chat does, a codemode call as its
-	// script; a tool an extension registered falls back to the page's own drawing.
+	// A saved file uses only shipped renderers, not the extensions or resources of the project it came from.
 	const [{ createToolHtmlRenderer }, { savedSessionToolRenderers }, { getGlobalTheme, initTheme, theme }] =
 		await Promise.all([
 			import("./tool-renderer.ts"),
@@ -380,7 +379,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	const renderedTools = await preRenderCustomTools(
 		entries,
 		opts.toolRenderer ??
-			createToolHtmlRenderer({ getToolRenderers: savedSessionToolRenderers, theme, cwd: sm.getCwd() }),
+			createToolHtmlRenderer({ ...(await savedSessionToolRenderers(entries)), theme, cwd: sm.getCwd() }),
 	);
 
 	const sessionData: SessionData = {
@@ -389,7 +388,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,
-		savedCodemode: !opts.toolRenderer,
+		savedToolCards: !opts.toolRenderer,
 		...(Object.keys(renderedTools).length > 0 ? { renderedTools } : {}),
 	};
 

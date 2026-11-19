@@ -1150,7 +1150,7 @@
           }
           default: {
             const rendered = renderedTools?.[call.id];
-            const savedScript = data.savedCodemode && name === 'codemode';
+            const savedScript = data.savedToolCards && name === 'codemode';
             const hasCustomResult =
               rendered?.resultHtmlCollapsed !== undefined || rendered?.resultHtmlExpanded !== undefined;
             if (rendered?.callHtml !== undefined || hasCustomResult) {
@@ -1181,7 +1181,11 @@
               } else if (rendered.resultHtmlCollapsed) {
                 html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlCollapsed}</div>`;
               }
-              if ((savedScript || !hasCustomResult) && result) {
+              if (data.savedToolCards && !savedScript) {
+                // A card can summarize or omit fields; the record remains available without crowding the card.
+                html += `<details><summary>Recorded arguments and result</summary><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre>${result ? savedOutput(getResultText(), textNodes) : ''}</details>`;
+              }
+              if ((savedScript || (!hasCustomResult && !data.savedToolCards)) && result) {
                 const output = getResultText();
                 if (output) html += savedScript ? savedOutput(output, textNodes) : formatExpandableOutput(output, 10);
               }

@@ -16,6 +16,8 @@ import { ansiLinesToHtml, stripAnsiEscapes } from "./ansi-to-html.ts";
 export interface ToolHtmlRendererDeps {
 	/** Renderers of calls to a tool, resolved by extensions and the registered tool. */
 	getToolRenderers: (name: string) => ToolRenderers | undefined;
+	/** Nested results have no separate saved-text panel, so draw them as in the chat. */
+	getNestedToolRenderers?: (name: string) => ToolRenderers | undefined;
 	/** Theme for styling */
 	theme: Theme;
 	/** Working directory for render context */
@@ -108,7 +110,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			durationMs: undefined,
 			outputPad: 1,
 			// A block that draws other tools' calls, such as a subagent card, draws them with their own renderers.
-			getToolDefinition: getToolRenderers,
+			getToolDefinition: deps.getNestedToolRenderers ?? getToolRenderers,
 			// The page keeps what is drawn: a read the rendering starts is waited for and the result drawn again.
 			waitForLoad: (load) => {
 				const loads = pendingLoads.get(toolCallId) ?? [];

@@ -49,7 +49,13 @@ import type { SubagentParamsLike } from "../runs/foreground/subagent-executor-ty
 import { subagentTaskResultLabel } from "../runs/foreground/task-execution.js";
 import { retainedTaskOutput } from "../runs/foreground/task-output-retention.js";
 import { formatDuration, formatModelThinking } from "../shared/formatters.js";
-import type { AgentProgress, Details, SingleResult, ToolCallSummary } from "../shared/types.js";
+import {
+	type AgentProgress,
+	type Details,
+	MAX_PARALLEL_TASKS,
+	type SingleResult,
+	type ToolCallSummary,
+} from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
 import { renderLiveSubagentResult } from "../tui/render.js";
 import { displayProgressDurationMs, firstOutputLine, statJoin } from "../tui/render-status-progress.js";
@@ -61,6 +67,8 @@ type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & {
 	isError?: boolean;
 	outputPad?: number;
 	args?: unknown;
+	/** Standalone file exports must never resolve a recorded ID against a live task or child transcript. */
+	savedFile?: boolean;
 	cwd?: string;
 	getTaskRecord?: ToolRenderContext["getTaskRecord"];
 	getElapsedMs?: () => number | undefined;
@@ -70,6 +78,7 @@ type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & {
 };
 
 const SHORT_TITLE_CHARS = 60;
+const MISSING_CHILD_HISTORY = "Child history is not included in this export.";
 
 const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	read: "Read",
@@ -790,16 +799,18 @@ function buildOutcomeToolBlock(input: {
 		outcome.kind === "sdk-handoff" ? { kind: "yielded" as const, taskId: outcome.taskId } : outcome.observation;
 	const savedTask = result.details?.taskRecords?.find((item) => item.ref.taskId === observation.taskId);
 	const childId = outcome.kind === "sdk-handoff" ? outcome.childId : savedTask?.launchOperationId;
-	const initialRecord = subagentChildCardRecord(childId, observation.taskId);
-	watchSubagentChildCard(
-		context.state,
-		context.invalidate,
-		initialRecord?.childId ?? childId ?? observation.taskId,
-		result.details?.ownerSessionId,
-	);
+	if (!context.savedFile) {
+		const initialRecord = subagentChildCardRecord(childId, observation.taskId);
+		watchSubagentChildCard(
+			context.state,
+			context.invalidate,
+			initialRecord?.childId ?? childId ?? observation.taskId,
+			result.details?.ownerSessionId,
+		);
+	}
 
 	const evaluate = (): { readonly block: ToolBlock; readonly working: boolean } => {
-		const record = subagentChildCardRecord(childId, observation.taskId);
+		const record = context.savedFile ? undefined : subagentChildCardRecord(childId, observation.taskId);
 		const activeTaskId = record?.taskId ?? observation.taskId;
 		const freshTask = context.getTaskRecord?.(activeTaskId as TaskId);
 		const task = freshTask ?? (savedTask?.ref.taskId === activeTaskId ? savedTask : undefined);
@@ -991,12 +1002,14 @@ function buildOutcomeToolBlock(input: {
 
 		const ownerId =
 			task?.ref.ownerId ?? (observation.kind === "settled" ? observation.result.output?.ownerId : undefined);
-		const resultText = hydrated?.result ?? extractInlineSettledOutput(result, activeTaskId, ownerId);
-		const toolCallsUnavailable =
-			hydrated?.unavailable ??
-			((task?.metrics?.toolCount ?? 0) > 0 && (!hydrated || hydrated.toolCalls.length === 0)
-				? "Transcript unavailable"
-				: undefined);
+		const resultText =
+			hydrated?.result ?? extractInlineSettledOutput(result, activeTaskId, context.savedFile ? undefined : ownerId);
+		const toolCallsUnavailable = context.savedFile
+			? MISSING_CHILD_HISTORY
+			: (hydrated?.unavailable ??
+				((task?.metrics?.toolCount ?? 0) > 0 && (!hydrated || hydrated.toolCalls.length === 0)
+					? "Transcript unavailable"
+					: undefined));
 
 		return {
 			block: new ToolBlock({
@@ -1039,7 +1052,10 @@ function buildForegroundChildToolBlock(input: {
 	readonly now?: number;
 	readonly theme: Theme;
 	readonly outputPad?: number;
-	readonly context?: Pick<RenderContext, "cwd" | "getToolDefinition" | "getTaskRecord" | "requestRender">;
+	readonly context?: Pick<
+		RenderContext,
+		"cwd" | "getToolDefinition" | "getTaskRecord" | "requestRender" | "savedFile"
+	>;
 }): ToolBlock {
 	const { child, progress, identity, taskRecord, expanded, now, theme, outputPad, context } = input;
 	const activeProgress = child?.progress ?? progress;
@@ -1144,6 +1160,7 @@ function buildForegroundChildToolBlock(input: {
 			status,
 			promptText: rawTask,
 			buildToolBlocks: () => toolBlocks,
+			toolCallsUnavailable: context?.savedFile && child?.detached ? MISSING_CHILD_HISTORY : undefined,
 			requestRender: context?.requestRender,
 			resultText: output || undefined,
 			failureText: child?.status === "error" ? child.error : undefined,
@@ -1153,10 +1170,40 @@ function buildForegroundChildToolBlock(input: {
 	});
 }
 
+/** A number in a saved file is not a validated launch. Don't allocate that many card components on its authority. */
+function oversizedSavedLaunch(args?: SubagentParamsLike, details?: Details): boolean {
+	let slots = 0;
+	for (const task of args?.tasks ?? []) {
+		slots += typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
+		if (slots > MAX_PARALLEL_TASKS) return true;
+	}
+	return (
+		(details?.totalSteps ?? 0) > MAX_PARALLEL_TASKS ||
+		(details?.progress?.some((p) => p.index >= MAX_PARALLEL_TASKS) ?? false)
+	);
+}
+
+export const savedSubagentToolRenderers = {
+	renderCall(args: SubagentParamsLike, theme: Theme, context: RenderContext): Component {
+		if (oversizedSavedLaunch(args)) return new Text(theme.bold("Agent(parallel launch)"), 0, 0);
+		return renderSubagentToolCall(args, theme, { ...context, savedFile: true });
+	},
+	renderResult(
+		result: AgentToolResult<Details>,
+		options: { expanded: boolean; isPartial: boolean },
+		theme: Theme,
+		context: RenderContext,
+	): Component {
+		if (oversizedSavedLaunch(context.args as SubagentParamsLike | undefined, result.details))
+			return new Text("See the recorded arguments and result for this parallel launch.", 0, 0);
+		return renderSubagentToolResult(result, options, theme, { ...context, savedFile: true });
+	},
+};
+
 export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, context: RenderContext): Component {
 	ensureGlobalTheme();
 	renderRequests.set(context.state, args);
-	const burst = getBurstDisplay(context.toolCallId);
+	const burst = context.savedFile ? undefined : getBurstDisplay(context.toolCallId);
 	if (burst && !burst.owner) return new ToolBlockGroup([]);
 	if (args.action) {
 		const target = args.agent || args.id || args.runId || (args.all ? "all" : "");
@@ -1201,7 +1248,7 @@ export function renderSubagentToolResult(
 		clearSubagentChildTranscriptCache(context.state);
 		expandedSectionCaches.delete(context.state);
 	}
-	const burst = getBurstDisplay(context.toolCallId);
+	const burst = context.savedFile ? undefined : getBurstDisplay(context.toolCallId);
 	if (burst && !burst.owner) return new ToolBlockGroup([]);
 	result = burst?.result ?? result;
 	const request = renderRequests.get(context.state) ?? (context.args as SubagentParamsLike | undefined);
@@ -1343,7 +1390,7 @@ export function renderSubagentToolResult(
 			const blocks = Array.from({ length: count }, (_, index) => {
 				const child = children.get(index);
 				const progress = progressBySlot.get(index);
-				if (child?.detached && d.runId) {
+				if (!context.savedFile && child?.detached && d.runId) {
 					const record = subagentChildIndexEntry(`${d.runId}:${child.progress?.index ?? index}`);
 					if (record?.taskId)
 						return buildOutcomeToolBlock({
@@ -1360,7 +1407,7 @@ export function renderSubagentToolResult(
 					progress,
 					identity: labels[index],
 					taskRecord: d.taskRecords?.[index],
-					childId: d.runId ? `${d.runId}:${child?.progress?.index ?? index}` : undefined,
+					childId: !context.savedFile && d.runId ? `${d.runId}:${child?.progress?.index ?? index}` : undefined,
 					expanded: options.expanded,
 					now: context.state.subagentResultSnapshotNow,
 					theme,

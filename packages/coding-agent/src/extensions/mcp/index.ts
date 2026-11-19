@@ -64,7 +64,13 @@ import {
 import { loadMcpRuntime } from "./runtime.lazy.ts";
 import type * as McpRuntime from "./runtime.ts";
 import type { McpServerConnection, McpServerLog, McpTransportFactory } from "./runtime.ts";
-import { createMcpToolDefinition, createMcpToolName, createMcpToolRenderers, type McpToolDetails } from "./tools.ts";
+import {
+	createMcpToolDefinition,
+	createMcpToolName,
+	createMcpToolRenderers,
+	type McpToolDetails,
+	savedMcpToolLabel,
+} from "./tools.ts";
 import { type McpMenu, type McpUi, showMcpManager } from "./ui.ts";
 
 function isCodemodeDiscoveryTool(tool: ToolInfo): boolean {
@@ -424,15 +430,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			if (!toolName.startsWith("mcp__")) return undefined;
 			const owner = toolOwners.get(toolName);
 			if (owner) return createMcpToolRenderers(owner.replace("\0", "/"));
-			const encoded = toolName.slice("mcp__".length);
-			const boundary = encoded.indexOf("__");
-			const unambiguous =
-				boundary > 0 &&
-				boundary + 2 < encoded.length &&
-				boundary === encoded.lastIndexOf("__") &&
-				!/_[a-f0-9]{8}(?:_\d+)?$/.test(toolName);
-			const label = unambiguous ? `${encoded.slice(0, boundary)}/${encoded.slice(boundary + 2)}` : toolName;
-			return createMcpToolRenderers(label);
+			return createMcpToolRenderers(savedMcpToolLabel(toolName));
 		});
 
 		const registerTools = (connection: McpServerConnection) => {

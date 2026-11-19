@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -7,7 +7,7 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { Container, type TUI } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
-import { exportSessionToHtml } from "../../packages/coding-agent/src/core/export-html/index.js";
+import { exportFromFile, exportSessionToHtml } from "../../packages/coding-agent/src/core/export-html/index.js";
 import { createToolHtmlRenderer } from "../../packages/coding-agent/src/core/export-html/tool-renderer.js";
 import type { ToolDefinition, ToolRenderers } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -547,6 +547,28 @@ test("an HTML export draws a finished background child's saved tool calls in its
 		assert.ok(card, "the card is pre-rendered");
 		assert.match(card.expanded, /Tool calls ● codemode\( const v0 = 0; .* const v19 = 19; \)/, card.expanded);
 		assert.doesNotMatch(card.expanded, /\(none\)/, card.expanded);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		await store.close();
+	}
+});
+
+test("a standalone background card reports missing child history without borrowing it from a running session (#5658)", async () => {
+	initTheme("dark", false);
+	const { store, manager } = await finishedScriptChild("file-only-child", "task-file-only");
+	const dir = mkdtempSync(join(tmpdir(), "atomic-file-only-child-"));
+	try {
+		bindSubagentChildCards({ sessionManager: manager });
+		const file = join(dir, "parent.jsonl");
+		writeFileSync(
+			file,
+			`${[manager.getHeader(), ...manager.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+		const output = await exportFromFile(file, join(dir, "out.html"));
+		const card = exportedToolRows(readFileSync(output, "utf8")).get("call-1");
+		assert.ok(card);
+		assert.doesNotMatch(card.expanded, /const v19/, "the file does not contain the separate child's script");
+		assert.match(card.expanded, /Child history is not included in this export/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 		await store.close();
