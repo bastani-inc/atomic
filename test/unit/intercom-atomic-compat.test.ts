@@ -443,7 +443,7 @@ describe("lazy intercom registration", () => {
 		assert.doesNotMatch(JSON.stringify(intercomTool.parameters), /retryToken/);
 	});
 
-	test("guides model-visible sends to live sessions and exact workflow-stage targets", () => {
+	test("guides model-visible sends to live sessions, without workflow-stage targets", () => {
 		const captured = captureIntercomRegistration({
 			PI_SUBAGENT_ORCHESTRATOR_TARGET: undefined,
 			ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET: undefined,
@@ -453,11 +453,7 @@ describe("lazy intercom registration", () => {
 		const targetDescription = (intercomTool.parameters as { properties?: { to?: { description?: string } } })
 			.properties?.to?.description;
 		const guidance = `${intercomTool.description}\n${targetDescription ?? ""}`;
-		assert.ok(guidance.includes("`workflow:<rootRunId>/<segment>[/<segment>...]`"));
-		assert.match(guidance, /sticky for every future\s+stage/i);
-		assert.ok(guidance.includes("`workflow:<rootRunId>/**`"));
-		assert.match(guidance, /looks like a typo of a known stage/);
-		assert.doesNotMatch(guidance, /notInKnownSet/);
+		assert.doesNotMatch(guidance, /workflow/i);
 		assert.match(guidance, /live session/i);
 		assert.match(guidance, /retries recoverable disconnects internally up to three times/);
 	});

@@ -38,12 +38,7 @@ const writeSettings = (settings: object) => writeFileSync(join(agentDir, "settin
 async function createFileSession(
 	options: Pick<
 		CreateAgentSessionOptions,
-		| "tools"
-		| "noTools"
-		| "excludedTools"
-		| "customTools"
-		| "sessionManager"
-		| "subagentPolicy"
+		"tools" | "noTools" | "excludedTools" | "customTools" | "sessionManager" | "subagentPolicy"
 	> = {},
 	transactional = true,
 	settingsManager = SettingsManager.create(tempDir, agentDir),

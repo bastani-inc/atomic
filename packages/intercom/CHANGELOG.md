@@ -4,6 +4,13 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Workflows were removed in Atomic 0.10.0, and with them Intercom's workflow stage targets. `send` and `ask` refuse a `workflow:<rootRunId>/...` target with `Workflow stage targets (workflow:<rootRunId>/...) were removed in Atomic 0.10.0; send to a session by name or id`, `intercom list` shows no workflow stage or future-stage rows, and the codemode `list` result no longer has a `workflowStages` field. Send to a session by its name or ID instead.
+- A `workflow:<rootRunId>` group is now an ordinary group: any session can list, peek at and join it, and no session controls a run's stages without joining. A queued send no longer carries `prediction`, `unexpected` or `suggestion`.
+- Removed the workflow-only API from `IntercomClient`: `registerPendingStageRoute`, `registerPendingStageRouteAcknowledged`, `withdrawPendingStageRoute`, `claimWorkflowInvocation`, `registerLiveWorkflowStageRoute`, `respondPendingStageMessage`, `respondPendingStageNotification`, `sendPendingStageNotification`, the `multiplexesPendingStageRoutes` option, `IntercomPendingStageRouteRefusedError`, `SessionDirectory.workflowStages` and `workflowFutureStages`, and the `liveRoute` of a hosted session with its `liveRouteRefusal`. `StageRecipientReleasedError`, `isStageRecipientReleasedError` and the `recipient_stage_released` code are removed from `@bastani/intercom`, and Intercom no longer raises `IntercomBrokerSuccessorTimeoutError`, which only workflow route connections did.
+- Sessions of Atomic 0.9.x and 0.10.0 keep messaging each other through whichever broker is running: the protocol range is unchanged. A 0.10.0 broker answers a 0.9.x session's workflow requests with refusals that session already handles and never closes its connection over one; a running 0.9.x stage's live route is acknowledged without creating a route, and sends to its `workflow:` path are refused. A 0.10.0 session on a 0.9.x broker sends no workflow request and ignores the workflow rows that broker lists. See [Mixed versions and workflows](https://atomic.bastani.dev/intercom/operations#mixed-versions-and-workflows).
+
 ## [0.9.90] - 2026-11-19
 
 ### Added

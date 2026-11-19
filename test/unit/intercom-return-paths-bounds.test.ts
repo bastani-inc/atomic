@@ -102,33 +102,7 @@ test("a return path binds registration identities: a new session under the same 
 	assert.equal(paths.holds(recipient, sender), false);
 });
 
-test("a queued message reaches each stage it names once, when that stage starts", () => {
-	const { paths } = clocked();
-	const launcher = party("launcher");
-	const target = "workflow:5a1e0010-0000-4000-8000-000000000010";
-	paths.queue(`${target}/reviewer`, launcher, "queued-note");
-	paths.queue(`${target}/reviewer`, launcher, "queued-note");
-	const reviewer = party("reviewer");
-	const sibling = party("sibling");
-	paths.stageStarted(sibling, `${target}/sibling`, () => false);
-	assert.equal(paths.holds(sibling, launcher), false);
-	paths.stageStarted(reviewer, `${target}/reviewer`, () => false);
-	exhaust(paths, reviewer, launcher, "reviewer-answer");
-	// Taking the route again (a reconnect) does not hand the message over a second time.
-	paths.stageStarted(reviewer, `${target}/reviewer`, () => false);
-	assert.equal(paths.use(reviewer, launcher, "after-reconnect"), false);
-	// A stage that already shares a group with the sender needs no return path.
-	const member = party("member");
-	paths.queue(`${target}/member`, launcher, "member-note");
-	paths.stageStarted(member, `${target}/member`, () => true);
-	assert.equal(paths.holds(member, launcher), false);
-	paths.forgetRun("5a1e0010-0000-4000-8000-000000000010");
-	const late = party("late");
-	paths.stageStarted(late, `${target}/reviewer`, () => false);
-	assert.equal(paths.holds(late, launcher), false);
-});
-
-test("a path dropped under pressure is not reopened by the message that opened it, nor by a stage taking its route again", () => {
+test("a path dropped under pressure is not reopened by the message that opened it", () => {
 	const { paths } = clocked(1);
 	const launcher = party("launcher");
 	const recipient = party("recipient");
@@ -138,14 +112,6 @@ test("a path dropped under pressure is not reopened by the message that opened i
 	assert.equal(paths.holds(recipient, launcher), false);
 	paths.open(recipient, launcher, "live-note");
 	assert.equal(paths.holds(recipient, launcher), false);
-	const target = "workflow:5a1e0011-0000-4000-8000-000000000011";
-	const stage = party("stage");
-	paths.queue(`${target}/stage`, launcher, "queued-note");
-	paths.stageStarted(stage, `${target}/stage`, () => false);
-	exhaust(paths, stage, launcher, "stage-answer");
-	paths.open(party("other"), party("writer"), "more-pressure");
-	paths.stageStarted(stage, `${target}/stage`, () => false);
-	assert.equal(paths.holds(stage, launcher), false);
 });
 
 test("a message handed over before its sender ended for good opens nothing, even once that end is forgotten", () => {

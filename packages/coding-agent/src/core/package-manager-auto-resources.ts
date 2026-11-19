@@ -22,6 +22,7 @@ import type {
 	ResourceMap,
 } from "./package-manager-types.ts";
 import type { SettingsManager } from "./settings-manager.ts";
+import { legacyWorkflowFilePaths } from "./settings-manager-internals.ts";
 
 export async function collectProjectLocalResources(
 	sourceRoot: string,
@@ -110,14 +111,14 @@ export async function addAutoDiscoveredResources(
 		skills: (globalSettings.skills ?? []) as string[],
 		prompts: (globalSettings.prompts ?? []) as string[],
 		themes: (globalSettings.themes ?? []) as string[],
-		legacyWorkflowFiles: context.settingsManager.getLegacyWorkflowFilePaths("global"),
+		legacyWorkflowFiles: legacyWorkflowFilePaths(context.settingsManager, "global"),
 	};
 	const projectOverrides = {
 		extensions: (projectSettings.extensions ?? []) as string[],
 		skills: (projectSettings.skills ?? []) as string[],
 		prompts: (projectSettings.prompts ?? []) as string[],
 		themes: (projectSettings.themes ?? []) as string[],
-		legacyWorkflowFiles: context.settingsManager.getLegacyWorkflowFilePaths("project"),
+		legacyWorkflowFiles: legacyWorkflowFilePaths(context.settingsManager, "project"),
 	};
 	const userConfigDirs = getBaseDirsForScope(context, "user");
 	const projectConfigDirs = getBaseDirsForScope(context, "project");

@@ -4,7 +4,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { registerContactSupervisorTool } from "../../packages/intercom/contact-supervisor-tool.js";
 import {
 	ForegroundDetachHandoff,
@@ -546,7 +545,7 @@ describe("registered blocking intercom tools", () => {
 		);
 	});
 
-	test("intercom ask surfaces a correlated completed-target revival failure as a tool error", async () => {
+	test("intercom ask surfaces a correlated failure reply as a tool error", async () => {
 		const current = fixture("intercom");
 		const execution = current.tool.execute(
 			"call",
@@ -556,13 +555,10 @@ describe("registered blocking intercom tools", () => {
 			context,
 		);
 		await sleep(0);
-		current.reply(
-			"Completed workflow stage could not process intercom ask",
-			"Completed workflow stage is not resumable",
-		);
+		current.reply("Recipient could not process intercom ask", "Recipient is not resumable");
 		const result = await execution;
 		assert.equal(result.isError, true);
-		assert.equal(result.content[0]?.text, "Failed: Completed workflow stage is not resumable");
+		assert.equal(result.content[0]?.text, "Failed: Recipient is not resumable");
 	});
 
 	test("contact_supervisor need_decision uses the same threaded waiter path", async () => {
@@ -723,9 +719,9 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(result.content[0]?.text, "Message sent to parent");
 	});
 
-	test("contact_supervisor progress_update to a supervisor stage without a live session is queued, not failed (#4639)", async () => {
+	test("contact_supervisor progress_update to a supervisor without a live session is queued, not failed (#4639)", async () => {
 		const queued = fixture("supervisor", {
-			supervisorSendResult: { delivered: false, queued: true, target: "workflow:run/stage", position: 1 },
+			supervisorSendResult: { delivered: false, queued: true, target: "offline session", position: 1 },
 		});
 		const updated = await queued.tool.execute(
 			"call",
@@ -737,7 +733,7 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(updated.isError, false);
 		assert.equal(
 			updated.content[0]?.text,
-			"Progress update queued for supervisor parent: its workflow stage has no live session now and receives it when it reopens",
+			"Progress update queued for supervisor parent: it has no live session now and receives it when it is back",
 		);
 		const queuedResult = updated as unknown as { content: Array<{ type: string }>; details: object };
 		assert.equal(queuedResult.content[0]?.type, "text");
@@ -767,9 +763,9 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(failed.content[0]?.text, 'Message to "parent" was not delivered: Session not found');
 	});
 
-	test("contact_supervisor need_decision queued for a supervisor stage waits for the stage's reply (#4639)", async () => {
+	test("contact_supervisor need_decision queued for a supervisor without a live session waits for its reply (#4639)", async () => {
 		const current = fixture("supervisor", {
-			supervisorSendResult: { delivered: false, queued: true, target: "workflow:run/stage", position: 1 },
+			supervisorSendResult: { delivered: false, queued: true, target: "offline session", position: 1 },
 		});
 		const execution = current.tool.execute(
 			"call",
@@ -825,10 +821,10 @@ describe("registered blocking intercom tools", () => {
 	});
 
 	// #2840: cancelling the child cannot retract an already accepted progress update.
-	test("stage closure preserves an in-flight progress update's transport receipt", async () => {
+	test("cancelling the call preserves an in-flight progress update's transport receipt", async () => {
 		const started = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<void>();
-		const boundary = new WorkflowStageAdmissionBoundary();
+		const cancel = new AbortController();
 		const progress = fixture("supervisor", {
 			onSupervisorSend: () => started.resolve(),
 			supervisorSendGate: finish.promise,
@@ -836,12 +832,12 @@ describe("registered blocking intercom tools", () => {
 		const execution = progress.tool.execute(
 			"call",
 			{ reason: "progress_update", message: "Accepted finding" },
-			boundary.closeSignal,
+			cancel.signal,
 			undefined,
 			context,
 		);
 		await started.promise;
-		await boundary.close();
+		cancel.abort();
 		finish.resolve();
 		const result = await execution;
 

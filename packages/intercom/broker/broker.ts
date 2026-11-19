@@ -22,14 +22,6 @@ import {
   writeMessageWithOutcome,
 } from "./socket-writes.js";
 import { BROKER_PROTOCOL, isBrokerProtocolRange, protocolRangeOf } from "./protocol-version.js";
-import { boundWorkflowPossibleStageRow } from "../workflow-delivery-states.js";
-import {
-	isWorkflowFutureStagePredictionFields,
-	isWorkflowSendPredictionFields,
-	type WorkflowSendPredictionFields,
-	workflowFutureStagePredictionFields,
-	workflowSendPredictionFields,
-} from "../workflow-prediction-fields.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock, type SocketReplacementLock } from "./socket-replacement-lock.js";
 import { type BrokerWatchdog, startBrokerWatchdog } from "./watchdog.js";
@@ -53,31 +45,17 @@ import type {
 	BrokerStatusReport,
 	DeliveryFailureReasonCode,
 	SupervisorRegistration,
-	WorkflowStageRosterAnnouncement,
-	WorkflowStageRosterEntry,
-	WorkflowPossibleStageAnnouncement,
-	WorkflowFutureStageRosterEntry,
-	WorkflowRunParentAnnouncement,
-	PendingStageRouteRefusalCode,
 	ReleasedChildRefusal,
 	HostedSessionAssignment,
 	HostedSessionRefusal,
 } from "../types.js";
-import {
-	formatWorkflowStageTarget,
-	parseWorkflowStageTarget,
-	withWorkflowStageTargetFinalSegment,
-} from "../workflow-stage-target.js";
 import { DELIVERED_MESSAGE_MAX_ENTRIES, DeliveredMessageCache } from "./delivered-message-cache.js";
 import { isMessage, isSessionRegistration } from "./client-message-validation.js";
-import { buildMessageSendSignature } from "./send-signature.js";
 import {
 	deliveryTargetIdentity,
 	handleBrokerSend,
-	messageFrameFor,
-	type BrokerConnectedSession,
-	type PendingStageRoute,
-	type ReleasedAskerReplyRouter,
+  type BrokerConnectedSession,
+type ReleasedAskerReplyRouter,
 	type RemoteSendRequest,
 	type RemoteSendRouter,
 	type RestoringRecipientHold,
@@ -85,9 +63,8 @@ import {
 	type ReturnPathAuthority,
 	returnPathParty,
 	type SendClientMessage,
-	senderGroupIdentity,
 } from "./send-handler.js";
-import { type ReturnPathParty, type ReturnPathSender, ReturnPaths } from "./return-paths.js";
+import { ReturnPaths } from "./return-paths.js";
 import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -110,10 +87,15 @@ import {
 } from "./released-children.js";
 import { boundedReleaseReasons, type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
 import { DepartedChildren, type HeldSendRefusal, validateEndedChildrenFrame } from "./departed-children.js";
-import { WorkflowStageAliases } from "./workflow-stage-aliases.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
-import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
+import {
+  LEGACY_LIVE_ROUTE_REFUSAL,
+  type ParsedHostedSession,
+  validateHostSessionsFrame,
+  validateUnhostSessionsFrame,
+} from "./hosted-sessions.js";
+import { answerLegacyWorkflowFrame } from "./legacy-workflow-frames.js";
 import {
   failRefusedReleasedAsk,
   ReleasedAskerReplies,
@@ -127,7 +109,7 @@ import {
   DEPARTURE_ASKS_TO_IT_TAKEN,
 } from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
-import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
+import { normalizeGroup, normalizeGroups } from "../group.js";
 import { handleBrokerPresence, replaceSessionReach } from "./presence-handler.js";
 import { PresenceFanout } from "./presence-fanout.js";
 import {
@@ -151,9 +133,8 @@ import {
 import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
-import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
+import { RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { deliverAskFailure, deliverHeldToAsker, failLostReply } from "./ask-failures.js";
-import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
 import {
@@ -162,10 +143,6 @@ import {
   BROKER_ROUTING_CHANGED_CODE,
   BROKER_ROUTING_CHANGED_REASON,
 } from "../recoverable-disconnect.js";
-import {
-	LIVE_WORKFLOW_STAGE_ROUTE_REFUSAL_REASONS,
-	type LiveWorkflowStageRouteRefusalCode,
-} from "../live-route-refusal.js";
 import { SUPERVISOR_AUTHORIZATION_REFUSED_CODE, SUPERVISOR_AUTHORIZATION_REFUSED_REASON } from "../supervisor-refusal.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
@@ -176,12 +153,6 @@ const UNCLASSIFIED_CONNECTION_RECHECK_MS = 100;
 const PID_PATH = getBrokerPidPath();
 const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 
-const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
-/**
- * #5096: delay before retrying a delivered-message delete that failed, e.g. while another broker held the write lock.
- * A delete waits only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a retry costs the broker milliseconds.
- */
-const PENDING_FORGET_RETRY_MS = 1_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
@@ -226,67 +197,6 @@ async function acquireSocketLockWithin(budgetMs: number): Promise<SocketReplacem
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
   process.exit(0);
-}
-
-interface PendingStageRouteRegistration {
-  readonly sessionId: string;
-  readonly generation?: string;
-  readonly group: string;
-  readonly capability: string;
-  /** Registered by a restarted owner for an interrupted run; yields to the process that resumes it (#3760). */
-  readonly dormant?: true;
-  /**
-   * #4006: held only by the process that launched the run, never by its stages. Presenting it in
-   * `claim_workflow_invocation` grants that session the invocation's control without membership.
-   */
-  readonly launcherCapability?: string;
-}
-
-interface WorkflowRosterRegistration {
-	readonly ownerSessionId: string;
-	readonly group: string;
-	readonly stages: WorkflowStageRosterAnnouncement[];
-	readonly possibleStages?: readonly WorkflowPossibleStageAnnouncement[];
-	readonly parent?: WorkflowRunParentAnnouncement;
-}
-
-
-interface PendingStageAcknowledgment {
-  readonly ownerSessionId: string;
-  readonly senderSocket: net.Socket;
-  readonly messageId: string;
-  readonly attemptId?: string;
-	readonly runId: string;
-	readonly target: string;
-	readonly senderSessionId: string;
-	readonly sender: SessionInfo;
-	readonly message: Message;
-	readonly liveTargetId?: string;
-	readonly signature?: string;
-	readonly resolveReplyTarget?: true;
-  readonly timeout: NodeJS.Timeout;
-}
-
-interface PendingStageNotificationAcknowledgment {
-	readonly ownerSessionId: string;
-	readonly recipientSessionId: string;
-	readonly senderSocket: net.Socket;
-	readonly messageId: string;
-	readonly attemptId?: string;
-	readonly signature: string;
-	readonly timeout: NodeJS.Timeout;
-}
-
-interface LiveWorkflowStageRouteRegistration {
-  readonly sessionId: string;
-  readonly capability: string;
-  /** Run whose route registration authorized this alias; capabilities are per run. */
-  readonly runId: string;
-}
-
-interface LiveWorkflowStageRouteActivation {
-  readonly sessionId: string;
-  readonly pendingRequestIds: Set<string>;
 }
 
 type ConnectedSession = BrokerConnectedSession;
@@ -348,7 +258,7 @@ function isPendingReply(clientMessage: SendClientMessage): boolean {
 
 function hostedWithinReach(reach: IntercomReachPolicy, item: ParsedHostedSession): boolean {
 	for (const group of normalizeGroups(item.session.groups, item.session.group)) {
-		if (!isReachable(reach, group) && !group.startsWith("workflow:")) return false;
+		if (!isReachable(reach, group)) return false;
 	}
 	return true;
 }
@@ -383,99 +293,6 @@ function holdSenderOf(from: ConnectedSession, answersAsk?: true): HoldSender {
 		...(answersAsk === undefined ? {} : { answersAsk }),
 	};
 }
-
-function invocationOwnsGroup(invocationGroup: string, candidateGroup: string): boolean {
-	const owner = normalizeGroup(invocationGroup);
-	const candidate = normalizeGroup(candidateGroup);
-	return candidate === owner || candidate.startsWith(`${owner}/`);
-}
-
-function readWorkflowRunParentAnnouncement(value: JsonWireValue | undefined): WorkflowRunParentAnnouncement | undefined {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	if (
-		typeof value.runId !== "string" ||
-		!Array.isArray(value.stageKeys) ||
-		!value.stageKeys.every((key) => typeof key === "string")
-	) return undefined;
-	return { runId: value.runId, stageKeys: value.stageKeys };
-}
-
-function isWorkflowStageRosterAnnouncements(
-	value: unknown,
-	runId: string,
-	invocationGroup: string,
-): value is WorkflowStageRosterAnnouncement[] {
-	const groupRootRunId = invocationGroup.startsWith("workflow:")
-		? invocationGroup.slice("workflow:".length)
-		: undefined;
-	return (
-		Array.isArray(value) &&
-		value.every((stage) => {
-			if (typeof stage !== "object" || stage === null) return false;
-			const announcement = stage as WorkflowStageRosterAnnouncement;
-			const parsed = parseWorkflowStageTarget(announcement.target);
-			return (
-				typeof announcement.stageId === "string" &&
-				typeof announcement.stageName === "string" &&
-				parsed?.kind === "path" &&
-				parsed.segments.at(-1) === announcement.stageId &&
-				// Depth-faithful targets are anchored at the invocation root even when the
-				// announcing run is a nested descendant whose run id appears in no segment
-				// position (boundary-name segments). The runId conditions keep the flat
-				// shortcut form valid for hosts that have not adopted the clarified form.
-				((groupRootRunId !== undefined && groupRootRunId === parsed.rootRunId) ||
-					runId === parsed.rootRunId ||
-					parsed.segments.slice(0, -1).includes(runId)) &&
-				(announcement.lifecycle === "pending" || announcement.lifecycle === "running") &&
-				typeof announcement.routeEligible === "boolean" &&
-				(announcement.recipientPurpose === undefined ||
-					announcement.recipientPurpose === "agent" ||
-					announcement.recipientPurpose === "control") &&
-				typeof announcement.group === "string"
-			);
-		})
-	);
-}
-function isWorkflowPossibleStageAnnouncements(
-	value: unknown,
-	runId: string,
-	invocationGroup: string,
-): value is WorkflowPossibleStageAnnouncement[] {
-	const groupRootRunId = invocationGroup.startsWith("workflow:")
-		? invocationGroup.slice("workflow:".length)
-		: undefined;
-	return (
-		Array.isArray(value) &&
-		value.every((row) => {
-			if (typeof row !== "object" || row === null) return false;
-			const announcement = row as WorkflowPossibleStageAnnouncement;
-			const parsed = parseWorkflowStageTarget(announcement.target);
-			return (
-				parsed !== undefined &&
-				((groupRootRunId !== undefined && groupRootRunId === parsed.rootRunId) || runId === parsed.rootRunId) &&
-				typeof announcement.queuedCount === "number" &&
-				Number.isInteger(announcement.queuedCount) &&
-				announcement.queuedCount >= 0 &&
-				(announcement.deliveryOnly === undefined || announcement.deliveryOnly === true) &&
-				isWorkflowFutureStagePredictionFields(announcement) &&
-				(announcement.omittedDeliveryStates === undefined ||
-					(Number.isInteger(announcement.omittedDeliveryStates) && announcement.omittedDeliveryStates >= 0)) &&
-				(announcement.deliveryStateCounts === undefined ||
-					(typeof announcement.deliveryStateCounts === "object" &&
-						announcement.deliveryStateCounts !== null &&
-						Object.values(announcement.deliveryStateCounts).every(
-							(count) => Number.isInteger(count) && count >= 0,
-						))) &&
-				(announcement.deliveryStates === undefined || (Array.isArray(announcement.deliveryStates) && announcement.deliveryStates.every((delivery) =>
-					delivery !== null && typeof delivery === "object" &&
-					typeof delivery.messageId === "string" && typeof delivery.runId === "string" &&
-					typeof delivery.stageId === "string" && typeof delivery.state === "string" &&
-					typeof delivery.reason === "string" && (delivery.sessionId === undefined || typeof delivery.sessionId === "string"))))
-			);
-		})
-	);
-}
-
 
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
@@ -523,48 +340,6 @@ class IntercomBroker {
   private get deliveredMessages(): DeliveredMessageCache {
     return this.openDeliveredMessages();
   }
-  /** #5096: reservations whose delete failed, by message ID, retried until the delete lands. */
-  private pendingForgets = new Map<string, string>();
-  private pendingForgetTimer: NodeJS.Timeout | null = null;
-
-  /**
-   * Remove a reservation after a proven non-delivery without letting a failed delete escape (#5096).
-   *
-   * `forget` is a durable SQLite DELETE that throws while another connection holds the write lock or the disk fails.
-   * Its callers include timer callbacks and socket close handlers, where a throw is an uncaughtException that ends
-   * the broker, and outcome paths whose sender must still hear `delivery_failed`. A failed delete is logged and
-   * retried later, so a stale reservation does not keep refusing the sender's retry as uncertain. The delete waits
-   * only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a held lock does not stall the broker. Callers write the sender's
-   * outcome first; the sender's retry is handled only after this synchronous delete, and a failed one is retried
-   * before the ID is looked up again.
-   */
-  private forgetDelivered(messageId: string, signature: string): void {
-    this.pendingForgets.delete(messageId);
-    try {
-      this.deliveredMessages.forget(messageId, signature);
-    } catch (error) {
-      this.pendingForgets.set(messageId, signature);
-      console.error(
-        `Intercom broker could not forget delivered message ${messageId}; retrying: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      this.schedulePendingForgets();
-    }
-  }
-
-  /** Retry a failed delete for `messageId` before its ID is looked up or reserved again. */
-  private retryPendingForget(messageId: string): void {
-    const signature = this.pendingForgets.get(messageId);
-    if (signature !== undefined) this.forgetDelivered(messageId, signature);
-  }
-
-  private schedulePendingForgets(): void {
-    if (this.pendingForgetTimer !== null || this.shuttingDown) return;
-    this.pendingForgetTimer = setTimeout(() => {
-      this.pendingForgetTimer = null;
-      for (const messageId of [...this.pendingForgets.keys()]) this.retryPendingForget(messageId);
-    }, PENDING_FORGET_RETRY_MS);
-    this.pendingForgetTimer.unref?.();
-  }
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
   /** Connections whose requested id is being checked against its multi-node binding before they register. */
@@ -581,22 +356,9 @@ class IntercomBroker {
   );
   /** #4639: subagents whose session is gone, held for until they return or their owner says why they ended. */
   private departedChildren = new DepartedChildren((refusals) => this.refuseHeldSends(refusals));
-  private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
-  private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
-	private pendingStageNotificationAcknowledgments = new Map<string, PendingStageNotificationAcknowledgment>();
-  private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
   /** Return paths: who may answer a sender outside its groups that wrote to it. */
   private readonly returnPaths = new ReturnPaths();
   private readonly returnPathAuthority: ReturnPathAuthority = createReturnPathAuthority(this.returnPaths, this.sessions);
-  /** #4639: the names and ids each stage's sessions registered under, so they keep reaching the stage. */
-  private workflowStageAliases = new WorkflowStageAliases();
-  private workflowRosters = new Map<string, WorkflowRosterRegistration>();
-  private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
-  /**
-   * #4006: runs each connected session launched, proven with the run's launcher capability. Keyed by session,
-   * then run, holding the capability claimed; a claim lapses when the run's route carries another one.
-   */
-  private workflowInvocationClaims = new Map<string, Map<string, string>>();
   /** Multi-node S5: set only when the agent directory's settings select a top-level shared `storage`. */
   private readonly sharedStorageSetting = readSharedStorageSetting(dirname(INTERCOM_DIR));
   private readonly routeRemote: RemoteSendRouter | undefined =
@@ -903,125 +665,8 @@ class IntercomBroker {
     socket.end();
     this.scheduleShutdownCheck();
   }
-	private pendingStageOwnerForTarget(
-		target: string,
-	): { readonly runId: string; readonly registration: PendingStageRouteRegistration } | undefined {
-		const parsed = parseWorkflowStageTarget(target);
-		if (parsed === undefined) return undefined;
-		const invocationGroup = normalizeGroup(`workflow:${parsed.rootRunId}`);
-		// Slice 3 (D3/D6): pattern and `**` targets are anchored at the invocation root
-		// registration — glob segments name no nested run, and the sticky entry lives in
-		// the root run's durable bucket.
-		if (parsed.kind !== "path") {
-			const rootRegistration = this.pendingStageRoutes.get(parsed.rootRunId);
-			return rootRegistration !== undefined && normalizeGroup(rootRegistration.group) === invocationGroup
-				? { runId: parsed.rootRunId, registration: rootRegistration }
-				: undefined;
-		}
-		let ownerRunId = parsed.rootRunId;
-		let registration = this.pendingStageRoutes.get(ownerRunId);
-		for (const segment of parsed.segments.slice(0, -1)) {
-			const candidate = this.pendingStageRoutes.get(segment);
-			if (candidate !== undefined && normalizeGroup(candidate.group) === invocationGroup) {
-				ownerRunId = segment;
-				registration = candidate;
-			}
-		}
-		return registration === undefined ? undefined : { runId: ownerRunId, registration };
-	}
-
-	private resolveLegacyWorkflowStageTarget = (runId: string, stageKey: string): string | undefined => {
-		const route = this.pendingStageRoutes.get(runId);
-		const roster = this.workflowRosters.get(runId);
-		if (route === undefined || roster === undefined || !route.group.startsWith("workflow:")) return undefined;
-		const matches = roster.stages.filter((stage) => stage.stageId === stageKey || stage.stageName === stageKey);
-		return matches.length === 1 ? matches[0]!.target : undefined;
-	};
-	private isNonAgentWorkflowTarget = (target: string): boolean => {
-		const parsed = parseWorkflowStageTarget(target);
-		if (parsed?.kind !== "path") return false;
-		// A connected agent's registered alias outlives its pending roster row.
-		// A same-name control announcement must not revoke that live identity.
-		if (this.resolveLiveWorkflowStage(target) !== undefined) return false;
-		const rosters = [...this.workflowRosters].filter(([, roster]) => roster.group === `workflow:${parsed.rootRunId}`);
-		let runId: string | undefined = parsed.rootRunId;
-		for (const segment of parsed.segments.slice(0, -1)) {
-			// Match the host's materialized-stage traversal: run IDs can jump at any
-			// depth; otherwise follow a uniquely resolved boundary ID/name edge.
-			if (rosters.some(([id]) => id === segment)) {
-				runId = segment;
-				continue;
-			}
-			const children = rosters.filter(([, roster]) => roster.parent?.runId === runId && roster.parent.stageKeys.includes(segment));
-			runId = children.length === 1 ? children[0]![0] : undefined;
-			if (runId === undefined) break;
-		}
-		const stageKey = parsed.segments.at(-1);
-		const stages = rosters.find(([id]) => id === runId)?.[1].stages;
-		const byId = stages?.filter((stage) => stage.stageId === stageKey) ?? [];
-		// Hosts without parent-edge metadata still support their advertised literal targets.
-		const matches = stages === undefined ? rosters.flatMap(([, roster]) => roster.stages.filter((stage) =>
-			stage.target === target || withWorkflowStageTargetFinalSegment(stage.target, stage.stageName) === target,
-		)) : byId.length > 0 ? byId : stages.filter((stage) => stage.stageName === stageKey);
-		return matches.some((stage) => !isAgentRecipient(stage)) && !matches.some(isAgentRecipient);
-	};
-
-
-	private resolveLiveWorkflowStage = (target: string): ConnectedSession | undefined => {
-		const registration = this.liveWorkflowStageRoutes.get(target);
-		if (registration === undefined) return undefined;
-		// The alias is owned by the run that registered it: route capabilities are per run,
-		// and for boundary-form targets the depth-first owner resolution selects the root
-		// registration, whose capability legitimately differs from the nested stage's own.
-		// Validate staleness against the alias's own run registration and require the alias
-		// to stay anchored inside the target's invocation.
-		const ownRegistration = this.pendingStageRoutes.get(registration.runId);
-		const parsed = parseWorkflowStageTarget(target);
-		if (
-			ownRegistration === undefined ||
-			ownRegistration.capability !== registration.capability ||
-			parsed === undefined ||
-			normalizeGroup(ownRegistration.group) !== normalizeGroup(`workflow:${parsed.rootRunId}`)
-		) {
-			this.liveWorkflowStageRoutes.delete(target);
-			return undefined;
-		}
-		const session = this.sessions.get(registration.sessionId);
-		if (session !== undefined && isAgentRecipient(session.info)) return session;
-		this.liveWorkflowStageRoutes.delete(target);
-		return undefined;
-	};
-
 	private canInspectSelectedGroup(requester: ConnectedSession, selectedGroup: string): boolean {
-		const selected = normalizeGroup(selectedGroup);
-		const groups = sessionGroups(requester.info);
-		for (const roster of this.workflowRosters.values()) {
-			if (!roster.stages.some((stage) => stage.group === selected && invocationOwnsGroup(roster.group, selected))) continue;
-			return groups.has(selected) || this.canControlWorkflowInvocation(requester, roster.group);
-		}
-		return requester.reach === undefined || canPeek(requester.reach, selected);
-	}
-
-	/**
-	 * The run's host queued a message for the stages `target` names: each of them may answer its sender once it starts
-	 * and the message reaches it. An owner's answer for a message it had already queued or delivered changes nothing.
-	 */
-	private queueStageReturnPath(pending: PendingStageAcknowledgment): void {
-		const sender = this.sessions.get(pending.senderSessionId);
-		if (sender === undefined || sender.info.id !== pending.sender.id) return;
-		// A stage may take its route while its host is still answering for this message (the going-live barrier holds
-		// the stage's acknowledgment behind it); the host hands the message to that live stage, so it reaches it now.
-		const parsed = parseWorkflowStageTarget(pending.target);
-		const liveRoutes: { stage: ReturnPathParty; target: string }[] = [];
-		const runPrefix = parsed === undefined ? undefined : `workflow:${parsed.rootRunId}/`;
-		for (const [target, route] of this.liveWorkflowStageRoutes) {
-			if (runPrefix === undefined || !target.startsWith(runPrefix)) continue;
-			const stage = this.sessions.get(route.sessionId);
-			if (stage !== undefined) liveRoutes.push({ stage: returnPathParty(stage), target });
-		}
-		this.returnPaths.queue(pending.target, returnPathParty(sender), pending.messageId, liveRoutes, (stage, from) =>
-			this.canAlreadyReach(stage.sessionId, from),
-		);
+		return requester.reach === undefined || canPeek(requester.reach, normalizeGroup(selectedGroup));
 	}
 
 	/** Whether a live session here other than `departed` is registered under `departed`'s return-path identity. */
@@ -1032,193 +677,6 @@ class IntercomBroker {
 		}
 		return false;
 	}
-
-	/** A stage took `target`: the messages queued for it reached it, opening its paths back to their senders. */
-	private stageTookRoute(stage: ConnectedSession, target: string): void {
-		this.returnPaths.stageStarted(returnPathParty(stage), target, (sender: ReturnPathSender) =>
-			this.canAlreadyReach(stage.info.id, sender),
-		);
-	}
-
-	/** Whether the stage `stageId` already shares a group with `sender`'s live session, so needs no return path to it. */
-	private canAlreadyReach(stageId: string, sender: ReturnPathSender): boolean {
-		const stage = this.sessions.get(stageId);
-		const live = this.sessions.get(sender.sessionId);
-		return (
-			stage !== undefined &&
-			live !== undefined &&
-			returnPathParty(live).identity === sender.identity &&
-			reachesSession(stage, live.info)
-		);
-	}
-
-	/**
-	 * Invocation control may come from the invocation owner, from the session that
-	 * launched the run (#4006), or from an ordinary host session that explicitly
-	 * joined the invocation group. A workflow stage registered under any workflow
-	 * group cannot turn mutable membership into a parent-control capability for a
-	 * sibling (or for another workflow run).
-	 */
-	private canControlWorkflowInvocation(sender: ConnectedSession, invocationGroup: string): boolean {
-		return this.controlsWorkflowInvocationByMembership(sender, invocationGroup) || this.launchedWorkflowInvocation(sender, invocationGroup);
-	}
-
-	private controlsWorkflowInvocationByMembership(sender: ConnectedSession, invocationGroup: string): boolean {
-		if (!hasGroup(sessionGroups(sender.info), invocationGroup)) return false;
-		const registrationGroup = normalizeGroup(sender.registrationGroup);
-		return registrationGroup === invocationGroup || !registrationGroup.startsWith("workflow:");
-	}
-
-	/** #4006: the sender holds a current claim on a run whose route is registered under `invocationGroup`. */
-	private launchedWorkflowInvocation(sender: ConnectedSession, invocationGroup: string): boolean {
-		const claims = this.workflowInvocationClaims.get(sender.info.id);
-		if (claims === undefined) return false;
-		const group = normalizeGroup(invocationGroup);
-		for (const [runId, capability] of claims) {
-			const route = this.pendingStageRoutes.get(runId);
-			if (route?.launcherCapability === capability && normalizeGroup(route.group) === group) return true;
-		}
-		return false;
-	}
-
-	/**
-	 * Only the holder of a run's launcher capability can claim to have launched it. That capability is
-	 * separate from the route capability every stage of the run holds, so a stage cannot claim.
-	 */
-	private claimWorkflowInvocation(sessionId: string, runId: string, capability: string): boolean {
-		const route = this.pendingStageRoutes.get(runId);
-		if (
-			route?.launcherCapability === undefined ||
-			route.launcherCapability !== capability ||
-			!normalizeGroup(route.group).startsWith("workflow:")
-		) {
-			return false;
-		}
-		const claims = this.workflowInvocationClaims.get(sessionId) ?? new Map<string, string>();
-		// Claims on runs whose routes are gone can never authorize again.
-		for (const claimedRunId of claims.keys()) {
-			if (!this.pendingStageRoutes.has(claimedRunId)) claims.delete(claimedRunId);
-		}
-		claims.set(runId, capability);
-		this.workflowInvocationClaims.set(sessionId, claims);
-		return true;
-	}
-
-	private canControlLiveWorkflowStage = (
-		sender: ConnectedSession,
-		target: ConnectedSession,
-		logicalTarget: string,
-	): boolean => {
-		const owner = this.pendingStageOwnerForTarget(logicalTarget)?.registration;
-		const live = this.liveWorkflowStageRoutes.get(logicalTarget);
-		if (owner === undefined || live?.sessionId !== target.info.id) return false;
-		const targetGroup = target.registrationGroup ?? target.info.group ?? "default";
-		return this.canControlWorkflowInvocation(sender, owner.group) && invocationOwnsGroup(owner.group, targetGroup);
-	};
-
-	// `send`/`ask` always resolve this namespace as a stage target. `list({ group })`
-	// remains the only operation that interprets the same path as an owned subgroup.
-
-	private workflowStagesVisibleTo(requester: ConnectedSession, selectedGroup?: string): WorkflowStageRosterEntry[] {
-	const selected = selectedGroup === undefined ? undefined : normalizeGroup(selectedGroup);
-	const entries: WorkflowStageRosterEntry[] = [];
-	for (const [runId, roster] of this.workflowRosters) {
-		for (const stage of roster.stages) {
-			if (!stage.routeEligible || !isAgentRecipient(stage)) continue;
-			const parentControl =
-				this.canControlWorkflowInvocation(requester, roster.group) && invocationOwnsGroup(roster.group, stage.group);
-			const directMembership = reachesGroups(requester, [stage.group]);
-			if (!parentControl && !directMembership) continue;
-			if (selected !== undefined && selected !== stage.group) continue;
-			const live = this.liveWorkflowStageRoutes.get(stage.target);
-			const liveSession = live === undefined ? undefined : this.sessions.get(live.sessionId);
-			if (stage.lifecycle === "running" && liveSession === undefined) continue;
-			// #2784: never list the requester's own stage as an "other" participant.
-			// Ordinary session rows already exclude self; the roster must match.
-			if (liveSession !== undefined && liveSession.info.id === requester.info.id) continue;
-			entries.push({
-				kind: "workflow-stage",
-				runId,
-				stageId: stage.stageId,
-				stageName: stage.stageName,
-				target: stage.target,
-				lifecycle: liveSession === undefined ? "pending" : "running",
-				group: stage.group,
-				...(liveSession === undefined ? {} : { sessionId: liveSession.info.id }),
-			});
-		}
-	}
-	return entries;
-  }
-
-	/**
-	 * D7 (slice 4): possible-future rows published with the run's persisted scan. Visible
-	 * only from inside the invocation — a membership in `workflow:<rootRunId>` or in an
-	 * owned subgroup (`workflow:<rootRunId>/…`). The read-only peek filter keeps the
-	 * invocation-group rows out of every other group's view.
-	 */
-	private workflowFutureStagesVisibleTo(
-		requester: ConnectedSession,
-		selectedGroup?: string,
-	): WorkflowFutureStageRosterEntry[] {
-		const requesterGroups = sessionGroups(requester.info);
-		const selected = selectedGroup === undefined ? undefined : normalizeGroup(selectedGroup);
-		const entries: WorkflowFutureStageRosterEntry[] = [];
-		for (const [runId, roster] of this.workflowRosters) {
-			if (roster.possibleStages === undefined || roster.possibleStages.length === 0) continue;
-			if (
-				![...requesterGroups].some((group) => invocationOwnsGroup(roster.group, group)) &&
-				!this.launchedWorkflowInvocation(requester, roster.group)
-			) {
-				continue;
-			}
-			if (selected !== undefined && selected !== roster.group) continue;
-			for (const row of roster.possibleStages) {
-				if (this.isNonAgentWorkflowTarget(row.target)) continue;
-				entries.push({
-					kind: "workflow-future-stage",
-					runId,
-					target: row.target,
-					queuedCount: row.queuedCount,
-					...(row.deliveryStates === undefined ? {} : { deliveryStates: row.deliveryStates }),
-					...(row.deliveryStateCounts === undefined ? {} : { deliveryStateCounts: row.deliveryStateCounts }),
-					...(row.omittedDeliveryStates === undefined ? {} : { omittedDeliveryStates: row.omittedDeliveryStates }),
-					...(row.deliveryOnly === undefined ? {} : { deliveryOnly: row.deliveryOnly }),
-					...workflowFutureStagePredictionFields(row),
-					group: roster.group,
-				});
-			}
-		}
-		return entries;
-	}
-
-  /** The preconditions of a live workflow-stage route a registrant may hold, checked before any alias is taken. */
-  private liveWorkflowStageRouteRefusal(
-    registrant: ConnectedSession | undefined,
-    runId: string,
-    stageKeys: readonly string[],
-    capability: string,
-  ): LiveWorkflowStageRouteRefusalCode | undefined {
-    if (!stageKeys.every((stageKey) => !stageKey.includes("/") && !stageKey.includes("*"))) return "invalid_stage_key";
-    const ownerRegistration = this.pendingStageRoutes.get(runId);
-    if (ownerRegistration === undefined) return "owner_missing";
-    if (registrant === undefined || !isAgentRecipient(registrant.info)) return "registrant_not_agent";
-    if (ownerRegistration.capability !== capability) return "capability_mismatch";
-    const registrantGroup = registrant.registrationGroup ?? registrant.info.group ?? "default";
-    if (!invocationOwnsGroup(ownerRegistration.group, registrantGroup)) return "group_mismatch";
-    return undefined;
-  }
-
-  /** #4642: a hosted session takes its live workflow-stage aliases as a connected stage would; a refusal keeps it hosted. */
-  private registerHostedLiveRoute(
-    hosted: ConnectedSession,
-    route: NonNullable<ParsedHostedSession["liveRoute"]>,
-  ): LiveWorkflowStageRouteRefusalCode | undefined {
-    return (
-      this.liveWorkflowStageRouteRefusal(hosted, route.runId, route.stageKeys, route.capability) ??
-      this.registerLiveWorkflowStageRoute(hosted.info.id, randomUUID(), route.runId, route.stageKeys, route.capability)
-    );
-  }
 
   /** #4642: register one session hosted by `hostId`, listed and addressed like a connected one, on the host's socket. */
   private hostSession(hostId: string, socket: net.Socket, item: ParsedHostedSession, confined: boolean): ConnectedSession {
@@ -1261,843 +719,6 @@ class IntercomBroker {
       error: serializeIntercomHostedSessionError(error),
     });
   }
-
-  private acknowledgeLiveWorkflowStageRoute(requestId: string): void {
-    const activation = this.liveWorkflowStageRouteActivations.get(requestId);
-    if (activation === undefined || activation.pendingRequestIds.size > 0) return;
-    this.liveWorkflowStageRouteActivations.delete(requestId);
-    const stage = this.sessions.get(activation.sessionId);
-    if (stage !== undefined) writeMessageIfOpen(stage.socket, { type: "live_workflow_stage_route_registered", requestId });
-  }
-
-  private releasePendingStageAcknowledgment(requestId: string): void {
-    for (const [activationId, activation] of this.liveWorkflowStageRouteActivations) {
-      if (!activation.pendingRequestIds.delete(requestId)) continue;
-      this.acknowledgeLiveWorkflowStageRoute(activationId);
-    }
-  }
-
-  /** Stage names shared by more than one agent stage of a roster; hosts resolve them to no stage. */
-  private ambiguousStageNames(roster: WorkflowRosterRegistration | undefined): ReadonlySet<string> {
-    const counts = new Map<string, number>();
-    for (const stage of roster?.stages ?? []) {
-      if (!isAgentRecipient(stage)) continue;
-      counts.set(stage.stageName, (counts.get(stage.stageName) ?? 0) + 1);
-    }
-    return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name));
-  }
-
-  /**
-   * #3163: once a run's roster makes a stage name ambiguous, no occurrence may keep the
-   * name-form alias — otherwise a send to `workflow:<root>/reviewer-a` would still reach
-   * the retained earlier round while the later round is the one running. The id-form
-   * aliases stay; the name resolves through the owner, which treats it as ambiguous.
-   */
-  private retireAmbiguousNameAliases(runId: string): void {
-    const roster = this.workflowRosters.get(runId);
-    const ambiguousNames = this.ambiguousStageNames(roster);
-    if (ambiguousNames.size === 0) return;
-    const stages = roster?.stages ?? [];
-    for (const stage of stages) {
-      if (!ambiguousNames.has(stage.stageName)) continue;
-      // A name that is also some stage's id addresses that stage; leave its id alias alone.
-      if (stages.some((candidate) => candidate.stageId === stage.stageName)) continue;
-      const nameTarget = withWorkflowStageTargetFinalSegment(stage.target, stage.stageName);
-      if (nameTarget === undefined || nameTarget === stage.target) continue;
-      if (this.liveWorkflowStageRoutes.get(nameTarget)?.runId === runId) this.liveWorkflowStageRoutes.delete(nameTarget);
-    }
-  }
-
-  /** Register the stage's live aliases; returns the refusal code when a precondition fails. */
-  private registerLiveWorkflowStageRoute(
-    currentId: string,
-    requestId: string,
-    runId: string,
-    stageKeys: readonly string[],
-    capability: string,
-  ): LiveWorkflowStageRouteRefusalCode | undefined {
-		const uniqueStageKeys = [...new Set(stageKeys)];
-		const owner = this.pendingStageRoutes.get(runId);
-		if (owner === undefined) return "owner_missing";
-		if (!owner.group.startsWith("workflow:")) return "owner_not_workflow";
-		const rootRunId = owner.group.slice("workflow:".length);
-		// D8 clarification: advertised targets are depth-faithful, so the live aliases must be
-		// depth-faithful too. The roster publishes the id-form target per stage; the name form
-		// swaps its final segment. Without a roster entry, fall back to the flat run-id prefix
-		// (still an accepted resolver input).
-		const roster = this.workflowRosters.get(runId);
-		const rosterMatches = (key: string): WorkflowStageRosterAnnouncement[] =>
-			roster?.stages.filter((stage) => stage.stageId === key || stage.stageName === key) ?? [];
-		if (uniqueStageKeys.some((key) => {
-			const matches = rosterMatches(key);
-			return matches.length > 0 && matches.every((stage) => !isAgentRecipient(stage));
-		})) return "non_agent_stage_key";
-		// #3163: a stage name reused by a later occurrence (`reviewer-a` in review round two)
-		// is ambiguous — hosts resolve such a name to no stage — so it gets no name alias
-		// rather than colliding with the retained earlier occurrence's live session. The
-		// stage stays addressable by its id-form target, which the roster advertises.
-		const ambiguousNames = this.ambiguousStageNames(roster);
-		this.retireAmbiguousNameAliases(runId);
-		const stages = roster?.stages ?? [];
-		// The registrant is the roster stage its own `[id, name]` keys describe. A key is an
-		// id alias only when it is *that* stage's id: a name that happens to equal another
-		// stage's id must not take over that stage's route.
-		const registrant =
-			stages.find((stage) => uniqueStageKeys.includes(stage.stageId) &&
-				(uniqueStageKeys.length === 1 || uniqueStageKeys.includes(stage.stageName))) ??
-			(uniqueStageKeys.length === 1 ? rosterMatches(uniqueStageKeys[0]!).find(isAgentRecipient) : undefined);
-		const idOfAnotherStage = (key: string): boolean =>
-			stages.some((stage) => stage.stageId === key && stage !== registrant);
-		const targets = uniqueStageKeys.flatMap((stageKey) => {
-			if (idOfAnotherStage(stageKey)) return [];
-			const registrantTarget = registrant === undefined ? undefined : parseWorkflowStageTarget(registrant.target);
-			if (registrant !== undefined && registrantTarget?.kind === "path") {
-				if (stageKey === registrant.stageId) return [registrant.target];
-				if (ambiguousNames.has(stageKey)) return [];
-				return [withWorkflowStageTargetFinalSegment(registrant.target, stageKey) ?? registrant.target];
-			}
-			if (ambiguousNames.has(stageKey)) return [];
-			const prefix = runId === rootRunId ? [] : [runId];
-			return [formatWorkflowStageTarget(rootRunId, ...prefix, stageKey)];
-		});
-		for (const target of targets) {
-			const existing = this.liveWorkflowStageRoutes.get(target);
-      if (
-        existing !== undefined &&
-        existing.sessionId !== currentId &&
-        this.sessions.has(existing.sessionId)
-      ) {
-        return "duplicate_live_owner";
-      }
-    }
-    for (const target of targets) {
-      this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability, runId });
-    }
-    const stage = this.sessions.get(currentId);
-    if (stage !== undefined) for (const target of targets) this.stageTookRoute(stage, target);
-    this.recordWorkflowStageAliases(currentId, runId, registrant?.target ?? targets[0]);
-    const pendingRequestIds = new Set(
-      [...this.pendingStageAcknowledgments]
-				.filter(([, pending]) => {
-					// Match in-flight pendings of the whole invocation, not just this run's own:
-					// boundary-form pendings settle on the root registration while the going-live
-					// stage may register under its nested child run.
-					const parsedPending = parseWorkflowStageTarget(pending.target);
-					if (parsedPending === undefined || parsedPending.rootRunId !== rootRunId) return false;
-					if (parsedPending.kind !== "path") {
-						// Slice 3: sticky pattern pendings hold the going-live barrier when the
-						// stage's advertised depth-faithful target matches the pattern.
-						return uniqueStageKeys.some((stageKey) => {
-							const entry = roster?.stages.find(
-								(candidate) => candidate.stageId === stageKey || candidate.stageName === stageKey,
-							);
-							const parsedEntry = entry === undefined ? undefined : parseWorkflowStageTarget(entry.target);
-							if (parsedEntry === undefined) {
-								return matchStagePathSegments(parsedPending.segments, parsedPending.segments);
-							}
-							return matchStagePathSegments(parsedPending.segments, parsedEntry.segments);
-						});
-					}
-					return uniqueStageKeys.includes(parsedPending.segments.at(-1) ?? "");
-				})
-        .map(([pendingRequestId]) => pendingRequestId),
-    );
-    this.liveWorkflowStageRouteActivations.set(requestId, { sessionId: currentId, pendingRequestIds });
-    this.acknowledgeLiveWorkflowStageRoute(requestId);
-    return undefined;
-  }
-
-	/** #4639: the stage session's names and ids reach its stage at `target` for as long as the run's route lives. */
-	private recordWorkflowStageAliases(sessionId: string, runId: string, target: string | undefined): void {
-		const session = this.sessions.get(sessionId);
-		if (session === undefined || target === undefined) return;
-		const group = normalizeGroup(session.registrationGroup ?? session.info.group);
-		const aliases = [session.info.name, session.registrationName, session.info.id, session.registrationReturnAddress];
-		this.workflowStageAliases.record({ runId, target, group }, aliases.filter((alias): alias is string => alias !== undefined));
-	}
-
-	/**
-	 * #4639: the `workflow:` target a stage session's name or id stands for, to a sender that may reach the stage: one
-	 * in the stage's group, or one that controls its run. Anyone else finds nothing, as before.
-	 */
-	private resolveWorkflowStageAlias = (sender: ConnectedSession, alias: string): string | undefined => {
-		const stage = this.workflowStageAliases.resolve(alias);
-		if (stage === undefined) return undefined;
-		const route = this.pendingStageRoutes.get(stage.runId);
-		if (route === undefined) {
-			this.workflowStageAliases.forgetRun(stage.runId);
-			return undefined;
-		}
-		const reachable = reachesGroups(sender, [stage.group]) || this.canControlWorkflowInvocation(sender, route.group);
-		if (!reachable) return undefined;
-		// #4642: a released stage whose hosted peer is gone and that no live session answers for is refused with why
-		// by the send itself, not forwarded to a run that has nothing to queue for it.
-		const live = this.liveWorkflowStageRoutes.get(stage.target);
-		const liveSession = live === undefined ? undefined : this.sessions.get(live.sessionId);
-		if (liveSession === undefined && this.departedChildren.isReleasedStage(alias, holdSenderOf(sender))) {
-			return undefined;
-		}
-		return stage.target;
-	};
-
-	private routePendingStage = (route: PendingStageRoute): boolean => {
-		const ownerMatch = this.pendingStageOwnerForTarget(route.target);
-		if (ownerMatch === undefined) return false;
-		const { runId, registration: ownerRegistration } = ownerMatch;
-		const owner = this.sessions.get(ownerRegistration.sessionId);
-		if (owner === undefined) {
-			this.pendingStageRoutes.delete(runId);
-			this.workflowStageAliases.forgetRun(runId);
-			this.returnPaths.forgetRun(runId);
-			return false;
-		}
-    if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
-      writeMessageIfOpen(route.socket, {
-        type: "delivery_failed",
-        messageId: route.message.id,
-        ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-        // A workflow stage registered outside the invocation can't gain control by joining; say so.
-        reason: workflowInvocationRefusalFor(route.from.registrationGroup, ownerRegistration.group),
-      });
-      return true;
-    }
-    // #4006: the run's host checks membership again before queueing; say when the broker authorized the launcher instead.
-    const invocationControl =
-      !this.controlsWorkflowInvocationByMembership(route.from, ownerRegistration.group) &&
-      this.launchedWorkflowInvocation(route.from, ownerRegistration.group);
-    const requestId = randomUUID();
-    const timeout = setTimeout(() => {
-      const pending = this.pendingStageAcknowledgments.get(requestId);
-      if (pending === undefined) return;
-      this.pendingStageAcknowledgments.delete(requestId);
-      this.releasePendingStageAcknowledgment(requestId);
-      writeMessageIfOpen(pending.senderSocket, {
-        type: "delivery_failed",
-        messageId: pending.messageId,
-        ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-        reason: "Pending-stage route did not acknowledge the message",
-      });
-    }, PENDING_STAGE_MESSAGE_TIMEOUT_MS);
-    this.pendingStageAcknowledgments.set(requestId, {
-      ownerSessionId: ownerRegistration.sessionId,
-      senderSocket: route.socket,
-      messageId: route.message.id,
-      ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-			runId,
-			target: route.target,
-		senderSessionId: route.from.info.id,
-		sender: { ...route.from.info },
-		message: route.message,
-		...(route.liveTargetId === undefined ? {} : { liveTargetId: route.liveTargetId }),
-		...(route.signature === undefined ? {} : { signature: route.signature }),
-		...(route.resolveReplyTarget === true ? { resolveReplyTarget: true } : {}),
-      timeout,
-    });
-    if (
-      !writeMessageIfOpen(owner.socket, {
-        type: "pending_stage_message",
-        requestId,
-        from: route.from.info,
-		...(route.from.registrationName === undefined ? {} : { senderRegistrationName: route.from.registrationName }),
-		...(route.from.registrationReturnAddress === undefined
-			? {}
-			: { senderReturnAddress: route.from.registrationReturnAddress }),
-			runId,
-			target: route.target,
-        message: route.message,
-		...(route.liveTargetId === undefined ? {} : { live: true }),
-		...(invocationControl ? { invocationControl: true as const } : {}),
-      })
-    ) {
-      // The owner's socket stopped accepting frames between resolving the route
-      // and this write. Unwind the acknowledgment just armed and report the
-      // route as not handled, so the caller answers with an honest
-      // delivery_failed now instead of stalling the sender for the full
-      // acknowledgment timeout on a message nobody ever received.
-      clearTimeout(timeout);
-      this.pendingStageAcknowledgments.delete(requestId);
-      this.releasePendingStageAcknowledgment(requestId);
-      return false;
-    }
-    return true;
-  };
-
-	private settlePendingStageMessageRequest(
-		currentId: string,
-		requestId: string,
-		outcome: "queued" | "delivered" | "forward" | "refused",
-		position: number | undefined,
-		forwardTarget: string | undefined,
-		reason: string | undefined,
-		reasonCode: "message_id_conflict" | undefined,
-		prediction?: WorkflowSendPredictionFields,
-		forwardTargets?: readonly string[],
-	): void {
-		const pending = this.pendingStageAcknowledgments.get(requestId);
-		if (pending === undefined || pending.ownerSessionId !== currentId) return;
-		clearTimeout(pending.timeout);
-		this.pendingStageAcknowledgments.delete(requestId);
-		this.releasePendingStageAcknowledgment(requestId);
-		if (outcome === "forward") {
-			this.forwardValidatedLiveStageMessage(pending, forwardTarget);
-			return;
-		}
-		if (outcome === "delivered") {
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivered",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-			});
-			return;
-		}
-		if (outcome === "queued" && typeof position === "number" && position > 0) {
-			// Slice 3 (D6/D9): a sticky pattern entry answers `queued` once while any
-			// matching live stages receive the message now, as ordinary inbound
-			// messages with the original sender identity. The owner records a live
-			// delivery only for the targets this write actually reached, so a stage
-			// that dropped between the owner's answer and this write is not marked
-			// delivered and a retried send re-forwards to it.
-			this.queueStageReturnPath(pending);
-			const deliveredTargets = this.deliverStickyBroadcast(pending, forwardTargets);
-			const ownerSocket = this.sessions.get(currentId)?.socket;
-			if (deliveredTargets.length > 0 && ownerSocket !== undefined) {
-				writeMessageIfOpen(ownerSocket, {
-					type: "sticky_live_delivered",
-					runId: pending.runId,
-					messageId: pending.messageId,
-					target: pending.target,
-					deliveredTargets,
-				});
-			}
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "queued",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				target: pending.target,
-				position,
-				...prediction,
-			});
-			return;
-		}
-		writeMessageIfOpen(pending.senderSocket, {
-			type: "delivery_failed",
-			messageId: pending.messageId,
-			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-			reason: reason ?? "Pending-stage delivery was refused",
-			...(reasonCode === undefined ? {} : { reasonCode }),
-		});
-	}
-
-	private forwardValidatedLiveStageMessage(pending: PendingStageAcknowledgment, forwardTarget?: string): void {
-		const from = this.sessions.get(pending.senderSessionId);
-		// The route owner chooses the live alias for boundary-form targets, so bind its
-		// forward answer to the sender's own invocation: a target under any other rootRunId
-		// could deliver a sender's message into a different invocation, bypassing the
-		// sender's group authorization on the ordinary send path.
-		const destination = forwardTarget ?? pending.target;
-		const parsedDestination = parseWorkflowStageTarget(destination);
-		const parsedPending = parseWorkflowStageTarget(pending.target);
-		const crossInvocation =
-			parsedDestination === undefined ||
-			parsedPending === undefined ||
-			parsedDestination.rootRunId !== parsedPending.rootRunId;
-		const target = crossInvocation ? undefined : this.resolveLiveWorkflowStage(destination);
-		if (
-			from === undefined ||
-			target === undefined ||
-			(pending.liveTargetId !== undefined && target.info.id !== pending.liveTargetId) ||
-			pending.signature === undefined
-		) {
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivery_failed",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				reason: "Session not found",
-			});
-			return;
-		}
-		const targetIdentity = deliveryTargetIdentity(target);
-		this.retryPendingForget(pending.messageId);
-		const deliveredMatch = this.deliveredMessages.lookupForTarget(
-			pending.messageId,
-			pending.signature,
-			targetIdentity,
-		);
-		// #3761: a recipient that confirms saves ignores a copy it already saved, so a reserved message is sent again.
-		const confirmsSaves = target.acknowledgesReceipt === true;
-		if (deliveredMatch !== "miss" && !(deliveredMatch === "uncertain" && confirmsSaves)) {
-			if (deliveredMatch === "match") {
-				if (pending.message.expectsReply === true) {
-					const acceptedQuestionTarget = this.deliveredMessages.lookupQuestionTarget(
-						pending.messageId,
-						pending.signature,
-						senderGroupIdentity(from),
-					);
-					if (acceptedQuestionTarget === undefined) {
-						writeMessageIfOpen(pending.senderSocket, {
-							type: "delivery_failed",
-							messageId: pending.messageId,
-							...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-							reason: "Accepted Intercom question route could not be securely rebound",
-						});
-						return;
-					}
-					if (!this.deliveredMessages.isQuestionAnswered(pending.messageId))
-						this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
-					if (pending.resolveReplyTarget === true && pending.attemptId !== undefined)
-						writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
-				}
-				writeMessageIfOpen(pending.senderSocket, {
-					type: "delivered",
-					messageId: pending.messageId,
-					...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				});
-				return;
-			}
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivery_failed",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				reason:
-					deliveredMatch === "conflict"
-						? `Intercom message ID '${pending.messageId}' was already delivered with a different target or payload`
-						: deliveredMatch === "uncertain"
-							? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
-							: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
-				...(deliveredMatch === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
-			});
-			return;
-		}
-		const reservation =
-			pending.message.expectsReply === true
-				? this.deliveredMessages.reserveQuestion(
-						pending.messageId,
-						pending.signature,
-						{
-							targetSessionId: target.info.id,
-							senderGroupIdentity: senderGroupIdentity(from),
-						},
-						Date.now(),
-						targetIdentity,
-					)
-				: this.deliveredMessages.reserve(pending.messageId, pending.signature, Date.now(), targetIdentity);
-		if (reservation === "match") {
-			if (pending.message.expectsReply === true) {
-				const acceptedQuestionTarget = this.deliveredMessages.lookupQuestionTarget(
-					pending.messageId,
-					pending.signature,
-					senderGroupIdentity(from),
-				);
-				if (acceptedQuestionTarget === undefined) {
-					writeMessageIfOpen(pending.senderSocket, {
-						type: "delivery_failed",
-						messageId: pending.messageId,
-						...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-						reason: "Accepted Intercom question route could not be securely rebound",
-					});
-					return;
-				}
-				if (!this.deliveredMessages.isQuestionAnswered(pending.messageId))
-					this.pendingQuestions.record(from.info.id, target.info.id, pending.messageId);
-				if (pending.resolveReplyTarget === true && pending.attemptId !== undefined)
-					writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
-			}
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivered",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-			});
-			return;
-		}
-		if (reservation !== "recorded" && !(reservation === "uncertain" && confirmsSaves)) {
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivery_failed",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				reason:
-					reservation === "capacity"
-						? "Intercom accepted-delivery capacity is full; refusing delivery without evicting live retry authority"
-						: reservation === "uncertain"
-							? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
-							: "Intercom accepted-delivery authority changed before forwarding; refusing possible duplicate delivery",
-				...(reservation === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
-			});
-			return;
-		}
-		if (pending.message.expectsReply === true && pending.resolveReplyTarget === true && pending.attemptId !== undefined)
-			writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
-		const frame: BrokerMessage = messageFrameFor(target, pending.sender, pending.message);
-		const signature = pending.signature;
-		// Taken as the message is handed over: its receipt opens nothing once every registration of the sender ended since.
-		const handedOver = this.returnPaths.mark();
-		const finish = (recipient: ConnectedSession, sender: ReceiptSender | undefined): void => {
-			const notify = (message: BrokerMessage): void => {
-				if (sender !== undefined) writeMessageIfOpen(sender.socket, message);
-			};
-			const senderAttempt = sender?.attemptId === undefined ? {} : { attemptId: sender.attemptId };
-			let accepted: ReturnType<DeliveredMessageCache["accept"]>;
-			try {
-				accepted = this.deliveredMessages.accept(pending.messageId, signature, targetIdentity);
-			} catch {
-				notify({
-					type: "delivery_failed",
-					messageId: pending.messageId,
-					...senderAttempt,
-					reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
-				});
-				return;
-			}
-			if (accepted !== "accepted") {
-				notify({
-					type: "delivery_failed",
-					messageId: pending.messageId,
-					...senderAttempt,
-					reason: "Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
-					...(accepted === "conflict" ? { reasonCode: "message_id_conflict" as const } : {}),
-				});
-				return;
-			}
-			if (pending.message.expectsReply === true && sender !== undefined) {
-				this.pendingQuestions.record(from.info.id, recipient.info.id, pending.messageId);
-				// #3761: a recipient that reconnected before confirming answers under its new session id.
-				if (recipient.info.id !== target.info.id && pending.resolveReplyTarget === true && sender.attemptId !== undefined)
-					notify({ type: "question_target", messageId: pending.messageId, attemptId: sender.attemptId, sessionId: recipient.info.id });
-			}
-			if (pending.message.replyTo !== undefined && this.pendingQuestions.clearReply(from.info.id, recipient.info.id, pending.message.replyTo)) {
-				this.deliveredMessages.settleQuestion(pending.message.replyTo);
-			}
-			this.returnPathAuthority.delivered(recipient, returnPathParty(from), from.info, pending.messageId, handedOver);
-			notify({ type: "delivered", messageId: pending.messageId, ...senderAttempt });
-		};
-		const sender: ReceiptSender = {
-			socket: pending.senderSocket,
-			...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-		};
-		if (confirmsSaves) {
-			this.receipts.await(
-				{
-					messageId: pending.messageId,
-					targetIdentity,
-					frame,
-					complete: finish,
-					expire: (waiting) => {
-						writeMessageIfOpen(waiting.socket, {
-							type: "delivery_failed",
-							messageId: pending.messageId,
-							...(waiting.attemptId === undefined ? {} : { attemptId: waiting.attemptId }),
-							reason: UNCERTAIN_RECEIPT_REASON,
-						});
-					},
-					hold: (waiting, timeoutMs) => {
-						writeMessageIfOpen(waiting.socket, {
-							type: "send_held",
-							messageId: pending.messageId,
-							...(waiting.attemptId === undefined ? {} : { attemptId: waiting.attemptId }),
-							timeoutMs,
-						});
-					},
-				},
-				sender,
-			);
-		}
-		if (!writeMessageIfOpen(target.socket, frame)) {
-			if (confirmsSaves) this.receipts.drop(pending.messageId);
-			writeMessageIfOpen(pending.senderSocket, {
-				type: "delivery_failed",
-				messageId: pending.messageId,
-				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-				reason: "Session not found",
-			});
-			if (reservation === "recorded") this.forgetDelivered(pending.messageId, pending.signature);
-			return;
-		}
-		if (!confirmsSaves) finish(target, sender);
-	}
-
-
-	/**
-	 * Slice 3 (D6/D9): deliver a sticky broadcast to the live stages the host validated,
-	 * each as an ordinary inbound message frame carrying the original sender identity.
-	 */
-	private deliverStickyBroadcast(
-		pending: PendingStageAcknowledgment,
-		forwardTargets: readonly string[] | undefined,
-	): string[] {
-		if (forwardTargets === undefined || forwardTargets.length === 0) return [];
-		const parsedPending = parseWorkflowStageTarget(pending.target);
-		if (parsedPending === undefined) return [];
-		const invocationGroup = normalizeGroup(`workflow:${parsedPending.rootRunId}`);
-		const delivered: string[] = [];
-		for (const target of forwardTargets) {
-			const targetSession = this.resolveLiveWorkflowStage(target);
-			if (targetSession === undefined) continue;
-			const targetGroup = targetSession.registrationGroup ?? targetSession.info.group ?? "default";
-			if (!invocationOwnsGroup(invocationGroup, normalizeGroup(targetGroup))) continue;
-			// The write itself is the writability check, so a stage that dropped between
-			// the owner's answer and this loop is not reported as delivered and a retried
-			// send re-forwards to it.
-			if (!writeMessageIfOpen(targetSession.socket, messageFrameFor(targetSession, pending.sender, pending.message)))
-				continue;
-			const sender = this.sessions.get(pending.senderSessionId);
-			if (sender !== undefined && sender.info.id === pending.sender.id)
-				this.returnPathAuthority.delivered(targetSession, returnPathParty(sender), pending.sender, pending.messageId);
-			delivered.push(target);
-		}
-		// Deliberately NOT recorded in the delivered-message cache (round-1 review): the
-		// sticky ledger in the workflow host is the durable dedupe authority, so a retry
-		// re-routes to the host, dedupes there, and the sender's ack stays `queued`
-		// instead of flipping to `delivered` between attempts.
-		return delivered;
-	}
-
-	private failPendingStageNotification(
-		socket: net.Socket,
-		messageId: string,
-		attemptId: string | undefined,
-		reason: string,
-		reasonCode?: "message_id_conflict",
-	): void {
-		this.writeAfterDeparture(socket, {
-			type: "delivery_failed",
-			messageId,
-			...(attemptId === undefined ? {} : { attemptId }),
-			reason,
-			...(reasonCode === undefined ? {} : { reasonCode }),
-		});
-	}
-
-	private handlePendingStageNotificationSend(
-		socket: net.Socket,
-		clientMessage: Record<string, unknown>,
-		currentId: string,
-	): void {
-		const message = clientMessage.message;
-		const messageId = typeof message === "object" && message !== null && typeof (message as { id?: unknown }).id === "string"
-			? (message as { id: string }).id
-			: "unknown";
-		const attemptId = typeof clientMessage.attemptId === "string" ? clientMessage.attemptId : undefined;
-		if (
-			typeof clientMessage.runId !== "string" ||
-			typeof clientMessage.capability !== "string" ||
-			typeof clientMessage.to !== "string" ||
-			(clientMessage.senderRegistrationName !== undefined && typeof clientMessage.senderRegistrationName !== "string") ||
-			(clientMessage.senderReturnAddress !== undefined &&
-				(typeof clientMessage.senderReturnAddress !== "string" || clientMessage.senderReturnAddress.length === 0)) ||
-			(clientMessage.attemptId !== undefined && typeof clientMessage.attemptId !== "string") ||
-			!isMessage(message)
-		) {
-			this.failPendingStageNotification(socket, messageId, attemptId, "Invalid pending-stage notification format");
-			return;
-		}
-		const ownerRegistration = this.pendingStageRoutes.get(clientMessage.runId);
-		const owner = this.sessions.get(currentId);
-		const routeGroup = normalizeGroup(ownerRegistration?.group);
-		if (
-			ownerRegistration === undefined ||
-			owner === undefined ||
-			ownerRegistration.sessionId !== currentId ||
-			ownerRegistration.capability !== clientMessage.capability ||
-			normalizeGroup(owner.registrationGroup) !== routeGroup
-		) {
-			this.failPendingStageNotification(socket, message.id, attemptId, "Pending-stage notification is not authorized");
-			return;
-		}
-		const logicalTarget = [
-			clientMessage.runId,
-			clientMessage.to,
-			clientMessage.senderReturnAddress ?? "",
-			clientMessage.senderRegistrationName ?? "",
-			routeGroup,
-		].join(":");
-		const signature = buildMessageSendSignature(logicalTarget, message, clientMessage.capability);
-		this.retryPendingForget(message.id);
-		const deliveredMatch = this.deliveredMessages.lookup(message.id, signature);
-		if (deliveredMatch === "match") {
-			writeMessageIfOpen(socket, { type: "delivered", messageId: message.id, ...(attemptId === undefined ? {} : { attemptId }) });
-			return;
-		}
-		if (deliveredMatch !== "miss") {
-			this.failPendingStageNotification(
-				socket,
-				message.id,
-				attemptId,
-				deliveredMatch === "conflict"
-					? `Intercom message ID '${message.id}' was already delivered with a different target or payload`
-					: deliveredMatch === "uncertain"
-						? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
-						: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
-				deliveredMatch === "conflict" ? "message_id_conflict" : undefined,
-			);
-			return;
-		}
-
-		let target = this.sessions.get(clientMessage.to);
-		if (target === undefined && clientMessage.senderReturnAddress !== undefined) {
-			const matches = [...this.sessions.values()].filter(
-				(session) =>
-					session.registrationReturnAddress === clientMessage.senderReturnAddress &&
-					normalizeGroup(session.registrationGroup) === routeGroup,
-			);
-			if (matches.length === 1) target = matches[0];
-		} else if (target === undefined && clientMessage.senderRegistrationName !== undefined) {
-			const alias = clientMessage.senderRegistrationName.trim().toLowerCase();
-			if (alias.length > 0) {
-				// Legacy durable records can only use the immutable registration name/group fallback.
-				const matches = [...this.sessions.values()].filter(
-					(session) =>
-						session.registrationName?.toLowerCase() === alias &&
-						normalizeGroup(session.registrationGroup) === routeGroup,
-				);
-				if (matches.length === 1) target = matches[0];
-			}
-		}
-		if (
-			target === undefined ||
-			!isAgentRecipient(target.info) ||
-			target.info.id === currentId ||
-			!this.canReceivePendingStageNotification(target, clientMessage.to, routeGroup)
-		) {
-			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
-			return;
-		}
-
-		const requestId = randomUUID();
-		let reservation: ReturnType<DeliveredMessageCache["reserve"]>;
-		try {
-			reservation = this.deliveredMessages.reserve(message.id, signature);
-		} catch {
-			this.failPendingStageNotification(
-				socket,
-				message.id,
-				attemptId,
-				"Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
-			);
-			return;
-		}
-		if (reservation === "match") {
-			writeMessageIfOpen(socket, {
-				type: "delivered",
-				messageId: message.id,
-				...(attemptId === undefined ? {} : { attemptId }),
-			});
-			return;
-		}
-		if (reservation !== "recorded") {
-			this.failPendingStageNotification(
-				socket,
-				message.id,
-				attemptId,
-				reservation === "capacity"
-					? "Intercom accepted-delivery capacity is full; refusing delivery without evicting live retry authority"
-					: reservation === "conflict"
-						? `Intercom message ID '${message.id}' was already delivered with a different target or payload`
-						: reservation === "uncertain"
-							? "Intercom cannot prove whether this reserved operation reached its recipient; refusing redelivery"
-							: "Intercom accepted-delivery authority is invalid; refusing possible duplicate delivery",
-				reservation === "conflict" ? "message_id_conflict" : undefined,
-			);
-			return;
-		}
-
-		const timeout = setTimeout(() => {
-			const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
-			if (pending === undefined) return;
-			this.pendingStageNotificationAcknowledgments.delete(requestId);
-			this.failPendingStageNotification(
-				pending.senderSocket,
-				pending.messageId,
-				pending.attemptId,
-				"Recipient did not acknowledge the pending-stage notification",
-			);
-			this.forgetDelivered(pending.messageId, pending.signature);
-		}, PENDING_STAGE_MESSAGE_TIMEOUT_MS);
-		this.pendingStageNotificationAcknowledgments.set(requestId, {
-			ownerSessionId: currentId,
-			recipientSessionId: target.info.id,
-			senderSocket: socket,
-			messageId: message.id,
-			...(attemptId === undefined ? {} : { attemptId }),
-			signature,
-			timeout,
-		});
-		if (
-			!writeMessageIfOpen(target.socket, {
-				type: "pending_stage_notification",
-				requestId,
-				from: owner.info,
-				message,
-			})
-		) {
-			// The recipient's socket stopped accepting frames between resolving it and
-			// this write. Release the acknowledgment and fail now, so the owner retries a
-			// message that was never handed over rather than waiting out the ack timeout.
-			clearTimeout(timeout);
-			this.pendingStageNotificationAcknowledgments.delete(requestId);
-			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
-			this.forgetDelivered(message.id, signature);
-		}
-	}
-
-	/**
-	 * A pending-stage notice reaches a session registered in the run's group, or (#4006) the exact
-	 * sender session that controls the run from outside it: the launcher holding a current claim, or
-	 * an ordinary session that joined `workflow:<rootRunId>`. Isolated stages never qualify, and the
-	 * legacy name/return-address fallbacks stay limited to the run's own group.
-	 */
-	private canReceivePendingStageNotification(target: ConnectedSession, to: string, routeGroup: string): boolean {
-		if (normalizeGroup(target.registrationGroup) === routeGroup && hasGroup(sessionGroups(target.info), routeGroup)) {
-			return true;
-		}
-		return target.info.id === to && this.canControlWorkflowInvocation(target, routeGroup);
-	}
-
-	private settlePendingStageNotification(
-		currentId: string,
-		requestId: string,
-		delivered: boolean,
-	): void {
-		const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
-		if (pending === undefined || pending.recipientSessionId !== currentId) return;
-		clearTimeout(pending.timeout);
-		this.pendingStageNotificationAcknowledgments.delete(requestId);
-		if (!delivered) {
-			this.failPendingStageNotification(
-				pending.senderSocket,
-				pending.messageId,
-				pending.attemptId,
-				"Recipient did not admit the pending-stage notification",
-			);
-			this.forgetDelivered(pending.messageId, pending.signature);
-			return;
-		}
-		let accepted: ReturnType<DeliveredMessageCache["accept"]>;
-		try {
-			accepted = this.deliveredMessages.accept(pending.messageId, pending.signature);
-		} catch {
-			this.failPendingStageNotification(
-				pending.senderSocket,
-				pending.messageId,
-				pending.attemptId,
-				"Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
-			);
-			return;
-		}
-		if (accepted !== "accepted") {
-			this.failPendingStageNotification(
-				pending.senderSocket,
-				pending.messageId,
-				pending.attemptId,
-				"Intercom could not durably confirm the forwarded operation; refusing a possibly unsafe retry",
-				accepted === "conflict" ? "message_id_conflict" : undefined,
-			);
-			return;
-		}
-		writeMessageIfOpen(pending.senderSocket, {
-			type: "delivered",
-			messageId: pending.messageId,
-			...(pending.attemptId === undefined ? {} : { attemptId: pending.attemptId }),
-		});
-	}
 
   /** Register the session under the id it was granted, and complete its registration (see `register`). */
   private completeSessionRegistration(
@@ -2152,11 +773,12 @@ class IntercomBroker {
             sessionId: id,
             ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
             ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
+            // Advertised so a 0.9.x session sends its workflow frames with a `requestId`, which this broker can answer
+            // in place; it no longer advertises `claimsWorkflowInvocations`, so 0.9.x never sends a claim.
             acknowledgesPendingStageRoutes: true as const,
             withdrawsPendingStageRoutes: true as const,
             refusesPendingStageRoutesInPlace: true as const,
             brokerStatus: true as const,
-            claimsWorkflowInvocations: true as const,
             extendsSaves: true as const,
             marksEndedChildren: true as const,
             multiNodeRouting: this.multiNodeStatus,
@@ -2475,8 +1097,6 @@ class IntercomBroker {
 			localSessions: () => this.sessions,
 			remoteSessions: multiNode === undefined ? undefined : () => multiNode.remoteSessions(),
 			canInspectSelectedGroup: (group) => this.canInspectSelectedGroup(requester, group),
-			workflowStages: () => this.workflowStagesVisibleTo(requester, selectedGroup),
-			workflowFutureStages: () => this.workflowFutureStagesVisibleTo(requester, selectedGroup),
 			write: (reply) => {
 				// #5146: presence gathered for this session goes first, so a list never precedes a staler update.
 				this.presenceFanout.flush(socket);
@@ -2598,7 +1218,7 @@ class IntercomBroker {
           });
           break;
         }
-        const assignments: HostedSessionAssignment[] = [];
+        const assignments: Array<HostedSessionAssignment & { liveRouteRefusal?: string }> = [];
         const presences: Promise<void>[] = [];
         // #4639: a host back after its connection closed takes over the departures it kept; hosting a name again ends its.
         this.adoptOrphans(currentId, host);
@@ -2608,11 +1228,11 @@ class IntercomBroker {
             this.dispatchHeldSends(this.departedChildren.supersede(currentId, hosted.registrationName));
           const presence = this.multiNode?.sessionRegistered(hosted);
           if (presence !== undefined) presences.push(presence);
-          const liveRouteRefusal = item.liveRoute === undefined ? undefined : this.registerHostedLiveRoute(hosted, item.liveRoute);
+          // A 0.9.x host's released workflow stage asks for a live route too: it is hosted, and the route refused.
           assignments.push({
             key: item.key,
             sessionId: hosted.info.id,
-            ...(liveRouteRefusal === undefined ? {} : { liveRouteRefusal }),
+            ...(item.liveRoute === true ? { liveRouteRefusal: LEGACY_LIVE_ROUTE_REFUSAL } : {}),
           });
         }
         // Multi-node: the answer waits until other brokers can resolve the hosted sessions, as `registered` does.
@@ -2778,275 +1398,6 @@ class IntercomBroker {
         break;
       }
 
-      case "withdraw_pending_stage_route": {
-        const { runId, generation, requestId } = clientMessage;
-        if (typeof runId !== "string" || !runId || typeof generation !== "string" || !generation || typeof requestId !== "string")
-          throw new Error("Invalid pending-stage route withdrawal");
-        const owner = this.pendingStageRoutes.get(runId);
-        if (owner?.sessionId === currentId && owner.generation === generation && this.sessions.get(currentId)?.socket === socket) {
-          this.forgetPendingStageRoute(runId);
-          this.dispatchHeldSends(this.releaseInvocationOrphans(owner.group));
-        }
-        // A stale request is also settled. Never disclose or remove the replacement owner.
-        writeMessageIfOpen(socket, { type: "pending_stage_route_registered", requestId });
-        break;
-      }
-
-      case "register_pending_stage_route": {
-        if (
-          typeof clientMessage.runId !== "string" ||
-          !clientMessage.runId ||
-          typeof clientMessage.group !== "string" ||
-          typeof clientMessage.capability !== "string" ||
-          !clientMessage.capability ||
-          (clientMessage.requestId !== undefined && typeof clientMessage.requestId !== "string") ||
-          (clientMessage.generation !== undefined && (typeof clientMessage.generation !== "string" || !clientMessage.generation)) ||
-          (clientMessage.launcherCapability !== undefined &&
-            (typeof clientMessage.launcherCapability !== "string" || !clientMessage.launcherCapability))
-        ) {
-          throw new Error("Invalid pending-stage route registration");
-        }
-        const launcherCapability = clientMessage.launcherCapability;
-        const routeRequestId = clientMessage.requestId;
-        // The route is applied synchronously, so this answer proves the update is visible to every later request.
-        const acknowledgeRoute = (): void => {
-          if (routeRequestId !== undefined) {
-            writeMessageIfOpen(socket, { type: "pending_stage_route_registered", requestId: routeRequestId });
-          }
-        };
-        // #3906: a client whose connection carries the routes of many runs asks for a refusal of one of them to be
-        // answered on its own. Authorization is the same either way; only whether the refusal ends the connection differs.
-        const refusesInPlace = routeRequestId !== undefined && clientMessage.refusalKeepsConnection === true;
-        // #3904: the refusal names the registration it answers, so a connection carrying many runs' routes knows which one.
-        const refuseRoute = (code: PendingStageRouteRefusalCode, reason: string): void => {
-          if (refusesInPlace) {
-            writeMessageIfOpen(socket, {
-              type: "pending_stage_route_refused",
-              requestId: routeRequestId,
-              runId: clientMessage.runId,
-              code,
-              reason,
-            });
-            return;
-          }
-          writeMessageIfOpen(socket, {
-            type: "registration_failed",
-            reason,
-            ...(routeRequestId === undefined ? {} : { requestId: routeRequestId }),
-          });
-          this.endRefusedConnection(socket, currentId, setId);
-        };
-        const owner = this.sessions.get(currentId);
-        const existing = this.pendingStageRoutes.get(clientMessage.runId);
-        const ownerGroup = normalizeGroup(owner?.registrationGroup);
-        const dormant = clientMessage.dormant === true;
-        const liveExisting = existing !== undefined && this.sessions.has(existing.sessionId) ? existing : undefined;
-        // #3760: a restarted owner queues for its interrupted run under a dormant route. The process that
-        // resumes the run holds the run's lease and a capability of its own, so it takes the route over and
-        // the dormant owner is told to stop answering for it; a dormant route never takes over another.
-        const yieldedDormant =
-          liveExisting?.dormant === true &&
-          !dormant &&
-          liveExisting.sessionId !== currentId &&
-          liveExisting.capability !== clientMessage.capability &&
-          normalizeGroup(clientMessage.group) === ownerGroup &&
-          liveExisting.group === ownerGroup
-            ? liveExisting
-            : undefined;
-        const activeExisting = yieldedDormant === undefined ? liveExisting : undefined;
-        // #3904: the owning session may move its own route to a new capability. One connection carries
-        // the routes of many runs, so refusing a rotation would end the connection and drop all of them.
-        if (
-          owner === undefined ||
-          normalizeGroup(clientMessage.group) !== ownerGroup ||
-          (activeExisting !== undefined &&
-            (activeExisting.group !== ownerGroup ||
-              (activeExisting.capability !== clientMessage.capability && activeExisting.sessionId !== currentId)))
-        ) {
-          refuseRoute("not_authorized", "Pending-stage route is not authorized");
-          return;
-        }
-        if (
-          clientMessage.stages !== undefined &&
-          (!isWorkflowStageRosterAnnouncements(
-            clientMessage.stages,
-            clientMessage.runId,
-            normalizeGroup(clientMessage.group),
-          ) ||
-            !clientMessage.stages.every((stage) => invocationOwnsGroup(ownerGroup, stage.group)))
-        ) {
-          refuseRoute("invalid_stage_roster", "Invalid workflow-stage roster");
-          return;
-        }
-        if (
-          clientMessage.possibleStages !== undefined &&
-          !isWorkflowPossibleStageAnnouncements(
-            clientMessage.possibleStages,
-            clientMessage.runId,
-            normalizeGroup(clientMessage.group),
-          )
-        ) {
-          refuseRoute("invalid_possible_stage_roster", "Invalid workflow possible-stage roster");
-          return;
-        }
-        // D7 (slice 4): presence replaces, absence keeps — a terminal root publishes `[]`
-        // so the broker drops every future row, while nested runs' re-announcements (which
-        // never carry the field) preserve the root's rows.
-        // Rows from hosts that announce every delivery state are bounded like current hosts' rows.
-        const possibleStages =
-          clientMessage.possibleStages !== undefined
-            ? clientMessage.possibleStages.map((row) => boundWorkflowPossibleStageRow(row))
-            : this.workflowRosters.get(clientMessage.runId)?.possibleStages;
-		// Optional path metadata is advisory for old hosts; omission retains a
-		// previously announced edge during two-session route replay.
-		const parent = readWorkflowRunParentAnnouncement(clientMessage.parent)
-			?? this.workflowRosters.get(clientMessage.runId)?.parent;
-        if (activeExisting !== undefined && activeExisting.sessionId !== currentId) {
-          // A stage replays the process-shared owner announcement before registering its live aliases.
-          // It may publish the materialized roster, but the original workflow owner must continue to
-          // handle pending delivery and own roster cleanup.
-          if (clientMessage.stages !== undefined || possibleStages !== undefined) {
-            this.workflowRosters.set(clientMessage.runId, {
-              ownerSessionId: activeExisting.sessionId,
-              group: ownerGroup,
-              stages: clientMessage.stages ?? [],
-              ...(possibleStages === undefined ? {} : { possibleStages }),
-              ...(parent === undefined ? {} : { parent }),
-            });
-            this.retireAmbiguousNameAliases(clientMessage.runId);
-          }
-          acknowledgeRoute();
-          break;
-        }
-        this.pendingStageRoutes.set(clientMessage.runId, {
-          sessionId: currentId,
-          generation: clientMessage.generation,
-          group: ownerGroup,
-          capability: clientMessage.capability,
-          ...(dormant ? { dormant: true as const } : {}),
-          ...(launcherCapability === undefined ? {} : { launcherCapability }),
-        });
-        if (yieldedDormant !== undefined) {
-          const revoked = this.sessions.get(yieldedDormant.sessionId);
-          if (revoked !== undefined)
-            writeMessageIfOpen(revoked.socket, { type: "pending_stage_route_revoked", runId: clientMessage.runId });
-        }
-        if (clientMessage.stages !== undefined || possibleStages !== undefined) {
-          this.workflowRosters.set(clientMessage.runId, {
-            ownerSessionId: currentId,
-            group: ownerGroup,
-            stages: clientMessage.stages ?? [],
-            ...(possibleStages === undefined ? {} : { possibleStages }),
-            ...(parent === undefined ? {} : { parent }),
-          });
-          this.retireAmbiguousNameAliases(clientMessage.runId);
-        }
-        acknowledgeRoute();
-        break;
-      }
-
-      case "claim_workflow_invocation": {
-        if (
-          typeof clientMessage.requestId !== "string" ||
-          typeof clientMessage.runId !== "string" ||
-          typeof clientMessage.capability !== "string" ||
-          !clientMessage.capability ||
-          currentId === null
-        ) {
-          throw new Error("Invalid workflow invocation claim");
-        }
-        writeMessageIfOpen(socket, {
-          type: "workflow_invocation_claimed",
-          requestId: clientMessage.requestId,
-          claimed: this.claimWorkflowInvocation(currentId, clientMessage.runId, clientMessage.capability),
-        });
-        break;
-      }
-
-      case "register_live_workflow_stage_route": {
-        if (
-          typeof clientMessage.requestId !== "string" ||
-          typeof clientMessage.runId !== "string" ||
-          typeof clientMessage.capability !== "string" ||
-          !clientMessage.capability ||
-          !Array.isArray(clientMessage.stageKeys) ||
-          clientMessage.stageKeys.length < 1 ||
-          clientMessage.stageKeys.length > 2 ||
-          !clientMessage.stageKeys.every((stageKey) => typeof stageKey === "string" && stageKey.length > 0)
-        ) {
-          throw new Error("Invalid live workflow-stage route registration");
-        }
-        const refuse = (code: LiveWorkflowStageRouteRefusalCode): void => {
-          // #3163: every precondition names its own condition, so a stage that started
-          // while its owner was reconnecting is not reported as a duplicate live owner.
-          writeMessageIfOpen(socket, {
-            type: "registration_failed",
-            reason: LIVE_WORKFLOW_STAGE_ROUTE_REFUSAL_REASONS[code],
-            code,
-          });
-          this.endRefusedConnection(socket, currentId, setId);
-        };
-        // A stage name containing "/" or "*" cannot be a canonical path segment, but throwing
-        // here reaches the framing reader's onError and destroys the stage session's whole
-        // broker connection. Refuse orderly like every neighbouring rejection; host clients
-        // filter such name keys and register the stage-id key instead.
-        const precondition = this.liveWorkflowStageRouteRefusal(
-          this.sessions.get(currentId),
-          clientMessage.runId,
-          clientMessage.stageKeys,
-          clientMessage.capability,
-        );
-        if (precondition !== undefined) {
-          refuse(precondition);
-          return;
-        }
-        const refusal = this.registerLiveWorkflowStageRoute(
-          currentId,
-          clientMessage.requestId,
-          clientMessage.runId,
-          clientMessage.stageKeys,
-          clientMessage.capability,
-        );
-        if (refusal !== undefined) {
-          refuse(refusal);
-          return;
-        }
-        break;
-      }
-
-      case "pending_stage_message_result": {
-        if (
-          typeof clientMessage.requestId !== "string" ||
-			(clientMessage.outcome !== "queued" &&
-				clientMessage.outcome !== "delivered" &&
-				clientMessage.outcome !== "forward" &&
-				clientMessage.outcome !== "refused") ||
-			(clientMessage.position !== undefined && typeof clientMessage.position !== "number") ||
-			(clientMessage.target !== undefined && typeof clientMessage.target !== "string") ||
-			(clientMessage.outcome === "forward" && typeof clientMessage.target !== "string") ||
-			(clientMessage.reason !== undefined && typeof clientMessage.reason !== "string") ||
-			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict") ||
-			!isWorkflowSendPredictionFields(clientMessage) ||
-			(clientMessage.forwardTargets !== undefined &&
-				(!Array.isArray(clientMessage.forwardTargets) ||
-					!clientMessage.forwardTargets.every((entry) => typeof entry === "string")))
-        ) {
-          throw new Error("Invalid pending-stage message result");
-        }
-        this.settlePendingStageMessageRequest(
-          currentId,
-          clientMessage.requestId,
-          clientMessage.outcome,
-          clientMessage.position,
-			clientMessage.target,
-			clientMessage.reason,
-			clientMessage.reasonCode,
-			workflowSendPredictionFields(clientMessage),
-			Array.isArray(clientMessage.forwardTargets) ? [...clientMessage.forwardTargets] : undefined,
-        );
-        break;
-      }
-
 		case "send":
 		case "supervisor_send": {
 			const hostedSender = clientMessage.hostedSender;
@@ -3113,19 +1464,6 @@ class IntercomBroker {
 			break;
 		}
 
-		case "send_pending_stage_notification": {
-			this.handlePendingStageNotificationSend(socket, clientMessage, currentId);
-			break;
-		}
-
-		case "pending_stage_notification_result": {
-			if (typeof clientMessage.requestId !== "string" || typeof clientMessage.delivered !== "boolean") {
-				throw new Error("Invalid pending-stage notification result");
-			}
-			this.settlePendingStageNotification(currentId, clientMessage.requestId, clientMessage.delivered);
-			break;
-		}
-
       case "set_reach": {
         const session = this.sessions.get(currentId);
         if (session === undefined || typeof clientMessage.requestId !== "string") throw new Error("Invalid set_reach message");
@@ -3175,6 +1513,18 @@ class IntercomBroker {
         break;
       }
 
+      case "register_pending_stage_route":
+      case "withdraw_pending_stage_route":
+      case "claim_workflow_invocation":
+      case "register_live_workflow_stage_route":
+      case "send_pending_stage_notification":
+      case "pending_stage_message_result":
+      case "pending_stage_notification_result":
+        // A 0.9.x session's workflow frame: answered in place, never by ending the connection (Atomic 0.10.0 removed
+        // workflows; see `legacy-workflow-frames.ts`).
+        answerLegacyWorkflowFrame(socket, clientMessage);
+        break;
+
       default:
         throw new Error(`Unknown client message type: ${clientMessage.type}`);
     }
@@ -3191,18 +1541,12 @@ class IntercomBroker {
       writeMessageIfOpen,
       this.supervisorChannel,
       this.pendingQuestions,
-      this.routePendingStage,
-      this.resolveLiveWorkflowStage,
-      this.canControlLiveWorkflowStage,
-      this.resolveLegacyWorkflowStageTarget,
       writeMessageWithOutcome,
-      this.isNonAgentWorkflowTarget,
       this.holdForRestoringRecipient,
       this.receipts,
       this.routeRemote,
       (sender, group) => this.canInspectSelectedGroup(sender, group),
       this.routeReleasedAskerReply,
-      this.resolveWorkflowStageAlias,
       this.returnPathAuthority,
     );
   }
@@ -3599,15 +1943,12 @@ class IntercomBroker {
   }
 
   private failHeldSendWith(held: HeldSend, error: IntercomRecipientGoneError): void {
-    // #4642: a client that registered below protocol 3 validates `recipientError` against the codes it knows and ends
-    // the connection over one it does not; it gets the plain reason, which already says what the typed error does.
-    const typed = error.code !== "recipient_stage_released" || clientHostsSessions(held.socket);
     writeMessageIfOpen(held.socket, {
       type: "delivery_failed",
       messageId: held.messageId,
       ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
       reason: error.message,
-      ...(typed ? { recipientError: serializeIntercomRecipientGoneError(error) } : {}),
+      recipientError: serializeIntercomRecipientGoneError(error),
     });
   }
 
@@ -3656,18 +1997,10 @@ class IntercomBroker {
     children: readonly ParsedReleasedChild[],
   ): ReleasedChildRefusal | undefined {
     for (const child of children) {
-      const refusal = this.releasedChildGroupRefusal(owner, child) ?? this.releasedChildOwnerRefusal(owner, child.childName);
+      const refusal = this.releasedChildOwnerRefusal(owner, child.childName);
       if (refusal !== undefined) return refusal;
     }
     return undefined;
-  }
-
-  private releasedChildGroupRefusal(owner: ConnectedSession, child: ParsedReleasedChild): ReleasedChildRefusal | undefined {
-    if (child.group === undefined) return undefined;
-    const group = normalizeGroup(child.group);
-    if (!group.startsWith("workflow:")) return undefined;
-    if (group === normalizeGroup(owner.registrationGroup) || hasGroup(sessionGroups(owner.info), group)) return undefined;
-    return { code: "group_not_allowed", childName: child.childName };
   }
 
   private releasedChildOwnerRefusal(requester: ConnectedSession, childName: string): ReleasedChildRefusal | undefined {
@@ -3867,39 +2200,13 @@ class IntercomBroker {
     this.afterDeparture(() => writeMessageIfOpen(socket, frame));
   };
 
-  private forgetPendingStageRoute(runId: string): void {
-    this.pendingStageRoutes.delete(runId);
-    this.workflowRosters.delete(runId);
-    this.workflowStageAliases.forgetRun(runId);
-    this.returnPaths.forgetRun(runId);
-  }
-
-  /** Only the last route of an invocation releases its orphaned children. */
-  private releaseInvocationOrphans(invocation: string): HeldSend[] {
-    for (const route of this.pendingStageRoutes.values()) if (route.group === invocation) return [];
-    const inInvocation = (group: string) => invocationOwnsGroup(invocation, group);
-    return [...this.restoringRecipients.dropOrphans(inInvocation), ...this.departedChildren.dropOrphans(inInvocation)];
-  }
-
   private departSession(sessionId: string, ended: boolean): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
     // #4642: the sessions a connection hosts leave with it, and a hosted session leaves its host's index.
     for (const hostedId of [...(this.hostedSessions.get(sessionId) ?? [])]) this.disconnectSession(hostedId);
     this.hostedSessions.delete(sessionId);
-    if (departed.hostedBy !== undefined) {
-      this.hostedSessions.get(departed.hostedBy)?.delete(sessionId);
-      // A released stage whose peer left answers with why, and where to send instead, rather than `Session not found`.
-      if (departed.registrationName !== undefined) {
-        const marked = this.departedChildren.markStageReleased(departed.hostedBy, {
-          childName: departed.registrationName,
-          group: normalizeGroup(departed.registrationGroup),
-          aliases: [sessionId],
-        });
-        this.refuseHeldSends(marked.refused);
-        this.dispatchHeldSends(marked.evicted);
-      }
-    }
+    if (departed.hostedBy !== undefined) this.hostedSessions.get(departed.hostedBy)?.delete(sessionId);
 
     this.restoringRecipients.dropSender(sessionId);
     this.departedChildren.dropSender(sessionId);
@@ -3917,8 +2224,8 @@ class IntercomBroker {
         });
     }
     // #3760: a departed owner restores nothing more; what it held goes through ordinary routing once it is gone.
-    // #4639: a session whose connection closes while it keeps released children, as a suspended stage's does, keeps
-    // them: sends to them are held until its host session connects again and reserves them.
+    // #4639: a session whose connection closes while it keeps released children keeps them: sends to them are held
+    // until its host session connects again and reserves them.
     const unreserved = [
       ...this.restoringRecipients.dropOwner(sessionId, departed.registrationReturnAddress),
       ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress),
@@ -3995,7 +2302,7 @@ class IntercomBroker {
       if (ended) crashPoint(DEPARTURE_ASKS_TO_IT_FAILED);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An
-    // owner already away, as a suspended workflow stage's session is, says so through its host session when it is back.
+    // owner already away says so through its host session when it is back.
     const ownerAway = departed.supervisorId !== undefined && !this.sessions.has(departed.supervisorId);
     if (
       !parked &&
@@ -4015,47 +2322,6 @@ class IntercomBroker {
       }));
     }
 
-    const endedInvocations = new Set<string>();
-    for (const [runId, owner] of this.pendingStageRoutes) {
-      if (owner.sessionId !== sessionId) continue;
-      this.forgetPendingStageRoute(runId);
-      endedInvocations.add(owner.group);
-    }
-    // #4639: once no route of a run is left, the released children its stages kept while away go with it.
-    for (const invocation of endedInvocations) unreserved.push(...this.releaseInvocationOrphans(invocation));
-    for (const [requestId, pending] of this.pendingStageAcknowledgments) {
-      if (pending.ownerSessionId !== sessionId) continue;
-      clearTimeout(pending.timeout);
-      this.pendingStageAcknowledgments.delete(requestId);
-      this.releasePendingStageAcknowledgment(requestId);
-      this.writeAfterDeparture(pending.senderSocket, {
-        type: "delivery_failed",
-        messageId: pending.messageId,
-        ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
-        reason: "Pending-stage route disconnected before acknowledging the message",
-      });
-    }
-	for (const [requestId, pending] of this.pendingStageNotificationAcknowledgments) {
-		if (pending.ownerSessionId !== sessionId && pending.recipientSessionId !== sessionId) continue;
-		clearTimeout(pending.timeout);
-		this.pendingStageNotificationAcknowledgments.delete(requestId);
-		if (pending.ownerSessionId !== sessionId) {
-			this.failPendingStageNotification(
-				pending.senderSocket,
-				pending.messageId,
-				pending.attemptId,
-				"Recipient disconnected before acknowledging the pending-stage notification",
-			);
-		}
-		this.forgetDelivered(pending.messageId, pending.signature);
-	}
-	for (const [target, registration] of this.liveWorkflowStageRoutes) {
-		if (registration.sessionId === sessionId) this.liveWorkflowStageRoutes.delete(target);
-	}
-	for (const [requestId, activation] of this.liveWorkflowStageRouteActivations) {
-		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
-	}
-	this.workflowInvocationClaims.delete(sessionId);
 	this.sessions.delete(sessionId);
 	if (departed.hostedBy === undefined) this.presenceFanout.forget(departed.socket);
 	this.multiNode?.sessionLeft(departed, parked ? { ownerSessionId: releasedOwner, childName } : undefined, ended);
@@ -4140,20 +2406,12 @@ class IntercomBroker {
     }
     this.sessions.clear();
     this.hostedSessions.clear();
-    this.pendingStageRoutes.clear();
-    this.pendingStageAcknowledgments.clear();
-    this.liveWorkflowStageRoutes.clear();
-    this.liveWorkflowStageRouteActivations.clear();
     this.restoringRecipients.clear();
     this.releasedAskerReplies.clear();
     this.presenceFanout.dispose();
     for (const pending of this.releasedReplyAcks.values()) clearTimeout(pending.timer);
     this.releasedReplyAcks.clear();
     this.receipts.clear();
-	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
-	this.pendingStageNotificationAcknowledgments.clear();
-	if (this.pendingForgetTimer !== null) clearTimeout(this.pendingForgetTimer);
-	this.pendingForgetTimer = null;
 	this.deliveredMessageCache?.close();
     // The watchdog thread ends while this broker's pipe still answers its probes. On Windows, process.exit waits for
     // that thread, and the thread for its probe's connection: one made after the pipe server closed, while a session's

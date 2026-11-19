@@ -17,8 +17,8 @@ interface Place {
 
 /**
  * The order in which a session admits what reaches it: each arriving message takes a place when it arrives, before its
- * save, and every path that writes a message to the session (at once, from the idle queue, on resume, from a closed
- * stage) runs in one of these places. One sender's messages therefore reach the session in the order they arrived,
+ * save, and every path that writes a message to the session (at once, from the idle queue, on resume) runs in one
+ * of these places. One sender's messages therefore reach the session in the order they arrived,
  * whichever path each takes, and a slow save never lets a later message overtake an earlier one.
  */
 export class InboundAdmissionOrder {

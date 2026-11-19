@@ -232,7 +232,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
               text: payload.text,
               displayRanges: payload.displayRanges,
             });
-            // #4639: a supervisor that is a workflow stage without a live session gets it when its stage reopens.
+            // #4639: a supervisor without a live session that the broker queues for gets it when it is back.
             const queued = result.queued === true;
             if (!result.delivered && !queued) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
@@ -253,7 +253,7 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
               content: [{
                 type: "text",
                 text: queued
-                  ? `Progress update queued for supervisor ${metadata.orchestratorTarget}: its workflow stage has no live session now and receives it when it reopens`
+                  ? `Progress update queued for supervisor ${metadata.orchestratorTarget}: it has no live session now and receives it when it is back`
                   : `Progress update sent to supervisor ${metadata.orchestratorTarget}${unverifiedNote}`,
               }],
               isError: false,
@@ -290,8 +290,8 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             displayRanges: payload.displayRanges,
             expectsReply: true,
           });
-          // #4639: a question queued for a supervisor stage without a live session is asked when the stage reopens; its
-          // reply ends this wait as a delivered question's does.
+          // #4639: a question queued for a supervisor without a live session is asked when it is back; its reply ends
+          // this wait as a delivered question's does.
           if (!sendResult.delivered && sendResult.queued !== true) {
             const errorText = `${sendResult.reason ?? "Session may not exist or has disconnected."}${unverifiedNote}`;
             wait.cancel(new Error(`Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}`));

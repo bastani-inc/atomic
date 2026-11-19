@@ -1,6 +1,5 @@
 import type net from "node:net";
 import type { BrokerMessage } from "../types.js";
-import type { WorkflowSendPredictionFields } from "../workflow-prediction-fields.js";
 import { writeMessage } from "./framing.js";
 import {
 	type BrokerProtocolRange,
@@ -39,30 +38,16 @@ export function isSocketOpenForWrite(socket: net.Socket): boolean {
 }
 
 /**
- * Frames the broker writes to a client socket.
- *
- * `BrokerMessage` is the client-validated union. Two frames the broker already
- * emits are absent from it — `sticky_live_delivered`, and `queued` carrying
- * a workflow send's prediction — because `writeMessage` accepts `unknown` and never checked
- * them. Widening the shared union is a separate change, so they are named here
- * rather than typed away with a cast.
+ * Frames the broker writes to a client socket: `BrokerMessage`, the client-validated union, and the answers this broker
+ * still gives a 0.9.x session's workflow frames (see `legacy-workflow-frames.ts`). Those answers are frames 0.9.x
+ * clients handle; clients of this version never send the requests they answer.
  */
 export type BrokerOutboundFrame =
 	| BrokerMessage
-	| {
-			type: "sticky_live_delivered";
-			runId: string;
-			messageId: string;
-			target: string;
-			deliveredTargets: string[];
-	  }
-	| ({
-			type: "queued";
-			messageId: string;
-			attemptId?: string;
-			target: string;
-			position: number;
-	  } & WorkflowSendPredictionFields);
+	| { type: "pending_stage_route_registered"; requestId: string }
+	| { type: "pending_stage_route_refused"; requestId: string; runId: string; code: "not_authorized"; reason: string }
+	| { type: "live_workflow_stage_route_registered"; requestId: string }
+	| { type: "workflow_invocation_claimed"; requestId: string; claimed: false };
 
 /** A frame written while its socket's writes were held, with the outcome callback of a confirmed write. */
 export interface HeldWrite {
@@ -107,6 +92,11 @@ export function recordClientProtocol(socket: net.Socket, protocol: BrokerProtoco
 	else hostingClients.delete(socket);
 	if (protocol.max >= REACH_POLICY_PROTOCOL) reachClients.add(socket);
 	else reachClients.delete(socket);
+}
+
+/** Whether the client on `socket` registered speaking protocol 1 only (Atomic 0.9.71 and earlier). */
+export function isProtocol1Client(socket: net.Socket): boolean {
+	return protocol1Clients.has(socket);
 }
 
 /** #4642: whether the client on `socket` registered speaking protocol 3, so it may host sessions. */

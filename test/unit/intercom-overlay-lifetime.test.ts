@@ -26,8 +26,6 @@ for (const overlay of ["directory", "compose"] as const) {
 		vi.spyOn(client, "sessionId", "get").mockReturnValue("self");
 		vi.spyOn(client, "listDirectory").mockResolvedValue({
 			sessions: [{ ...target, id: "self" }, target],
-			workflowStages: [],
-			workflowFutureStages: [],
 		});
 		const mounted = Promise.withResolvers<void>();
 		const dismissed = Promise.withResolvers<void>();
@@ -86,8 +84,6 @@ test("intercom awaits an already started send and exactly one session record aft
 	vi.spyOn(client, "sessionId", "get").mockReturnValue(manager.getSessionId());
 	vi.spyOn(client, "listDirectory").mockResolvedValue({
 		sessions: [{ ...target, id: manager.getSessionId() }, target],
-		workflowStages: [],
-		workflowFutureStages: [],
 	});
 	const sending = Promise.withResolvers<void>();
 	const deliver = Promise.withResolvers<void>();

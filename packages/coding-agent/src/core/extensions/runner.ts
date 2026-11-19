@@ -1138,10 +1138,19 @@ export class ExtensionRunner {
 	emitResourcesDiscover(
 		cwd: string,
 		reason: ResourcesDiscoverEvent["reason"],
+		reportError?: (error: ExtensionError) => void,
+	): Promise<ResourcesDiscoverCombinedResult>;
+	emitResourcesDiscover(
+		cwd: string,
+		reason: ResourcesDiscoverEvent["reason"],
 		reportError: (error: ExtensionError) => void = (error) => this.emitError(error),
+		admission?: { closed?: Error },
 	): Promise<ResourcesDiscoverCombinedResult> {
-		return runResourceRegistrationBatch(this.runtime, () =>
-			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+		return runResourceRegistrationBatch(
+			this.runtime,
+			() => runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+			false,
+			admission,
 		);
 	}
 
@@ -1168,3 +1177,12 @@ export class ExtensionRunner {
 		);
 	}
 }
+
+// An SDK discovery override can report an independent failure, even after calling the stock method.
+export const stockResourceDiscovery: (
+	this: ExtensionRunner,
+	cwd: string,
+	reason: ResourcesDiscoverEvent["reason"],
+	reportError: ((error: ExtensionError) => void) | undefined,
+	admission: { closed?: Error },
+) => Promise<ResourcesDiscoverCombinedResult> = ExtensionRunner.prototype.emitResourcesDiscover;
