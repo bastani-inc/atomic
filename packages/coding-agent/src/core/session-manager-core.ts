@@ -150,9 +150,12 @@ type SelectedWindow = SessionResume & {
 };
 type OpenedSession = { readonly resume: SelectedWindow } | { readonly snapshot: SessionSnapshot };
 async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Promise<SelectedWindow> {
+	const selected = resume.deferredChildren
+		? await (await import("./storage/session/child-reader.js")).resolveDeferredChildren(store, resume)
+		: resume;
 	return Object.hasOwn(resume, "priorAnswer")
-		? resume
-		: { ...resume, priorAnswer: await savedWindowAnswer(store, resume) };
+		? selected
+		: { ...selected, priorAnswer: await savedWindowAnswer(store, selected) };
 }
 async function readStoredSession(
 	store: SessionStore,
@@ -163,7 +166,9 @@ async function readStoredSession(
 	if (options?.history === "full") return { snapshot: await store.load(sessionId) };
 	if (!store.readResume || !store.readRange)
 		return { resume: await (await import("./storage/session/snapshot-history.js")).snapshotWindow(store, sessionId) };
-	return { resume: await withPriorAnswer(store, await store.readResume(sessionId)) };
+	return {
+		resume: await withPriorAnswer(store, await store.readResume(sessionId, undefined, { deferChildRecords: true })),
+	};
 }
 
 async function openSessionFileWindow(path: string, cwd: string | undefined, options?: SessionOpenOptions) {
@@ -660,6 +665,7 @@ export class SessionManager {
 			),
 		];
 		this.lastSeq = 0;
+		this.childArchive = new ChildCatalog();
 		this.historyStartSeq = 1;
 		this.answerWindowStart = 1;
 		this.priorAnswer = undefined;
@@ -1933,9 +1939,10 @@ export class SessionManager {
 				return target;
 			}
 			let resume: SessionResume;
-			if (this.store.readResumeAt) resume = await this.store.readResumeAt(this.sessionId, id, this.lastSeq);
+			if (this.store.readResumeAt)
+				resume = await this.store.readResumeAt(this.sessionId, id, this.lastSeq, { deferChildRecords: true });
 			else {
-				resume = await this.store.readResume(this.sessionId, id);
+				resume = await this.store.readResume(this.sessionId, id, { deferChildRecords: true });
 				if (
 					resume.lastSeq > this.lastSeq &&
 					(this.historyEpoch === undefined || resume.epoch === this.historyEpoch)

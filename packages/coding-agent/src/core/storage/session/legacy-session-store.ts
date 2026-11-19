@@ -59,6 +59,8 @@ export class LegacySessionStore implements SessionStore {
 	readonly readEntryRange?: (sessionId: string, query: SessionEntriesQuery) => Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
 	readonly readTreeOutline?: SessionStore["readTreeOutline"];
+	readonly readChildCatalogCut?: SessionStore["readChildCatalogCut"];
+	readonly readSelectedPage?: SessionStore["readSelectedPage"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -72,6 +74,16 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		if (inner.readChildCatalogCut)
+			this.readChildCatalogCut = async (id) => {
+				await this.convert(id);
+				return inner.readChildCatalogCut!(id);
+			};
+		if (inner.readSelectedPage)
+			this.readSelectedPage = async (id, seqs, epoch) => {
+				await this.convert(id);
+				return inner.readSelectedPage!(id, seqs, epoch);
+			};
 		if (inner.readTreeOutline)
 			this.readTreeOutline = async (id, from, to, epoch) => {
 				await this.convert(id);
@@ -194,9 +206,10 @@ export class LegacySessionStore implements SessionStore {
 		return findSessionCompaction(this.inner, sessionId, leafId);
 	}
 
-	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+	async readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		await this.convert(sessionId);
-		if (this.inner.readResume) return this.inner.readResume(sessionId, leafId);
+		if (this.inner.readResume)
+			return options ? this.inner.readResume(sessionId, leafId, options) : this.inner.readResume(sessionId, leafId);
 		return (await import("./snapshot-history.js")).snapshotWindow(this.inner, sessionId, leafId);
 	}
 	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {

@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { getLastAssistantText, getSessionStats } from "../../src/core/agent-session-export.ts";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
@@ -267,6 +267,49 @@ it("a cleared parent keeps completed children's addresses rather than their laun
 			data: { launch: { task: "old input" }, extra: "old result", state: "terminal", taskId: "last" },
 		});
 		expect(view.getEntry(id)).toBeUndefined();
+	}
+});
+
+it("cold resume never decodes an oversized settled child payload to recover its heading or earlier task aliases (#5554)", async () => {
+	const store = await sqlStore(),
+		m = await SessionManager.create(store, "/project");
+	const base = {
+		version: 1,
+		childId: "cold",
+		runId: "owner-run",
+		index: 0,
+		agent: "worker",
+		cwd: "/project",
+		owner: { kind: "session", sessionId: m.getSessionId() },
+	};
+	for (const [taskId, state, status] of [
+		["one", "running", "ok"],
+		["two", "terminal", "released"],
+		["three", "running", "ok"],
+		["four", "terminal", "ok"],
+	])
+		await m.appendCustomEntry("subagent-child", {
+			...base,
+			taskId,
+			state,
+			terminalStatus: status,
+			launch: state === "terminal" ? "large child launch " + "x".repeat(2 * 1024 * 1024) : "small",
+		});
+	await m.appendCompaction("clear", null, 10, details);
+	const parse = JSON.parse;
+	let count = 0;
+	const trap = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+		if (text.length > 1024 * 1024 && text.includes("large child launch ")) count++;
+		return parse(text, reviver);
+	});
+	try {
+		const reopened = await SessionManager.open(store, m.getSessionId());
+		expect(count).toBe(0);
+		expect(reopened.getArchivedChildCatalog()).toMatchObject([
+			{ taskIds: ["one", "two", "three", "four"], releasedTaskIds: ["two"] },
+		]);
+	} finally {
+		trap.mockRestore();
 	}
 });
 

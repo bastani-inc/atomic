@@ -6,6 +6,7 @@ import { SessionKeyDigests } from "./key-digests.js";
 import type {
 	SessionBranchPageCut,
 	SessionBranchSpan,
+	SessionChildAliases,
 	SessionCompactionPoint,
 	SessionEntryRange,
 	SessionHistoryTotals,
@@ -25,8 +26,8 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
-/** Version 8 carries snapshot record/restore presence when rebuilding from chunked session entries. */
-const RESUME_INDEX_VERSION = 8;
+/** Version 9 preserves historic task aliases after the observation carrying them is superseded. */
+const RESUME_INDEX_VERSION = 9;
 
 export interface SessionResumeIndex {
 	readonly version: typeof RESUME_INDEX_VERSION;
@@ -35,6 +36,7 @@ export interface SessionResumeIndex {
 	readonly latest: Readonly<Record<string, readonly number[]>>;
 	readonly fields: Readonly<Record<string, readonly (readonly [number, readonly string[]])[]>>;
 	readonly firstChildren: Readonly<Record<string, number>>;
+	readonly childAliases: Readonly<Record<string, SessionChildAliases>>;
 	readonly workflowStarts: Readonly<Record<string, number>>;
 	readonly models: readonly (readonly [number, string])[];
 	readonly assistants: readonly number[];
@@ -253,6 +255,7 @@ type ResumeProtocolIndex = Pick<
 	| "latest"
 	| "fields"
 	| "firstChildren"
+	| "childAliases"
 	| "workflowStarts"
 	| "admissions"
 	| "delivered"
@@ -267,6 +270,7 @@ class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
 	readonly fields: Record<string, readonly (readonly [number, readonly string[]])[]>;
 	readonly firstChildren: Record<string, number>;
+	readonly childAliases: Record<string, SessionChildAliases>;
 	readonly workflowStarts: Record<string, number>;
 	readonly admissions: SessionKeyDigests;
 	readonly delivered: Set<string>;
@@ -280,6 +284,7 @@ class ResumeProtocols {
 		this.latest = { ...previous?.latest };
 		this.fields = { ...previous?.fields };
 		this.firstChildren = { ...previous?.firstChildren };
+		this.childAliases = { ...previous?.childAliases };
 		this.workflowStarts = { ...previous?.workflowStarts };
 		this.admissions = new SessionKeyDigests(previous?.admissions);
 		this.delivered = new Set(previous?.delivered ?? []);
@@ -372,6 +377,24 @@ class ResumeProtocols {
 	private child(data: Record<string, unknown>, seq: number): void {
 		const key = `${text(record(data.owner).sessionId) ?? ""}:${data.childId}`;
 		if (this.firstChildren[key] === undefined) this.firstChildren[key] = seq;
+		const aliasKey = JSON.stringify([text(record(data.owner).sessionId) ?? "", data.childId]);
+		const prev = this.childAliases[aliasKey];
+		const lastTask = Object.hasOwn(data, "taskId") ? text(data.taskId) : prev?.lastTask;
+		const lastStatus = Object.hasOwn(data, "terminalStatus") ? text(data.terminalStatus) : prev?.lastStatus;
+		if (lastTask !== undefined || lastStatus !== undefined) {
+			const ids = prev?.taskIds ?? [],
+				released = new Set(prev?.releasedTaskIds);
+			if (lastTask !== undefined) {
+				if (data.state === "terminal" && lastStatus === "released") released.add(lastTask);
+				else released.delete(lastTask);
+			}
+			this.childAliases[aliasKey] = {
+				taskIds: lastTask !== undefined && !ids.includes(lastTask) ? [...ids, lastTask] : ids,
+				releasedTaskIds: [...released],
+				lastTask,
+				lastStatus,
+			};
+		}
 		const seen = new Set(Object.keys(data));
 		const kept: (readonly [number, readonly string[]])[] = [[seq, [...seen]]];
 		for (const [at, keys] of [...(this.fields[key] ?? [])].reverse()) {
@@ -425,6 +448,7 @@ class ResumeProtocols {
 			latest: this.latest,
 			fields: this.fields,
 			firstChildren: this.firstChildren,
+			childAliases: this.childAliases,
 			workflowStarts: this.workflowStarts,
 			admissions: this.admissions.serialize(),
 			delivered: [...this.delivered],
@@ -638,6 +662,8 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	const index = value as Partial<SessionResumeIndex>;
 	return (
 		index.version === RESUME_INDEX_VERSION &&
+		index.childAliases != null &&
+		typeof index.childAliases === "object" &&
 		!index.needsBranchRebuild &&
 		typeof index.admissions === "string" &&
 		Array.isArray(index.deliveryOps) &&
@@ -954,7 +980,21 @@ export async function findSessionCompaction(
 	return sessionCompactionOf(snapshot.entries, leafId);
 }
 
-export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq) {
+export function childCatalogCut(index: SessionResumeIndex) {
+	return {
+		epoch: index.epoch,
+		lastSeq: index.seq,
+		aliases: index.childAliases,
+		seqs: [
+			...new Set([
+				...Object.values(index.firstChildren),
+				...Object.values(index.fields).flatMap((rows) => rows.map(([seq]) => seq)),
+			]),
+		].sort((a, b) => a - b),
+	};
+}
+
+export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq, deferChildren = false) {
 	const compaction = latestCompactionOf(index, leafSeq);
 	const from =
 		compaction === undefined
@@ -974,7 +1014,15 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 			...acks.map(([, ackSeq]) => ackSeq),
 		]),
 	].sort((left, right) => left - right);
-	return { leafSeq, compaction, branch, state };
+	const candidates = deferChildren ? new Set(childCatalogCut(index).seqs) : undefined;
+	const children = candidates ? state.filter((seq) => candidates.has(seq)) : [];
+	return {
+		leafSeq,
+		compaction,
+		branch,
+		state: children.length ? state.filter((seq) => !candidates!.has(seq)) : state,
+		children,
+	};
 }
 
 export function sessionResumeFrom(
@@ -983,6 +1031,7 @@ export function sessionResumeFrom(
 	branch: readonly SessionStoredEntry[],
 	state: readonly SessionStoredEntry[],
 	leafId: string | null,
+	deferred: readonly number[] = [],
 ): SessionResume {
 	const ranges = branchRanges(index, index.leafSeq);
 	const plan = sessionResumePlan(index);
@@ -1000,6 +1049,14 @@ export function sessionResumeFrom(
 			: {}),
 		branch,
 		state: state.map((held) => ({ ...held, onBranch: onBranch(ranges, held.seq) })),
+		...(deferred.length
+			? {
+					deferredChildren: {
+						positions: deferred.map((seq) => ({ seq, onBranch: onBranch(ranges, seq) })),
+						aliases: index.childAliases,
+					},
+				}
+			: {}),
 		omitted: omittedTotals(
 			index,
 			branch[0]?.seq ?? index.seq + 1,

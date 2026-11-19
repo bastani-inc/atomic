@@ -1,6 +1,6 @@
 import { hash } from "fast-sha256";
 import type { SessionEntry } from "../../session-manager-types.ts";
-import type { ArchivedChildCatalogEntry, SessionStoredEntry } from "./types.js";
+import type { ArchivedChildCatalogEntry, SessionChildAliases, SessionStoredEntry } from "./types.js";
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
@@ -65,6 +65,47 @@ export class ChildCatalog {
 			state: d.state as "running" | "terminal",
 		};
 	}
+	/** Drop payloads before advancing to the next archive page. Keep field presence and delivery guards. */
+	static headingOnly(entry: SessionEntry): SessionEntry {
+		const s = ChildCatalog.inspect(entry);
+		if (!s || entry.type !== "custom")
+			return {
+				type: "custom",
+				customType: "subagent-child",
+				id: entry.id,
+				parentId: entry.parentId,
+				timestamp: entry.timestamp,
+			};
+		const { d, o } = s;
+		const projected: Record<string, unknown> = Object.create(null);
+		for (const field of Object.keys(d)) projected[field] = null;
+		for (const key of ["version", "childId", "runId", "index", "agent", "cwd", "state", "elapsedMs", ...strings])
+			if (Object.hasOwn(d, key))
+				projected[key] = typeof d[key] === "string" || typeof d[key] === "number" ? d[key] : null;
+		projected.owner = { kind: o.kind, sessionId: o.sessionId };
+		if (d.elapsedSpan) {
+			const s = obj(d.elapsedSpan);
+			projected.elapsedSpan = { dispatchedAt: s.dispatchedAt, endedAt: s.endedAt };
+		}
+		for (const key of ["waitingOn", "heldToolResults", "stillRunning"])
+			if (Object.hasOwn(d, key)) projected[key] = Array.isArray(d[key]) && d[key].length ? [true] : [];
+		if (d.wakeFailure) projected.wakeFailure = { taskId: obj(d.wakeFailure).taskId };
+		if (d.heldMessages) {
+			const h = obj(d.heldMessages);
+			projected.heldMessages = {
+				taskId: h.taskId,
+				messages: Array.isArray(h.messages) && h.messages.length ? [true] : [],
+			};
+		}
+		return {
+			type: "custom",
+			customType: "subagent-child",
+			id: entry.id,
+			parentId: entry.parentId,
+			timestamp: entry.timestamp,
+			data: projected,
+		};
+	}
 	private observe(entry: SessionEntry, seq: number): string | undefined {
 		const s = ChildCatalog.inspect(entry);
 		if (!s) return;
@@ -112,7 +153,7 @@ export class ChildCatalog {
 			else valid = false;
 		}
 		Object.assign(heading, extras);
-		if (heading.taskId) {
+		if (heading.taskId !== undefined) {
 			const released = new Set(p?.releasedTaskIds);
 			if (heading.state === "terminal" && heading.terminalStatus === "released") released.add(heading.taskId);
 			else released.delete(heading.taskId);
@@ -195,7 +236,28 @@ export class ChildCatalog {
 	}
 	publish() {
 		this.byEntry = new Map([...this.groups.values()].map((child) => [child.heading.entryId, child]));
-		this.published = [...this.groups.values()].sort((a, b) => a.first - b.first).map((child) => child.heading);
+		this.published = Object.freeze(
+			[...this.groups.values()]
+				.sort((a, b) => a.first - b.first)
+				.map(({ heading }) => {
+					Object.freeze(heading.taskIds);
+					if (heading.releasedTaskIds) Object.freeze(heading.releasedTaskIds);
+					if (heading.elapsedSpan) Object.freeze(heading.elapsedSpan);
+					return Object.freeze(heading);
+				}),
+		);
+	}
+	applyAliases(aliases: Readonly<Record<string, SessionChildAliases>>) {
+		for (const [key, c] of this.groups) {
+			const a = aliases[key];
+			if (a)
+				c.heading = {
+					...c.heading,
+					taskIds: [...a.taskIds],
+					releasedTaskIds: a.releasedTaskIds.length ? [...a.releasedTaskIds] : undefined,
+				};
+		}
+		this.publish();
 	}
 	rows(): readonly ArchivedChildCatalogEntry[] {
 		return this.published;

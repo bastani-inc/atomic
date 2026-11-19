@@ -220,6 +220,18 @@ export interface SessionRecoveryState {
 	readonly deliveryOpIds?: readonly string[];
 }
 
+export interface SessionChildAliases {
+	readonly taskIds: readonly string[];
+	readonly releasedTaskIds: readonly string[];
+	readonly lastTask?: string;
+	readonly lastStatus?: string;
+}
+export interface SessionChildReadCut {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	readonly seqs: readonly number[];
+	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+}
 export interface SessionResume {
 	readonly header: SessionRecordHeader;
 	readonly lastSeq: number;
@@ -231,6 +243,12 @@ export interface SessionResume {
 	readonly state: readonly SessionStateEntry[];
 	readonly omitted: SessionHistoryTotals;
 	readonly recovery: SessionRecoveryState;
+	/** Returned only on a manager's opt-in metadata read. Inspect these child headings before fetching a
+	 * historical payload; an active child may need it on resume, a completed one does not. */
+	readonly deferredChildren?: {
+		readonly positions: readonly { seq: number; onBranch: boolean }[];
+		readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+	};
 }
 
 export interface SessionSummary {
@@ -427,9 +445,16 @@ export interface SessionStore {
 	readEntryChunk?(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
-	readResume?(sessionId: string, leafId?: string): Promise<SessionResume>;
+	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
+	readChildCatalogCut?(sessionId: string): Promise<SessionChildReadCut>;
+	readSelectedPage?(sessionId: string, seqs: readonly number[], epoch: string): Promise<SessionHistoryPage>;
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
-	readResumeAt?(sessionId: string, leafId: string, throughSeq: number): Promise<SessionResume>;
+	readResumeAt?(
+		sessionId: string,
+		leafId: string,
+		throughSeq: number,
+		options?: { deferChildRecords: true },
+	): Promise<SessionResume>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;

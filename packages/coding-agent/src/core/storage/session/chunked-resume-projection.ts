@@ -47,6 +47,8 @@ const childFields = {
 	runId: "short",
 	childId: true,
 	state: "short",
+	taskId: "string",
+	terminalStatus: "short",
 	owner: "owner",
 } as const;
 const customFields: Fields = {
@@ -515,6 +517,32 @@ export async function chunkedTreeOutline(
 	};
 }
 
+const hasItems: Shape = function* (t) {
+	if (t.name !== "startArray") {
+		yield* skip(t);
+		return null;
+	}
+	let present = false;
+	for (let token = yield; token.name !== "endArray"; token = yield) {
+		present = true;
+		yield* skip(token);
+	}
+	return present ? [true] : [];
+};
+// Unknown property names (not values) identify the older observations needed to reconstruct a partial record.
+const retainingKeys = (fields: Fields): Shape =>
+	function* (t) {
+		if (t.name !== "startObject") {
+			yield* skip(t);
+			return null;
+		}
+		const data: Record<string, Json> = Object.create(null);
+		while ((yield).name !== "endObject") {
+			const key = yield* stringValue();
+			data[key] = yield* readValue(yield, field(fields, key));
+		}
+		return data;
+	};
 export async function chunkedChildHeading(chunks: AsyncIterable<Uint8Array>): Promise<SessionEntry> {
 	const e = await read(
 		chunks,
@@ -523,7 +551,12 @@ export async function chunkedChildHeading(chunks: AsyncIterable<Uint8Array>): Pr
 				id: "string",
 				type: "short",
 				customType: "short",
-				data: {
+				data: retainingKeys({
+					waitingOn: hasItems,
+					stillRunning: hasItems,
+					heldToolResults: hasItems,
+					wakeFailure: { taskId: "string" },
+					heldMessages: { taskId: "string", messages: hasItems },
 					version: "number",
 					childId: "string",
 					runId: "string",
@@ -541,7 +574,7 @@ export async function chunkedChildHeading(chunks: AsyncIterable<Uint8Array>): Pr
 					releasedIntercomId: "string",
 					elapsedMs: "number",
 					elapsedSpan: { dispatchedAt: "number", endedAt: "number" },
-				},
+				}),
 			});
 		})(),
 	);

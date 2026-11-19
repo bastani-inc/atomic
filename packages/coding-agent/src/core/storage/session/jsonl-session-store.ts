@@ -47,6 +47,7 @@ import {
 import { summarizeLegacySession } from "./legacy-session-summary.js";
 import {
 	branchRanges,
+	childCatalogCut,
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
@@ -1049,7 +1050,10 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+	readChildCatalogCut(sessionId: string) {
+		return this.run(async () => childCatalogCut((await this.indexed(sessionId)).jsonl.index));
+	}
+	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.run(async () => {
 			if (leafId !== undefined) validateSessionText("entry.id", leafId);
 			const { path, header, jsonl } = await this.indexed(sessionId);
@@ -1067,7 +1071,7 @@ export class JsonlSessionStore implements SessionStore {
 								chunk: (seq, offset, length) => readBytes(path, spanStart(jsonl, seq) + offset, length),
 							}),
 						);
-			const plan = sessionResumePlan(index);
+			const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
 			const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state]);
 			const inBranch = new Set(branchSeqs);
@@ -1083,7 +1087,7 @@ export class JsonlSessionStore implements SessionStore {
 				)
 					throw new SessionConflictError(sessionId, index.seq, index.seq);
 			}
-			return sessionResumeFrom(index, header, branch, state, leaf);
+			return sessionResumeFrom(index, header, branch, state, leaf, plan.children);
 		});
 	}
 
