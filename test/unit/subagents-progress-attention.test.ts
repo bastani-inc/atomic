@@ -8,9 +8,6 @@ import {
 	classify_trend as classifySubagentTrend,
 	FLAT_LOW_SCORE_CEILING,
 	PROGRESS_ATTENTION_THRESHOLD_FRACTION,
-	DEFAULT_FALL_DELTA as subagentFallDelta,
-	DEFAULT_RISE_DELTA as subagentRiseDelta,
-	DEFAULT_TREND_WINDOW as subagentTrendWindow,
 } from "../../packages/subagents/src/runs/shared/progress-trend.js";
 import {
 	DEFAULT_CONTROL_CONFIG,
@@ -18,27 +15,20 @@ import {
 	resolveControlConfig,
 } from "../../packages/subagents/src/runs/shared/subagent-control.js";
 import type { ResolvedControlConfig } from "../../packages/subagents/src/shared/types-results.js";
-import {
-	classify_trend as classifyWorkflowTrend,
-	DEFAULT_FALL_DELTA as workflowFallDelta,
-	DEFAULT_RISE_DELTA as workflowRiseDelta,
-	DEFAULT_TREND_WINDOW as workflowTrendWindow,
-} from "../../packages/workflows/builtin/progress-scoring.js";
 import { moduleDir } from "../helpers/runtime.js";
 
 const TREND_CASES = [
-	{ name: "rising boundary", series: [1, 1, 1, 2.5, 2.5, 2.5] },
-	{ name: "regressing boundary", series: [2.5, 2.5, 2.5, 1, 1, 1] },
-	{ name: "alternating noise", series: [6, 10, 6, 10, 6, 10] },
-	{ name: "short series", series: [5, 6, 7] },
-	{ name: "paper low and flat failure", series: [5, 5, 6, 5, 5, 6] },
+	{ expected: "rising", name: "rising boundary", series: [1, 1, 1, 2.5, 2.5, 2.5] },
+	{ expected: "regressing", name: "regressing boundary", series: [2.5, 2.5, 2.5, 1, 1, 1] },
+	{ expected: "flat", name: "alternating noise", series: [6, 10, 6, 10, 6, 10] },
+	{ expected: "flat", name: "short series", series: [5, 6, 7] },
+	{ expected: "flat", name: "paper low and flat failure", series: [5, 5, 6, 5, 5, 6] },
 ];
 const repoRoot = join(moduleDir(import.meta.url), "../..");
 const PROGRESS_CONSUMER_SOURCES = [
 	"packages/subagents/src/runs/shared/progress-trend.ts",
 	"packages/subagents/src/runs/shared/subagent-control.ts",
 	"packages/subagents/src/runs/shared/long-running-guard.ts",
-	"packages/workflows/builtin/loop-until-done-runner.ts",
 ] as const;
 const TREND_DERIVED_IDENTIFIERS = new Set([
 	"TrendResult",
@@ -226,19 +216,9 @@ function controlConfig(progressScores?: number[]): ResolvedControlConfig {
 }
 
 describe("subagents progress attention", () => {
-	test("progress trend copies produce identical mirrored table results", () => {
-		assert.equal(subagentTrendWindow, workflowTrendWindow);
-		assert.equal(subagentRiseDelta, workflowRiseDelta);
-		assert.equal(subagentFallDelta, workflowFallDelta);
-		for (const testCase of TREND_CASES) {
-			assert.deepEqual(
-				classifySubagentTrend(testCase.series),
-				classifyWorkflowTrend(testCase.series),
-				testCase.name,
-			);
-		}
-		assert.equal(classifySubagentTrend(TREND_CASES[4]!.series).trend, "flat");
-		assert.notEqual(classifySubagentTrend(TREND_CASES[4]!.series).trend, "regressing");
+	test("classifies improving, regressing and inconclusive progress scores", () => {
+		for (const { series, expected, name } of TREND_CASES)
+			assert.equal(classifySubagentTrend(series).trend, expected, name);
 	});
 
 	test("progress control config preserves score-series precedence and ordering", () => {

@@ -20,7 +20,6 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { captureWorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
@@ -49,7 +48,6 @@ import {
 	recordSubagentChildStatus,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	type SubagentChildWaitingCall,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
@@ -68,9 +66,8 @@ import {
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
-import { cleanupWorktrees, createWorktrees } from "../../packages/subagents/src/runs/shared/worktree.js";
+import { cleanupWorktrees, createWorktrees, runGitChecked } from "../../packages/subagents/src/runs/shared/worktree.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
-import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { subagentLaunchCard } from "../helpers/subagent-launch-card.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -103,7 +100,6 @@ interface Harness {
 	readonly deps: ExecutorDeps;
 	readonly runs: Array<{ task: string; options: RunSyncOptions; scope: readonly WorktreeRootMapping[] }>;
 	readonly holds: Array<{ reserve: string; dormant?: true } | { release: string }>;
-	readonly stageState?: Map<string, object>;
 	host: AgentTaskHost;
 	original: OriginalLaunch;
 	originalGate?: PromiseWithResolvers<void>;
@@ -122,7 +118,7 @@ interface Harness {
 	wokenReleasedOn?: readonly SubagentChildWaitingCall[];
 	/** Every tool result a woken run saved into the child's transcript, in order. */
 	readonly saved: DetachedToolResult[];
-	closeOwnerAndReopen(cause: "session-close" | "stage-close"): Promise<void>;
+	closeOwnerAndReopen(cause: "session-close"): Promise<void>;
 	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
 	admit(runId: string, options?: Partial<RunSyncOptions>): Promise<TaskId>;
 	latest(childId: string): SubagentChildRecord | undefined;
@@ -142,11 +138,9 @@ function newHost(): AgentTaskHost {
 	});
 }
 
-function harness(options: { stage?: boolean; sessionManager?: SessionManager } = {}): Harness {
+function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 	const cwd = makeTempDirectory("subagent-wake-restore-");
 	let host = newHost();
-	const stageState = options.stage ? new Map<string, object>() : undefined;
-	const stageBoundary = options.stage ? new WorkflowStageAdmissionBoundary() : undefined;
 	const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
 	const runs: Harness["runs"] = [];
 	const holds: Harness["holds"] = [];
@@ -199,7 +193,6 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 		get deps() {
 			return deps;
 		},
-		...(stageState ? { stageState } : {}),
 		original: "waits",
 		async closeOwnerAndReopen(cause) {
 			await host.close(cause);
@@ -214,22 +207,6 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 			ui: {},
 			sessionManager,
 			getAgentTaskHost: () => host,
-			...(stageState
-				? {
-						orchestrationContext: {
-							kind: "workflow-stage",
-							workflowRunId: "wf-run",
-							workflowStageId: "stage-1",
-							workflowStageName: "build",
-							constraints: { disableWorkflowTool: true },
-							messageAdmission: {
-								extensionState: stageState,
-								boundary: stageBoundary,
-								isOpen: () => stageBoundary?.isOpen() === true,
-							},
-						},
-					}
-				: {}),
 			modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
 			model: undefined,
 			thinkingLevel: undefined,
@@ -431,8 +408,8 @@ async function releasedChild(h: Harness, runId: string): Promise<SubagentChildRe
 	return h.waitForLatest(`${runId}:0`, (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
 }
 
-test("a stage's original launch card opened during a wake counts from the new dispatch (#5570)", async () => {
-	const h = harness({ stage: true });
+test("an original launch card opened during a wake counts from the new dispatch (#5570)", async () => {
+	const h = harness();
 	h.original = "released";
 	h.originalGate = Promise.withResolvers<void>();
 	const first = await h.admit("elapsed-wake");
@@ -874,19 +851,6 @@ test("the worktree of a child its owner's session closed on keeps its unsaved wo
 	const { draft } = await childWithDirtyWorktree(h, "wt-owner-closed");
 
 	await h.closeOwnerAndReopen("session-close");
-	await sleep(KEPT_SETTLE_MS);
-
-	assert.equal(existsSync(draft), true);
-});
-
-test("the worktree of a child its workflow stage paused keeps its unsaved work for the stage's resume (#4326)", async () => {
-	const h = harness({ stage: true });
-	h.original = "waits";
-	const { taskId, draft } = await childWithDirtyWorktree(h, "wt-stage-paused");
-
-	await h.host.pauseTasks();
-	await settled(h, taskId);
-	await h.waitForLatest("wt-stage-paused:0", (record) => record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS);
 	await sleep(KEPT_SETTLE_MS);
 
 	assert.equal(existsSync(draft), true);
