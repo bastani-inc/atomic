@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,13 +11,19 @@ import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/
  * The free space the file system of a database file reports to the move, when a test sets it (#5694); otherwise what the
  * file system says. Only the space it reports changes: the database writes to its real file.
  */
-const reportedFree = vi.hoisted(() => ({ bytes: undefined as number | undefined }));
+const reportedFree = vi.hoisted(() => ({
+	bytes: undefined as number | undefined,
+	/** Only for paths that lead into this directory, through links, as the kernel measures them. */
+	under: undefined as string | undefined,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const original = await importOriginal<typeof import("node:fs/promises")>();
 	const statfs = async (...args: Parameters<typeof original.statfs>) => {
 		const real = await original.statfs(...args);
-		const { bytes } = reportedFree;
-		return bytes === undefined ? real : { ...real, bavail: Math.floor(bytes / Number(real.bsize)) };
+		const { bytes, under } = reportedFree;
+		if (bytes === undefined) return real;
+		if (under !== undefined && !(await original.realpath(String(args[0]))).startsWith(under)) return real;
+		return { ...real, bavail: Math.floor(bytes / Number(real.bsize)) };
 	};
 	return { ...original, default: { ...original, statfs }, statfs };
 });
@@ -91,6 +97,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
 	reportedFree.bytes = undefined;
+	reportedFree.under = undefined;
 	while (closers.length > 0) await closers.pop()?.();
 	rmSync(directory, { recursive: true, force: true });
 });
@@ -578,6 +585,134 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				await store.collectGarbage({ graceSeconds: 3_600 });
 				assert.equal(await layoutOf(database), "rowid");
 				assert.deepEqual(await chunkRows(database), before);
+			});
+
+			for (const other of ["finishes the move", "drops the partial copy"] as const) {
+				test(`a collector completes when another collector ${other} between its room check's statements (#5694)`, async () => {
+					const database = await release0989Store();
+					const before = await chunkRows(database);
+					// An earlier collection stopped after its first copy left a partial copy.
+					const controller = new AbortController();
+					const stopped = new Error("stopped");
+					const first = await SqlSnapshotBlobStore.open(
+						afterEachTransaction(database, async () => {
+							if ((await chunkTables(database)).length > 1) controller.abort(stopped);
+						}),
+						prefix,
+					);
+					await assert.rejects(first.collectGarbage({ graceSeconds: 3_600, signal: controller.signal }), stopped);
+					assert.deepEqual(await chunkTables(database), [chunks, `${chunks}_next`]);
+
+					// Collector A finds the partial copy; collector B, on another connection, then finishes the whole move, or
+					// finds no room for it and drops the copy, before A reads anything else.
+					const path = database.descriptor.location.replace(/^file:\/\//, "").replace(/^file:/, "");
+					const collectorB = await SqlSnapshotBlobStore.open(await openDatabase(path), prefix);
+					let interleaved = false;
+					const paused: SqliteDatabase = {
+						...database,
+						descriptor: database.descriptor,
+						exec: database.exec.bind(database),
+						run: database.run.bind(database),
+						all: database.all.bind(database),
+						close: database.close.bind(database),
+						transaction: database.transaction.bind(database),
+						async get(sql, ...params) {
+							const row = await database.get(sql, ...params);
+							if (!interleaved && row !== undefined && params[0] === `${chunks}_next`) {
+								interleaved = true;
+								if (other === "drops the partial copy") reportedFree.bytes = SNAPSHOT_BLOB_CHUNK_BYTES;
+								try {
+									assert.deepEqual(await collectorB.collectGarbage({ graceSeconds: 3_600 }), []);
+								} finally {
+									reportedFree.bytes = undefined;
+								}
+								assert.equal(
+									await layoutOf(database),
+									other === "finishes the move" ? "rowid" : "WITHOUT ROWID",
+								);
+							}
+							return row as never;
+						},
+					};
+					const collectorA = await SqlSnapshotBlobStore.open(paused, prefix);
+					assert.deepEqual(await collectorA.collectGarbage({ graceSeconds: 3_600 }), []);
+					assert.ok(interleaved, "collector B ran between collector A's statements");
+					assert.deepEqual(await chunkTables(database), [chunks]);
+					assert.equal(await layoutOf(database), "rowid");
+					assert.deepEqual(await chunkRows(database), before);
+					await assertEveryBlobReads(collectorA, STORED, "collector A");
+				});
+			}
+
+			for (const home of ["full", "roomy"] as const) {
+				test.skipIf(process.platform === "win32")(
+					`the room check measures the file system a linked database is on: database on the ${home} disk (#5694)`,
+					async () => {
+						// Two file systems: the database file on one, the link Atomic opens it by on the other.
+						const disks = {
+							full: mkdtempSync(join(directory, "full-")),
+							roomy: mkdtempSync(join(directory, "roomy-")),
+						};
+						const file = join(disks[home], "store.sqlite");
+						const link = join(disks[home === "full" ? "roomy" : "full"], "store.sqlite");
+						writeFileSync(file, "");
+						symlinkSync(file, link);
+						const database = await openDatabase(link);
+						await (await release0989.SqlSnapshotBlobStore.open(database, prefix)).putBlobs(STORED);
+						const before = await chunkRows(database);
+						reportedFree.bytes = SNAPSHOT_BLOB_CHUNK_BYTES;
+						reportedFree.under = realpathSync(disks.full);
+						const store = await SqlSnapshotBlobStore.open(database, prefix);
+						assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+						assert.equal(await layoutOf(database), home === "full" ? "WITHOUT ROWID" : "rowid");
+						assert.deepEqual(await chunkTables(database), [chunks]);
+						assert.deepEqual(await chunkRows(database), before);
+					},
+				);
+			}
+
+			test("the room check counts the chunks the copy lacks, not copies of chunks deleted since they were copied (#5694)", async () => {
+				const database = await release0989Store();
+				// An earlier collection copied every chunk and stopped before its rename.
+				const sourceRows = async () =>
+					Number(
+						(await database.get<SqliteRow & { rows: number }>(`SELECT count(*) AS rows FROM ${chunks}`))?.rows,
+					);
+				const controller = new AbortController();
+				const stopped = new Error("stopped");
+				const first = await SqlSnapshotBlobStore.open(
+					afterEachTransaction(database, async () => {
+						if ((await chunkTables(database)).length < 2) return;
+						const copied = await database.get<SqliteRow & { rows: number }>(
+							`SELECT count(*) AS rows FROM ${chunks}_next`,
+						);
+						if (Number(copied?.rows) >= (await sourceRows())) controller.abort(stopped);
+					}),
+					prefix,
+				);
+				await assert.rejects(first.collectGarbage({ graceSeconds: 3_600, signal: controller.signal }), stopped);
+				// 0.9.89 then deletes every blob and stores as many chunks of other blobs: the copy holds none of them.
+				const replaced = [
+					blob(3 * SNAPSHOT_BLOB_CHUNK_BYTES, 500),
+					blob(3 * SNAPSHOT_BLOB_CHUNK_BYTES, 501),
+					blob(3 * SNAPSHOT_BLOB_CHUNK_BYTES, 502),
+				];
+				await database.run(`DELETE FROM ${blobs}`);
+				await (await release0989.SqlSnapshotBlobStore.open(database, prefix)).putBlobs(replaced);
+				const copiedRows = await database.get<SqliteRow & { rows: number }>(
+					`SELECT count(*) AS rows FROM ${chunks}_next`,
+				);
+				assert.ok(Number(copiedRows?.rows) >= (await sourceRows()), "the copy holds as many rows as the table");
+				const before = await chunkRows(database);
+
+				// Room for the headroom and a chunk, not for copying the table again.
+				reportedFree.bytes = SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + SNAPSHOT_BLOB_CHUNK_BYTES;
+				const store = await SqlSnapshotBlobStore.open(database, prefix);
+				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+				assert.equal(await layoutOf(database), "WITHOUT ROWID");
+				assert.deepEqual(await chunkTables(database), [chunks], "the stale copy is gone");
+				assert.deepEqual(await chunkRows(database), before);
+				await assertEveryBlobReads(store, replaced, "this version");
 			});
 
 			test("the room a move needs holds its copy, the write-ahead log of the copy and the headroom (#5694)", async () => {

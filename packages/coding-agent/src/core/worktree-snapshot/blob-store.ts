@@ -1,5 +1,4 @@
 import { statfs } from "node:fs/promises";
-import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	SqliteDatabase,
@@ -274,25 +273,27 @@ export const SNAPSHOT_CHUNK_MOVE_ROWS = 4;
 export const SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES = 64 * 1024 * 1024;
 
 /**
- * Whether `error`, or a failure it wraps, says the database's disk is full: SQLite's `SQLITE_FULL` (node:sqlite's
- * `errcode` 13, libSQL's code or `rawCode`), or PostgreSQL's `disk_full` (53100).
+ * Whether `error`, or a failure it wraps, says the database's disk is full or failed to read or write: SQLite's
+ * `SQLITE_FULL` or `SQLITE_IOERR` and its extended codes (node:sqlite's `errcode`, libSQL's code or `rawCode`), as a
+ * libSQL server answers when its disk fills, or PostgreSQL's `disk_full` (53100) or `io_error` (58030).
  */
-function isStorageFull(error: unknown): boolean {
+function isStorageSpaceFailure(error: unknown): boolean {
 	const seen = new Set<object>();
 	for (let cause = error; typeof cause === "object" && cause !== null && !seen.has(cause); ) {
 		seen.add(cause);
 		const { code, errcode, rawCode } = cause as { code?: unknown; errcode?: unknown; rawCode?: unknown };
-		if (code === "SQLITE_FULL" || code === "53100") return true;
+		if (typeof code === "string" && /^(?:SQLITE_FULL|SQLITE_IOERR(?:_\w+)?|53100|58030)$/.test(code)) return true;
 		const number = errcode ?? rawCode;
-		if (typeof number === "number" && (number & 0xff) === 13) return true;
+		if (typeof number === "number" && ((number & 0xff) === 13 || (number & 0xff) === 10)) return true;
 		cause = (cause as { cause?: unknown }).cause;
 	}
 	return false;
 }
 
 /**
- * The bytes this process may still write on the file system of a SQLite or libSQL database file, or undefined for a
- * database that is no local file (a libSQL server, Postgres, memory) or when the file system does not say.
+ * The bytes this process may still write on the file system that holds a SQLite or libSQL database file (where a link
+ * to it points, and where its write-ahead log goes), or undefined for a database that is no local file (a libSQL server,
+ * Postgres, memory) or when the file system does not say.
  */
 async function freeBytesBeside({ adapter, location }: StorageDescriptor): Promise<number | undefined> {
 	try {
@@ -303,7 +304,8 @@ async function freeBytesBeside({ adapter, location }: StorageDescriptor): Promis
 			path = /^file:\/\//i.test(file) ? fileURLToPath(file) : decodeURIComponent(file.slice("file:".length));
 		}
 		if (path === undefined || path === "" || path === ":memory:") return undefined;
-		const { bavail, bsize } = await statfs(dirname(path));
+		// The file itself, not its directory: a link to a database on another file system measures that file system.
+		const { bavail, bsize } = await statfs(path);
 		return Number(bavail) * Number(bsize);
 	} catch {
 		return undefined;
@@ -1581,7 +1583,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			} catch (error) {
 				// A disk that fills up ends the move, not the collection (#5694): the partial copy is dropped, its pages back on
 				// the database's free list, and a later collection tries again.
-				if (!isStorageFull(error)) throw error;
+				if (!isStorageSpaceFailure(error)) throw error;
 				await this.betweenBatches(options.pace);
 				return this.dropChunkTable(next, options);
 			}
@@ -1595,19 +1597,38 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Whether the file system of a SQLite or libSQL database file has room to copy what is left of the chunk table to the
 	 * row layout (#5694): the copy grows the file by the bytes its free pages do not hold, and the write-ahead log can
 	 * hold every page the copy writes until a checkpoint moves them into the file, with
-	 * {@link SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES} left over. Always true for a database that is no local file, such as a
-	 * libSQL server, whose full disk the move meets as `SQLITE_FULL` instead.
+	 * {@link SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES} left over. A database whose disk this process cannot see, such as a
+	 * libSQL server, moves only what is left of a table no larger than that headroom: the move must never be what fills
+	 * a disk, and the old layout works as before.
 	 */
 	private async roomForChunkCopy(next: string): Promise<boolean> {
-		const free = await freeBytesBeside(this.database.descriptor);
-		if (free === undefined) return true;
 		const rowsOf = async (table: string) =>
 			Number(
 				(await this.database.get<SqliteRow & { rows: number }>(`SELECT count(*) AS rows FROM ${table}`))?.rows ?? 0,
 			);
 		const copy = this.dialect.tableExists(next);
-		const copied = (await this.database.get(copy.sql, ...copy.params)) === undefined ? 0 : await rowsOf(next);
-		const left = Math.max(0, (await rowsOf(this.tables.blobChunks)) - copied) * SNAPSHOT_BLOB_CHUNK_BYTES;
+		const copyExists = async () => (await this.database.get(copy.sql, ...copy.params)) !== undefined;
+		// The chunks the copy lacks, counted in one statement against what it holds: a copy may also hold copies of chunks
+		// deleted since, which take no more room, and chunks stored since that it lacks.
+		const lacking = async () =>
+			Number(
+				(
+					await this.database.get<SqliteRow & { rows: number }>(
+						`SELECT count(*) AS rows FROM ${this.tables.blobChunks} AS old WHERE NOT EXISTS (SELECT 1 FROM ${next} AS copy WHERE copy.hash = old.hash AND copy.idx = old.idx)`,
+					)
+				)?.rows ?? 0,
+			);
+		const rows = !(await copyExists())
+			? await rowsOf(this.tables.blobChunks)
+			: await lacking().catch(async (error: unknown) => {
+					// Another collector finished the move, which took the copy's name, or dropped the copy, since it was found:
+					// none of it is left to count on. The move's own transactions see which.
+					if (!(await copyExists())) return rowsOf(this.tables.blobChunks);
+					throw error;
+				});
+		const left = rows * SNAPSHOT_BLOB_CHUNK_BYTES;
+		const free = await freeBytesBeside(this.database.descriptor);
+		if (free === undefined) return left <= SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
 		const freePages = await this.database.get<SqliteRow & { bytes: number }>(
 			"SELECT (SELECT freelist_count FROM pragma_freelist_count()) * (SELECT page_size FROM pragma_page_size()) AS bytes",
 		);
@@ -1642,7 +1663,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					return false;
 				});
 			} catch (error) {
-				if (isStorageFull(error)) return;
+				if (isStorageSpaceFailure(error)) return;
 				throw error;
 			}
 			await this.betweenBatches(options.pace);
