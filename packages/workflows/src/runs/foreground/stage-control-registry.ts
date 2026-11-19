@@ -458,6 +458,17 @@ export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
 	return record !== undefined && sources.records.get(record)?.get(source.key) === source.generation;
 }
 
+/** Seed a reply awaiting its message-end notification as streaming rather than as another settled row. */
+export function stageChatMessages(handle: StageControlHandle) {
+	const session = handle.agentSession;
+	return (
+		session?.pendingReplySnapshot ?? {
+			messages: handle.messages,
+			streamingMessage: session?.agent?.state.streamingMessage ?? handle.streamingMessage?.(),
+		}
+	);
+}
+
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
 export function stageWaitsToRetry(handle: Pick<StageControlHandle, "agentSession" | "isWaitingToRetry">): boolean {
 	const session = handle.agentSession;

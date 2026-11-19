@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { retainTurnOutcome } from "../host-notice-window.ts";
-import { sessionEntryToTranscriptMessages } from "../session-manager-history.ts";
+import { inChatOrder, sessionEntryToTranscriptMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
@@ -446,25 +446,36 @@ function transcriptView(
 	hasEntryLookup = false,
 ): TaskViewResult<TaskTranscriptView> {
 	const sessionId = session.getSessionId();
-	const page = taskTranscriptPage(taskId, sessionId, entries, cursor);
+	const ordered = inChatOrder(entries);
+	const page = taskTranscriptPage(taskId, sessionId, ordered, cursor);
 	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
 	const items = page.ok ? page.value.items : [];
 	const entryIds = new Set(items.map((item) => item.source.entryId));
 	const itemIds = new Set(items.map((item) => item.id));
-	const messages = entries.flatMap<AgentMessage>((entry) => {
+	const messages = ordered.flatMap<AgentMessage>((entry) => {
 		if (!entryIds.has(entry.id)) return [];
 		if (entry.type !== "message")
 			return sessionEntryToTranscriptMessages(entry, hasEntryLookup ? sessionId : undefined).map((message) =>
 				retainTurnOutcome(page, message),
 			);
 		const message = entry.message;
-		if (message.role === "assistant")
+		if (message.role === "assistant") {
+			const lastBlock = message.content.findLastIndex(
+				(block) => block.type === "text" || block.type === "thinking" || block.type === "toolCall",
+			);
+			const terminal =
+				message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length";
 			return [
 				{
 					...message,
+					// Only the fragment containing the final indexed block owns the turn's terminal notice.
+					...(terminal && lastBlock >= 0 && !itemIds.has(`${entry.id}:${lastBlock}`)
+						? { stopReason: "stop" as const, errorMessage: undefined }
+						: {}),
 					content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
 				},
 			];
+		}
 		return [message];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;

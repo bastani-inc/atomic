@@ -8,6 +8,7 @@ import {
 import {
 	type StageControlHandle,
 	type StageControlRegistry,
+	stageChatMessages,
 	stageWaitsToRetry,
 } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
@@ -813,14 +814,14 @@ function commandCatalog(handle: StageControlHandle): SessionCommandCatalog | und
 }
 
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {
-	const streamingMessage = handle.agentSession?.agent?.state.streamingMessage;
+	const { messages, streamingMessage } = stageChatMessages(handle);
 	const turn = handle.turnState?.();
 	const status = handle.agentSession?.retryStatus ?? handle.modelSwitch;
 	return {
 		sessionId: handle.sessionId,
 		status: handle.status,
 		isStreaming: handle.isStreaming,
-		messages: [...handle.messages],
+		messages: [...messages],
 		...(streamingMessage === undefined ? {} : { streamingMessage }),
 		...(stageWaitsToRetry(handle) ? { waitingToRetry: true } : {}),
 		...(turn === undefined ? {} : { turn }),

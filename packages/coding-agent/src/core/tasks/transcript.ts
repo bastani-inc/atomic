@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { hostNoticeFromEntry } from "../host-notices.ts";
-import { sessionEntryToContextMessages } from "../session-manager-history.ts";
+import { inChatOrder, sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { Failure, Result } from "./contracts.js";
 import { type TaskLease, type TaskTranscriptSource, taskTranscriptSource } from "./supervisor.js";
 
@@ -46,7 +46,7 @@ export async function readTaskTranscript(
 	const history = await session.loadHistory();
 	if (history.unavailable !== undefined)
 		return { ok: false, error: { code: "TranscriptUnavailable", message: history.unavailable } };
-	return taskTranscriptPage(taskId, session.getSessionId(), history.entries, cursor);
+	return taskTranscriptPage(taskId, session.getSessionId(), inChatOrder(history.entries), cursor);
 }
 
 /** Synchronous history read lets an in-process viewer subscribe without an await gap. */
@@ -57,7 +57,7 @@ export function readTaskTranscriptSnapshot(
 	const bound = taskTranscriptSource(task);
 	if (!bound.ok) return bound;
 	const { session, taskId } = bound.value;
-	return taskTranscriptPage(taskId, session.getSessionId(), session.getEntries(), cursor);
+	return taskTranscriptPage(taskId, session.getSessionId(), inChatOrder(session.getEntries()), cursor);
 }
 
 /** The page of `entries`, the history of task `taskId`'s session `sessionId`, that ends before `cursor`. */

@@ -26,10 +26,7 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 type Fixture = Awaited<ReturnType<typeof createStageSkillFixture>>;
 
 /** Open the stage as another process's chat does: through a worker watch whose snapshot seeds a mirror handle. */
-function withWorkerView<T>(
-	fixture: Pick<Fixture, "registry" | "runId" | "stageId">,
-	use: (mirror: PooledStageHandle) => T,
-): T {
+function openWorkerView(fixture: Pick<Fixture, "registry" | "runId" | "stageId">) {
 	const attempt = { workId: "work", generation: 1 };
 	const watch = "watch-1" as WatchId;
 	let mirror: PooledStageHandle | undefined;
@@ -37,6 +34,8 @@ function withWorkerView<T>(
 		fixture.registry,
 		() => attempt,
 		(message) => {
+			if (message.kind === "stage-events")
+				mirror?.receive({ kind: "events", events: structuredClone(message.events) });
 			if (message.kind !== "stage-command-result" || message.snapshot === undefined) return;
 			const snapshot = structuredClone(message.snapshot);
 			// Reading needs no transport: nothing here delivers to the stage.
@@ -53,13 +52,26 @@ function withWorkerView<T>(
 		},
 	);
 	const target = { runId: fixture.runId, stageId: fixture.stageId };
+	watches.serve({ kind: "stage-command", commandId: 1, attempt, op: "watch", watch, ...target });
+	assert.ok(mirror, "the watch answers with a snapshot");
+	return {
+		mirror,
+		close() {
+			watches.serve({ kind: "stage-command", commandId: 2, attempt, op: "unwatch", watch });
+			mirror?.dispose();
+		},
+	};
+}
+
+function withWorkerView<T>(
+	fixture: Pick<Fixture, "registry" | "runId" | "stageId">,
+	use: (mirror: PooledStageHandle) => T,
+): T {
+	const worker = openWorkerView(fixture);
 	try {
-		watches.serve({ kind: "stage-command", commandId: 1, attempt, op: "watch", watch, ...target });
-		assert.ok(mirror, "the watch answers with a snapshot");
-		return use(mirror);
+		return use(worker.mirror);
 	} finally {
-		watches.serve({ kind: "stage-command", commandId: 2, attempt, op: "unwatch", watch });
-		mirror?.dispose();
+		worker.close();
 	}
 }
 
@@ -233,6 +245,59 @@ test("reopened stage chats still show requesting before the retry's first token 
 		await execution;
 		registry.clear();
 		await stage.cleanup();
+	}
+});
+
+test("a stage opened while its reply is being saved keeps the reply once on either host (#5660)", async () => {
+	const reply = "Reply held at its final save";
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const fixture = await createStageSkillFixture({
+		extensionFactories: [
+			(pi) => {
+				pi.on("message_end", async ({ message }) => {
+					if (
+						message.role === "assistant" &&
+						message.content.some((part) => part.type === "text" && part.text === reply)
+					) {
+						entered.resolve();
+						await release.promise;
+					}
+				});
+			},
+		],
+	});
+	fixture.stage.appendResponses([fauxAssistantMessage(reply)]);
+	const turn = fixture.handle.prompt("Produce a reply");
+	let worker: ReturnType<typeof openWorkerView> | undefined;
+	try {
+		await entered.promise;
+		const attached = fixture.mount();
+		worker = openWorkerView(fixture);
+		const pooled = fixture.mount({ handle: worker.mirror });
+		const counts = () => [attached, pooled].map((view) => text(view).split(reply).length - 1);
+		assert.deepEqual(counts(), [1, 1], "the reply is already visible");
+		const ended = Promise.withResolvers<void>();
+		worker.mirror.subscribe((event) => {
+			if (event.type === "agent_end") ended.resolve();
+		});
+		release.resolve();
+		await turn;
+		await ended.promise;
+		assert.deepEqual(counts(), [1, 1], "saving settles the displayed reply");
+		const next = Promise.withResolvers<void>();
+		worker.mirror.subscribe((event) => {
+			if (event.type === "agent_end") next.resolve();
+		});
+		fixture.stage.appendResponses([fauxAssistantMessage(reply)]);
+		await fixture.handle.prompt("Produce the same reply again");
+		await next.promise;
+		assert.deepEqual(counts(), [2, 2], "a distinct reply with the same text still appears");
+	} finally {
+		release.resolve();
+		await turn;
+		worker?.close();
+		await fixture.cleanup();
 	}
 });
 

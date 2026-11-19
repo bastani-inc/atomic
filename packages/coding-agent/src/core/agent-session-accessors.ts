@@ -141,6 +141,18 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		},
 		transcriptMessages: {
 			get(this: AgentSession) {
+				return this._readTranscriptMessages();
+			},
+		},
+		pendingReplySnapshot: {
+			get(this: AgentSession) {
+				const reply = this._transcriptAppend?.message ?? this.messages.at(-1);
+				if (reply?.role !== "assistant" || !this._messagesAwaitingPersistence.has(reply)) return undefined;
+				return { messages: this._readTranscriptMessages(reply), streamingMessage: reply };
+			},
+		},
+		_readTranscriptMessages: {
+			value(this: AgentSession, streaming?: AgentMessage) {
 				const saving = this._transcriptAppend;
 				// Only a context edit, a save in flight, or a line about how a turn ended (saved or still saving, #5649) sets
 				// the transcript apart from the context, which is read as it is.
@@ -150,7 +162,9 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					!this.sessionManager.hasHostNotices() &&
 					!hasUnsavedHostNotices(this)
 				)
-					return this.messages;
+					return streaming === undefined
+						? this.messages
+						: this.messages.filter((message) => message !== streaming);
 				const beforeSave =
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
 				const projection = this.sessionManager.buildSessionProjection("transcript", beforeSave);
@@ -158,7 +172,8 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				// The context also shows rows the store does not have: admitted ones still saving and ones whose save failed.
 				const pending = this.messages.filter(
 					(message) =>
-						this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message),
+						message !== streaming &&
+						(this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message)),
 				);
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
 				// Lines about how a turn ended are part of the transcript once shown: those saved after the pinned leaf,
@@ -184,7 +199,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				if (beforeSave !== undefined) {
 					for (const message of this.messages) {
 						const id = this._entryIdsByMessage.get(message);
-						if (id !== undefined && !saved.has(id)) tail.add(message);
+						if (message !== streaming && id !== undefined && !saved.has(id)) tail.add(message);
 					}
 				}
 				for (const message of tail) {

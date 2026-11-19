@@ -6,7 +6,7 @@ import {
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@bastani/atomic-tui";
-import { stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
+import { stageChatMessages, stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
 import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
@@ -452,9 +452,8 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
 	if (!handle) return;
-	const messages = handle.messages;
+	const { messages, streamingMessage: streaming } = stageChatMessages(handle);
 	ctx.chatHost.appendMessages(messages);
-	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
 	const active = activeLiveHandle(ctx);
 	if (!active) return;

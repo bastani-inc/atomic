@@ -190,6 +190,28 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 	}
 });
 
+test("paging a long failed reply shows its error only after the last block (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({
+		...assistant(
+			Array.from({ length: 101 }, (_, i) => ({ type: "text", text: `part-${String(i).padStart(3, "0")}` })),
+			"error",
+		),
+		errorMessage: "request failed here",
+	});
+	const host = await openTranscript(session, { height: 480 });
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		const body = host.text();
+		assert.match(body, /part-000[\s\S]*part-100[\s\S]*request failed here/);
+		assert.equal(body.split("request failed here").length - 1, 1);
+	} finally {
+		await host.dispose();
+	}
+});
+
 test("a transcript read again on each change holds still while the reader is above its end and follows once they return (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	const append = (i: number) =>
