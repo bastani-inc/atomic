@@ -1,4 +1,4 @@
-import { convertToLlm, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../../messages.js";
+import { convertToLlm, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../../messages.ts";
 import { buildSessionProjection, getBranchPath } from "../../session-manager-history.ts";
 import type { LabelEntry, ModelChangeEntry, SessionEntry } from "../../session-manager-types.ts";
 import { branchRanges, isBranchCustomState, latestCompactionOf, type SessionResumeIndex } from "./session-resume.js";
