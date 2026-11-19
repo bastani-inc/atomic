@@ -67,7 +67,7 @@ import {
 	type TransferredIds,
 } from "../core/storage/transfer-files.js";
 import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } from "../core/storage-transfer.ts";
-import type { SnapshotChunkMoveSpace } from "../core/worktree-snapshot/blob-store.js";
+import type { SnapshotChunkMoveSpace } from "../core/worktree-snapshot/blob-store.ts";
 import {
 	loadWorkerHostModule,
 	type WorkerDatabase,

@@ -8,7 +8,7 @@ import { selectSessionStorageWithSettings } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
-import type { SnapshotChunkMoveSpace } from "../worktree-snapshot/blob-store.js";
+import type { SnapshotChunkMoveSpace } from "../worktree-snapshot/blob-store.ts";
 import { openAdapterSelectionDatabase } from "./adapter-open.js";
 import type { SqliteDatabase, SqliteRow } from "./database.js";
 import {
@@ -89,7 +89,7 @@ async function inspectShardFiles(
 			const database = await openNodeSqliteDatabase(path, { readOnly: true });
 			try {
 				await database.get("SELECT count(*) FROM sqlite_master");
-				const { SqlSnapshotBlobStore } = await import("../worktree-snapshot/blob-store.js");
+				const { SqlSnapshotBlobStore } = await import("../worktree-snapshot/blob-store.ts");
 				const space = await SqlSnapshotBlobStore.pendingChunkMove(database).catch(() => undefined);
 				if (space) moves.push({ path, space });
 			} finally {
@@ -631,7 +631,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 				? async (database) => {
 						if (inspect) await inspect(database);
 						if (database.dialect?.name === "postgres") return;
-						const { SqlSnapshotBlobStore } = await import("../worktree-snapshot/blob-store.js");
+						const { SqlSnapshotBlobStore } = await import("../worktree-snapshot/blob-store.ts");
 						snapshotChunkMove = await SqlSnapshotBlobStore.pendingChunkMove(database, selection.prefix);
 					}
 				: inspect,
