@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
@@ -10,22 +11,37 @@ import {
 } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
 	TASK_COMPLETION_MESSAGE_TYPE,
 	type TaskCompletionEnvelope,
 	taskCompletionNotice,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
-import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { Cleanup, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	ownerTaskViewSource,
 	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import {
+	chatEntriesFromAgentMessages,
+	renderChatMessageEntry,
+} from "../../packages/coding-agent/src/modes/interactive/components/chat-message-renderer.js";
+import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import type { TaskTranscriptEnvironment } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
+import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
+import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
+import { runStageTaskAction } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
+import { countingDatabase } from "../helpers/counting-database.js";
+import { agent } from "../helpers/released-task-launch.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { makeTestTui } from "../support/fake-tui.js";
@@ -185,6 +201,488 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 		}
 		assert.equal(firstMessage(host.frame()), "M-000", "one Ctrl+Home reaches the first retained message");
 		assert.equal(reads.length, 3, "nothing is left to load before the first retained message");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test.each(["local", "worker"] as const)(
+	"paging a long failed reply in the %s transcript shows its error only after the last block (#5651)",
+	async (location) => {
+		const session = SessionManager.inMemory();
+		await session.appendMessage({
+			...assistant(
+				Array.from({ length: 101 }, (_, i) => ({ type: "text", text: `part-${String(i).padStart(3, "0")}` })),
+				"error",
+			),
+			errorMessage: "request failed here",
+		});
+		const host = await openTranscript(session, {
+			height: 480,
+			source: (owner) => {
+				if (location === "local") return owner;
+				const worker = new PooledStageTaskSource(async (id, action) =>
+					structuredClone(await runStageTaskAction(owner, id, action)),
+				);
+				return Object.assign(Object.create(owner) as TaskViewSource, {
+					readTaskTranscript: worker.readTaskTranscript.bind(worker),
+				});
+			},
+		});
+		try {
+			host.inspector.handleInput(CTRL_HOME);
+			host.frame();
+			await flush();
+			const body = host.text();
+			assert.match(body, /part-000[\s\S]*part-100[\s\S]*request failed here/);
+			assert.equal(body.split("request failed here").length - 1, 1);
+		} finally {
+			await host.dispose();
+		}
+	},
+);
+
+test("worker pages containing only failed tool calls send just the transcript (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({
+		...assistant(
+			Array.from({ length: 101 }, (_, i) => ({ type: "toolCall", id: `tool-${i}`, name: "read", arguments: {} })),
+			"error",
+		),
+		errorMessage: "provider outage",
+	});
+	const entry = { ...session.getEntries()[0], id: "x".repeat(65_536) };
+	const fixture = taskFixture();
+	try {
+		await fixture.start();
+		fixture.runners[0].context.bindTranscript({
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [entry],
+		});
+		const owner = ownerTaskViewSource(fixture.store);
+		const id = fixture.runners[0].context.ref.taskId;
+		let cursor: string | undefined;
+		for (const blocks of [100, 1]) {
+			const reply = await runStageTaskAction(owner, id, { kind: "transcript", cursor });
+			assert.ok(reply.kind === "transcript" && reply.result.ok);
+			const [message] = reply.result.value.messages;
+			assert.ok(message.role === "assistant");
+			assert.equal(message.content.length, blocks);
+			assert.equal(message.stopReason, "error");
+			assert.deepEqual(Object.keys(reply), ["kind", "result"]);
+			cursor = reply.result.value.nextCursor;
+		}
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("paging back to an unfinished read keeps its failure even when the reply ends on the next page (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({
+		...assistant(
+			[
+				{ type: "toolCall", id: "read-first", name: "read", arguments: { path: "unfinished-file" } },
+				...Array.from({ length: 101 }, (_, i) => ({ type: "text" as const, text: `part-${i}` })),
+			],
+			"error",
+		),
+		errorMessage: "provider stopped the read",
+	});
+	const host = await openTranscript(session, { height: 480 });
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		const body = host.text();
+		assert.match(body, /✗ Read\(unfinished-file\) · failed\s+⎿\s+provider stopped the read/);
+		assert.match(body, /part-100[\s\S]*Error: provider stopped the read/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("when a source repeats a row, only the reply split by the page loses its earlier notice (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ ...assistant([], "error"), errorMessage: "short error" });
+	await session.appendMessage({
+		...assistant(
+			Array.from({ length: 101 }, () => ({ type: "text" as const, text: "long reply" })),
+			"error",
+		),
+		errorMessage: "long error",
+	});
+	const [short, long] = session.getEntries();
+	const host = await openTranscript(
+		{ getSessionId: () => session.getSessionId(), getEntries: () => [short, long, short] },
+		{ height: 480 },
+	);
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(host.text().match(/Error: short error/g)?.length, 2);
+		assert.equal(host.text().match(/Error: long error/g)?.length, 1);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a tool on the final page doesn't erase the only standalone provider error on the previous page (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({
+		...assistant(
+			[
+				...Array.from({ length: 101 }, (_, i) => ({ type: "text" as const, text: `part-${i}` })),
+				{ type: "toolCall", id: "last", name: "read", arguments: { path: "last-file" } },
+			],
+			"error",
+		),
+		errorMessage: "provider stopped",
+	});
+	const host = await openTranscript(session, { height: 480 });
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(host.text().match(/Error: provider stopped/g)?.length, 1);
+		assert.match(host.text(), /✗ Read\(last-file\) · failed/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("rendering a page fragment independently keeps the error its task view already showed (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({
+		...assistant(
+			Array.from({ length: 101 }, () => ({ type: "text", text: "row" })),
+			"error",
+		),
+		errorMessage: "provider outage",
+	});
+	let earlier: AssistantMessage | undefined;
+	let mounted: ChatSessionHost | undefined;
+	const host = await openTranscript(session, {
+		height: 480,
+		environment: {
+			createChat(opts) {
+				mounted = new ChatSessionHost(opts);
+				return mounted;
+			},
+		},
+		source: (owner) =>
+			Object.assign(Object.create(owner) as TaskViewSource, {
+				async readTaskTranscript(id: TaskId, cursor?: string) {
+					const page = await owner.readTaskTranscript(id, cursor);
+					if (cursor && page.ok) earlier = page.value.messages.find((m) => m.role === "assistant");
+					return page;
+				},
+			}),
+	});
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.ok(earlier);
+		Object.defineProperty(earlier, "diagnostics", {
+			enumerable: true,
+			get() {
+				throw new Error("unrequested diagnostics");
+			},
+		});
+		host.inspector.invalidate();
+		assert.equal(host.text().match(/Error: provider outage/g)?.length, 1);
+		const [entry] = chatEntriesFromAgentMessages([earlier]);
+		assert.match(
+			renderChatMessageEntry(entry, { ui: { requestRender() {} }, cwd: process.cwd() })
+				.render(80)
+				.join("\n"),
+			/Error: provider outage/,
+		);
+		assert.ok(mounted);
+		mounted.replaceMessages([earlier]);
+		assert.match(host.text(), /Error: provider outage/, "replacing the mounted rows removes the later witness");
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("repainting a split reply restores the earlier failure when the later block becomes a tool (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	const reply = {
+		...assistant(
+			Array.from({ length: 101 }, (_, i) => ({ type: "text" as const, text: `part-${i}` })),
+			"error",
+		),
+		errorMessage: "provider outage",
+	};
+	await session.appendMessage(reply);
+	const host = await openTranscript(session, { height: 480 });
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		Object.assign(reply.content[99], { type: "toolCall", id: "read", name: "read", arguments: { path: "file" } });
+		host.inspector.invalidate();
+		assert.match(host.text(), /part-0\s+Error: provider outage[\s\S]*part-100/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+function rewriteSavedReply(file: string, rename: boolean): void {
+	execFileSync(process.execPath, [
+		"-e",
+		`const fs = require('node:fs');
+		const [file, target] = process.argv.slice(1);
+		fs.writeFileSync(target, fs.readFileSync(file, 'utf8').replaceAll('original-', 'restored-'));
+		if (target !== file) fs.renameSync(target, file);`,
+		file,
+		rename ? `${file}.new` : file,
+	]);
+}
+
+const savedHistoryCases = [
+	"file",
+	"replaced file",
+	"file rewritten in place",
+	"file rewritten during projection",
+	"file replaced during projection",
+	"memory",
+	"sqlite",
+] as const;
+
+test.each(savedHistoryCases)(
+	"paging a settled child's %s history keeps failures attributed to its record (#5651)",
+	async (backend) => {
+		const duringRead =
+			backend === "file rewritten during projection" || backend === "file replaced during projection";
+		const replace = duringRead || backend === "replaced file" || backend === "file rewritten in place";
+		const rename = backend === "replaced file" || backend === "file replaced during projection";
+		const root = makeTempDirectory("task-chat-archive-");
+		const gate = Promise.withResolvers<void>();
+		let host: Awaited<ReturnType<typeof openTranscript>> | undefined;
+		const database = backend === "sqlite" ? countingDatabase(await openNodeSqliteDatabase(":memory:")) : undefined;
+		const shared = database
+			? await SqlSessionStore.open(database.wrapped)
+			: backend === "memory"
+				? new MemorySessionStore()
+				: undefined;
+		try {
+			const manager = shared && (await SessionManager.create(shared, root));
+			let retained: TaskTranscriptSource | undefined;
+			let cleanup: Promise<Cleanup> | undefined;
+			const child = await runSingleInProcess(root, agent, "read the file", {
+				cwd: root,
+				sessionDir: root,
+				runId: "paged-archive",
+				...(manager && { sessionManager: manager, resumeSession: true }),
+				testSession: { output: "done" },
+				taskExecution: {
+					signal: new AbortController().signal,
+					reportActivity() {},
+					bindTranscript(source) {
+						retained = source;
+					},
+					onExecution(run) {
+						cleanup = run.cleanup;
+					},
+				},
+			});
+			await cleanup;
+			assert.ok(retained?.loadHistory);
+			assert.ok(manager || child.sessionFile);
+			const saved =
+				shared && manager
+					? await SessionManager.open(shared, manager.getSessionId())
+					: await SessionManager.open(child.sessionFile!);
+			try {
+				await saved.appendMessage({
+					...assistant(
+						Array.from({ length: 101 }, (_, i) => ({ type: "text", text: `original-${i}` })),
+						"error",
+					),
+					errorMessage: "provider outage",
+				});
+				const snapshot = await saved.getSessionStore().load(saved.getSessionId());
+				assert.deepEqual(Reflect.ownKeys(snapshot).sort(), ["entries", "header", "lastSeq"]);
+			} finally {
+				if (!shared) await saved.getSessionStore().close();
+			}
+			let loadReads = 0;
+			if (shared) {
+				const load = shared.load;
+				Object.defineProperty(shared, "load", {
+					configurable: true,
+					get() {
+						++loadReads;
+						return load;
+					},
+				});
+			}
+			const calls: (string | undefined)[] = [];
+			const storeReads: number[] = [];
+			const queries: number[] = [];
+			const first = Promise.withResolvers<void>();
+			const earlier = Promise.withResolvers<void>();
+			const transcript = retained;
+			host = await openTranscript(transcript, {
+				height: 40,
+				source: (owner) =>
+					Object.assign(Object.create(owner) as TaskViewSource, {
+						async readTaskTranscript(id: TaskId, cursor?: string) {
+							if (cursor) await gate.promise;
+							if (!cursor && duringRead) {
+								// The page asks for its session ID after capturing the stored entries.
+								const getId = transcript.getSessionId.bind(transcript);
+								transcript.getSessionId = () => {
+									transcript.getSessionId = getId;
+									rewriteSavedReply(child.sessionFile!, rename);
+									return getId();
+								};
+							}
+							calls.push(cursor);
+							const before = database?.statements.length ?? 0;
+							const beforeLoads = loadReads;
+							try {
+								return await owner.readTaskTranscript(id, cursor);
+							} finally {
+								if (shared) storeReads.push(loadReads - beforeLoads);
+								if (database) queries.push(database.statements.length - before);
+								(cursor ? earlier : first).resolve();
+							}
+						},
+					}),
+			});
+			await first.promise;
+			await flush();
+			assert.match(host.text(), /original-100/);
+			host.inspector.handleInput(CTRL_HOME);
+			host.frame();
+			if (replace && !duringRead) rewriteSavedReply(child.sessionFile!, rename);
+			gate.resolve();
+			await earlier.promise;
+			await flush();
+			const body = host.frame(80, 480).join("\n");
+			assert.match(
+				body,
+				replace
+					? /restored-0\s+Error: provider outage[\s\S]*original-100\s+Error: provider outage/
+					: /original-0[\s\S]*original-100\s+Error: provider outage/,
+			);
+			assert.deepEqual(
+				calls.map((cursor) => cursor !== undefined),
+				[false, true],
+			);
+			if (shared) assert.deepEqual(storeReads, [1, 1], "one store load per page");
+			if (database) assert.deepEqual(queries, [3, 3], "the header, entries batch and chunked answer per page");
+			assert.equal(body.match(/Error: provider outage/g)?.length, replace ? 2 : 1);
+		} finally {
+			gate.resolve();
+			await host?.dispose();
+			await shared?.close();
+			await database?.wrapped.close();
+			clearSubagentControls();
+			removeTempDirectory(root);
+		}
+	},
+);
+
+test("a draft snapshot's text never stands in for the settled reply's tool card (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	const texts = Array.from({ length: 101 }, (_, i) => ({ type: "text" as const, text: `part-${i}` }));
+	await session.appendMessage(assistant(texts));
+	const [draft] = session.getEntries();
+	const settled = {
+		...assistant(
+			texts.map((part, i) => (i === 1 ? { type: "toolCall", name: "read", id: "call", arguments: {} } : part)),
+			"error",
+		),
+		errorMessage: "provider outage",
+	};
+	const host = await openTranscript(
+		{
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [draft, { ...draft, type: "message", message: settled }],
+		},
+		{
+			height: 650,
+			environment: {
+				getChatRenderSettings: () => ({
+					createToolComponent: (entry) => ({
+						render: () => [entry.result?.isError ? "Compact failed read" : "Pending"],
+						invalidate() {},
+					}),
+				}),
+			},
+		},
+	);
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.match(host.text(), /Error: provider outage[\s\S]*Compact failed read/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a provider error updated between page reads is not a repeated notice (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	const reply = {
+		...assistant(
+			Array.from({ length: 101 }, () => ({ type: "text" as const, text: "row" })),
+			"error",
+		),
+		errorMessage: "initial failure",
+	};
+	await session.appendMessage(reply);
+	const host = await openTranscript(session, { height: 480 });
+	try {
+		assert.match(host.text(), /Error: initial failure/);
+		reply.errorMessage = "updated failure";
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.match(host.text(), /Error: updated failure[\s\S]*Error: initial failure/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("paging back still works with a source that accepts only its existing page fields (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 101; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	const host = await openTranscript(session, {
+		source: (source) =>
+			Object.assign(Object.create(source) as TaskViewSource, {
+				async readTaskTranscript(id: TaskId, cursor?: string) {
+					const page = await source.readTaskTranscript(id, cursor);
+					if (!page.ok) return page;
+					const guarded = Proxy.revocable(
+						{ ...page.value, nextCursor: page.value.nextCursor },
+						{
+							getOwnPropertyDescriptor(target, key) {
+								if (!Reflect.has(target, key)) {
+									guarded.revoke();
+									throw new Error(`Unknown page field: ${String(key)}`);
+								}
+								return Reflect.getOwnPropertyDescriptor(target, key);
+							},
+						},
+					);
+					return { ok: true, value: guarded.proxy };
+				},
+			}),
+	});
+	try {
+		assert.match(host.text(), /M-100/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(firstMessage(host.frame()), "M-000");
 	} finally {
 		await host.dispose();
 	}

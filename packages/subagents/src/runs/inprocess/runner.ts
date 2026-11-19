@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -35,6 +35,7 @@ import {
 	spanElapsedMs,
 	type TaskElapsedSpan,
 	watchHeldPromptAttention,
+	withTaskTranscriptArchive,
 } from "@bastani/atomic";
 import {
 	type Api,
@@ -1059,6 +1060,81 @@ async function readSessionFileEntries(file: string, sessionId: string): Promise<
 	return entries;
 }
 
+/** Only a split failure needs to identify the saved reply from which the page took its blocks. */
+function withArchivedPages(
+	source: TranscriptSource,
+	file: string | undefined,
+	sessionId: string,
+	store: ReturnType<SessionManager["getSessionStore"]> | undefined,
+	unsaved?: SessionEntry,
+): TranscriptSource {
+	if (store)
+		return withTaskTranscriptArchive(source, async (project, loadSnapshot) => {
+			let records: SessionEntry[];
+			let entries: SessionEntry[];
+			let version: string | undefined;
+			try {
+				const loaded = await loadSnapshot(store, sessionId);
+				records = [...loaded.snapshot.entries];
+				entries = withUnsavedAnswer(records, unsaved);
+				version = loaded.generation;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					ok: false,
+					error: {
+						message: message.startsWith("History unavailable:")
+							? message
+							: await historyUnavailable(undefined, error),
+					},
+				};
+			}
+			return project(
+				entries,
+				records.length,
+				async () => version && createHash("sha256").update(`store:${version}`).digest("base64url"),
+			);
+		});
+	if (file === undefined) return source;
+	return withTaskTranscriptArchive(source, async (project) => {
+		let records: SessionEntry[];
+		let entries: SessionEntry[];
+		try {
+			// Release the file before projecting the page: a writer may need to rename over it on Windows.
+			records = await readSessionFileEntries(file, sessionId);
+			entries = withUnsavedAnswer(records, unsaved);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				ok: false,
+				error: {
+					message: message.startsWith("History unavailable:") ? message : await historyUnavailable(file, error),
+				},
+			};
+		}
+		return project(
+			entries,
+			records.length,
+			async () => {
+				const identity = await stat(file, { bigint: true }).catch(() => undefined);
+				if (!identity?.isFile() || !identity.ino || !identity.birthtimeNs) return undefined;
+				const { dev, ino, birthtimeNs, ctimeNs, mtimeNs, size } = identity;
+				return createHash("sha256")
+					.update(`${dev}:${ino}:${birthtimeNs}:${ctimeNs}:${mtimeNs}:${size}`)
+					.digest("base64url");
+			},
+			(generation, row) => {
+				// The file may already have changed by the time we stat it. Use the record this page actually read.
+				try {
+					return createHash("sha256").update(generation).update(JSON.stringify(records[row])).digest("base64url");
+				} catch {
+					return undefined;
+				}
+			},
+		);
+	});
+}
+
 /** The entry a task view shows for a final answer its child's session could not save (#5210). */
 function unsavedAnswerEntry(manager: SessionManager, answer: AssistantMessage): SessionEntry {
 	return {
@@ -1116,7 +1192,7 @@ function settledTranscript(
 				: [...(fallbackEntries ?? [])];
 		return withUnsavedAnswer(entries, unsaved);
 	};
-	return {
+	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
 		...(last?.type === "message" && last.message.role === "assistant" ? { settledReply: last.message } : {}),
@@ -1135,6 +1211,7 @@ function settledTranscript(
 		},
 		...(commands === undefined ? {} : { commands: () => commands }),
 	};
+	return withArchivedPages(source, sessionFile, sessionId, store, unsaved);
 }
 
 /** One copy of each skill every settled child keeps, however many children loaded it. */
@@ -1190,7 +1267,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 		sessionFile === undefined && typeof manager.getSessionStore === "function"
 			? manager.getSessionStore()
 			: undefined;
-	return {
+	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
 		...(store === undefined && sessionFile === undefined
@@ -1216,6 +1293,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 				}),
 		...(commands === undefined ? {} : { commands: () => commands }),
 	};
+	return withArchivedPages(source, sessionFile, sessionId, store);
 }
 
 function nativeStatus(value: ChildStatus): NativeAgentStatus {
