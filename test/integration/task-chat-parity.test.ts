@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { bindOwnerTaskStore, ChatSessionHost, InteractiveMode } from "@bastani/atomic";
+import { type AgentSessionEvent, bindOwnerTaskStore, ChatSessionHost, InteractiveMode } from "@bastani/atomic";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { Container, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
@@ -15,27 +15,18 @@ import {
 	refreshInteractiveTasks,
 } from "../../packages/coding-agent/src/modes/interactive/interactive-task-projection.js";
 import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
-import { getMarkdownTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { getMarkdownTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
+import { fakeFooterAgentSession } from "../helpers/footer-session.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
-import { makeTestTui } from "../support/fake-tui.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import { editorTheme, plainStyle } from "../unit/chat-session-host-working-lifecycle-fixture.js";
-import {
-	type AgentSessionEvent,
-	createStore,
-	deriveGraphTheme,
-	fakeFooterAgentSession,
-	makeHandle,
-	makePendingPrompt,
-	StageChatView,
-	setupRun,
-	stripAnsi,
-} from "../unit/stage-chat-view-helpers.js";
 
+initTheme("dark", false);
 setKeybindings(new KeybindingsManager());
 
-// RFC #2884: both real host components consume the same native task trace after turn end.
-test("both chats retain the same task through tool end, agent end, background action and settlement", async () => {
+// RFC #2884: the real host component consumes the native task trace after turn end.
+test("the main chat retains its task through tool end, agent end, background action and settlement", async () => {
 	const fixture = taskFixture();
 	const session = fakeFooterAgentSession();
 	bindOwnerTaskStore(session, fixture.store);
@@ -48,45 +39,22 @@ test("both chats retain the same task through tool end, agent end, background ac
 		getAgentSession: () => session,
 		getChatRenderSettings: () => ({ toolOutputExpanded: expanded }),
 	});
-	const { handle, emit } = makeHandle(undefined, [], "running", session);
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const stage = new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "S4",
-		handle,
-		initialComposerDraft: "Workflow draft",
-		piTui: makeTestTui(100),
-		getToolsExpanded: () => expanded,
-		setToolsExpanded: (value) => {
-			expanded = value;
-		},
-		onDetach() {},
-		onClose() {},
-	});
-	const taskLines = (text: string) =>
-		stripAnsi(text)
+	// The main chat lists its active tasks as agent-panel rows below its prompt, not as transcript entries (#5224).
+	const assertNoTaskEntries = () => {
+		assert.equal(main.entries().filter((entry) => entry.kind === "task").length, 0);
+	};
+	const assertRunningTaskRow = () => {
+		assertNoTaskEntries();
+		const rows = stripAnsi(main.renderFooter(80).join("\n"))
 			.split("\n")
 			.map((line) => line.trim())
-			// Each chat lists its active tasks as agent-panel rows below its prompt (#5224).
-			.filter((line) => /^∀ \S+ {2}/.test(line))
-			.map((line) => line.replace(/ {2,}/g, "  "));
-	const assertParity = () => {
-		assert.deepEqual(taskLines(main.renderFooter(80).join("\n")), taskLines(stage.render(80).join("\n")));
-		assert.equal(main.entries().filter((entry) => entry.kind === "task").length, 0);
-		assert.doesNotMatch(stripAnsi(stage.render(80).join("\n")), /worker:/);
+			.filter((line) => /^∀ \S+ {2}/.test(line));
+		assert.equal(rows.length, 1);
+		assert.match(rows[0]!, /^∀ worker {2}Inspect task projection\s+running$/);
 	};
 	try {
 		await fixture.start();
-		assertParity();
-		const screen = stripAnsi(stage.render(80).join("\n"));
-		assert.ok(
-			screen.indexOf("Workflow draft") >= 0 && screen.indexOf("Workflow draft") < screen.indexOf("∀ worker  "),
-			"workflow background count stays below the composer",
-		);
+		assertRunningTaskRow();
 		for (const event of [
 			{ type: "tool_execution_start", toolCallId: "launch", toolName: "subagent", args: {} },
 			{
@@ -99,8 +67,7 @@ test("both chats retain the same task through tool end, agent end, background ac
 			{ type: "agent_end", messages: [] },
 		] as AgentSessionEvent[]) {
 			main.applyAgentEvent(event);
-			emit(event);
-			assertParity();
+			assertRunningTaskRow();
 		}
 		taskValue(
 			fixture.runners[0].context.reportActivity({
@@ -109,10 +76,9 @@ test("both chats retain the same task through tool end, agent end, background ac
 			}),
 		);
 		fixture.store.drain();
-		assertParity();
-		assert.doesNotMatch(stripAnsi(stage.render(80).join("\n")), /live background output/);
+		assertRunningTaskRow();
 		await fixture.settle();
-		assertParity();
+		assertNoTaskEntries();
 		const task = fixture.store.tasks[0];
 		assert.equal(task.execution.kind, "settled");
 		const envelope = {
@@ -125,7 +91,6 @@ test("both chats retain the same task through tool end, agent end, background ac
 		};
 		const entryCount = main.entries().length;
 		const beforeMain = main.renderBody(80, 100);
-		const beforeStage = stage.render(80);
 		const hidden: AgentSessionEvent = {
 			type: "message_start",
 			message: {
@@ -138,12 +103,9 @@ test("both chats retain the same task through tool end, agent end, background ac
 			},
 		};
 		main.applyAgentEvent(hidden);
-		emit(hidden);
 		main.applyAgentEvent({ type: "message_end", message: hidden.message });
-		emit({ type: "message_end", message: hidden.message });
 		assert.equal(main.entries().length, entryCount);
 		assert.deepEqual(main.renderBody(80, 100), beforeMain);
-		assert.deepEqual(stage.render(80), beforeStage);
 		const genuine: AgentSessionEvent = {
 			type: "message_start",
 			message: {
@@ -155,14 +117,11 @@ test("both chats retain the same task through tool end, agent end, background ac
 			},
 		};
 		main.applyAgentEvent(genuine);
-		emit(genuine);
-		assert.equal((stripAnsi(stage.render(80).join("\n")).match(/Genuine peer message/g) ?? []).length, 1);
 		main.applyAgentEvent({ type: "message_end", message: genuine.message });
-		emit({ type: "message_end", message: genuine.message });
 		assert.equal((stripAnsi(main.renderBody(80, 100).join("\n")).match(/Genuine peer message/g) ?? []).length, 1);
-		assertParity();
+		assertNoTaskEntries();
 		expanded = true;
-		assertParity();
+		assertNoTaskEntries();
 		assert.doesNotMatch(main.renderFooter(80).join("\n"), /Tasks {2}/);
 		const completedEnvelope: TaskCompletionEnvelope = {
 			...envelope,
@@ -184,28 +143,14 @@ test("both chats retain the same task through tool end, agent end, background ac
 				timestamp: 1,
 			},
 		};
-		for (const type of ["message_start", "message_end"] as const) {
+		for (const type of ["message_start", "message_end"] as const)
 			main.applyAgentEvent({ type, message: visible.message });
-			emit({ type, message: visible.message });
-		}
-		const noticeRows = (rows: readonly string[]) => {
-			const start = rows.findIndex((row) => stripAnsi(row).includes("● worker finished"));
-			assert.ok(start >= 0, "the notice line is shown");
-			return rows.slice(start, start + 3);
-		};
-		for (const output of [main.renderBody(80, 100).join("\n"), stage.render(80).join("\n")]) {
-			assert.equal((stripAnsi(output).match(/● worker finished/g) ?? []).length, 1);
-			assert.match(stripAnsi(output), /Review finished successfully/);
-			assert.doesNotMatch(output, /Internal model context|"completionId"/);
-		}
-		// One notice component: the stage chat shows the main chat's notice rows exactly, styling included.
-		assert.deepEqual(
-			noticeRows(stage.render(80)).map((row) => row.trimEnd()),
-			noticeRows(main.renderBody(80, 100)).map((row) => row.trimEnd()),
-		);
+		const output = main.renderBody(80, 100).join("\n");
+		assert.equal((stripAnsi(output).match(/● worker finished/g) ?? []).length, 1);
+		assert.match(stripAnsi(output), /Review finished successfully/);
+		assert.doesNotMatch(output, /Internal model context|"completionId"/);
 	} finally {
 		main.dispose();
-		stage.dispose();
 		await fixture.dispose();
 	}
 });
@@ -243,8 +188,8 @@ test("main CLI projection mounts once on a late binding and shares complete row 
 	}
 });
 
-// RFC #2884: footer allocation survives both scrolling and a mounted stage question.
-test("six task anchors stay complete behind a bounded viewport and mounted prompt footer", async () => {
+// RFC #2884: footer allocation survives scrolling.
+test("six task anchors stay complete behind a bounded viewport", async () => {
 	const fixture = taskFixture();
 	const session = fakeFooterAgentSession();
 	let renders = 0;
@@ -256,22 +201,7 @@ test("six task anchors stay complete behind a bounded viewport and mounted promp
 			renders++;
 		},
 	});
-	const { handle, emit } = makeHandle(undefined, [], "running", session);
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const stage = new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "S4",
-		handle,
-		piTui: makeTestTui(24),
-		onDetach() {},
-		onClose() {},
-	});
 	try {
-		assert.doesNotMatch(stage.render(80).join("\n"), /Tasks /);
 		bindOwnerTaskStore(session, fixture.store);
 		for (let index = 0; index < 6; index++) await fixture.start(`task-${index}`);
 		assert.ok(renders > 0);
@@ -306,29 +236,11 @@ test("six task anchors stay complete behind a bounded viewport and mounted promp
 			},
 		};
 		main.applyAgentEvent(event);
-		emit(event);
 		main.scrollToBottom();
 		assert.doesNotMatch(main.renderBody(80, 5).join("\n"), /worker:/);
 		assert.match(main.renderFooter(80).join("\n"), /\+2 more/);
-		const mounted = stage.render(80);
-		assert.equal(mounted.length, 24);
-		assert.doesNotMatch(mounted.join("\n"), /worker:/);
-		assert.match(stripAnsi(mounted.join("\n")), /\+2 more/);
-		assert.equal(
-			store.recordStagePendingPrompt(
-				"run-1",
-				"stage-a",
-				makePendingPrompt({ kind: "input", message: "Answer this stage question" }),
-			),
-			true,
-		);
-		const prompt = stage.render(80);
-		assert.equal(prompt.length, 24);
-		assert.match(stripAnsi(prompt.join("\n")), /Answer this stage question/);
-		assert.match(stripAnsi(prompt.join("\n")), /\+2 more/);
 	} finally {
 		main.dispose();
-		stage.dispose();
 		await fixture.dispose();
 	}
 });

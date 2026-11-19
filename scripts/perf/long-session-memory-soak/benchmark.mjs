@@ -2,7 +2,7 @@
 /**
  * Long-session memory soak: what one long-running main session keeps of the work it has finished.
  *
- * One main session (a real `createAgentSession` with the bundled subagents, Intercom and workflows extensions, over a
+ * One main session (a real `createAgentSession` with the bundled subagents and Intercom extensions, over a
  * scripted model, with sessions and the run journal in SQLite as by default) starts from a long history and runs
  * `--rounds` rounds. Each round:
  *   - reads a slice of a large file, so the main context keeps growing;
@@ -12,7 +12,6 @@
  *     quits and resumes it again;
  *   - lets every child report to the main session over Intercom (`contact_supervisor`);
  *   - reads and searches `history://` over a store seeded with `--history-sessions` other sessions;
- *   - runs a workflow of `--workflow-stages` stages in the background;
  *   - starts on a model that fails, so model fallback moves it to the next model (children fall back too).
  *
  * Every `--sample-every` rounds the session waits until nothing runs, collects garbage, and samples heap and RSS, how
@@ -36,8 +35,8 @@ const { values } = parseArgs({
 		forks: { type: "string", default: "3" },
 		"seed-entries": { type: "string", default: "4000" },
 		"history-sessions": { type: "string", default: "40" },
-		"workflow-stages": { type: "string", default: "6" },
-		patterns: { type: "string", default: "read,shell,fork,background,intercom,history,workflow,fallback" },
+
+		patterns: { type: "string", default: "read,shell,fork,background,intercom,history,fallback" },
 		"snapshot-dir": { type: "string" },
 		label: { type: "string", default: "soak" },
 		out: { type: "string" },
@@ -50,7 +49,7 @@ const SAMPLE_EVERY = Number(values["sample-every"]);
 const FORKS = Number(values.forks);
 const SEED_ENTRIES = Number(values["seed-entries"]);
 const HISTORY_SESSIONS = Number(values["history-sessions"]);
-const WORKFLOW_STAGES = Number(values["workflow-stages"]);
+
 const PATTERNS = new Set(values.patterns.split(",").map((pattern) => pattern.trim()));
 const VERBOSE = values.verbose;
 const IS_BUN = typeof globalThis.Bun !== "undefined";
@@ -69,7 +68,7 @@ const root = mkdtempSync(join(tmpdir(), "atomic-long-session-soak-"));
 const cwd = join(root, "project");
 const agentDir = join(root, "agent");
 mkdirSync(join(cwd, ".atomic", "agents"), { recursive: true });
-mkdirSync(join(cwd, ".atomic", "workflows"), { recursive: true });
+
 mkdirSync(agentDir, { recursive: true });
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 process.env.ATOMIC_OFFLINE = "1";
@@ -95,32 +94,6 @@ writeFileSync(
 	join(cwd, ".atomic", "agents", "soak-worker.md"),
 	`---\nname: soak-worker\ndescription: Reads, reports to its supervisor and answers\ntools: read, bash, intercom, contact_supervisor\nmodel: ${PROVIDER}/${childModel}\nfallbackModels: ${PROVIDER}/${MAIN_MODEL}\n---\n\n${WORKER_PROMPT}\n`,
 );
-writeFileSync(
-	join(cwd, ".atomic", "workflows", "soak-stages.ts"),
-	`import { workflow } from "@bastani/atomic/workflows";
-import { Type } from "typebox";
-export default workflow({
-	name: "soak-stages",
-	description: "Stages in two lanes, each reading a slice and answering.",
-	inputs: { stages: Type.Number({ default: 4 }), round: Type.Number({ default: 0 }) },
-	outputs: {},
-	run: async (ctx) => {
-		let next = 0;
-		const stages = Number(ctx.inputs.stages);
-		const lane = async () => {
-			for (;;) {
-				const id = next++;
-				if (id >= stages) return;
-				await ctx.task(\`stage-\${id}\`, { model: "${PROVIDER}/${MAIN_MODEL}", prompt: \`SOAK-STAGE r=\${ctx.inputs.round} i=\${id}\` });
-			}
-		};
-		await Promise.all([lane(), lane()]);
-		return {};
-	},
-});
-`,
-);
-
 const atomic = await import("@bastani/atomic");
 const { AuthStorage, createAgentSession, ModelRuntime, SessionManager, SettingsManager, resolveSessionStore } = atomic;
 const { fauxAssistantMessage, fauxToolCall, registerFauxProvider } = await import("@bastani/atomic-ai/compat");
@@ -135,7 +108,7 @@ const textOf = (message) =>
 			: "";
 
 /**
- * Who is asking and for which step: a child by its agent's system prompt, a workflow stage by its prompt, else the main
+ * Who is asking and for which step: a child by its agent's system prompt, else the main
  * session by its latest round prompt. Task notices quote a child's task, so markers count only where they are the
  * whole start of a prompt (a forked child's task is wrapped, so it is found by its marker anywhere after the fork).
  */
@@ -147,7 +120,7 @@ function latestMarker(messages) {
 		const text = textOf(message);
 		const match = child
 			? /SOAK-CHILD r=(\d+) i=(\d+)( SLOW)?/.exec(text)
-			: /^(ROUND|SOAK-STAGE) r=(\d+)(?: i=(\d+))?/.exec(text);
+			: /^(ROUND) r=(\d+)(?: i=(\d+))?/.exec(text);
 		if (!match) continue;
 		if (child)
 			return { kind: "SOAK-CHILD", round: Number(match[1]), index: Number(match[2]), slow: !!match[3], at: index };
@@ -158,7 +131,7 @@ function latestMarker(messages) {
 
 let flakyFailures = 0;
 let lastBackgroundChild;
-const stats = { notices: 0, childAnswers: 0, stageAnswers: 0, mainRounds: 0, toolErrors: 0 };
+const stats = { notices: 0, childAnswers: 0, mainRounds: 0, toolErrors: 0 };
 const errorSamples = [];
 
 function mainSteps(round) {
@@ -209,14 +182,6 @@ function mainSteps(round) {
 		steps.push(() => fauxToolCall("read", { path: "history://sessions" }));
 		steps.push(() => fauxToolCall("search", { pattern: `seeded topic ${round % 13}`, paths: "history://" }));
 	}
-	if (PATTERNS.has("workflow") && WORKFLOW_STAGES > 0)
-		steps.push(() =>
-			fauxToolCall("workflow", {
-				action: "run",
-				workflow: "soak-stages",
-				inputs: { stages: WORKFLOW_STAGES, round },
-			}),
-		);
 	return steps;
 }
 
@@ -253,14 +218,6 @@ function respond(context, _options, _state, model) {
 			stats.toolErrors += 1;
 			if (errorSamples.length < 20) errorSamples.push(sample);
 		}
-	}
-	if (marker.kind === "SOAK-STAGE") {
-		if (results.length === 0)
-			return fauxAssistantMessage([fauxToolCall("read", { path: `big.ts:${1 + marker.index * 50}+300` })], {
-				stopReason: "toolUse",
-			});
-		stats.stageAnswers += 1;
-		return fauxAssistantMessage(answer("stage"));
 	}
 	if (marker.kind === "SOAK-CHILD") {
 		const steps = [() => fauxToolCall("read", { path: `big.ts:${1 + marker.index * 100}+400` })];
@@ -539,7 +496,7 @@ const report = {
 	forks: FORKS,
 	seedEntries: SEED_ENTRIES,
 	historySessions: HISTORY_SESSIONS,
-	workflowStages: WORKFLOW_STAGES,
+
 	patterns: [...PATTERNS],
 	seedSeconds,
 	seconds: +((performance.now() - started) / 1000).toFixed(1),
