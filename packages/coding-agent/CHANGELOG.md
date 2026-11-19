@@ -12,6 +12,8 @@
 - **Workflow summaries:** Removed `ctx.generateWorkflowSummary()`. Use normal session summaries for stored conversations, or request a summary as part of a subagent’s task.
 - Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to read an old definition as text and carry out its steps with codemode and subagents.
 - SDK hosts no longer receive `ResolvedPaths.workflows`, and resource loaders no longer expose `getWorkflowResources()` or `refreshWorkflowResources()`. `SettingsManager` no longer offers workflow path or auto-advance getters and setters.
+- Removed `atomic worker start`, `status`, `metrics` and `controller`, the standalone workflow worker entry point, and the worker fleet deployment examples. Stop worker services and autoscalers before upgrading. Ask Atomic to delegate work to subagents instead; there is no remote worker pool to configure.
+- Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH` and `ATOMIC_WORKFLOW_ARTIFACT_DIR` in launch scripts; startup warns once if they are still set. Other workflow and pool variables, including `ATOMIC_WORKFLOW_DEBUG` and `ATOMIC_DEBUG_POOLED_WATCH`, no longer enable tracing or classify new sessions. Extensions no longer receive `WORKFLOW_STAGE_SUBAGENT_GUARD_ENV`, `WORKFLOW_SESSION_METADATA_ENV`, `workflowSessionMetadataFromEnv`, or the `workflow`, `pooled-watch` and `pool` debug areas. Use `--debug` or `ATOMIC_DEBUG=1` for the supported areas.
 
 ## [0.9.90] - 2026-11-19
 

@@ -426,7 +426,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   function reportReleasedStageFailure(event: string, error: Error, fields: Record<string, number | boolean>): void {
     const { code } = error as Error & { readonly code?: unknown };
-    reportDebug("workflow", event, { name: error.name, code: typeof code === "string" ? code : undefined, message: error.message, ...fields });
+    reportDebug("engine", event, { name: error.name, code: typeof code === "string" ? code : undefined, message: error.message, ...fields });
   }
   const releasedStagePeers = new ReleasedStagePeers({
     report: ({ error, retrying, attempt, peers }) =>
