@@ -1272,16 +1272,30 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					: "drag"
 				: "press";
 		const timestamp = clickTime();
+		// End the drag even if a dialog or another control consumes this report first.
+		const releasedScrollbar = !!this.scrollbarDrag && raw.release;
+		if (this.scrollbarDrag && (raw.release || type === "move")) this.stopScrollbarDrag();
 		const previous = this.lastClick;
 		// A press taken by a scrollbar, search button or another gesture also breaks the click sequence.
 		if (type === "press") this.lastClick = undefined;
 		const event = this.createMouseEvent(type, raw.button, raw.x, raw.y);
 		const focus = this.getPointerFocus();
 
-		if ((this.mouseCapture || this.mousePressTarget) && this.mousePressFocus !== focus) {
-			this.clearComponentMouseGesture();
-			// The gesture ends without a click, so it continues no click sequence either.
+		const missedRelease = this.mouseCapture && type === "move" ? this.mousePressPoint : undefined;
+		if ((this.mouseCapture || this.mousePressTarget) && (this.mousePressFocus !== focus || missedRelease)) {
+			// A dialog cancels activation, not the capture owner's end-of-drag notification.
 			this.lastClick = undefined;
+			if (this.mouseCapture && this.mousePressPoint) {
+				if (type === "drag") return;
+				if (raw.release || missedRelease) {
+					const release = missedRelease
+						? this.createMouseEvent("release", missedRelease.button, raw.x, raw.y)
+						: event;
+					// Cleanup may repaint the control, but must not take focus back from a dialog.
+					if (this.dispatchMouseToTarget(release, this.mouseCapture)?.render) this.requestRender();
+				}
+			}
+			this.clearComponentMouseGesture();
 			if (type !== "press") return;
 		}
 		if (this.mouseCapture || this.mousePressTarget) {
@@ -1341,7 +1355,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const overlay = this.dispatchMouseToOverlay(event, focus);
 		if (!overlay.hit) {
 			if (this.handleScrollToEndIndicatorMouseEvent(raw)) return;
-			const scrollbarHandled = this.handleScrollbarMouseEvent(raw);
+			const scrollbarHandled = releasedScrollbar || this.handleScrollbarMouseEvent(raw);
 			if (!this.scrollbarDrag) this.updateScrollbarHover(raw.x, raw.y);
 			if (scrollbarHandled) return;
 		} else {
@@ -1512,10 +1526,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private handleScrollbarMouseEvent(event: SgrMouseEvent): boolean {
 		if (this.scrollbarDrag) {
-			if (event.release) {
-				this.stopScrollbarDrag();
-				return true;
-			}
 			const box = this.currentLayout
 				? getScrollViewBox(this.currentLayout, this.scrollbarDrag.scrollView)
 				: undefined;

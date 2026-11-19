@@ -151,6 +151,28 @@ function point(screen: string, label: string, offset = 0): string {
 }
 
 test(
+	"local: a captured drag gets its release after dismissing a confirmation (#5532)",
+	async () => {
+		await runCli("local", {}, async (pty, changes) => {
+			pty.write("/sample-menu drag\r");
+			await pty.waitForScreen((s) => s.includes("Drag handle: idle"), input, "idle drag handle");
+			const cell = point(pty.screen(), "Drag handle");
+			const [, row] = cell.split(";");
+			pty.write(`\x1b[<0;${cell}M\x1b[<32;20;${row}M`);
+			await pty.waitForScreen((s) => s.includes("Drag handle: dragging"), input, "captured drag");
+			pty.write("v");
+			await pty.waitForScreen((s) => s.includes("Move handle?"), input, "confirmation");
+			pty.write("\x1b");
+			await pty.waitForScreen((s) => !s.includes("Move handle?") && s.includes("Drag handle"), input, "dismissal");
+			pty.write(`\x1b[<0;20;${row}m`);
+			await pty.waitForScreen((s) => s.includes("Drag handle: idle"), input, "released drag handle");
+			assert.equal(readFileSync(changes, "utf8"), "press\ndrag\nrelease\n");
+		});
+	},
+	startup + 60_000,
+);
+
+test(
 	"engine: a non-capturing preview leaves shell output clickable (#5532)",
 	async () => {
 		await runCli("engine", {}, async (pty) => {
@@ -169,6 +191,33 @@ test(
 );
 
 for (const host of ["local", "engine"]) {
+	test(
+		`${host}: releasing the transcript scrollbar outside Settings ends its drag (#5532)`,
+		async () => {
+			await runCli(host, {}, async (pty) => {
+				const first = (screen: string) => /Transcript line (\d+)/.exec(screen)?.[1];
+				pty.write("\x1b[<35;110;24M");
+				await pty.waitForScreen((s) => /█$/m.test(s), input, "active scrollbar");
+				const bottom = first(pty.screen());
+				pty.write("\x1b[<0;110;24M");
+				await pty.waitForScreen((s) => !!first(s) && first(s) !== bottom, input, "scrollbar track jump");
+				const grabbed = first(pty.screen());
+				pty.write("\x1b[<32;110;16M");
+				await pty.waitForScreen((s) => !!first(s) && first(s) !== grabbed, input, "scrollbar drag");
+				pty.write("/settings\r");
+				await pty.waitForScreen((s) => s.includes("Search settings"), input, "Settings");
+				pty.write("\x1b[<0;110;16m\x1b");
+				await pty.waitForScreen((s) => !s.includes("Search settings") && !!first(s), input, "dialog dismissed");
+				const released = first(pty.screen());
+				// The typed suffix marks the frame after the button-free move was processed.
+				pty.write("\x1b[<35;8;5MHOVERED");
+				await pty.waitForScreen((s) => s.includes("HOVERED"), input, "composer input after hover");
+				assert.equal(first(pty.screen()), released);
+			});
+		},
+		startup + 60_000,
+	);
+
 	test(
 		`${host}: clicking the second occurrence of an item navigates from that row (#5532)`,
 		async () => {

@@ -50,6 +50,23 @@ export default (pi) => {
 			}
 			return ctx.ui.custom(
 				async (tui, theme, keys, done) => {
+					if (name === "drag") {
+						let held = false;
+						return {
+							render: () => [`Drag handle: ${held ? "dragging" : "idle"}`],
+							invalidate() {},
+							handleInput(key) {
+								if (key === "v") void ctx.ui.confirm("Move handle?", "Confirm new position?");
+							},
+							handleMouse(event) {
+								if (event.type === "move") return undefined;
+								appendFileSync(process.env.DRAFT_CHANGES, `${event.type}\n`);
+								if (event.type === "press") held = true;
+								if (event.type === "release") held = false;
+								return { handled: true, capture: event.type === "press", render: true };
+							},
+						};
+					}
 					if (name === "repeated") {
 						const plain = (s) => s;
 						const row = (label) => ({ label, value: label });
