@@ -92,12 +92,15 @@ export function findDuplicateParallelOutputPath(input: {
 	paramsCwd: string;
 	ctxCwd: string;
 	worktreeSetup?: WorktreeSetup;
+	unresolvedCwd?: (task: TaskParam) => boolean;
 }): string | undefined {
 	const seen = new Map<string, { index: number; agent: string }>();
 	for (let index = 0; index < input.tasks.length; index++) {
 		const behavior = input.behaviors[index];
 		if (!behavior?.output) continue;
 		const task = input.tasks[index]!;
+		// An absolute output is known even if the run failed before making this task's worktree.
+		if (input.unresolvedCwd?.(task) && !path.isAbsolute(behavior.output)) continue;
 		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
 		const outputPath = resolveSingleOutputPath(behavior.output, input.ctxCwd, taskCwd);
 		if (!outputPath) continue;
@@ -131,30 +134,35 @@ function withNamedWorktree<T extends { cwd?: string; worktree?: SubagentParamsLi
  * (#5202), setting the child's cwd to it. A top-level named worktree applies to the single child, or to each task
  * that names none of its own. `worktree: true` is left as it is.
  */
+/** The error a launch fails with before any worktree is made: a working directory that does not exist, or worktree requests that do not go together. */
+export async function launchDirectoryError(
+	params: SubagentParamsLike,
+	runtimeCwd: string,
+): Promise<SubagentToolResult | undefined> {
+	const callCwd = params.cwd ?? runtimeCwd;
+	const tasks = params.tasks ?? [];
+	const cwds = [callCwd, ...tasks.map((task) => resolveRequestedCwd(callCwd, task.cwd))];
+	for (const cwd of cwds) {
+		if (!(await pathExists(cwd))) return launchError(params, missingCwdMessage(cwd));
+	}
+	if (params.worktree === true && tasks.some((task) => task.worktree !== undefined))
+		return launchError(
+			params,
+			"worktree: true gives each task a new worktree of its own, so it cannot be combined with a task's named worktree. Use one or the other.",
+		);
+	return undefined;
+}
+
 export async function prepareNamedWorktrees(
 	params: SubagentParamsLike,
 	runtimeCwd: string,
 	options: NamedWorktreeOptions = {},
 ): Promise<{ params: SubagentParamsLike; error?: undefined } | { params?: undefined; error: SubagentToolResult }> {
+	const directoryError = await launchDirectoryError(params, runtimeCwd);
+	if (directoryError) return { error: directoryError };
 	const callCwd = params.cwd ?? runtimeCwd;
 	const tasks = params.tasks ?? [];
-	const cwds = [callCwd, ...tasks.map((task) => resolveRequestedCwd(callCwd, task.cwd))];
-	let missing: string | undefined;
-	for (const cwd of cwds) {
-		if (!(await pathExists(cwd))) {
-			missing = cwd;
-			break;
-		}
-	}
-	if (missing !== undefined) return { error: launchError(params, missingCwdMessage(missing)) };
 	const topLevel = typeof params.worktree === "object" ? params.worktree : undefined;
-	if (params.worktree === true && tasks.some((task) => task.worktree !== undefined))
-		return {
-			error: launchError(
-				params,
-				"worktree: true gives each task a new worktree of its own, so it cannot be combined with a task's named worktree. Use one or the other.",
-			),
-		};
 	try {
 		if (tasks.length === 0)
 			return {
