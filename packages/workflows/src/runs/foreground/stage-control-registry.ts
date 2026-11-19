@@ -33,12 +33,21 @@ import type {
 	SessionStore,
 	TaskViewSource,
 } from "@bastani/atomic";
+import { AgentTokenMeter, type AgentTokenMeterSnapshot, retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
+import {
+	ownsStageRecord,
+	type StageRecordOwner,
+	stageRecordIdentity,
+	stageRecordOwner,
+} from "../../shared/stage-record-owner.js";
 import { isTerminalStageStatus } from "../../shared/store-internal.js";
+import type { StageSnapshot } from "../../shared/store-types.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 import type { StageSessionHolds } from "./stage-session-holds.js";
+import type { StageTurnState } from "./stage-turn-start.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -74,6 +83,9 @@ export interface StagePlacement {
  * semantics that the raw SDK does not provide.
  */
 export interface StageControlHandle {
+	/** The stage record this registration can leave a released-session route for. */
+	readonly stageRecord?: StageSnapshot;
+	readonly stageUiSignal?: AbortSignal;
 	readonly runId: string;
 	readonly stageId: string;
 	readonly stageName: string;
@@ -90,6 +102,8 @@ export interface StageControlHandle {
 	/** True after the executor has released the live SDK session behind this handle. */
 	readonly isDisposed?: boolean;
 	readonly messages: AgentSession["messages"];
+	/** The meter for a fresh view of these display rows, when they differ from the stage's request context. */
+	contextMeter?(displayed: readonly AgentSession["messages"][number][]): StageContextMeter | undefined;
 	/** Live coding-agent session when available, used by embedded chat/footer UI. */
 	readonly agentSession?: AgentSession;
 	/** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
@@ -100,11 +114,27 @@ export interface StageControlHandle {
 	 */
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
 	/**
-	 * Whether the stage's session waits out an automatic retry's backoff, for a handle without an `agentSession` (a
-	 * stage on a local worker). Handles with a session expose it through the session instead: see
-	 * {@link stageWaitsToRetry}.
+	 * A backoff outside the local SDK session: the stage is retrying a failed operation itself or its session
+	 * lives on a worker. See {@link stageWaitsToRetry} for either source.
 	 */
 	readonly isWaitingToRetry?: boolean;
+	/** A worker session has a cancellable retry, even before it announces the next attempt. */
+	readonly isRetrying?: boolean;
+	/** False for a status-only watch on another host, which refuses pause commands. */
+	readonly canPause?: boolean;
+	/**
+	 * When the stage's current turn sent its first request, while the turn is under way (a request runs, or a retry or
+	 * a model switch announced the next one). A turn the stage moved to its next model goes on in a new session that
+	 * holds only the requests since the switch, so a chat opened then counts the turn from here. Undefined between
+	 * turns, and from a handle that does not know it (a stage on an older worker).
+	 */
+	readonly turnStartedAt?: number;
+	/** The stage's turn while it may still go on, for a local worker's watch to hand to the root. */
+	turnState?(): StageTurnState | undefined;
+	/** The model switch seen on the worker, until its next request starts. */
+	readonly modelSwitch?: Extract<AgentSessionEvent, { type: "model_fallback_start" }>;
+	/** Initial activity of a stage on another host, updated by stage publications rather than SDK events. */
+	readonly publishedActivity?: import("@bastani/atomic").PublishedChatActivity;
 	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
@@ -177,9 +207,10 @@ export interface StageControlHandle {
 	/**
 	 * Subscribe to AgentSession events. The pending-listener semantics
 	 * from `InternalStageContext.subscribe` apply: listeners registered
-	 * before the session exists are buffered and bound on first attach.
+	 * before the session exists are buffered and bound on first attach. A worker-backed
+	 * handle also notifies the subscriber when its watched attempt stops supplying events.
 	 */
-	subscribe(listener: AgentSessionEventListener): () => void;
+	subscribe(listener: AgentSessionEventListener, onWatchEnd?: () => void): () => void;
 	/**
 	 * Subscribe to workflow-owned delivery lifecycle facts. Present only for
 	 * handles backed by a live stage runner. An accepted idle delivery reports
@@ -261,6 +292,8 @@ export interface WorkflowRunControlHandle {
 }
 
 export interface StageControlRegistry {
+	/** Watches a pending asynchronous registration for this run until its caller releases the check. */
+	beginRegistrationCheck?(runId: string): { current(): boolean; release(): void };
 	/** Changes whenever cleanup invalidates pending asynchronous handle acquisition. */
 	readonly generation: number;
 	/**
@@ -277,13 +310,20 @@ export interface StageControlRegistry {
 	 * resolver so repeated attach/send calls single-flight onto one detached
 	 * writer per real stage instead of racing competing sessions.
 	 */
-	getOrCreateDetached(runId: string, stageId: string, create: () => StageControlHandle): StageControlHandle;
+	getOrCreateDetached(
+		runId: string,
+		stageId: string,
+		create: () => StageControlHandle,
+		source?: ReleasedStageSource,
+	): StageControlHandle;
 	/**
 	 * Acquire tentative ownership of a detached handle. A newly-created handle
 	 * stays provisional until one lease commits or an ordinary consumer claims
 	 * it through `claim()` / `getOrCreateDetached()`.
 	 */
 	acquireDetached(runId: string, stageId: string, create: () => StageControlHandle): DetachedStageHandleLease;
+	/** The exact registration of this handle, if it is still resident in this registry. */
+	registrationSource?(handle: StageControlHandle): ReleasedStageSource | undefined;
 	/** Follow a replaced stage by identity: a pane can still hold an old worker view after its registration is gone. */
 	onStageReplaced?(listener: (stage: StageChatTarget, next?: StageControlHandle) => void): () => void;
 	/** A worker published a stage reserved for resume: its live view is served by the pool, not this registry. */
@@ -336,12 +376,38 @@ export interface StageControlRegistry {
 	 * stage after its session is gone, so it can leave a route that reopens the
 	 * stage on demand. Returns the unsubscribe function.
 	 */
-	onStageReleased(listener: (stage: ReleasedStage) => void): () => void;
+	onStageReleased(listener: ReleasedStageListener): () => void;
 }
 
 export interface StageChatTarget {
 	readonly runId: string;
 	readonly stageId: string;
+}
+
+export interface StageContextMeter extends AgentTokenMeterSnapshot {
+	/** Whether the last settled row in the request context is a user message or tool result. */
+	readonly requestSide: boolean;
+}
+
+/** Read the display history once. A reopened meter starts from the resident context, not restored display-only rows. */
+export function stageChatHistory(handle: StageControlHandle): {
+	messages: AgentSession["messages"];
+	contextMeter?: StageContextMeter;
+} {
+	const messages = handle.messages;
+	const contextMeter = handle.contextMeter?.(messages);
+	return contextMeter ? { messages, contextMeter } : { messages };
+}
+
+/** A local SDK stage can restore display-only rows without treating those rows as part of the current request. */
+export function stageContextMeter(
+	session: AgentSession | undefined,
+	displayed: readonly AgentSession["messages"][number][],
+): StageContextMeter | undefined {
+	const resident = session?.messages;
+	if (!resident || resident === displayed) return undefined;
+	const role = resident.at(-1)?.role;
+	return { ...new AgentTokenMeter(resident).snapshot(), requestSide: role === "user" || role === "toolResult" };
 }
 
 /** A running post-mortem turn owns its transcript until it finishes. Never wait for it in resume admission. */
@@ -368,11 +434,65 @@ export interface ReleasedStage {
 	readonly sessionId: string;
 }
 
+/** A stage can switch sessions between attempts. Follow its own events even when there is no session to read. */
+export type StageRetryWait = "backoff" | StageControlHandle["modelSwitch"];
+export function stageRetryWaitAfter(wait: StageRetryWait, event: AgentSessionEvent): StageRetryWait {
+	const update = retryStatusUpdate(event);
+	if (update === undefined) return wait;
+	return update?.type === "auto_retry_start" ? "backoff" : (update ?? undefined);
+}
+
+/** The registration that released a stage, separate from the IDs used for the public notice. */
+export interface ReleasedStageSource {
+	readonly key: string;
+	readonly generation: number;
+	readonly record?: StageRecordOwner;
+}
+type ReleasedStageListener = (stage: ReleasedStage, source?: ReleasedStageSource) => void;
+
+// Release announcements from independently loaded registries reach the same host, sometimes out of order.
+const sourceKey = Symbol.for("atomic-workflows/stage-release-generations@1");
+const processState = globalThis as typeof globalThis &
+	Record<symbol, { next: number; readonly records: WeakMap<object, Map<string, number>> } | undefined>;
+const sources = processState[sourceKey] ?? { next: 0, records: new WeakMap<object, Map<string, number>>() };
+processState[sourceKey] = sources;
+
+export function beginStageRegistrationCheck(registry: StageControlRegistry, runId: string) {
+	if (registry.beginRegistrationCheck) return registry.beginRegistrationCheck(runId);
+	const generation = registry.generation;
+	return { current: () => registry.generation === generation, release() {} };
+}
+
+function releaseSource(
+	runId: string,
+	stageId: string,
+	record?: StageSnapshot,
+	continued?: ReleasedStageSource,
+): ReleasedStageSource {
+	// One worker publication shares its lease across the subtree, including runs that reuse a local stage ID.
+	const key = JSON.stringify([runId, stageId]);
+	// An admitted ask opens a new handle, not a new peer. Never advance (or rewind) the watermark for it.
+	if (continued?.key === key && ownsStageRecord(continued.record, record))
+		return { key, generation: continued.generation, record: record && stageRecordOwner(record) };
+	const generation = ++sources.next;
+	if (!record) return { key, generation };
+	const identity = stageRecordIdentity(record);
+	const stages = sources.records.get(identity) ?? new Map<string, number>();
+	sources.records.set(identity, stages);
+	stages.set(key, generation);
+	return { key, generation, record: stageRecordOwner(record) };
+}
+
+export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
+	if (!source?.record) return true;
+	const record = source.record.identity.deref();
+	return record !== undefined && sources.records.get(record)?.get(source.key) === source.generation;
+}
+
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
 export function stageWaitsToRetry(handle: Pick<StageControlHandle, "agentSession" | "isWaitingToRetry">): boolean {
 	const session = handle.agentSession;
-	if (session === undefined) return handle.isWaitingToRetry === true;
-	return session.retryAttempt > 0 && !session.isStreaming;
+	return handle.isWaitingToRetry === true || (session !== undefined && sessionWaitsToRetry(session));
 }
 
 /**
@@ -385,6 +505,7 @@ export const CLAIM_GRACE_MS = 10_000;
 export function createStageControlRegistry(): StageControlRegistry {
 	type RegistryEntry = {
 		handle: StageControlHandle;
+		readonly source: ReleasedStageSource;
 		executionEnded?: () => boolean;
 		controlsDependencies: boolean;
 		permanent: boolean;
@@ -406,10 +527,11 @@ export function createStageControlRegistry(): StageControlRegistry {
 
 	const _byRun = new Map<string, Map<string, RegistryEntry>>();
 	const pendingDisposals = new Set<Promise<void>>();
+	const pendingLookups = new Map<string, { count: number }>();
 	const chatReservations = new Map<string, { until: AbortController; workerPublished: boolean }>();
 	const chatKey = (runId: string, stageId: string) => JSON.stringify([runId, stageId]);
 	const sessionStores = new Map<string, Map<string, SessionStore>>();
-	const releaseListeners = new Set<(stage: ReleasedStage) => void>();
+	const releaseListeners = new Set<ReleasedStageListener>();
 	const replacementListeners = new Set<(stage: StageChatTarget, next?: StageControlHandle) => void>();
 	function notifyReplacement(stage: StageChatTarget): void {
 		for (const listener of [...replacementListeners]) {
@@ -459,8 +581,15 @@ export function createStageControlRegistry(): StageControlRegistry {
 		stageId: string,
 		handle: StageControlHandle,
 		fields: Pick<RegistryEntry, "controlsDependencies" | "permanent" | "releaseWanted" | "executionEnded">,
+		continued?: ReleasedStageSource,
 	): RegistryEntry {
-		const entry: RegistryEntry = { handle, ...fields, leases: new Set(), epoch: 0 };
+		const entry: RegistryEntry = {
+			handle,
+			source: releaseSource(runId, stageId, handle.stageRecord, continued),
+			...fields,
+			leases: new Set(),
+			epoch: 0,
+		};
 		if (fields.executionEnded === undefined && isTerminalStageStatus(handle.status)) {
 			const reserved = chatReservations.get(chatKey(runId, stageId));
 			if (reserved) handle.releaseGate?.chatHolds?.reserveForResume(reserved.until.signal);
@@ -580,10 +709,10 @@ export function createStageControlRegistry(): StageControlRegistry {
 		runMap.delete(stageId);
 		if (runMap.size === 0) _byRun.delete(runId);
 		await disposeEntry(entry);
-		if (sessionId === undefined) return;
+		if (sessionId === undefined || _byRun.get(runId)?.has(stageId) || !isLatestStageRelease(entry.source)) return;
 		for (const listener of [...releaseListeners]) {
 			try {
-				listener({ runId, stageId, stageName, sessionId });
+				listener({ runId, stageId, stageName, sessionId }, entry.source);
 			} catch (error) {
 				console.warn("atomic-workflows: released stage listener failed", error);
 			}
@@ -653,6 +782,17 @@ export function createStageControlRegistry(): StageControlRegistry {
 		get generation() {
 			return generation;
 		},
+		beginRegistrationCheck(runId) {
+			const checks = pendingLookups.get(runId) ?? { count: 0 };
+			checks.count++;
+			pendingLookups.set(runId, checks);
+			return {
+				current: () => pendingLookups.get(runId) === checks,
+				release() {
+					if (--checks.count === 0 && pendingLookups.get(runId) === checks) pendingLookups.delete(runId);
+				},
+			};
+		},
 		register(handle: StageControlHandle, executionEnded?: () => boolean): () => void {
 			const runMap = ensureRun(handle.runId);
 			const displaced = runMap.get(handle.stageId);
@@ -668,15 +808,13 @@ export function createStageControlRegistry(): StageControlRegistry {
 			const takeover =
 				(executionEnded !== undefined || handle.placement !== undefined) &&
 				chatReservations.delete(chatKey(handle.runId, handle.stageId));
-			runMap.set(
-				handle.stageId,
-				createEntry(handle.runId, handle.stageId, handle, {
-					executionEnded,
-					controlsDependencies: true,
-					permanent: true,
-					releaseWanted: handle.releaseGate?.releaseWhenIdle === true,
-				}),
-			);
+			const registered = createEntry(handle.runId, handle.stageId, handle, {
+				executionEnded,
+				controlsDependencies: true,
+				permanent: true,
+				releaseWanted: handle.releaseGate?.releaseWhenIdle === true,
+			});
+			runMap.set(handle.stageId, registered);
 			if (displaced !== undefined) stopWatching(displaced);
 			if (retiring) retire(displaced);
 			if (takeover || (displaced !== undefined && displaced.handle !== handle)) notifyReplacement(handle);
@@ -684,7 +822,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				const existing = _byRun.get(handle.runId);
 				if (!existing) return;
 				const entry = existing.get(handle.stageId);
-				if (entry?.handle === handle) {
+				if (entry === registered) {
 					rememberSessionStore(handle);
 					stopWatching(entry);
 					existing.delete(handle.stageId);
@@ -692,7 +830,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				if (existing.size === 0) _byRun.delete(handle.runId);
 			};
 		},
-		getOrCreateDetached(runId: string, stageId: string, create: () => StageControlHandle): StageControlHandle {
+		getOrCreateDetached(runId, stageId, create, source): StageControlHandle {
 			const runMap = ensureRun(runId);
 			const existing = runMap.get(stageId);
 			if (existing !== undefined && existing.handle.isDisposed !== true) {
@@ -704,11 +842,17 @@ export function createStageControlRegistry(): StageControlRegistry {
 				disposeEntryInBackground(existing, "atomic-workflows: stale stage handle dispose failed");
 			}
 			const handle = create();
-			const entry = createEntry(runId, handle.stageId, handle, {
-				controlsDependencies: false,
-				permanent: true,
-				releaseWanted: true,
-			});
+			const entry = createEntry(
+				runId,
+				handle.stageId,
+				handle,
+				{
+					controlsDependencies: false,
+					permanent: true,
+					releaseWanted: true,
+				},
+				source,
+			);
 			markClaimed(runId, handle.stageId, entry);
 			runMap.set(handle.stageId, entry);
 			return handle;
@@ -774,6 +918,10 @@ export function createStageControlRegistry(): StageControlRegistry {
 			entry.controlsDependencies = false;
 			return true;
 		},
+		registrationSource(handle) {
+			const entry = _byRun.get(handle.runId)?.get(handle.stageId);
+			return entry?.handle === handle ? entry.source : undefined;
+		},
 		peek(runId: string, stageId: string): StageControlHandle | undefined {
 			return _byRun.get(runId)?.get(stageId)?.handle;
 		},
@@ -806,9 +954,11 @@ export function createStageControlRegistry(): StageControlRegistry {
 					? [..._byRun.values()].flatMap((runMap) => [...runMap.values()])
 					: [...(_byRun.get(runId)?.values() ?? [])];
 			if (runId === undefined) {
+				pendingLookups.clear();
 				_byRun.clear();
 				sessionStores.clear();
 			} else {
+				pendingLookups.delete(runId);
 				_byRun.get(runId)?.clear();
 				_byRun.delete(runId);
 				sessionStores.delete(runId);
@@ -816,6 +966,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 			await disposeEntries(entries);
 		},
 		async clearDetached(): Promise<void> {
+			pendingLookups.clear();
 			const entries: RegistryEntry[] = [];
 			generation += 1;
 			for (const [runId, runMap] of [..._byRun]) {
@@ -891,7 +1042,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 			replacementListeners.add(listener);
 			return () => replacementListeners.delete(listener);
 		},
-		onStageReleased(listener: (stage: ReleasedStage) => void): () => void {
+		onStageReleased(listener: ReleasedStageListener): () => void {
 			releaseListeners.add(listener);
 			return () => {
 				releaseListeners.delete(listener);

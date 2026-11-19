@@ -1,4 +1,5 @@
 import type { AutocompleteItem } from "@bastani/atomic-tui";
+import { BUNDLED_COMMAND_NAMES, CORE_COMMAND_NAMES } from "@bastani/atomic-tui/dist/builtin-command-names.js";
 import { APP_NAME } from "../config.js";
 import type { SourceInfo } from "./source-info.ts";
 
@@ -35,7 +36,20 @@ export interface BuiltinSlashCommand {
 	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 }
 
-export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
+/** The terminal and command registry use the same ordered names; descriptions belong to the application. */
+function commandList<const Name extends string>(
+	names: readonly Name[],
+	commands: readonly (BuiltinSlashCommand & { name: NoInfer<Name> })[],
+): readonly BuiltinSlashCommand[] {
+	const byName = new Map(commands.map((command) => [command.name, command]));
+	return names.map((name) => {
+		const command = byName.get(name);
+		if (!command) throw new Error(`Missing built-in command description: /${name}`);
+		return command;
+	});
+}
+
+export const BUILTIN_SLASH_COMMANDS = commandList(CORE_COMMAND_NAMES, [
 	{ name: "settings", description: "Open settings menu" },
 	{ name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },
 	{ name: "tree", description: "Navigate session tree (switch branches)" },
@@ -71,9 +85,9 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{ name: "exit", description: `Exit ${APP_NAME}` },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
-];
+]);
 
-export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
+export const BUNDLED_EXTENSION_SLASH_COMMANDS = commandList(BUNDLED_COMMAND_NAMES, [
 	{ name: "agents", description: "Browse available subagents and inspect their configuration" },
 	{ name: "workflows", description: "Browse running and completed workflows" },
 	{ name: "workflow-authoring", description: "Load the reference for writing workflow definitions" },
@@ -84,4 +98,4 @@ export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand
 	{ name: "search", description: "Browse stored web search results" },
 	{ name: "websearch", description: "Open web search curator" },
 	{ name: "intercom", description: "Open session intercom overlay" },
-];
+]);

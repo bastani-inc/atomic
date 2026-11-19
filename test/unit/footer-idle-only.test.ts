@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import {
 	getKeybindings,
 	setKeybindings,
@@ -21,6 +20,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const identity = (text: string): string => text;
 const text = (rows: readonly string[]) => stripVTControlCharacters(rows.join("\n"));

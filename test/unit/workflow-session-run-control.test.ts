@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setImmediate } from "node:timers";
 import {
 	WorkflowRunControlError,
 	WorkflowRunControlUnavailableError,
@@ -1536,6 +1537,49 @@ test("SDK workflow history reads stored summaries for durable, completed and liv
 	assert.equal(detail.summary, "Review underway");
 	assert.equal(detail.summarizedThrough, 20);
 	assert.equal(detail.identity, "Live label");
+});
+
+test("a run listing whose signal aborts stops waiting for stored runs and passes the signal to the catalog read (#5480)", async () => {
+	const { execute } = setup();
+	const turns = async (count: number) => {
+		for (let turn = 0; turn < count; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+	};
+	const pendingCatalog = Promise.withResolvers<DurableWorkflowCatalogEntries>();
+	const received: (AbortSignal | undefined)[] = [];
+	const control = createSessionRunControl({
+		execute,
+		context: () => sessionContext(SESSION_ID),
+		store,
+		catalog: (options) => {
+			received.push(options?.signal);
+			return pendingCatalog.promise;
+		},
+	});
+	try {
+		for (const list of [
+			(signal: AbortSignal) => control.listProjectRuns?.({ signal }),
+			(signal: AbortSignal) => control.listRuns({ includeDurable: true }, { signal }),
+		]) {
+			const controller = new AbortController();
+			const listing = list(controller.signal);
+			assert.ok(listing);
+			const reads = received.length;
+			while (received.length === reads) await turns(1);
+			const reason = new Error("history call stopped");
+			controller.abort(reason);
+			const outcome = await Promise.race([
+				listing.then(
+					() => "listed",
+					(error: Error) => error,
+				),
+				turns(5).then(() => "still waiting"),
+			]);
+			assert.equal(outcome, reason);
+			assert.equal(received.at(-1), controller.signal);
+		}
+	} finally {
+		pendingCatalog.resolve({ resumable: [], completed: [] });
+	}
 });
 
 test("SDK details retain stored generated summary metadata for durable and completed runs", async () => {

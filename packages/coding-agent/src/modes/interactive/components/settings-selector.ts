@@ -14,8 +14,11 @@ export type { SettingsCallbacks, SettingsConfig } from "./settings-selector-type
 export class SettingsSelectorComponent extends Container {
 	private settingsList: SettingsPicker;
 
+	private readonly callbacks: SettingsCallbacks;
+
 	constructor(config: SettingsConfig, callbacks: SettingsCallbacks) {
 		super();
+		this.callbacks = callbacks;
 
 		this.addChild(new DynamicBorder());
 
@@ -28,6 +31,18 @@ export class SettingsSelectorComponent extends Container {
 
 		this.addChild(this.settingsList);
 		this.addChild(new DynamicBorder());
+	}
+
+	refreshSettings(config: SettingsConfig): void {
+		this.settingsList.setItems(buildSettingsItems(config, this.callbacks));
+	}
+
+	/** Keep this form and its current child untouched; a later child reads its own values and save targets on open. */
+	readSubmenusOnOpen(read: () => { config: SettingsConfig; callbacks: SettingsCallbacks }): void {
+		this.settingsList.setSubmenuSource(() => {
+			const { config, callbacks } = read();
+			return buildSettingsItems(config, callbacks);
+		});
 	}
 
 	getSettingsList(): SettingsPicker {

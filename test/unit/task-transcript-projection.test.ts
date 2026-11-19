@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import {
 	VERBATIM_COMPACTION_PROMPT_VERSION,
@@ -13,7 +14,10 @@ import {
 	type TaskTranscriptSource,
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
-import { readTaskTranscript } from "../../packages/coding-agent/src/core/tasks/transcript.js";
+import {
+	readTaskTranscript,
+	readTaskTranscriptSnapshot,
+} from "../../packages/coding-agent/src/core/tasks/transcript.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -118,6 +122,74 @@ test("transcript pages have opaque task scoped cursors and omit duplicate source
 			assert.equal(wrong.error.code, "ScopeMismatch");
 		});
 	});
+});
+
+test("paging a successful reply consumes its provider status only once (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	const reply = fauxAssistantMessage("done");
+	reply.content = Array.from({ length: 101 }, () => ({ type: "thinking", thinking: "reasoning" }));
+	await session.appendMessage(reply);
+	let reads = 0;
+	Object.defineProperty(reply, "stopReason", {
+		enumerable: true,
+		get() {
+			assert.equal(++reads, 1, "provider status already consumed");
+			return "stop";
+		},
+	});
+	const fixture = taskFixture();
+	try {
+		await fixture.start();
+		fixture.runners[0].context.bindTranscript(session);
+		const page = await ownerTaskViewSource(fixture.store).readTaskTranscript(fixture.runners[0].context.ref.taskId);
+		assert.ok(page.ok && page.value.nextCursor);
+		const message = page.value.messages[0];
+		assert.ok(message.role === "assistant");
+		assert.equal(message.stopReason, "stop");
+		assert.equal(message.content.length, 100);
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("a cursor from another task never inspects the supplied history rows (#5651)", async () => {
+	const fixture = taskFixture();
+	const session = SessionManager.inMemory();
+	try {
+		const first = await fixture.start("First task");
+		const second = await fixture.start("Second task");
+		for (let i = 0; i < 101; i++) await session.appendMessage({ role: "user", content: `row ${i}`, timestamp: i });
+		fixture.runners[0].context.bindTranscript(session);
+		let inspected = 0;
+		const rows = session.getEntries().map(
+			(entry) =>
+				new Proxy(entry, {
+					get(target, property, receiver) {
+						inspected++;
+						return Reflect.get(target, property, receiver);
+					},
+				}),
+		);
+		fixture.runners[1].context.bindTranscript({
+			getSessionId: () => "other-session",
+			getEntries: () => rows,
+			loadHistory: async () => ({ entries: rows }),
+		});
+		const page = await readTaskTranscript(first);
+		assert.ok(page.ok && page.value.nextCursor);
+		const source = ownerTaskViewSource(fixture.store);
+		inspected = 0;
+		const cursor = page.value.nextCursor;
+		for (const refused of [await readTaskTranscript(second, cursor), readTaskTranscriptSnapshot(second, cursor)]) {
+			assert.ok(!refused.ok);
+			assert.equal(refused.error.code, "ScopeMismatch");
+		}
+		const view = await source.readTaskTranscript(fixture.runners[1].context.ref.taskId, page.value.nextCursor);
+		assert.ok(!view.ok);
+		assert.equal(inspected, 0);
+	} finally {
+		await fixture.dispose();
+	}
 });
 
 // RFC #2884: tool references keep original toolCallId. Thinking blocks are referenced by position, so a task

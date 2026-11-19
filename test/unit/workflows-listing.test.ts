@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, StdinBuffer, setKeybindings, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -15,6 +14,7 @@ import {
 } from "../../packages/workflows/src/tui/workflows-listing.js";
 
 import { ScreenTerminal } from "../helpers/screen-terminal.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
 beforeEach(() => {

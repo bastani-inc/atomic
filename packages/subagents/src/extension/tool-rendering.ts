@@ -1,5 +1,6 @@
 import {
 	builtinToolBlockPresentation,
+	clickableKeyTextHint,
 	formatTokenSegment,
 	initTheme,
 	isTaskTurnInterrupted,
@@ -8,6 +9,8 @@ import {
 	keyHintIfBound,
 	keyText,
 	navEntryKeys,
+	slashCommandHint,
+	spanElapsedMs,
 	type TaskId,
 	type TaskRecord,
 	ToolBlock,
@@ -27,6 +30,7 @@ import {
 	type SubagentChildToolCallEntry,
 	subagentChildCardRecord,
 	subagentChildCardTask,
+	subagentChildIndexEntry,
 	subagentChildTranscriptDetails,
 	watchSubagentChildCard,
 } from "../runs/foreground/subagent-child-card-state.js";
@@ -103,6 +107,8 @@ function resolveLiveTaskElapsedMs(
 	running: boolean,
 	fallbackElapsedMs?: number,
 ): number {
+	if (task?.elapsedSpan) return spanElapsedMs(task.elapsedSpan);
+	if (task?.execution.kind === "queued") return 0;
 	const reportedMs = task?.metrics?.elapsedMs;
 	if (!running) {
 		taskElapsedBaselines.get(state)?.delete(taskId);
@@ -140,7 +146,7 @@ class DynamicToolBlock implements Component {
 
 class DynamicToolBlockGroup implements Component {
 	readonly toolBlockKind = "group" as const;
-	constructor(private readonly blocks: readonly DynamicToolBlock[]) {}
+	constructor(private readonly blocks: readonly (ToolBlock | DynamicToolBlock)[]) {}
 	isWorking(): boolean {
 		return this.blocks.some((block) => block.isWorking());
 	}
@@ -166,10 +172,10 @@ function ensureGlobalTheme(): void {
 }
 
 class OneLine implements Component {
-	constructor(private readonly text: string) {}
+	constructor(private readonly text: string | (() => string)) {}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return width < 1 ? [] : [truncateToWidth(this.text, width, "…")];
+		return width < 1 ? [] : [truncateToWidth(typeof this.text === "string" ? this.text : this.text(), width, "…")];
 	}
 }
 
@@ -236,7 +242,7 @@ function expandParallelTasks(
 	return [];
 }
 
-function hasPanelRow(task: TaskRecord | undefined, observation?: WaitOutcome): boolean {
+function hasPanelRow(task: TaskRecord | undefined, observation?: Pick<WaitOutcome, "kind">): boolean {
 	if (task !== undefined) {
 		if (task.execution.kind === "settled") return false;
 		if (task.wasBackground === true) return true;
@@ -600,7 +606,7 @@ function buildExpandedDetails(input: {
 	readonly state?: object;
 	readonly cacheId?: string;
 	readonly hydratedRef?: unknown;
-	readonly statusLine: string;
+	readonly statusLine: string | (() => string);
 	readonly status: ToolBlockStatus;
 	readonly promptText: string;
 	readonly buildToolBlocks: () => readonly Component[];
@@ -696,6 +702,7 @@ function releasedWaitingTools(result: TaskResult): string | undefined {
 
 function buildOutcomeToolBlock(input: {
 	readonly outcome:
+		| { readonly kind: "sdk-handoff"; readonly childId: string; readonly taskId: string }
 		| Extract<NonNullable<Details["taskResponse"]>, { kind: "admitted" | "unstarted" }>
 		| NonNullable<Extract<NonNullable<Details["taskResponse"]>, { kind: "parallel" }>["slots"][number]["outcome"]>;
 	readonly identity?: { readonly agent: string; readonly task: string };
@@ -749,9 +756,10 @@ function buildOutcomeToolBlock(input: {
 		return new DynamicToolBlock(() => ({ block, working: false }));
 	}
 
-	const observation = outcome.observation;
+	const observation =
+		outcome.kind === "sdk-handoff" ? { kind: "yielded" as const, taskId: outcome.taskId } : outcome.observation;
 	const savedTask = result.details?.taskRecords?.find((item) => item.ref.taskId === observation.taskId);
-	const childId = savedTask?.launchOperationId;
+	const childId = outcome.kind === "sdk-handoff" ? outcome.childId : savedTask?.launchOperationId;
 	const initialRecord = subagentChildCardRecord(childId, observation.taskId);
 	watchSubagentChildCard(
 		context.state,
@@ -763,10 +771,8 @@ function buildOutcomeToolBlock(input: {
 	const evaluate = (): { readonly block: ToolBlock; readonly working: boolean } => {
 		const record = subagentChildCardRecord(childId, observation.taskId);
 		const activeTaskId = record?.taskId ?? observation.taskId;
-		const freshTask =
-			context.getTaskRecord?.(activeTaskId as TaskId) ??
-			(activeTaskId !== observation.taskId ? context.getTaskRecord?.(observation.taskId) : undefined);
-		const task = freshTask ?? savedTask;
+		const freshTask = context.getTaskRecord?.(activeTaskId as TaskId);
+		const task = freshTask ?? (savedTask?.ref.taskId === activeTaskId ? savedTask : undefined);
 		const hydrated = expanded && record ? subagentChildTranscriptDetails(context.state, record) : undefined;
 		const recordTask = record ? subagentChildCardTask(record) : undefined;
 		const agentName = identity?.agent || task?.agentName || record?.agent || "agent";
@@ -781,7 +787,11 @@ function buildOutcomeToolBlock(input: {
 					? observation.result.message
 					: undefined;
 
-		const turnInterrupted = task !== undefined && isTaskTurnInterrupted(task);
+		// A saved receipt can predate dispatch, or belong to an earlier run of this child.
+		const span = freshTask?.elapsedSpan ?? record?.elapsedSpan;
+		const turnInterrupted =
+			(task !== undefined && isTaskTurnInterrupted(task)) ||
+			(record?.state === "running" && !taskSettled && span?.endedAt !== undefined);
 		const isRunningNow =
 			task?.attention.kind === "input-needed" || turnInterrupted
 				? false
@@ -793,13 +803,22 @@ function buildOutcomeToolBlock(input: {
 							task?.execution.kind === "running" ||
 							task?.execution.kind === "queued";
 
-		const elapsedMs = resolveLiveTaskElapsedMs(
-			context.state,
-			activeTaskId,
-			task,
-			isRunningNow,
-			context.getElapsedMs?.(),
-		);
+		const elapsedMs =
+			record?.state === "terminal" && record.elapsedMs !== undefined
+				? record.elapsedMs
+				: span !== undefined
+					? span === null
+						? 0
+						: spanElapsedMs(span)
+					: resolveLiveTaskElapsedMs(
+							context.state,
+							activeTaskId,
+							task,
+							isRunningNow,
+							record?.taskId !== observation.taskId && record !== undefined
+								? record.elapsedMs
+								: context.getElapsedMs?.(),
+						);
 		const tokens = task?.metrics?.tokenCount ?? 0;
 		const elapsedText = elapsedMs > 0 ? formatDuration(elapsedMs) : "";
 		const runningElapsedText = elapsedMs >= 1000 ? formatDuration(elapsedMs) : "";
@@ -812,7 +831,11 @@ function buildOutcomeToolBlock(input: {
 			status = "warning";
 			const questionFirstLine = firstDisplayLine(task.attention.prompt || "");
 			const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
-			statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+			statusLine = statJoin(theme, [
+				"Needs input",
+				questionFirstLine,
+				answerKey ? clickableKeyTextHint(answerKey, " to answer") : "",
+			]);
 		} else if (turnInterrupted) {
 			status = "stopped";
 			statusLine = statJoin(theme, ["Stopped", elapsedText]);
@@ -837,14 +860,15 @@ function buildOutcomeToolBlock(input: {
 		} else if (record) {
 			if (record.state === "running") {
 				status = "running";
-				const manageKey = hasPanelRow(task, observation)
-					? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
-					: "";
+				const manageKey =
+					outcome.kind !== "sdk-handoff" && hasPanelRow(task, observation)
+						? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
+						: "";
 				statusLine = statJoin(theme, [
 					"Running",
 					runningElapsedText,
 					tokenText,
-					manageKey ? `${manageKey} to manage` : "",
+					manageKey ? clickableKeyTextHint(manageKey, " to manage") : "",
 				]);
 			} else {
 				const terminal = record.terminalStatus ?? "";
@@ -899,7 +923,7 @@ function buildOutcomeToolBlock(input: {
 				"Running",
 				runningElapsedText,
 				tokenText,
-				manageKey ? `${manageKey} to manage` : "",
+				manageKey ? clickableKeyTextHint(manageKey, " to manage") : "",
 			]);
 		} else if (observation.result.kind === "completed") {
 			status = "success";
@@ -978,11 +1002,12 @@ function buildForegroundChildToolBlock(input: {
 	readonly progress: AgentProgress | undefined;
 	readonly identity?: { readonly agent: string; readonly task: string };
 	readonly taskRecord?: TaskRecord;
+	readonly childId?: string;
 	readonly expanded: boolean;
 	readonly now?: number;
 	readonly theme: Theme;
 	readonly outputPad?: number;
-	readonly context?: Pick<RenderContext, "cwd" | "getToolDefinition">;
+	readonly context?: Pick<RenderContext, "cwd" | "getToolDefinition" | "getTaskRecord">;
 }): ToolBlock {
 	const { child, progress, identity, taskRecord, expanded, now, theme, outputPad, context } = input;
 	const activeProgress = child?.progress ?? progress;
@@ -994,21 +1019,29 @@ function buildForegroundChildToolBlock(input: {
 	const headerTask = taskRecord?.title || activeProgress?.task || child?.task || identity?.task || "";
 	const rawTask = identity?.task || child?.task || activeProgress?.task || taskRecord?.title || "";
 	const args = formatAgentBlockArgs(agentName, headerTask);
-	const elapsedMs = summary ? displayProgressDurationMs(summary, now) : (taskRecord?.metrics?.elapsedMs ?? 0);
+	const span = activeProgress?.elapsedSpan ?? taskRecord?.elapsedSpan;
+	const elapsedMs = span
+		? spanElapsedMs(span, now)
+		: summary
+			? displayProgressDurationMs(summary, now)
+			: (taskRecord?.metrics?.elapsedMs ?? 0);
 	const tokens = summary?.tokens ?? taskRecord?.metrics?.tokenCount ?? 0;
 	const elapsedText = elapsedMs > 0 ? formatDuration(elapsedMs) : "";
-	const runningElapsedText = elapsedMs >= 1000 ? formatDuration(elapsedMs) : "";
 	const tokenText = formatTokenSegment({ mode: "receiving", count: tokens });
 	const output = child ? child.truncation?.text || getSingleResultOutput(child) : "";
 
 	let status: ToolBlockStatus;
-	let statusLine: string;
+	let statusLine: string | (() => string);
 
 	if (taskRecord?.attention.kind === "input-needed") {
 		status = "warning";
 		const questionFirstLine = firstDisplayLine(taskRecord.attention.prompt || "");
 		const answerKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to answer" });
-		statusLine = statJoin(theme, ["Needs input", questionFirstLine, answerKey ? `${answerKey} to answer` : ""]);
+		statusLine = statJoin(theme, [
+			"Needs input",
+			questionFirstLine,
+			answerKey ? clickableKeyTextHint(answerKey, " to answer") : "",
+		]);
 	} else if (turnInterrupted) {
 		status = "stopped";
 		statusLine = statJoin(theme, ["Stopped", elapsedText]);
@@ -1017,12 +1050,21 @@ function buildForegroundChildToolBlock(input: {
 		const manageKey = hasPanelRow(taskRecord)
 			? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
 			: "";
-		statusLine = statJoin(theme, [
-			"Running",
-			runningElapsedText,
-			tokenText,
-			manageKey ? `${manageKey} to manage` : "",
-		]);
+		statusLine = () => {
+			// Progress may have crossed the engine boundary before the child stopped or started another turn.
+			const id = activeProgress?.taskId;
+			const current =
+				(id ? context?.getTaskRecord?.(id)?.elapsedSpan : undefined) ??
+				(input.childId ? subagentChildIndexEntry(input.childId)?.elapsedSpan : undefined) ??
+				span;
+			const ms = current ? spanElapsedMs(current) : elapsedMs;
+			return statJoin(theme, [
+				"Running",
+				ms >= 1000 ? formatDuration(ms) : "",
+				tokenText,
+				manageKey ? clickableKeyTextHint(manageKey, " to manage") : "",
+			]);
+		};
 	} else if (!child) {
 		status = "stopped";
 		statusLine = statJoin(theme, ["Stopped", elapsedText]);
@@ -1238,7 +1280,7 @@ export function renderSubagentToolResult(
 				? text.text
 				: `${theme.bold(`${count} available agents`)}\n${theme.fg(
 						"dim",
-						["/agents to browse", keyHintIfBound("app.tools.expand", "Expand")]
+						[slashCommandHint("/agents to browse"), keyHintIfBound("app.tools.expand", "Expand")]
 							.filter(Boolean)
 							.map((hint, index) => (index ? `(${hint})` : hint))
 							.join(" · "),
@@ -1261,16 +1303,29 @@ export function renderSubagentToolResult(
 			d.results.length === 0 &&
 			!d.progress?.length;
 		if (count > 0 && !failedBeforeStart) {
+			const children = new Map(d.results.map((child, i) => [d.resultIndices?.[i] ?? i, child]));
+			const progressBySlot = new Map(d.progress?.map((p) => [p.index, p]));
 			const blocks = Array.from({ length: count }, (_, index) => {
-				const child = d.results[index];
-				const progress =
-					d.progress?.find((p) => p.index === index) ??
-					(child ? d.progress?.find((p) => p.agent === child.agent && p.status === "running") : undefined);
+				const child = children.get(index);
+				const progress = progressBySlot.get(index);
+				if (child?.detached && d.runId) {
+					const record = subagentChildIndexEntry(`${d.runId}:${child.progress?.index ?? index}`);
+					if (record?.taskId)
+						return buildOutcomeToolBlock({
+							outcome: { kind: "sdk-handoff", childId: record.childId, taskId: record.taskId },
+							identity: child,
+							result,
+							expanded: options.expanded,
+							theme,
+							context,
+						});
+				}
 				return buildForegroundChildToolBlock({
 					child,
 					progress,
 					identity: labels[index],
 					taskRecord: d.taskRecords?.[index],
+					childId: d.runId ? `${d.runId}:${child?.progress?.index ?? index}` : undefined,
 					expanded: options.expanded,
 					now: context.state.subagentResultSnapshotNow,
 					theme,
@@ -1278,7 +1333,7 @@ export function renderSubagentToolResult(
 					context,
 				});
 			});
-			return blocks.length === 1 ? blocks[0]! : new ToolBlockGroup(blocks);
+			return blocks.length === 1 ? blocks[0]! : new DynamicToolBlockGroup(blocks);
 		}
 		if (context.isError || (result as { isError?: boolean }).isError) {
 			const reason = firstDisplayLine(text?.type === "text" ? text.text : "failed");

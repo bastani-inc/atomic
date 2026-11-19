@@ -6,7 +6,9 @@ import {
 	subagentChildRecordFailures,
 	subagentChildRecordRegistrySizes,
 	subagentChildRecordsAppended,
+	takeChildRecordFailure,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 
 type Input = Parameters<ReturnType<typeof createSubagentChildRecordSink>["record"]>[0];
 
@@ -108,6 +110,29 @@ describe("a record that could not be appended", () => {
 			terminalStatus: "ok",
 		});
 		assert.equal(subagentChildRecordFailures.last?.code, "record-append-failed");
+	});
+
+	test("a failed child-record write reports the failure without keeping its disposed session alive (#5570)", async () => {
+		const tracked = trackCollection();
+		const ownerId = await (async () => {
+			const sessionManager = SessionManager.inMemory("/repo");
+			tracked.track(sessionManager);
+			const sink = createSubagentChildRecordSink(
+				{
+					appendEntry: async () => {
+						throw Object.assign(new Error("session closed"), { sessionManager });
+					},
+				},
+				{ sessionManager, orchestrationContext: undefined },
+			);
+			sink.record(input("closing", { state: "running" }));
+			await sink.flushed?.();
+			return sessionManager.getSessionId();
+		})();
+		await collectEverythingTracked(tracked);
+		assert.equal(tracked.collected(), 1);
+		assert.equal(subagentChildRecordFailures.last?.fields.childId, "closing:0");
+		assert.equal(takeChildRecordFailure(ownerId)?.code, "record-append-failed");
 	});
 
 	test("names no terminal status when the record has none (#4326)", async () => {

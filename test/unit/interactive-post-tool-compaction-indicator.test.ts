@@ -1,7 +1,6 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { Container, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
@@ -15,6 +14,7 @@ import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/inter
 import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
 import { setThemeInstance } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { installLifecycleFakeClock } from "./chat-session-host-working-lifecycle-fixture.ts";
 
 const previousKeybindings = getKeybindings();

@@ -10,7 +10,19 @@ import {
 	watch,
 	write,
 } from "node:fs";
-import { lstat, mkdir, readdir, readFile, realpath, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import {
+	lstat,
+	mkdir,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	stat,
+	statfs,
+	unlink,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
@@ -1222,6 +1234,22 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
+	/**
+	 * The bytes this process may still write on the file system that holds the database file (where a link to it points,
+	 * and where its write-ahead log goes), or undefined for a database in memory or when the file system does not say.
+	 */
+	async freeBytes(): Promise<number | undefined> {
+		const path = this.descriptor.location;
+		if (path === "" || path === ":memory:") return undefined;
+		try {
+			// The file itself, not its directory: a link to a database on another file system measures that file system.
+			const { bavail, bsize } = await statfs(path);
+			return Number(bavail) * Number(bsize);
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** Creates this connection's write-lock record; see `SqliteHolderRecord`. */
 	async openHolderRecord(): Promise<void> {
 		await this.holderRecord?.open();
@@ -1555,6 +1583,26 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,
 	): Promise<T> {
+		if (options?.readOnly === true) {
+			return this.enqueueStatement(async () => {
+				await this.executor.exec("BEGIN");
+				let active = true;
+				try {
+					const value = await callback(this.createExecutor(() => active));
+					active = false;
+					await this.executor.exec("COMMIT");
+					return value;
+				} catch (cause) {
+					active = false;
+					try {
+						await this.executor.exec("ROLLBACK");
+					} catch (rollbackCause) {
+						throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
+					}
+					throw cause;
+				}
+			});
+		}
 		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
 		return new Promise<T>((resolve, reject) => {
 			const queued: QueuedTransaction = {

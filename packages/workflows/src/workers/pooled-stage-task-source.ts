@@ -1,4 +1,7 @@
+import { isProxy } from "node:util/types";
 import {
+	bindTaskTranscriptFragments,
+	type PublishedChatActivity,
 	rehydrateTaskMessageError,
 	scopedBackgroundTasks,
 	sessionTasks,
@@ -10,13 +13,13 @@ import {
 	type TaskOutputView,
 	type TaskRecord,
 	type TaskTranscriptFollow,
+	type TaskTranscriptFragments,
 	type TaskTranscriptView,
 	type TaskViewResult,
 	type TaskViewSource,
 } from "@bastani/atomic";
 import type { PooledStageTasks, PooledTaskAction, PooledTaskReply } from "./stage-watch-types.js";
 
-const EMPTY: PooledStageTasks = { tasks: [], background: [], settlement: [], activity: [], stdin: [], statuses: [] };
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
 
 function failure<T>(error: Error | string): TaskViewResult<T> {
@@ -28,11 +31,11 @@ function failure<T>(error: Error | string): TaskViewResult<T> {
  * root (#3996). It shows the state the worker last sent, and runs every action on the worker.
  */
 export class PooledStageTaskSource implements TaskViewSource {
-	private state = EMPTY;
 	private records: TaskRecord[] = [];
 	private backgroundRecords: TaskRecord[] = [];
 	private settlements: ReadonlyMap<TaskId, bigint> = new Map();
 	private activity = new Map<TaskId, { readonly entries: readonly TaskActivity[]; readonly omitted: boolean }>();
+	private chatActivity = new Map<TaskId, PublishedChatActivity>();
 	private statuses = new Map<TaskId, ReadonlyMap<string, string>>();
 	private stdin = new Set<TaskId>();
 	private readonly listeners = new Set<() => void>();
@@ -45,7 +48,7 @@ export class PooledStageTaskSource implements TaskViewSource {
 
 	/** Adopts the state the worker sent. */
 	apply(state: PooledStageTasks): void {
-		this.state = state;
+		this.chatActivity = new Map(state.chatActivity);
 		this.records = [...state.tasks];
 		const background = new Set(state.background);
 		this.backgroundRecords = this.records.filter((task) => background.has(task.ref.taskId));
@@ -56,9 +59,16 @@ export class PooledStageTaskSource implements TaskViewSource {
 		for (const listener of [...this.listeners]) listener();
 	}
 
+	/** The attempt can no longer report live turns. Keep its task records and history for inspection. */
+	withdrawChatActivity(): void {
+		if (this.chatActivity.size === 0) return;
+		this.chatActivity.clear();
+		for (const listener of [...this.listeners]) listener();
+	}
+
 	/** Whether the worker has sent any task yet. */
 	get empty(): boolean {
-		return this.state.tasks.length === 0;
+		return this.records.length === 0;
 	}
 
 	/** The stage's own tasks; its workers' shells are listed in their own views. */
@@ -114,13 +124,21 @@ export class PooledStageTaskSource implements TaskViewSource {
 	}
 	async readTaskTranscript(id: TaskId, cursor?: string): Promise<TaskViewResult<TaskTranscriptView>> {
 		const reply = await this.request(id, { kind: "transcript", ...(cursor === undefined ? {} : { cursor }) });
-		return reply.ok ? (reply.value.kind === "transcript" ? reply.value.result : unexpected()) : reply;
+		if (!reply.ok) return reply;
+		if (reply.value.kind !== "transcript") return unexpected();
+		const { result } = reply.value;
+		// Only the worker's plain data envelope carries these positions; never probe the SDK page itself.
+		const fragments: TaskTranscriptFragments | undefined = isProxy(reply.value)
+			? undefined
+			: Object.getOwnPropertyDescriptor(reply.value, "fragments")?.value;
+		if (fragments) bindTaskTranscriptFragments(result, fragments);
+		return result;
 	}
 	/** An agent task's transcript is read again from the worker whenever its tasks change. */
 	followTaskTranscript(id: TaskId): TaskTranscriptFollow | undefined {
-		return this.records.some((task) => task.ref.taskId === id && task.kind === "agent")
-			? { historyOnly: true }
-			: undefined;
+		if (!this.records.some((task) => task.ref.taskId === id && task.kind === "agent")) return undefined;
+		const publishedActivity = this.chatActivity.get(id);
+		return publishedActivity === undefined ? { historyOnly: true } : { historyOnly: true, publishedActivity };
 	}
 	/** A subagent's cwd and skills are on the worker, where its session runs. */
 	async taskCommands(id: TaskId): Promise<TaskCommandCatalog | undefined> {

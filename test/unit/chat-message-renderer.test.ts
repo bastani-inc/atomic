@@ -1,15 +1,38 @@
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
+	AssistantMessageComponent,
 	ChatTranscriptComponent,
 	chatEntriesFromAgentMessages,
 	LiveChatEntriesController,
 	ScrollableComponentViewport,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 describe("chat message renderer utilities", () => {
+	test("an assistant card subclass keeps control of its own compact notice setting (#5651)", () => {
+		initTheme("dark", false);
+		class Compact extends AssistantMessageComponent {
+			get hideTerminalNotice() {
+				return true;
+			}
+			override render(width: number) {
+				return super.render(width).filter((line) => !this.hideTerminalNotice || !line.includes("Error:"));
+			}
+		}
+		const card = new Compact({
+			...fauxAssistantMessage("visible body"),
+			stopReason: "error",
+			errorMessage: "provider failed",
+		});
+		const body = card.render(80).join("\n");
+		assert.match(body, /visible body/);
+		assert.doesNotMatch(body, /provider failed/);
+	});
+
 	test("pairs assistant tool calls with later tool results while preserving args", () => {
 		const messages: AgentMessage[] = [
 			{

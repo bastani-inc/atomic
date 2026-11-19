@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { setKeybindings, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
+import { setKeybindings, stripHintMarkers, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { AgentPanelRow } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
@@ -11,7 +11,7 @@ import {
 	type AttachedComposerStyle,
 	applyAttachedComposer,
 } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
-import { mainComposerHintSegments } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.js";
+import { mainComposerFooterHints } from "../../packages/coding-agent/src/modes/interactive/components/main-composer-keys.js";
 import {
 	type NavKey,
 	type NavKeyStyle,
@@ -24,7 +24,8 @@ import { moduleDir, readText } from "../helpers/runtime.js";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const plainStyle: NavKeyStyle = {
-	dim: (text) => text,
+	// Hint lines are compared as the terminal shows them, without their zero-width click markers.
+	dim: (text) => stripHintMarkers(text),
 	text: (text) => text,
 	muted: (text) => text,
 	border: (text) => text,
@@ -64,7 +65,7 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		}
 	});
 
-	test("main footer at narrow widths drops lower-priority hint segments whole and preserves ↓ N agents and ? keys (#5239)", () => {
+	test("main footer at narrow widths keeps existing hints ahead of the retired workflow pointer (#5239, #5710)", () => {
 		const keybindings = new KeybindingsManager();
 		setKeybindings(keybindings);
 		for (const working of [true, false]) {
@@ -91,13 +92,14 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 				getAvailableProviderCount: () => 1,
 				onBranchChange: () => () => {},
 			};
+			let hiddenWorkflow = false;
 			const footer = new FooterComponent(
 				session as never,
 				footerData as never,
 				undefined,
 				() => false,
 				undefined,
-				() => mainComposerHintSegments(keybindings, { agentRows: 3, needsInput: 1 }),
+				() => mainComposerFooterHints(keybindings, { agentRows: 3, needsInput: 1, hiddenWorkflow }),
 			);
 			for (const width of [30, 40, 50, 60, 80, 160]) {
 				const line = stripTerminalSequences(footer.render(width)[0] ?? "");
@@ -111,7 +113,42 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 				working ? "esc to interrupt · ↓ 3 agents · ? keys" : "claude-sonnet-4... · ↓ 3 agents · ? keys",
 			);
 			assert.equal(stripTerminalSequences(footer.render(30)[0] ?? ""), "↓ 3 agents · ? keys");
+			hiddenWorkflow = true;
+			assert.match(stripTerminalSequences(footer.render(60)[0] ?? ""), /↓ 3 agents · 1 needs input · \? keys$/u);
+			assert.equal(
+				stripTerminalSequences(footer.render(100)[0] ?? ""),
+				working
+					? "esc to interrupt · ↓ 3 agents · 1 needs input · /workflows to see runs · ? keys"
+					: "claude-sonnet-4-5  medium • /workspace/atomic-project (main) · ↓ 3 agents · 1 needs input · ? keys",
+			);
+			assert.match(
+				stripTerminalSequences(footer.render(160)[0] ?? ""),
+				/1 needs input · \/workflows to see runs · \? keys$/u,
+			);
 		}
+	});
+
+	test("a workflow pointer can use the space after a clipped status when help is unbound (#5710)", () => {
+		// These spacing marks form one grapheme wider than the terminal. The footer cannot show part of it.
+		const model = { provider: "local", id: `a${"\u093e".repeat(100)}` };
+		const footer = new FooterComponent(
+			{ state: { model }, sessionManager: { getCwd: () => "/project" } } as never,
+			{
+				getGitBranch: () => null,
+				getExtensionStatuses: () => new Map(),
+				getAvailableProviderCount: () => 1,
+				onBranchChange: () => () => {},
+			},
+			undefined,
+			undefined,
+			undefined,
+			() =>
+				mainComposerFooterHints(
+					{ matches: () => false, getKeys: () => [] },
+					{ agentRows: 0, hiddenWorkflow: true },
+				),
+		);
+		assert.equal(stripTerminalSequences(footer.render(80)[0]!), "... · /workflows to see runs");
 	});
 
 	test("renderNavHintLine keeps one separator style and preserves way-out and ? keys on panel, /tasks, and attached chats (#5239)", () => {

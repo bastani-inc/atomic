@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
+import { stripTerminalSequences as stripAnsi } from "@bastani/atomic-tui";
 import { describe, it } from "vitest";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";

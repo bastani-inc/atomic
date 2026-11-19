@@ -32,6 +32,7 @@ import { subagentWakeKey } from "./released-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
+import { subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	currentWakeFailure,
 	findSubagentChildRecord,
@@ -506,7 +507,7 @@ function interruptedResume(record: SubagentChildRecord, withdrawn: boolean, mess
 		"resume",
 		withdrawn
 			? `Interrupted before ${label(record)} took the resume: it was withdrawn, and the child does not run it${message ? " or get your message" : ""}. Resume it again when you are ready.`
-			: `Interrupted while ${label(record)} was being resumed: the resume had begun and goes on${message ? " with your message" : ""}. subagent({ action: "status", id: "${record.childId}" }) shows how it went.`,
+			: `Interrupted while ${label(record)} was being resumed: the resume had begun and goes on${message ? " with your message" : ""}.${record.worktree && !record.worktree.named ? " Any worktree cleanup continues in the background." : ""} subagent({ action: "status", id: "${record.childId}" }) shows how it went.`,
 	);
 }
 
@@ -724,6 +725,9 @@ export function controlSubagentChildren(
 		return Promise.resolve(errorResult(request.action, "Pass either id or all: true, not both."));
 	if (!request.all && !request.id?.trim() && request.action !== "resume")
 		return Promise.resolve(errorResult(request.action, `${request.action} needs the id of a child, or all: true.`));
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	deps = { ...deps, pi: owner.pi };
+	ctx = owner.ctx;
 	if (request.action === "resume") return resumeChild(deps, ctx, request, signal);
 	const action = request.action;
 	// A child that does not stop yet keeps its stop waiting: the interrupted turn ends, and the stop goes on.

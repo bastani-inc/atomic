@@ -1,4 +1,5 @@
 import { type Component, Container, type Input, Spacer, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { clickableHintText } from "../../../../modes/interactive/components/nav-keys.ts";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import type { QuestionnaireState } from "../state/state.ts";
 import type { QuestionData } from "../tool/types.js";
@@ -207,7 +208,7 @@ export class DialogView implements StatefulView<DialogProps> {
 		}
 		lines.push(chrome.bottom);
 		const hint = fitHintText(strategy.hintText(state), Math.max(1, width - 2));
-		const hintLine = `  ${theme.fg("dim", hint)}`;
+		const hintLine = `  ${theme.fg("dim", clickableHintText(hint, ["n"]))}`;
 		lines.push(visibleWidth(hintLine) > width ? truncateToWidth(hintLine, width, "") : hintLine);
 
 		const maxHeight =

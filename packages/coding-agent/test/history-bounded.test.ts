@@ -2350,12 +2350,19 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		assert.ok(turnBlockedMs(turn, [{ start: 5, end: 25 }], 0.001) <= TURN_LIMIT_MS);
 	});
 
-	it("counts a turn that held the event loop past the limit while a coarse CPU clock charged it one step or none (#5599)", () => {
+	it("does not charge a clock step to a turn with no measured CPU time (#5624)", () => {
+		const windowsTick = 15.625;
+		for (const wall of [12, 200]) assert.equal(turnBlockedMs({ start: 0, end: wall, cpu: 0 }, [], windowsTick), 0);
+	});
+
+	it("counts a turn that held the event loop past the limit when a coarse CPU clock charged it a step (#5599)", () => {
 		const windowsTick = 15.625;
 		for (const turn of [
-			{ start: 0, end: 12, cpu: 0 },
+			{ start: 0, end: 12, cpu: windowsTick },
 			{ start: 0, end: 15.2, cpu: windowsTick },
+			{ start: 0, end: 20, cpu: windowsTick },
 			{ start: 0, end: 25, cpu: windowsTick },
+			{ start: 0, end: 31, cpu: windowsTick },
 		])
 			assert.ok(
 				turnBlockedMs(turn, [], windowsTick) > TURN_LIMIT_MS,

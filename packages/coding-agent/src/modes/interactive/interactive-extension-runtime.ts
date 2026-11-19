@@ -13,7 +13,7 @@ import {
 	type ExtensionRunner,
 	type ExtensionWidgetOptions,
 	type KeyId,
-	keyText,
+	keyTextHint,
 	type LoaderIndicatorOptions,
 	matchesKey,
 	Text,
@@ -296,7 +296,7 @@ InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveMode
 	this.setWorkingVisible(true);
 	this.setWorkingIndicator();
 	if (this.loadingAnimation) {
-		this.loadingAnimation.setMessage(`${this.defaultWorkingMessage} (${keyText("app.interrupt")} Interrupt)`);
+		this.loadingAnimation.setMessage(`${this.defaultWorkingMessage} (${keyTextHint("app.interrupt", "Interrupt")})`);
 	}
 	this.setHiddenThinkingLabel();
 	// The extensions that replace these report their startup errors before the transcript is redrawn: keep them for it.

@@ -226,7 +226,7 @@ export function parseGitHubCopilotDiscoveredModels(raw: unknown, catalog: readon
 }
 
 async function accountModelListRequest(
-	context: RefreshModelsContext,
+	context: Pick<RefreshModelsContext, "credential" | "baseUrl">,
 ): Promise<{ token: string; baseUrl: string } | undefined> {
 	const credential = context.credential;
 	if (credential?.type === "oauth") {
@@ -265,8 +265,8 @@ async function saveAccountModelLists(context: RefreshModelsContext, raw: unknown
 }
 
 /** The account's `GET /models` response and the host that answered it, or undefined when the host refuses the token. */
-async function readAccountModelList(
-	context: RefreshModelsContext,
+export async function readGitHubCopilotAccountModelList(
+	context: Pick<RefreshModelsContext, "credential" | "baseUrl" | "signal">,
 ): Promise<{ raw: unknown; baseUrl: string } | undefined> {
 	const request = await accountModelListRequest(context);
 	if (!request) return undefined;
@@ -301,7 +301,7 @@ export async function discoverGitHubCopilotModels(
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
 ): Promise<Model<Api>[] | undefined> {
-	const list = await readAccountModelList(context);
+	const list = await readGitHubCopilotAccountModelList(context);
 	if (!list) return undefined;
 	const models = parseGitHubCopilotDiscoveredModels(list.raw, catalog);
 	await saveAccountModelLists(context, list.raw, list.baseUrl);
@@ -316,7 +316,7 @@ export async function discoverGitHubCopilotModels(
  */
 export async function refreshGitHubCopilotAccountModelLists(context: RefreshModelsContext): Promise<void> {
 	if (!context.allowNetwork || context.credential?.type !== "api_key") return;
-	const list = await readAccountModelList(context);
+	const list = await readGitHubCopilotAccountModelList(context);
 	if (list) await saveAccountModelLists(context, list.raw, list.baseUrl);
 }
 

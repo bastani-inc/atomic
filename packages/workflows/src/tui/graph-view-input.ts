@@ -29,6 +29,16 @@ const GRAPH_NOTICE_MS = 4000;
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
+		const prior = this.displayBlock;
+		this.displayBlock = undefined;
+		try {
+			return this._handleInput(data);
+		} finally {
+			this.displayBlock = prior;
+		}
+	}
+
+	private _handleInput(data: string): boolean {
 		const paintedView = this.paintedView;
 		const paintedBlockerKey = this.paintedBlockerKey;
 		this._syncLayout();

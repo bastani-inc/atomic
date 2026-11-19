@@ -1,3 +1,4 @@
+import { clickableHintText } from "../clickable-hints.ts";
 import { fuzzyFilter } from "../fuzzy.ts";
 import { getKeybindings, getSelectPageIndex } from "../keybindings.ts";
 import type { Component, TuiMouseEvent, TuiMouseEventResult } from "../tui.ts";
@@ -322,9 +323,11 @@ export class SettingsList implements Component {
 		lines.push(
 			truncateToWidth(
 				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
+					clickableHintText(
+						this.searchEnabled
+							? "  Type to search · Enter/Space to change · Esc to cancel"
+							: "  Enter/Space to change · Esc to cancel",
+					),
 				),
 				width,
 			),

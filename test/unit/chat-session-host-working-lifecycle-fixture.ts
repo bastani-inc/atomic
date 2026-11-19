@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { EditorTheme } from "@bastani/atomic-tui";
+import { stripHintMarkers } from "@bastani/atomic-tui";
 import {
 	ChatSessionHost,
 	type ChatSessionHostOpts,
@@ -39,7 +40,7 @@ export function makeLifecycleHost(overrides: Partial<ChatSessionHostOpts> = {}):
 }
 
 export function stripAnsi(text: string): string {
-	return text.replace(/\u001b\[[0-9;]*m/g, "");
+	return stripHintMarkers(text).replace(/\u001b\[[0-9;]*m/g, "");
 }
 
 export function rawWorkingLine(host: ChatSessionHost<never>): string | undefined {

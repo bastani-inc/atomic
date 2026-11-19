@@ -1,6 +1,7 @@
 import { type Component, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
+import { slashCommandHint } from "./nav-keys.ts";
 import { ToolBlock, ToolBlockRecords } from "./tool-block.ts";
 
 /** One row of a heartbeat record: shortened to the width, or wrapped onto further rows when `wrap` is set. */
@@ -49,7 +50,8 @@ export class HeartbeatBlock implements Component {
 	invalidate(): void {}
 	render(width: number): string[] {
 		const expand = this.spec.expandable && !this.spec.expanded ? keyHintIfBound("app.tools.expand", "to expand") : "";
-		const hint = theme.fg("dim", [this.spec.hint, expand].filter(Boolean).join(" · "));
+		const inspect = this.spec.hint === undefined ? "" : slashCommandHint(this.spec.hint);
+		const hint = theme.fg("dim", [inspect, expand].filter(Boolean).join(" · "));
 		const records = this.spec.records.length === 0 ? [[hint]] : this.spec.records.map((rows) => [...rows]);
 		if (this.spec.records.length > 0) records[records.length - 1]?.push(hint);
 		// The title and subject stay whole while they can: facts are dropped from the right first, as a notice's are,

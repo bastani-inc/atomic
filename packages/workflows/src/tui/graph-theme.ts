@@ -10,6 +10,8 @@
  * overrides without forking the renderer.
  */
 
+import { colorToRgb, foregroundAnsi, parseColor } from "@bastani/atomic-tui";
+
 // ---------------------------------------------------------------------------
 // Canonical palette (Catppuccin Mocha)
 // ---------------------------------------------------------------------------
@@ -101,6 +103,9 @@ export interface GraphTheme {
 	accent: string;
 	mauve: string;
 
+	/** Palette slots have no fixed RGB. Keep a live stage's slot when its host uses one. */
+	stagePaletteFg?: (role: "warning" | "info") => string | undefined;
+
 	/** Statuses */
 	success: string;
 	warning: string;
@@ -161,6 +166,7 @@ export function deriveGraphTheme(theme: GenericTheme = {}): GraphTheme {
 export interface PiRuntimeTheme {
 	readonly name?: string;
 	getFgAnsi?: (color: string) => string;
+	getStyleLevel?: () => number;
 	getBgAnsi?: (color: string) => string;
 }
 
@@ -229,6 +235,32 @@ function tryPiAccessor(
 	}
 }
 
+/** Round the peak hue once to a basic foreground. Relative channel strengths keep pastel yellow yellow, not white. */
+function basicForeground(hex: string): string {
+	const { r, g, b } = colorToRgb(parseColor(hex));
+	const hi = Math.max(r, g, b);
+	const lo = Math.min(r, g, b);
+	if (hi === lo) return `\x1b[${hi < 64 ? 30 : hi < 160 ? 90 : hi < 224 ? 37 : 97}m`;
+	const mid = (hi + lo) / 2;
+	const slot = Number(r >= mid) + 2 * Number(g >= mid) + 4 * Number(b >= mid);
+	return `\x1b[${(hi >= 192 ? 90 : 30) + slot}m`;
+}
+
+function stagePeak(
+	ansi: string | undefined,
+	hex: string,
+	level: number,
+	depth: number | undefined,
+): string | undefined {
+	const indexed = /^\x1b\[38;5;(\d{1,3})m$/.exec(ansi ?? "");
+	const index = indexed ? Number(indexed[1]) : undefined;
+	if (index !== undefined && index < 16) return `\x1b[${index < 8 ? 30 + index : 90 + index - 8}m`;
+	if (level === 1 || depth === 4) return basicForeground(hex);
+	if (index !== undefined && index < 256) return ansi;
+	if (depth === 8) return foregroundAnsi(parseColor(hex), "256color");
+	return undefined;
+}
+
 function fgHex(theme: PiRuntimeTheme, color: string): string | undefined {
 	return parsePiAnsiToHex(tryPiAccessor(theme, theme.getFgAnsi, color));
 }
@@ -261,7 +293,7 @@ function bgHex(theme: PiRuntimeTheme, color: string): string | undefined {
  * Mocha defaults — the overlay must always render with a stable
  * palette even if the host theme is mid-load or absent.
  */
-export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
+export function deriveGraphThemeFromPiTheme(theme: unknown, terminal?: { readonly colorDepth?: number }): GraphTheme {
 	if (!theme || typeof theme !== "object") return deriveGraphTheme({});
 	const t = theme as PiRuntimeTheme;
 	const defaultText = t.name === "light" || t.name === "catppuccin-latte" ? LATTE.text : undefined;
@@ -296,5 +328,24 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 			(cleaned as Record<string, string>)[k] = v;
 		}
 	}
-	return deriveGraphTheme(cleaned);
+	const graph = deriveGraphTheme(cleaned);
+	if (typeof t.getStyleLevel === "function" && typeof t.getFgAnsi === "function") {
+		const styleLevel = t.getStyleLevel.bind(t);
+		const localDepth = terminal?.colorDepth ?? process.stdout.getColorDepth?.();
+		type Peak = { level: number; depth?: number; ansi?: string; fg?: string };
+		const peaks: Partial<Record<"warning" | "info", Peak>> = {};
+		graph.stagePaletteFg = (role) => {
+			// An isolated component learns its display depth after mounting, before its first host paint.
+			const depth = terminal?.colorDepth ?? localDepth;
+			const level = styleLevel();
+			if (level === 0) return "";
+			const ansi = tryPiAccessor(t, t.getFgAnsi, role === "info" ? "accent" : role);
+			const cached = peaks[role];
+			if (cached && cached.level === level && cached.depth === depth && cached.ansi === ansi) return cached.fg;
+			const fg = stagePeak(ansi, graph[role], level, depth);
+			peaks[role] = { level, depth, ansi, fg };
+			return fg;
+		};
+	}
+	return graph;
 }

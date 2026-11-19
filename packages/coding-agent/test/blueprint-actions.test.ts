@@ -50,10 +50,17 @@ import {
 	type BlueprintUsesUnsupportedReason,
 	isBlueprintUsesUnsupportedError,
 } from "../src/core/resume/blueprint/errors.ts";
-import { openStepLog, type ProcessExit, runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
+import {
+	openStepLog,
+	type ProcessExit,
+	runLoggedProcess,
+	stepProcessWatcher,
+	stepStartingWatcher,
+} from "../src/core/resume/blueprint/process.ts";
 import { isWorkspaceGitError } from "../src/core/workspace/errors.ts";
 import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { createGitEnvironment } from "../src/utils/git-env.ts";
+import * as shell from "../src/utils/shell.ts";
 import { getShellConfig, type ShellConfig } from "../src/utils/shell.ts";
 import { bunExecutable } from "./cli-test-helpers.ts";
 
@@ -2227,30 +2234,146 @@ describe("the file commands of a step", () => {
 });
 
 describe("the budget of a step", () => {
-	test("is spent before a process starts when the deadline has already passed (#4588)", async () => {
-		const started = 1_700_000_000_000;
-		const timeoutMs = 5_000;
-		let now = started;
-		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-		const planting = planted({
-			"acme/late": nodeAction(`require("node:fs").appendFileSync(process.env.RESULT_FILE, "ran\\n");\n`),
-		});
-		const fetchAction: ActionFetcher = async (request) => {
-			await planting(request);
-			now = started + timeoutMs;
-		};
-
-		try {
-			const run = startRun("github.com/acme/late@v1", { fetchAction, timeoutMs });
-			const exit = await run.result;
-
-			assert.deepEqual(exit, { exitStatus: null, signal: null, timedOut: true, elapsedMs: timeoutMs });
-			assert.deepEqual(resultLines(), []);
-			assert.ok(!readText(run.logPath).includes("=== main of"));
-		} finally {
-			clock.mockRestore();
-		}
+	const fetchAction = planted({
+		"acme/fractional": {
+			"action.yml": compositeMetadata(["    - shell: sh", "      run: 'sleep 0.03; echo ran > marker'"]),
+		},
 	});
+
+	/** Return a real shell lookup at the specified wall millisecond. Neither clock nor the command timer is patched. */
+	async function runAtSetupBoundary(timeoutMs: number, setupMs: number) {
+		const log = await openStepLog(join(fixture.logs, "fractional.log"));
+		const lookup = shell.getShellConfigAsync;
+		let readyAt = 0;
+		let returnedAt = 0;
+		const lookupSpy = vi.spyOn(shell, "getShellConfigAsync").mockImplementation(async () => {
+			const config = await lookup();
+			const sleepMs = readyAt - Date.now() - 20;
+			if (sleepMs > 0) await delay(sleepMs);
+			while (Date.now() < readyAt) {
+				/* finish in the target millisecond */
+			}
+			returnedAt = Date.now();
+			return config;
+		});
+		try {
+			for (let attempt = 0; attempt < 8; attempt++) {
+				const pids: number[] = [];
+				const options = {
+					step: { uses: "github.com/acme/fractional@v1", inputs: {} },
+					location: LOCATION,
+					cwd: fixture.workspace,
+					env: process.env,
+					envrcPath: fixture.envrcPath,
+					cacheDir: fixture.cacheDir,
+					log,
+					timeoutMs,
+					fetchAction,
+				};
+				const before = Date.now();
+				const result = stepProcessWatcher.run(
+					(pid, live) => {
+						if (live) pids.push(pid);
+					},
+					() => runAction(options),
+				);
+				const after = Date.now();
+				readyAt = after + setupMs;
+				const exit = await result;
+				// If setup began across a tick or lookup overslept, this wasn't the boundary under test.
+				if (before === after && returnedAt === readyAt) return { pids, exit };
+			}
+			throw new Error(`Shell lookup never returned at setup millisecond ${setupMs}`);
+		} finally {
+			lookupSpy.mockRestore();
+			await log.close();
+		}
+	}
+
+	test("a fractional seconds conversion does not start a child at the expired millisecond (#5707)", async () => {
+		const { exit, pids } = await runAtSetupBoundary(1000 * (0.1 + 0.2), 300);
+		assert.deepEqual(pids, []);
+		assert.equal(exit.timedOut, true);
+		assert.equal(existsSync(join(fixture.workspace, "marker")), false);
+	});
+
+	test("a fractional budget with the maximum timer delay remaining lets the command finish (#5707)", async () => {
+		const { exit } = await runAtSetupBoundary(2_147_483_847.0001, 200);
+		assert.equal(exit.timedOut, false);
+		assert.equal(exit.exitStatus, 0);
+		assert.equal(readText(join(fixture.workspace, "marker")).trim(), "ran");
+	});
+
+	test.skipIf(process.platform !== "linux")(
+		"an action with 50.5 ms left after a clock rollback still admits a retry at 50 ms without extending its timer (#5707)",
+		async () => {
+			const heldShell = join(fixture.root, "held-sh");
+			writeFileSync(heldShell, '#!/bin/sh\nexec /bin/sh "$@"\n', { mode: 0o755 });
+			let held: number | undefined = openSync(heldShell, "r+");
+			const wall = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+			const active = vi.spyOn(performance, "now").mockReturnValue(0);
+			const lookup = vi.spyOn(shell, "getShellConfigAsync").mockImplementation(async () => {
+				// Setup consumed 150 ms while the wall clock moved back. There are 50.5 ms left, not 700.5.
+				wall.mockReturnValue(1_699_999_999_500);
+				active.mockReturnValue(150);
+				return { shell: heldShell, args: ["-c"] };
+			});
+			try {
+				let tries = 0;
+				const exit = await stepStartingWatcher.run(
+					() => {
+						if (lookup.mock.calls.length === 0 || ++tries !== 2) return;
+						active.mockReturnValue(200);
+						if (held !== undefined) closeSync(held);
+						held = undefined;
+					},
+					() => startRun("github.com/acme/fractional@v1", { timeoutMs: 200.5, fetchAction }).result,
+				);
+				assert.equal(tries, 2);
+				assert.equal(exit.spawnError, undefined);
+				assert.equal(exit.timedOut, true);
+				assert.equal(existsSync(join(fixture.workspace, "marker")), false);
+			} finally {
+				lookup.mockRestore();
+				active.mockRestore();
+				wall.mockRestore();
+				if (held !== undefined) closeSync(held);
+			}
+		},
+	);
+
+	test.each([
+		{ duringFetch: "ordinary time", wallMs: 5_000, awakeMs: 5_000, timeoutMs: 5_000, expectedMs: 5_000 },
+		{ duringFetch: "a backward clock change", wallMs: -5_000, awakeMs: 5_000, timeoutMs: 5_000, expectedMs: 5_000 },
+		{ duringFetch: "system suspend", wallMs: 350, awakeMs: 0, timeoutMs: 200, expectedMs: 350 },
+	])(
+		"expires without starting the action after $duringFetch during fetch (#4588, #5707)",
+		async ({ wallMs, awakeMs, timeoutMs, expectedMs }) => {
+			const started = 1_700_000_000_000;
+			const clock = vi.spyOn(Date, "now").mockReturnValue(started);
+			const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
+			const planting = planted({
+				"acme/late": nodeAction(`require("node:fs").appendFileSync(process.env.RESULT_FILE, "ran\\n");\n`),
+			});
+			const fetchAction: ActionFetcher = async (request) => {
+				await planting(request);
+				clock.mockReturnValue(started + wallMs);
+				monotonic.mockReturnValue(awakeMs);
+			};
+
+			try {
+				const run = startRun("github.com/acme/late@v1", { fetchAction, timeoutMs });
+				const exit = await run.result;
+
+				assert.deepEqual(exit, { exitStatus: null, signal: null, timedOut: true, elapsedMs: expectedMs });
+				assert.deepEqual(resultLines(), []);
+				assert.ok(!readText(run.logPath).includes("=== main of"));
+			} finally {
+				monotonic.mockRestore();
+				clock.mockRestore();
+			}
+		},
+	);
 });
 
 async function withEnvironment<T>(

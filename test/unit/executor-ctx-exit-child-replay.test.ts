@@ -73,6 +73,10 @@ describe("ctx.exit", () => {
 				entry.payload.runId === result.runId &&
 				entry.payload.stageId === boundary?.id,
 		);
+		const actual = store.runs().find((candidate) => candidate.parentRunId === result.runId);
+		assert.ok(actual);
+		assert.equal(boundary?.startedChildRunId, actual.id);
+		assert.equal(boundaryEnd?.payload.startedChildRunId, actual.id);
 		assert.equal(boundaryEnd?.payload.status, "failed");
 		assert.equal("workflowChild" in (boundaryEnd?.payload ?? {}), false);
 	});
@@ -166,6 +170,12 @@ describe("ctx.exit", () => {
 				entry.payload.runId === continued.runId &&
 				entry.payload.stageId === boundary?.id,
 		);
+		assert.equal(
+			boundary?.startedChildRunId,
+			undefined,
+			"a replay that never starts a child cannot claim the earlier invocation",
+		);
+		assert.equal(boundaryEnd?.payload.startedChildRunId, undefined);
 		assert.equal(boundaryEnd?.payload.status, "skipped");
 		assert.equal("workflowChild" in (boundaryEnd?.payload ?? {}), false);
 		assert.equal(store.runs().filter((runSnapshot) => runSnapshot.name === "exit-replay-child").length, 1);

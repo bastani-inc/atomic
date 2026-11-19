@@ -10,26 +10,18 @@ import {
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { registerWithBrokerSuccessor } from "./broker-successor-retry.js";
 import { loadConfigAsync } from "./config.js";
+import { PendingStagePublication, type PendingStageRoute } from "./pending-stage-publication.js";
 import { jitteredReconnectDelayMs } from "./reconnect-backoff.js";
 import { isIntercomBrokerRetiring } from "./recoverable-disconnect.js";
-import type {
-	WorkflowPossibleStageAnnouncement,
-	WorkflowRunParentAnnouncement,
-	WorkflowStageRosterAnnouncement,
-} from "./types.js";
 
-interface Route {
+interface Route extends PendingStageRoute {
 	readonly runId: string;
-	readonly group: string;
-	readonly capability: string;
-	readonly stages?: WorkflowStageRosterAnnouncement[];
-	readonly possibleStages?: WorkflowPossibleStageAnnouncement[];
-	readonly parent?: WorkflowRunParentAnnouncement;
 	completion?: Promise<void>;
 }
 
 interface RouteState {
 	route: Route;
+	readonly publication: PendingStagePublication;
 	tail: Promise<void>;
 	retry?: ReturnType<typeof setTimeout>;
 	attempt: number;
@@ -107,6 +99,26 @@ export function createWorkflowRouteOwner(cwd: string) {
 		if (!state.isolated || connection === undefined) return;
 		connections.delete(key);
 		void connection.client?.disconnect().catch(() => {});
+	}
+
+	async function retire(state: RouteState): Promise<void> {
+		const { runId } = state.route;
+		routes.delete(runId);
+		clearTimeout(state.retry);
+		settle(state, false);
+		const key = connectionKey(state);
+		const connection = connections.get(key);
+		connection?.routes.delete(runId);
+		const close = connection !== undefined && connection.routes.size === 0;
+		if (close) connections.delete(key);
+		try {
+			await state.publication.withdraw(runId);
+		} finally {
+			if (close) {
+				await connection.connecting?.catch(() => {});
+				await connection.client?.disconnect();
+			}
+		}
 	}
 
 	function settle(state: RouteState, registered: boolean): void {
@@ -228,14 +240,8 @@ export function createWorkflowRouteOwner(cwd: string) {
 				let client: IntercomClient | undefined;
 				try {
 					client = await connect(connection);
-					await client.registerPendingStageRouteAcknowledged(
-						route.runId,
-						route.group,
-						route.capability,
-						route.stages,
-						route.possibleStages,
-						route.parent,
-					);
+					if (!isCurrent(state)) throw closedError();
+					await state.publication.register(client, route.runId, route);
 					if (connection.client !== client || !isCurrent(state)) return;
 					connection.acknowledged = true;
 					state.attempt = 0;
@@ -243,6 +249,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 					state.retry = undefined;
 					settle(state, true);
 				} catch (error) {
+					if (!isCurrent(state)) throw error;
 					if (error instanceof IntercomPendingStageRouteRefusedError && error.connectionKept) {
 						// #3906: the broker refused only this run and kept the connection with every other run's route,
 						// so the run retries on its own backoff over the same connection.
@@ -271,17 +278,22 @@ export function createWorkflowRouteOwner(cwd: string) {
 	events.on("atomic:workflow-pending-stage-route", (payload) => {
 		const route = payload as Route;
 		let state = routes.get(route.runId);
-		if (state === undefined) {
-			state = { route, tail: Promise.resolve(), attempt: 0, registered: false, isolated: false, waiters: new Set() };
+		if (state === undefined || state.route.group !== route.group) {
+			const publication = new PendingStagePublication(state === undefined ? undefined : retire(state));
+			state = { route, publication, tail: Promise.resolve(), attempt: 0, registered: false, isolated: false, waiters: new Set() };
 			routes.set(route.runId, state);
-		} else if (state.route.group !== route.group) {
-			detach(state);
-			state.isolated = false;
-			settle(state, false);
 		}
 		state.route = route;
 		connectionOf(state);
 		route.completion = publish(state, route);
+	});
+	events.on("atomic:workflow-pending-stage-route-retired", (payload) => {
+		const event = payload as { runId: string; completion?: Promise<void> };
+		const state = routes.get(event.runId);
+		if (state !== undefined) {
+			event.completion = retire(state);
+			void event.completion.catch(() => {});
+		}
 	});
 	events.on("atomic:workflow-pending-stage-undeliverable", (payload) => {
 		const event = payload as Undeliverable;

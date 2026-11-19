@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
@@ -138,6 +139,26 @@ export interface MessageCompanionEntry {
 	readonly data?: SessionJsonValue;
 }
 
+/** Private host/builtin bridge, not re-exported by session-manager or the SDK. */
+export let appendOwnedSubagentChildRecord: (
+	manager: SessionManager,
+	ownerId: string,
+	data: { readonly childId?: string; readonly owner?: { readonly sessionId?: string } },
+	live: () => boolean,
+) => Promise<void>;
+
+// A child factory and its host can load independent SDK copies. Their constructors are not
+// interchangeable, but both can identify the physical header without calling virtual host methods.
+const forkGeneration = Symbol.for("atomic.session-manager/fork-generation@1");
+
+/** @internal Read only the native manager's local generation. Unknown/virtual hosts have no receipt. */
+export function physicalForkHeader(manager: SessionManager): SessionHeader | undefined {
+	if (isProxy(manager)) return undefined;
+	const prototype: object | null = Object.getPrototypeOf(manager);
+	const read = prototype && !isProxy(prototype) && Object.getOwnPropertyDescriptor(prototype, forkGeneration)?.value;
+	return typeof read === "function" ? read.call(manager) : undefined;
+}
+
 /** An in-memory session tree whose mutations await the backing store. */
 export class SessionManager {
 	private sessionId = "";
@@ -165,6 +186,9 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
+	private contextEdits = 0;
+	/** Whether a retained row at this leaf differs between the transcript and model projections. */
+	private projectedEdits: { leafId: string | null; visible: boolean } | undefined;
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
 
@@ -544,6 +568,8 @@ export class SessionManager {
 		this.byId = index.byId;
 		this.labelsById = index.labelsById;
 		this.labelTimestampsById = index.labelTimestampsById;
+		this.contextEdits = index.contextEdits;
+		this.projectedEdits = undefined;
 		this.leafId = index.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
@@ -704,6 +730,9 @@ export class SessionManager {
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
+			if (entry.type === "context_edit") this.contextEdits++;
+			else if (entry.type !== "compaction" && this.projectedEdits?.leafId === entry.parentId)
+				this.projectedEdits.leafId = entry.id;
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
@@ -950,13 +979,29 @@ export class SessionManager {
 		});
 	}
 
+	static {
+		appendOwnedSubagentChildRecord = (manager, ownerId, data, live) =>
+			manager.runMutation(async () => {
+				if (typeof data?.childId !== "string" || data.owner?.sessionId !== ownerId)
+					throw new Error("Cannot save a subagent-child record belonging to another owner.");
+				const refusal = `Cannot save subagent-child record: session ${ownerId} no longer owns its writer.`;
+				// A session its owner gave up refuses the record as its closed extension API does.
+				if (manager.sessionId !== ownerId || !live())
+					throw Object.assign(new Error(refusal), { code: "SessionClosed" });
+				if (manager.deletedFromStore) throw new Error(refusal);
+				await manager.appendCustomEntryAtLeaf("subagent-child", data);
+			});
+	}
+
+	private async appendCustomEntryAtLeaf<T>(customType: string, data?: T): Promise<string> {
+		const entry = createCustomEntry(customType, data, this.byId, this.leafId);
+		await this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
 	appendCustomEntry<T = SessionJsonValue>(customType: string, data?: T): Promise<string> {
-		return this.runMutation(async () => {
-			const entry = createCustomEntry(customType, data, this.byId, this.leafId);
-			await this._appendEntry(entry);
-			return entry.id;
-		});
+		return this.runMutation(() => this.appendCustomEntryAtLeaf(customType, data));
 	}
 
 	/**
@@ -1196,9 +1241,29 @@ export class SessionManager {
 		return buildContextEntries(this.getEntries(), this.leafId, this.byId, this.activeBranch());
 	}
 
-	/** Build provenance-preserving, compaction-aware model context from the current leaf. */
-	buildSessionProjection(): SessionProjection {
-		return buildSessionProjection(this.getEntries(), this.leafId, this.byId, this.sessionId, this.activeBranch());
+	/** Project the current leaf and its compaction boundary. Transcript rows keep the content shown before model-only edits. */
+	buildSessionProjection(purpose: "model" | "transcript" = "model", leafId = this.leafId): SessionProjection {
+		let visible = false;
+		const projection = buildSessionProjection(
+			this.getEntries(),
+			leafId,
+			this.byId,
+			this.sessionId,
+			leafId === this.leafId ? this.activeBranch() : leafId === null ? undefined : this.getBranch(leafId),
+			purpose,
+			() => {
+				visible = true;
+			},
+		);
+		if (leafId === this.leafId) this.projectedEdits = { leafId, visible };
+		return projection;
+	}
+
+	/** Whether an edit on the active branch changes a row still shown in its transcript. */
+	hasContextEdits(): boolean {
+		if (this.contextEdits === 0 || this.leafId === null) return false;
+		if (this.projectedEdits?.leafId !== this.leafId) this.buildSessionProjection();
+		return this.projectedEdits!.visible;
 	}
 
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */
@@ -1212,6 +1277,12 @@ export class SessionManager {
 	buildSessionContext(): SessionContext {
 		const { messages, thinkingLevel, model } = this.buildSessionProjection();
 		return { messages, thinkingLevel, model };
+	}
+
+	/** @internal Starting or replacing a session installs a new header in slot zero, even for the same public ID. */
+	[forkGeneration](): SessionHeader | undefined {
+		const header = this.fileEntries[0];
+		return header?.type === "session" ? header : undefined;
 	}
 
 	/** Get session header. */

@@ -124,38 +124,45 @@ export function createPromptStoreMethods(context: StoreContext): PromptStoreMeth
 				stage.status = "running";
 				delete stage.awaitingInputSince;
 			}
-			context.bumpAndNotify();
 			const entry = state.resolvers.get(promptId);
-			if (entry) {
-				state.resolvers.delete(promptId);
-				entry.resolve(response);
-			}
+			state.resolvers.delete(promptId);
+			context.bumpAndNotify();
+			entry?.resolve(response);
 			return true;
 		},
 
-		awaitStagePendingPrompt(runId: string, stageId: string, promptId: string): Promise<unknown> {
-			return new Promise<unknown>((resolve, reject) => {
-				const run = context.findRun(runId);
-				if (!run) {
-					reject(new Error(`atomic-workflows: run "${runId}" not found`));
-					return;
-				}
-				const stage = context.findStage(run, stageId);
-				if (!stage) {
-					reject(new Error(`atomic-workflows: stage "${stageId}" not found on run "${runId}"`));
-					return;
-				}
-				const pending = stage.pendingPrompt;
-				if (!pending || pending.id !== promptId) {
-					reject(
-						new Error(
-							`atomic-workflows: pending prompt "${promptId}" not registered on stage "${stageId}" in run "${runId}"`,
-						),
-					);
-					return;
-				}
-				state.resolvers.set(promptId, { promptId, resolve, reject });
-			});
+		awaitStagePendingPrompt(runId, stageId, promptId, signal): Promise<unknown> {
+			if (signal?.aborted) return Promise.reject(signal.reason);
+			const run = context.findRun(runId);
+			if (!run) return Promise.reject(new Error(`atomic-workflows: run "${runId}" not found`));
+			const stage = context.findStage(run, stageId);
+			if (!stage)
+				return Promise.reject(new Error(`atomic-workflows: stage "${stageId}" not found on run "${runId}"`));
+			if (stage.pendingPrompt?.id !== promptId)
+				return Promise.reject(
+					new Error(
+						`atomic-workflows: pending prompt "${promptId}" not registered on stage "${stageId}" in run "${runId}"`,
+					),
+				);
+			const result = Promise.withResolvers<unknown>();
+			const abort = () => {
+				if (state.resolvers.get(promptId) === entry) state.resolvers.delete(promptId);
+				result.reject(signal?.reason);
+			};
+			const entry = {
+				promptId,
+				resolve(response: unknown) {
+					signal?.removeEventListener("abort", abort);
+					result.resolve(response);
+				},
+				reject(error: unknown) {
+					signal?.removeEventListener("abort", abort);
+					result.reject(error);
+				},
+			};
+			state.resolvers.set(promptId, entry);
+			signal?.addEventListener("abort", abort, { once: true });
+			return result.promise;
 		},
 
 		recordStagePromptAnswer(
