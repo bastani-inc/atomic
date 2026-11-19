@@ -156,7 +156,7 @@ function isVerbatimCompaction(entry: SessionEntry): entry is CompactionEntry {
 	);
 }
 
-function completionIdOf(entry: SessionEntry): string | undefined {
+export function completionIdOf(entry: SessionEntry): string | undefined {
 	if (entry.type !== "custom") return undefined;
 	const completionId = (entry.data as { completionId?: unknown } | undefined)?.completionId;
 	return typeof completionId === "string" ? completionId : undefined;
@@ -171,9 +171,12 @@ const BRANCH_CUSTOM_STATE_TYPES = new Set([
 	"event_subscription_child",
 	"intercom_released_reply_wait",
 ]);
+export function isBranchCustomState(customType: string | undefined): boolean {
+	return customType !== undefined && BRANCH_CUSTOM_STATE_TYPES.has(customType);
+}
 export function isSessionHistoryEntry(entry: SessionEntry): boolean {
 	if (entry.type === "message") return entry.message?.role !== "system";
-	if (entry.type === "custom") return !BRANCH_CUSTOM_STATE_TYPES.has(entry.customType);
+	if (entry.type === "custom") return !isBranchCustomState(entry.customType);
 	return !SESSION_STATE_TYPES.has(entry.type);
 }
 
@@ -812,7 +815,7 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 }
 
 /** The resume fold appends these pairs in acknowledgement sequence order. */
-function intentForAcknowledgement(index: SessionResumeIndex, ack: number): number | undefined {
+export function intentForAcknowledgement(index: SessionResumeIndex, ack: number): number | undefined {
 	let low = 0;
 	let high = index.acks.length - 1;
 	while (low <= high) {

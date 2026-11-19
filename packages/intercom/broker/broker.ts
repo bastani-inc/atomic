@@ -95,7 +95,7 @@ import {
   validateHostSessionsFrame,
   validateUnhostSessionsFrame,
 } from "./hosted-sessions.js";
-import { answerLegacyWorkflowFrame } from "./legacy-workflow-frames.js";
+import { answerLegacyWorkflowFrame, legacyNotificationSend } from "./legacy-workflow-frames.js";
 import {
   failRefusedReleasedAsk,
   ReleasedAskerReplies,
@@ -1531,11 +1531,24 @@ class IntercomBroker {
         break;
       }
 
+      case "send_pending_stage_notification":
+        // A 0.9.x run's notice that a message queued for one of its stages will not be delivered: sent on as an
+        // ordinary send from this connection (Atomic 0.10.0 removed workflows; see `legacy-workflow-frames.ts`).
+        this.dispatchSend(
+          socket,
+          legacyNotificationSend(
+            clientMessage,
+            this.sessions.values(),
+            currentId === null ? undefined : this.sessions.get(currentId)?.registrationGroup,
+          ),
+          currentId,
+        );
+        break;
+
       case "register_pending_stage_route":
       case "withdraw_pending_stage_route":
       case "claim_workflow_invocation":
       case "register_live_workflow_stage_route":
-      case "send_pending_stage_notification":
       case "pending_stage_message_result":
       case "pending_stage_notification_result":
         // A 0.9.x session's workflow frame: answered in place, never by ending the connection (Atomic 0.10.0 removed

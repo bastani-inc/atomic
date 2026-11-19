@@ -119,6 +119,8 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	isPaused?: () => boolean;
 	isDisabled?: () => boolean;
 	isBashRunning?: () => boolean;
+	/** Whether Esc now cancels the retry the chat waits on, so its working line names the key. Without it, none. */
+	canCancelRetry?: () => boolean;
 	showWarning?: (message: string) => void;
 	showStatus?: (message: string) => void;
 	actions?: Record<string, () => void | Promise<void>>;

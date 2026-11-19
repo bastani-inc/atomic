@@ -1,5 +1,5 @@
 import { atomicWorkingFrame, watchAtomicWorkingClock } from "./atomic-working-status.ts";
-import type { ChatSessionHostState } from "./chat-session-host-state.ts";
+import { type ChatSessionHostState, isChatSessionRetryStatus } from "./chat-session-host-state.ts";
 import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
@@ -127,10 +127,17 @@ function clearChatSessionAnimation<TExtraEntry extends ChatTranscriptEntryLike>(
 	state.metaTimer = undefined;
 }
 
+/** Whether the chat's working line animates: a turn's, a compaction's, or a retry's, which counts down its wait. */
+function chatSessionLineAnimates<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): boolean {
+	return state.workingLifecycleActive || state.compacting || isChatSessionRetryStatus(state.statusMessage);
+}
+
 export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
-	const active = !state.disposed && (state.workingLifecycleActive || state.compacting);
+	const active = !state.disposed && chatSessionLineAnimates(state);
 	if (active && process.env.ATOMIC_REDUCED_MOTION === "1") {
 		const stopClock = state.stopAnimationClock;
 		state.stopAnimationClock = undefined;
@@ -141,8 +148,7 @@ export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptE
 		state.animationTimer = undefined;
 		if (state.metaTimer !== undefined) return;
 		const timer = setInterval(() => {
-			if (state.disposed || state.metaTimer !== timer || (!state.workingLifecycleActive && !state.compacting))
-				return;
+			if (state.disposed || state.metaTimer !== timer || !chatSessionLineAnimates(state)) return;
 			state.requestRender?.();
 		}, 1000);
 		state.metaTimer = timer;
@@ -154,12 +160,7 @@ export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptE
 	if (active && !state.stopAnimationClock) {
 		let subscribed = true;
 		const unsubscribe = watchAtomicWorkingClock(() => {
-			if (
-				!subscribed ||
-				state.disposed ||
-				state.stopAnimationClock !== stop ||
-				(!state.workingLifecycleActive && !state.compacting)
-			) {
+			if (!subscribed || state.disposed || state.stopAnimationClock !== stop || !chatSessionLineAnimates(state)) {
 				return;
 			}
 			state.workingFrame = atomicWorkingFrame();

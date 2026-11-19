@@ -11,10 +11,12 @@ import {
 import { test } from "vitest";
 import { createBrokerHostModulePlugin } from "../../packages/coding-agent/src/bun/internal-intercom-broker.js";
 import {
+	makeDirectorySync,
 	makeTempDirectory,
 	moduleDir,
 	removeTempDirectory,
 	spawnSyncCollect,
+	symlinkSync,
 	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
 
@@ -65,6 +67,67 @@ test("built package adapters share @bastani/atomic and its storage module withou
 
 test("single-file builds give adapters the live host modules through virtual modules, as the standalone binary does (#3856)", () => {
 	loadAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
+});
+
+/** A `"type": "module"` adapter package whose own `.js` and `.mjs` files import `@bastani/atomic/storage`. */
+async function writeModuleTypeAdapter(adapterDir: string): Promise<void> {
+	const which = [
+		'import * as storage from "@bastani/atomic/storage";',
+		'export const which = () => storage.MARK ?? "node-resolved";',
+		"",
+	].join("\n");
+	await writeFileEnsuringDir(join(adapterDir, "package.json"), JSON.stringify({ type: "module" }));
+	await writeFileEnsuringDir(
+		join(adapterDir, "adapter.js"),
+		[
+			'import { which } from "./static.js";',
+			"export default {",
+			"\tatomicStorageAdapter: 1,",
+			"\twhich,",
+			'\tasync fromInner() { return (await import("./inner.js")).which(); },',
+			'\tasync nested() { return import("./nested.js"); },',
+			"};",
+			"",
+		].join("\n"),
+	);
+	await writeFileEnsuringDir(join(adapterDir, "inner.js"), which);
+	await writeFileEnsuringDir(join(adapterDir, "static.js"), which);
+	await writeFileEnsuringDir(join(adapterDir, "nested.mjs"), which);
+	await writeFileEnsuringDir(
+		join(adapterDir, "nested.js"),
+		['export { which } from "./static.js";', 'export { which as mjs } from "./nested.mjs";', ""].join("\n"),
+	);
+}
+
+test("modules a type:module adapter imports get the host's @bastani/atomic/storage, not the npm copy (#3972)", async () => {
+	const agentDir = makeTempDirectory("storage-module-type-adapter-");
+	const adapterDir = join(agentDir, "adapter");
+	await writeModuleTypeAdapter(adapterDir);
+	// A resolvable npm copy, which a natively imported nested module would pick up instead of the host's.
+	const npmCopy = join(adapterDir, "node_modules", "@bastani", "atomic");
+	await writeFileEnsuringDir(
+		join(npmCopy, "package.json"),
+		JSON.stringify({ name: "@bastani/atomic", type: "module", exports: { "./storage": "./storage.js" } }),
+	);
+	await writeFileEnsuringDir(join(npmCopy, "storage.js"), "export const MARK = undefined;\n");
+	try {
+		const adapter = (await loadStorageAdapter(
+			join(adapterDir, "adapter.js"),
+			{ agentDir, domain: "sessions" },
+			{ "@bastani/atomic/storage": { MARK: "host" } },
+		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & {
+			readonly which: () => string;
+			fromInner(): Promise<string>;
+			nested(): Promise<{ readonly which: () => string; readonly mjs: () => string }>;
+		};
+		assert.equal(await adapter.fromInner(), "host");
+		assert.equal(adapter.which(), "host");
+		const nested = await adapter.nested();
+		assert.equal(nested.mjs(), "host");
+		assert.equal(nested.which, adapter.which, "a module imported twice is evaluated once");
+	} finally {
+		removeTempDirectory(agentDir);
+	}
 });
 
 // The three type:module adapters below still export `openRunJournal`, a hook of earlier releases that the loader accepts
@@ -178,6 +241,58 @@ test("a type:module helper and a TypeScript module that import each other load w
 	} finally {
 		removeTempDirectory(agentDir);
 	}
+});
+
+/**
+ * The type:module adapter loaded by the built `@bastani/atomic/storage`, with a resolvable installed copy of Atomic
+ * beside it whose storage module lacks the host's `MARK`.
+ */
+async function loadModuleTypeAdapterWithBuiltHost(env: Record<string, string | undefined>): Promise<void> {
+	const agentDir = makeTempDirectory("storage-module-type-built-host-");
+	const adapterDir = join(agentDir, "adapter");
+	const packageDir = join(moduleDir(import.meta.url), "../../packages/coding-agent");
+	await writeModuleTypeAdapter(adapterDir);
+	makeDirectorySync(join(adapterDir, "node_modules", "@bastani"), { recursive: true });
+	symlinkSync(
+		packageDir,
+		join(adapterDir, "node_modules", "@bastani", "atomic"),
+		process.platform === "win32" ? "junction" : "dir",
+	);
+	try {
+		const result = spawnSyncCollect(
+			[
+				process.execPath,
+				"--input-type=module",
+				"-e",
+				`
+			import assert from 'node:assert/strict';
+			import * as storage from '@bastani/atomic/storage';
+			const adapter = await storage.loadStorageAdapter(
+				${JSON.stringify(join(adapterDir, "adapter.js"))},
+				{ agentDir: ${JSON.stringify(agentDir)}, domain: 'sessions' },
+				{ '@bastani/atomic/storage': { ...storage, MARK: 'host' } },
+			);
+			assert.equal(await adapter.fromInner(), 'host');
+			assert.equal(adapter.which(), 'host');
+			const nested = await adapter.nested();
+			assert.equal(nested.mjs(), 'host');
+			assert.equal(nested.which, adapter.which);
+		`,
+			],
+			{ cwd: packageDir, env: { ...process.env, ...env } },
+		);
+		assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
+	} finally {
+		removeTempDirectory(agentDir);
+	}
+}
+
+test("built package hosts give a type:module adapter's nested modules the host storage module (#3972)", async () => {
+	await loadModuleTypeAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: undefined });
+});
+
+test("single-file builds give a type:module adapter's nested modules the host storage module (#3972)", async () => {
+	await loadModuleTypeAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 
 test("the standalone broker loads host modules from the app bundle on first import only (#3856)", async () => {
