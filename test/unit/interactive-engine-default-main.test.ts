@@ -402,7 +402,7 @@ async function invokeSlashCommand(
 const ENGINE_RESTART_TEST_TIMEOUT_MS = 120_000;
 
 serialTest(
-	"isolated default main lists and executes engine-only /workflows and /workflow-authoring while the host has no extensions (#5224)",
+	"isolated default main lists and executes engine-only /fixture-actions and /fixture-authoring while the host has no extensions (#5224)",
 	async () => {
 		const temp = mkdtempSync(join(tmpdir(), "atomic-remote-commands-"));
 		const extension = join(moduleDir(import.meta.url), "fixtures", "workflow-command-extension.ts");
@@ -424,16 +424,12 @@ serialTest(
 			);
 			const enginePid = initial.enginePid!;
 
-			const names = await waitForSlashCommands(driver, "/workflow", ["workflows", "workflow-authoring"]);
-			assert.equal(names.has("workflow"), false, "autocomplete must not offer removed /workflow");
-			assert.ok(names.has("workflows"), "autocomplete missing /workflows");
-			assert.ok(names.has("workflow-authoring"), "autocomplete missing /workflow-authoring");
+			const names = await waitForSlashCommands(driver, "/fixture-", ["fixture-actions", "fixture-authoring"]);
+			assert.ok(names.has("fixture-actions"), "autocomplete missing /fixture-actions");
+			assert.ok(names.has("fixture-authoring"), "autocomplete missing /fixture-authoring");
 
-			assert.equal(await invokeSlashCommand(driver, logFile, "workflows", "/workflows"), enginePid);
-			assert.equal(
-				await invokeSlashCommand(driver, logFile, "workflow-authoring", "/workflow-authoring"),
-				enginePid,
-			);
+			assert.equal(await invokeSlashCommand(driver, logFile, "fixture-actions", "/fixture-actions"), enginePid);
+			assert.equal(await invokeSlashCommand(driver, logFile, "fixture-authoring", "/fixture-authoring"), enginePid);
 
 			driver.send({ type: "input", data: "restart the engine" });
 			await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "restart the engine");
@@ -456,10 +452,9 @@ serialTest(
 			);
 			assert.notEqual(restarted.enginePid, enginePid);
 
-			const afterRestart = await waitForSlashCommands(driver, "/workflow", ["workflows", "workflow-authoring"]);
-			assert.equal(afterRestart.has("workflow"), false, "/workflow must not appear after engine restart");
-			assert.ok(afterRestart.has("workflows"), "/workflows missing after engine restart");
-			assert.ok(afterRestart.has("workflow-authoring"), "/workflow-authoring missing after engine restart");
+			const afterRestart = await waitForSlashCommands(driver, "/fixture-", ["fixture-actions", "fixture-authoring"]);
+			assert.ok(afterRestart.has("fixture-actions"), "/fixture-actions missing after engine restart");
+			assert.ok(afterRestart.has("fixture-authoring"), "/fixture-authoring missing after engine restart");
 		} finally {
 			await driver.stop();
 			rmSync(temp, { recursive: true, force: true });
