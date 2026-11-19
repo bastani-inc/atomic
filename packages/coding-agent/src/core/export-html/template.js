@@ -1009,7 +1009,15 @@
         return out;
       }
 
-      function renderToolCall(call) {
+      // Insert saved text as a DOM text node, not HTML or terminal rows. Even tabs, CRLF and ANSI stay selectable.
+      function savedOutput(text, textNodes) {
+        const block = value => `<div data-saved-text="${textNodes.push(value) - 1}"></div>`;
+        const lines = text.split('\n');
+        if (lines.length <= 10) return `<div class="tool-output">${block(text)}</div>`;
+        return `<div class="tool-output expandable" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')"><div class="output-preview">${block(lines.slice(0, 10).join('\n'))}<div class="expand-hint">... (${lines.length - 10} more lines)</div></div><div class="output-full">${block(text)}</div></div>`;
+      }
+
+      function renderToolCall(call, textNodes) {
         const result = findToolResult(call.id);
         const isError = result?.isError || false;
         const statusClass = result ? (isError ? 'error' : 'success') : 'pending';
@@ -1142,6 +1150,7 @@
           }
           default: {
             const rendered = renderedTools?.[call.id];
+            const savedScript = data.savedCodemode && name === 'codemode';
             const hasCustomResult =
               rendered?.resultHtmlCollapsed !== undefined || rendered?.resultHtmlExpanded !== undefined;
             if (rendered?.callHtml !== undefined || hasCustomResult) {
@@ -1156,6 +1165,12 @@
                 html += `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span></div>`;
               }
 
+              if (savedScript) {
+                // The script is already in the formatted header. Keep any other arguments exactly as recorded.
+                const extra = Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'code'));
+                if (Object.keys(extra).length) html += `<div class="tool-output"><pre>${escapeHtml(JSON.stringify(extra, null, 2))}</pre></div>`;
+              }
+
               if (rendered.resultHtmlCollapsed && rendered.resultHtmlExpanded && rendered.resultHtmlCollapsed !== rendered.resultHtmlExpanded) {
                 html += `<div class="tool-output expandable ansi-rendered" onclick="if(window.getSelection().toString()||event.target.closest('a'))return;this.classList.toggle('expanded')">
                   <div class="output-preview">${rendered.resultHtmlCollapsed}</div>
@@ -1165,9 +1180,10 @@
                 html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlExpanded}</div>`;
               } else if (rendered.resultHtmlCollapsed) {
                 html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlCollapsed}</div>`;
-              } else if (!hasCustomResult && result) {
+              }
+              if ((savedScript || !hasCustomResult) && result) {
                 const output = getResultText();
-                if (output) html += formatExpandableOutput(output, 10);
+                if (output) html += savedScript ? savedOutput(output, textNodes) : formatExpandableOutput(output, 10);
               }
             } else {
               // Fallback to JSON display (existing behavior)
@@ -1295,7 +1311,7 @@
         </button>`;
       }
 
-      function renderEntry(entry) {
+      function renderEntry(entry, textNodes) {
         const ts = formatTimestamp(entry.timestamp);
         const tsHtml = ts ? `<div class="message-timestamp">${ts}</div>` : '';
         const entryDomId = `entry-${escapeHtml(entry.id)}`;
@@ -1380,7 +1396,7 @@
 
             for (const block of msg.content) {
               if (block.type === 'toolCall') {
-                html += renderToolCall(block);
+                html += renderToolCall(block, textNodes);
               }
             }
 
@@ -1640,12 +1656,18 @@
         }
 
         // Render to HTML string, then parse to node
-        const html = renderEntry(entry);
+        const textNodes = [];
+        const html = renderEntry(entry, textNodes);
         if (!html) return null;
 
         const template = document.createElement('template');
         template.innerHTML = html;
         const node = template.content.firstElementChild;
+        if (textNodes.length) {
+          for (const block of node.querySelectorAll('[data-saved-text]')) {
+            block.textContent = textNodes[block.dataset.savedText];
+          }
+        }
 
         // Cache the node
         if (node) {

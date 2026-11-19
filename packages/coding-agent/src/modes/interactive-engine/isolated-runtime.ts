@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { dirname } from "node:path";
 import type { AuthInteraction } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession, ClearedQueue, CompactionReason } from "../../core/agent-session.js";
@@ -24,7 +24,7 @@ import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { warnDeprecation } from "../../utils/deprecation.js";
-import { canonicalizePathAsync, normalizePath } from "../../utils/paths.ts";
+import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AgentPanelCounts } from "../rpc/agent-panel-bridge.ts";
@@ -115,18 +115,6 @@ type PendingQueueClear = {
 	count: number;
 	succeeded: boolean;
 };
-
-/**
- * An absolute path naming the file that writing `path` from this process names, for another process to write. The
- * working directory is put in front as text, so `..` after a linked directory still leaves the directory the link
- * points to; Windows resolves `..` before links when it opens a file, so there the path is resolved as it does.
- */
-function hostAbsolutePath(path: string): string {
-	if (process.platform === "win32") return resolve(path);
-	if (isAbsolute(path)) return path;
-	const cwd = process.cwd();
-	return cwd.endsWith(sep) ? `${cwd}${path}` : `${cwd}${sep}${path}`;
-}
 
 /**
  * Owns Atomic's local interactive host facade and child-process engine.
@@ -960,20 +948,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				},
 			},
 			recordBashResult: { configurable: true, value: () => {} },
-			// The engine holds the extensions, so it draws each tool call with the renderer the chat uses. It writes the
-			// page where the host would have: a relative path, or the default name, in the host's working directory.
+			// The engine owns the tool renderers; the host owns the user's working directory and destination.
 			exportToHtml: {
 				configurable: true,
 				value: async (outputPath?: string, options?: { themeName?: string }) => {
-					const { defaultHtmlExportPath } = await import("../../core/export-html/index.ts");
-					const path = outputPath
-						? normalizePath(outputPath)
-						: defaultHtmlExportPath(
-								this.remoteSessionFile,
-								this.remoteSessionId ?? session.sessionManager.getSessionId(),
-							);
-					await this.client.exportHtml(hostAbsolutePath(path), options ?? {});
-					return path;
+					const { writeHtmlExport } = await import("../../core/export-html/index.ts");
+					const file = this.remoteSessionFile;
+					const id = this.remoteSessionId ?? session.sessionManager.getSessionId();
+					const { html } = await this.client.requestInternal<{ html: string }>({
+						type: "render_html",
+						themeName: options?.themeName,
+					});
+					return writeHtmlExport(html, outputPath, file, id);
 				},
 			},
 			abortBash: {

@@ -145,6 +145,8 @@ interface SessionData {
 	leafId: string | null;
 	systemPrompt?: string;
 	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
+	/** A file export draws codemode's saved text separately from its rendered nested activity. */
+	savedCodemode?: boolean;
 	/** Pre-rendered HTML for custom tool calls/results, keyed by tool call ID */
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
@@ -282,17 +284,12 @@ async function preRenderCustomTools(
 	return renderedTools;
 }
 
-/**
- * Export session to HTML using SessionManager and AgentState.
- * Used by TUI's /export command.
- */
-export async function exportSessionToHtml(
+/** Render the page in the process that owns the session and its tool renderers. */
+export async function renderSessionToHtml(
 	sm: SessionManager,
 	state?: AgentState,
-	options?: ExportOptions | string,
+	opts: Pick<ExportOptions, "toolRenderer" | "themeName"> = {},
 ): Promise<string> {
-	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
-
 	const snapshot = await sm
 		.getSessionStore()
 		.load(sm.getSessionId())
@@ -322,19 +319,38 @@ export async function exportSessionToHtml(
 		renderedTools,
 	};
 
-	const html = await generateHtml(sessionData, opts.themeName);
-
-	const outputPath = opts.outputPath
-		? normalizePath(opts.outputPath)
-		: defaultHtmlExportPath(sm.getSessionFile(), sm.getSessionId());
-
-	await writeFile(outputPath, html, "utf8");
-	return outputPath;
+	return generateHtml(sessionData, opts.themeName);
 }
 
 /** Where `/export` writes a session's HTML when no path is given: named after its session file, in the working directory. */
 export function defaultHtmlExportPath(sessionFile: string | undefined, sessionId: string): string {
 	return `${APP_NAME}-session-${sessionFile ? basename(sessionFile, ".jsonl") : sessionId}.html`;
+}
+
+/** Write from the caller's working directory, letting the filesystem resolve relative components and check access. */
+export async function writeHtmlExport(
+	html: string,
+	outputPath: string | undefined,
+	sessionFile: string | undefined,
+	sessionId: string,
+): Promise<string> {
+	const path = outputPath ? normalizePath(outputPath) : defaultHtmlExportPath(sessionFile, sessionId);
+	await writeFile(path, html, "utf8");
+	return path;
+}
+
+export async function exportSessionToHtml(
+	sm: SessionManager,
+	state?: AgentState,
+	options?: ExportOptions | string,
+): Promise<string> {
+	const opts = typeof options === "string" ? { outputPath: options } : (options ?? {});
+	return writeHtmlExport(
+		await renderSessionToHtml(sm, state, opts),
+		opts.outputPath,
+		sm.getSessionFile(),
+		sm.getSessionId(),
+	);
 }
 
 /**
@@ -373,6 +389,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,
+		savedCodemode: !opts.toolRenderer,
 		...(Object.keys(renderedTools).length > 0 ? { renderedTools } : {}),
 	};
 

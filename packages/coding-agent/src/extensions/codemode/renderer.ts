@@ -177,10 +177,9 @@ type CodemodeRenderers = Pick<
 
 /**
  * Draws a codemode result: the calls the script made, their model costs, the output and where the full output is.
- * The lines the result starts with, saying how the script ended and how long it ran, are left out unless
- * `withScriptHeader` keeps them.
+ * The chat omits the script header; a saved HTML page draws all text itself, without terminal wrapping.
  */
-function codemodeResultRenderer(withScriptHeader: boolean): NonNullable<CodemodeRenderers["renderResult"]> {
+function codemodeResultRenderer(savedPage: boolean): NonNullable<CodemodeRenderers["renderResult"]> {
 	return (result, options, theme, context) => {
 		const records: Component[] = [];
 		const calls = result.details?.calls ?? [];
@@ -210,8 +209,11 @@ function codemodeResultRenderer(withScriptHeader: boolean): NonNullable<Codemode
 				);
 		}
 		const [first, ...rest] = result.content;
-		const content =
-			!withScriptHeader && first?.type === "text" && SCRIPT_HEADER.test(first.text) ? rest : result.content;
+		const content = savedPage
+			? result.content.filter((block) => block.type !== "text")
+			: first?.type === "text" && SCRIPT_HEADER.test(first.text)
+				? rest
+				: result.content;
 		const output = options.isPartial ? "" : getTextOutput({ ...result, content }, context.showImages).trim();
 		if (output) {
 			const styled = terminalDisplayText(replaceTabs(output))
@@ -238,8 +240,7 @@ export const codemodeRenderers: CodemodeRenderers = {
 };
 
 /**
- * The renderers for a saved session's export: the call as the chat draws it, and the result with the lines saying how
- * the script ended and how long it ran, which that export has always shown.
+ * The call and nested activity for a saved session's export. The page adds the original result text and script header.
  */
 export const savedCodemodeRenderers: CodemodeRenderers = {
 	...codemodeRenderers,
