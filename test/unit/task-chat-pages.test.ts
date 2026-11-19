@@ -335,6 +335,36 @@ test("the latest task page alone shows a prompt above the visible part of a run 
 	]);
 });
 
+test("an order saved in a newer records generation never moves a row an older page drew (#5649)", async () => {
+	const { manager, scope } = await overtaken(10, 2, 99);
+	// The session's records were replaced between the two page reads: only the earlier page reads the new ones.
+	const owners = [scope.owner, { ...scope.owner, epoch: `${scope.owner.epoch}-replaced` }];
+	const records = await scope.store.read(
+		scope.owner,
+		manager.getEntries().map((entry) => entry.id),
+	);
+	const store: SessionChatRecords = {
+		has: async () => true,
+		read: async (owner, anchors) =>
+			owner.epoch === owners[1]!.epoch ? records.filter((row) => anchors.includes(row.anchor)) : [],
+		append: async () => {},
+	};
+	let reads = 0;
+	const earlier = Promise.withResolvers<void>();
+	const page = await openPage(
+		childOf(manager, {
+			chatSession: {
+				sessionManager: { chatRecordScope: () => ({ store, owner: owners[Math.min(reads++, 1)]! }) },
+			} as never,
+		}),
+		{ height: 600, earlier: earlier.promise },
+	);
+	const texts = ["F-009", "NOTICE-000", "NOTICE-001", "THE-PROMPT", "T-000"];
+	assert.deepEqual(order(await page.lines(), texts), ["THE-PROMPT", "T-000"]);
+	earlier.resolve();
+	assert.deepEqual(order(await page.lines(), texts), ["F-009", "NOTICE-000", "NOTICE-001", "THE-PROMPT", "T-000"]);
+});
+
 test.each(["absent", "refused", "unreadable"] as const)(
 	"a subagent page whose chat records are %s shows its transcript and asks the store once (#5649)",
 	async (kind) => {

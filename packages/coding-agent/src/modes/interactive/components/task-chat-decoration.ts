@@ -169,13 +169,16 @@ function read(adopted: Adopted, owned: PageRows): void {
 function apply(adopted: Adopted, owned: PageRows, data: ChatPageDecorations): void {
 	const moves = new Map<Row, Row>();
 	if (data.before.size) {
-		// The topmost page keeps the off-page start of its run; below it, that start is the page above.
+		// Only pages read under the same records generation share order. The topmost of them keeps the off-page start
+		// of its run; below it, that start is the page above.
 		const entries: ChatPosition[] = [];
 		const own = new Map<string, Row>();
-		adopted.pages.forEach((page, i) => {
-			entries.push(...(i === 0 ? page.page.entries : page.page.entries.slice(page.page.prefix)));
-			for (const [id, row] of page.own) own.set(id, row);
-		});
+		adopted.pages
+			.filter((page) => page.mount === owned.mount)
+			.forEach((page, i) => {
+				entries.push(...(i === 0 ? page.page.entries : page.page.entries.slice(page.page.prefix)));
+				for (const [id, row] of page.own) own.set(id, row);
+			});
 		const ordered = inDisplayOrder(entries, data.before);
 		for (let i = 0; i < ordered.length; i++) {
 			const original = entries[i]!,
