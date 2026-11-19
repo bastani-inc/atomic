@@ -19,7 +19,7 @@ import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { runRendererCleanup } from "../interactive/components/renderer-disposal.js";
-import { isLeftMouseSequence } from "../interactive/mouse-reports.js";
+import { isLeftMouseSequence } from "../interactive/mouse-reports.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
 import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
