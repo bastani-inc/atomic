@@ -67,7 +67,7 @@ test.each(reloadModes)(
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		try {
 			await session.bindExtensions({});
@@ -140,7 +140,7 @@ test.each(reloadModes)(
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		});
 		try {
 			await session.bindExtensions({});

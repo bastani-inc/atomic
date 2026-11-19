@@ -25,7 +25,7 @@ test("missing adapter refuses ordinary dialog and leaves durable approval pendin
 		agentDir: join(cwd, "agent"),
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory(),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 	});
 	const context = session.extensionRunner!.createContext();
 	const store = createStore();
@@ -245,7 +245,7 @@ test("workflow child inherits SDK host and disabled tool ceiling", async () => {
 		agentDir: join(cwd, "agent"),
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory(),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		excludedTools: ["bash"],
 		extensionBindings: {
 			humanInput: {
@@ -307,7 +307,7 @@ test.each(["omitted", "undefined", "manager", "relative"] as const)(
 			thinkingLevel: "high",
 			sessionManager: SessionManager.inMemory(cwd),
 			settingsManager: SettingsManager.inMemory(),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			tools: ["read"],
 			extensionBindings: { humanInput: host },
 		});
@@ -425,7 +425,7 @@ test.each([false, true])(
 			model,
 			settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			tools: ["read"],
 			fallbackModels: fallback ? [`${model.provider}/${fallbackModel.id}`] : [],
 		});
@@ -522,7 +522,7 @@ test.each(childHostBindingModes)(
 			agentDir: join(cwd, "agent"),
 			sessionManager: SessionManager.inMemory(cwd),
 			settingsManager: SettingsManager.inMemory(),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			tools: ["ask_user_question"],
 			extensionBindings: { humanInput: reuse ? original : host("parent") },
 		});
@@ -695,7 +695,7 @@ test("workflow fallback replacement enforces the inherited gate but explicit pri
 		modelRuntime: runtime,
 		model: primary,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: [],
 		fallbackModels: [],
 		isFallbackModelAllowed: (model) => {

@@ -87,7 +87,7 @@ test.each(["shipped", "wrapped"] as const)(
 				subagents: extensionKind === "shipped",
 				intercom: false,
 				mcp: false,
-				workflows: false,
+
 				"web-access": false,
 			},
 			orchestrationContext: {

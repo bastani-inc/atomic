@@ -136,7 +136,7 @@ function stageHarness(
 			const { session } = await createAgentSession({
 				cwd: process.cwd(),
 				agentDir: process.cwd(),
-				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 				modelRuntime,
 				model: modelRuntime.getModel("p", "m")!,
 				fallbackModels: createOptions.fallbackModels,

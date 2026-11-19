@@ -114,7 +114,7 @@ async function runSession(
 		settingsManager,
 		sessionManager,
 		resourceLoader: createTestResourceLoader(),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => session.dispose());
@@ -476,7 +476,7 @@ describe("an auth failure takes its provider out of the chain", () => {
 			settingsManager,
 			sessionManager,
 			resourceLoader: createTestResourceLoader(),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			tools: ["read"],
 		});
 		cleanups.push(() => session.dispose());

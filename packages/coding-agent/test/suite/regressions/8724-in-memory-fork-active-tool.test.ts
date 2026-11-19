@@ -12,7 +12,7 @@ import {
 import { createTestResourceLoader } from "../../utilities.ts";
 import { createHarness } from "../harness.ts";
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 describe("regression #8724: in-memory fork during an active tool turn", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];

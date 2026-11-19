@@ -303,7 +303,7 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 	const payloadRoot = join(probeRoot, "payload");
 	const atomicRoot = join(payloadRoot, "atomic");
 	for (const directory of [
-		join(atomicRoot, "builtin", "workflows"),
+		join(atomicRoot, "builtin", "subagents"),
 		join(atomicRoot, "node_modules", "@bastani", "atomic-natives"),
 		join(atomicRoot, "lib"),
 	]) {
@@ -313,7 +313,7 @@ function createMuslSmokeProbe(): MuslSmokeProbe {
 		join(atomicRoot, "atomic"),
 		join(atomicRoot, "app.js"),
 		join(atomicRoot, "package.json"),
-		join(atomicRoot, "builtin", "workflows", "package.json"),
+		join(atomicRoot, "builtin", "subagents", "package.json"),
 		join(atomicRoot, "node_modules", "@bastani", "atomic-natives", "package.json"),
 		join(atomicRoot, "lib", "libgcc_s.so.1"),
 		join(atomicRoot, "lib", "libstdc++.so.6"),
