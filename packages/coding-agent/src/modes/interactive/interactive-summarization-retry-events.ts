@@ -25,7 +25,8 @@ export function handleSummarizationRetryEvent(mode: InteractiveModeBase, event: 
 		mode.retryCountdown?.dispose();
 		const wait = retryWaitFromEvent(event, "summary");
 		const cancel = cancellableSummaries.has(mode) ? retryCancelHint() : undefined;
-		const retryMessage = (seconds: number) => retryWaitMessage(wait, seconds, cancel);
+		// The line fits the columns its row leaves it when it renders, so it never wraps.
+		const retryMessage = (seconds: number) => (columns: number) => retryWaitMessage(wait, seconds, cancel, columns);
 		mode.retryLoader = new AtomicWorkingLoader(
 			mode.ui,
 			undefined,
