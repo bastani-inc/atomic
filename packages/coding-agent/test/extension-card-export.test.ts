@@ -85,6 +85,40 @@ test("without a recorded card the standalone export is byte-identical to the ord
 	}
 });
 
+test("a launch that cannot be reached on any branch leaves the complete ordinary export unchanged (#5658)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-file-export-reachable-"));
+	try {
+		const sm = await SessionManager.create(dir, dir);
+		const args = { agent: "worker", task: "Inspect the sample" };
+		const launch = await sm.appendMessage(fauxAssistantMessage([fauxToolCall("subagent", args, { id: "launch" })]));
+		const receipt = await sm.appendMessage({
+			role: "toolResult",
+			toolName: "subagent",
+			toolCallId: "launch",
+			isError: false,
+			timestamp: 2,
+			content: [{ type: "text", text: "Original result" }],
+			details: {
+				mode: "single",
+				results: [{ ...args, status: "ok", finalOutput: "Done", toolCalls: [{ text: "read sample.txt" }] }],
+			},
+		});
+		const visible = await sm.appendMessage({ role: "user", content: "Still readable", timestamp: 3 });
+		const imported = join(dir, "imported.jsonl");
+		const entries = sm.getEntries().map((entry) => ({
+			...entry,
+			parentId: entry.id === launch ? receipt : entry.id === visible ? null : entry.parentId,
+		}));
+		writeFileSync(imported, `${[sm.getHeader(), ...entries].map((e) => JSON.stringify(e)).join("\n")}\n`);
+		const opened = await SessionManager.open(imported);
+		const ordinary = await exportSessionToHtml(opened, undefined, join(dir, "ordinary.html"));
+		const standalone = await exportFromFile(imported, join(dir, "standalone.html"));
+		assert.ok(readFileSync(standalone).equals(readFileSync(ordinary)), "the unreachable pair must not enable cards");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("a saved subagent call opens as a card with its recorded prompt, tool calls and result (#5658)", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-agent-file-export-"));
 	try {

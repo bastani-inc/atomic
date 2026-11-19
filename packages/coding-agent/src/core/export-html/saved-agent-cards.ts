@@ -74,6 +74,34 @@ function previousTurns(sm: SessionManager): PreviousTurn {
 	};
 }
 
+/** The viewer stops at a missing or self parent, but a disconnected parent cycle has no selectable path. */
+function rootedLaunches(sm: SessionManager, entries: SessionEntry[]): (id: string) => boolean {
+	const checking = 1,
+		rooted = 2,
+		cyclic = 3;
+	let states: Uint8Array | undefined;
+	// Sequences in a fully opened session file are its one-based entry positions.
+	const parent = (seq: number) => {
+		const entry = entries[seq - 1];
+		return entry?.parentId && entry.parentId !== entry.id ? (sm.getEntrySeq(entry.parentId) ?? 0) : 0;
+	};
+	return (id) => {
+		const start = sm.getEntrySeq(id);
+		if (start === undefined) return false;
+		if (!parent(start)) return true;
+		// Check each candidate ancestor at most once. No unrelated calls or arguments are indexed.
+		states ??= new Uint8Array(entries.length + 1);
+		let seq = start;
+		while (seq && !states[seq]) {
+			states[seq] = checking;
+			seq = parent(seq);
+		}
+		const outcome = !seq || states[seq] === rooted ? rooted : cyclic;
+		for (seq = start; seq && states[seq] === checking; seq = parent(seq)) states[seq] = outcome;
+		return outcome === rooted;
+	};
+}
+
 function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: PreviousTurn): SavedAgentCard | undefined {
 	if (entry.type !== "message" || entry.message.role !== "toolResult") return;
 	const receipt = entry.message;
@@ -171,13 +199,15 @@ function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: Previo
 export function savedAgentCards(sm: SessionManager, entries: SessionEntry[]): SavedAgentCard[] | undefined {
 	if (sm.getEntryCount() !== entries.length) return; // A reused entry address cannot identify its own receipt.
 	const previousTurn = previousTurns(sm);
+	let rooted: ReturnType<typeof rootedLaunches> | undefined;
 	let cards: SavedAgentCard[] | undefined;
 	for (const entry of entries) {
 		const card = savedCard(sm, entry, previousTurn);
-		if (card) {
-			cards ??= [];
-			cards.push(card);
-		}
+		if (!card) continue;
+		rooted ??= rootedLaunches(sm, entries);
+		if (!rooted(card.launch)) continue;
+		cards ??= [];
+		cards.push(card);
 	}
 	if (!cards) return;
 
