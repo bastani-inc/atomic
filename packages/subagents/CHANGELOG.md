@@ -8,21 +8,18 @@
 
 ### Added
 
-- Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
-- `/skill:workflow-files` uses `skill-creator` to convert an earlier workflow into a reusable skill, with its checks in `scripts/` and its dependencies and approvals in `SKILL.md`. It leaves the old file unchanged and never overwrites an existing skill.
-
-### Fixed
-
-- A delayed wake refusal no longer shows `hold-failed` when Intercom confirms that reconnect restored the same released subagent. A child whose hold was dropped still reports the failure, as do older brokers that cannot verify the hold ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
-
-### Fixed
-
-- Temporary worktree children now report completion, pause, or quit after cleanup rather than while Atomic still has the directory open. The reply explains when a sibling keeps the batch open or cleanup continues in the background; Esc still ends the wait immediately ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
-- When an SDK session without a task host batches several subagent calls, each caller now receives only its own children’s answers, even if a child used a fallback model or its parent cancelled it. Previously each caller could receive the whole batch’s text ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- Codemode scripts can launch single or parallel subagents with `tools.subagent` and get their task IDs immediately, then wait with a budget, check status, and pause, quit or resume the children their session launched, including from a child's saved session. Scripts can `list` and `get` agent definitions; `create`, `update` and `delete` still require direct calls. The new `models` action lists configured models and their supported thinking levels, both directly and from scripts ([#5927](https://github.com/bastani-inc/atomic/pull/5927)).
+- `/skill:workflow-files` uses `skill-creator` to convert an earlier workflow into a reusable skill, with its checks in `scripts/` and its dependencies and approvals in `SKILL.md`. It leaves the old file unchanged and never overwrites an existing skill ([#5924](https://github.com/bastani-inc/atomic/pull/5924)).
 
 ### Changed
 
 - A subagent launched with `context: "fork"` starts faster and copies less data after a clear or compaction. Its saved session keeps the conversation through its original fork point, without duplicating retired turns. Earlier history remains in the parent session ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
+
+### Fixed
+
+- A delayed wake refusal no longer shows `hold-failed` when Intercom confirms that reconnect restored the same released subagent. A child whose hold was dropped still reports the failure, as do older brokers that cannot verify the hold ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
+- Temporary worktree children now report completion, pause, or quit after cleanup rather than while Atomic still has the directory open. The reply explains when a sibling keeps the batch open or cleanup continues in the background; Esc still ends the wait immediately ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- When an SDK session without a task host batches several subagent calls, each caller now receives only its own children’s answers, even if a child used a fallback model or its parent cancelled it. Previously each caller could receive the whole batch’s text ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ## [0.9.90] - 2026-11-19
 
