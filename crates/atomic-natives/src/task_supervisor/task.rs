@@ -415,10 +415,11 @@ impl Task {
 	pub fn receipt(&self) -> CancelReceipt {
 		CancelReceipt {
 			task_id: self.record.reference.task_id.clone(),
-			decision: if self.cancel_cause.is_some() {
-				"cancellation-requested"
-			} else if self.finishing && !matches!(self.record.execution, Execution::Settled { .. }) {
+			decision: if self.finishing && !matches!(self.record.execution, Execution::Settled { .. })
+			{
 				"already-finishing"
+			} else if self.cancel_cause.is_some() {
+				"cancellation-requested"
 			} else {
 				"already-settled"
 			}

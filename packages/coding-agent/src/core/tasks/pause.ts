@@ -28,7 +28,9 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 	if (!watched.ok) throw new Error(`${watched.error.code}: ${watched.error.message}`);
 	const watch = watched.value;
 	const { supervisor, owner } = host.ownerBinding;
-	const off = supervisor.onDirectoryHandoff(owner, () => watch.onReconcile(watch.snapshot, []));
+	const off = watch.snapshot.tasks.some((task) => task.kind === "agent" && task.execution.kind !== "settled")
+		? supervisor.onDirectoryHandoff?.(owner, () => watch.onReconcile(watch.snapshot, []))
+		: undefined;
 	try {
 		await cancel(
 			watch.snapshot.tasks.filter((task) => task.kind === "agent" && task.execution.kind !== "settled"),
@@ -48,7 +50,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 				if (
 					snapshot.tasks.some(
 						(task) =>
-							!(task.kind === "agent" && supervisor.isBatchOwnedDirectory(owner, task.ref.taskId)) &&
+							!(task.kind === "agent" && supervisor.isBatchOwnedDirectory?.(owner, task.ref.taskId)) &&
 							(task.cleanup.kind === "active" ||
 								task.cleanup.kind === "draining" ||
 								(task.cleanup.kind === "quarantined" && stopped.has(task.ref.taskId)) ||
@@ -66,7 +68,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 			watch.onReconcile(watch.snapshot, []);
 		});
 	} finally {
-		off();
+		off?.();
 		watch.dispose();
 	}
 }
