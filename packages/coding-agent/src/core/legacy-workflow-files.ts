@@ -1,34 +1,40 @@
 import { dirname, join } from "node:path";
+import { CONFIG_DIR_NAME } from "../config.ts";
 import { getPathComparisonKey, pathsEqual } from "../utils/paths.ts";
-import type { PathMetadata, ResolvedResource } from "./package-manager-types.ts";
+import type { ResolvedResource } from "./package-manager-types.ts";
 
 export interface LegacyWorkflowFiles {
 	readonly files: readonly {
 		readonly path: string;
-		readonly scope: "project" | "user" | "package" | "settings" | "borrowed";
+		readonly scope: "project" | "global";
+		readonly targetSkillsDir: string;
 	}[];
 	readonly total: number;
 }
 
 const MAX_LISTED_FILES = 20;
 
-function recipeScope(metadata: PathMetadata): LegacyWorkflowFiles["files"][number]["scope"] {
-	if (metadata.borrowedProjectLocal) return "borrowed";
-	if (metadata.origin === "package") return "package";
-	if (metadata.source === "local") return "settings";
-	return metadata.scope === "user" ? "user" : "project";
+interface ConversionContext {
+	cwd: string;
+	agentDir: string;
+	projectTrusted: boolean;
+	trustedBorrowedSources?: ReadonlySet<string>;
 }
 
-/** Summarize discovery after project trust; a borrowed source needs its own positive decision. */
+/** Locate source files and their conversion scope; never load the module or write a skill during discovery. */
 export function findLegacyWorkflowFiles(
-	trustedBorrowedSources: ReadonlySet<string> | undefined,
+	{ cwd, agentDir, projectTrusted, trustedBorrowedSources }: ConversionContext,
 	...sources: (readonly ResolvedResource[])[]
 ): LegacyWorkflowFiles {
 	const files: Array<LegacyWorkflowFiles["files"][number]> = [];
 	const seen = new Set<string>();
+	const projectSkillsDir = join(cwd, CONFIG_DIR_NAME, "skills");
+	const globalSkillsDir = join(agentDir, "skills");
 	for (const resources of sources) {
 		for (const { path, enabled, metadata } of resources) {
 			if (!enabled || !/\.(?:ts|js|mjs|cjs)$/.test(path) || path.endsWith(".d.ts")) continue;
+			const scope = metadata.scope === "user" ? "global" : "project";
+			if (scope === "project" && !projectTrusted) continue;
 			if (metadata.borrowedProjectLocal && !trustedBorrowedSources?.has(metadata.source)) continue;
 			// Automatic project/user discovery loaded only files directly in workflows/, not helpers or run artifacts.
 			if (
@@ -40,7 +46,7 @@ export function findLegacyWorkflowFiles(
 			if (seen.has(key)) continue;
 			seen.add(key);
 			if (files.length === MAX_LISTED_FILES) continue;
-			files.push({ path, scope: recipeScope(metadata) });
+			files.push({ path, scope, targetSkillsDir: scope === "project" ? projectSkillsDir : globalSkillsDir });
 		}
 	}
 	return { files, total: seen.size };
@@ -49,10 +55,8 @@ export function findLegacyWorkflowFiles(
 export function legacyWorkflowSection(catalog?: LegacyWorkflowFiles): string | undefined {
 	if (!catalog?.total) return undefined;
 	return [
-		"When the user asks for an earlier workflow, read the matching file as text, never import or execute the module. Use the workflow-files skill when available to carry out its steps with codemode and subagents. A file's presence is not a request to run it.",
-		...catalog.files.map(
-			({ scope, path }) => `${scope}: ${JSON.stringify(path).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}`,
-		),
+		"If asked to migrate or run an earlier workflow file, read it as text. Use workflow-files and skill-creator to create a new skill in its targetSkillsDir. Never import, execute, modify or delete the original, or overwrite an existing skill. Run the new skill with codemode and subagents only when execution was requested. Discovery alone authorizes no writes.",
+		...catalog.files.map((file) => JSON.stringify(file).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")),
 		...(catalog.total > catalog.files.length ? [`+${catalog.total - catalog.files.length} more`] : []),
 	].join("\n");
 }

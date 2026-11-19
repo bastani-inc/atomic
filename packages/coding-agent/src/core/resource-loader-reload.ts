@@ -357,7 +357,12 @@ export async function prepareDefaultResourceLoaderReload(
 		const cliEnabledPrompts = getEnabledPaths(cliExtensionPaths.prompts, metadataByPath);
 		const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes, metadataByPath);
 		state.legacyWorkflowFiles = findLegacyWorkflowFiles(
-			state.trustedBorrowedProjectLocalSources,
+			{
+				cwd: state.cwd,
+				agentDir: state.agentDir,
+				projectTrusted: state.settingsManager.isProjectTrusted(),
+				trustedBorrowedSources: state.trustedBorrowedProjectLocalSources,
+			},
 			resolvedPaths.workflows,
 			cliExtensionPaths.workflows,
 		);
