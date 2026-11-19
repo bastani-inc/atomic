@@ -9,6 +9,7 @@ import type {
 	SystemOneCompat,
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { isRecord, parseClassifierUsage, postClassifierRequest, requiredNumber } from "./classifier-shared.ts";
 
 /** Base64 image in the System One request's top-level `assets` map. */
@@ -257,7 +258,7 @@ export async function classifySystemOne(
 		output.answers = parseAnswers(transport.label, result.answers, context);
 		return output;
 	} catch (error) {
-		output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 		output.errorMessage = formatProviderError(normalizeProviderError(error), `${transport.label} error`);
 		return output;
 	}

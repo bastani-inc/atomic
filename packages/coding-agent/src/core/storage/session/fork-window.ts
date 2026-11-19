@@ -1,7 +1,19 @@
 import { convertToLlm, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../../messages.ts";
 import { buildSessionProjection, getBranchPath } from "../../session-manager-history.ts";
 import type { LabelEntry, ModelChangeEntry, SessionEntry } from "../../session-manager-types.ts";
-import { branchRanges, isBranchCustomState, latestCompactionOf, type SessionResumeIndex } from "./session-resume.js";
+import {
+	type LegacyCompletionTarget,
+	legacyCompletionTarget,
+	resolvesCompletionHeader,
+} from "../../tasks/reopened-completion.js";
+import {
+	branchRanges,
+	completionIdOf,
+	intentForAcknowledgement,
+	isBranchCustomState,
+	latestCompactionOf,
+	type SessionResumeIndex,
+} from "./session-resume.js";
 import type { SessionForkWindow, SessionRecordHeader, SessionSnapshot, SessionStoredEntry } from "./types.js";
 
 export interface ForkMetadata {
@@ -12,11 +24,16 @@ export interface ForkMetadata {
 	readonly boundary?: { first: string | null; covered?: string };
 	readonly customType?: string;
 	readonly hash?: string;
+	readonly completionId?: string;
 	readonly assistantModel?: ModelChangeEntry;
+	readonly label?: LabelEntry;
+	readonly labelTarget?: string;
+	readonly labelSet?: boolean;
 }
 
 export function forkMetadata(seq: number, entry: SessionEntry): ForkMetadata {
 	const link = { id: entry.id, parentId: entry.parentId };
+	if (entry.type === "label") return { seq, type: entry.type, ...link, label: entry };
 	if (
 		entry.type === "compaction" &&
 		(entry.details as { strategy?: string } | undefined)?.strategy === "verbatim-lines"
@@ -34,6 +51,9 @@ export function forkMetadata(seq: number, entry: SessionEntry): ForkMetadata {
 			type: entry.type,
 			...link,
 			customType: entry.customType,
+			...(entry.customType === "task-completion-intent" || entry.customType === "task-completion-ack"
+				? { completionId: completionIdOf(entry) }
+				: {}),
 			...(entry.customType === "atomic.tool-output" && typeof hash === "string" ? { hash } : {}),
 		};
 	}
@@ -61,7 +81,7 @@ export type ReadMetadata = (seqs: readonly number[]) => Promise<ForkMetadata[]>;
 export type ScanForkRecords = (
 	ranges: readonly Range[],
 	customTypes: readonly string[],
-	labels?: boolean,
+	entryTypes?: readonly string[],
 ) => AsyncIterable<ForkMetadata>;
 
 function namedOutputs(entries: readonly SessionStoredEntry[], sessionId: string): Set<string> {
@@ -107,6 +127,7 @@ export async function locateFork(
 	entryId: string,
 	metadata: ReadMetadata,
 	unindexed = false,
+	pageSize = 64,
 ) {
 	if (!index.needsBranchRebuild && index.lastId === entryId) return { index, leaf: index.seq };
 	let leaf = 0,
@@ -117,15 +138,39 @@ export async function locateFork(
 		covered = -1;
 	const jumps: Array<readonly [number, number, number]> = [];
 	const states: number[] = [];
+	const waitingAcks = new Map<string, number>(),
+		acks: Array<readonly [number, number]> = [];
 	let labels = false,
 		bindings = false;
+	let nameSeq: number | undefined, summarySeq: number | null | undefined;
 	for (let end = index.seq; end > 0 && (next !== null || unindexed); ) {
-		const start = Math.max(1, end - 63);
+		const start = Math.max(1, end - pageSize + 1);
 		const page = await metadata(Array.from({ length: end - start + 1 }, (_, i) => start + i));
 		for (let i = page.length - 1; i >= 0; i--) {
 			const m = page[i]!;
 			if (unindexed && m.type === "label") labels = true;
-			if (next === null || m.id !== next) continue;
+			const ancestor = next !== null && m.id === next;
+			// Reconstruct only links for acknowledgements on the selected window. An intervening sibling
+			// intent or acknowledgement consumes the association; it never becomes the child's evidence.
+			if (unindexed && m.completionId !== undefined) {
+				if (m.customType === "task-completion-ack") {
+					const inWindow =
+						!point ||
+						(point.boundary?.first
+							? first < 0
+							: point.boundary?.covered !== undefined && covered < 0 && point.boundary.covered !== m.id);
+					if (ancestor && inWindow) waitingAcks.set(m.completionId, m.seq);
+					else waitingAcks.delete(m.completionId);
+				} else if (m.customType === "task-completion-intent") {
+					const ack = waitingAcks.get(m.completionId);
+					if (ancestor && ack !== undefined) acks.push([m.seq, ack]);
+					waitingAcks.delete(m.completionId);
+				}
+			}
+			if (!ancestor) continue;
+			if (nameSeq === undefined && m.type === "session_info") nameSeq = m.seq;
+			if (summarySeq === undefined && (m.type === "session_summary" || m.type === "branch_summary"))
+				summarySeq = m.type === "branch_summary" ? null : m.seq;
 			if (unindexed) {
 				if (m.type === "custom" && m.customType === "workspace_binding") bindings = true;
 				if (
@@ -155,8 +200,17 @@ export async function locateFork(
 	const state = unindexed ? states.map((seq, i) => (seq - (states[i - 1] ?? 0)).toString(36)).join(".") : index.state;
 	return {
 		leaf,
-		index: { ...index, leafSeq: leaf, jumps: jumps.reverse(), compactions, state },
-		extras: { labels, bindings },
+		index: {
+			...index,
+			leafSeq: leaf,
+			jumps: jumps.reverse(),
+			compactions,
+			state,
+			acks: unindexed ? acks.sort((a, b) => a[1] - b[1]) : index.acks,
+			nameSeq,
+			summarySeq: summarySeq ?? undefined,
+		},
+		extras: { labels, bindings, branchCatalog: true },
 	};
 }
 
@@ -164,6 +218,94 @@ export function fullForkWindow(snapshot: SessionSnapshot, entryId: string): Sess
 	const path = getBranchPath(entryId, new Map(snapshot.entries.map((entry) => [entry.id, entry])));
 	if (!path.length) return undefined;
 	return { ...snapshot, entries: path, labels: snapshot.entries.filter((e): e is LabelEntry => e.type === "label") };
+}
+
+/** The retained acknowledgement makes this one older row inert on both live and tail reopens. */
+async function earlierStopEvidence(
+	index: SessionResumeIndex,
+	rows: readonly SessionStoredEntry[],
+	before: (seq: number) => boolean,
+	readMany: (seqs: readonly number[]) => Promise<readonly SessionStoredEntry[]>,
+): Promise<SessionStoredEntry[]> {
+	if (!index.acks.length) return [];
+	const cards = new Map<string, Array<{ entry: SessionEntry; target: LegacyCompletionTarget }>>();
+	for (const { entry } of rows) {
+		const target = legacyCompletionTarget(entry);
+		if (!target) continue;
+		const group = cards.get(target.id) ?? [];
+		group.push({ entry, target });
+		cards.set(target.id, group);
+	}
+	if (!cards.size) return [];
+	const candidates = new Map<string, number | null>();
+	for (const { entry, seq } of rows) {
+		const id = completionIdOf(entry);
+		if (!id || !cards.has(id) || entry.type !== "custom") continue;
+		if (entry.customType === "task-completion-intent") {
+			cards.delete(id);
+			candidates.delete(id);
+		} else if (entry.customType === "task-completion-ack") {
+			const intent = intentForAcknowledgement(index, seq);
+			if (intent !== undefined && before(intent))
+				candidates.set(id, candidates.has(id) && candidates.get(id) !== intent ? null : intent);
+		}
+	}
+	const seqs = [...candidates.values()].filter((seq): seq is number => seq !== null);
+	if (!seqs.length) return [];
+	return (await readMany(seqs)).filter(({ entry, seq }) => {
+		const id = completionIdOf(entry);
+		return (
+			entry.type === "custom" &&
+			entry.customType === "task-completion-intent" &&
+			!!id &&
+			candidates.get(id) === seq &&
+			cards.get(id)?.some((c) => resolvesCompletionHeader(c.entry, c.target, entry.data)) === true
+		);
+	});
+}
+
+// Source proof for a new child's projection only. Neither a custom entry's name nor an unpaired
+// intent is authority to copy a parent operation. Holding a saved window does not pin the store.
+const settledDisplayRows = new WeakMap<readonly SessionEntry[], ReadonlySet<string>>();
+export function forkDisplayEvidence(entries: readonly SessionEntry[]): ReadonlySet<string> | undefined {
+	return settledDisplayRows.get(entries);
+}
+function keepSettledDisplayEvidence(
+	index: SessionResumeIndex,
+	rows: readonly SessionStoredEntry[],
+	entries: SessionEntry[],
+) {
+	if (!index.acks.length) return;
+	const cards = new Map<string, Array<{ entry: SessionEntry; target: LegacyCompletionTarget; seq: number }>>();
+	for (const row of rows) {
+		const target = legacyCompletionTarget(row.entry);
+		if (!target) continue;
+		const group = cards.get(target.id) ?? [];
+		group.push({ ...row, target });
+		cards.set(target.id, group);
+	}
+	if (!cards.size) return;
+	const bySeq = new Map(rows.map((row) => [row.seq, row.entry]));
+	const ids = new Set<string>();
+	for (const { entry: ack, seq } of rows) {
+		if (ack.type !== "custom" || ack.customType !== "task-completion-ack") continue;
+		const id = completionIdOf(ack);
+		const yes = id && cards.get(id);
+		if (!yes) continue;
+		const at = intentForAcknowledgement(index, seq);
+		const intent = at === undefined ? undefined : bySeq.get(at);
+		if (
+			at !== undefined &&
+			intent?.type === "custom" &&
+			intent.customType === "task-completion-intent" &&
+			completionIdOf(intent) === id &&
+			yes.some((c) => c.seq > at && resolvesCompletionHeader(c.entry, c.target, intent.data))
+		) {
+			ids.add(intent.id);
+			ids.add(ack.id);
+		}
+	}
+	if (ids.size) settledDisplayRows.set(entries, ids);
 }
 
 /** Read from a single store snapshot. The index supplies ancestry even when an older branch was selected. */
@@ -175,10 +317,21 @@ export async function indexedForkWindow(
 	readMany: (seqs: readonly number[]) => Promise<readonly SessionStoredEntry[]>,
 	metadata: ReadMetadata,
 	scan: ScanForkRecords,
-	options?: { readonly archivedReceipts?: true; readonly labels?: boolean; readonly bindings?: boolean },
+	options?: {
+		readonly archivedReceipts?: true;
+		readonly labels?: boolean;
+		readonly bindings?: boolean;
+		readonly branchCatalog?: boolean;
+	},
+	orderedLabels?: () => Promise<readonly number[]>,
 ): Promise<SessionForkWindow | undefined> {
 	if (leafSeq <= 0) return undefined;
-	const ranges = branchRanges(index, leafSeq).reverse();
+	const ranges: Range[] = [];
+	for (const [lo, hi] of branchRanges(index, leafSeq).reverse()) {
+		const last = ranges.at(-1);
+		if (last && last[1] + 1 === lo) ranges[ranges.length - 1] = [last[0], hi];
+		else ranges.push([lo, hi]);
+	}
 	const compact = latestCompactionOf(index, leafSeq);
 	const rows: SessionStoredEntry[] = [];
 	const takeRanges = async (intervals: readonly Range[]) => {
@@ -214,11 +367,28 @@ export async function indexedForkWindow(
 		const bindings =
 			options?.bindings || Object.keys(index.latest).some((key) => key.startsWith("workspace_binding:"));
 		const keep = new Set<number>();
-		if (bindings || wanted.size) {
-			for await (const meta of scan(before, [
-				...(bindings ? ["workspace_binding"] : []),
-				...(wanted.size ? ["atomic.tool-output"] : []),
-			])) {
+		// These catalog values are usually already indexed. A later name, summary or retirement on a
+		// different branch is not authoritative for this child: resolve the last record on its path.
+		const catalogTypes: string[] = [];
+		if (index.nameSeq && !rows.some(({ entry }) => entry.type === "session_info")) {
+			if (onEarlierBranch(index.nameSeq)) keep.add(index.nameSeq);
+			else if (!options?.branchCatalog) catalogTypes.push("session_info");
+		}
+		if (!rows.some(({ entry }) => entry.type === "session_summary" || entry.type === "branch_summary")) {
+			if (index.summarySeq && onEarlierBranch(index.summarySeq)) keep.add(index.summarySeq);
+			else if (!options?.branchCatalog && (index.summarySeq || index.jumps.length || leafSeq !== index.leafSeq))
+				catalogTypes.push("session_summary", "branch_summary");
+		}
+		let nameSeq: number | undefined, summarySeq: number | undefined;
+		if (bindings || wanted.size || catalogTypes.length) {
+			for await (const meta of scan(
+				before,
+				[...(bindings ? ["workspace_binding"] : []), ...(wanted.size ? ["atomic.tool-output"] : [])],
+				catalogTypes,
+			)) {
+				if (meta.type === "session_info") nameSeq = meta.seq;
+				else if (meta.type === "session_summary") summarySeq = meta.seq;
+				else if (meta.type === "branch_summary") summarySeq = undefined;
 				if (meta.customType === "workspace_binding" && onEarlierBranch(meta.seq)) keep.add(meta.seq);
 				if (meta.hash && wanted.has(meta.hash)) {
 					archived = true;
@@ -227,6 +397,9 @@ export async function indexedForkWindow(
 			}
 		}
 		if (!archived) {
+			for (const row of await earlierStopEvidence(index, rows, onEarlierBranch, readMany)) rows.push(row);
+			if (nameSeq) keep.add(nameSeq);
+			if (summarySeq) keep.add(summarySeq);
 			// The branch-state index contains tool policies, codemode writes, snapshots and explicit thinking/model changes.
 			// Only the effective model is needed; it can also come from a covered assistant response. Don't load that answer.
 			const transition = await modelPosition(index, before, metadata);
@@ -285,16 +458,38 @@ export async function indexedForkWindow(
 	});
 	const labels = new Map<string, LabelEntry>();
 	const targets = new Set(entries.filter((e) => options?.labels || index.latest[`label:${e.id}`]).map((e) => e.id));
-	if (targets.size) {
+	if (targets.size && orderedLabels && rows.length < index.seq) {
+		const wanted = new Set([...targets].map((id) => index.latest[`label:${id}`]?.[0]));
+		const seqs = (await orderedLabels()).filter((seq) => wanted.has(seq));
+		const known = new Map(rows.filter((r) => r.entry.type === "label").map((r) => [r.seq, r.entry]));
+		for (const row of await readMany(seqs.filter((seq) => !known.has(seq)))) known.set(row.seq, row.entry);
+		for (const seq of seqs) {
+			const e = known.get(seq);
+			if (e?.type === "label" && e.label && targets.has(e.targetId)) labels.set(e.targetId, e);
+		}
+	} else if (targets.size) {
 		// Labels may have been set or cleared on another branch after launch. A replacement keeps its
 		// original place in the map; clearing and later setting the same label gives it a new place.
-		for await (const m of scan([[1, index.seq]], [], true)) {
-			const label = (await read(m.seq, m.seq))[0]?.entry;
-			if (label?.type !== "label" || !targets.has(label.targetId)) continue;
-			if (label.label) labels.set(label.targetId, label);
-			else labels.delete(label.targetId);
+		const active = new Map<string, ForkMetadata>();
+		const apply = (m: ForkMetadata) => {
+			const target = m.label?.targetId ?? m.labelTarget;
+			if (target === undefined || !targets.has(target)) return;
+			if (m.label?.label || m.labelSet) active.set(target, m);
+			else active.delete(target);
+		};
+		if (rows.length === index.seq) {
+			for (const row of rows)
+				if (row.entry.type === "label") apply({ seq: row.seq, type: "label", label: row.entry });
+		} else for await (const m of scan([[1, index.seq]], [], ["label"])) apply(m);
+		// Inline labels arrive in the scan itself; only selected, still-active large labels need a batched payload read.
+		const missing = await readMany([...active.values()].filter((m) => !m.label).map((m) => m.seq));
+		const large = new Map(missing.map((row) => [row.seq, row.entry]));
+		for (const [target, m] of active) {
+			const entry = m.label ?? large.get(m.seq);
+			if (entry?.type === "label") labels.set(target, entry);
 		}
 	}
+	if (options?.archivedReceipts) keepSettledDisplayEvidence(index, rows, entries);
 	return { header, entries, labels: [...labels.values()], lastSeq: index.seq, epoch: index.epoch };
 }
 
@@ -357,13 +552,13 @@ export function rangedForkMetadata(
 }
 
 export function scanForkRecords(metadata: ReadMetadata): ScanForkRecords {
-	return async function* (ranges, customTypes, labels) {
+	return async function* (ranges, customTypes, entryTypes = []) {
 		for (const [lo, hi] of ranges)
 			for (let seq = lo; seq <= hi; seq += 128) {
 				const page = await metadata(Array.from({ length: Math.min(128, hi - seq + 1) }, (_, i) => seq + i));
 				for (const m of page)
 					if (
-						(labels && m.type === "label") ||
+						entryTypes.includes(m.type) ||
 						(m.type === "custom" && m.customType && customTypes.includes(m.customType))
 					)
 						yield m;

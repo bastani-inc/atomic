@@ -129,6 +129,7 @@ import {
 	savedWindowAnswer,
 } from "./storage/session/window-answer.js";
 import { writeChunksAtomically } from "./storage/transfer-files.js";
+import { copyEarlierCompletionWitnesses } from "./tasks/reopened-completion.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type {
 	PathContinuation,
@@ -329,12 +330,8 @@ export class SessionManager {
 		}
 		const resume = opened.resume;
 		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
-		this.restoreHistory(
-			resume.header,
-			held.map(({ entry }) => entry),
-			resume.lastSeq,
-			location,
-		);
+		const heldEntries = held.map(({ entry }) => entry);
+		this.restoreHistory(resume.header, heldEntries, resume.lastSeq, location);
 		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
 		this.historyEpoch = resume.epoch;
 		this.archiveOnlyEpoch = resume.archiveOnlyEpoch === true;
@@ -343,6 +340,7 @@ export class SessionManager {
 		this.lastEntryId = resume.lastEntryId;
 		const { workflowStarts, ...recovery } = resume.recovery;
 		this.recoveryState = { ...recovery, admissionDigests: "" };
+		copyEarlierCompletionWitnesses(resume.recovery, this.recoveryState, heldEntries);
 		this.workflowStarts = { ...workflowStarts };
 		// An older custom store includes open workflow records in its state rows instead of their positions.
 		if (workflowStarts === undefined) {
@@ -954,6 +952,7 @@ export class SessionManager {
 		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined);
 		if (!resume.compaction) return;
 		this.admissionKeys.mergeEncoded(resume.recovery.admissionDigests);
+		const previousRecovery = this.recoveryState;
 		this.recoveryState = {
 			...this.recoveryState,
 			intercomDeliveredIds: [
@@ -963,6 +962,8 @@ export class SessionManager {
 				...new Set([...(this.recoveryState.deliveryOpIds ?? []), ...(resume.recovery.deliveryOpIds ?? [])]),
 			],
 		};
+		copyEarlierCompletionWitnesses(previousRecovery, this.recoveryState, entries);
+		copyEarlierCompletionWitnesses(resume.recovery, this.recoveryState, entries);
 		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
 		const leaf = this.leafId;
@@ -1692,6 +1693,7 @@ export class SessionManager {
 			() => {
 				visible = true;
 			},
+			this.recoveryState,
 		);
 		if (leafId === this.leafId) this.projectedEdits = { leafId, visible };
 		return projection;
@@ -2175,7 +2177,11 @@ export class SessionManager {
 			const receipts = new Map<string, OversizedSessionEntry>();
 			const entries = bounded
 				? await includeNamedForkOutputs(
-						forkContextPath(window.entries, sessionId),
+						forkContextPath(
+							window.entries,
+							sessionId,
+							(await import("./storage/session/fork-window.js")).forkDisplayEvidence(window.entries),
+						),
 						store,
 						sessionId,
 						leafId,

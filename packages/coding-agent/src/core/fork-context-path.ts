@@ -185,7 +185,11 @@ export async function includeNamedForkOutputs(
 
 /** A new child inherits request content, not the source's admission authority or its recoverable operations.
  * Model-visible content from a notice is still the same provider input, but is no longer a deliverable card. */
-export function forkContextPath(path: SessionEntry[], sourceSessionId: string): SessionEntry[] {
+export function forkContextPath(
+	path: SessionEntry[],
+	sourceSessionId: string,
+	displayEvidence?: ReadonlySet<string>,
+): SessionEntry[] {
 	const leaf = path.at(-1);
 	if (!leaf) return [];
 	const current = buildContextEntries(path, leaf.id, undefined, path);
@@ -209,6 +213,7 @@ export function forkContextPath(path: SessionEntry[], sourceSessionId: string): 
 		(e) => e.type === "model_change" || (e.type === "message" && e.message.role === "assistant"),
 	);
 	const thinking = before.findLast((e) => e.type === "thinking_level_change");
+	const summary = path.findLast((e) => e.type === "session_summary" || e.type === "branch_summary");
 	const retained: SessionEntry[] = [];
 	for (const source of path) {
 		let entry: SessionEntry | undefined = source;
@@ -238,7 +243,7 @@ export function forkContextPath(path: SessionEntry[], sourceSessionId: string): 
 			(source.type === "compaction" ||
 				source.type === "context_edit" ||
 				source.type === "branch_summary" ||
-				source.type === "session_summary" ||
+				(source.type === "session_summary" && source !== summary) ||
 				source.type === "usage")
 		) {
 			entry = undefined;
@@ -248,12 +253,25 @@ export function forkContextPath(path: SessionEntry[], sourceSessionId: string): 
 				(source.data as { toolCallId?: string } | undefined)?.toolCallId;
 			if (
 				!forkSettings.has(source.customType) &&
+				!displayEvidence?.has(source.id) &&
 				!(source.customType === TOOL_OUTPUT_ENTRY_TYPE && (window.has(source.id) || (ref && toolResults.has(ref))))
 			)
 				entry = undefined;
 		} else if (source.type === "custom_message") {
 			if (!window.has(source.id) || source.excludeFromContext) entry = undefined;
-			else if (source.protectedReconciliation || source.stageAdmissionKey) {
+			else if (
+				source.customType === "task-completion" &&
+				source.display &&
+				source.stageAdmissionKey &&
+				source.details &&
+				typeof source.details === "object" &&
+				"notification" in source.details
+			) {
+				// A stored completion can display its existing outcome without granting this child the
+				// parent's admission key. Its already acknowledged display witness is not an outstanding task.
+				const { stageAdmissionKey, protectedReconciliation: _protected, ...view } = source;
+				entry = { ...view, details: { completionId: stageAdmissionKey, ...source.details } };
+			} else if (source.protectedReconciliation || source.stageAdmissionKey) {
 				entry = {
 					type: "custom_message",
 					id: source.id,

@@ -11,6 +11,7 @@ export interface InteractiveEngineLiveness {
 	ready(): void;
 	bound(): void;
 	trustDecision(scope: keyof SessionTrustDecisions, path: string, trusted: boolean): void;
+	withholdProjectResources(path: string): void;
 	projectTrustResolved(): void;
 	resourcesReady(): void;
 	resourcesFailed(error: Error): void;
@@ -27,6 +28,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 			ready: () => {},
 			bound: () => {},
 			trustDecision: () => {},
+			withholdProjectResources: () => {},
 			projectTrustResolved: () => {},
 			resourcesReady: () => {},
 			resourcesFailed: () => {},
@@ -68,6 +70,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 			send({ type: "engine_bound" });
 		},
 		trustDecision: (scope, path, trusted) => send({ type: "engine_trust_decision", scope, path, trusted }),
+		withholdProjectResources: (path) => send({ type: "engine_project_resources_withheld", path }),
 		projectTrustResolved: () => {
 			if (projectTrustResolvedSent) return;
 			projectTrustResolvedSent = true;

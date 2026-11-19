@@ -428,7 +428,7 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 });
 ```
 
-In fullscreen mode a click anywhere on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. If your renderer draws the same rows either way, the click leaves the message as it is.
+In fullscreen mode a click on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. When the main chat runs in the terminal UI process, a message, saved-entry or tool renderer’s component can take a click first by returning `{ handled: true }` from `handleMouse`. Leave clicks outside the control unhandled to keep click-to-expand there. A tool’s title row always toggles first. A separate engine sends rendered rows rather than mouse callbacks. If your renderer draws the same rows either way, the click leaves the message as it is.
 
 Messages are sent via `pi.sendMessage()`:
 

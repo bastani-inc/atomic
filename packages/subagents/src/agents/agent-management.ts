@@ -135,7 +135,22 @@ function formatAgentDetail(agent: AgentConfig): string {
 	return lines.join("\n");
 }
 
-export async function handleList(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
+function definitionSummary(agent: AgentConfig) {
+	return {
+		name: agent.name,
+		description: agent.description,
+		scope: agent.source,
+		executable: !agent.disabled,
+		...(agent.model ? { model: agent.model } : {}),
+		...(agent.defaultContext ? { defaultContext: agent.defaultContext } : {}),
+	};
+}
+
+export async function handleList(
+	params: ManagementParams,
+	ctx: ManagementContext,
+	structured = false,
+): Promise<SubagentToolResult> {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
 	const d = await discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const agents = allAgents(d)
@@ -150,10 +165,17 @@ export async function handleList(params: ManagementParams, ctx: ManagementContex
 				)
 			: ["- (none)"]),
 	];
-	return result(lines.join("\n"));
+	return {
+		...result(lines.join("\n")),
+		...(structured ? { structuredContent: { action: "list", agents: agents.map(definitionSummary) } } : {}),
+	};
 }
 
-async function handleGet(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
+async function handleGet(
+	params: ManagementParams,
+	ctx: ManagementContext,
+	structured: boolean,
+): Promise<SubagentToolResult> {
 	if (!params.agent) return result("Specify 'agent' for get.", true);
 	const matches = await findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), "both");
 	if (!matches.length)
@@ -161,7 +183,27 @@ async function handleGet(params: ManagementParams, ctx: ManagementContext): Prom
 			`Agent '${params.agent}' not found. Available: ${(await availableNames(ctx.cwd, contextAgentDiscoveryOptions(ctx))).join(", ") || "none"}.`,
 			true,
 		);
-	return result(matches.map(formatAgentDetail).join("\n\n"));
+	return {
+		...result(matches.map(formatAgentDetail).join("\n\n")),
+		...(structured
+			? {
+					structuredContent: {
+						action: "get",
+						definitions: matches.map((agent) => ({
+							...definitionSummary(agent),
+							systemPrompt: agent.systemPrompt,
+							systemPromptMode: agent.systemPromptMode,
+							inheritProjectContext: agent.inheritProjectContext,
+							inheritSkills: agent.inheritSkills,
+							...(agent.tools ? { tools: agent.tools } : {}),
+							...(agent.mcpDirectTools ? { mcpDirectTools: agent.mcpDirectTools } : {}),
+							...(agent.fallbackModels ? { fallbackModels: agent.fallbackModels } : {}),
+							skills: agent.skills ?? [],
+						})),
+					},
+				}
+			: {}),
+	};
 }
 
 export async function handleCreate(params: ManagementParams, ctx: ManagementContext): Promise<SubagentToolResult> {
@@ -318,12 +360,13 @@ export async function handleManagementAction(
 	action: string,
 	params: ManagementParams,
 	ctx: ManagementContext,
+	structured = false,
 ): Promise<SubagentToolResult> {
 	switch (action as ManagementAction) {
 		case "list":
-			return handleList(params, ctx);
+			return handleList(params, ctx, structured);
 		case "get":
-			return handleGet(params, ctx);
+			return handleGet(params, ctx, structured);
 		case "create":
 			return handleCreate(params, ctx);
 		case "update":

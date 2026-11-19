@@ -379,7 +379,9 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 					details: { strategy: "short" },
 					firstKeptEntryId: true,
 					coveredThroughEntryId: true,
-					data: { hash: "hash" },
+					targetId: true,
+					label: "truth",
+					data: { hash: "hash", completionId: "op" },
 					id: true,
 					parentId: true,
 					timestamp: true,
@@ -390,6 +392,8 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 	);
 	const type = String(e.type);
 	const link = { id: String(e.id), parentId: e.parentId === null ? null : String(e.parentId) };
+	if (type === "label" && typeof e.targetId === "string")
+		return { seq, type, ...link, labelTarget: e.targetId, labelSet: Boolean(e.label) };
 	if (type === "compaction" && object(e.details).strategy === "verbatim-lines")
 		return {
 			seq,
@@ -422,6 +426,11 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 		...link,
 		customType: typeof e.customType === "string" ? e.customType : undefined,
 		hash: e.customType === "atomic.tool-output" && typeof hash === "string" ? hash : undefined,
+		completionId:
+			(e.customType === "task-completion-intent" || e.customType === "task-completion-ack") &&
+			typeof object(e.data).completionId === "string"
+				? String(object(e.data).completionId)
+				: undefined,
 	};
 }
 
