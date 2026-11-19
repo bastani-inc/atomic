@@ -999,6 +999,7 @@ async function reloadOwnedGeneration(
 		this._cwd,
 		this.sessionManager,
 		new ModelRegistry(this._modelRuntime),
+		undefined,
 		this._subagentPolicy,
 		this._intercomPolicy,
 	);

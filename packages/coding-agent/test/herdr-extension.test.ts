@@ -55,6 +55,7 @@ test("invalid environment and inherited child/headless modes never acquire repor
 				fake.dir,
 				SessionManager.inMemory(),
 				{} as never,
+				undefined,
 				scenario.child,
 			);
 			runner.setUIContext(scenario.ui ? { ...noOpUIContext } : undefined, scenario.mode);
