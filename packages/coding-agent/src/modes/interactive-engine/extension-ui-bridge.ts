@@ -235,7 +235,10 @@ export function onInteractiveEngineResourceExtensionsChanged(
 }
 
 /** Called when the isolated host's trust for its session, or whether its engine has decided it, changes. */
-export function onInteractiveEngineProjectTrustChanged(runtime: AgentSessionRuntime, listener: () => void): () => void {
+export function onInteractiveEngineProjectTrustChanged(
+	runtime: AgentSessionRuntime,
+	listener: (resourcesChanged: boolean) => void,
+): () => void {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onProjectTrustChanged(listener) : () => {};
 }
 

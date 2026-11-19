@@ -1,3 +1,5 @@
+import { onInteractiveEngineProjectTrustChanged } from "../interactive-engine/extension-ui-bridge.ts";
+import type { SettingsConfig } from "./components/settings-selector-types.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
@@ -49,13 +51,9 @@ InteractiveModeBase.prototype.showSelector = function (
 InteractiveModeBase.prototype.showSettingsSelector = async function (this: InteractiveModeBase): Promise<void> {
 	const availableThemes = getAvailableThemes();
 	this.showSelector((done) => {
-		const { decisionModelScope, autoAdvanceAfterSteerScope } = decisionSettingScopes(
-			this.settingsManager.getProjectSettings(),
-		);
-		const compactionModelScope =
-			this.settingsManager.getProjectSettings().compactionModel !== undefined ? "project" : "global";
-		const component = new SettingsSelectorComponent(
-			{
+		const readConfig = (): SettingsConfig => {
+			const project = this.settingsManager.getProjectSettings();
+			return {
 				autoCompact: this.session.autoCompactionEnabled,
 				showImages: this.settingsManager.getShowImages(),
 				imageWidthCells: this.settingsManager.getImageWidthCells(),
@@ -73,13 +71,12 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				availableClassifierModels: [...this.session.modelRuntime.getModelsOfType("classifier")],
 				modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
 				decisionModel: this.settingsManager.getDecisionModel(),
-				decisionModelScope,
+				...decisionSettingScopes(project),
 				autoAdvanceAfterSteer: this.settingsManager.getAutoAdvanceAfterSteer(),
-				autoAdvanceAfterSteerScope,
 				availableCompactorModels: [...this.session.modelRuntime.getModelsOfType("compactor")],
 				morphAuthenticated: this.session.modelRuntime.hasConfiguredAuth("morph"),
 				compactionModel: this.settingsManager.getCompactionModel(),
-				compactionModelScope,
+				compactionModelScope: project.compactionModel !== undefined ? "project" : "global",
 				currentTheme: this.themeController.getThemeSelection() || "dark",
 				terminalTheme: this.themeController.getTerminalTheme(),
 				availableThemes,
@@ -105,7 +102,12 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				clearOnShrink: this.settingsManager.getClearOnShrink(),
 				showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
 				warnings: this.settingsManager.getWarnings(),
-			},
+			};
+		};
+		let config = readConfig();
+		const component = new SettingsSelectorComponent(
+			// The open selector receives a new snapshot when the cwd's settings finish loading.
+			config,
 			{
 				onAutoCompactChange: (enabled) => {
 					this.session.setAutoCompactionEnabled(enabled);
@@ -160,13 +162,13 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 					this.updateEditorBorderColor();
 				},
 				onDecisionModelChange: (model) => {
-					this.settingsManager.setDecisionModel(model, decisionModelScope);
+					this.settingsManager.setDecisionModel(model, config.decisionModelScope);
 				},
 				onAutoAdvanceAfterSteerChange: (enabled) => {
-					this.settingsManager.setAutoAdvanceAfterSteer(enabled, autoAdvanceAfterSteerScope);
+					this.settingsManager.setAutoAdvanceAfterSteer(enabled, config.autoAdvanceAfterSteerScope);
 				},
 				onCompactionModelChange: (model) => {
-					this.settingsManager.setCompactionModel(model, compactionModelScope);
+					this.settingsManager.setCompactionModel(model, config.compactionModelScope);
 				},
 				onModelThinkingLevelChange: (provider, modelId, level) => {
 					this.settingsManager.setModelThinkingLevel(provider, modelId, level);
@@ -281,7 +283,14 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				},
 			},
 		);
-		return { component, focus: component.getSettingsList() };
+		const dispose = onInteractiveEngineProjectTrustChanged(this.runtimeHost, (changed) => {
+			if (!changed) return;
+			availableThemes.splice(0, availableThemes.length, ...getAvailableThemes());
+			config = readConfig();
+			component.refreshSettings(config);
+			this.ui.requestRender();
+		});
+		return { component, focus: component.getSettingsList(), dispose };
 	});
 	await refreshCustomThemes();
 	availableThemes.splice(0, availableThemes.length, ...getAvailableThemes());

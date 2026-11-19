@@ -32,9 +32,10 @@ import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.t
 import {
 	APP_NAME,
 	APP_TITLE,
-	type Container,
+	Container,
 	checkForNewPiVersion,
 	composeStartupIdentity,
+	configureHttpDispatcher,
 	DefaultPackageManager,
 	DynamicBorder,
 	ENV_OFFLINE,
@@ -57,6 +58,7 @@ import {
 	preloadChangelog,
 	recordTimeSinceReset,
 	Spacer,
+	setRegisteredThemes,
 	spawn,
 	Text,
 	theme,
@@ -69,6 +71,7 @@ import {
 	updateProviderCountFromSnapshot,
 } from "./interactive-model-catalog-startup.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
+import { applyProjectSettingsToTranscript } from "./interactive-render-chat.ts";
 import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
@@ -115,7 +118,7 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 ): void {
 	if (this.startupNoticesShown) {
 		// Deferred startup asks again after extensions load: redraw What's New with their transformers, don't repeat it.
-		this.startupChangelogComponent?.invalidate();
+		this.refreshStartupChangelog?.();
 		return;
 	}
 	prepareStartupNotices(this);
@@ -131,20 +134,25 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 			targetContainer.addChild(new Spacer(1));
 		}
 		targetContainer.addChild(new DynamicBorder());
-		if (this.settingsManager.getCollapseChangelog()) {
-			const versionMatch = changelogMarkdown.match(
-				/##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
-			);
-			const latestVersion = versionMatch ? versionMatch[1] : this.version;
-			const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-			targetContainer.addChild(new Text(condensedText, 1, 0));
-		} else {
-			targetContainer.addChild(new ThemedText(() => theme.bold(theme.fg("accent", "What's New")), 1, 0));
-			targetContainer.addChild(new Spacer(1));
-			this.startupChangelogComponent = this.createChangelogMarkdown(changelogMarkdown.trim(), 1, 0);
-			targetContainer.addChild(this.startupChangelogComponent);
-			targetContainer.addChild(new Spacer(1));
-		}
+		const content = new Container();
+		targetContainer.addChild(content);
+		this.refreshStartupChangelog = () => {
+			content.clear();
+			if (this.settingsManager.getCollapseChangelog()) {
+				const versionMatch = changelogMarkdown.match(
+					/##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
+				);
+				const latestVersion = versionMatch ? versionMatch[1] : this.version;
+				const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
+				content.addChild(new Text(condensedText, 1, 0));
+			} else {
+				content.addChild(new ThemedText(() => theme.bold(theme.fg("accent", "What's New")), 1, 0));
+				content.addChild(new Spacer(1));
+				content.addChild(this.createChangelogMarkdown(changelogMarkdown.trim(), 1, 0));
+				content.addChild(new Spacer(1));
+			}
+		};
+		this.refreshStartupChangelog();
 		targetContainer.addChild(new DynamicBorder());
 	}
 
@@ -203,16 +211,20 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
+function refreshResourceDisclosure(mode: InteractiveModeBase, options?: { preserveExpansion?: boolean }): void {
+	mode.showLoadedResources({
+		...options,
+		force: true,
+		showDiagnosticsWhenQuiet: true,
+		targetContainer: mode.resourceDisclosureContainer,
+	});
+}
+
 export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
 	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, () => {
 		mode.chatContainer.invalidate();
 		mode.ui.requestRender();
-		if (mode.resourceDisclosureContainer.children.length === 0) return;
-		mode.showLoadedResources({
-			force: true,
-			showDiagnosticsWhenQuiet: true,
-			targetContainer: mode.resourceDisclosureContainer,
-		});
+		if (mode.resourceDisclosureContainer.children.length > 0) refreshResourceDisclosure(mode);
 	});
 }
 
@@ -276,8 +288,23 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.setupAutocompleteProvider();
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
-	// The engine decides project trust after this host drew the chat.
-	onInteractiveEngineProjectTrustChanged(this.runtimeHost, () => this.refreshProjectTrustWarning());
+	onInteractiveEngineProjectTrustChanged(this.runtimeHost, (resourcesChanged) => {
+		// The cwd's own load can finish before the engine's full catalog. Apply the same settings as startup,
+		// without rebinding extensions or replacing the live editor and transcript.
+		if (resourcesChanged) {
+			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+			this.applyRuntimeSettings();
+			configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
+			void this.themeController.applyFromSettings();
+			if (this.isInitialized) {
+				this.refreshStartupChangelog?.();
+				applyProjectSettingsToTranscript(this);
+				refreshResourceDisclosure(this, { preserveExpansion: true });
+				this.setupAutocompleteProvider({ preserveSelection: true });
+			}
+		}
+		this.refreshProjectTrustWarning();
+	});
 	// Engine stats can land after the last event of a run; repaint so the idle footer shows them.
 	onInteractiveEngineSessionStatsChanged(this.runtimeHost, () => {
 		this.ui.requestRender();

@@ -54,6 +54,28 @@ export class SettingsPicker implements Component, Focusable {
 		if (this.submenu && "focused" in this.submenu) (this.submenu as Component & Focusable).focused = value;
 	}
 
+	setItems(items: SettingItem[]): void {
+		this.items.splice(0, this.items.length, ...items);
+		this.refresh();
+		this.restoreSubmenu(this);
+	}
+
+	restoreNavigation(previous: Component): void {
+		if (!(previous instanceof SettingsPicker)) return;
+		this.selector.restoreNavigation(previous.selector, true);
+		this.restoreSubmenu(previous);
+	}
+
+	private restoreSubmenu(previous: SettingsPicker): void {
+		const open = previous.submenu;
+		if (!open) return;
+		const item = this.items.find(({ id }) => id === previous.submenuItemId);
+		this.submenu = null;
+		this.submenuItemId = null;
+		// Use the new row's factory: values, labels and save callbacks belong to one settings snapshot.
+		if (item?.submenu) this.activate(item, open);
+	}
+
 	updateValue(id: string, newValue: string): void {
 		const item = this.items.find((entry) => entry.id === id);
 		if (!item) return;
@@ -111,17 +133,21 @@ export class SettingsPicker implements Component, Focusable {
 		this.selector.setItems(this.selectorItems());
 	}
 
-	private activate(item: SettingItem): void {
+	private activate(item: SettingItem, previous?: Component): void {
 		if (item.submenu) {
 			this.submenuItemId = item.id;
 			this.submenu = item.submenu(item.currentValue, (selectedValue, options) => {
 				if (selectedValue !== undefined) {
-					item.currentValue = selectedValue;
+					const current = this.items.find((entry) => entry.id === item.id);
+					if (current) current.currentValue = selectedValue;
 					this.onChange(item.id, selectedValue);
 				}
 				if (options?.navigateTo) this.navigateAfterClose = options.navigateTo;
 				this.closeSubmenu();
 			});
+			if (previous && "restoreNavigation" in this.submenu && typeof this.submenu.restoreNavigation === "function") {
+				this.submenu.restoreNavigation(previous);
+			}
 			if ("focused" in this.submenu) (this.submenu as Component & Focusable).focused = this._focused;
 			return;
 		}

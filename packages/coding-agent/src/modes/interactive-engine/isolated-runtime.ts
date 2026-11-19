@@ -181,7 +181,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private engineProjectTrustReported = false;
 	/** The engine's trust decisions in this host session, handed to an engine started to replace it. */
 	private knownTrust: SessionTrustDecisions = { projects: {}, extensionSources: {} };
-	private readonly projectTrustListeners = new Set<() => void>();
+	private readonly projectTrustListeners = new Set<(resourcesChanged: boolean) => void>();
 	private remoteSessionName: string | undefined;
 	private remoteSessionId: string | undefined;
 	private remoteSessionFile: string | undefined;
@@ -310,6 +310,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, {
 					[message.scope]: { [message.path]: message.trusted },
 				});
+				if (message.scope === "projects" && !this.engineProjectTrustReported)
+					this.applyProjectDecisionWhilePending(message.path, message.trusted);
 				return;
 			}
 			if (message.type === "engine_deprecation_warning") {
@@ -406,6 +408,44 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		await this.initializationTail;
 	}
 
+	/**
+	 * The project's own decision, made while startup still decides other trust (an `-e` source's question, which also
+	 * keeps the engine's other requests waiting for its resources). Each source follows its own decision, so the
+	 * project's resources load, or stay out, now instead of when startup has decided. It is no startup decision: the
+	 * warning still waits for that (#5693).
+	 */
+	private applyProjectDecisionWhilePending(path: string, trusted: boolean): void {
+		const generation = this.client.getGeneration?.();
+		const apply = async () => {
+			const session = super.session;
+			if (this.disposed || this.engineProjectTrustReported) return;
+			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
+			const [decided, current] = await Promise.all([
+				canonicalizePathAsync(path),
+				canonicalizePathAsync(session.sessionManager.getCwd()),
+			]);
+			if (decided !== current || session !== super.session || this.engineProjectTrustReported) return;
+			if (session.settingsManager.isProjectTrusted() === trusted) return;
+			await session.settingsManager.setProjectTrustedAsync(trusted);
+			await session.settingsManager.reload();
+			await session.resourceLoader.reload();
+			if (
+				this.disposed ||
+				session !== super.session ||
+				(generation !== undefined && !this.isCurrentResourceGeneration(generation))
+			)
+				return;
+			for (const listener of [...this.projectTrustListeners]) listener(true);
+		};
+		// After any synchronization in flight, so an earlier report cannot undo the decision.
+		const run = (this.initializationTail ?? Promise.resolve()).then(apply);
+		const tail = run.catch(() => {});
+		this.initializationTail = tail;
+		void tail.then(() => {
+			if (this.initializationTail === tail) this.initializationTail = undefined;
+		});
+	}
+
 	/** Keep a live engine's report as soon as it arrives, before the caller waits on other engine or session work. */
 	private async getEngineState(): Promise<RpcSessionState> {
 		const generation = this.client.getGeneration?.();
@@ -457,12 +497,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
-			this.engineProjectTrustReported = state.projectTrusted !== undefined;
-			if (
-				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
-				trustBefore[1] !== this.engineProjectTrustReported
-			) {
-				for (const listener of [...this.projectTrustListeners]) listener();
+			// A pending report keeps the project's resources out until the engine decides; it is no decision to warn about.
+			this.engineProjectTrustReported = state.projectTrusted !== undefined && state.projectTrustPending !== true;
+			const resourcesChanged = trustBefore[0] !== session.settingsManager.isProjectTrusted();
+			if (resourcesChanged || trustBefore[1] !== this.engineProjectTrustReported) {
+				for (const listener of [...this.projectTrustListeners]) listener(resourcesChanged);
 			}
 			this.remoteModelCatalog.apply(catalog, scope);
 			this.remoteModelCatalog.patch(session);
@@ -612,7 +651,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return this.knownTrust;
 	}
 	/** Called when this host's trust for its session, or whether the engine has decided it, changes. */
-	onProjectTrustChanged(listener: () => void): () => void {
+	onProjectTrustChanged(listener: (resourcesChanged: boolean) => void): () => void {
 		this.projectTrustListeners.add(listener);
 		return () => this.projectTrustListeners.delete(listener);
 	}
