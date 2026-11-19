@@ -11,12 +11,21 @@ import type { SessionStats } from "./agent-session-types.js";
 import { calculateContextTokens, estimateProjectedContextTokens } from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
-import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
-import { inlineToolOutput, withoutInlineToolOutput } from "./session-tool-output.ts";
-import { inlineSnapshotBlobs, sessionSnapshotBlobs } from "./session-worktree-snapshots.ts";
+import {
+	CURRENT_SESSION_VERSION,
+	getLatestCompactionBoundaryEntry,
+	type SessionEntry,
+	SessionEntryError,
+	type SessionHeader,
+	type SessionManager,
+} from "./session-manager.ts";
+import { inlineToolOutput, withoutCarriedToolOutput } from "./session-tool-output.ts";
+import { sessionSnapshotBlobs, snapshotBlobInliner } from "./session-worktree-snapshots.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
+import type { OversizedSessionEntry, SessionStore } from "./storage/session/types.js";
 import { lastAssistantAnswer } from "./storage/session/window-answer.js";
 import { addHistoryUsageToTotals, addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+import type { SnapshotBlobStore, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
 
 export function getSessionStats(this: AgentSession): SessionStats {
 	const omitted = this.sessionManager.getOmittedHistoryTotals?.();
@@ -182,27 +191,23 @@ export async function exportToJsonl(
 	);
 	await mkdir(dirname(filePath), { recursive: true });
 
-	await this.sessionManager.loadFullHistory();
-	const sessionId = this.sessionManager.getSessionId();
+	const sessionManager = this.sessionManager;
+	const sessionId = sessionManager.getSessionId();
 	const header: SessionHeader = {
 		type: "session",
 		version: CURRENT_SESSION_VERSION,
 		id: sessionId,
 		createdAt: new Date().toISOString(),
-		cwd: this.sessionManager.getCwd(),
+		cwd: sessionManager.getCwd(),
 	};
 
-	const store = this.sessionManager.getSessionStore();
-	const snapshotEntries = await inlineSnapshotBlobs(
-		this.sessionManager.getBranch(),
-		this.sessionManager.getWorktreeSnapshotRecords(),
-		options.snapshotContent === false
-			? undefined
-			: sessionSnapshotBlobs(store.snapshotBlobs, this.sessionManager.getEntries()),
+	const store = sessionManager.getSessionStore();
+	const snapshotEntries = withSnapshotContent(
+		capturedBranch(sessionManager, store, options.snapshotContent !== false),
 	);
 	const branchEntries =
 		options.toolOutputContent === false
-			? withoutInlineToolOutput(snapshotEntries)
+			? withoutCarriedToolOutputs(snapshotEntries)
 			: inlineToolOutput(snapshotEntries, store, sessionId);
 	const shareEntry = (parentId: string | null) => ({
 		type: "custom",
@@ -255,6 +260,146 @@ export async function exportToJsonl(
 		throw error;
 	}
 	return filePath;
+}
+
+type SnapshotBlobReader = Pick<SnapshotBlobStore, "getBlob">;
+type SnapshotEntry = Extract<SessionEntry, { type: "worktree_snapshot" }>;
+
+/**
+ * The selected branch as the export started, which a session the manager moves on to does not change. `read` yields
+ * its entries root first, as stored or as the manager holds them, as often as it is called. `record` and `blobs` give a
+ * snapshot entry's record and content as a full load of the session gives them; `record` sees every snapshot entry of
+ * one pass in order.
+ */
+interface CapturedBranch {
+	/** The cut the branch is paged from, when the manager holds only its window. */
+	readonly cut?: ArchiveCut;
+	/** The stored position of the selected leaf, when the branch is paged from `cut`. */
+	readonly leafSeq?: number;
+	read(): AsyncGenerator<SessionEntry, void>;
+	record(entry: SnapshotEntry): WorktreeSnapshot | undefined | Promise<WorktreeSnapshot | undefined>;
+	blobs(entry: SnapshotEntry): SnapshotBlobReader | undefined;
+}
+
+/**
+ * A manager that holds the whole session gives its branch from memory, with records and inline blobs from every
+ * entry, as it always has. One that holds only its window pages the selected ancestry from the store, the manager's
+ * own entry where it holds one, never loading the session. A snapshot entry's record is its own or one the branch
+ * carried before; only a record the branch has not carried, and content neither the store's blob table nor the entry
+ * has, are read from the rest of the session.
+ */
+function capturedBranch(sessionManager: SessionManager, store: SessionStore, content: boolean): CapturedBranch {
+	if (sessionManager.hasFullHistory()) {
+		const branch = sessionManager.getBranch();
+		const records = sessionManager.getWorktreeSnapshotRecords();
+		const blobs = content ? sessionSnapshotBlobs(store.snapshotBlobs, sessionManager.getEntries()) : undefined;
+		return {
+			async *read() {
+				yield* branch;
+			},
+			record: (entry) => entry.snapshot ?? records.get(entry.snapshotId),
+			blobs: () => blobs,
+		};
+	}
+	const cut = sessionManager.captureArchive();
+	const leafSeq = cut.leafId === null ? undefined : sessionManager.getEntrySeq(cut.leafId);
+	const primary = store.snapshotBlobs;
+	const session = sessionSnapshots(cut);
+	const seen = new Map<string, WorktreeSnapshot>();
+	return {
+		cut,
+		leafSeq,
+		async *read() {
+			if (cut.leafId === null) return;
+			if (leafSeq === undefined) throw new SessionEntryError(cut.leafId, "missing");
+			for await (const { items } of cut.pages({ branchLeafSeq: leafSeq })) {
+				for (const item of items)
+					yield cut.held.get(item.seq) ?? ("entry" in item ? item.entry : await entryOf(cut, item));
+			}
+		},
+		async record(entry) {
+			const record = entry.snapshot ?? seen.get(entry.snapshotId) ?? (await session.record(entry.snapshotId));
+			if (record) seen.set(entry.snapshotId, record);
+			return record;
+		},
+		blobs: (entry) =>
+			content
+				? {
+						getBlob: async (hash) =>
+							(await primary?.getBlob(hash)) ?? carriedBlob(entry, hash) ?? (await session.blob(hash)),
+					}
+				: undefined,
+	};
+}
+
+/** One pass of `branch`, each snapshot entry with its record and content carried, each once. */
+async function* withSnapshotContent(branch: CapturedBranch): AsyncGenerator<SessionEntry, void> {
+	const inline = snapshotBlobInliner();
+	for await (const entry of branch.read())
+		yield entry.type === "worktree_snapshot"
+			? await inline(entry, await branch.record(entry), branch.blobs(entry))
+			: entry;
+}
+
+type ArchiveCut = ReturnType<SessionManager["captureArchive"]>;
+
+/** A stored entry too large for a history page, from its exact bytes. */
+async function entryOf(cut: ArchiveCut, item: OversizedSessionEntry): Promise<SessionEntry> {
+	const chunks: Uint8Array[] = [];
+	for await (const chunk of cut.chunks(item)) chunks.push(chunk);
+	return JSON.parse(Buffer.concat(chunks).toString("utf8")) as SessionEntry;
+}
+
+function carriedBlob(entry: SessionEntry, hash: string): Uint8Array | undefined {
+	const base64 = entry.type === "worktree_snapshot" ? entry.blobs?.[hash] : undefined;
+	return base64 === undefined ? undefined : new Uint8Array(Buffer.from(base64, "base64"));
+}
+
+/**
+ * The session's snapshot records and inline snapshot content at `cut`, each the last the session has, as a full load
+ * gives them. The first lookup reads the session's snapshot entries once, keeping only where each record and blob is;
+ * each lookup then reads that one entry.
+ */
+function sessionSnapshots(cut: ArchiveCut) {
+	let located: Promise<{ records: Map<string, number>; blobs: Map<string, number> }> | undefined;
+	const locate = async () => {
+		const records = new Map<string, number>();
+		const blobs = new Map<string, number>();
+		for await (const { items } of cut.pages()) {
+			for (const item of items) {
+				const entry = cut.held.get(item.seq) ?? ("entry" in item ? item.entry : await entryOf(cut, item));
+				if (entry.type !== "worktree_snapshot") continue;
+				if (entry.snapshot) records.set(entry.snapshotId, item.seq);
+				for (const hash of Object.keys(entry.blobs ?? {})) blobs.set(hash, item.seq);
+			}
+		}
+		return { records, blobs };
+	};
+	const at = async (seq: number | undefined) => {
+		if (seq === undefined) return undefined;
+		const held = cut.held.get(seq);
+		if (held) return held;
+		for await (const { items } of cut.pages({ fromSeq: seq, toSeq: seq }))
+			for (const item of items) return "entry" in item ? item.entry : await entryOf(cut, item);
+		return undefined;
+	};
+	return {
+		async record(snapshotId: string): Promise<WorktreeSnapshot | undefined> {
+			located ??= locate();
+			const entry = await at((await located).records.get(snapshotId));
+			return entry?.type === "worktree_snapshot" ? entry.snapshot : undefined;
+		},
+		async blob(hash: string): Promise<Uint8Array | undefined> {
+			located ??= locate();
+			const entry = await at((await located).blobs.get(hash));
+			return entry === undefined ? undefined : carriedBlob(entry, hash);
+		},
+	};
+}
+
+/** `entries` without the bytes any tool-output entry carries inline, one at a time. */
+async function* withoutCarriedToolOutputs(entries: AsyncIterable<SessionEntry>): AsyncGenerator<SessionEntry, void> {
+	for await (const entry of entries) yield withoutCarriedToolOutput(entry);
 }
 
 const realpathJs = promisify(realpath);

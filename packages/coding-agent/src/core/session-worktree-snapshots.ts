@@ -1767,15 +1767,33 @@ export async function inlineSnapshotBlobs(
 	records: ReadonlyMap<string, WorktreeSnapshot>,
 	store: SnapshotBlobStore | undefined,
 ): Promise<SessionEntry[]> {
-	const emittedRecords = new Set<string>();
-	const emittedBlobs = new Set<string>();
+	const inline = snapshotBlobInliner();
 	const result: SessionEntry[] = [];
 	for (const entry of entries) {
-		if (entry.type !== "worktree_snapshot") {
-			result.push(entry);
-			continue;
-		}
-		const record = entry.snapshot ?? records.get(entry.snapshotId);
+		result.push(
+			entry.type === "worktree_snapshot"
+				? await inline(entry, entry.snapshot ?? records.get(entry.snapshotId), store)
+				: entry,
+		);
+	}
+	return result;
+}
+
+type SnapshotEntry = Extract<SessionEntry, { type: "worktree_snapshot" }>;
+
+/**
+ * {@link inlineSnapshotBlobs} one entry at a time, for an export that streams its entries: each call returns the
+ * snapshot entry as `inlineSnapshotBlobs` returns it at that position, given `record`, the entry's own record or the
+ * session's record of its snapshot, and the entries passed before. Without `blobs` only the record is carried.
+ */
+export function snapshotBlobInliner(): (
+	entry: SnapshotEntry,
+	record: WorktreeSnapshot | undefined,
+	blobs: Pick<SnapshotBlobStore, "getBlob"> | undefined,
+) => Promise<SnapshotEntry> {
+	const emittedRecords = new Set<string>();
+	const emittedBlobs = new Set<string>();
+	return async (entry, record, store) => {
 		const { blobs: _carried, snapshot: _record, ...rest } = entry;
 		const blobs: Record<string, string> = {};
 		if (record && store) {
@@ -1789,13 +1807,12 @@ export async function inlineSnapshotBlobs(
 		}
 		const carryRecord = record !== undefined && !emittedRecords.has(record.id);
 		if (record) emittedRecords.add(record.id);
-		result.push({
+		return {
 			...rest,
 			...(carryRecord ? { snapshot: record } : {}),
 			...(Object.keys(blobs).length > 0 ? { blobs } : {}),
-		});
-	}
-	return result;
+		};
+	};
 }
 
 /**
