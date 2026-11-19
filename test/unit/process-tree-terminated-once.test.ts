@@ -216,7 +216,12 @@ test.skipIf(process.platform !== "win32")(
 				log,
 				{ timeoutMs: 60_000, signal: controller.signal },
 			);
-			const child = vi.mocked(spawn).mock.results.at(-1)?.value as ChildProcess | undefined;
+			const started = () =>
+				vi.mocked(spawn).mock.results[vi.mocked(spawn).mock.calls.findIndex(([, args]) => args?.[1] === command)]
+					?.value as ChildProcess | undefined;
+			const deadline = Date.now() + PROCESS_START_WAIT_MS;
+			while (started() === undefined && Date.now() < deadline) await realSleep(10);
+			const child = started();
 			assert.ok(child?.pid, "the step's command was spawned");
 			const commandPid = String(child.pid);
 			if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
