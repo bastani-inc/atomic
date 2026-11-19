@@ -228,6 +228,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 			diagnostics: [...caller.diagnostics, ...builtin.diagnostics],
 		};
 	}
+	getLegacyWorkflowFiles() {
+		return this.delegate.getLegacyWorkflowFiles?.();
+	}
 	getAgentsFiles() {
 		return this.delegate.getAgentsFiles();
 	}

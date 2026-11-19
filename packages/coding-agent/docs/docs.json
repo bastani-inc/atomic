@@ -51,6 +51,7 @@
           {
             "group": "Running work for you",
             "pages": [
+              "guides/orchestration",
               "guides/workflows",
               "guides/subagents",
               "background-tasks",
@@ -113,6 +114,9 @@
           {
             "group": "Orchestrate work",
             "pages": [
+              "orchestration",
+              "orchestration/patterns",
+              "orchestration/migrating-workflows",
               {
                 "group": "Workflows",
                 "pages": [

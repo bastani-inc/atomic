@@ -85,6 +85,10 @@ class MandatoryResourceLoader implements ResourceLoader {
 		return this.delegate.getInheritanceSnapshot?.() ?? {};
 	}
 
+	getLegacyWorkflowFiles() {
+		return this.delegate.getLegacyWorkflowFiles?.();
+	}
+
 	getMcpServerContributions() {
 		return this.delegate.getMcpServerContributions?.() ?? [];
 	}
