@@ -936,7 +936,7 @@ export class SessionList implements Component, Focusable {
 
 	/**
 	 * A click on a session resumes it, as moving there and pressing Enter does. While a delete waits for its
-	 * confirmation, rows take no clicks, as they take no keys but Enter and Esc. The wheel moves the selection.
+	 * confirmation, rows take no clicks, as they take no keys but Enter and Esc.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.showingHelp || this.confirmingDeleteSession !== null) return undefined;
@@ -947,15 +947,6 @@ export class SessionList implements Component, Focusable {
 				this.touchSelection();
 				this.selectedIndex = index;
 				this.selectSession();
-			},
-			scroll: (direction) => {
-				const before = this.selectedIndex;
-				this.touchSelection();
-				this.selectedIndex = Math.max(
-					0,
-					Math.min(this.filteredSessions.length - 1, this.selectedIndex + direction),
-				);
-				return this.selectedIndex !== before;
 			},
 		});
 	}

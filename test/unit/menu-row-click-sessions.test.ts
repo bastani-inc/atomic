@@ -93,12 +93,12 @@ test("while /resume waits to confirm a delete, a click on a session resumes noth
 	ui.tui.stop();
 });
 
-test("the mouse wheel over /resume moves its selection", async () => {
+test("scrolling over /resume keeps the selected session (#5532)", async () => {
 	const { ui, selector } = await picker(100);
 	const row = ui.rowOf(/Fix the login page/);
 	await ui.wheel("down", 6, row);
 	await ui.wheel("down", 6, row);
-	assert.equal(selector.getSessionList().getSelectedSessionId(), "c");
+	assert.equal(selector.getSessionList().getSelectedSessionId(), "a");
 	ui.tui.stop();
 });
 
@@ -142,7 +142,7 @@ for (const width of [80, 160]) {
 		assert.deepEqual(chosen, ["entry-2", "entry-4"]);
 		const row = ui.rowOf(/question number 0/);
 		await ui.wheel("down", 6, row);
-		assert.equal(tree.getTreeList().getSelectedNode()?.entry.id, "entry-5");
+		assert.equal(tree.getTreeList().getSelectedNode()?.entry.id, "entry-4");
 		ui.tui.stop();
 	});
 }

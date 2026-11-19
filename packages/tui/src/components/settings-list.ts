@@ -182,33 +182,35 @@ export class SettingsList implements Component {
 		return lines;
 	}
 
-	/** A click on a row changes it as Enter does; the wheel moves the selection. */
+	/** A click on a row changes it as Enter does. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.submenuComponent) {
 			const result = this.submenuComponent.handleMouse?.(event);
 			return result ? { ...result, focus: true } : undefined;
 		}
 
-		if (this.searchEnabled && this.searchInput && event.type !== "wheel") {
+		if (this.searchEnabled && this.searchInput) {
 			if (event.y === 0) {
 				const result = this.searchInput.handleMouse?.(event);
 				return result ? { ...result, focus: true } : undefined;
 			}
+			if (event.y === 1) return undefined;
 		}
 
 		const displayItems = this.getDisplayItems();
 		if (displayItems.length === 0) return undefined;
+		if (event.type === "wheel" && event.wheelDelta) {
+			const delta = event.wheelDelta < 0 ? -1 : 1;
+			const previousIndex = this.selectedIndex;
+			this.selectedIndex = Math.max(0, Math.min(displayItems.length - 1, this.selectedIndex + delta));
+			return { handled: true, render: this.selectedIndex !== previousIndex };
+		}
 		return this.clickableRows.handleMouse(event, {
 			activate: (item) => {
 				const index = displayItems.indexOf(item);
 				if (index === -1) return;
 				this.selectedIndex = index;
 				this.activateItem();
-			},
-			scroll: (direction) => {
-				const previousIndex = this.selectedIndex;
-				this.selectedIndex = Math.max(0, Math.min(displayItems.length - 1, this.selectedIndex + direction));
-				return this.selectedIndex !== previousIndex;
 			},
 		});
 	}

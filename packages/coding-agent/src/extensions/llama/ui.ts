@@ -267,6 +267,7 @@ class LlamaView implements LlamaUi, Focusable {
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "press" && event.type !== "click") return undefined;
 		return this.content.handleMouse?.(event);
 	}
 

@@ -541,7 +541,7 @@ pi.registerCommand("pick", {
 
 ### Pattern 1c: Clickable rows in your own list
 
-`Selector`, `SelectList` and `SettingsList` run a row on one click already. For a list you draw yourself, use `ClickableRows` from `@bastani/atomic-tui`. Record each row while rendering, and forward `handleMouse` and `paintedRowKey` to the recorded rows, including through any wrapper. A single left click runs the row, dragging selects text, and a double or triple click does not run the row again. A `scroll` action lets the wheel move the selection when the list runs in process. Naming a row for clicks does not forward wheel events to an isolated component.
+`Selector`, `SelectList` and `SettingsList` run a row on one click already. For a list you draw yourself, use `ClickableRows` from `@bastani/atomic-tui`. Record each row while rendering, and forward `handleMouse` and `paintedRowKey` to the recorded rows, including through any wrapper. A single left click runs the row, dragging selects text, and a double or triple click does not run the row again.
 
 Call the same action from your click and keyboard handlers. If you forward terminal input instead, `keyInput(key)` encodes a key returned by `getKeybindings().getKeys(action)`, including modified function keys.
 
@@ -578,12 +578,6 @@ class FruitList implements Component {
       activate: (index) => {
         this.selected = index; // move there, then do what Enter does
         this.handleInput("\r");
-      },
-      scroll: (direction) => {
-        const next = Math.max(0, Math.min(this.fruits.length - 1, this.selected + direction));
-        const moved = next !== this.selected;
-        this.selected = next;
-        return moved;
       },
     });
   }

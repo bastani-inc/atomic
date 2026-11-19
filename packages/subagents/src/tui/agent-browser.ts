@@ -53,7 +53,7 @@ export class AgentBrowser implements Component, Focusable {
 			`${agent.name} ${agent.description} ${agent.source}`.toLowerCase().includes(query),
 		);
 	}
-	/** A click on a listed agent opens its details, as moving there and pressing Enter does; the wheel moves the selection. */
+	/** A click on a listed agent opens its details, as moving there and pressing Enter does. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.detail) return undefined;
 		return this.clickableRows.handleMouse(event, {
@@ -62,11 +62,6 @@ export class AgentBrowser implements Component, Focusable {
 				if (index < 0) return;
 				this.index = index;
 				this.handleInput("\r");
-			},
-			scroll: (direction) => {
-				const before = this.index;
-				this.handleInput(direction < 0 ? "\x1b[A" : "\x1b[B");
-				return this.index !== before;
 			},
 		});
 	}

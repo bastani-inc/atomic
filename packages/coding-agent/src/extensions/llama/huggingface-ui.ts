@@ -113,11 +113,10 @@ export class HuggingFaceSearch extends Container implements Focusable {
 				0,
 				0,
 			);
-			// A click downloads the model clicked, as moving to it and pressing Enter does; the wheel moves the selection.
+			// A click downloads the model clicked, as moving to it and pressing Enter does.
 			this.resultsContainer.addChild(
 				new ClickableRow(text, model.id, {
 					activate: () => this.close(model.id),
-					scroll: (direction) => this.moveSelection(direction),
 				}),
 			);
 		}
@@ -230,16 +229,6 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		if (this.debounce) clearTimeout(this.debounce);
 		this.request?.abort();
 		this.onSelectModel(model);
-	}
-
-	/** Move the selection one row, as the wheel does, without wrapping. Return whether it moved. */
-	private moveSelection(direction: -1 | 1): boolean {
-		const next = Math.max(0, Math.min(this.filteredResults.length - 1, this.selectedIndex + direction));
-		if (next === this.selectedIndex) return false;
-		this.selectedIndex = next;
-		this.selectionTouched = true;
-		this.updateResults();
-		return true;
 	}
 
 	handleInput(data: string): boolean {

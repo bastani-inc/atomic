@@ -4,6 +4,8 @@ import {
 	isTaskTurnInterrupted,
 	type OwnerTaskStore,
 	ownerTaskViewSource,
+	type PublishedChatActivity,
+	sessionWaitsToRetry,
 	type TaskId,
 	TaskMessageError,
 	type TaskViewSource,
@@ -21,7 +23,17 @@ export function snapshotStageTasks(source: TaskViewSource): PooledStageTasks {
 	// Every task of the stage's owner: the watcher's views list the stage's own, and each worker's view its shells.
 	const tasks = [...(source.ownerTasks ?? source.tasks)];
 	const background = (source.ownerBackgroundTasks ?? source.backgroundTasks).map((task) => task.ref.taskId);
+	const chatActivity: [TaskId, PublishedChatActivity][] = [];
+	for (const task of tasks) {
+		if (task.kind !== "agent" || task.execution.kind === "settled") continue;
+		const session = source.followTaskTranscript(task.ref.taskId)?.session;
+		const chat = session?.chatSession;
+		if (chat && sessionWaitsToRetry(chat)) chatActivity.push([task.ref.taskId, "retrying"]);
+		else if (chat?.retryStatus?.type === "model_fallback_start") chatActivity.push([task.ref.taskId, "switching"]);
+		else if (session?.isRunning?.()) chatActivity.push([task.ref.taskId, "working"]);
+	}
 	return {
+		...(chatActivity.length ? { chatActivity } : {}),
 		tasks: tasks.map((task) => {
 			if (task.kind !== "agent") return task;
 			const interrupted = isTaskTurnInterrupted(task);

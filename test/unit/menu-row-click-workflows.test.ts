@@ -144,7 +144,7 @@ for (const host of ["local", "engine"] as const) {
 	}
 }
 
-test("the mouse wheel over /workflows moves its selection", async () => {
+test("scrolling over /workflows keeps the selected run (#5532)", async () => {
 	const ui = makeClickScreen();
 	const view = listing(ui);
 	await flushClicks();
@@ -154,7 +154,7 @@ test("the mouse wheel over /workflows moves its selection", async () => {
 	await ui.wheel("down", 6, row);
 	ui.terminal.input("\r");
 	await flushClicks();
-	assert.deepEqual(view.picked(), { kind: "run", runId: "run-3-0000" });
+	assert.deepEqual(view.picked(), { kind: "run", runId: "run-1-0000" });
 	ui.tui.stop();
 });
 

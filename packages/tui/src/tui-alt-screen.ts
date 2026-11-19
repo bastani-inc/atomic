@@ -989,7 +989,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const overlay = this.dispatchMouseToOverlay(event);
 			const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
 			if (result) {
-				if (this.applyMouseDispatchResult(event, result, this.getPointerFocus())) this.requestRender();
+				if (this.applyMouseDispatchResult(event, result)) this.requestRender();
 				return { consume: true };
 			}
 			this.routeWheel(wheelEvent, wheelDelta);
@@ -1107,7 +1107,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		};
 	}
 
-	private dispatchMouseToLayout(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
+	private dispatchMouseToLayout(event: TuiMouseEvent, sourceRows = false): TuiMouseDispatchResult | undefined {
 		if (!this.currentLayout) return undefined;
 		const visited = new Set<Component>();
 		const boxes = getLayoutBoxesAt(this.currentLayout, event.screenX, event.screenY);
@@ -1115,8 +1115,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (visited.has(box.component)) continue;
 			if (getLayoutNode(box.component) && box.component.handleMouse === Container.prototype.handleMouse) continue;
 			visited.add(box.component);
-			// A click names the painted source row. Wheel coordinates stay relative to the visible box.
-			const offset = event.type === "wheel" ? 0 : (box.lineOffset ?? 0);
+			// Button gestures name the source row that was painted here.
+			const offset = sourceRows ? (box.lineOffset ?? 0) : 0;
 			const result = dispatchMouseEvent(box.component, {
 				...event,
 				x: event.screenX - box.rect.x,
@@ -1168,15 +1168,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private applyMouseDispatchResult(
 		event: TuiMouseEvent,
 		result: TuiMouseDispatchResult,
-		focus: PointerFocus,
+		focus?: PointerFocus,
 	): boolean {
 		const focusTarget = this.resolveMouseFocusTarget(result.focusTarget ?? result.target.component);
 		const focusChanged =
-			result.focus === true && this.getPointerFocus() === focus && this.getFocusedComponent() !== focusTarget;
+			result.focus === true &&
+			(!focus || this.getPointerFocus() === focus) &&
+			this.getFocusedComponent() !== focusTarget;
 		if (focusChanged) {
 			this.setFocus(focusTarget);
 			// A captured control can claim focus on release rather than on press.
-			if (this.mousePressFocus === focus) this.mousePressFocus = this.focusAfterClaim(focus, focusTarget);
+			if (focus && this.mousePressFocus === focus) this.mousePressFocus = this.focusAfterClaim(focus, focusTarget);
 		}
 		if (result.capture) this.mouseCapture = result.target;
 		if (event.type === "click") this.afterComponentClick(result.inputReady, result.target.component);
@@ -1341,7 +1343,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 
-		const overlay = this.dispatchMouseToOverlay(event);
+		const overlay = this.dispatchMouseToOverlay(event, focus);
 		if (!overlay.hit) {
 			if (this.handleScrollToEndIndicatorMouseEvent(raw)) return;
 			const scrollbarHandled = this.handleScrollbarMouseEvent(raw);
@@ -1351,7 +1353,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.stopScrollbarHover();
 		}
 
-		const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
+		const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event, true));
 		if (result) {
 			const takesFocus = result.focus && this.getPointerFocus() === focus;
 			const render = this.applyMouseDispatchResult(event, result, focus);
@@ -1862,8 +1864,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					this.requestRender();
 					return;
 				}
-				const overlay = this.dispatchMouseToOverlay(clickEvent);
-				const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(clickEvent));
+				const overlay = this.dispatchMouseToOverlay(clickEvent, clickFocus);
+				const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(clickEvent, true));
 				if (result) {
 					const render = this.applyMouseDispatchResult(clickEvent, result, clickFocus);
 					this.clearTextSelection();

@@ -96,7 +96,7 @@ test("a double-click on a /tasks row opens it once", async () => {
 	}
 });
 
-test("the mouse wheel over /tasks moves its selection", async () => {
+test("scrolling over /tasks keeps the selected task (#5532)", async () => {
 	const ui = makeClickScreen();
 	const fixture = taskFixture();
 	try {
@@ -108,7 +108,7 @@ test("the mouse wheel over /tasks moves its selection", async () => {
 		assert.match(selected() ?? "", /Summarize the changelog/, ui.screen().join("\n"));
 		const row = ui.rowOf(/Summarize the changelog/);
 		await ui.wheel("down", 6, row);
-		assert.match(selected() ?? "", /Index the repository/, ui.screen().join("\n"));
+		assert.match(selected() ?? "", /Summarize the changelog/, ui.screen().join("\n"));
 	} finally {
 		ui.tui.stop();
 		await fixture.dispose();

@@ -362,6 +362,31 @@ test("a watch opened while its stage's session waits to retry says so in its sna
 	assert.notEqual(snapshotOf(idle, 3)?.waitingToRetry, true);
 });
 
+test("a worker watch carries a pending model switch even while the session is streaming (#5572)", () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	const retryStatus = {
+		type: "model_fallback_start",
+		from: "primary",
+		to: "fallback",
+		reason: "not found",
+		attempt: 1,
+	} as const;
+	registry.register(
+		Object.assign(stage.handle, {
+			agentSession: Object.assign(startedSession(), { retryStatus, isStreaming: true }),
+		}),
+	);
+	openWatch(watches);
+	try {
+		const opened = sent[0];
+		assert.equal(opened?.kind, "stage-command-result");
+		assert.deepEqual(opened.snapshot?.modelSwitch, retryStatus);
+	} finally {
+		watches.clear();
+	}
+});
+
 async function deliver(
 	sent: Sent[],
 	watches: WorkerStageWatches,

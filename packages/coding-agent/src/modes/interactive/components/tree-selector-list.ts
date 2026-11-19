@@ -210,7 +210,7 @@ export class TreeList implements Component {
 		return lines;
 	}
 
-	/** A click on an entry goes to it, as moving there and pressing Enter does. The wheel moves the selection. */
+	/** A click on an entry goes to it, as moving there and pressing Enter does. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const state = this.state;
 		return this.clickableRows.handleMouse(event, {
@@ -219,14 +219,6 @@ export class TreeList implements Component {
 				if (index < 0) return;
 				state.selectedIndex = index;
 				this.onSelect?.(entryId);
-			},
-			scroll: (direction) => {
-				const before = state.selectedIndex;
-				state.selectedIndex = Math.max(
-					0,
-					Math.min(state.filteredNodes.length - 1, state.selectedIndex + direction),
-				);
-				return state.selectedIndex !== before;
 			},
 		});
 	}

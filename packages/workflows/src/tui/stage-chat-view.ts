@@ -55,6 +55,7 @@ import {
 	isReadOnlyArchive,
 	pooledStageWaitingNotice,
 	promptCardShown,
+	publishedStageChatActivity,
 	syncPromptState,
 	viewLineCount,
 } from "./stage-chat-view-state.js";
@@ -136,6 +137,7 @@ export class StageChatView implements Component, Focusable {
 		const dialog = this.customUiRows;
 		const mounted = this.mountedCustomUi?.component;
 		if (
+			event.type !== "wheel" &&
 			dialog !== undefined &&
 			mounted !== undefined &&
 			event.y >= dialog.top &&
@@ -229,7 +231,9 @@ export class StageChatView implements Component, Focusable {
 					]
 				: [];
 		const pendingLines = chatChromeHidden ? [] : [...closedQuestion, ...this.chatHost.renderPendingMessages(w)];
-		const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
+		const workingLines = chatChromeHidden
+			? []
+			: this.chatHost.renderWorkingStatus(w, publishedStageChatActivity(ctx, stage));
 		const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsageRow(w);
 		const editorLines = chatChromeHidden
 			? []

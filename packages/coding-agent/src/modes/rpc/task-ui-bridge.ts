@@ -180,7 +180,8 @@ export async function showTaskInspector(
 							});
 						},
 						// The page and the inline list both draw from their own top row, so the click's row is theirs.
-						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined => inspector.handleMouse(event),
+						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
+							fullscreen || event.type !== "wheel" ? inspector.handleMouse(event) : undefined,
 						paintedRowKey: (row: number): string | undefined => inspector.paintedRowKey(row),
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);

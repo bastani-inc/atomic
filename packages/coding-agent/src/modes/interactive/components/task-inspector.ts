@@ -25,11 +25,13 @@ import {
 } from "../../../core/tasks/completion.js";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
+	bindTaskClock,
 	liveElapsedFromRead,
 	type TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
 	taskClocksFor,
+	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
@@ -195,9 +197,6 @@ type InspectorClickTarget =
 	| { readonly kind: "row"; readonly id: string }
 	| { readonly kind: "action" }
 	| { readonly kind: "choice"; readonly number: number };
-
-/** The wheel reports a terminal sends, so a wheel turn the renderer hands over takes the keyboard's wheel path. */
-const WHEEL_REPORT = { up: "\x1b[<64;1;1M", down: "\x1b[<65;1;1M" } as const;
 
 /** The host owns thinking display; only its default physical key, as a remap may reuse an editor key. */
 function isHostThinkingToggle(data: string): boolean {
@@ -620,7 +619,7 @@ export class TaskInspector implements Component {
 						sectionChanged = true;
 						anyChanged = true;
 						previous.set(task.ref.taskId, task);
-						if (!dismissed.has(task.ref.taskId))
+						if (task.elapsedSpan === undefined && !dismissed.has(task.ref.taskId))
 							this.elapsedClocks.elapsedMs(
 								task.ref.taskId,
 								task.metrics?.elapsedMs,
@@ -642,7 +641,7 @@ export class TaskInspector implements Component {
 			const tasks = this.store.backgroundTasks;
 			this.tasksById = new Map(tasks.map((task) => [task.ref.taskId, task]));
 			for (const task of tasks)
-				if (!dismissed.has(task.ref.taskId))
+				if (task.elapsedSpan === undefined && !dismissed.has(task.ref.taskId))
 					this.elapsedClocks.elapsedMs(
 						task.ref.taskId,
 						task.metrics?.elapsedMs,
@@ -883,7 +882,7 @@ export class TaskInspector implements Component {
 	/**
 	 * A click on any row of a block in an open transcript expands or collapses that block. On the list, a click on a
 	 * row opens it as moving there and pressing Enter does; on a task's page, a click on its action runs it as Enter
-	 * does, and a click on a peeked choice picks it as its number does. The wheel moves the selection or the page.
+	 * does, and a click on a peeked choice picks it as its number does.
 	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const transcript = this.transcript;
@@ -911,7 +910,6 @@ export class TaskInspector implements Component {
 				}
 				this.requestRender();
 			},
-			scroll: (direction) => this.handleInput(direction < 0 ? WHEEL_REPORT.up : WHEEL_REPORT.down),
 		});
 	}
 
@@ -1530,13 +1528,11 @@ export class TaskInspector implements Component {
 
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
 		if (isTaskTurnInterrupted(task)) return task;
-		const elapsedMs = this.elapsedClocks.elapsedMs(
-			task.ref.taskId,
-			task.metrics?.elapsedMs,
-			taskClockRunning(task.execution.kind),
-		);
+		const elapsedMs = taskElapsedMs(task, taskClockRunning(task.execution.kind), this.elapsedClocks);
 		if (elapsedMs === undefined) return task;
-		return { ...task, metrics: { ...task.metrics, elapsedMs } };
+		const copy = { ...task, metrics: { ...task.metrics, elapsedMs } };
+		// The board and peek read a running span again: from this view's clock, which keeps what it showed.
+		return task.elapsedSpan ? bindTaskClock(copy, this.elapsedClocks) : copy;
 	}
 	private withBoardElapsed(row: TaskBoardRow): TaskBoardRow {
 		if (row.kind === "task") return { ...row, task: this.withLiveElapsed(row.task) };

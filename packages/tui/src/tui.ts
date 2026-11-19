@@ -1018,10 +1018,11 @@ export abstract class TuiBase extends Container implements TUI {
 	 * Offer `event` to the topmost overlay drawn under the pointer. `hit` says an overlay owns the point, so nothing in
 	 * the layout behind it takes the event; while a dialog holds focus, it owns every point outside it as well.
 	 */
-	protected dispatchMouseToOverlay(event: TuiMouseEvent): { hit: boolean; result?: TuiMouseDispatchResult } {
-		// Modal ownership guards button gestures. The wheel follows the painted layout under the pointer.
-		const gesture = event.type !== "wheel";
-		const modal = gesture ? this.getPointerFocus().owner : undefined;
+	protected dispatchMouseToOverlay(
+		event: TuiMouseEvent,
+		gesture?: PointerFocus,
+	): { hit: boolean; result?: TuiMouseDispatchResult } {
+		const modal = gesture?.owner;
 		if (modal && !this.modalContainsPoint(modal, event.screenX, event.screenY)) return { hit: true };
 		for (let index = this.renderedOverlayLayouts.length - 1; index >= 0; index--) {
 			const layout = this.renderedOverlayLayouts[index]!;

@@ -106,7 +106,7 @@ export class SessionListOverlay implements Component {
 
   invalidate(): void {}
 
-  /** A click on a session messages it, as moving there and pressing Enter does; the wheel moves the selection. */
+  /** A click on a session messages it, as moving there and pressing Enter does. */
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     return this.clickableRows.handleMouse(event, {
       activate: (session) => {
@@ -114,13 +114,6 @@ export class SessionListOverlay implements Component {
         if (index < 0) return;
         this.selectedIndex = index;
         this.onSessionSelect(session.id);
-      },
-      scroll: (direction) => {
-        if (this.sessions.length === 0) return false;
-        const next = Math.max(0, Math.min(this.sessions.length - 1, this.selectedIndex + direction));
-        const moved = next !== this.selectedIndex;
-        this.selectedIndex = next;
-        return moved;
       },
     });
   }
