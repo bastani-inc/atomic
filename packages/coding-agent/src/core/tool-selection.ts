@@ -23,6 +23,13 @@ export function createToolNameMatcher(entries: Iterable<string>): (name: string)
 	return (name) => names.has(name) || patterns.some((pattern) => pattern.test(name));
 }
 
+/** Tools that earlier releases registered and Atomic removed on purpose; a transcript that recorded one does not make it missing. */
+const RETIRED_TOOL_NAMES: ReadonlySet<string> = new Set(["workflow"]);
+
+export function isRetiredToolName(name: string): boolean {
+	return RETIRED_TOOL_NAMES.has(name);
+}
+
 export function isMcpToolName(name: string): boolean {
 	return (
 		name.startsWith("mcp__") ||
