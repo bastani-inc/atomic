@@ -33,6 +33,7 @@ import type {
 	SessionStore,
 	TaskViewSource,
 } from "@bastani/atomic";
+import { retryStatusUpdate, sessionWaitsToRetry } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -113,6 +114,10 @@ export interface StageControlHandle {
 	readonly turnStartedAt?: number;
 	/** The stage's turn while it may still go on, for a local worker's watch to hand to the root. */
 	turnState?(): StageTurnState | undefined;
+	/** The model switch seen on the worker, until its next request starts. */
+	readonly modelSwitch?: Extract<AgentSessionEvent, { type: "model_fallback_start" }>;
+	/** Initial activity of a stage on another host, updated by stage publications rather than SDK events. */
+	readonly publishedActivity?: import("@bastani/atomic").PublishedChatActivity;
 	inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
@@ -338,11 +343,18 @@ export interface ReleasedStage {
 	readonly sessionId: string;
 }
 
+/** A stage can switch sessions between attempts. Follow its own events even when there is no session to read. */
+export type StageRetryWait = "backoff" | StageControlHandle["modelSwitch"];
+export function stageRetryWaitAfter(wait: StageRetryWait, event: AgentSessionEvent): StageRetryWait {
+	const update = retryStatusUpdate(event);
+	if (update === undefined) return wait;
+	return update?.type === "auto_retry_start" ? "backoff" : (update ?? undefined);
+}
+
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */
 export function stageWaitsToRetry(handle: Pick<StageControlHandle, "agentSession" | "isWaitingToRetry">): boolean {
 	const session = handle.agentSession;
-	if (session === undefined) return handle.isWaitingToRetry === true;
-	return session.retryAttempt > 0 && !session.isStreaming;
+	return handle.isWaitingToRetry === true || (session !== undefined && sessionWaitsToRetry(session));
 }
 
 /**

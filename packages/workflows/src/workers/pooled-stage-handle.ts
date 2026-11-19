@@ -6,11 +6,13 @@ import type {
 	SessionCommandCatalog,
 	TaskViewSource,
 } from "@bastani/atomic";
-import type {
-	AgentSessionEventListener,
-	StageControlHandle,
-	StageControlStatus,
-	StagePlacement,
+import {
+	type AgentSessionEventListener,
+	type StageControlHandle,
+	type StageControlStatus,
+	type StagePlacement,
+	type StageRetryWait,
+	stageRetryWaitAfter,
 } from "../runs/foreground/stage-control-registry.js";
 import { StageQueuedUserMessageBuffer } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
@@ -156,10 +158,10 @@ export class PooledStageHandle implements StageControlHandle {
 	private streaming: StreamingMessage;
 	private currentStatus: StageControlStatus = "running";
 	private streamingNow = false;
-	/** Whether the stage's session waits out an automatic retry's backoff: its retry started, its next attempt has not. */
-	private waitingToRetry = false;
 	/** When the stage's turn started, read from the worker's snapshot and the events since. */
 	private turnStart = new StageTurnStart();
+	private pendingRetry: StageRetryWait;
+	publishedActivity?: PooledStageChatSnapshot["publishedActivity"];
 	private seq = 0;
 	private attempt: { readonly workId: string; readonly generation: number };
 	private ended?: WatchEndReason;
@@ -241,7 +243,10 @@ export class PooledStageHandle implements StageControlHandle {
 		return this.streamingNow;
 	}
 	get isWaitingToRetry(): boolean {
-		return this.waitingToRetry;
+		return this.pendingRetry === "backoff";
+	}
+	get modelSwitch(): PooledStageChatSnapshot["modelSwitch"] {
+		return this.pendingRetry === "backoff" ? undefined : this.pendingRetry;
 	}
 	get turnStartedAt(): number | undefined {
 		return this.turnStart.turnStartedAt();
@@ -438,6 +443,7 @@ export class PooledStageHandle implements StageControlHandle {
 		const result = await this.transport.pause(this.watchId);
 		if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
 		this.currentStatus = "paused";
+		this.pendingRetry = undefined;
 		this.streamingNow = false;
 	}
 	async resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
@@ -477,6 +483,8 @@ export class PooledStageHandle implements StageControlHandle {
 
 	/** Releases sends waiting on the current watch; the next watch gets a fresh signal. */
 	private leaveWatch(): void {
+		this.publishedActivity = undefined;
+		this.pendingRetry = undefined;
 		this.watchGone.resolve();
 		this.watchGone = Promise.withResolvers<void>();
 	}
@@ -803,8 +811,9 @@ export class PooledStageHandle implements StageControlHandle {
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
-		this.waitingToRetry = snapshot.waitingToRetry === true;
 		this.turnStart = new StageTurnStart(snapshot.turn);
+		this.publishedActivity = snapshot.publishedActivity;
+		this.pendingRetry = snapshot.modelSwitch ?? (snapshot.waitingToRetry ? "backoff" : undefined);
 		this.seq = snapshot.seq;
 		this.toolExecutions = new StageToolExecutionBuffer();
 		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);
@@ -855,18 +864,12 @@ export class PooledStageHandle implements StageControlHandle {
 		this.toolExecutions.record(event);
 		this.queued.record(event);
 		this.turnStart.record(event);
+		this.pendingRetry = stageRetryWaitAfter(this.pendingRetry, event);
 		switch (event.type) {
 			case "agent_start":
 				// A turn only starts on a running stage, including one resumed after it paused.
 				this.streamingNow = true;
-				this.waitingToRetry = false;
 				this.currentStatus = "running";
-				return;
-			case "auto_retry_start":
-				this.waitingToRetry = true;
-				return;
-			case "auto_retry_end":
-				this.waitingToRetry = false;
 				return;
 			case "agent_end":
 				this.streamingNow = false;

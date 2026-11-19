@@ -78,7 +78,7 @@ export class StageTurnStart {
 	record(event: AgentSessionEvent, now = Date.now()): void {
 		switch (event.type) {
 			case "agent_start":
-				if (!this.pending) this.startedAt = now;
+				if (!this.pending) this.startedAt = event.turnStartedAt ?? now;
 				this.running = true;
 				this.pending = false;
 				this.lastAnswerFailed = false;

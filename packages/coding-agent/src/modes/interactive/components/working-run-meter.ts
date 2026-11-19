@@ -189,8 +189,8 @@ export class WorkingRunMeter {
 		this.now = now;
 	}
 
-	start(): void {
-		this.startedAt = this.now();
+	start(startedAt = this.now()): void {
+		this.startedAt = startedAt;
 		this.settledTokens = 0;
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
@@ -203,10 +203,10 @@ export class WorkingRunMeter {
 	 * Start the next attempt of the turn whose run {@link stop} ended last, as a retry or a fallback model does: the
 	 * elapsed time and the tokens keep counting from the turn's start. With no ended run it starts a run.
 	 */
-	continueRun(): void {
+	continueRun(startedAt?: number): void {
 		const run = this.endedRun;
-		if (run === undefined) {
-			this.start();
+		if (run === undefined || (startedAt !== undefined && startedAt !== run.startedAt)) {
+			this.start(startedAt);
 			return;
 		}
 		this.resume(run.startedAt, run.settledTokens);

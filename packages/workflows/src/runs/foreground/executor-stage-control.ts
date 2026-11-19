@@ -2,7 +2,12 @@ import { isReopenableSession } from "../../shared/session-transcript.js";
 import { userMessageText } from "./executor-hil.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
-import type { AgentSessionEventListener, StageControlHandle } from "./stage-control-registry.js";
+import {
+	type AgentSessionEventListener,
+	type StageControlHandle,
+	type StageRetryWait,
+	stageRetryWaitAfter,
+} from "./stage-control-registry.js";
 import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
 import type {
 	StageQueuedTextOptions,
@@ -70,6 +75,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	};
 	const toolExecutions = new StageToolExecutionBuffer();
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
+	let retryWait: StageRetryWait;
 	const holds = new StageSessionHolds();
 	const turnStart = new StageTurnStart();
 	// One lifetime subscription feeds the runtime projections, so the queue stays
@@ -78,6 +84,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		toolExecutions.record(event);
 		queuedUserMessages.record(event);
 		turnStart.record(event);
+		retryWait = stageRetryWaitAfter(retryWait, event);
 		holds.observe(event);
 		if (event.type === "task_cleanup_quarantined")
 			runtime.activeStore.recordStageNotice(runtime.runId, runtime.stageId, {
@@ -113,6 +120,12 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		},
 		get isStreaming() {
 			return runtime.innerCtx.isStreaming;
+		},
+		get modelSwitch() {
+			return retryWait === "backoff" ? undefined : retryWait;
+		},
+		get isWaitingToRetry() {
+			return retryWait === "backoff";
 		},
 		get isTurnLoopBusy() {
 			return runtime.innerCtx.__turnLoopBusy?.() === true;

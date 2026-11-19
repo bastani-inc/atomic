@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A session that keeps running workflows no longer holds an Intercom connection for every run it has finished. Only the 32 most recently finished invocations keep their pending-stage routes, so a message to one of their stages still gets that run's own answer; an older finished invocation's routes are withdrawn and its connection closes, and an invocation that runs again is routed again ([#5492](https://github.com/bastani-inc/atomic/issues/5492))
 - The `/workflows` graph marks a stage suspended with its session released with the dim `◌` waiting mark, the same mark a released subagent has in the chat, `/tasks` and the agent panel, in node cards, the stage switcher, the stage strip and the header's count. It used `◷`. A paused stage keeps `❚❚` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
 - A stage chat keeps counting a turn when the stage moves a failed request to the next model in its `fallbackModels`, instead of reading `for 0s` for the fallback model's answer. A chat opened during or after the move, also for a stage on a local worker, counts from the turn's first request, and shows `switching model…` while the move is under way ([#5535](https://github.com/bastani-inc/atomic/issues/5535)).
+- A stage chat opened during a provider backoff or model switch shows `retrying…` or `switching model…` even when the session still reads as streaming, including on a worker ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 
 ## [0.9.89] - 2026-11-18
 

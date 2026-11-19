@@ -18,6 +18,7 @@ import type { WorkflowActivityFrame } from "../../core/extensions/workflow-event
 import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
+import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
@@ -146,6 +147,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
+	private streamingEpoch = 0;
+	private turnStartedAt?: number;
+	private retryStatus?: SessionRetryStatus;
+	private retryStatusEpoch = 0;
 	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
@@ -246,6 +251,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			clearActivity: () => {
 				this.streaming = false;
+				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
+				this.retryStatus = undefined;
+				this.retryStatusEpoch++;
 				this.compacting = false;
 				this.retrying = false;
 				this.compactionReason = undefined;
@@ -292,6 +301,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// session/model/bash behavior do not need to implement unrelated transport
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
+			if (message.type === "engine_trust_decision") {
+				this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, {
+					[message.scope]: { [message.path]: message.trusted },
+				});
+				return;
+			}
 			if (message.type === "engine_deprecation_warning") {
 				warnDeprecation(message.message, message.once === undefined ? {} : { once: message.once });
 				return;
@@ -382,15 +397,28 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		await this.initializationTail;
 	}
 
+	/** Keep a live engine's report as soon as it arrives, before the caller waits on other engine or session work. */
+	private async getEngineState(): Promise<RpcSessionState> {
+		const generation = this.client.getGeneration?.();
+		const state = await this.client.getState();
+		if (state.trustDecisions && (generation === undefined || this.isCurrentResourceGeneration(generation))) {
+			this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, state.trustDecisions);
+		}
+		return state;
+	}
+
 	private async initializeFromEngineGeneration(generation: number | undefined): Promise<void> {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
 			this.sessionStats.reset();
 			this.pendingEnabledModelsSync = undefined;
 			const modelEpoch = this.modelEpoch;
+			const retryStatusEpoch = this.retryStatusEpoch;
+			const streamingEpoch = this.streamingEpoch;
 			const thinkingEpoch = this.thinkingEpoch;
 			const scope = this.remoteModelCatalog.getScopeSnapshot();
-			const state = await this.client.getState();
+			const state = await this.getEngineState();
+			if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			const catalog = await this.client.requestInternal<RpcModelCatalog>({
 				type: "get_available_models",
 				allowPartialResources: true,
@@ -421,7 +449,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			this.engineProjectTrustReported = state.projectTrusted !== undefined;
-			this.knownTrust = mergeSessionTrustDecisions(this.knownTrust, state.trustDecisions);
 			if (
 				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
 				trustBefore[1] !== this.engineProjectTrustReported
@@ -444,7 +471,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.remoteSessionName = state.sessionName;
 			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
-			this.streaming = state.isStreaming;
+			if (retryStatusEpoch === this.retryStatusEpoch) this.retryStatus = state.retryStatus;
+			if (streamingEpoch === this.streamingEpoch) {
+				this.streaming = state.isStreaming;
+				this.turnStartedAt = state.turnStartedAt;
+			}
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 			this.compactionStartedAt = state.isCompacting
@@ -704,7 +735,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async synchronize(): Promise<void> {
 		const generation = this.client.getGeneration();
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (!this.isCurrentResourceGeneration(generation)) return;
 		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
@@ -784,7 +815,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	override async newSession(options?: { parentSession?: string }): Promise<{ cancelled: boolean }> {
 		const result = await this.client.newSession(options?.parentSession);
 		if (result.cancelled) return result;
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -803,7 +834,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		if (result.cancelled) return { cancelled: true };
 		this.queueResumeNotices(result.notices ?? []);
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				cwdOverride,
@@ -828,7 +859,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			selectedText = result.text;
 		}
 		if (cancelled) return { cancelled: true };
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -880,11 +911,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.sessionStats.track(session);
 		Object.defineProperties(session, {
 			isStreaming: { configurable: true, get: () => this.streaming },
+			retryStatus: { configurable: true, get: () => this.retryStatus },
+			turnStartedAt: { configurable: true, get: () => this.turnStartedAt },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
 			compactionStartedAt: { configurable: true, get: () => this.compactionStartedAt },
 			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
-			isRetrying: { configurable: true, get: () => this.retrying },
+			isRetrying: { configurable: true, get: () => this.retrying || this.retryStatus !== undefined },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
 			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
 			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
@@ -1090,7 +1123,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						const state =
 							options?.persist === true
 								? await this.syncPersistedModelCatalog(session, nextModel, selected.persistedDefaults)
-								: await this.client.getState();
+								: await this.getEngineState();
 						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 					});
 				},
@@ -1122,7 +1155,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						const state =
 							options?.persist === true
 								? await this.syncPersistedModelCatalog(session, model, result.persistedDefaults)
-								: await this.client.getState();
+								: await this.getEngineState();
 						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 						return { model, thinkingLevel: result.thinkingLevel, isScoped: result.isScoped };
 					});
@@ -1341,7 +1374,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		} finally {
 			this.mirroringPersistedModelDefault = false;
 		}
-		const state = await this.client.getState();
+		const state = await this.getEngineState();
 		if (persistedDefaults !== undefined) {
 			session.settingsManager.setModelThinkingLevel(
 				persistedDefaults.provider,
@@ -1410,13 +1443,25 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			});
 			return;
 		}
+		const status = retryStatusUpdate(event);
+		if (status !== undefined) {
+			this.retryStatus = status ?? undefined;
+			this.retryStatusEpoch++;
+		}
 		switch (event.type) {
 			case "agent_start":
+				this.turnStartedAt = event.turnStartedAt;
+				this.streamingEpoch++;
 				this.streaming = true;
 				break;
 			case "agent_end":
+				this.streamingEpoch++;
 				this.streaming = false;
 				this.dispatchBestEffort("refresh session view", this.refreshSessionView());
+				break;
+			case "agent_settled":
+				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
 				break;
 			case "compaction_start":
 				this.compacting = true;

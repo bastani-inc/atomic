@@ -595,6 +595,27 @@ describe("a live subagent's chat box (#4640)", () => {
 		idle.page.dispose();
 	});
 
+	test("a subagent chat opened while the session switches models shows the switch until the next request (#5572)", async () => {
+		const phase = {
+			type: "model_fallback_start",
+			from: "primary",
+			to: "fallback",
+			reason: "not found",
+			attempt: 1,
+		} as const;
+		const { page, live } = await livePage({
+			chatSession: { ...(await liveChatSession()), retryStatus: phase },
+			isRunning: () => true,
+		});
+		try {
+			assert.match(text(page.render(100, 20)), /∀ switching model…/);
+			for (const listener of live.listeners) listener({ type: "agent_start" });
+			assert.doesNotMatch(text(page.render(100, 20)), /switching model…/);
+		} finally {
+			page.dispose();
+		}
+	});
+
 	test("a chat opened while its subagent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", async () => {
 		// Between attempts the session is not streaming, but its retry has started and not ended.
 		const waiting = { ...(await liveChatSession()), retryAttempt: 1 } as ChatBoxSession;

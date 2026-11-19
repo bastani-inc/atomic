@@ -10,6 +10,7 @@ import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prom
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
+import { sessionWaitsToRetry } from "../../../core/session-retry-status.js";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import { releasedWaitingOn, waitingReleasedShells, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
@@ -183,16 +184,6 @@ function isTyping(data: string): boolean {
 
 async function settled<T>(read: T | Promise<T>): Promise<T> {
 	return read instanceof Promise ? await read : read;
-}
-
-/**
- * Whether the session waits out an automatic retry's backoff: its retry has started and its next attempt has not. A
- * session with fallback models keeps its run open through the wait, so it reads as streaming then (#5523).
- */
-function waitsToRetry(
-	session: Pick<ChatBoxSession, "retryAttempt" | "isStreaming" | "isWaitingToRetry"> | undefined,
-): boolean {
-	return session !== undefined && session.retryAttempt > 0 && (!session.isStreaming || session.isWaitingToRetry);
 }
 
 /**
@@ -519,7 +510,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		);
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
-		const working = reserve(this.chat.renderWorkingStatus(width), true);
+		const working = reserve(
+			this.chat.renderWorkingStatus(width, this.source.followTaskTranscript(this.taskId)?.publishedActivity),
+			true,
+		);
 		const usage = reserve(this.chat.renderUsageRow(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
 		this.bodyRows = body.length;
@@ -717,13 +711,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	 * its run open through the wait.
 	 */
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
-		if (waitsToRetry(session.chatSession)) {
+		const chatSession = session.chatSession;
+		if (chatSession && sessionWaitsToRetry(chatSession)) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.hydrateRetryWait(messages);
+			this.chat.hydrateRetryWait(messages, chatSession.turnStartedAt);
+		} else if (chatSession?.retryStatus?.type === "model_fallback_start") {
+			setTaskTurnInterrupted(this.source, this.taskId, false);
+			this.chat.hydrateModelSwitch(chatSession.turnStartedAt, messages);
 		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
-			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.(), chatSession?.turnStartedAt);
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()

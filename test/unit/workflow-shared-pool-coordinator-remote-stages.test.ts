@@ -89,7 +89,7 @@ async function queueIntercom(f: Fixture, store: Store, runId: string, stageKey: 
 }
 
 test(
-	"the root reaches a stage on another host: its chat steers, its question is shown and answered, its Intercom message arrives, each once through the stage's input queue (#4391)",
+	"the root reaches a stage on another host: its chat steers, its question is shown and answered, its Intercom message arrives, each once through the stage's input queue, and its retry wait is visible (#4391, #5572)",
 	async () => {
 		const registry = createStageControlRegistry();
 		const f = await fixture("shared-coordinator-remote-stage", {
@@ -146,6 +146,7 @@ test(
 				{
 					sessionId: "session-stage",
 					status: "running",
+					publishedActivity: "retrying",
 					isStreaming: false,
 					messages: [],
 					pendingToolExecutionEvents: [],

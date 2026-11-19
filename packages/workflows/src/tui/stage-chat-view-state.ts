@@ -387,7 +387,9 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 	const stage = run?.stages.find((s) => s.id === ctx.stageId);
 	const currentRunStatus = run?.status;
 	const currentStageStatus = stage?.status;
-	let changed = false;
+	const publishedActivity = publishedStageChatActivity(ctx, stage);
+	let changed = ctx.lastPublishedActivity !== publishedActivity;
+	ctx.lastPublishedActivity = publishedActivity;
 	if (stage && stage.status === "paused" && !ctx.localPaused) {
 		ctx.localPaused = true;
 		changed = true;
@@ -439,9 +441,13 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	ctx.chatHost.appendMessages(handle.messages);
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
-	const turnStartedAt = handle.turnStartedAt;
-	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming, turnStartedAt);
-	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait(handle.messages, turnStartedAt);
+	const active = activeLiveHandle(ctx);
+	if (!active) return;
+	const turnStartedAt = active.turnStartedAt ?? active.agentSession?.turnStartedAt;
+	const status = active.agentSession?.retryStatus ?? active.modelSwitch;
+	if (stageWaitsToRetry(active)) ctx.chatHost.hydrateRetryWait(handle.messages, turnStartedAt);
+	else if (status?.type === "model_fallback_start") ctx.chatHost.hydrateModelSwitch(turnStartedAt, handle.messages);
+	else if (active.isStreaming) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming, turnStartedAt);
 	else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
 }
 
@@ -692,13 +698,19 @@ function activeLiveHandle(ctx: StageChatViewContext): ReturnType<typeof liveHand
 	return handle;
 }
 
-export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
-	return activeLiveHandle(ctx)?.isStreaming === true;
+export function publishedStageChatActivity(
+	ctx: StageChatViewContext,
+	stage: StageSnapshot | undefined,
+): StageSnapshot["chatActivity"] {
+	if (ctx.handle?.placement?.reconnecting || stage?.workerExecution?.reconnecting) return "idle";
+	const initial = ctx.handle?.publishedActivity;
+	if (initial === undefined || !activeLiveHandle(ctx) || stage?.status === "suspended") return undefined;
+	// Once the worker has published the stage, an absent phase is idle, not the wait from the initial watch.
+	return stage?.chatActivity ?? (stage?.workerExecution ? "idle" : initial);
 }
 
-function isLiveHandleWaitingToRetry(ctx: StageChatViewContext): boolean {
-	const handle = activeLiveHandle(ctx);
-	return handle !== undefined && stageWaitsToRetry(handle);
+export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
+	return activeLiveHandle(ctx)?.isStreaming === true;
 }
 
 export function isStreaming(ctx: StageChatViewContext): boolean {
