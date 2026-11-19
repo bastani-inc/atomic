@@ -45,12 +45,14 @@ it("prunes obsolete bytecode generations but keeps the current and previous gene
 	try {
 		vi.setSystemTime(new Date(10 * 30 * 24 * 60 * 60 * 1000));
 		const cache = join(agent, "cache", "node");
-		for (const name of ["8", "9", "10", "unrelated"]) mkdirSync(join(cache, name), { recursive: true });
-		assert.equal(getRuntimeCacheDir("node"), join(cache, "10"));
+		for (const name of ["8", "9", "10", "unrelated"]) mkdirSync(join(cache, name), { recursive: true, mode: 0o700 });
+		assert.equal(getRuntimeCacheDir("node"), cache);
 		assert.ok(existsSync(join(cache, "8")), "no scan on the startup path");
 		await vi.runOnlyPendingTimersAsync();
 		vi.useRealTimers();
-		await vi.waitFor(() => assert.deepEqual(readdirSync(cache).sort(), ["10", "9", "unrelated"]));
+		await vi.waitFor(() =>
+			assert.deepEqual(readdirSync(cache).sort(), [".gitignore", ".last-pruned", "10", "9", "unrelated"]),
+		);
 	} finally {
 		vi.useRealTimers();
 		vi.unstubAllEnvs();
@@ -59,6 +61,7 @@ it("prunes obsolete bytecode generations but keeps the current and previous gene
 
 it("an unusable agent directory preserves both caches and private scratch with one notice", () => {
 	writeFileSync(agent, "not a directory");
+	env.LOCALAPPDATA = agent;
 	delete env.XDG_RUNTIME_DIR;
 	const compile = new URL("../dist/utils/compile-cache.js", import.meta.url).href;
 	const config = new URL("../dist/config.js", import.meta.url).href;
@@ -139,7 +142,10 @@ it.each([false, true])(
 	"startup collects crashed scratch but preserves live, recent and unrecognized directories (fallback: %s)",
 	(fallback) => {
 		delete env.XDG_RUNTIME_DIR;
-		if (fallback) writeFileSync(agent, "not writable");
+		if (fallback) {
+			writeFileSync(agent, "not writable");
+			env.LOCALAPPDATA = agent;
+		}
 		const config = new URL("../dist/config.js", import.meta.url).href;
 		const crash = () => {
 			const child = spawnSync(

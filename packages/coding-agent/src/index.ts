@@ -349,6 +349,7 @@ export {
 	VERSION,
 	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
 	withWorkflowTranspileCache,
+	withWorkflowTranspileCacheAsync,
 } from "./config.js";
 export {
 	AgentRehydrateError,

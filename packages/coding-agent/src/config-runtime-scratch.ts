@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, type Stats, wr
 import { lstat, mkdir, readdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { getRuntimeScratchCache, reportRuntimeStorageFallback } from "./config.js";
+import { CONFIG_DIR_NAME, getRuntimeScratchCache, reportRuntimeStorageFallback } from "./config.js";
 import {
 	assertPrivateDirectoryAsync,
 	createFallbackRun,
@@ -14,18 +14,24 @@ import {
 } from "./core/tools/session-temp-dir.ts";
 
 import { isPathInside } from "./utils/path-inside.ts";
+import { getHomeDir } from "./utils/paths.ts";
 import { resolvePhysicalPathAsync } from "./utils/physical-path.ts";
 
 /** A snapshot must not create even an empty agent directory in the checkout it is observing. */
+function accountSnapshotCache(): string {
+	return getRuntimeScratchCache(join(getHomeDir(), CONFIG_DIR_NAME, "snapshot-runtime"));
+}
 export async function checkoutScratchCache(
 	cache: string,
-	checkout: { readonly root: string; readonly gitDir?: string },
-): Promise<string> {
-	const physical = await realpath(cache)
-		.catch(() => resolvePhysicalPathAsync(cache))
-		.catch(() => undefined);
-	if (physical !== undefined && !isPathInside(checkout.root, physical)) return cache;
-	return getRuntimeScratchCache(join(checkout.gitDir ?? join(checkout.root, ".git"), "atomic-runtime"));
+	checkout: { readonly root: string },
+): Promise<string | undefined> {
+	for (const candidate of [cache, accountSnapshotCache()]) {
+		const physical = await realpath(candidate)
+			.catch(() => resolvePhysicalPathAsync(candidate))
+			.catch(() => undefined);
+		if (physical !== undefined && !isPathInside(checkout.root, physical)) return candidate;
+	}
+	return undefined;
 }
 
 // A shared home can contain runs from other hosts. Only this host can interpret its PIDs.
@@ -77,6 +83,7 @@ export async function sweepRuntimeScratch(): Promise<void> {
 	const primary = join(getRuntimeScratchCache(), "tmp", "runs");
 	const parents = new Set([
 		primary,
+		join(accountSnapshotCache(), "tmp", "runs"),
 		...fallbackRunParents(),
 		...[...owned.keys()].map((dir) => dirname(dir)).filter((dir) => basename(dir) === "runs"),
 	]);
@@ -165,7 +172,49 @@ export async function removeRunSession(cache: string, name: string): Promise<voi
 	}
 }
 
-async function createRunDirectory(cache: string): Promise<string> {
+async function markRun(path: string): Promise<Stats> {
+	await writeFile(join(path, ".gitignore"), marker(await ownNamespace().catch(() => "unverified")), {
+		flag: "wx",
+		mode: 0o600,
+	});
+	return lstat(path);
+}
+
+const outputFallbacks = new Map<string, string>();
+
+/** A tiny marker can fit even when the payload does not. Retry the whole write on the next filesystem,
+ * without rebinding the primary run: other operations may still hold paths into it. */
+export async function writeInRuntimeScratch<T>(write: (dir: string) => Promise<T>): Promise<T> {
+	const cache = getRuntimeScratchCache();
+	const fallback = outputFallbacks.get(cache);
+	const valid =
+		fallback &&
+		(await lstat(fallback).then(
+			(stat) => isOwnedDir(fallback, stat),
+			() => false,
+		));
+	const dir = valid ? fallback : await runtimeScratchDirectory(cache);
+	try {
+		return await write(dir);
+	} catch (error) {
+		if (
+			!["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EROFS", "ENOENT"].includes(
+				(error as NodeJS.ErrnoException).code ?? "",
+			)
+		)
+			throw error;
+	}
+	reportRuntimeStorageFallback();
+	return createFallbackRunAsync(runPrefix(), async (other) => {
+		const stat = await markRun(other);
+		const result = await write(other);
+		owned.set(other, stat);
+		outputFallbacks.set(cache, other);
+		return result;
+	});
+}
+
+async function createRunDirectory(cache: string, fallbackOnly: boolean): Promise<string> {
 	let dir = directories.get(cache);
 	if (dir) {
 		try {
@@ -178,12 +227,9 @@ async function createRunDirectory(cache: string): Promise<string> {
 	let created: string | undefined;
 	const initialize = async (path: string) => {
 		created = path;
-		await writeFile(join(path, ".gitignore"), marker(await ownNamespace().catch(() => "unverified")), {
-			flag: "wx",
-			mode: 0o600,
-		});
-		return remember(cache, path, await lstat(path));
+		return remember(cache, path, await markRun(path));
 	};
+	if (fallbackOnly) return createFallbackRunAsync(runPrefix(), initialize);
 	try {
 		dir = preferredRuntimeScratchDir(cache);
 		await ensureAgentScratchParentAsync(cache);
@@ -194,14 +240,15 @@ async function createRunDirectory(cache: string): Promise<string> {
 	} catch {
 		if (created) await rm(created, { recursive: true, force: true }).catch(() => {});
 		reportRuntimeStorageFallback();
-		return initialize(await createFallbackRunAsync(runPrefix()));
+		return createFallbackRunAsync(runPrefix(), initialize);
 	}
 }
 
-export function runtimeScratchDirectory(cache: string): Promise<string> {
+export function runtimeScratchDirectory(candidate: string | undefined): Promise<string> {
+	const cache = candidate ?? "outside-checkout";
 	let creating = pending.get(cache);
 	if (!creating) {
-		creating = createRunDirectory(cache).finally(() => pending.delete(cache));
+		creating = createRunDirectory(cache, candidate === undefined).finally(() => pending.delete(cache));
 		pending.set(cache, creating);
 	}
 	return creating;

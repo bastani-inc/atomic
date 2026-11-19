@@ -1,8 +1,9 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { lstat, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { resolvePackageDirFrom } from "./config-package-identity.ts";
+import { alternateRuntimeBase, ensureCacheDirectory, ensureCacheDirectoryAsync } from "./config-runtime-cache.ts";
 import { getHomeDir, normalizePath } from "./utils/paths.ts";
 import { isSplitLauncherRuntime, moduleFileFromMetaUrl } from "./utils/split-launcher.ts";
 import { stripBom } from "./utils/text.ts";
@@ -621,15 +622,53 @@ export function reportRuntimeStorageFallback(): void {
 	);
 }
 
+/** Sweep Node's content files off the startup path, at most daily in the usual case. Keep recently read bytecode. */
+async function pruneNodeBytecode(parent: string): Promise<void> {
+	const now = Date.now();
+	const marker = join(parent, ".last-pruned");
+	try {
+		await writeFile(marker, "", { flag: "wx", mode: 0o600 });
+	} catch {
+		const info = await lstat(marker);
+		if (!info.isFile() || now - info.mtimeMs < 86_400_000) return;
+		await utimes(marker, new Date(now), new Date(now));
+	}
+	const cutoff = now - 2 * CACHE_GENERATION_MS;
+	for (const version of await readdir(parent, { withFileTypes: true })) {
+		if (!version.isDirectory() || !/^v\d+\.\d+\.\d+-/.test(version.name)) continue;
+		const dir = join(parent, version.name);
+		for (const entry of await readdir(dir, { withFileTypes: true })) {
+			if (!entry.isFile() || !/^[a-f0-9]{8}$/.test(entry.name)) continue;
+			const file = join(dir, entry.name);
+			const info = await lstat(file).catch(() => undefined);
+			if (info?.isFile() && Math.max(info.mtimeMs, info.atimeMs) < cutoff) await rm(file, { force: true });
+		}
+	}
+}
+
 /** A bounded lifetime for reusable bytecode. Pruning never scans individual modules on startup. */
-export function getRuntimeCacheDir(kind: "node" | "workflows"): string {
+function cacheLocation(kind: "node" | "workflows", alternateBase?: string) {
+	const base = alternateBase ?? resolve(getAgentDir());
+	const agent = alternateBase ? join(base, process.platform === "win32" ? "Atomic" : APP_NAME) : base;
 	const parent =
-		kind === "node" ? resolve(getAgentDir(), "cache", "node") : resolve(getExtensionTranspileCacheDir(), "workflows");
+		kind === "node" ? resolve(agent, "cache", "node") : resolve(getExtensionTranspileCacheDir(agent), "workflows");
 	const generation = Math.floor(Date.now() / CACHE_GENERATION_MS);
-	const current = join(parent, String(generation));
+	const current = kind === "node" ? parent : join(parent, String(generation));
+	return {
+		kind,
+		base,
+		current,
+		parent,
+		generation,
+		alternate: alternateBase !== undefined,
+		ignored: join(agent, "cache", kind === "node" ? "node" : "jiti"),
+	};
+}
+function scheduleCachePruning({ kind, current, parent, generation }: ReturnType<typeof cacheLocation>): void {
 	if (!prunedRuntimeCaches.has(current)) {
 		prunedRuntimeCaches.add(current);
 		setTimeout(() => {
+			if (kind === "node") void pruneNodeBytecode(parent).catch(() => {});
 			void readdir(parent, { withFileTypes: true })
 				.then(async (entries) => {
 					for (const entry of entries) {
@@ -641,7 +680,65 @@ export function getRuntimeCacheDir(kind: "node" | "workflows"): string {
 				.catch(() => {});
 		}, 10_000).unref();
 	}
-	return current;
+}
+
+export function getRuntimeCacheDir(kind: "node" | "workflows", alternateBase?: string): string {
+	const location = cacheLocation(kind, alternateBase);
+	ensureCacheDirectory(location.base, location.current, location.alternate, location.ignored);
+	scheduleCachePruning(location);
+	return location.current;
+}
+
+function cacheBases(): (string | undefined)[] {
+	const alternate = alternateRuntimeBase();
+	return alternate ? [undefined, alternate] : [undefined];
+}
+
+/** Each cache must actually open before we stop trying other trusted locations. */
+export function* runtimeCacheDirectories(kind: "node" | "workflows"): Generator<string> {
+	for (const base of cacheBases()) {
+		try {
+			yield getRuntimeCacheDir(kind, base);
+		} catch {
+			/* Refused path; never ask the loader to write there. */
+		}
+		reportRuntimeStorageFallback();
+	}
+}
+
+function workflowCacheEnabled(): boolean {
+	let enabled = true;
+	for (const value of [process.env.JITI_CACHE, process.env.JITI_FS_CACHE]) {
+		if (value !== undefined) {
+			try {
+				enabled = Boolean(JSON.parse(value));
+			} catch {
+				/* jiti ignores invalid values. */
+			}
+		}
+	}
+	return enabled;
+}
+
+/** Async discovery does not block the interactive host while checking cache permissions. */
+export async function withWorkflowTranspileCacheAsync<T extends { options: { fsCache?: boolean | string } }>(
+	create: (dir: string | boolean) => T,
+): Promise<T> {
+	if (!workflowCacheEnabled()) return create(false);
+	for (const base of cacheBases()) {
+		const location = cacheLocation("workflows", base);
+		try {
+			await ensureCacheDirectoryAsync(location.base, location.current, location.alternate, location.ignored);
+		} catch {
+			reportRuntimeStorageFallback();
+			continue;
+		}
+		scheduleCachePruning(location);
+		const loader = create(location.current);
+		if (loader.options.fsCache !== false) return loader;
+		reportRuntimeStorageFallback();
+	}
+	return create(true);
 }
 
 /** jiti silently disables its cache for a refused directory; retain its normal temp fallback instead. */
@@ -649,22 +746,11 @@ export function withWorkflowTranspileCache<T extends { options: { fsCache?: bool
 	create: (dir: string | boolean) => T,
 	honorEnvironment = true,
 ): T {
-	if (honorEnvironment) {
-		let enabled = true;
-		for (const value of [process.env.JITI_CACHE, process.env.JITI_FS_CACHE]) {
-			if (value !== undefined) {
-				try {
-					enabled = Boolean(JSON.parse(value));
-				} catch {
-					/* jiti ignores invalid values. */
-				}
-			}
-		}
-		if (!enabled) return create(false);
+	if (honorEnvironment && !workflowCacheEnabled()) return create(false);
+	for (const dir of runtimeCacheDirectories("workflows")) {
+		const loader = create(dir);
+		if (loader.options.fsCache !== false) return loader;
 	}
-	const loader = create(getRuntimeCacheDir("workflows"));
-	if (loader.options.fsCache !== false) return loader;
-	reportRuntimeStorageFallback();
 	return create(true);
 }
 

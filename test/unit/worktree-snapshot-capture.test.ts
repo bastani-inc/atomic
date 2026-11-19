@@ -122,6 +122,22 @@ describe("captureWorktreeSnapshot availability", () => {
 });
 
 describe("captureWorktreeSnapshot content", () => {
+	test("a nested agent's bytecode is not captured, but adjacent user files are", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const agent = join(clone, "agent-home");
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agent);
+		try {
+			const { getRuntimeCacheDir } = await import("../../packages/coding-agent/src/config.js");
+			sandbox.write(join(getRuntimeCacheDir("node"), "v24", "ff9ae40c"), "compiled module");
+			sandbox.write(join(agent, "cache", "notes.txt"), "user notes");
+			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", sandbox.path("other-agent"));
+			const { snapshot } = captured(await captureWorktreeSnapshot(clone));
+			assert.deepEqual(await treePaths(clone, snapshot.tree), ["README.md", "agent-home/cache/notes.txt"]);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	test("runtime scratch inside the checkout does not become part of a snapshot", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(clone, "agent"));

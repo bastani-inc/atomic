@@ -32,6 +32,7 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import { namedWorktreeLockDir } from "../helpers/named-worktree-locks.js";
 import { bunExecutable, moduleDir, readStreamText, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
@@ -62,7 +63,7 @@ function makeRepo(): string {
 }
 
 function namedWorktreePathLock(repo: string, branch: string): string {
-	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+	const dir = namedWorktreeLockDir(repo);
 	mkdirSync(dir, { recursive: true });
 	const target = join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"));
 	const key = process.platform === "win32" ? target.toLowerCase() : target;

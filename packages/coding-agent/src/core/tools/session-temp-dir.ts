@@ -191,7 +191,7 @@ export function getTempRootDir(): string {
 	return useManagedSessionScratch() ? join(plannedRuntimeScratchDir(), "sessions") : systemTempRootDir();
 }
 
-function systemTempRootDir(): string {
+export function systemTempRootDir(): string {
 	const app = sanitizeTempPathComponent(APP_NAME, "atomic");
 	return join(tmpdir(), `${app}-${ownerComponent()}`);
 }
@@ -566,10 +566,19 @@ export async function ensureAgentScratchParentAsync(cache: string): Promise<stri
 	return ensurePrivateChainAsync(cache, cache, ["tmp", "runs"]);
 }
 
+function otherWindowsScratchCache(): string | undefined {
+	const local = process.env.LOCALAPPDATA;
+	if (process.platform !== "win32" || !local || !isAbsolute(local)) return undefined;
+	const short = resolve(local, "Atomic", "cache");
+	return getRuntimeScratchCache() === short ? resolve(getAgentDir(), "cache") : short;
+}
+
 /** Predictable owner roots only; housekeeping never needs to scan a dense shared temporary directory. */
 export function fallbackRunParents(): string[] {
 	const runtime = process.env.XDG_RUNTIME_DIR;
+	const windows = otherWindowsScratchCache();
 	return [
+		...(windows ? [join(windows, "tmp", "runs")] : []),
 		resolve(systemTempRootDir(), "runs"),
 		...(process.platform !== "win32" && runtime && isAbsolute(runtime)
 			? [join(runtime, sanitizeTempPathComponent(APP_NAME, "atomic"), "runs")]
@@ -579,7 +588,10 @@ export function fallbackRunParents(): string[] {
 
 /** Try each private fallback through the actual allocation: a pre-existing parent may still be on a full disk. */
 export function createFallbackRun(prefix: string): string {
-	for (const attempt of privateTempDirAttempts(["runs"], false)) {
+	const windows = otherWindowsScratchCache();
+	const attempts = privateTempDirAttempts(["runs"], false);
+	if (windows) attempts.unshift(() => ensureAgentScratchParent(windows));
+	for (const attempt of attempts) {
 		try {
 			return mkdtempSync(join(resolve(attempt()), prefix));
 		} catch {
@@ -589,15 +601,27 @@ export function createFallbackRun(prefix: string): string {
 	return mkdtempSync(join(resolve(tmpdir()), `atomic-${prefix}`));
 }
 
-export async function createFallbackRunAsync(prefix: string): Promise<string> {
-	for (const attempt of privateTempDirAttemptsAsync(["runs"], false)) {
+export async function createFallbackRunAsync<T>(prefix: string, use: (dir: string) => Promise<T>): Promise<T> {
+	const useNew = async (template: string) => {
+		const dir = await mkdtemp(template);
 		try {
-			return await mkdtemp(join(resolve(await attempt()), prefix));
+			return await use(dir);
+		} catch (error) {
+			await rm(dir, { recursive: true, force: true }).catch(() => {});
+			throw error;
+		}
+	};
+	const windows = otherWindowsScratchCache();
+	const attempts = privateTempDirAttemptsAsync(["runs"], false);
+	if (windows) attempts.unshift(() => ensureAgentScratchParentAsync(windows));
+	for (const attempt of attempts) {
+		try {
+			return await useNew(join(resolve(await attempt()), prefix));
 		} catch {
 			/* Try the next filesystem. */
 		}
 	}
-	return mkdtemp(join(resolve(tmpdir()), `atomic-${prefix}`));
+	return useNew(join(resolve(tmpdir()), `atomic-${prefix}`));
 }
 
 function privateTempDirAttempts(parts: readonly string[], includeCache = true): Array<() => string> {

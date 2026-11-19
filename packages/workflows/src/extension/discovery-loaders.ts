@@ -3,7 +3,7 @@ import { extname, isAbsolute, join, resolve } from "node:path";
 import type { DiscoveryDiagnostic, DiscoveryKind } from "./discovery.js";
 import {
 	collectWorkflowModuleCandidates,
-	loadWorkflowModule,
+	loadWorkflowModuleAsync,
 	type WorkflowHostModuleProvider,
 } from "./workflow-module-loader.js";
 
@@ -38,7 +38,7 @@ async function importWorkflowFile(
 ): Promise<WorkflowModuleCandidateRecord[]> {
 	let mod: Record<string, unknown>;
 	try {
-		mod = loadWorkflowModule(filePath, await getWorkflowHostModules?.());
+		mod = (await loadWorkflowModuleAsync(filePath, await getWorkflowHostModules?.())).exports;
 	} catch (err) {
 		diagnostics.push({
 			level: "error",

@@ -17,6 +17,7 @@ import { tryAdvisoryLock } from "@bastani/atomic-natives";
 import { afterEach, test, vi } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { ensureNamedWorktree, WorktreeReentryError } from "../../packages/subagents/src/runs/shared/named-worktree.js";
+import { namedWorktreeLockDir } from "../helpers/named-worktree-locks.js";
 import { sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 const roots: string[] = [];
@@ -32,8 +33,10 @@ function git(repo: string, ...args: string[]): string {
 }
 
 function makeRepo(): string {
-	const repo = realpathSync(mkdtempSync(join(tmpdir(), "named-worktree-wait-")));
-	roots.push(repo);
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "named-worktree-wait-")));
+	roots.push(root);
+	const repo = join(root, "repo");
+	mkdirSync(repo);
 	git(repo, "init", "-q", "-b", "main");
 	git(repo, "config", "user.name", "Test");
 	git(repo, "config", "user.email", "test@example.com");
@@ -45,7 +48,7 @@ function makeRepo(): string {
 }
 
 function locks(repo: string, branch: string): { dir: string; pathLock: string; branchLock: string; target: string } {
-	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+	const dir = namedWorktreeLockDir(repo);
 	mkdirSync(dir, { recursive: true });
 	const target = join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"));
 	const comparable = process.platform === "win32" ? target.toLowerCase() : target;
@@ -104,7 +107,7 @@ test("named-worktree ownership files survive Git maintenance without appearing a
 	const repo = makeRepo();
 	if (process.platform !== "win32") chmodSync(join(repo, ".git", "objects", "info"), 0o755);
 	const { path: target } = await ensureNamedWorktree(repo, { branch: "feat/pruned" });
-	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+	const dir = namedWorktreeLockDir(repo);
 	const before = readdirSync(dir).sort();
 	assert.equal(before.length, 2);
 	const identities = (): Array<{ ino: number; mtimeMs: number; size: number }> =>
