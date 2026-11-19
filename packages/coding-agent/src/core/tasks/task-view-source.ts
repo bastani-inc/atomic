@@ -589,7 +589,14 @@ async function savedTranscriptView(
 			const { entry } = item;
 			if (entry.type === "message") {
 				const message = entry.message;
-				if (message.role === "user" || message.role === "toolResult") return [message];
+				if (
+					message.role === "user" ||
+					message.role === "toolResult" ||
+					message.role === "bashExecution" ||
+					message.role === "branchSummary" ||
+					(message.role === "custom" && message.display)
+				)
+					return [message];
 				if (message.role !== "assistant") return [];
 				const content = message.content.filter(
 					(block) => block.type === "text" || block.type === "toolCall" || block.type === "thinking",

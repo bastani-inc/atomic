@@ -12,6 +12,7 @@ import { summarizeSession } from "./session-summary.js";
 import type {
 	OversizedSessionEntry,
 	SessionBlob,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
@@ -153,6 +154,13 @@ export class LegacySessionStore implements SessionStore {
 		if (!this.inner.readRange)
 			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readRange`);
 		return this.inner.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+	}
+
+	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		if (!this.inner.readBranchSpan)
+			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readBranchSpan`);
+		await this.convert(sessionId);
+		return this.inner.readBranchSpan(sessionId, cut);
 	}
 
 	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {

@@ -58,6 +58,7 @@ import {
 	sessionResumePlan,
 	sessionTailFrom,
 	stateSeqsBefore,
+	transcriptBranchSpan,
 } from "./session-resume.js";
 import {
 	applySessionSummaryEntries,
@@ -67,6 +68,7 @@ import {
 } from "./session-summary.js";
 import type {
 	OversizedSessionEntry,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
@@ -983,6 +985,10 @@ export class JsonlSessionStore implements SessionStore {
 			const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
 			return sessionTailFrom(jsonl.index, header, start, state, tail);
 		});
+	}
+
+	readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		return this.run(async () => transcriptBranchSpan(sessionId, (await this.indexed(sessionId)).jsonl.index, cut));
 	}
 
 	readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {

@@ -94,6 +94,50 @@ test("a saved task chat requests a bounded page instead of loading its whole tra
 	}
 });
 
+test("reading a saved task page keeps shell commands and visible extension messages (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({
+		role: "bashExecution",
+		command: "echo saved",
+		output: "saved",
+		exitCode: 0,
+		cancelled: false,
+		truncated: false,
+		timestamp: 1,
+	});
+	await session.appendMessage({ role: "custom", customType: "report", content: "shown", display: true, timestamp: 2 });
+	await session.appendMessage({
+		role: "custom",
+		customType: "state",
+		content: "hidden",
+		display: false,
+		timestamp: 3,
+	});
+	const fixture = taskFixture();
+	try {
+		await fixture.start("inspect a saved chat");
+		fixture.runners[0].context.bindTranscript({
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => [],
+			readHistory: session.readHistory.bind(session),
+			loadHistory: async () => {
+				throw new Error("whole transcript loaded");
+			},
+		});
+		const page = await ownerTaskViewSource(fixture.store).readTaskTranscript(fixture.store.tasks[0]!.ref.taskId);
+		assert.ok(page.ok, "the transcript is not empty");
+		assert.deepEqual(
+			page.value.messages.map((m) =>
+				m.role === "bashExecution" ? m.command : m.role === "custom" ? m.content : m.role,
+			),
+			["echo saved", "shown"],
+		);
+	} finally {
+		await fixture.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
 // RFC #2884: references retain source identity rather than constructing transcript text.
 test("transcript references use authorized session entries and preserve repeated prompts", async () => {
 	const session = SessionManager.inMemory();

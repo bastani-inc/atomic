@@ -96,6 +96,49 @@ function compacted(history: number): SessionEntry[] {
 	return entries;
 }
 
+it("a transcript reader pages the selected branch in both directions without reading sibling messages (#5593)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		await store.create(header, [
+			user("root", null, "root", 1),
+			user("sibling", "root", "sibling", 2),
+			user("selected", "root", "selected", 3),
+		]);
+		const bodies = vi.spyOn(store, "readRange");
+		const latest = await readSessionHistory(store, "session", {
+			branchLeafSeq: 3,
+			direction: "backward",
+			adjacent: true,
+		}).next();
+		assert.ok(!latest.done && latest.value.adjacent?.older);
+		assert.deepEqual(
+			latest.value.items.map((x) => x.seq),
+			[3],
+		);
+		const earlier = await readSessionHistory(store, "session", {
+			cursor: latest.value.adjacent.older,
+			adjacent: true,
+		}).next();
+		assert.ok(!earlier.done && earlier.value.adjacent?.newer);
+		assert.deepEqual(
+			earlier.value.items.map((x) => x.seq),
+			[1],
+		);
+		const again = await readSessionHistory(store, "session", { cursor: earlier.value.adjacent.newer }).next();
+		assert.ok(!again.done);
+		assert.deepEqual(
+			again.value.items.map((x) => x.seq),
+			[3],
+		);
+		assert.ok(
+			bodies.mock.calls.every(([, low, high]) => high < 2 || low > 2),
+			"unrelated sibling body was loaded",
+		);
+	} finally {
+		await store.close();
+	}
+});
+
 function tailStart(entries: readonly SessionEntry[]): number {
 	return entries.findIndex((entry) => entry.id === "kept") + 1;
 }

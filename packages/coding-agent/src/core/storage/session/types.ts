@@ -89,10 +89,28 @@ export interface SessionHistoryReadOptions {
 	readonly direction?: "forward" | "backward";
 	/** Include cursors to read in either direction without keeping earlier pages or a cursor stack. */
 	readonly adjacent?: boolean;
+	/** Only entries on the path from this stored sequence to the root, including history before compaction. */
+	readonly branchLeafSeq?: number;
 	readonly fromSeq?: number;
 	readonly toSeq?: number;
 	readonly cursor?: string;
 	readonly signal?: AbortSignal;
+}
+
+export interface SessionBranchPageCut {
+	readonly leaf: number;
+	readonly first: number;
+	readonly last: number;
+	readonly pivot: number;
+	readonly backward: boolean;
+	readonly epoch?: string;
+}
+
+export interface SessionBranchSpan {
+	readonly start: number;
+	readonly end: number;
+	readonly older: boolean;
+	readonly newer: boolean;
 }
 
 export interface SessionEntrySizes {
@@ -344,6 +362,8 @@ export interface SessionStore {
 	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
 
 	readRange?(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange>;
+	/** Locate a contiguous range on the requested branch without reading neighboring conversation bodies. */
+	readBranchSpan?(sessionId: string, cut: SessionBranchPageCut): Promise<SessionBranchSpan | undefined>;
 	/** Metadata only; a historical page is sized before any entry is decoded. */
 	readEntrySizes?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes>;
 	/** Read at most SESSION_HISTORY_CHUNK_BYTES, rejecting a reference to a replaced generation. */

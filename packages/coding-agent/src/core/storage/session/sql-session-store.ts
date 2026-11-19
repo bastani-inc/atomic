@@ -28,6 +28,7 @@ import {
 	sessionResumePlan,
 	sessionTailFrom,
 	stateSeqsBefore,
+	transcriptBranchSpan,
 } from "./session-resume.js";
 import { SqlSessionSearchIndex, yieldTurn } from "./session-search-index.js";
 import {
@@ -40,6 +41,7 @@ import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generati
 import type {
 	OversizedSessionEntry,
 	SessionBlob,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
 	SessionEntriesPage,
@@ -1927,6 +1929,13 @@ export class SqlSessionStore implements SessionStore {
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		return { lastSeq: Number(row.last_seq), epoch: row.epoch };
+	}
+
+	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const { index } = await this.prepareResume(sessionId);
+		return transcriptBranchSpan(sessionId, index, cut);
 	}
 
 	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
