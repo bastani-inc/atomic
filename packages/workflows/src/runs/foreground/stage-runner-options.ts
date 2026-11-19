@@ -105,6 +105,8 @@ export async function stripWorkflowOnlyOptions(
 		context,
 		forkFromSessionId,
 		forkFromEntryId,
+		forkFromEmptySource,
+		durableForkPoint,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
 		resumeInsideCall: _resumeInsideCall,
@@ -151,7 +153,9 @@ export async function stripWorkflowOnlyOptions(
 			cwd,
 			classification,
 			undefined,
-			forkFromEntryId,
+			durableForkPoint !== undefined
+				? await durableForkPoint()
+				: (forkFromEntryId ?? (forkFromEmptySource === true ? null : undefined)),
 		);
 	} else if (sessionOptions.sessionManager === undefined) {
 		if (sessionStore !== undefined) {

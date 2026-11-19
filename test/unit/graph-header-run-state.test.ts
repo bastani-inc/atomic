@@ -175,7 +175,7 @@ test("renderHeader adds a ↑ N blocked-stage badge in the stage badge order (#4
 	});
 	const lines = renderHeader(target, { width: WIDE, theme });
 	assertVisibleWidths(lines, WIDE);
-	assert.match(plain(lines[1]!), /✓ 1 {2}● 1 {2}❚❚ 1 {2}↑ 2 {2}◷ 1 {2}○ 1 {2}✗ 1 {2}$/);
+	assert.match(plain(lines[1]!), /✓ 1 {2}● 1 {2}❚❚ 1 {2}↑ 2 {2}◌ 1 {2}○ 1 {2}✗ 1 {2}$/);
 	assert.ok(lines[1]!.includes(`${hexToAnsi(statusColor("blocked", theme))}${statusIcon("blocked")} 2`));
 	assert.doesNotMatch(headerMid(run(), WIDE), /↑/);
 });

@@ -477,6 +477,11 @@ function withStageWriteBarrier(stage: StageContext, beforeCall?: () => void | Pr
 
 export const TASK_RESULT_CHECKPOINT_CONTROL_PREFIX = "task-checkpoint:";
 
+/** The next replay key of a task named `name` among the run's replay keys `nextReplayKey`. */
+export function reserveTaskReplayKey(nextReplayKey: (stageName: string) => string, name: string): string {
+	return nextReplayKey(`task:${name}`);
+}
+
 export function createDurableTaskPrimitive(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
@@ -507,13 +512,15 @@ export function createDurableTaskPrimitive(input: {
 	name: string,
 	options: WorkflowTaskOptions,
 	stageFailFastScope?: ParallelFailFastScope,
+	reservedReplayKey?: string,
 ) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
 		options: WorkflowTaskOptions,
 		stageFailFastScope?: ParallelFailFastScope,
+		reservedReplayKey?: string,
 	): Promise<WorkflowTaskResult> => {
-		const replayKey = input.nextReplayKey(`task:${name}`);
+		const replayKey = reservedReplayKey ?? reserveTaskReplayKey(input.nextReplayKey, name);
 		const restartFromPrompt = options.durableRestartFromPrompt === true;
 		const replayed = restartFromPrompt
 			? undefined
