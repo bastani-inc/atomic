@@ -1,4 +1,4 @@
-import { onRequestedExtensionBindClose } from "../../core/agent-session-events.ts";
+import { type InitialExtensionBind, initialExtensionBind } from "../../core/extension-bind-close.ts";
 import { sessionQuitSignal } from "../../core/session-lifecycle-work.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
@@ -7,20 +7,16 @@ import { releaseStartupChatOutput } from "./interactive-startup-chat-container.t
 export async function bindInitialEagerSession(mode: InteractiveModeBase): Promise<"closed" | "bound"> {
 	const session = mode.session;
 	const quit = sessionQuitSignal(mode.runtimeHost);
-	const cancelled = new WeakSet<Error>();
-	const unsubscribe = onRequestedExtensionBindClose(session, (error) => {
-		if (mode.isShuttingDown || quit.aborted) cancelled.add(error);
-	});
+	const bind: InitialExtensionBind = { session, isQuitting: () => mode.isShuttingDown || quit.aborted };
 	try {
 		mode.initialStartupBinding = true;
 		try {
-			await mode.rebindCurrentSession();
+			await initialExtensionBind.run(new WeakRef(bind), () => mode.rebindCurrentSession());
 		} catch (error) {
-			if (!(error instanceof Error && cancelled.has(error))) throw error;
+			if (bind.cancelled === undefined || error !== bind.cancelled) throw error;
 			if (mode.session === session) return "closed";
 			// The replacement installed its own binding. Finish the startup display for it.
 		} finally {
-			unsubscribe();
 			mode.initialStartupBinding = false;
 		}
 		mode.showLoadedResources({

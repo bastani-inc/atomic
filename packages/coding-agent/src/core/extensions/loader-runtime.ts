@@ -1,3 +1,4 @@
+import { discoveryBindFor, recordExtensionBindClose } from "../extension-bind-close.ts";
 import { AgentPanelSourceHub } from "../tasks/agent-panel-source.ts";
 import { extensionWorkOpen, trackExtensionWork } from "./extension-work.ts";
 import { hostInputError } from "./host-input.js";
@@ -21,8 +22,13 @@ export async function runResourceRegistrationBatch<T>(
 	runtime: ExtensionRuntime,
 	run: () => Promise<T>,
 	completion = false,
+	discoveryRunner?: object,
 ): Promise<T> {
-	if (!completion && !extensionWorkOpen(runtime)) throw hostInputError("SessionClosed");
+	if (!completion && !extensionWorkOpen(runtime)) {
+		const error = hostInputError("SessionClosed");
+		if (discoveryRunner) recordExtensionBindClose(discoveryBindFor(discoveryRunner), error);
+		throw error;
+	}
 	return trackExtensionWork(runtime, async () => {
 		if (!runtime.beginResourceRegistrationBatch || !runtime.endResourceRegistrationBatch) return run();
 		runtime.beginResourceRegistrationBatch();

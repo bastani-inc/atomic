@@ -41,7 +41,6 @@ import {
 	subscribeSession,
 } from "./event-subscriptions/session-subscription.js";
 import type { EventSource, Subscription } from "./event-subscriptions/types.js";
-import { hostInputError } from "./extensions/host-input.js";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
@@ -733,30 +732,6 @@ export function _disconnectFromAgent(this: AgentSession): void {
 const shutdownEventFailures = new WeakMap<AgentSession, Error[]>();
 const sessionClosures = new WeakMap<object, Promise<void>>();
 const sessionRetirements = new WeakMap<AgentSession, Promise<void>>();
-type SessionCloseOrigin = "request" | "startupRollback";
-const closeOrigins = new WeakMap<object, SessionCloseOrigin>();
-const bindCloseListeners = new WeakMap<object, Set<(error: Error) => void>>();
-
-/** A rollback calls the normal disposer for cleanup; only the first close determines whether a bind can be cancelled. */
-export function recordSessionCloseOrigin(session: object, origin: SessionCloseOrigin): void {
-	if (!closeOrigins.has(session)) closeOrigins.set(session, origin);
-}
-
-export function closedExtensionBindError(session: object): Error {
-	const error = hostInputError("SessionClosed");
-	if (closeOrigins.get(session) === "request") {
-		for (const listener of bindCloseListeners.get(session) ?? []) listener(error);
-	}
-	return error;
-}
-
-/** Notify pending binds at the point of failure, before asynchronous cleanup can change the host's quit state. */
-export function onRequestedExtensionBindClose(session: object, listener: (error: Error) => void): () => void {
-	const listeners = bindCloseListeners.get(session) ?? new Set();
-	bindCloseListeners.set(session, listeners);
-	listeners.add(listener);
-	return () => listeners.delete(listener);
-}
 
 /** A close has started; this session will not accept another extension bind. */
 export function isAgentSessionClosed(session: object): boolean {
@@ -772,7 +747,6 @@ export function closeAgentSession(
 	const handoff = event.reason !== "quit" && hasCallingSessionWork(session);
 	const existing = sessionClosures.get(session);
 	if (existing) return (handoff && sessionRetirements.get(session)) || existing;
-	recordSessionCloseOrigin(session, "request");
 	let resolveRetired!: () => void;
 	let rejectRetired!: (error: Error) => void;
 	const retirement = new Promise<void>((resolve, reject) => {

@@ -1166,8 +1166,11 @@ export class ExtensionRunner {
 		reason: ResourcesDiscoverEvent["reason"],
 		reportError: (error: ExtensionError) => void = (error) => this.emitError(error),
 	): Promise<ResourcesDiscoverCombinedResult> {
-		return runResourceRegistrationBatch(this.runtime, () =>
-			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+		return runResourceRegistrationBatch(
+			this.runtime,
+			() => runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+			false,
+			this,
 		);
 	}
 

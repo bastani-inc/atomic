@@ -255,6 +255,47 @@ test.each(["bindExtensions", "run"] as const)(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
+test.each(["bindExtensions", "run", "quitting run"] as const)(
+	"%s preserves the diagnostic from a decorated discovery method after the session closes (#5697)",
+	async (entry) => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode } = await createMode((pi) => {
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			});
+			pi.on("resources_discover", () => ({}));
+		});
+		const runner = mode.session.extensionRunner;
+		const discover = runner.emitResourcesDiscover.bind(runner);
+		let diagnostic: Error | undefined;
+		runner.emitResourcesDiscover = async (...args) => {
+			try {
+				return await discover(...args);
+			} catch (cause) {
+				diagnostic = new Error("catalog discovery failed", { cause });
+				throw diagnostic;
+			}
+		};
+
+		const startup = entry === "bindExtensions" ? mode.session.bindExtensions({}) : mode.run();
+		try {
+			await Promise.race([entered.promise, startup]);
+			const closed = entry === "quitting run" ? mode.runtimeHost.dispose() : mode.session.dispose();
+			release.resolve();
+			await Promise.all([
+				assert.rejects(startup, (error) => diagnostic !== undefined && error === diagnostic),
+				closed,
+			]);
+			assert.ok(diagnostic?.cause instanceof Error && diagnostic.cause.message === "SessionClosed");
+		} finally {
+			release.resolve();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
 test.each(["before run", "during session_start", "before a later runtime quit"] as const)(
 	"disposing the SDK session %s rejects interactive startup with the original error (#5697)",
 	async (timing) => {
@@ -323,6 +364,34 @@ test.each(["before run", "during session_start", "before a later runtime quit"] 
 			release.resolve();
 			mode.stop();
 		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"interactive startup returns the loader's original error after rollback revokes its proxy (#5697)",
+	async () => {
+		const { proxy, revoke } = Proxy.revocable(new Error("catalog unavailable"), {});
+		class CatalogLoader extends DefaultResourceLoader {
+			override async extendResources(paths: ResourceExtensionPaths): Promise<void> {
+				if (paths.skillPaths?.length) throw proxy;
+				await super.extendResources(paths);
+			}
+		}
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", () => ({ skillPaths: ["./catalog"] }));
+				pi.on("session_shutdown", revoke);
+			},
+			{ loaderClass: CatalogLoader },
+		);
+
+		const sameError = await mode.run().then(
+			() => false,
+			(error: unknown) => error === proxy,
+		);
+		assert.throws(() => Object.getPrototypeOf(proxy), TypeError);
+		assert.equal(sameError, true);
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
