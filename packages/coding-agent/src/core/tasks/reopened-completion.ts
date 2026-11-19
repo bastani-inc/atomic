@@ -1,12 +1,14 @@
-import { isProxy } from "node:util/types";
 import type { CustomMessage, StageAdmittedCustomMessage } from "../messages.ts";
 import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecoveryState } from "../storage/session/types.js";
 import { cancelReasonText } from "./cancel-reason.js";
 
-// A lookup must not invoke an extension's getter or inspect a proxy. Persisted JSON has own data properties.
-function field(record: unknown, key: string): unknown {
-	if (!record || typeof record !== "object" || isProxy(record)) return undefined;
+// Stores read decoded JSON. Hosts that also see extension objects supply their native proxy check before reflection.
+export type CompletionProxyCheck = (value: object) => boolean;
+function readable(value: unknown, isProxy?: CompletionProxyCheck): value is object {
+	return value !== null && typeof value === "object" && !isProxy?.(value);
+}
+function field(record: object, key: string): unknown {
 	return Object.getOwnPropertyDescriptor(record, key)?.value;
 }
 
@@ -23,17 +25,22 @@ export interface LegacyCompletionTarget {
 }
 
 /** Only the old title collision. Neither a body, a preview, a saved line/result/name, nor a task number is evidence. */
-export function legacyCompletionTarget(entry: SessionEntry): LegacyCompletionTarget | undefined {
-	return entry.type === "custom_message" ? completionTarget(entry) : undefined;
+export function legacyCompletionTarget(
+	entry: SessionEntry,
+	isProxy?: CompletionProxyCheck,
+): LegacyCompletionTarget | undefined {
+	return entry.type === "custom_message" ? completionTarget(entry, isProxy) : undefined;
 }
 
-function completionTarget(entry: Card | StageAdmittedCustomMessage): LegacyCompletionTarget | undefined {
-	if (entry.customType !== "task-completion" || !entry.display) return undefined;
+function completionTarget(
+	entry: Card | StageAdmittedCustomMessage,
+	isProxy?: CompletionProxyCheck,
+): LegacyCompletionTarget | undefined {
+	if (!readable(entry, isProxy) || entry.customType !== "task-completion" || !entry.display) return undefined;
 	const details = field(entry, "details");
-	if (!details || typeof details !== "object" || isProxy(details) || "result" in details) return undefined;
+	if (!readable(details, isProxy) || "result" in details) return undefined;
 	const notice = field(details, "notification");
-	if (!notice || typeof notice !== "object" || isProxy(notice) || "line" in notice || "agentName" in notice)
-		return undefined;
+	if (!readable(notice, isProxy) || "line" in notice || "agentName" in notice) return undefined;
 	const completion = field(details, "completionId");
 	const id = field(entry, "stageAdmissionKey") ?? completion;
 	if (typeof id !== "string" || !id || (completion !== undefined && id !== completion)) return undefined;
@@ -66,7 +73,8 @@ interface StopWitness {
 }
 
 /** Retain the identity and spelling only, not the result, its owner, or a discarded title. */
-function stopWitness(intent: unknown): StopWitness | undefined {
+function stopWitness(intent: unknown, isProxy?: CompletionProxyCheck): StopWitness | undefined {
+	if (!readable(intent, isProxy)) return undefined;
 	const id = field(intent, "completionId");
 	const taskId = field(intent, "taskId");
 	const ownerId = field(intent, "ownerId");
@@ -80,7 +88,8 @@ function stopWitness(intent: unknown): StopWitness | undefined {
 	)
 		return undefined;
 	const result = field(intent, "result");
-	if (field(result, "kind") !== "cancelled" || field(result, "released") !== undefined) return undefined;
+	if (!readable(result, isProxy) || field(result, "kind") !== "cancelled" || field(result, "released") !== undefined)
+		return undefined;
 	let wording: string;
 	const cause = field(result, "cause");
 	switch (cause) {
@@ -120,10 +129,10 @@ function stopWitness(intent: unknown): StopWitness | undefined {
 	};
 }
 
-function stopName(message: CustomMessage, target: LegacyCompletionTarget, witness: StopWitness): string | undefined {
+function stopName(details: object, target: LegacyCompletionTarget, witness: StopWitness): string | undefined {
 	if (witness.id !== target.id || witness.taskId !== target.taskId) return undefined;
 	for (const key of ["ownerId", "terminalSequence"] as const) {
-		const saved = field(message.details, key);
+		const saved = field(details, key);
 		if (saved !== undefined && saved !== witness[key]) return undefined;
 	}
 	// 0.9.76 wrote bare `stopped` for timeouts and owner closure. A name can itself include an entire stop and
@@ -152,11 +161,12 @@ function stopName(message: CustomMessage, target: LegacyCompletionTarget, witnes
 
 // Presentation only: neither the durable entry, the model message, nor the shared parsed notice gains a field.
 const witnesses = new WeakMap<CustomMessage, StopWitness>();
-export function reopenedCompletionName(message: CustomMessage): string | undefined {
+export function reopenedCompletionName(message: CustomMessage, isProxy: CompletionProxyCheck): string | undefined {
 	const witness = witnesses.get(message);
 	if (!witness) return undefined;
-	const target = completionTarget(message);
-	return target && stopName(message, target, witness);
+	const target = completionTarget(message, isProxy);
+	const details = target && field(message, "details");
+	return target && readable(details, isProxy) ? stopName(details, target, witness) : undefined;
 }
 
 /** An SDK caller can copy the same entry object into a different session. Evidence outside the window belongs to
@@ -167,10 +177,11 @@ export function rememberEarlierCompletion(
 	entry: SessionEntry,
 	target: LegacyCompletionTarget,
 	intent: unknown,
+	isProxy?: CompletionProxyCheck,
 ): void {
-	if (entry.type !== "custom_message" || field(intent, "completionId") !== target.id) return;
-	const witness = stopWitness(intent);
-	if (!witness) return;
+	if (entry.type !== "custom_message") return;
+	const witness = stopWitness(intent, isProxy);
+	if (witness?.id !== target.id) return;
 	let cards = earlierWitnesses.get(scope);
 	if (!cards) {
 		cards = new WeakMap();
@@ -185,11 +196,13 @@ type RecordedBranch = { readonly entries: readonly SessionEntry[]; readonly reco
 export class ReopenedCompletionHeaders {
 	private recorded?: Map<Card, StopWitness>;
 	private readonly branch: () => RecordedBranch;
-	constructor(branch: () => RecordedBranch) {
+	private readonly isProxy: CompletionProxyCheck;
+	constructor(branch: () => RecordedBranch, isProxy: CompletionProxyCheck) {
 		this.branch = branch;
+		this.isProxy = isProxy;
 	}
 	apply(entry: Card, message: CustomMessage): void {
-		if (!legacyCompletionTarget(entry)) return;
+		if (!legacyCompletionTarget(entry, this.isProxy)) return;
 		if (!this.recorded) {
 			const { entries, recovery } = this.branch();
 			const earlier = recovery && earlierWitnesses.get(recovery);
@@ -197,12 +210,15 @@ export class ReopenedCompletionHeaders {
 			this.recorded = new Map();
 			for (const item of entries) {
 				if (item.type === "custom" && item.customType === "task-completion-intent") {
-					const id = field(item.data, "completionId");
-					if (typeof id === "string") intents.set(id, intents.has(id) ? undefined : item.data);
+					const data = item.data;
+					const id = readable(data, this.isProxy) ? field(data, "completionId") : undefined;
+					if (typeof id === "string") intents.set(id, intents.has(id) ? undefined : data);
 				} else if (item.type === "custom_message") {
-					const target = legacyCompletionTarget(item);
+					const target = legacyCompletionTarget(item, this.isProxy);
 					if (!target) continue;
-					const witness = intents.has(target.id) ? stopWitness(intents.get(target.id)) : earlier?.get(item);
+					const witness = intents.has(target.id)
+						? stopWitness(intents.get(target.id), this.isProxy)
+						: earlier?.get(item);
 					if (witness) this.recorded.set(item, witness);
 				}
 			}

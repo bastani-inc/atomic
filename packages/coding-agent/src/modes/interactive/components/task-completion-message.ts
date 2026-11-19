@@ -710,7 +710,7 @@ export class TaskCompletionMessage implements Component {
 		const notice = Array.isArray(read) ? read[0] : read;
 		const card = new TaskCompletionMessage(notice, expanded, options);
 		if (card.#reuseHeader(previous, notice)) return card;
-		const restored = options?.reopenedStopName ?? reopenedCompletionName(message);
+		const restored = options?.reopenedStopName ?? reopenedCompletionName(message, isProxy);
 		if (restored !== undefined && notice.preview === "" && notice.agentName?.endsWith(":")) {
 			const body = ownData(message, "content");
 			if (body === "" || body === notice.title) card.stoppedName = restored;

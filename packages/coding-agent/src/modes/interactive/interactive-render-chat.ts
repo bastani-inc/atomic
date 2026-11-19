@@ -1,3 +1,4 @@
+import { isProxy } from "node:util/types";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
@@ -815,10 +816,13 @@ function planTranscript(
 		}
 		messageBuffer = [];
 	};
-	const headers = new ReopenedCompletionHeaders(() => ({
-		entries: mode.sessionManager.getBranch(),
-		recovery: mode.sessionManager.getSessionRecoveryState(),
-	}));
+	const headers = new ReopenedCompletionHeaders(
+		() => ({
+			entries: mode.sessionManager.getBranch(),
+			recovery: mode.sessionManager.getSessionRecoveryState(),
+		}),
+		isProxy,
+	);
 	for (const entry of sessionEntries) {
 		if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.

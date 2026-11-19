@@ -5,6 +5,8 @@ import { beforeAll, test, vi } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
 	TASK_COMPLETION_MESSAGE_TYPE,
 	type TaskCompletionEnvelope,
@@ -40,6 +42,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import savedNotices from "../fixtures/saved-subagent-notices.json" with { type: "json" };
+import { countingDatabase } from "../helpers/counting-database.js";
 import { withDiskSessions } from "../helpers/on-disk-session.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { setupRun } from "./stage-chat-view-helpers.js";
@@ -303,6 +306,75 @@ test("a surviving pause result takes precedence over a previously reopened heade
 	);
 });
 
+async function compactEarlierReceipts(session: SessionManager) {
+	const last = await session.appendMessage({ role: "user", content: "Check the queue", timestamp: 1 });
+	await session.appendCompaction(
+		"Checked the queue",
+		null,
+		100,
+		{
+			strategy: "verbatim-lines",
+			promptVersion: 7,
+			form: "compacted",
+			parameters: { query: "queue" },
+			stats: {
+				linesBefore: 2,
+				linesDeleted: 1,
+				linesKept: 1,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 50,
+				percentReduction: 50,
+			},
+		},
+		undefined,
+		last,
+	);
+}
+
+test("a title-only card without a matching acknowledgement in the window reads no extra rows (#5690)", async () => {
+	const readCost = async (title: string) => {
+		const database = countingDatabase(await openNodeSqliteDatabase(":memory:"));
+		const store = await SqlSessionStore.open(database.wrapped);
+		try {
+			const session = await SessionManager.create(store, process.cwd());
+			for (let i = 0; i < 32; i++) {
+				const completionId = `earlier-${i}`;
+				await session.appendCustomEntry("task-completion-intent", {
+					completionId,
+					taskId: "task-1",
+					result: { kind: "cancelled", cause: "user" },
+				});
+				await session.appendCustomEntry("task-completion-ack", { completionId });
+			}
+			await compactEarlierReceipts(session);
+			await session.appendCustomMessageEntry("task-completion", title, true, {
+				completionId: "no-receipt",
+				notification: { title, status: "cancelled", taskId: "task-1", preview: "" },
+			});
+			database.statements.length = 0;
+			const reopened = await SessionManager.open(store, session.getSessionId(), undefined, { history: "tail" });
+			assert.ok(
+				reopened
+					.buildSessionContext()
+					.messages.some((message) => message.role === "custom" && message.content === title),
+			);
+			return {
+				calls: database.statements.length,
+				rows: database.statements.reduce((total, statement) => total + statement.rows, 0),
+			};
+		} finally {
+			await store.close();
+			await database.wrapped.close();
+		}
+	};
+	const ordinary = await readCost("Subagent docs worker paused · awaiting resume: verify");
+	assert.deepEqual(
+		await readCost("Subagent docs worker killed (non-resumable): paused · awaiting resume: verify"),
+		ordinary,
+	);
+});
+
 test("a compacted chat shows its earlier stop without carrying that evidence into another chat (#5690)", async () => {
 	const title = "Subagent docs worker timed out: quit · paused, awaiting resume: check the queue";
 	const taskId = savedNotices.stopped088.taskId;
@@ -321,29 +393,7 @@ test("a compacted chat shows its earlier stop without carrying that evidence int
 				display: false,
 				result: { kind: "cancelled", cause: "execution-timeout" },
 			});
-			const last = await session.appendMessage({ role: "user", content: "Check the queue", timestamp: 1 });
-			await session.appendCompaction(
-				"Checked the queue",
-				null,
-				100,
-				{
-					strategy: "verbatim-lines",
-					promptVersion: 7,
-					form: "compacted",
-					parameters: { query: "queue" },
-					stats: {
-						linesBefore: 2,
-						linesDeleted: 1,
-						linesKept: 1,
-						rangeCount: 1,
-						tokensBefore: 100,
-						tokensAfter: 50,
-						percentReduction: 50,
-					},
-				},
-				undefined,
-				last,
-			);
+			await compactEarlierReceipts(session);
 		},
 		"receipt",
 		(reopened) => {

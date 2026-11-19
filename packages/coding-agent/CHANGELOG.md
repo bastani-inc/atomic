@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Reopened subagent notices from older sessions no longer show a stopped child as paused just because its task description begins with pause or wait wording. For a notice with only its title left, Atomic uses the stop recorded for that exact completion on the same branch; without it, the old label remains ([#5690](https://github.com/bastani-inc/atomic/issues/5690)).
+- Reopened subagent notices from older sessions no longer show a stopped child as paused just because its task description begins with pause or wait wording. For a notice with only its title left, Atomic uses the matching stop on the same branch. If the stop predates the open window, its acknowledgement must still be in the window; otherwise the old label remains ([#5690](https://github.com/bastani-inc/atomic/issues/5690)).
 
 ## [0.9.90] - 2026-11-19
 

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
 import { reopenedCompletionName } from "../../core/tasks/reopened-completion.js";
@@ -404,7 +405,7 @@ export class RemoteCustomMessageComponent extends RemoteRenderer {
 	) {
 		super(runtime, requestRender);
 		this.message = message;
-		this.reopenedStopName = reopenedCompletionName(message);
+		this.reopenedStopName = reopenedCompletionName(message, isProxy);
 		this.outputPad = outputPad;
 	}
 

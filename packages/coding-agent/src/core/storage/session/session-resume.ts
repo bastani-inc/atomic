@@ -1,7 +1,7 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import { yieldToEventLoop } from "../../../utils/event-loop.ts";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
 import {
+	type CompletionProxyCheck,
 	type LegacyCompletionTarget,
 	legacyCompletionTarget,
 	rememberEarlierCompletion,
@@ -19,6 +19,7 @@ import type {
 	SessionUsageTotals,
 } from "./types.js";
 import { validateSessionText } from "./validation.js";
+import { yieldTurn } from "./yield-turn.js";
 
 const LEAF_MOVE_TYPE = "atomic.leaf";
 const TASK_COMPLETION_INTENT_TYPE = "task-completion-intent";
@@ -810,11 +811,26 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 	return { leafSeq, compaction, branch, state };
 }
 
+/** The resume fold appends these pairs in acknowledgement sequence order. */
+function intentForAcknowledgement(index: SessionResumeIndex, ack: number): number | undefined {
+	let low = 0;
+	let high = index.acks.length - 1;
+	while (low <= high) {
+		const mid = Math.floor((low + high) / 2);
+		const [intentSeq, ackSeq] = index.acks[mid]!;
+		if (ackSeq === ack) return intentSeq;
+		if (ackSeq < ack) low = mid + 1;
+		else high = mid - 1;
+	}
+	return undefined;
+}
+
 /** A compaction can fall between intent and delivery. Keep just a display hint for the visible card, never bring an
  * acknowledged intent back into outbox recovery. The existing index pairs intent/ack positions across branches. */
 function* earlierCompletionBatches(
 	index: SessionResumeIndex,
 	resume: SessionResume,
+	isProxy?: CompletionProxyCheck,
 ): Generator<number[], void, readonly SessionStoredEntry[]> {
 	const { branch, state, compaction } = resume;
 	const first = branch[0]?.seq ?? 1;
@@ -824,7 +840,7 @@ function* earlierCompletionBatches(
 	for (const { entry, seq } of branch) {
 		if (++visited % 1024 === 0) yield [];
 		if (seq < compaction.retainedStartSeq || entry.type !== "custom_message") continue;
-		const target = legacyCompletionTarget(entry);
+		const target = legacyCompletionTarget(entry, isProxy);
 		if (target) {
 			const group = wanted.get(target.id) ?? [];
 			group.push({ entry, target });
@@ -843,21 +859,22 @@ function* earlierCompletionBatches(
 			if (entry.customType === TASK_COMPLETION_INTENT_TYPE && onBranch(ranges, seq)) wanted.delete(id);
 			if (entry.customType === TASK_COMPLETION_ACK_TYPE) knownAcks.set(seq, id);
 		}
-	if (!wanted.size) return;
-	const acknowledged = new Set(knownAcks.values());
-	const unidentified = [...wanted.keys()].some((id) => !acknowledged.has(id));
+	// Only a loaded acknowledgement identifies which earlier intent to read. Don't search other receipts.
+	if (!wanted.size || !knownAcks.size) return;
 	let batch: number[] = [];
-	for (let i = 0; i < index.acks.length; i++) {
-		const [intent, ack] = index.acks[i]!;
-		if (intent < first && onBranch(ranges, intent) && (unidentified || knownAcks.has(ack))) batch.push(intent);
-		if (batch.length < 16 && i % 1024 !== 1023 && i + 1 < index.acks.length) continue;
-		if (!batch.length && i + 1 === index.acks.length) return;
+	let remaining = knownAcks.size;
+	for (const [ack, id] of knownAcks) {
+		const intent = wanted.has(id) ? intentForAcknowledgement(index, ack) : undefined;
+		if (intent !== undefined && intent < first && onBranch(ranges, intent)) batch.push(intent);
+		remaining--;
+		if (batch.length < 16 && remaining % 1024 !== 0) continue;
+		if (!batch.length && !remaining) return;
 		for (const { entry } of yield batch) {
 			if (entry.type !== "custom" || entry.customType !== TASK_COMPLETION_INTENT_TYPE) continue;
 			const id = completionIdOf(entry);
 			if (id === undefined) continue;
 			for (const card of wanted.get(id) ?? [])
-				rememberEarlierCompletion(resume.recovery, card.entry, card.target, entry.data);
+				rememberEarlierCompletion(resume.recovery, card.entry, card.target, entry.data, isProxy);
 			wanted.delete(id);
 		}
 		if (!wanted.size) return;
@@ -877,7 +894,7 @@ export async function readEarlierCompletionIntents(
 		// A damaged or unreadable old receipt must not make an otherwise readable conversation fail to open.
 		const rows = batch.value.length ? await read(batch.value).catch(() => []) : [];
 		if (!rows) return false;
-		await yieldToEventLoop();
+		await yieldTurn();
 		batch = batches.next(rows);
 	}
 	return true;
@@ -925,6 +942,7 @@ export function sessionResumeOf(
 	entries: readonly SessionEntry[],
 	leafId?: string,
 	index = foldSessionResume(undefined, entries),
+	isProxy?: CompletionProxyCheck,
 ): SessionResume {
 	const leafSeq = leafId === undefined ? index.leafSeq : entries.findLastIndex((e) => e.id === leafId) + 1;
 	const ranges = branchRanges(index, leafSeq);
@@ -946,7 +964,7 @@ export function sessionResumeOf(
 	const state = plan.state.map((seq) => ({ seq, entry: entries[seq - 1]! }));
 	const resume = sessionResumeFrom(selected, header, branch, state, leafSeq > 0 ? entries[leafSeq - 1]!.id : null);
 	if (resume.compaction) {
-		const batches = earlierCompletionBatches(selected, resume);
+		const batches = earlierCompletionBatches(selected, resume, isProxy);
 		for (let batch = batches.next(); !batch.done; )
 			batch = batches.next(batch.value.map((seq) => ({ seq, entry: entries[seq - 1]! })));
 	}

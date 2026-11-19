@@ -1,3 +1,4 @@
+import { isProxy } from "node:util/types";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { serializeRetainedTranscript, type TranscriptChunk } from "./compaction/transcript-serialization.js";
@@ -284,7 +285,7 @@ export function buildSessionProjection(
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const contextEntries = buildContextEntries(entries, leaf.id, byId, walked);
 	const edits = collectContextEdits(contextEntries);
-	const headers = new ReopenedCompletionHeaders(() => ({ entries: path, recovery }));
+	const headers = new ReopenedCompletionHeaders(() => ({ entries: path, recovery }), isProxy);
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	// A summary boundary from an older release replays with its kept messages as structured messages.
