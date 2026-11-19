@@ -35,13 +35,15 @@ import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { type FileHandle, lstat, open, readdir, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { getAgentConfigPaths } from "../../config.js";
+import { CONFIG_DIR_NAME, getAgentConfigPaths } from "../../config.js";
+import { getHomeDir } from "../../utils/paths.ts";
 import { getErrnoCode } from "./errno.ts";
 import {
+	assertPrivateDirectoryAsync,
 	ensureTempDirAsync,
-	getTempRootDir,
 	isProtectedSessionTempDir,
 	SESSION_TEMP_FILE_MODE,
+	systemTempRootDir,
 } from "./session-temp-dir.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tool-limits.js";
 
@@ -90,7 +92,8 @@ export interface SweepOptions {
 
 /** Default parent for the marker/lock pair of a session-storage scan. */
 export function getCleanupControlRoot(): string {
-	return join(getTempRootDir(), CLEANUP_CONTROL_SUBDIR);
+	// A custom sessions root can be opened from different agent profiles. Never split its lock by profile or PID.
+	return join(getHomeDir(), CONFIG_DIR_NAME, CLEANUP_CONTROL_SUBDIR);
 }
 
 /**
@@ -494,15 +497,33 @@ function isCleanupArtifact(name: string): boolean {
  * retention cutoff, and never when it belongs to a session this process
  * registered as live. A symlinked root is refused outright.
  */
-export async function sweepSessionTempRoot(
-	root: string = getTempRootDir(),
-	options: SweepOptions = {},
-): Promise<SweepOutcome> {
+export async function sweepSessionTempRoot(explicitRoot?: string, options: SweepOptions = {}): Promise<SweepOutcome> {
+	const root = explicitRoot ?? systemTempRootDir();
 	const rootIdentity = await realDirectoryIdentity(root);
 	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	return withCleanupGate(root, { path: root, identity: rootIdentity }, options, async (gate) => {
+	let controlDir = root;
+	if (explicitRoot === undefined) {
+		// Migrating the old tree must not create new files in it. Honor a recent sweep or active lock from an older client.
+		try {
+			await assertPrivateDirectoryAsync(root);
+		} catch {
+			return "locked";
+		}
+		const now = options.now ?? Date.now();
+		if (
+			await markerIsFresh(
+				join(root, CLEANUP_MARKER_FILE),
+				now,
+				options.throttleMs ?? SESSION_TEMP_CLEANUP_INTERVAL_MS,
+			)
+		)
+			return "throttled";
+		if (await markerIsFresh(join(root, CLEANUP_LOCK_FILE), now, SESSION_TEMP_CLEANUP_LOCK_STALE_MS)) return "locked";
+		controlDir = getCleanupControlDir(root, options.controlRoot);
+	}
+	return withCleanupGate(controlDir, { path: root, identity: rootIdentity }, options, async (gate) => {
 		let entries: string[];
 		try {
 			entries = await readdir(root);
@@ -511,7 +532,8 @@ export async function sweepSessionTempRoot(
 			return;
 		}
 		for (const entry of entries) {
-			if (isCleanupArtifact(entry)) {
+			// Only the run collector can verify the host, namespace and PID of entries below runs.
+			if (entry === "runs" || isCleanupArtifact(entry)) {
 				continue;
 			}
 			const entryPath = join(root, entry);
@@ -663,8 +685,13 @@ function safeSessionsRoots(): readonly string[] {
 /** Run every sweep once. Each failure is swallowed: cleanup is housekeeping. */
 export async function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): Promise<void> {
 	const { tempRoot, sessionsRoots, sessionDirs, ...sweepOptions } = options;
+	if (tempRoot === undefined) {
+		const { sweepRuntimeScratch } = await import("../../config-runtime-scratch.ts");
+		await sweepRuntimeScratch().catch(() => undefined);
+	}
 	try {
-		await sweepSessionTempRoot(tempRoot ?? getTempRootDir(), sweepOptions);
+		// Managed sessions belong to their PID's run. Only legacy spills need the session-age policy.
+		await sweepSessionTempRoot(tempRoot, sweepOptions);
 	} catch {
 		// Best effort.
 	}

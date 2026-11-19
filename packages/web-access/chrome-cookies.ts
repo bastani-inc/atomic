@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { createDecipheriv, pbkdf2 } from "node:crypto";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
-import { homedir, platform, tmpdir } from "node:os";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Worker } from "node:worker_threads";
-import { createChildProcessEnvironment } from "@bastani/atomic";
+import { createChildProcessEnvironment, getRuntimeScratchDir } from "@bastani/atomic";
 import { pathExists } from "./path-exists.js";
 
 const pbkdf2Async = promisify(pbkdf2);
@@ -99,7 +99,7 @@ export async function getGoogleCookies(
 		}
 
 		const key = await pbkdf2Async(password, "saltysalt", currentPlatform === "darwin" ? 1003 : 1, 16, "sha1");
-		const tempDir = await mkdtemp(join(tmpdir(), "pi-chrome-cookies-"));
+		const tempDir = await mkdtemp(join(await getRuntimeScratchDir(), "pi-chrome-cookies-"));
 
 		try {
 			const tempDb = join(tempDir, "Cookies");

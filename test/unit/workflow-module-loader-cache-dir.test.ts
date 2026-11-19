@@ -4,9 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 
-// jiti places its transpile cache under `<tmpdir>/jiti`. Point every temp-dir variable Node's `tmpdir()` reads (TMPDIR on
-// POSIX, TEMP and TMP on Windows) at a private directory so deleting the cache cannot disturb other processes, and
-// re-import the loader so any jiti instance it builds sees that directory.
+// Isolate both possible destinations so deleting the cache cannot disturb other processes.
 const TEMP_DIR_VARIABLES = ["TMPDIR", "TEMP", "TMP"] as const;
 let previousTempDirs: Partial<Record<(typeof TEMP_DIR_VARIABLES)[number], string>>;
 let sandbox: string;
@@ -21,6 +19,7 @@ beforeEach(() => {
 		if (process.env[name] !== undefined) previousTempDirs[name] = process.env[name];
 		process.env[name] = privateTmp;
 	}
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(sandbox, "agent"));
 	vi.resetModules();
 });
 
@@ -30,6 +29,7 @@ afterEach(() => {
 		if (previous === undefined) delete process.env[name];
 		else process.env[name] = previous;
 	}
+	vi.unstubAllEnvs();
 	rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -56,10 +56,11 @@ test("loads workflows after the jiti cache directory is deleted (#3985)", async 
 
 	assert.equal(validateWorkflowDefinitionShape(loadWorkflowModule(first).default), null);
 	assert.equal(tmpdir(), privateTmp, "the loader must see the private temp directory");
-	const cacheDir = join(privateTmp, "jiti");
+	assert.ok(!existsSync(join(privateTmp, "jiti")), "no workflow bytecode in system temp");
+	const cacheDir = join(sandbox, "agent", "cache", "jiti");
 	assert.ok(existsSync(cacheDir), "the first load should populate the jiti cache directory");
 
-	// Simulate an external /tmp cleanup between loads.
+	// Simulate clearing the transpile cache between loads.
 	rmSync(cacheDir, { recursive: true, force: true });
 
 	assert.equal(validateWorkflowDefinitionShape(loadWorkflowModule(first).default), null);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	bindingOf,
 	captureWorktreeSnapshot,
@@ -122,6 +122,35 @@ describe("captureWorktreeSnapshot availability", () => {
 });
 
 describe("captureWorktreeSnapshot content", () => {
+	test("a nested agent's bytecode is not captured, but adjacent user files are", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const agent = join(clone, "agent-home");
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agent);
+		try {
+			const { getRuntimeCacheDir } = await import("../../packages/coding-agent/src/config.js");
+			sandbox.write(join(getRuntimeCacheDir("node"), "v24", "ff9ae40c"), "compiled module");
+			sandbox.write(join(agent, "cache", "notes.txt"), "user notes");
+			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", sandbox.path("other-agent"));
+			const { snapshot } = captured(await captureWorktreeSnapshot(clone));
+			assert.deepEqual(await treePaths(clone, snapshot.tree), ["README.md", "agent-home/cache/notes.txt"]);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	test("runtime scratch inside the checkout does not become part of a snapshot", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(clone, "agent"));
+		try {
+			const { writeOutputFile } = await import("../../packages/coding-agent/src/utils/output-files.js");
+			await writeOutputFile("private", ".txt", "must not leave the runtime directory");
+			const result = captured(await captureWorktreeSnapshot(clone));
+			assert.equal(result.snapshot.tree, await sandbox.git(clone, "rev-parse", "HEAD^{tree}"));
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	test("a clean tree records HEAD's tree with no patch or bundle", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const result = captured(await captureWorktreeSnapshot(clone));

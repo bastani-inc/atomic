@@ -9,6 +9,7 @@ import { tryAdvisoryLock } from "@bastani/atomic-natives";
 import { afterEach, test, vi } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { ensureNamedWorktree, WorktreeReentryError } from "../../packages/subagents/src/runs/shared/named-worktree.js";
+import { namedWorktreeLockDir } from "../helpers/named-worktree-locks.js";
 import { bunExecutable, moduleDir, sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 const cleanups: Array<() => void> = [];
@@ -48,10 +49,6 @@ function makeRepo(shared: boolean | "all" | "0001" | "0606" = false, umask?: "00
 	writeFileSync(join(repo, "README.md"), "hello\n");
 	git(repo, "add", "README.md");
 	git(repo, "commit", "-q", "-m", "init");
-	const common = realpathSync(join(repo, ".git"));
-	const key = process.platform === "win32" ? common.toLowerCase() : common;
-	const fallback = join(tmpdir(), `atomic-named-worktree-locks-${createHash("sha256").update(key).digest("hex")}`);
-	cleanups.push(() => rmSync(fallback, { recursive: true, force: true }));
 	return { root, repo };
 }
 
@@ -65,7 +62,7 @@ function targetLockPaths(
 	pathLock: string;
 	branchLock: string;
 } {
-	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+	const dir = namedWorktreeLockDir(repo);
 	const target = worktreePath ?? join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"));
 	const comparableTarget = process.platform === "win32" ? target.toLowerCase() : target;
 	const comparableBranch = process.platform === "win32" ? branch.toLowerCase() : branch;
@@ -77,6 +74,24 @@ function targetLockPaths(
 		branchLock: join(dir, `branch-${hash(comparableBranch)}.lock`),
 	};
 }
+
+test("checking out an existing branch does not put Atomic locks in refs or objects/info", async () => {
+	const { root, repo } = makeRepo();
+	git(repo, "branch", "existing");
+	const dirs = [join(repo, ".git", "objects", "info"), join(repo, ".git", "refs")];
+	const before = dirs.map((dir) => readdirSync(dir).sort());
+	if (process.platform !== "win32")
+		for (const dir of dirs) {
+			chmodSync(dir, 0o555);
+			cleanups.push(() => chmodSync(dir, 0o755));
+		}
+	const checkout = await ensureNamedWorktree(repo, { branch: "existing", path: join(root, "outside") });
+	assert.equal(git(checkout.path, "branch", "--show-current"), "existing");
+	assert.deepEqual(
+		dirs.map((dir) => readdirSync(dir).sort()),
+		before,
+	);
+});
 
 test("malformed ATOMIC_NAMED_WORKTREE_LOCKS values are treated as empty so launches succeed (#5202)", async () => {
 	const { repo } = makeRepo();
@@ -273,7 +288,7 @@ test.skipIf(process.platform === "win32")(
 		const first = await ensureNamedWorktree(repo, { branch: "feat/shared-a", path: join(wts, "shared-a") });
 		assert.equal(git(first.path, "branch", "--show-current"), "feat/shared-a");
 
-		const lockDir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+		const lockDir = namedWorktreeLockDir(repo);
 		assert.equal(statSync(lockDir).mode & 0o2777, 0o2770);
 		const files = readdirSync(lockDir).filter((name) => name.endsWith(".lock"));
 		assert.equal(files.length, 2);
@@ -317,7 +332,7 @@ test.skipIf(process.platform === "win32")(
 
 		const { root: rootAll, repo: repoAll } = makeRepo("all");
 		await ensureNamedWorktree(repoAll, { branch: "feat/shared-all", path: join(rootAll, "shared-all") });
-		const lockDirAll = join(repoAll, ".git", "objects", "info", "atomic-named-worktree-locks");
+		const lockDirAll = namedWorktreeLockDir(repoAll);
 		assert.equal(statSync(lockDirAll).mode & 0o2777, 0o2770);
 		for (const file of readdirSync(lockDirAll).filter((name) => name.endsWith(".lock"))) {
 			assert.equal(statSync(join(lockDirAll, file)).mode & 0o777, 0o660, file);
@@ -335,7 +350,7 @@ for (const [setting, expectedDirMode, expectedFileMode] of [
 			const { root, repo } = makeRepo(setting);
 			git(repo, "config", "core.sharedRepository", setting);
 			await ensureNamedWorktree(repo, { branch: "feat/shared-setting", path: join(root, "shared-setting") });
-			const lockDir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+			const lockDir = namedWorktreeLockDir(repo);
 			assert.equal(statSync(lockDir).mode & 0o2777, expectedDirMode);
 			assert.equal(statSync(lockDir).gid, statSync(join(repo, ".git", "objects", "info")).gid);
 			for (const file of readdirSync(lockDir).filter((name) => name.endsWith(".lock"))) {
@@ -353,7 +368,7 @@ for (const setting of [undefined, "umask"]) {
 			assert.equal(statSync(join(repo, ".git", "objects", "info")).mode & 0o777, 0o775);
 			if (setting !== undefined) git(repo, "config", "core.sharedRepository", setting);
 			await ensureNamedWorktree(repo, { branch: "feat/shared-umask", path: join(root, "shared-umask") });
-			const lockDir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+			const lockDir = namedWorktreeLockDir(repo);
 			assert.equal(statSync(lockDir).mode & 0o2777, 0o2770);
 			assert.equal(statSync(lockDir).gid, statSync(join(repo, ".git", "objects", "info")).gid);
 			for (const file of readdirSync(lockDir).filter((name) => name.endsWith(".lock"))) {
@@ -378,11 +393,7 @@ test.skipIf(process.platform === "win32")(
 		assert.equal(git(fromInfoRo.path, "branch", "--show-current"), "feat/info-ro");
 		assert.doesNotMatch(git(repoInfoRo, "worktree", "list", "--porcelain"), /atomic-named-worktree-locks/);
 
-		const infoRoCommon = realpathSync(join(repoInfoRo, ".git"));
-		const infoRoFallbackDir = join(
-			tmpdir(),
-			`atomic-named-worktree-locks-${createHash("sha256").update(infoRoCommon).digest("hex")}`,
-		);
+		const infoRoFallbackDir = targetLockPaths(repoInfoRo, "feat/info-ro").dir;
 		cleanups.push(() => rmSync(infoRoFallbackDir, { recursive: true, force: true }));
 		const recoveredTarget = join(rootInfoRo, "wt-info-recovered");
 		const recoveredPathLock = join(
@@ -447,11 +458,7 @@ test.skipIf(process.platform === "win32")(
 		});
 
 		const { root: rootUnsafeFallback, repo: repoUnsafeFallback } = makeRepo();
-		const unsafeCommon = realpathSync(join(repoUnsafeFallback, ".git"));
-		const unsafeFallbackDir = join(
-			tmpdir(),
-			`atomic-named-worktree-locks-${createHash("sha256").update(unsafeCommon).digest("hex")}`,
-		);
+		const unsafeFallbackDir = targetLockPaths(repoUnsafeFallback, "feat/unsafe-fallback").dir;
 		mkdirSync(unsafeFallbackDir, { recursive: true });
 		chmodSync(unsafeFallbackDir, 0o777);
 		cleanups.push(() => rmSync(unsafeFallbackDir, { recursive: true, force: true }));

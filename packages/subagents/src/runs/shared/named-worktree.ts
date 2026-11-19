@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
+import { homedir } from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { type AdvisoryLock, renameNoReplaceAsync, tryAdvisoryLockAsync } from "@bastani/atomic-natives";
 import { pathExists } from "../../shared/path-exists.js";
 import { addNamedWorktree } from "./named-worktree-git.js";
@@ -201,11 +202,12 @@ function isReadonlyLocationError(error: unknown): boolean {
 	return code === "EACCES" || code === "EPERM" || code === "EROFS";
 }
 
-async function validateFallbackLockDirectory(targetDir: string, gid: number | undefined): Promise<void> {
+async function validateLockDirectory(targetDir: string, gid: number | undefined, dirMode: number): Promise<void> {
 	const stat = await fs.lstat(targetDir);
 	if (!stat.isDirectory()) throw new Error(`${targetDir}: lock directory is not a directory`);
 	if (process.platform === "win32") return;
-	if ((stat.mode & 0o002) !== 0) throw new Error(`${targetDir}: lock directory must not be world-writable`);
+	if ((stat.mode & 0o002) !== 0 && (dirMode & 0o002) === 0)
+		throw new Error(`${targetDir}: lock directory must not be world-writable`);
 	const euid = process.geteuid?.();
 	const ownedByCurrent = euid === undefined || stat.uid === euid;
 	const sharedWithGroup = gid !== undefined && stat.gid === gid && (stat.mode & 0o060) === 0o060;
@@ -243,33 +245,32 @@ async function createLockDirectory(targetDir: string, dirMode: number, gid: numb
 	}
 }
 
-async function resolveLockDirectory(commonDir: string): Promise<string> {
-	const canonicalCommon = await comparablePath(commonDir);
-	const primary = path.join(canonicalCommon, "objects", "info", "atomic-named-worktree-locks");
-	if (await pathExists(primary)) return primary;
-	const fallback = path.join(
-		os.tmpdir(),
-		`atomic-named-worktree-locks-${createHash("sha256").update(canonicalCommon).digest("hex")}`,
-	);
-	const { dirMode, gid } = await repositoryLockModes(canonicalCommon);
-	if (await pathExists(fallback)) {
-		await validateFallbackLockDirectory(fallback, gid);
-		return fallback;
+async function resolveLockDirectory(repo: string, commonDir: string): Promise<string> {
+	const { dirMode, gid } = await repositoryLockModes(commonDir);
+	// Keep locks outside both the checkout and Git's metadata. A sibling namespace preserves shared
+	// repositories' writer group across account profiles. Never create it in a world-writable parent.
+	const key = createHash("sha256")
+		.update(await comparablePath(commonDir))
+		.digest("hex");
+	const parent = path.dirname(await comparablePath(repo));
+	const shared = path.join(parent, `.atomic-worktree-locks-${key}`);
+	const account = path.join(homedir(), CONFIG_DIR_NAME, "worktree-locks", key);
+	if (!(await pathExists(account)) && (process.platform === "win32" || ((await fs.stat(parent)).mode & 0o002) === 0)) {
+		try {
+			await createLockDirectory(shared, dirMode, gid);
+			await validateLockDirectory(shared, gid, dirMode);
+			return shared;
+		} catch (error) {
+			if (!isReadonlyLocationError(error)) throw error;
+		}
 	}
-	try {
-		await createLockDirectory(primary, dirMode, gid);
-		return primary;
-	} catch (error) {
-		if (await pathExists(primary)) return primary;
-		if (!isReadonlyLocationError(error)) throw error;
-		await createLockDirectory(fallback, dirMode, gid);
-		await validateFallbackLockDirectory(fallback, gid);
-		return fallback;
-	}
+	await createLockDirectory(account, 0o700, undefined);
+	await validateLockDirectory(account, undefined, 0o700);
+	return account;
 }
 
-async function lockPaths(commonDir: string, branch: string, worktreePath: string): Promise<string[]> {
-	const lockDir = await resolveLockDirectory(commonDir);
+async function lockPaths(repo: string, commonDir: string, branch: string, worktreePath: string): Promise<string[]> {
+	const lockDir = await resolveLockDirectory(repo, commonDir);
 	const key = (kind: string, value: string): string =>
 		path.join(lockDir, `${kind}-${createHash("sha256").update(value).digest("hex")}.lock`);
 	return [
@@ -487,7 +488,7 @@ export async function ensureNamedWorktree(
 		nextNotice = performance.now() + 2_000;
 	};
 	try {
-		const targetLocks = await lockPaths(commonDir, branch, worktreePath);
+		const targetLocks = await lockPaths(repo, commonDir, branch, worktreePath);
 		return await withTargetLocks(targetLocks, worktreePath, options, notifyWaiting, async (env) => {
 			deadline = performance.now() + CONCURRENT_ADD_WAIT_MS;
 			const ready = async (): Promise<NamedWorktree> => ({

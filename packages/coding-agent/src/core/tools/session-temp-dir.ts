@@ -1,21 +1,13 @@
 /**
  * Owner- and session-scoped temp storage for tool output files.
  *
- * Every file a tool spills to the system temp directory (bash overflow logs,
- * `OutputAccumulator` spill files, and the in-memory-session tool-result fallback)
- * lands under:
- *
- * ```text
- * <tmpdir>/<APP_NAME>-<owner>/<sanitized-session-id>/
- * ```
- *
- * The owner segment keeps accounts in separate trees: a shared multi-user
- * temp directory must never let one account write into or read another
- * account's tree. The session segment makes the tree reapable as a unit by
- * the age-based sweeper in `session-temp-cleanup.ts` once the session is gone.
+ * Bash overflow logs, output accumulator spills and in-memory tool-result files
+ * live under the process's private run directory, in a directory per session.
+ * SDK hosts that explicitly set TMPDIR keep the historical owner/session layout
+ * and retention policy. Never adopt another account's tree in either layout.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	type BigIntStats,
 	chmodSync,
@@ -31,14 +23,29 @@ import { chmod, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { APP_NAME, getAgentDir } from "../../config.js";
+import {
+	APP_NAME,
+	getAgentDir,
+	getRuntimeScratchCache,
+	getRuntimeScratchDir,
+	useManagedSessionScratch,
+} from "../../config.js";
+import {
+	getRuntimeScratchDirSync,
+	plannedRuntimeScratchDir,
+	preferredRuntimeScratchDir,
+	removeRunSession,
+} from "../../config-runtime-scratch.ts";
+import { createModuleRequire } from "../../utils/module-require.js";
 import { getErrnoCode } from "./errno.ts";
 import {
+	evaluateWindowsDirectorySecurity,
 	resetWindowsDirectorySecurityStateForTesting,
 	trackWindowsDirectorySecurityWork,
 	VERIFICATION_PENDING_REASON,
 	verifyWindowsDirectorySecurity,
 	verifyWindowsDirectorySecurityAsync,
+	type WindowsDirectorySecurity,
 } from "./windows-directory-security.ts";
 
 /** Directory mode for every directory this module creates (owner-only). */
@@ -179,8 +186,12 @@ function baseTempDirs(): BaseTempDirs {
 	return cachedBaseTempDirs;
 }
 
-/** `<tmpdir>/<APP_NAME>-<owner>` — the root every session temp tree lives under. */
+/** Ordinary runs isolate session output from other processes; SDKs can select the historical TMPDIR layout. */
 export function getTempRootDir(): string {
+	return useManagedSessionScratch() ? join(plannedRuntimeScratchDir(), "sessions") : systemTempRootDir();
+}
+
+export function systemTempRootDir(): string {
 	const app = sanitizeTempPathComponent(APP_NAME, "atomic");
 	return join(tmpdir(), `${app}-${ownerComponent()}`);
 }
@@ -194,7 +205,11 @@ export function getTempRootDir(): string {
  */
 export function resolveSessionTempDirPath(sessionId?: string): string {
 	const id = sessionId ?? activeSessionId ?? `pid-${process.pid}`;
-	return join(getTempRootDir(), sanitizeTempPathComponent(id, FALLBACK_SESSION_COMPONENT));
+	const component = sanitizeTempPathComponent(id, FALLBACK_SESSION_COMPONENT);
+	const name = useManagedSessionScratch()
+		? managedSessions.get(join(resolve(getAgentDir()), component))?.name
+		: undefined;
+	return join(getTempRootDir(), name ?? component);
 }
 
 const ensuredDirs = new Set<string>();
@@ -508,7 +523,108 @@ function stillPrivateDirectory(known: PrivateDirectoryIdentity): boolean {
 	}
 }
 
-function privateTempDirAttempts(parts: readonly string[]): Array<() => string> {
+/** A cache may be readable by others, but no other account may replace the private root below it. */
+function checkScratchCache(cache: string, stat: Stats): void {
+	if (
+		!stat.isDirectory() ||
+		(process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0))
+	) {
+		throw new TempDirRefusedError(cache, "it is not a trusted cache directory");
+	}
+}
+
+/** Only synchronous bootstrap/stream callers use the native synchronous descriptor API. */
+export function ensureAgentScratchParent(cache: string): string {
+	mkdirSync(cache, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+	checkScratchCache(cache, lstatSync(cache));
+	if (process.platform !== "win32") return ensurePrivateChain(cache, cache, ["tmp", "runs"]);
+	const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+		windowsDirectorySecurity(path: string): WindowsDirectorySecurity | null;
+	};
+	let dir = cache;
+	for (const part of ["", "tmp", "runs"]) {
+		if (part) {
+			dir = join(dir, part);
+			try {
+				mkdirSync(dir);
+			} catch (error) {
+				if (getErrnoCode(error) !== "EEXIST") throw error;
+			}
+		}
+		if (!lstatSync(dir).isDirectory()) throw new TempDirRefusedError(dir, "it is not a directory");
+		const descriptor = binding.windowsDirectorySecurity(dir);
+		if (!descriptor || evaluateWindowsDirectorySecurity(descriptor) !== undefined)
+			throw new TempDirRefusedError(dir, "its ownership could not be verified");
+	}
+	return dir;
+}
+
+export async function ensureAgentScratchParentAsync(cache: string): Promise<string> {
+	await mkdir(cache, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+	checkScratchCache(cache, await lstat(cache));
+	if (process.platform === "win32") await verifyWindowsOwnedDirectoryAsync(cache);
+	return ensurePrivateChainAsync(cache, cache, ["tmp", "runs"]);
+}
+
+function otherWindowsScratchCache(): string | undefined {
+	const local = process.env.LOCALAPPDATA;
+	if (process.platform !== "win32" || !local || !isAbsolute(local)) return undefined;
+	const short = resolve(local, "Atomic", "cache");
+	return getRuntimeScratchCache() === short ? resolve(getAgentDir(), "cache") : short;
+}
+
+/** Predictable owner roots only; housekeeping never needs to scan a dense shared temporary directory. */
+export function fallbackRunParents(): string[] {
+	const runtime = process.env.XDG_RUNTIME_DIR;
+	const windows = otherWindowsScratchCache();
+	return [
+		...(windows ? [join(windows, "tmp", "runs")] : []),
+		resolve(systemTempRootDir(), "runs"),
+		...(process.platform !== "win32" && runtime && isAbsolute(runtime)
+			? [join(runtime, sanitizeTempPathComponent(APP_NAME, "atomic"), "runs")]
+			: []),
+	];
+}
+
+/** Try each private fallback through the actual allocation: a pre-existing parent may still be on a full disk. */
+export function createFallbackRun(prefix: string): string {
+	const windows = otherWindowsScratchCache();
+	const attempts = privateTempDirAttempts(["runs"], false);
+	if (windows) attempts.unshift(() => ensureAgentScratchParent(windows));
+	for (const attempt of attempts) {
+		try {
+			return mkdtempSync(join(resolve(attempt()), prefix));
+		} catch {
+			/* Try the next filesystem. */
+		}
+	}
+	return mkdtempSync(join(resolve(tmpdir()), `atomic-${prefix}`));
+}
+
+export async function createFallbackRunAsync<T>(prefix: string, use: (dir: string) => Promise<T>): Promise<T> {
+	const useNew = async (template: string) => {
+		const dir = await mkdtemp(template);
+		try {
+			return await use(dir);
+		} catch (error) {
+			await rm(dir, { recursive: true, force: true }).catch(() => {});
+			throw error;
+		}
+	};
+	const windows = otherWindowsScratchCache();
+	const attempts = privateTempDirAttemptsAsync(["runs"], false);
+	if (windows) attempts.unshift(() => ensureAgentScratchParentAsync(windows));
+	for (const attempt of attempts) {
+		try {
+			return await useNew(join(resolve(await attempt()), prefix));
+		} catch {
+			/* Try the next filesystem. */
+		}
+	}
+	return useNew(join(resolve(tmpdir()), `atomic-${prefix}`));
+}
+
+function privateTempDirAttempts(parts: readonly string[], includeCache = true): Array<() => string> {
 	const attempts: Array<() => string> = [];
 	const runtimeDir = process.env.XDG_RUNTIME_DIR;
 	if (process.platform !== "win32" && runtimeDir && isAbsolute(runtimeDir)) {
@@ -522,13 +638,14 @@ function privateTempDirAttempts(parts: readonly string[]): Array<() => string> {
 		});
 	}
 	const cacheDir = resolve(getAgentDir(), "cache");
-	attempts.push(() => {
-		mkdirSync(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
-		return ensurePrivateChain(cacheDir, cacheDir, ["tmp", ...parts]);
-	});
+	if (includeCache)
+		attempts.push(() => {
+			mkdirSync(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+			return ensurePrivateChain(cacheDir, cacheDir, ["tmp", ...parts]);
+		});
 	attempts.push(() => {
 		const base = baseTempDirs();
-		const rootName = getTempRootDir().slice(base.raw.length + sep.length);
+		const rootName = systemTempRootDir().slice(base.raw.length + sep.length);
 		return ensurePrivateChain(base.canonical, base.raw, [rootName, ...parts]);
 	});
 	return attempts;
@@ -624,6 +741,11 @@ function canonicalTempChild(dir: string, base: BaseTempDirs): string | undefined
  * directory someone else controls.
  */
 export function ensureTempDir(dir: string, options: { preserveExistingLeaf?: boolean } = {}): string {
+	const parts = managedSessionParts(resolve(dir));
+	if (parts) {
+		const run = getRuntimeScratchDirSync();
+		return ensurePrivateChain(run, run, parts);
+	}
 	const base = baseTempDirs();
 	const checkedDir = canonicalTempChild(dir, base);
 	if (checkedDir !== undefined) {
@@ -702,11 +824,26 @@ async function ensureWindowsOwnedDirectoryAsync(path: string, options: { backgro
 	await verifyWindowsOwnedDirectoryAsync(path, options);
 }
 
+function managedSessionParts(dir: string): string[] | undefined {
+	if (!useManagedSessionScratch()) return undefined;
+	// A caller may have obtained the preferred path before another operation selected a fallback.
+	for (const root of [getTempRootDir(), join(preferredRuntimeScratchDir(), "sessions")]) {
+		if (dir === root) return ["sessions"];
+		if (dir.startsWith(`${root}${sep}`)) return ["sessions", ...dir.slice(root.length + 1).split(sep)];
+	}
+	return undefined;
+}
+
 export async function ensureTempDirAsync(
 	dir: string,
 	options: { preserveExistingLeaf?: boolean } = {},
 ): Promise<string> {
 	const resolvedDir = resolve(dir);
+	const parts = managedSessionParts(resolvedDir);
+	if (parts) {
+		const run = await getRuntimeScratchDir();
+		return ensurePrivateChainAsync(run, run, parts);
+	}
 	const base = await baseTempDirsAsync();
 	const checkedDir = canonicalTempChild(resolvedDir, base);
 	if (checkedDir !== undefined) {
@@ -754,7 +891,32 @@ const protectedPathCounts = new Map<string, number>();
 
 /** A protection claim held by one owner; releasing twice is a no-op. */
 export interface ProtectedPathLease {
-	release(): void;
+	release(): void | Promise<void>;
+}
+
+const managedSessions = new Map<string, { name: string; refs: number }>();
+
+/** Retire the last holder's generation before awaiting I/O: a reopened session cannot reuse the tree being removed. */
+export function claimSessionStorage(id: string, persistentPaths: readonly string[]): ProtectedPathLease {
+	if (!useManagedSessionScratch()) return acquireProtectedPaths([setActiveSessionTempId(id), ...persistentPaths]);
+	const component = sanitizeTempPathComponent(id, FALLBACK_SESSION_COMPONENT);
+	const agent = resolve(getAgentDir());
+	const key = join(agent, component);
+	const current = managedSessions.get(key) ?? { name: `${component}-${randomBytes(4).toString("hex")}`, refs: 0 };
+	managedSessions.set(key, current);
+	current.refs++;
+	const protectedLease = acquireProtectedPaths([setActiveSessionTempId(id), ...persistentPaths]);
+	let released = false;
+	return {
+		async release() {
+			if (released) return;
+			released = true;
+			protectedLease.release();
+			if (--current.refs !== 0) return;
+			managedSessions.delete(key);
+			await removeRunSession(getRuntimeScratchCache(agent), current.name);
+		},
+	};
 }
 
 /** Protect `paths` until the returned lease is released. */
@@ -800,7 +962,12 @@ export function setActiveSessionTempId(sessionId: string): string {
 function startPrivateRootVerification(): void {
 	void trackWindowsDirectorySecurityWork(async () => {
 		try {
-			const ownerRoot = canonicalTempChild(getTempRootDir(), await baseTempDirsAsync());
+			if (useManagedSessionScratch()) {
+				const run = await getRuntimeScratchDir();
+				await ensurePrivateChainAsync(run, run, ["sessions"]);
+				return;
+			}
+			const ownerRoot = canonicalTempChild(systemTempRootDir(), await baseTempDirsAsync());
 			if (ownerRoot !== undefined) await ensureWindowsOwnedDirectoryAsync(ownerRoot, { background: true });
 		} catch {}
 	}).catch(() => undefined);
@@ -824,6 +991,7 @@ export function getProtectedSessionTempDirs(): ReadonlySet<string> {
 export function resetSessionTempDirStateForTesting(): void {
 	activeSessionId = undefined;
 	protectedPathCounts.clear();
+	managedSessions.clear();
 	ensuredDirs.clear();
 	cachedOwnerComponent = undefined;
 	cachedBaseTempDirs = undefined;
@@ -996,7 +1164,7 @@ async function stillPrivateDirectoryAsync(known: PrivateDirectoryIdentity): Prom
 	}
 }
 
-function privateTempDirAttemptsAsync(parts: readonly string[]): Array<() => Promise<string>> {
+function privateTempDirAttemptsAsync(parts: readonly string[], includeCache = true): Array<() => Promise<string>> {
 	const attempts: Array<() => Promise<string>> = [];
 	const runtimeDir = process.env.XDG_RUNTIME_DIR;
 	if (process.platform !== "win32" && runtimeDir && isAbsolute(runtimeDir)) {
@@ -1010,13 +1178,14 @@ function privateTempDirAttemptsAsync(parts: readonly string[]): Array<() => Prom
 		});
 	}
 	const cacheDir = resolve(getAgentDir(), "cache");
-	attempts.push(async () => {
-		await mkdir(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
-		return await ensurePrivateChainAsync(cacheDir, cacheDir, ["tmp", ...parts]);
-	});
+	if (includeCache)
+		attempts.push(async () => {
+			await mkdir(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+			return await ensurePrivateChainAsync(cacheDir, cacheDir, ["tmp", ...parts]);
+		});
 	attempts.push(async () => {
 		const base = await baseTempDirsAsync();
-		const rootName = getTempRootDir().slice(base.raw.length + sep.length);
+		const rootName = systemTempRootDir().slice(base.raw.length + sep.length);
 		return await ensurePrivateChainAsync(base.canonical, base.raw, [rootName, ...parts]);
 	});
 	return attempts;

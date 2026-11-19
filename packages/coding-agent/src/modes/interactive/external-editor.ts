@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { APP_NAME } from "../../config.js";
+import { APP_NAME, getRuntimeScratchDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { stripBom } from "../../utils/text.ts";
 
@@ -87,7 +86,7 @@ export function resolveExternalEditorCommand(
 }
 
 export async function editInExternalEditor(request: ExternalEditorRequest): Promise<ExternalEditorResult> {
-	const directory = await mkdtemp(join(tmpdir(), `${APP_NAME}-editor-`));
+	const directory = await mkdtemp(join(await getRuntimeScratchDir(), `${APP_NAME}-editor-`));
 	const filePath = join(directory, "prompt.md");
 	try {
 		await writeFile(filePath, request.content, {

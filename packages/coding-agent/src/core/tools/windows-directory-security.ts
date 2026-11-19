@@ -34,111 +34,17 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { createModuleRequire } from "../../utils/module-require.js";
 import { windowsPowerShellEnvironment } from "../../utils/windows-powershell.ts";
 
-/** One DACL entry with its trustee resolved to a literal SID. */
-export interface WindowsAccessRule {
-	/** True for an access-allowed entry, false for access-denied. */
-	allow: boolean;
-	/** The SID the entry applies to. */
-	sid: string;
-}
+import {
+	evaluateWindowsDirectorySecurity,
+	type WindowsAccessRule,
+	type WindowsDirectorySecurity,
+} from "./windows-directory-descriptor.ts";
 
-/** What the security read produces: the caller's SID plus the descriptor. */
-export interface WindowsDirectorySecurity {
-	/** SID of the current process token's user. */
-	currentSid: string;
-	/** SID owning the directory. */
-	ownerSid: string;
-	/** The DACL portion of the descriptor in SDDL form (may be empty). */
-	dacl: string;
-	/**
-	 * Every DACL entry with its trustee as a literal SID (`GetAccessRules`
-	 * resolves domain-relative SDDL abbreviations such as `LA` that a
-	 * name-side parse cannot). The SDDL string above cross-checks that these
-	 * rules describe the whole DACL: only plain allow/deny ACE types, one
-	 * rule per ACE.
-	 */
-	accessRules: readonly WindowsAccessRule[];
-}
-
-/**
- * Principals allowed to own, or hold access-allowed ACEs on, a temp component.
- *
- * SYSTEM and Administrators hold both on any per-user Windows temp directory
- * by inheritance, and both can reach any file on the volume regardless, so
- * permitting them grants nothing an attacker did not already have. Elevated
- * processes also create directories owned by the Administrators group rather
- * than the user, which is why the owner check shares this set. CREATOR OWNER
- * is inherit-only plumbing: it materializes as the creating account on
- * descendants, and creation inside the tree is already restricted to the
- * SIDs allowed here.
- */
-const TRUSTED_STATIC_SIDS = new Set<string>([
-	"S-1-5-18", // Local System
-	"S-1-5-32-544", // Builtin Administrators
-	"S-1-3-0", // Creator Owner
-	"S-1-3-4", // Owner Rights
-]);
-
-/**
- * Decide whether a directory's descriptor is safe to adopt.
- *
- * Returns a refusal reason, or `undefined` when the directory is owned by a
- * trusted principal and its DACL grants access to trusted principals only.
- * Exported as a pure function so the decision table is testable on any host.
- */
-export function evaluateWindowsDirectorySecurity(security: WindowsDirectorySecurity): string | undefined {
-	const trusted = (sid: string): boolean => sid === security.currentSid || TRUSTED_STATIC_SIDS.has(sid);
-	if (!security.ownerSid.startsWith("S-1-")) {
-		return "its owner could not be verified";
-	}
-	if (!trusted(security.ownerSid)) {
-		return "it is owned by another account";
-	}
-	// `Get-Acl` renders a null DACL (everyone has full control) as an absent
-	// `D:` section; an empty DACL (`D:` with no ACEs) grants nobody anything
-	// and is fine.
-	const dacl = security.dacl.trim();
-	if (!dacl.startsWith("D:")) {
-		return "it has no access control list";
-	}
-	let rest = dacl.slice(2);
-	const flagsEnd = rest.indexOf("(");
-	const flags = flagsEnd === -1 ? rest : rest.slice(0, flagsEnd);
-	if (!/^[A-Z]*$/.test(flags)) {
-		return "its access control list could not be parsed";
-	}
-	rest = flagsEnd === -1 ? "" : rest.slice(flagsEnd);
-	const aces = rest.match(/\([^()]*\)/g) ?? [];
-	if (aces.join("") !== rest) {
-		return "its access control list could not be parsed";
-	}
-	for (const ace of aces) {
-		const type = ace.slice(1, -1).split(";")[0];
-		if (type !== "A" && type !== "D") {
-			// Conditional, object, and callback ACEs are not modeled by the
-			// resolved access rules below, so a DACL containing one cannot be
-			// proven restrictive.
-			return "its access control list could not be verified";
-		}
-	}
-	if (security.accessRules.length !== aces.length) {
-		// The resolved rules must describe the whole DACL; a mismatch means
-		// part of it was not translated and cannot be checked.
-		return "its access control list could not be verified";
-	}
-	for (const rule of security.accessRules) {
-		if (!rule.allow) {
-			continue; // A deny entry only ever removes access.
-		}
-		if (!rule.sid.startsWith("S-1-")) {
-			return "its access control list could not be verified";
-		}
-		if (!trusted(rule.sid)) {
-			return "it grants access to another account";
-		}
-	}
-	return undefined;
-}
+export {
+	evaluateWindowsDirectorySecurity,
+	type WindowsAccessRule,
+	type WindowsDirectorySecurity,
+} from "./windows-directory-descriptor.ts";
 
 /**
  * One PowerShell round trip: the caller's SID, the owner SID, the DACL in

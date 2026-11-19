@@ -140,6 +140,14 @@ function writeRenderCrashLog(crashLogPath: string, crashData: string): void {
 	fs.writeFileSync(crashLogPath, crashData);
 }
 
+/** The app supplies its log directory. Standalone TUI hosts can select a directory with TMPDIR. */
+function logRoot(configured: string | undefined): string {
+	return (
+		configured ??
+		(process.env.TMPDIR || getTuiEnvValue("CODING_AGENT_DIR") || path.join(os.homedir(), ".atomic", "agent"))
+	);
+}
+
 /** TUI implementation that renders into the terminal's main screen and scrollback. */
 export class TuiMainScreen extends TuiBase implements TUI {
 	readonly mode = "regular" as const;
@@ -537,7 +545,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			output.append("\x1b[2K"); // Clear current line
 			if (!isImage && visibleWidth(line) > width) {
 				// Log all lines to crash file for debugging
-				const crashLogPath = path.join(this.logDirectory ?? os.tmpdir(), "pi-tui-crash.log");
+				const crashLogPath = path.join(logRoot(this.logDirectory), "pi-tui-crash.log");
 				const crashData = [
 					`Crash at ${new Date().toISOString()}`,
 					`Terminal width: ${width}`,
@@ -587,7 +595,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		output.append("\x1b[?2026l"); // End synchronized output
 
 		if (getTuiEnvValue("TUI_DEBUG") === "1") {
-			const debugDir = "/tmp/tui";
+			const debugDir = path.join(logRoot(this.logDirectory), "tui");
 			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 			const debugData = [
 				`firstChanged: ${firstChanged}`,

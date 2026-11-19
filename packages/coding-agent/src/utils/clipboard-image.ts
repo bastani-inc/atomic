@@ -1,8 +1,8 @@
 import { execFile } from "child_process";
 import { randomUUID } from "crypto";
 import { readFile, unlink } from "fs/promises";
-import { tmpdir } from "os";
 import { join } from "path";
+import { getRuntimeScratchDir } from "../config.js";
 
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { clipboard } from "./clipboard-native.ts";
@@ -155,7 +155,7 @@ async function readClipboardImageViaWlPaste(): Promise<ClipboardImage | null> {
  * directly, so we use it as a fallback.
  */
 async function readClipboardImageViaPowerShell(): Promise<ClipboardImage | null> {
-	const tmpFile = join(tmpdir(), `pi-wsl-clip-${randomUUID()}.png`);
+	const tmpFile = join(await getRuntimeScratchDir(), `pi-wsl-clip-${randomUUID()}.png`);
 
 	try {
 		const winPathResult = await runCommand("wslpath", ["-w", tmpFile], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });

@@ -18,7 +18,7 @@
  */
 
 import { fileURLToPath } from "node:url";
-import { spawnProcess } from "@bastani/atomic";
+import { getRuntimeScratchDir, spawnProcess } from "@bastani/atomic";
 import { referenceImageFileUrl } from "./open-claude-design-utils.js";
 
 /** JSON values emitted by the live helper. */
@@ -192,16 +192,19 @@ export function liveLauncherPath(platform: NodeJS.Platform = process.platform): 
 
 export type ScriptResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
 
-function runLiveHelper(
+async function runLiveHelper(
 	launcher: string,
 	args: readonly string[],
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<ScriptResult> {
+	// The bundled launcher uses the native temp directory for checksum and executable probes.
+	const scratch = await getRuntimeScratchDir();
+	if (signal?.aborted) return { code: -1, stdout: "", stderr: "" };
 	return new Promise((resolve, reject) => {
 		const child = spawnProcess(launcher, [...args], {
 			cwd,
-			env: { ...process.env, GH_PAGER: "cat" },
+			env: { ...process.env, GH_PAGER: "cat", TMPDIR: scratch, TMP: scratch, TEMP: scratch },
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});

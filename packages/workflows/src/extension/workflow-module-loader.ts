@@ -6,6 +6,7 @@
  * stay consistent.
  */
 
+import { withWorkflowTranspileCache, withWorkflowTranspileCacheAsync } from "@bastani/atomic";
 import { createJiti } from "jiti/static";
 import * as typeboxModule from "typebox";
 import * as typeboxCompileModule from "typebox/compile";
@@ -82,17 +83,20 @@ export type WorkflowHostModules = Record<
 
 export type WorkflowHostModuleProvider = () => Promise<WorkflowHostModules>;
 
-function createWorkflowModuleLoader(virtualModules: Record<string, unknown>) {
+function workflowModuleLoader(hostModules?: WorkflowHostModules) {
+	const virtualModules = hostModules ? { ...WORKFLOWS_VIRTUAL_MODULES, ...hostModules } : WORKFLOWS_VIRTUAL_MODULES;
 	// Build a fresh jiti per load: jiti creates its filesystem cache directory only when an instance is constructed,
 	// so a long-lived instance fails with ENOENT on every load after something (such as a /tmp cleanup) deletes it.
-	return createJiti(import.meta.url, {
-		moduleCache: false,
-		// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
-		// resolution instead of handing some imports back to native import().
-		tryNative: false,
-		// Resolve the current SDK once while workflow files are evaluated fresh.
-		virtualModules,
-	});
+	return (fsCache: boolean | string) =>
+		createJiti(import.meta.url, {
+			fsCache,
+			moduleCache: false,
+			// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
+			// resolution instead of handing some imports back to native import().
+			tryNative: false,
+			// Resolve the current SDK once while workflow files are evaluated fresh.
+			virtualModules,
+		});
 }
 
 function materializeModuleObject(mod: object): Record<string, unknown> {
@@ -162,10 +166,17 @@ export function validateWorkflowDefinitionShape(value: unknown): string | null {
 }
 
 export function loadWorkflowModule(filePath: string, hostModules?: WorkflowHostModules): Record<string, unknown> {
-	const loader = createWorkflowModuleLoader(
-		hostModules ? { ...WORKFLOWS_VIRTUAL_MODULES, ...hostModules } : WORKFLOWS_VIRTUAL_MODULES,
-	);
+	const loader = withWorkflowTranspileCache(workflowModuleLoader(hostModules));
 	return normalizeWorkflowModule(loader(filePath));
+}
+
+export async function loadWorkflowModuleAsync(
+	filePath: string,
+	hostModules?: WorkflowHostModules,
+): Promise<{ exports: Record<string, unknown> }> {
+	const loader = await withWorkflowTranspileCacheAsync(workflowModuleLoader(hostModules));
+	// An authored export may be named `then`; never resolve a promise with the module object itself.
+	return { exports: normalizeWorkflowModule(loader(filePath)) };
 }
 
 export function collectWorkflowModuleCandidates(mod: Record<string, unknown>): WorkflowModuleCandidate[] {

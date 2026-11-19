@@ -1,9 +1,8 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { TUI } from "@bastani/atomic-tui";
-import { APP_NAME } from "../../config.js";
+import { APP_NAME, getRuntimeScratchDir } from "../../config.js";
 import { readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { editInExternalEditor, resolveExternalEditorCommand } from "./external-editor.ts";
@@ -47,14 +46,16 @@ function scheduleTempFileCleanup(filePath: string, delayMs: number): void {
 export async function cleanupStaleClipboardFiles(now = Date.now()): Promise<void> {
 	const prefix = appTempPrefix("clipboard");
 	let entries: string[];
+	let dir: string;
 	try {
-		entries = await fs.readdir(os.tmpdir());
+		dir = await getRuntimeScratchDir();
+		entries = await fs.readdir(dir);
 	} catch {
 		return;
 	}
 	for (const entry of entries) {
 		if (!entry.startsWith(prefix)) continue;
-		const filePath = path.join(os.tmpdir(), entry);
+		const filePath = path.join(dir, entry);
 		try {
 			const stat = await fs.stat(filePath);
 			if (stat.isFile() && now - stat.mtimeMs >= CLIPBOARD_STALE_AGE_MS) await fs.unlink(filePath);
@@ -152,7 +153,7 @@ export async function pasteClipboardImageToEditor(
 
 		const ext = extensionForImageMimeType(image.mimeType) ?? "png";
 		const fileName = `${appTempPrefix("clipboard")}${crypto.randomUUID()}.${ext}`;
-		const filePath = path.join(os.tmpdir(), fileName);
+		const filePath = path.join(await getRuntimeScratchDir(), fileName);
 		await fs.writeFile(filePath, Buffer.from(image.bytes), { flag: "wx", mode: 0o600 });
 		scheduleTempFileCleanup(filePath, options.cleanupDelayMs ?? CLIPBOARD_CLEANUP_DELAY_MS);
 

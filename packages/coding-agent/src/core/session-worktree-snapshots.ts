@@ -1793,8 +1793,16 @@ export async function compareWorktreeSnapshot(
 		allowExitCodes: [1, 128],
 	});
 	const policy = await loadSnapshotPathPolicy(checkout.root);
-	const state = await withScratchDirectory((scratch) =>
-		writeWorkingTree(checkout, settings, policy, scratch, present.exitCode === 0 ? { seedTree: snapshot.tree } : {}),
+	const state = await withScratchDirectory(
+		(scratch) =>
+			writeWorkingTree(
+				checkout,
+				settings,
+				policy,
+				scratch,
+				present.exitCode === 0 ? { seedTree: snapshot.tree } : {},
+			),
+		checkout,
 	);
 	if (state.tree === snapshot.tree) {
 		if (checkout.head === snapshot.head) return { status: "match", tree: state.tree };

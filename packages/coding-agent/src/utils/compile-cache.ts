@@ -7,9 +7,10 @@
  * wrappers are silent no-ops there.
  */
 import nodeModule from "node:module";
+import { runtimeCacheDirectories } from "../config.js";
 
 interface CompileCacheApi {
-	enableCompileCache?: () => unknown;
+	enableCompileCache?: (directory?: string) => { status: number };
 	flushCompileCache?: () => void;
 }
 
@@ -17,7 +18,16 @@ const compileCacheApi: CompileCacheApi = nodeModule;
 
 export function enablePersistentCompileCache(): void {
 	try {
-		compileCacheApi.enableCompileCache?.();
+		if (!compileCacheApi.enableCompileCache || process.env.NODE_DISABLE_COMPILE_CACHE === "1") return;
+		if (process.env.NODE_COMPILE_CACHE) {
+			compileCacheApi.enableCompileCache(process.env.NODE_COMPILE_CACHE);
+			return;
+		}
+		for (const dir of runtimeCacheDirectories("node")) {
+			const result = compileCacheApi.enableCompileCache(dir);
+			if (result?.status !== nodeModule.constants.compileCacheStatus.FAILED) return;
+		}
+		compileCacheApi.enableCompileCache();
 	} catch {
 		// Best effort: an unwritable cache directory must never break startup.
 	}

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type AgentTaskHost,
@@ -10,6 +9,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
+	getRuntimeScratchDir,
 	isRetryableStorageError,
 	isStaleExtensionContextError,
 	mapRestoredPathAsync,
@@ -740,7 +740,7 @@ async function relaunchChild(
 		index: record.index,
 		sessionDir:
 			(fresh ? fresh.sessionDir : sessionManager?.getSessionDir()) ||
-			(await mkdtemp(join(tmpdir(), "atomic-subagent-restore-"))),
+			(await mkdtemp(join(await getRuntimeScratchDir(), "atomic-subagent-restore-"))),
 		...(sessionManager ? { sessionManager, ...(fresh ? {} : { resumeSession: true }) } : {}),
 		...(fresh?.skills ? { skills: [...fresh.skills] } : {}),
 		...(fresh?.outputPath ? { outputPath: fresh.outputPath } : {}),

@@ -70,7 +70,7 @@ import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
 import { defaultToolNamesFor } from "./tools/index.js";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
-import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
+import { claimSessionStorage, type ProtectedPathLease } from "./tools/session-temp-dir.ts";
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tools/tool-limits.js";
 import { withWindowsDirectorySecurityOwner } from "./tools/windows-directory-security.ts";
@@ -484,13 +484,9 @@ class AgentSessionBase {
 			try {
 				const sessionId = this.sessionManager.getSessionId();
 				const sessionDir = this.sessionManager.getSessionDir() || undefined;
-				this._tempStorageLease = acquireProtectedPaths([
-					withWindowsDirectorySecurityOwner(sessionLifetime(this), () => setActiveSessionTempId(sessionId)),
-					// A disk-backed session's results are read back by path, and a replayed
-					// result reuses an old file without touching its mtime, so age alone
-					// cannot keep it alive.
-					...(sessionDir ? [join(sessionDir, TOOL_RESULTS_SUBDIR)] : []),
-				]);
+				this._tempStorageLease = withWindowsDirectorySecurityOwner(sessionLifetime(this), () =>
+					claimSessionStorage(sessionId, sessionDir ? [join(sessionDir, TOOL_RESULTS_SUBDIR)] : []),
+				);
 				// A custom `--session-dir` keeps its tool results directly under that
 				// directory, outside the project-nested roots the default sweep walks,
 				// so it has to be named as its own target.

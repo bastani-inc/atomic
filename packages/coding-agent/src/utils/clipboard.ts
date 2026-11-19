@@ -1,9 +1,9 @@
 import { execFile, spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { unlink, writeFile } from "fs/promises";
-import { platform, tmpdir } from "os";
+import { platform } from "os";
 import { join } from "path";
-import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.js";
+import { ENV_CLIPBOARD_OSC52, getEnvNames, getRuntimeScratchDir } from "../config.js";
 import { createChildProcessEnvironment } from "./child-process.ts";
 import { isWaylandSession } from "./clipboard-image.ts";
 import { type ClipboardModule, clipboard } from "./clipboard-native.ts";
@@ -103,7 +103,7 @@ function runClipboardExecFile(
  * decode piped bytes with the console code page, which mangles non-ASCII UTF-8.
  */
 async function copyViaWindowsClipboard(text: string): Promise<boolean> {
-	const tmpFile = join(tmpdir(), `pi-wsl-clip-${randomUUID()}.txt`);
+	const tmpFile = join(await getRuntimeScratchDir(), `pi-wsl-clip-${randomUUID()}.txt`);
 	const env = createChildProcessEnvironment();
 	try {
 		await writeFile(tmpFile, text, { encoding: "utf8", mode: 0o600 });

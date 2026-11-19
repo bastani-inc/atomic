@@ -7,14 +7,16 @@ import {
 	mkdtemp,
 	open,
 	readFile,
+	realpath,
 	rm,
 	stat,
 	utimes,
 	writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { getAgentDir, getRuntimeScratchDir } from "../../config.js";
 import { pathExists } from "../../utils/path-exists.ts";
+import { isPathInside } from "../../utils/path-inside.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { snapshotBlobHashes } from "./blob-store.ts";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
@@ -199,8 +201,11 @@ async function locateCheckoutStepwise(
 }
 
 /** Runs `action` with a private directory that is removed afterwards; a removal failure never hides `action`'s. */
-export async function withScratchDirectory<T>(action: (directory: string) => Promise<T>): Promise<T> {
-	const directory = await mkdtemp(join(tmpdir(), "atomic-snapshot-"));
+export async function withScratchDirectory<T>(
+	action: (directory: string) => Promise<T>,
+	checkout?: Pick<Checkout, "root" | "gitDir">,
+): Promise<T> {
+	const directory = await mkdtemp(join(await getRuntimeScratchDir(checkout), "atomic-snapshot-"));
 	let result: T;
 	try {
 		result = await action(directory);
@@ -499,7 +504,7 @@ function readWorkingFiles(
 			const policy = await loadSnapshotPathPolicy(checkout.root);
 			const state = await writeCapturedTree(checkout, settings, policy, scratch, capture, modeTree, signal);
 			return { state, omitted: [...state.omitted, ...(await submoduleOmissions(checkout.root, signal))] };
-		});
+		}, checkout);
 	if (signal !== undefined) return inTurn(capture.index, compute);
 	const key = JSON.stringify([
 		checkout.root,
@@ -638,8 +643,17 @@ async function writeTreeThrough(
 	);
 	const forceAdded = await how.forceAdded(git);
 	// An untracked repository inside the checkout is listed as its directory, ending in `/`: its files are not captured.
+	// Leave user files next to the generated cache (and already-tracked files) alone. Literal pathspecs
+	// also work when the configured agent path contains Git pattern characters or resolves through a link.
+	const cache = await realpath(join(getAgentDir(), "cache")).catch(() => undefined);
+	const excludes =
+		cache && isPathInside(root, cache)
+			? ["node", "jiti", "tmp"].map(
+					(name) => `:(top,exclude,literal)${relative(root, join(cache, name)).split(sep).join("/")}`,
+				)
+			: [];
 	const untracked = [
-		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout),
+		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard", "--", ...excludes], git)).stdout),
 		...forceAdded,
 	];
 	const omitted: Extract<WorktreeSnapshotOmission, { readonly path: string }>[] = [];
@@ -1197,5 +1211,5 @@ async function captureCheckout(
 		};
 		if (options.blobs) await options.blobs.putBlobs(blobs);
 		return { status: "captured", snapshot, binding: bindingOf(snapshot), blobs };
-	});
+	}, checkout);
 }

@@ -336,6 +336,7 @@ export {
 	getProjectConfigDirs,
 	getProjectConfigPaths,
 	getReadmePath,
+	getRuntimeScratchDir,
 	getThemesDir,
 	getUserConfigDirs,
 	getUserConfigPaths,
@@ -347,6 +348,8 @@ export {
 	setEnvValue,
 	VERSION,
 	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
+	withWorkflowTranspileCache,
+	withWorkflowTranspileCacheAsync,
 } from "./config.js";
 export {
 	AgentRehydrateError,

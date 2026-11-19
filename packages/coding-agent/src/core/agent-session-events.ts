@@ -841,7 +841,7 @@ export function closeAgentSession(
 		// Empty stored IDs have no provider cache key; empty-key cleanup would close other sessions' caches.
 		if (session.sessionId !== "") await attempt("provider", () => cleanupSessionResources(session.sessionId));
 		await attempt("storage", async () => {
-			session._tempStorageLease?.release();
+			await session._tempStorageLease?.release();
 			session._tempStorageLease = undefined;
 			const releaseOpenMarker = session._sessionOpenMarker;
 			session._sessionOpenMarker = undefined;

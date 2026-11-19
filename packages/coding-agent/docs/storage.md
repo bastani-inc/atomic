@@ -985,6 +985,19 @@ Sequences count entries from 1. `readResume.branch` contains `{ seq, entry }` re
 
 Atomic uses `readResume` when available. A custom store without it keeps working and resumes sessions whole. First-party stores implement all of these methods. An older SQL session needs one lazy, paged metadata scan to build its index; a read-only store remembers the result for that process. JSONL stores save a checksummed `.idx` sidecar with an atomic rename and rebuild it when the session file changes.
 
+## Runtime caches and temporary files
+
+Under the agent directory (normally `~/.atomic/agent`, configurable with `ATOMIC_CODING_AGENT_DIR`):
+
+- `cache/node/` holds reusable compiled modules. `cache/jiti/` holds transpiled extensions and workflows. Node reuses the same cache directory across restarts. Background cleanup prunes bytecode that has neither been read nor written for 60 days. Workflow caches retain the current and previous 30-day generations. Explicit Node cache settings still apply.
+- `cache/tmp/runs/` holds private process directories for temporary editor files, clipboard images, engine startup records, Git indexes, and tool output. Operations remove their own short-lived files; sessions release their temporary tool output, and a normal process exit removes the remaining run directory. Startup housekeeping collects run directories on this host that are at least seven days old and whose process is gone. It leaves live processes and other accounts alone.
+
+If the agent directory is inside the checkout being snapshotted, Atomic uses a separate private location for its temporary Git index. Captures leave untracked runtime files out of the snapshot without excluding adjacent user files.
+
+To clear these files by hand, stop Atomic and its workers, then remove `cache/node`, `cache/jiti`, or `cache/tmp/runs` beneath the agent directory. The caches are rebuilt as needed. Do not remove the sessions or workflows directories to clear a cache.
+
+On Windows, if a long agent directory would leave too little room for editor and Git filenames, scratch uses the shorter `%LOCALAPPDATA%\Atomic\cache\tmp\runs` when available. If the agent directory cannot hold runtime files, Atomic reports the fallback once per process. It tries a private directory under `XDG_RUNTIME_DIR` on Unix or `LOCALAPPDATA` on Windows before using system temporary storage. SDK callers that set `TMPDIR` keep their chosen location for session tool output. One OS-specific exception is the Intercom broker's Unix socket: when its normal path is too long for the kernel, it uses a private short path under `XDG_RUNTIME_DIR` or the system temporary directory. Windows uses a named pipe instead. Startup can also remove stale subagent event files created by older releases; it does not create new files in that legacy location.
+
 ## Locks in the agent directory
 
 Processes that share an agent directory take turns writing `settings.json`, `auth.json` and trust decisions, and take a claim on each session they resume, through locks beside those files. When a holder dies, the next process takes its lock over under an operating-system advisory lock on a `*.takeover.lock` file (`flock` on Unix, `LockFileEx` on Windows), which the kernel releases when its holder dies.

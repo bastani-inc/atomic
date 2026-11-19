@@ -1,5 +1,4 @@
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
@@ -230,7 +229,7 @@ export async function assertWorkspaceGitAvailable(signal?: AbortSignal): Promise
 	const { path } = await executable(signal);
 	let check = availableExecutables.get(path);
 	if (check === undefined) {
-		check = runWorkspaceGit({ cwd: tmpdir(), args: ["--version"], phase: "probe" }).then((result) =>
+		check = runWorkspaceGit({ cwd: dirname(process.execPath), args: ["--version"], phase: "probe" }).then((result) =>
 			assertSupportedVersion(path, result.stdout),
 		);
 		availableExecutables.set(path, check);

@@ -20,8 +20,8 @@ export const workerDefinitionSources = new WeakMap<WorkflowDefinition, WorkerDef
 export async function loadWorkerDefinition(source: WorkerDefinitionSource): Promise<WorkflowDefinition> {
 	if (!isAbsolute(source.path) || (await definitionDigest(source.path)) !== source.digest)
 		throw new Error(`Worker definition compatibility error: ${source.path}`);
-	const { loadWorkflowModule } = await import("../extension/workflow-module-loader.js");
-	const exports = loadWorkflowModule(source.path);
+	const { loadWorkflowModuleAsync } = await import("../extension/workflow-module-loader.js");
+	const { exports } = await loadWorkflowModuleAsync(source.path);
 	const definition = exports[source.exportName];
 	if (!isWorkflowDefinition(definition)) throw new Error(`Worker definition is not importable: ${source.exportName}`);
 	workerDefinitionSources.set(definition, { ...source });

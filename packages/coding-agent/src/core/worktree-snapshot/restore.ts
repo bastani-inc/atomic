@@ -2676,13 +2676,15 @@ async function verifyRestoredTree(
 	const checkout = await locateCheckout(dir, signal);
 	if (checkout instanceof Error) throw checkout;
 	const policy = await loadSnapshotPathPolicy(dir);
-	const actual = await withScratchDirectory((verifyScratch) =>
-		writeWorkingTree(checkout, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, policy, verifyScratch, {
-			signal,
-			neutral: true,
-			seedTree: tree,
-			attributesFile: join(scratch, "empty-attributes"),
-		}),
+	const actual = await withScratchDirectory(
+		(verifyScratch) =>
+			writeWorkingTree(checkout, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, policy, verifyScratch, {
+				signal,
+				neutral: true,
+				seedTree: tree,
+				attributesFile: join(scratch, "empty-attributes"),
+			}),
+		checkout,
 	);
 	if (checkout.head !== head || (verify === "tree" && actual.tree !== tree)) {
 		throw new WorkspaceRestoreError("tree-mismatch", {
@@ -2889,8 +2891,10 @@ export async function verifyWorktree(
 		});
 	}
 	const policy = await loadSnapshotPathPolicy(checkout.root);
-	const state = await withScratchDirectory((scratch) =>
-		writeWorkingTree(checkout, settings, policy, scratch, { signal: options.signal, seedTree: binding.tree }),
+	const state = await withScratchDirectory(
+		(scratch) =>
+			writeWorkingTree(checkout, settings, policy, scratch, { signal: options.signal, seedTree: binding.tree }),
+		checkout,
 	);
 	if (checkout.head !== binding.head || state.tree !== binding.tree) {
 		throw new WorkspaceDriftError({

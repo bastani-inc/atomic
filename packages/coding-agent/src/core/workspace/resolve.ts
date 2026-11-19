@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { getAgentDir } from "../../config.js";
+import { getAgentDir, getRuntimeScratchDir } from "../../config.js";
 import { renameReplacingAsync } from "../rename-retry.ts";
 import { storageHomeDir } from "../storage/file-identity.js";
 import type { WorkspaceBinding } from "../worktree-snapshot/types.ts";
@@ -743,7 +743,7 @@ async function worktreePath(repository: OpenRepository, requested: string, branc
 
 /** Snapshot tree of the working state (tracked and untracked, honouring ignores), without touching the real index. */
 async function snapshotTree(worktree: string): Promise<string> {
-	const index = join(tmpdir(), `atomic-workspace-${randomUUID()}.index`);
+	const index = join(await getRuntimeScratchDir({ root: worktree }), `atomic-workspace-${randomUUID()}.index`);
 	const env = { GIT_INDEX_FILE: index };
 	const run = (args: readonly string[]) => gitOutput({ cwd: worktree, args, phase: "snapshot", env });
 	try {

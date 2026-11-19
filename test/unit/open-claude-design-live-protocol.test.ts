@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import {
 	buildLiveEventPrompt,
 	buildLiveSessionStartPrompt,
@@ -88,6 +88,33 @@ describe("open-claude-design live protocol (workflow-owned poll loop)", () => {
 		for (const call of runner.calls) {
 			assert.equal(call.launcher, liveLauncherPath(), "every poll runs the bundled launcher");
 			assert.deepEqual(call.args, [LIVE_POLL_VERB], "a poll is the bare live-poll verb");
+		}
+	});
+
+	test("the bundled poll helper uses private run storage for temporary probes", async () => {
+		const dir = makeProjectWithScripts();
+		const system = join(dir, "system-temp");
+		const agent = join(dir, "agent");
+		mkdirSync(system);
+		const windows = process.platform === "win32";
+		const engine = join(dir, windows ? "report.cmd" : "report.sh");
+		writeFileSync(
+			engine,
+			windows
+				? '@echo off\r\n>temp-path.txt echo %TEMP%\r\necho {"type":"exit"}\r\n'
+				: '#!/bin/sh\nprintf "%s" "$TMPDIR" >temp-path.txt\nprintf \'%s\\n\' \'{"type":"exit"}\'\n',
+			{ mode: 0o700 },
+		);
+		try {
+			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agent);
+			vi.stubEnv("IMPECCABLE_BIN", engine);
+			for (const key of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(key, system);
+			assert.equal((await pollLiveEvent({ workflowCwd: dir })).type, "exit");
+			const actual = readFileSync(join(dir, "temp-path.txt"), "utf8").trim();
+			assert.ok(actual.startsWith(join(agent, "cache")), actual);
+			assert.equal(process.env.TMPDIR, system, "other subprocesses keep the caller's environment");
+		} finally {
+			vi.unstubAllEnvs();
 		}
 	});
 
