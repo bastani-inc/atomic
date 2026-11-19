@@ -40,7 +40,7 @@ function indentWithin(width: number, indent: number): number {
 
 /** Apply the terminal's tab and control-character rules, without trimming source rows. */
 function scriptSource(code: string): string {
-	return terminalDisplayText(replaceTabs(code));
+	return terminalDisplayText(replaceTabs(code.replace(/\r\n?/g, "\n")));
 }
 
 /**

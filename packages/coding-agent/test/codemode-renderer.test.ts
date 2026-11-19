@@ -162,6 +162,11 @@ test("codemode keeps blank lines, tabs and trailing spaces in the argument so er
 	}
 });
 
+test("codemode displays CRLF and bare CR as source line breaks, not cursor motion (#5525)", () => {
+	const { plain } = codemodeBlock({ code: "\r\nconst first = 1;\rreturn first;" }, { expanded: true });
+	assert.deepEqual(plain.slice(1), [" ● codemode(", "", "     const first = 1;", "     return first;", "   ) · 1s"]);
+});
+
 test("codemode call shows a one-line script inline as highlighted code", () => {
 	const { raw, plain } = codemodeBlock({ code: "return 1 + 1;" }, { output: "2" });
 	assert.deepEqual(plain, ["", " ● codemode(return 1 + 1;) · 1s", "   ⎿  2"]);
