@@ -189,6 +189,31 @@ test("an unsaved host refresh reads only new engine rows and keeps an earlier ho
 	}
 });
 
+test("refreshing a private mirror after a branch change does not decode the retired branch again (#5554)", async () => {
+	const manager = SessionManager.inMemory("/project");
+	const root = await manager.appendMessage({ role: "user", content: "root", timestamp: 1 });
+	await manager.appendMessage({ role: "user", content: "retired unique payload", timestamp: 2 });
+	await manager.branch(root);
+	await manager.appendMessage({ role: "user", content: "different branch", timestamp: 3 });
+	await manager.appendCompaction("clear", null, 120, { strategy: "verbatim-lines" });
+	pair = await createEngineHostPair({ sessionManager: manager });
+	await pair.runtime.initializeFromEngine();
+	const parse = JSON.parse;
+	let retired = 0;
+	const reader = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+		if (typeof text === "string" && text.startsWith("[{") && text.includes("retired unique payload")) retired++;
+		return parse(text, reviver);
+	});
+	try {
+		const next = await manager.appendMessage({ role: "user", content: "current", timestamp: 4 });
+		await pair.runtime.initializeFromEngine();
+		assert.equal(pair.runtime.session.sessionManager.getLeafId(), next);
+		assert.equal(retired, 0, "warm refresh reread archived branch bodies");
+	} finally {
+		reader.mockRestore();
+	}
+});
+
 test("a first private attachment exposes the current transcript even while its archive transfer is stopped (#5554)", async () => {
 	const manager = SessionManager.inMemory("/project");
 	await manager.appendMessage({ role: "user", content: "retired".repeat(200_000), timestamp: 1 });

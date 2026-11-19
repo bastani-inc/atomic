@@ -1783,6 +1783,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (privateArchive.summary) archive.setPrivateMirrorSummary(sessionId, privateArchive.summary);
 			const rows = new Map(privateArchive.seqs.map((seq, index) => [seq, entries[index]!]));
 			const changes = privateArchive.overridesOnly ? rows : archive.privateMirrorOverrides(sessionId, rows);
+			await archive.preparePrivateMirror(sessionId);
 			let local = archive.copyPrivateMirror(sessionId, true);
 			const complete = await SessionManager.openLinearPrivateMirror(local, sessionId, cwd, changes, decoded);
 			if (!complete && changes.size) {
