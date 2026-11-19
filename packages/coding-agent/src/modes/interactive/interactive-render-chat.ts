@@ -100,6 +100,7 @@ import {
 	parkViewport,
 	releaseSavedChatHistory,
 	type SavedCopyDraw,
+	type SavedPageEarlier,
 	type SavedPageRecords,
 	type SavedRendererInstances,
 	storedWidget,
@@ -842,6 +843,8 @@ interface ReplyNotices {
 	previousRequest: PreviousRequest | undefined;
 	models: ModelPriceSource;
 	summarizedParent?: string;
+	/** On a saved page: the dropped thinking blocks of the reply read before the page, unknown when none was. */
+	earlier?: { readonly drops: number | undefined };
 	repeated?: {
 		occurrences: ReplyNotices[];
 		resolved?: true;
@@ -872,6 +875,7 @@ function missForOccurrence(notes: ReplyNotices): ReturnType<typeof cacheMissAfte
 
 function precedingDropCount(mode: InteractiveModeBase, notes: ReplyNotices): number | undefined {
 	if (notes.previousReply) return countDroppedThinkingBlocks(notes.previousReply);
+	if (notes.earlier) return notes.earlier.drops;
 	// The provider's cumulative count does not start over at a summary. Only the first visible reply can
 	// need an omitted predecessor. Do not fetch old message bodies or guess when a tail-only reader lacks it.
 	let id = notes.summarizedParent;
@@ -917,13 +921,31 @@ const TAIL_STEPS = 128;
 const HISTORY_SLICE_BUDGET_MS = 8;
 const HISTORY_SLICE_STEPS = 24;
 
+/**
+ * Where a saved page's replies start from, as the whole chat reaches them: the request and the dropped thinking of
+ * the entries read right before the page. Without a reply among them or the start of the branch, the count is unknown.
+ */
+function earlierReplies(earlier: SavedPageEarlier | undefined): {
+	request: PreviousRequest | undefined;
+	drops: number | undefined;
+} {
+	let request: PreviousRequest | undefined;
+	let drops = earlier?.root ? 0 : undefined;
+	for (const entry of earlier?.entries ?? []) {
+		request = advanceCacheHistory(request, entry);
+		if (entry.type === "message" && entry.message.role === "assistant")
+			drops = countDroppedThinkingBlocks(entry.message);
+	}
+	return { request, drops };
+}
+
 function planTranscript(
 	mode: InteractiveModeBase,
 	sessionEntries: SessionEntry[],
 	options: {
 		populateHistory?: boolean;
 		suppressCompactionBoundary?: VerbatimCompactionResult;
-		saved?: { seqs: Map<SessionEntry, number>; owners: WeakMap<object, string> };
+		saved?: { seqs: Map<SessionEntry, number>; owners: WeakMap<object, string>; earlier?: SavedPageEarlier };
 	},
 	layout?: ChatReaderLayout,
 ): TranscriptStep[] {
@@ -941,11 +963,12 @@ function planTranscript(
 	const sources = layout ? ([] as string[]) : undefined;
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
 	const messageSeq = options.saved ? new Map<AgentMessage, number>() : undefined;
-	const models =
-		!options.saved && mode.settingsManager.getShowCacheMissNotices()
-			? createCacheMissModelSource(mode.session.modelRuntime)
-			: undefined;
-	let previousRequest: PreviousRequest | undefined;
+	const models = mode.settingsManager.getShowCacheMissNotices()
+		? createCacheMissModelSource(mode.session.modelRuntime)
+		: undefined;
+	// A saved page goes on from the entries read right before it, as the whole chat goes on from them.
+	const earlier = options.saved && models ? earlierReplies(options.saved.earlier) : undefined;
+	let previousRequest: PreviousRequest | undefined = earlier?.request;
 	let previousReply: AssistantMessage | undefined;
 	const replyGroups: ReplyNotices[] = [];
 	let firstMessage = true;
@@ -1029,7 +1052,14 @@ function planTranscript(
 				if (seq !== undefined) noteSavedSeq(message, seq);
 				if (options.saved) messageSeq?.set(message, options.saved.seqs.get(entry)!);
 				if (models && firstOccurrence && message.role === "assistant") {
-					const notes: ReplyNotices = { message, previousReply, summarizedParent, previousRequest, models };
+					const notes: ReplyNotices = {
+						message,
+						previousReply,
+						summarizedParent,
+						previousRequest,
+						models,
+						...(earlier ? { earlier } : {}),
+					};
 					const saved = entry.type === "message" && entry.message.role === "assistant" ? entry.message : message;
 					const first = firstOccurrence.get(saved);
 					if (first) {
@@ -1150,6 +1180,7 @@ function savedChatComponents(
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 	copy?: SavedCopyDraw,
 	records?: SavedPageRecords,
+	earlier?: SavedPageEarlier,
 ): Component[] {
 	const scratch = new Container();
 	// Each page draws after earlier rows, as the whole transcript does: its first message keeps its spacing.
@@ -1157,7 +1188,11 @@ function savedChatComponents(
 	const chat = mode.chatContainer;
 	try {
 		mode.chatContainer = scratch;
-		const saved = { seqs: new Map(entries.map((e, i) => [e, seqs[i]!])), owners: new WeakMap<object, string>() };
+		const saved = {
+			seqs: new Map(entries.map((e, i) => [e, seqs[i]!])),
+			owners: new WeakMap<object, string>(),
+			earlier,
+		};
 		// The page's saved lines go where the whole chat draws them: after the last row of their entry's group.
 		const layout = records ? new ChatReaderLayout(entries, scratch, { root: records.root }) : undefined;
 		const steps = planTranscript(mode, entries, { saved }, layout);

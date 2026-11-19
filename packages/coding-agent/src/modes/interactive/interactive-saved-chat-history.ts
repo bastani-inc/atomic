@@ -44,7 +44,52 @@ type Draw = (
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 	copy?: SavedCopyDraw,
 	records?: SavedPageRecords,
+	earlier?: SavedPageEarlier,
 ) => Component[];
+
+/**
+ * The saved entries right before a page, in order, for its first replies' warnings: a prompt-cache miss and dropped
+ * thinking compare a reply with the request and reply before it, which may be on the page before. `root`: nothing
+ * is saved before them on the branch.
+ */
+export interface SavedPageEarlier {
+	readonly entries: readonly SessionEntry[];
+	readonly root: boolean;
+}
+
+/** At most this many saved entries before a page are read for its first replies: one turn's reply, results and prompt. */
+const EARLIER_ENTRIES = 16;
+
+/**
+ * One bounded read of the entries right before a page, made only when its replies' warnings are shown. A reply whose
+ * predecessor the read does not reach draws no warning that depends on it, as the whole chat does without one.
+ */
+async function readEarlierEntries(
+	mode: InteractiveModeBase,
+	manager: SessionManager,
+	leaf: number,
+	entries: readonly SessionEntry[],
+	first: number | undefined,
+	signal?: AbortSignal,
+): Promise<SavedPageEarlier | undefined> {
+	if (first === undefined || !mode.settingsManager.getShowCacheMissNotices()) return undefined;
+	if (!entries.some((entry) => entry.type === "message" && entry.message.role === "assistant")) return undefined;
+	if (first <= 1) return { entries: [], root: true };
+	const read = manager.readHistory({
+		branchLeafSeq: leaf,
+		toSeq: first - 1,
+		direction: "backward",
+		limit: EARLIER_ENTRIES,
+		signal,
+	});
+	try {
+		const next = await read.next();
+		if (next.done) return { entries: [], root: true };
+		return { entries: next.value.items.map(entryForDisplay), root: next.value.nextCursor === undefined };
+	} finally {
+		await read.return();
+	}
+}
 
 /** The saved reader-only lines of one page's entries, read with the page and drawn with it, as the whole chat
  * draws them. `root`: the page starts the conversation, so it also shows what was saved before any entry. */
@@ -433,11 +478,13 @@ function entryForDisplay(item: SessionHistoryItem): SessionEntry {
 interface VisiblePage {
 	readonly page: SessionHistoryPage;
 	readonly records?: SavedPageRecords;
+	readonly earlier?: SavedPageEarlier;
 }
 
 async function readVisiblePage(
 	mode: InteractiveModeBase,
 	manager: SessionManager,
+	leaf: number,
 	options: SessionHistoryReadOptions,
 	direction: Direction,
 ): Promise<VisiblePage | undefined> {
@@ -452,15 +499,14 @@ async function readVisiblePage(
 	if (!page) return undefined;
 	page = await withOversizedToolResults(manager, page, options.signal);
 	options.signal?.throwIfAborted();
-	// The page's saved lines arrive with it, so it is drawn once, with each line where the whole chat shows it.
-	const records = await readPageRecords(
-		mode,
-		manager,
-		page.items.map(entryForDisplay),
-		page.items[0]?.seq === 1,
-		direction === "older",
-	);
-	return { page, records };
+	// The page's saved lines and the entries before it arrive with it, so it is drawn once, as the whole chat draws it.
+	const entries = page.items.map(entryForDisplay),
+		first = page.items[0]?.seq;
+	const [records, earlier] = await Promise.all([
+		readPageRecords(mode, manager, entries, first === 1, direction === "older"),
+		readEarlierEntries(mode, manager, leaf, entries, first, options.signal),
+	]);
+	return { page, records, earlier };
 }
 
 /** Network I/O owns only its abort signal and a weak return address, not the terminal and every rendered row. */
@@ -473,7 +519,7 @@ function requestPage(
 ): void {
 	void read.then(
 		(page) => {
-			if (!signal.aborted) owner.deref()?.publish(direction, page?.page, range, page?.records);
+			if (!signal.aborted) owner.deref()?.publish(direction, page?.page, range, page?.records, page?.earlier);
 		},
 		(error) => {
 			if (!signal.aborted) owner.deref()?.failed(error);
@@ -552,15 +598,14 @@ class SavedChatHistory {
 			if (!alive()) throw closed();
 			const { items } = await withOversizedToolResults(this.manager, page, signal);
 			if (!alive()) throw closed();
-			const records = await readPageRecords(
-				this.mode,
-				this.manager,
-				items.map(entryForDisplay),
-				items[0]?.seq === 1,
-			);
-			if (!alive()) throw closed();
-			const first = items[0]?.seq,
+			const entries = items.map(entryForDisplay),
+				first = items[0]?.seq,
 				end = items.at(-1)?.seq;
+			const [records, earlier] = await Promise.all([
+				readPageRecords(this.mode, this.manager, entries, first === 1),
+				readEarlierEntries(this.mode, this.manager, branchLeafSeq, entries, first, signal),
+			]);
+			if (!alive()) throw closed();
 			if (first === undefined || end === undefined) continue;
 			const copy: SavedCopyDraw = {
 				positions: new Map(),
@@ -574,12 +619,13 @@ class SavedChatHistory {
 			};
 			const components = this.draw(
 				this.mode,
-				items.map(entryForDisplay),
+				entries,
 				items.map((item) => item.seq),
 				this.exceptions,
 				undefined,
 				copy,
 				records,
+				earlier,
 			);
 			try {
 				await copy.settled;
@@ -627,6 +673,7 @@ class SavedChatHistory {
 			readVisiblePage(
 				this.mode,
 				this.manager,
+				this.leaf,
 				{ ...request.options, adjacent: true, signal: controller.signal },
 				direction,
 			),
@@ -739,6 +786,7 @@ class SavedChatHistory {
 		page: SessionHistoryPage | undefined,
 		range: { readonly from: number; readonly to: number },
 		records?: SavedPageRecords,
+		earlier?: SavedPageEarlier,
 	): void {
 		this.pending = undefined;
 		const at = this.chat.children.indexOf(this.marker);
@@ -755,6 +803,7 @@ class SavedChatHistory {
 			page.adjacent,
 			undefined,
 			records,
+			earlier,
 		);
 		// An edge cut short continues with a range read from the page's own edge, not with the store's cursor.
 		const mounted: MountedPage = {
