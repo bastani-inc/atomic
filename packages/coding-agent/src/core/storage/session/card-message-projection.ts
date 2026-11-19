@@ -16,6 +16,9 @@ function* object(first: Token, fields: Fields): Reader<void> {
 		else yield* skip(value);
 	}
 }
+/** A copy of a string a card keeps, so it holds that text and not the decoded page a streamed value is a slice of. */
+const own = (s: string) => (s.length > 12 ? ` ${s}`.slice(1) : s);
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 function* json(t: Token): Reader<Json> {
 	if (t.name === "startObject") {
 		const r: Record<string, Json> = {};
@@ -35,7 +38,7 @@ function* json(t: Token): Reader<Json> {
 		for (let v = yield; v.name !== "endArray"; v = yield) a.push(yield* json(v));
 		return a;
 	}
-	if (t.name === "startString") return yield* stringValue();
+	if (t.name === "startString") return own(yield* stringValue());
 	if (t.name === "numberValue") return Number(t.value);
 	if (t.name === "trueValue" || t.name === "falseValue" || t.name === "nullValue") return t.value;
 	throw new SyntaxError("Invalid stored JSON value");
@@ -48,35 +51,56 @@ interface Text {
 	left: string;
 	right: string;
 }
+/** A text value read piece by piece: a streamed value in its chunks, a parsed one as one piece. */
+class TextReader {
+	private raw: string | undefined;
+	private preview = "";
+	private space = false;
+	private marker = false;
+	private left = "";
+	private right = "";
+	constructor(full: boolean) {
+		this.raw = full ? "" : undefined;
+	}
+	add(s: string) {
+		if (this.raw !== undefined) this.raw += s;
+		this.marker ||= (this.right + s).includes(MARKER);
+		this.left += s.slice(0, Math.max(0, MARKER.length - this.left.length));
+		this.right = (this.right + s).slice(-MARKER.length);
+		if (this.preview.length > 201) return;
+		for (const m of s.matchAll(/\s+|\S+/gu)) {
+			if (/\s/u.test(m[0][0]!)) this.space = true;
+			else {
+				if (this.space && this.preview) this.preview += " ";
+				this.preview += m[0].slice(0, 202 - this.preview.length);
+				this.space = false;
+			}
+			if (this.preview.length >= 202) break;
+		}
+	}
+	done(): Text {
+		return {
+			raw: this.raw === undefined ? undefined : own(this.raw),
+			preview: this.preview,
+			marker: this.marker,
+			left: this.left,
+			right: this.right,
+		};
+	}
+}
 function* text(t: Token, full: boolean): Reader<Text | undefined> {
 	if (t.name !== "startString") {
 		yield* skip(t);
 		return undefined;
 	}
-	let raw = full ? "" : undefined,
-		preview = "",
-		space = false,
-		marker = false,
-		left = "",
-		right = "";
-	for (let p = yield; p.name === "stringChunk"; p = yield) {
-		const s = p.value;
-		if (raw !== undefined) raw += s;
-		marker ||= (right + s).includes(MARKER);
-		left += s.slice(0, Math.max(0, MARKER.length - left.length));
-		right = (right + s).slice(-MARKER.length);
-		if (preview.length > 201) continue;
-		for (const m of s.matchAll(/\s+|\S+/gu)) {
-			if (/\s/u.test(m[0][0]!)) space = true;
-			else {
-				if (space && preview) preview += " ";
-				preview += m[0].slice(0, 202 - preview.length);
-				space = false;
-			}
-			if (preview.length >= 202) break;
-		}
-	}
-	return { raw, preview, marker, left, right };
+	const reader = new TextReader(full);
+	for (let p = yield; p.name === "stringChunk"; p = yield) reader.add(p.value);
+	return reader.done();
+}
+function textOf(s: string, full: boolean): Text {
+	const reader = new TextReader(full);
+	reader.add(s);
+	return reader.done();
 }
 export interface CardCall {
 	index: number;
@@ -91,34 +115,66 @@ export interface CardPiece {
 	marker: boolean;
 	text?: string;
 }
+const emptyPiece = (): CardPiece => ({ lines: [], calls: [], nonblank: false, marker: false });
+/** What one message's content shows on its card, whether its content was streamed or parsed. */
+class PieceBuilder {
+	readonly output: CardPiece;
+	private pieces = 0;
+	private tail = "";
+	private readonly role: string;
+	private readonly full: boolean;
+	constructor(role: string, full: boolean) {
+		this.role = role;
+		this.full = full;
+		this.output = { ...emptyPiece(), ...(full ? { text: "" } : {}) };
+	}
+	private line(s: string) {
+		if (s.length > 200) {
+			let end = 199;
+			if (/[\uD800-\uDBFF]/.test(s.charAt(end - 1)) && /[\uDC00-\uDFFF]/.test(s.charAt(end))) end--;
+			s = `${s.slice(0, end)}…`;
+		}
+		this.output.lines.push(own(s));
+		if (this.output.lines.length > 12) this.output.lines.shift();
+	}
+	part(v: Text | undefined) {
+		if (!v) return;
+		const { output } = this;
+		const join = this.pieces ? "\n" : "";
+		output.nonblank ||= !!v.preview;
+		output.marker ||= v.marker || (this.tail + join + v.left).includes(MARKER);
+		this.tail = (this.tail + join + v.right).slice(-MARKER.length);
+		if (this.full) output.text += join + (v.raw ?? "");
+		this.pieces++;
+		if (v.preview) this.line((this.role === "user" ? "› " : "") + v.preview);
+	}
+	block(index: number, type: string, name: string, id: string, v: Text | undefined, args: unknown) {
+		if (type === "text") this.part(v);
+		else if (type === "toolCall" && name) {
+			this.line(`→ ${name}`);
+			if (this.role === "assistant")
+				this.output.calls.push({
+					index,
+					id,
+					name,
+					...(args === undefined ? {} : { args: isRecord(args) ? args : {} }),
+				});
+		}
+	}
+	done(): CardPiece {
+		const { output } = this;
+		if (output.text !== undefined) output.text = own(output.text);
+		return output;
+	}
+}
 function* content(
 	t: Token,
 	role: string,
 	full: boolean,
 	args: ReadonlySet<number> | "all" | undefined,
 ): Reader<CardPiece> {
-	const output: CardPiece = { lines: [], calls: [], nonblank: false, marker: false, ...(full ? { text: "" } : {}) };
-	let pieces = 0,
-		tail = "";
-	const line = (s: string) => {
-		if (s.length > 200) {
-			let end = 199;
-			if (/[\uD800-\uDBFF]/.test(s.charAt(end - 1)) && /[\uDC00-\uDFFF]/.test(s.charAt(end))) end--;
-			s = s.slice(0, end) + "…";
-		}
-		output.lines.push(s);
-		if (output.lines.length > 12) output.lines.shift();
-	};
-	const part = (v: Text | undefined) => {
-		if (!v) return;
-		output.nonblank ||= !!v.preview;
-		output.marker ||= v.marker || (tail + (pieces ? "\n" : "") + v.left).includes(MARKER);
-		tail = (tail + (pieces ? "\n" : "") + v.right).slice(-MARKER.length);
-		if (full) output.text += (pieces ? "\n" : "") + (v.raw ?? "");
-		pieces++;
-		if (v.preview) line((role === "user" ? "› " : "") + v.preview);
-	};
-	if (t.name === "startString") part(yield* text(t, full));
+	const builder = new PieceBuilder(role, full);
+	if (t.name === "startString") builder.part(yield* text(t, full));
 	else if (t.name === "startArray") {
 		let index = 0;
 		const wanted = (at: number) => args === "all" || !!args?.has(at);
@@ -134,11 +190,11 @@ function* content(
 					else yield* skip(x);
 				},
 				name: function* (x) {
-					if (x.name === "startString") name = yield* stringValue();
+					if (x.name === "startString") name = own(yield* stringValue());
 					else yield* skip(x);
 				},
 				id: function* (x) {
-					if (x.name === "startString") id = yield* stringValue();
+					if (x.name === "startString") id = own(yield* stringValue());
 					else yield* skip(x);
 				},
 				text: function* (x) {
@@ -149,27 +205,10 @@ function* content(
 					else yield* skip(x);
 				},
 			});
-			if (type === "text") part(v);
-			else if (type === "toolCall" && name) {
-				line(`→ ${name}`);
-				if (role === "assistant")
-					output.calls.push({
-						index,
-						id,
-						name,
-						...(wanted(index)
-							? {
-									args:
-										argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
-											? argumentsValue
-											: {},
-								}
-							: {}),
-					});
-			}
+			builder.block(index, type, name, id, v, wanted(index) ? (argumentsValue ?? null) : undefined);
 		}
 	} else yield* skip(t);
-	return output;
+	return builder.done();
 }
 export async function cardPiece(
 	chunks: AsyncIterable<Uint8Array>,
@@ -181,7 +220,7 @@ export async function cardPiece(
 	return read(
 		chunks,
 		(function* (): Reader<CardPiece> {
-			let p: CardPiece = { lines: [], calls: [], nonblank: false, marker: false };
+			let p = emptyPiece();
 			yield* object(yield, {
 				[edit ? "replacement" : "message"]: function* (t) {
 					yield* object(t, {
@@ -194,6 +233,26 @@ export async function cardPiece(
 			return p;
 		})(),
 	);
+}
+/** The same projection as {@link cardPiece} of a message's `content`, when the row was parsed whole. */
+export function cardPieceOf(value: unknown, role: string, full = false, args?: ReadonlySet<number> | "all"): CardPiece {
+	if (value === undefined) return emptyPiece();
+	const builder = new PieceBuilder(role, full);
+	if (typeof value === "string") builder.part(textOf(value, full));
+	else if (Array.isArray(value))
+		value.forEach((b, index) => {
+			if (!isRecord(b)) return;
+			const withArgs = args === "all" || !!args?.has(index);
+			builder.block(
+				index,
+				typeof b.type === "string" ? b.type.slice(0, 16) : "",
+				typeof b.name === "string" ? b.name : "",
+				typeof b.id === "string" ? b.id : "",
+				typeof b.text === "string" ? textOf(b.text, full) : undefined,
+				withArgs ? (b.arguments ?? null) : undefined,
+			);
+		});
+	return builder.done();
 }
 export interface CardHeader {
 	type?: string;
