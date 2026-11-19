@@ -67,6 +67,7 @@ export function normalizeSessionEntries(entries: readonly SessionEntry[]): reado
 
 /** Structural type for pi's sessionManager (optional — degrades gracefully). */
 export interface SessionManager {
+	readOpenWorkflowIds?: () => Promise<string[]>;
 	getSessionStore?: () => import("@bastani/atomic").SessionStore;
 	getCwd?: () => string;
 	getEntries?: () => SessionEntry[] | readonly SessionEntry[];

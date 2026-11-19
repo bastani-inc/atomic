@@ -15,6 +15,8 @@ type Shape =
 	| "array"
 	| "truth"
 	| "short"
+	| "string"
+	| "stringPresent"
 	| "owner"
 	| "op"
 	| "usage"
@@ -55,10 +57,8 @@ const customFields: Fields = {
 	intercom_ask_settled: { askId: true },
 	intercom_sent: { message: protocolMessage },
 	intercom_reply_wait: { toolCallId: true },
-	"workflow.run.start": { runId: true },
-	"workflow.stage.start": { runId: true },
-	"workflow.stage.end": { runId: true },
-	"workflow.run.end": { runId: true },
+	"workflow.run.start": { runId: "string", name: "stringPresent", ts: "number" },
+	"workflow.run.end": { runId: "string" },
 	"workflow-stage-parked-tasks": { tasks: "tasks" },
 	"task-completion-intent": { completionId: true, ownerId: true, taskId: true },
 	"task-completion-ack": { completionId: true },
@@ -124,9 +124,13 @@ function* embedded(shape: Shape, tool = false): Reader<Json> {
 }
 
 function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
+	if (shape === "stringPresent") {
+		yield* skip(first);
+		return first.name === "startString" ? "" : null;
+	}
 	if (
 		shape === undefined ||
-		(shape === "op" && first.name !== "startString") ||
+		((shape === "op" || shape === "string") && first.name !== "startString") ||
 		(shape === "number" && first.name !== "numberValue") ||
 		(shape === "tools" && first.name !== "startArray")
 	) {
@@ -337,6 +341,18 @@ function extracted(value: Json | undefined, postgres: boolean): Json {
 	return typeof value === "boolean" ? Number(value) : value;
 }
 
+/** Read an interrupted run's exact JSON string without decoding its unrelated start inputs or normalizing SQL text. */
+export async function readChunkedWorkflowRunId(chunks: AsyncIterable<Uint8Array>): Promise<string | undefined> {
+	const selected = await read(
+		chunks,
+		(function* (): Reader<Json> {
+			return yield* readValue(yield, { data: { runId: "string" } });
+		})(),
+	);
+	const id = object(object(selected).data).runId;
+	return typeof id === "string" ? id : undefined;
+}
+
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */
 export async function chunkedResumeProjection(
 	stub: SqliteRow,
@@ -365,7 +381,7 @@ export async function chunkedResumeProjection(
 			result.resume_compactiondetails = extracted(source.strategy, postgres) as SqliteValue;
 		for (const [field, v] of Object.entries(source)) {
 			if (!Object.hasOwn(projected, field)) continue;
-			if (key === "data" && ["version", "index", "timestamp"].includes(field))
+			if (key === "data" && ["version", "index", "timestamp", "ts"].includes(field))
 				projected[field] = typeof v === "number" ? v : null;
 			else if (key === "data" && ["queries", "urls"].includes(field))
 				projected[field] = Array.isArray(v) ? "[]" : null;

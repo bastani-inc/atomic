@@ -20,7 +20,8 @@ export class SessionKeyDigests {
 		return this.data;
 	}
 	private digest(key: string): Buffer {
-		return createHash("sha256").update(key).digest().subarray(0, DIGEST_BYTES);
+		// JS key equality compares code units. UTF-8 would silently merge an unpaired surrogate with U+FFFD.
+		return createHash("sha256").update(key, "utf16le").digest().subarray(0, DIGEST_BYTES);
 	}
 	private contains(digest: Buffer): boolean {
 		const data = this.packed();

@@ -410,4 +410,5 @@ export type ReadonlySessionManager = Pick<
 	| "getLastSeq"
 	| "getSessionRecoveryState"
 	| "getAdmissionKeys"
+	| "readOpenWorkflowIds"
 >;

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
 import { SessionKeyDigests } from "./key-digests.js";
@@ -22,8 +23,8 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
-/** Version 6 separates covered system/setting entries from the state restored to a live window. */
-const RESUME_INDEX_VERSION = 6;
+/** Version 7 records where to look for open workflows instead of restoring their whole lifecycle. */
+const RESUME_INDEX_VERSION = 7;
 
 export interface SessionResumeIndex {
 	readonly version: typeof RESUME_INDEX_VERSION;
@@ -32,6 +33,7 @@ export interface SessionResumeIndex {
 	readonly latest: Readonly<Record<string, readonly number[]>>;
 	readonly fields: Readonly<Record<string, readonly (readonly [number, readonly string[]])[]>>;
 	readonly firstChildren: Readonly<Record<string, number>>;
+	readonly workflowStarts: Readonly<Record<string, number>>;
 	readonly models: readonly (readonly [number, string])[];
 	readonly assistants: readonly number[];
 	readonly admissions: string;
@@ -249,6 +251,7 @@ type ResumeProtocolIndex = Pick<
 	| "latest"
 	| "fields"
 	| "firstChildren"
+	| "workflowStarts"
 	| "admissions"
 	| "delivered"
 	| "deliveryOps"
@@ -262,6 +265,7 @@ class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
 	readonly fields: Record<string, readonly (readonly [number, readonly string[]])[]>;
 	readonly firstChildren: Record<string, number>;
+	readonly workflowStarts: Record<string, number>;
 	readonly admissions: SessionKeyDigests;
 	readonly delivered: Set<string>;
 	readonly deliveryOps: Set<string>;
@@ -274,6 +278,7 @@ class ResumeProtocols {
 		this.latest = { ...previous?.latest };
 		this.fields = { ...previous?.fields };
 		this.firstChildren = { ...previous?.firstChildren };
+		this.workflowStarts = { ...previous?.workflowStarts };
 		this.admissions = new SessionKeyDigests(previous?.admissions);
 		this.delivered = new Set(previous?.delivered ?? []);
 		this.deliveryOps = new Set(previous?.deliveryOps ?? []);
@@ -351,14 +356,7 @@ class ResumeProtocols {
 		}
 		if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
 			this.settle(`inbound:${record(data.message).replyTo}`);
-		if (
-			(kind === "workflow.run.start" || kind === "workflow.stage.start" || kind === "workflow.stage.end") &&
-			typeof data.runId === "string"
-		) {
-			const key = `run:${data.runId}`;
-			this.latest[key] = [...(this.latest[key] ?? []), seq];
-		}
-		if (kind === "workflow.run.end" && typeof data.runId === "string") delete this.latest[`run:${data.runId}`];
+		updateWorkflowStarts(this.workflowStarts, entry, seq);
 		if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
 			this.keepPending(`wait:${data.toolCallId}`, seq);
 		if (kind === "workflow-stage-parked-tasks" && Array.isArray(data.tasks)) {
@@ -425,6 +423,7 @@ class ResumeProtocols {
 			latest: this.latest,
 			fields: this.fields,
 			firstChildren: this.firstChildren,
+			workflowStarts: this.workflowStarts,
 			admissions: this.admissions.serialize(),
 			delivered: [...this.delivered],
 			deliveryOps: [...this.deliveryOps],
@@ -435,6 +434,21 @@ class ResumeProtocols {
 			acks: this.acks,
 		};
 	}
+}
+
+/** Positions of the latest valid starts which have no subsequent end. Workflow recovery only needs these
+ * positions before it consults the run journal, not copies of stage output and run input records. */
+export function updateWorkflowStarts(open: Record<string, number>, entry: SessionEntry, seq: number): void {
+	if (
+		entry.type !== "custom" ||
+		(entry.customType !== "workflow.run.start" && entry.customType !== "workflow.run.end")
+	)
+		return;
+	const data = record(entry.data);
+	if (typeof data.runId !== "string") return;
+	const key = createHash("sha256").update(data.runId, "utf16le").digest("hex").slice(0, 32);
+	if (entry.customType === "workflow.run.end") delete open[key];
+	else if (typeof data.name === "string" && typeof data.ts === "number") open[key] = seq;
 }
 
 export function foldSessionResume(
@@ -894,6 +908,7 @@ export function sessionResumeFrom(
 			returned.some((held) => held.seq === index.latestAssistantSeq),
 		),
 		recovery: {
+			workflowStarts: index.workflowStarts,
 			admissionDigests: index.admissions,
 			intercomDeliveredIds: index.delivered,
 			deliveryOpIds: index.deliveryOps,

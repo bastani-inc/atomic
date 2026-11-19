@@ -112,6 +112,33 @@ test("admission recovery uses a fixed-size digest per delivery rather than retai
 	assert.equal(Buffer.from(recovery.admissionDigests, "base64").byteLength, count * 16);
 });
 
+test("synchronous admission distinguishes the original key from Unicode replacement text after a clear (#5554)", () => {
+	const s = session();
+	s.card("admitted", "already-admitted", {}, { stageAdmissionKey: "job:\ud800" });
+	const keys = new SessionKeyDigests(s.resume().recovery.admissionDigests);
+	assert.equal(keys.has("job:\ud800"), true);
+	assert.equal(keys.has("job:\ufffd"), false);
+});
+
+test("a cleared window does not retain workflow inputs or completed stage outputs to find its open runs (#5554)", () => {
+	const s = session();
+	for (const runId of ["active", "ended"]) {
+		s.custom("workflow.run.start", { runId, name: runId, ts: 1, inputs: { text: "expensive input".repeat(8000) } });
+		for (let n = 0; n < 12; n++) {
+			s.custom("workflow.stage.start", { runId, stageId: `s${n}` });
+			s.custom("workflow.stage.end", { runId, stageId: `s${n}`, output: "expensive output".repeat(8000) });
+		}
+	}
+	s.custom("workflow.run.end", { runId: "ended" });
+	const restored = s.resume();
+	assert.equal(
+		restored.state.some(({ entry }) => entry.type === "custom" && entry.customType.startsWith("workflow.")),
+		false,
+		"workflow payloads are resident before recovery asks for them",
+	);
+	assert.deepEqual(Object.values(restored.recovery.workflowStarts ?? {}), [1]);
+});
+
 test("resume keeps child insertion order and merged state without rewriting its entries (#5249)", () => {
 	const s = session();
 	const first = s.custom("subagent-child", {
@@ -179,9 +206,12 @@ test("resume keeps in-flight workflow runs but drops completed workflow lifecycl
 	}
 	s.custom("workflow.run.end", { runId: "done" });
 	const resume = s.resume();
+	const ids = Object.values(resume.recovery.workflowStarts ?? {}).map(
+		(seq) => (s.entries[seq - 1] as { data: { runId: string } }).data.runId,
+	);
 	assert.deepEqual(
-		scanInFlightRuns(resume.state.map((e) => e.entry) as Parameters<typeof scanInFlightRuns>[0]),
-		scanInFlightRuns(s.entries as Parameters<typeof scanInFlightRuns>[0]),
+		ids,
+		scanInFlightRuns(s.entries as Parameters<typeof scanInFlightRuns>[0]).map((run) => run.runId),
 	);
 	assert.equal(
 		resume.state.some(({ entry }) => entry.type === "custom" && (entry.data as { runId?: string })?.runId === "done"),

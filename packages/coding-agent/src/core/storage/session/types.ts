@@ -142,6 +142,7 @@ export interface SessionCompactionPoint {
 }
 
 export interface SessionRecoveryState {
+	readonly workflowStarts?: Readonly<Record<string, number>>;
 	/** Sorted, packed 128-bit admission-key digests, encoded as base64. Does not expose original keys. */
 	readonly admissionDigests: string;
 	readonly intercomDeliveredIds: readonly string[];

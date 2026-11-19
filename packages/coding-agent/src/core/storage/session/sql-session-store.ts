@@ -1476,9 +1476,14 @@ export class SqlSessionStore implements SessionStore {
 							key,
 							["version", "index", "timestamp"].includes(key)
 								? `CASE WHEN ${this.dialect.jsonType("entry_json", "data", key)} IN ('integer','real') THEN CAST(${j("data", key)} AS ${this.dialect.types.real}) END`
-								: j("data", key),
+								: key === "runId"
+									? `CASE WHEN ${j("customType")} NOT IN ('workflow.run.start','workflow.run.end') OR ${this.dialect.jsonHasType("text", "entry_json", "data", key)} THEN ${j("data", key)} END`
+									: j("data", key),
 						] as const,
 				),
+				// Run recovery needs the types of name and timestamp, not their values or the start's inputs.
+				["name", `CASE WHEN ${this.dialect.jsonHasType("text", "entry_json", "data", "name")} THEN '' END`],
+				["ts", `CASE WHEN ${this.dialect.jsonType("entry_json", "data", "ts")} IN ('integer','real') THEN 0 END`],
 				[
 					"message",
 					this.dialect.jsonObject(

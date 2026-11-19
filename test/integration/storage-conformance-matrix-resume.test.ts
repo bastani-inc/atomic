@@ -79,6 +79,9 @@ for (const backend of storageBackends) {
 					["task-completion-ack", { completionId: "intent" }],
 					["web-search-results", { id: "search", timestamp: 2, type: "fetch", urls: ["url"] }],
 					["workflow.run.start", { runId: 1e-8 }],
+					["workflow.run.start", { runId: "bad-name", name: { name: "not a string" }, ts: 1 }],
+					["workflow.run.start", { runId: "bad-ts", name: "work", ts: "1" }],
+					["workflow.run.start", { runId: "waiting", name: "work", ts: 1 }],
 				];
 				const entries: SessionEntry[] = protocols.map(([customType, data], i) => ({
 					type: "custom",
@@ -158,6 +161,11 @@ for (const backend of storageBackends) {
 					return JSON.stringify((await state()).resume);
 				};
 				const inline = await rebuild();
+				assert.deepEqual(
+					Object.values(JSON.parse(inline).workflowStarts),
+					[protocols.length],
+					"only a valid workflow start may reopen a run",
+				);
 				// Change only the physical representation. The old SQL projection still serves as an independent oracle.
 				await db.transaction(async (tx) => {
 					for (const [i, entry] of entries.entries()) {

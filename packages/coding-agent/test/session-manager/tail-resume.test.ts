@@ -139,6 +139,51 @@ it("a live manager drops earlier windows after each compaction without deleting 
 	expect(first.lastSeq).toBe(windows * (messagesPerWindow + 1));
 });
 
+it("discovers interrupted workflows across a clear without keeping their inputs, outputs or closed runs (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const payload = "界".repeat(SESSION_HISTORY_PAGE_BYTES);
+	const runId = "active\ud800workflow";
+	for (const id of ["completed", runId]) {
+		await writer.appendCustomEntry("workflow.run.start", { inputs: { payload }, runId: id, name: "work", ts: 1 });
+		await writer.appendCustomEntry("workflow.stage.end", { runId: id, output: payload });
+	}
+	await writer.appendCustomEntry("workflow.run.end", { runId: "completed" });
+	await writer.appendCompaction("cleared", null, 1000, details);
+	const resumed = await SessionManager.open(store, writer.getSessionId());
+	for (const manager of [writer, resumed]) {
+		expect(await manager.readOpenWorkflowIds()).toEqual([runId]);
+		expect(manager.getEntries().map((entry) => entry.type)).toEqual(["compaction"]);
+	}
+	await resumed.appendCustomEntry("workflow.run.end", { runId });
+	expect(await resumed.readOpenWorkflowIds()).toEqual([]);
+});
+
+it("a cleared parent releases a giant workflow identity after its route ends (#5554)", async () => {
+	const store = await sqlStore();
+	const parent = await SessionManager.create(store, "/project");
+	const { collectGarbage } = await import("../../../../test/helpers/collect-garbage.js");
+	const makeRun = async () => {
+		const runId = Array.from({ length: 2048 }, () => "r".repeat(1024)).join("");
+		const start = { runId, name: "work", ts: 1 };
+		const end = { runId };
+		const first = await parent.appendCustomEntry("workflow.run.start", start);
+		await parent.appendCompaction("cleared", null, 1000, details);
+		expect(await parent.readOpenWorkflowIds()).toEqual([runId]);
+		const last = await parent.appendCustomEntry("workflow.run.end", end);
+		await parent.appendCompaction("cleared again", null, 1000, details);
+		return { entries: [first, last], payloads: [new WeakRef(start), new WeakRef(end)] };
+	};
+	const { entries, payloads } = await makeRun();
+	await collectGarbage();
+	expect(payloads.every((payload) => payload.deref() === undefined)).toBe(true);
+	expect(entries.every((id) => !parent.getEntry(id))).toBe(true);
+	expect(await parent.readOpenWorkflowIds()).toEqual([]);
+	const resume = await store.readResume!(parent.getSessionId());
+	expect(resume.recovery.workflowStarts).toEqual({});
+	expect(JSON.stringify(resume).length).toBeLessThan(SESSION_HISTORY_PAGE_BYTES);
+});
+
 it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
 	const store = await sqlStore();
 	const { id, firstPreTail } = await compactedSession(store);
