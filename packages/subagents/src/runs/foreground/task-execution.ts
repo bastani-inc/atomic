@@ -73,7 +73,12 @@ import {
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
-import { INLINE_TASK_OUTPUT_MAX_BYTES, retainedTaskOutput, retainTaskOutput } from "./task-output-retention.js";
+import {
+	INLINE_TASK_OUTPUT_MAX_BYTES,
+	retainedTaskOutput,
+	retainTaskOutput,
+	wasTaskOutputEvicted,
+} from "./task-output-retention.js";
 
 export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 
@@ -222,7 +227,8 @@ async function readSettledOutput(
 			if (
 				page.error.code === "OutputUnavailable" &&
 				record?.kind === "agent" &&
-				!(settled.result.kind === "cancelled" && settled.result.released)
+				!(settled.result.kind === "cancelled" && settled.result.released) &&
+				wasTaskOutputEvicted(lease.value)
 			) {
 				return unavailable(
 					`The private copy is no longer in the recent output cache. See the earlier result or open /tasks ${settled.taskId} for the child's transcript.`,
@@ -914,7 +920,7 @@ export async function runAgentTask(input: {
 							);
 						const text = getSingleResultOutput(child);
 						if (!released) {
-							await retainTaskOutput(child, text, context.ref);
+							await retainTaskOutput(child, text, context.ref, lease);
 							rememberTranscriptOutput(lease, context.ref, settledReply?.deref());
 						}
 						const bytes = Buffer.from(text);
