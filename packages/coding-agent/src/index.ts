@@ -47,7 +47,7 @@ export type {
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
 export { retainTurnOutcome, settleTurnOutcome } from "./core/host-notice-window.ts";
-export { hostNoticeFromMessage } from "./core/host-notices.ts";
+export { hostNoticeFromMessage, hostNoticeMessageFromEntry } from "./core/host-notices.ts";
 export {
 	type AsyncTakeoverMutex,
 	type TakeoverMutex,

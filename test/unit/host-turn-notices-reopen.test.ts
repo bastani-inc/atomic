@@ -257,12 +257,18 @@ test.each([
 	["isolated", "no entry lookup"],
 	["in-process", "lookup misses"],
 	["isolated", "lookup finds another entry"],
+	["in-process", "confirmed save"],
+	["isolated", "confirmed save"],
+	["in-process", "private child store"],
+	["isolated", "private child store"],
 ] as const)(
 	"the %s attached chat shows the entire storage error without a dead link: %s (#5649)",
 	async (host, fault) => {
 		const root = mkdtempSync(join(tmpdir(), "host-notice-save-"));
 		cleanups.push(() => rmSync(root, { force: true, recursive: true }));
-		const manager = await SessionManager.create(root, join(root, "sessions"));
+		const child = fault === "private child store";
+		const parent = child ? await SessionManager.create(root, join(root, "parent")) : undefined;
+		const manager = await SessionManager.create(root, join(root, "sessions"), child ? { internal: true } : undefined);
 		const pair = await createEngineHostPair({
 			sessionManager: manager,
 			hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
@@ -283,9 +289,12 @@ test.each([
 		});
 		cleanups.push(() => chat.dispose());
 		const session = host === "isolated" ? pair.runtime.session : pair.engine.session;
+		const settled = Promise.withResolvers<void>();
 		cleanups.push(
 			session.subscribe((e) => {
 				chat.applyAgentEvent(e);
+				if (e.type === "message_end" && e.message.role === "custom" && e.message.customType === HOST_NOTICE_TYPE)
+					settled.resolve();
 			}),
 		);
 		const store = manager.getSessionStore();
@@ -296,7 +305,7 @@ test.each([
 			store.findEntrySeq = lookup;
 		});
 		const refused = fault === "write refused";
-		const error = `Write refused: ${"long-directory/".repeat(refused ? 310 : 165)} ENOSPC`;
+		const error = `Write refused: ${"long-directory/".repeat(child ? 41 : refused || fault === "confirmed save" ? 350 : 165)} ENOSPC`;
 		if (fault === "no entry lookup") store.findEntrySeq = undefined;
 		else if (fault === "lookup misses") store.findEntrySeq = async () => undefined;
 		else if (fault === "lookup finds another entry") store.findEntrySeq = async () => 1;
@@ -305,7 +314,7 @@ test.each([
 			return append.apply(store, args);
 		};
 		await assert.rejects(pair.engine.session.compact(), /ENOSPC/);
-		await manager.branch(manager.getLeafId()!);
+		await settled.promise;
 		await pair.drain();
 		const drawn = visibleRows(chat.renderBody(160, 200)).join("\n");
 		assert.equal(count(drawn.split("\n"), "Write refused:"), 1);
@@ -315,10 +324,26 @@ test.each([
 			.entries()
 			.flatMap((e) => (e.kind === "custom" && e.message.customType === HOST_NOTICE_TYPE ? [e.message.content] : []));
 		assert.deepEqual(rows, [`Compaction failed: ${error}`]);
-		const saved = (await store.load(manager.getSessionId())).entries.flatMap((e) =>
-			e.type === "custom" && e.customType === HOST_NOTICE_TYPE ? [(e.data as { text: string }).text] : [],
+		const savedRows = (await store.load(manager.getSessionId())).entries.flatMap((e) =>
+			e.type === "custom" && e.customType === HOST_NOTICE_TYPE ? [e] : [],
 		);
-		assert.deepEqual(saved, refused ? [] : rows);
+		const saved = savedRows.map((e) => (e.data as { text: string }).text);
+		if (fault === "confirmed save") {
+			assert.equal(saved.length, 1);
+			assert.equal(Buffer.byteLength(saved[0]!), 4096);
+			assert.ok(saved[0]!.endsWith("…"));
+		} else assert.deepEqual(saved, refused ? [] : rows);
+		if (parent) {
+			const router = createHistoryRouter({
+				cwd: root,
+				sessionStore: () => parent.getSessionStore(),
+				workflows: () => undefined,
+			});
+			await assert.rejects(
+				async () => router.read!(`history://sessions/${manager.getSessionId()}?notice=${savedRows[0]!.id}`),
+				/Session not found/,
+			);
+		}
 	},
 );
 
@@ -394,15 +419,22 @@ test("repeated storage failures keep only a window of notice bodies without losi
 	manager.appendCompaction = async () => {
 		throw new Error(`Storage failure ${++attempt}: ${"x".repeat(5000)}`);
 	};
-	const chat = stageOrSubagentChat();
+	const savedAll = Promise.withResolvers<void>();
+	let savedCount = 0;
 	harness.session.subscribe((event) => {
-		chat.applyAgentEvent(event as never);
+		if (
+			event.type === "entry_appended" &&
+			event.entry.type === "custom" &&
+			event.entry.customType === HOST_NOTICE_TYPE &&
+			++savedCount === 40
+		)
+			savedAll.resolve();
 	});
 	for (let i = 0; i < 40; ++i) {
 		await assert.rejects(harness.session.compact(), /Storage failure/);
 		harness.events.length = 0;
 	}
-	await manager.branch(manager.getLeafId()!);
+	await savedAll.promise;
 	assert.deepEqual(manager.buildSessionContext().messages, model);
 	const resident = manager
 		.getEntries()
@@ -420,7 +452,9 @@ test("repeated storage failures keep only a window of notice bodies without losi
 		sessionStore: () => manager.getSessionStore(),
 		workflows: () => undefined,
 	});
-	for (const host of [chat, reopened]) {
+	const attached = stageOrSubagentChat();
+	attached.appendMessages(harness.session.transcriptMessages);
+	for (const host of [attached, reopened]) {
 		host.renderBody(160, 2);
 		const outcomes = host
 			.entries()

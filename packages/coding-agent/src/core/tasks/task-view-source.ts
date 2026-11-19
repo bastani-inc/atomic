@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
-import type { CompactionReason } from "../agent-session.js";
-import { retainTurnOutcome } from "../host-notice-window.ts";
+import type { AgentSession, CompactionReason } from "../agent-session.js";
+import { isResidentNotice, retainTurnOutcome, storedNotice } from "../host-notice-window.ts";
+import { hostNoticeFromEntry, hostNoticeMessage, isHostNoticeEntry } from "../host-notices.ts";
 import { sessionEntryToTranscriptMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
@@ -10,7 +11,7 @@ import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
-import { isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from "./owner-store.js";
+import { getOwnerTaskSession, isTaskTurnInterrupted, type OwnerTaskStore, type TaskActivity } from "./owner-store.js";
 import { scopedBackgroundTasks } from "./session-scope.js";
 import {
 	loadTaskOwnTranscriptEntries,
@@ -296,12 +297,14 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					.loadHistory()
 					.then((history) =>
 						history.unavailable === undefined
-							? transcriptView(session, taskId, history.entries, cursor, history.hasEntryLookup)
+							? transcriptView(store, session, taskId, history.entries, cursor)
 							: { ok: false, error: { message: history.unavailable } },
 					);
 			if (session.loadFullHistory)
-				return session.loadFullHistory().then(() => transcriptView(session, taskId, session.getEntries(), cursor));
-			return transcriptView(session, taskId, session.getEntries(), cursor);
+				return session
+					.loadFullHistory()
+					.then(() => transcriptView(store, session, taskId, session.getEntries(), cursor));
+			return transcriptView(store, session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {
 			const task = lease(id);
@@ -439,24 +442,26 @@ function detailText(entries: ReturnType<TaskTranscriptSource["getEntries"]> | un
 
 /** The page of a task's transcript ending before `cursor`, read from `entries`, its session's history. */
 function transcriptView(
+	owner: OwnerTaskStore,
 	session: TaskTranscriptSource,
 	taskId: string,
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
-	hasEntryLookup = false,
-): TaskViewResult<TaskTranscriptView> {
+): TaskViewResult<TaskTranscriptView> | Promise<TaskViewResult<TaskTranscriptView>> {
 	const sessionId = session.getSessionId();
 	const page = taskTranscriptPage(taskId, sessionId, entries, cursor);
 	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
 	const items = page.ok ? page.value.items : [];
 	const entryIds = new Set(items.map((item) => item.source.entryId));
 	const itemIds = new Set(items.map((item) => item.id));
+	const notices = new Map<AgentMessage, (typeof entries)[number]>();
 	const messages = entries.flatMap<AgentMessage>((entry) => {
 		if (!entryIds.has(entry.id)) return [];
-		if (entry.type !== "message")
-			return sessionEntryToTranscriptMessages(entry, hasEntryLookup ? sessionId : undefined).map((message) =>
-				retainTurnOutcome(page, message),
-			);
+		if (entry.type !== "message") {
+			const projected = sessionEntryToTranscriptMessages(entry);
+			if (isHostNoticeEntry(entry) && projected[0]) notices.set(projected[0], entry);
+			return projected;
+		}
 		const message = entry.message;
 		if (message.role === "assistant")
 			return [
@@ -471,8 +476,8 @@ function transcriptView(
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
 	const activeToolStarts =
 		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
-	return {
-		ok: true,
+	const result = {
+		ok: true as const,
 		value: {
 			messages,
 			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
@@ -481,4 +486,33 @@ function transcriptView(
 			...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
 		},
 	};
+	// Attach to a local live stream in the same turn when its stored rows are already inline.
+	if (!notices.size || (session.subscribe && ![...notices.values()].some(isResidentNotice))) return result;
+	return (async () => {
+		const reader = getOwnerTaskSession(owner) as AgentSession | undefined;
+		for (const [index, message] of messages.entries()) {
+			const entry = notices.get(message);
+			if (!entry) continue;
+			const full = hostNoticeFromEntry(await storedNotice(entry));
+			if (!full) continue;
+			const { level, text, label } = full;
+			const url = `history://sessions/${sessionId}?notice=${entry.id}`;
+			let location: string | undefined;
+			try {
+				// The child may have a private store. Test the link through the reader, not the writer.
+				if (
+					!reader?.sessionManager?.getHeader()?.internal &&
+					(await reader?.extensionRunner?.createContext?.().internalResourceRouter?.read?.(url)) === text
+				)
+					location = url;
+			} catch {
+				/* An unavailable or unauthorized coordinate leaves the stored text inline. */
+			}
+			messages[index] = retainTurnOutcome(
+				page,
+				hostNoticeMessage({ level, text, label, ...(location && { location }) }, Date.parse(entry.timestamp)),
+			);
+		}
+		return result;
+	})();
 }

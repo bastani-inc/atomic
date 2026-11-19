@@ -5,6 +5,7 @@ import {
 	AgentTokenMeter,
 	type BashResult,
 	hostNoticeFromMessage,
+	hostNoticeMessageFromEntry,
 	retainTurnOutcome,
 	type SessionCommandCatalog,
 	settleTurnOutcome,
@@ -917,6 +918,17 @@ export class PooledStageHandle implements StageControlHandle {
 				this.streamingNow = false;
 				this.streaming = undefined;
 				return;
+			case "entry_appended": {
+				const saved = hostNoticeMessageFromEntry(event.entry);
+				if (saved && saved.details?.label !== saved.content) {
+					// Only the snapshot a later attachment reads changes. Live listeners keep their full row.
+					const index = this.settled.findLastIndex(
+						(row) => hostNoticeFromMessage(row)?.settlesId === event.entry.id,
+					);
+					if (index >= 0) this.settled[index] = saved;
+				}
+				return;
+			}
 			case "message_start":
 			case "message_update":
 				if (event.message.role === "assistant") this.streaming = event.message as StreamingMessage;

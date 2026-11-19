@@ -105,6 +105,9 @@ export function isHostNoticeEntry(entry: SessionEntry): boolean {
 	return entry.type === "custom" && entry.customType === HOST_NOTICE_TYPE;
 }
 
+// A saved record supplies text, never authority to send its reader to a URL.
+export const noticeLocations = new WeakMap<SessionEntry, string>();
+
 /** The notice a stored entry records, if it is one. */
 export function hostNoticeFromEntry(entry: SessionEntry): HostNotice | undefined {
 	if (!isHostNoticeEntry(entry) || entry.type !== "custom") return undefined;
@@ -114,7 +117,7 @@ export function hostNoticeFromEntry(entry: SessionEntry): HostNotice | undefined
 		level: data.level,
 		text: boundHostNoticeText(data.text),
 		...(typeof data.label === "string" && { label: data.label }),
-		...(typeof data.location === "string" && { location: data.location }),
+		...(noticeLocations.has(entry) && { location: noticeLocations.get(entry) }),
 	};
 }
 
@@ -133,16 +136,9 @@ export function hostNoticeMessage(notice: HostNotice, timestamp: number): Custom
 }
 
 /** The message a chat transcript shows for a stored notice entry, if `entry` is one. */
-export function hostNoticeMessageFromEntry(
-	entry: SessionEntry,
-	sessionId?: string,
-): CustomMessage<HostNotice> | undefined {
+export function hostNoticeMessageFromEntry(entry: SessionEntry): CustomMessage<HostNotice> | undefined {
 	const notice = hostNoticeFromEntry(entry);
-	if (!notice) return undefined;
-	return hostNoticeMessage(
-		sessionId ? { ...notice, location: `history://sessions/${sessionId}?notice=${entry.id}` } : notice,
-		new Date(entry.timestamp).getTime(),
-	);
+	return notice && hostNoticeMessage(notice, Date.parse(entry.timestamp));
 }
 
 /** The notice a chat message shows, if it is one. */

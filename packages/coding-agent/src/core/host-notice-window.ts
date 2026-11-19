@@ -5,10 +5,10 @@ import {
 	hostNoticeFromEntry,
 	hostNoticeFromMessage,
 	isHostNoticeEntry,
+	noticeLocations,
 } from "./host-notices.ts";
 import type { CustomMessage } from "./messages.ts";
 import type { CustomEntry, SessionEntry } from "./session-manager-types.ts";
-import { readSessionRange } from "./storage/session/session-resume.js";
 import type { SessionStore } from "./storage/session/types.js";
 
 /** An ordinary status row is enough for the preview; the stored entry keeps the longer diagnostic. */
@@ -104,39 +104,45 @@ interface NoticeSource {
 	seq: number;
 }
 const sources = new WeakMap<SessionEntry, NoticeSource>();
-const unlocatable = new WeakSet<SessionEntry>();
+const verified = new WeakMap<SessionEntry, NoticeSource>();
 
-/** Confirm a just-written outcome with the same point lookup its history link uses, before exposing a preview. */
+/** A current-session link needs its session header and the full text at the entry's point lookup. */
 export async function checkNoticeReadback(store: SessionStore, sessionId: string, entry: SessionEntry): Promise<void> {
+	const expected = hostNoticeFromEntry(entry);
+	if (!expected) return;
 	try {
-		if (store.findEntrySeq && store.readEntryRange) {
+		if (store.findEntrySeq && store.readEntryRange && (await store.readHeader(sessionId))?.id === sessionId) {
 			const seq = await store.findEntrySeq(sessionId, entry.id);
 			if (seq !== undefined) {
 				const page = await store.readEntryRange(sessionId, { fromSeq: seq, toSeq: seq });
 				const row = page.entries[0]?.entry;
-				if (row?.id === entry.id && hostNoticeFromEntry(row)) return;
+				if (row?.id === entry.id && hostNoticeFromEntry(row)?.text === expected.text) {
+					verified.set(entry, { store, sessionId, seq });
+					return;
+				}
 			}
 		}
 	} catch {
 		// Saving the entry succeeded. A lookup failure only changes how the chat displays it.
 	}
-	unlocatable.add(entry);
+	verified.delete(entry);
 }
 
 /** Store writes keep the full record. The manager's tree, branch and projections share this small, private copy. */
 export function residentNotice(entry: SessionEntry, source: NoticeSource, window: HostNoticeWindow): SessionEntry {
+	const original = sources.get(entry) ?? verified.get(entry);
+	if (!original || !isHostNoticeEntry(entry)) return entry;
 	if (
-		!isHostNoticeEntry(entry) ||
-		!source.store.findEntrySeq ||
-		!source.store.readEntryRange ||
-		unlocatable.has(entry)
+		!sources.has(entry) &&
+		(original.store !== source.store || original.sessionId !== source.sessionId || original.seq !== source.seq)
 	)
 		return entry;
 	const notice = hostNoticeFromEntry(entry);
 	if (!notice) return entry;
-	const data = { ...noticePreview(notice), location: `history://sessions/${source.sessionId}?notice=${entry.id}` };
+	const data = { ...noticePreview(notice), location: `history://sessions/${original.sessionId}?notice=${entry.id}` };
 	const held = { ...entry, data } as CustomEntry<HostNotice>;
-	sources.set(held, sources.get(entry) ?? source);
+	sources.set(held, original);
+	noticeLocations.set(held, data.location);
 	window.keep(data.text, () => {
 		held.data = { ...data, text: data.label ?? "Turn outcome" };
 	});
@@ -151,8 +157,8 @@ export function isResidentNotice(entry: SessionEntry): boolean {
 export async function storedNotice(entry: SessionEntry): Promise<SessionEntry> {
 	const source = sources.get(entry);
 	if (!source) return entry;
-	const range = await readSessionRange(source.store, source.sessionId, source.seq, source.seq);
-	const stored = range.entries[0];
+	const range = await source.store.readEntryRange?.(source.sessionId, { fromSeq: source.seq, toSeq: source.seq });
+	const stored = range?.entries[0]?.entry;
 	if (!stored || stored.id !== entry.id) throw new Error("Turn outcome is no longer at its recorded history location");
 	return stored;
 }

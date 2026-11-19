@@ -76,8 +76,6 @@ export interface TaskTranscriptCommands {
 export type TaskTranscriptHistory =
 	| {
 			readonly entries: ReturnType<SessionManager["getEntries"]>;
-			/** The backing store can locate individual entries for on-demand history reads. */
-			readonly hasEntryLookup?: boolean;
 			readonly unavailable?: undefined;
 	  }
 	| {

@@ -7,7 +7,6 @@ import {
 	HOST_NOTICE_TYPE,
 	type HostNotice,
 	hostNoticeForEvent,
-	hostNoticeFromEntry,
 	hostNoticeMessage,
 	reserveNoticeId,
 } from "./host-notices.ts";
@@ -53,12 +52,14 @@ export function recordHostNotice(session: AgentSession, event: AgentSessionEvent
 	const pending = unsaved.get(session) ?? new Map<string, CustomMessage<HostNotice>>();
 	const finish = (entry?: SessionEntry) => {
 		pending.delete(key);
-		const stored = entry && hostNoticeFromEntry(entry);
-		// Until there is a readable history location, the open chat keeps the entire diagnostic.
-		const final = stored?.location ? stored : found;
+		// A successful save must not replace the live diagnostic with the capped text from history.
 		if (!fixed)
-			session._emit({ type: "message_end", message: hostNoticeMessage({ ...final, settlesId: key }, timestamp) });
-		if (entry !== undefined && session.sessionManager === manager) session._emit({ type: "entry_appended", entry });
+			session._emit({
+				type: "message_end",
+				message: hostNoticeMessage({ ...found, label, settlesId: key }, timestamp),
+			});
+		if (entry?.type === "custom" && session.sessionManager === manager)
+			session._emit({ type: "entry_appended", entry: { ...entry, data: notice } });
 	};
 	if (saved !== undefined) {
 		unsaved.set(session, pending);
