@@ -20,6 +20,7 @@ export interface ToolHtmlRendererDeps {
 	theme: Theme;
 	/** Working directory for render context */
 	cwd: string;
+	sessionId?: string;
 	/** Terminal width for rendering (default: 100) */
 	width?: number;
 }
@@ -98,6 +99,7 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			invalidate: () => {},
 			lastComponent,
 			state: getState(toolCallId),
+			sessionId: deps.sessionId,
 			cwd,
 			executionStarted: true,
 			argsComplete: true,

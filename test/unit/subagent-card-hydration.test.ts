@@ -554,12 +554,12 @@ test("an HTML export draws a finished background child's saved tool calls in its
 });
 
 /** A saved session whose finished background child ran a script, as a parent and the child's own session. */
-async function finishedScriptChild(runId: string, taskId: string) {
+async function finishedScriptChild(agent: string, taskId: string, runId = agent) {
 	const store = new MemorySessionStore();
 	const manager = await SessionManager.create(store, process.cwd());
 	const childSession = await SessionManager.create(store, process.cwd());
 	const code = Array.from({ length: 20 }, (_, i) => `const v${i} = ${i};`).join("\n");
-	await childSession.appendMessage({ role: "user", content: `Script the ${runId} audit`, timestamp: Date.now() });
+	await childSession.appendMessage({ role: "user", content: `Script the ${agent} audit`, timestamp: Date.now() });
 	await childSession.appendMessage({
 		role: "assistant",
 		content: [{ type: "toolCall", id: "script", name: "codemode", arguments: { code } }],
@@ -580,14 +580,14 @@ async function finishedScriptChild(runId: string, taskId: string) {
 		timestamp: Date.now(),
 	});
 	const t = new TranscriptBuilder(manager, process.cwd());
-	await t.launch(runId, taskId);
+	await t.launch(agent, taskId);
 	await t.record({
 		childId: `${runId}:0`,
 		runId,
 		state: "terminal",
 		terminalStatus: "ok",
 		taskId,
-		task: `task for ${runId}`,
+		task: `task for ${agent}`,
 		childSessionId: childSession.getSessionId(),
 	});
 	return { store, manager };
@@ -629,12 +629,18 @@ function savedNotice(runId: string, taskId: string, launchId: string | undefined
 	};
 }
 
-/** The engine's drawing of an expanded notice, rendered again until `expected` shows or the wait runs out. */
-async function engineNotice(manager: SessionManager, message: object, expected: RegExp): Promise<string> {
+/** The host draws the expanded notice again only when the engine invalidates its frame. */
+async function engineNotice(
+	manager: SessionManager,
+	message: object,
+	expected: RegExp,
+	reopen = false,
+): Promise<string> {
 	const frames: string[] = [];
 	const service = new EngineRenderService((line) => {
 		const parsed = parseInteractiveEngineMessage(line.trim());
 		if (parsed?.type === "engine_custom_frame") frames.push(stripVTControlCharacters(parsed.lines.join("\n")));
+		else if (parsed?.type === "engine_custom_invalidate") render();
 	});
 	service.bindSession({
 		extensionRunner: {
@@ -645,6 +651,7 @@ async function engineNotice(manager: SessionManager, message: object, expected: 
 		sessionManager: manager,
 	} as unknown as AgentSession);
 	let requestId = 0;
+	let expanded = true;
 	const render = () =>
 		service.handleLine(
 			serializeInteractiveEngineFrame({
@@ -653,15 +660,23 @@ async function engineNotice(manager: SessionManager, message: object, expected: 
 				requestId: ++requestId,
 				width: 140,
 				message: message as never,
-				expanded: true,
+				expanded,
 				outputPad: 1,
 			}).trim(),
 		);
+	const lastFrame = () => (frames.at(-1) ?? "").replace(/\s+/g, " ");
 	try {
-		return await eventually(() => {
-			render();
-			return (frames.at(-1) ?? "").replace(/\s+/g, " ");
-		}, expected);
+		render();
+		const first = await eventually(lastFrame, expected);
+		if (!reopen) return first;
+		expanded = false;
+		frames.length = 0;
+		render();
+		assert.doesNotMatch(await eventually(lastFrame, /Audit done\./), /Prompt/);
+		expanded = true;
+		frames.length = 0;
+		render();
+		return await eventually(lastFrame, expected);
 	} finally {
 		service.dispose();
 	}
@@ -669,14 +684,15 @@ async function engineNotice(manager: SessionManager, message: object, expected: 
 
 test("after a restart, a finished subagent's notice shows the child's saved prompt and tool calls, as its launch card does (#5525)", async () => {
 	initTheme("dark");
-	const { store, manager } = await finishedScriptChild("hynotice", "task-1-0-1");
+	const runId = "12345678-9abc-4def-8123-456789abcdef";
+	const { store, manager } = await finishedScriptChild("hynotice", "task-1-0-1", runId);
 	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
 		// No task of this process runs as task-1-0-1: the notice reads the child's own session, named by its record.
 		const shown = await engineNotice(
 			manager,
-			savedNotice("hynotice", "task-1-0-1", "hynotice:0"),
+			savedNotice("hynotice", "task-1-0-1", `${runId}:0`),
 			/const v19 = 19; \)/,
 		);
 		assert.match(
@@ -696,7 +712,7 @@ test("after a restart, a finished subagent's notice shows the child's saved prom
 		bindSubagentChildCards({ sessionManager: manager });
 		const named = await engineNotice(
 			manager,
-			savedNotice("hynotice", "task-1-0-1", "hynotice:0"),
+			savedNotice("hynotice", "task-1-0-1", `${runId}:0`),
 			/const v19 = 19; \)/,
 		);
 		assert.match(named, /Prompt Script the hynotice audit/);
@@ -705,6 +721,87 @@ test("after a restart, a finished subagent's notice shows the child's saved prom
 		await store.close();
 	}
 });
+
+for (const host of ["local", "isolated"] as const) {
+	test(`the ${host} host reads a saved child only by its parent and full launch identity (#5531)`, async () => {
+		initTheme("dark");
+		const store = new MemorySessionStore();
+		const taskId = "task-1-0-0";
+		const prefix = "c0ffee00";
+		const amber = `${prefix}-1111-4111-8111-111111111111`;
+		const violet = `${prefix}-2222-4222-8222-222222222222`;
+		const stops: Array<() => void> = [];
+		const reopen = async (label: string, runs: string[]) => {
+			const writer = await SessionManager.create(store, process.cwd());
+			for (const runId of runs) {
+				const child = await SessionManager.create(store, process.cwd());
+				await child.appendMessage({ role: "user", content: `Read ${label} ${runId}`, timestamp: 0 });
+				await new TranscriptBuilder(writer, process.cwd()).record({
+					childId: `${runId}:0`,
+					runId,
+					taskId,
+					state: "terminal",
+					childSessionId: child.getSessionId(),
+				});
+				const notice = savedNotice(label, taskId, `${runId}:0`);
+				await writer.appendCustomMessageEntry(notice.customType, notice.content, true, notice.details);
+			}
+			const manager = await SessionManager.open(store, writer.getSessionId());
+			bindSubagentChildCards({ sessionManager: manager });
+			stops.push(registerSavedTaskTranscripts(savedSubagentTranscripts(manager)));
+			return manager;
+		};
+		try {
+			// Prefix-only receipts from an earlier build, and current receipts sharing that prefix. Even the same
+			// complete identifier in two independent parents must not substitute the other parent's transcript.
+			const first = await reopen("amber", [prefix, amber, violet]);
+			const second = await reopen("violet", [prefix, violet]);
+			const notices = first.getEntries().filter((e) => e.type === "custom_message");
+			for (const [i, runId] of [prefix, amber, violet].entries()) {
+				const message = notices[i]!;
+				assert.ok(message.type === "custom_message");
+				const notice = completionNoticeFromDetails(message.details)!;
+				const query = noticeTranscriptQuery(taskId, notice, first.getSessionId());
+				const expected = runId === prefix ? /Audit done\./ : /Read (amber|violet)/;
+				let shown: string;
+				if (host === "isolated") {
+					shown = await engineNotice(
+						first,
+						{ ...message, role: "custom", timestamp: 0 },
+						expected,
+						runId !== prefix,
+					);
+				} else {
+					const card = new TaskCompletionMessage(notice, true, {
+						hasTranscript: () => hasTaskTranscript(undefined, query),
+						loadTranscript: () => loadTaskTranscript(undefined, query),
+					});
+					shown = await eventually(() => stripVTControlCharacters(card.render(140).join(" ")), expected);
+				}
+				assert.match(shown, /Audit done\./);
+				if (runId === prefix) {
+					assert.equal(await loadTaskTranscript(undefined, query), undefined, "a prefix cannot identify a launch");
+					assert.doesNotMatch(shown, /Prompt|Read/);
+				} else assert.ok(shown.includes(`Read amber ${runId}`), shown);
+				if (host === "local" && runId === violet) {
+					// Two views can share a notice object. Its expanded rows still belong to the view's owner.
+					const other = noticeTranscriptQuery(taskId, notice, second.getSessionId());
+					const card = new TaskCompletionMessage(notice, true, {
+						loadTranscript: () => loadTaskTranscript(undefined, other),
+					});
+					const rows = await eventually(
+						() => stripVTControlCharacters(card.render(140).join(" ")),
+						/Read (amber|violet)/,
+					);
+					assert.ok(rows.includes(`Read violet ${runId}`), rows);
+				}
+			}
+		} finally {
+			for (const stop of stops) stop();
+			await store.close();
+		}
+	});
+}
 
 test("an older notice keeps its saved result whether one or several children used its number (#5525)", async () => {
 	initTheme("dark");
@@ -739,13 +836,14 @@ test("an older notice keeps its saved result whether one or several children use
 
 test("a legacy notice cannot read a different saved child's prompt through a reused task id (#5531)", async () => {
 	const taskId = "task-reused-legacy";
-	const { store, manager } = await finishedScriptChild("shapes-reader", taskId);
+	const runId = "abc0de00-4141-4242-8181-000000000033";
+	const { store, manager } = await finishedScriptChild("shapes-reader", taskId, runId);
 	const saved = savedNotice("shapes-reader", taskId, undefined);
 	await manager.appendCustomMessageEntry(saved.customType, saved.content, true, saved.details);
 	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
-		const matching = { taskId, launchId: "shapes-reader:0" };
+		const matching = { taskId, launchId: `${runId}:0` };
 		assert.equal(hasTaskTranscript(undefined, { ...matching, ownerSessionId: manager.getSessionId() }), true);
 		assert.equal(
 			hasTaskTranscript(undefined, { ...matching, ownerSessionId: "another-owner" }),
@@ -896,7 +994,9 @@ test("a later child with even the same number, agent and title cannot supply an 
 
 test("a notice whose task id this process reuses for another task reads the notice's own child, not the running task (#5525)", async () => {
 	const loads: TaskTranscriptQuery[] = [];
+	const ownerSessionId = "reader";
 	const stop = registerSavedTaskTranscripts({
+		ownerSessionId,
 		has: () => true,
 		load: async (task) => {
 			loads.push(task);
@@ -905,19 +1005,21 @@ test("a notice whose task id this process reuses for another task reads the noti
 	});
 	try {
 		const store = {
+			snapshot: { scope: { sessionId: ownerSessionId } },
 			resolveTask: () => ({ ok: true, value: {} }),
 			getTask: () => ({ launchOperationId: "second:0", agentName: "second", title: "Second task" }),
 		} as unknown as OwnerTaskStore;
-		assert.equal(hasTaskTranscript(store, { taskId: "task-reused-7", launchId: "first:0" }), true);
-		assert.deepEqual(await loadTaskTranscript(store, { taskId: "task-reused-7", launchId: "first:0" }), {
+		const first = { ownerSessionId, taskId: "task-reused-7", launchId: "first:0" };
+		assert.equal(hasTaskTranscript(store, first), true);
+		assert.deepEqual(await loadTaskTranscript(store, first), {
 			entries: [],
 		});
 		// Even a source offering a transcript for every task cannot enrich an unidentified notice.
 		const older = savedNotice("second", "task-reused-7", undefined).details.notification;
-		const query = noticeTranscriptQuery(older.taskId, older);
+		const query = noticeTranscriptQuery(older.taskId, older, ownerSessionId);
 		assert.equal(hasTaskTranscript(store, query), false);
 		assert.equal(await loadTaskTranscript(store, query), undefined);
-		assert.deepEqual(loads, [{ taskId: "task-reused-7", launchId: "first:0" }]);
+		assert.deepEqual(loads, [first]);
 	} finally {
 		stop();
 	}

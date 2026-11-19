@@ -93,6 +93,7 @@ export interface ChatMessageRenderOptions {
 	markdownTransformers?: readonly MarkdownTransformer[];
 	renderLatex?: boolean;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	sessionId?: string;
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
 	loadTaskTranscript?: TaskCompletionMessageOptions["loadTranscript"];
 	hasTaskTranscript?: TaskCompletionMessageOptions["hasTranscript"];
@@ -830,6 +831,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 					showImages: options.showImages ?? true,
 					imageWidthCells: options.imageWidthCells,
 					outputPad: options.outputPad,
+					sessionId: options.sessionId,
 					getTaskRecord: options.getTaskRecord,
 					getToolDefinition: options.getToolDefinition,
 				},
