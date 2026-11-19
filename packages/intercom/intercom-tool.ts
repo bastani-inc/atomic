@@ -9,7 +9,7 @@ import {
   sliceHead,
 } from "@bastani/atomic";
 import { Type } from "typebox";
-import { type IntercomClient, sameReachPolicy } from "./broker/client.js";
+import { type IntercomClient, sameReachPolicy, type SendOptions, type SendResult } from "./broker/client.js";
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";
 import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
@@ -35,7 +35,7 @@ import { createConcurrencyGate } from "./route-connect-gate.js";
 import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, RETURN_PATH_TOOL_NOTE, validateRuntimeGroup } from "./group.js";
 import { DEFAULT_GROUP_WARNING } from "./project-group.js";
 import { canJoin, canLeave, canPeek, type IntercomReachPolicy } from "./reach-policy.js";
-import { isWorkflowTarget, WORKFLOW_TARGET_REMOVED_REASON } from "./broker/legacy-workflow-frames.js";
+import { isWorkflowTarget, workflowTargetFailure } from "./broker/legacy-workflow-frames.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
 import { runIntercomOperation, type IntercomAttemptResult } from "./tool-retry.js";
@@ -219,6 +219,25 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
   const resolveRecipient = async (client: IntercomClient, target: string): Promise<string> =>
     (await resolveTarget(client, target)) ?? target;
+  /**
+   * Atomic 0.10.0 removed workflows. A send, ask or reply to a workflow stage target (`workflow:<rootRunId>/...`) gets
+   * the answer a broker gives a name no session has, and never reaches a broker: one of 0.9.x would still deliver or
+   * queue it for a stage.
+   */
+  const sendUnlessWorkflowTarget = (client: IntercomClient, to: string, options: SendOptions): Promise<SendResult> => {
+    if (!isWorkflowTarget(to) && !isWorkflowTarget(options.logicalTarget ?? to)) return client.send(to, options);
+    const reach = deps.reachPolicy?.();
+    return Promise.resolve({
+      id: options.messageId ?? randomUUID(),
+      delivered: false,
+      ...workflowTargetFailure({
+        to,
+        requirePendingReply: options.requirePendingReply === true,
+        ...(options.expectedRecipientId === undefined ? {} : { expectedRecipientId: options.expectedRecipientId }),
+        ...(reach === undefined ? {} : { reach }),
+      }),
+    });
+  };
   const getMetadata = typeof childOrchestratorMetadata === "function"
     ? childOrchestratorMetadata
     : () => childOrchestratorMetadata ?? null;
@@ -442,10 +461,6 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         if (sizeError !== undefined) {
           return { content: [{ type: "text", text: sizeError }], isError: true, details: { error: true } };
         }
-      }
-      // Atomic 0.10.0 removed workflows: a workflow stage target is refused here, whatever broker is running.
-      if ((action === "send" || action === "ask" || action === "reply") && typeof to === "string" && isWorkflowTarget(to)) {
-        return { content: [{ type: "text", text: WORKFLOW_TARGET_REMOVED_REASON }], isError: true, details: { error: true } };
       }
       const writtenReach = new Map<string, IntercomReachPolicy | undefined>();
       const guardWrite = (messageId: string) => (reach: IntercomReachPolicy | undefined): void => {
@@ -788,7 +803,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: retryErrorDetails(retained.retryToken),
               };
             }
-            const result = await connectedClient.send(sendTo, {
+            const result = await sendUnlessWorkflowTarget(connectedClient, sendTo, {
               messageId: retryIdentity.messageId,
               beforeWrite: guardWrite(retryIdentity.messageId),
               logicalTarget: to,
@@ -1058,7 +1073,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 				// With every reply-wait slot taken, the ask still goes out; its reply arrives as a message.
 				if (admission.ok) wait = admission.wait;
 			}
-            const sendResult = await connectedClient.send(sendTo, {
+            const sendResult = await sendUnlessWorkflowTarget(connectedClient, sendTo, {
               messageId: questionId,
               beforeWrite: guardWrite(questionId),
               logicalTarget: to,
@@ -1307,7 +1322,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
             const replyMessageId = retryIdentity.messageId;
-            const sendReply = (targetId: string) => connectedClient.send(targetId, {
+            const sendReply = (targetId: string) => sendUnlessWorkflowTarget(connectedClient, targetId, {
               messageId: replyMessageId,
               logicalTarget: replyLogicalTarget,
               ...(route.expectsReply ? { requirePendingReply: true as const } : {}),

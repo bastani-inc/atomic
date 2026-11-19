@@ -543,7 +543,7 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 	);
 
 	test(
-		"a workflow-stage target is refused, pattern or not, and sends nothing (Atomic 0.10.0 removed workflows)",
+		"a workflow-stage target, pattern or not, gets the answer an unknown name or pattern gets, and sends nothing (Atomic 0.10.0 removed workflows)",
 		async () => {
 			const runId = randomUUID();
 			const member = await connect("workflow-member", { group: `workflow:${runId}` });
@@ -553,20 +553,30 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 			);
 			const sender = await connect("workflow-sender");
 			const tool = registerTool(sender);
-
-			for (const to of [`workflow:${runId}/**`, `workflow:${runId}/reviewer`]) {
-				const result = await tool.execute(
+			const send = (to: string) =>
+				tool.execute(
 					"workflow",
 					{ action: "send", to, message: "broadcast" },
 					undefined,
 					undefined,
 					contextFor("workflow-host"),
 				);
-				assert.equal(result.isError, true, to);
-				assert.match(
-					text(result),
-					/Workflow stage targets \(workflow:<rootRunId>\/\.\.\.\) were removed in Atomic 0\.10\.0/,
+			/** The result with its target written as `<target>` and message ids as `<id>`, which differ between calls. */
+			const normalized = async (to: string) =>
+				JSON.parse(
+					JSON.stringify(await send(to))
+						.split(to)
+						.join("<target>")
+						.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>"),
 				);
+
+			for (const [to, unknown] of [
+				[`workflow:${runId}/**`, `no-such-run-${runId}/**`],
+				[`workflow:${runId}/reviewer`, `no-such-run-${runId}-reviewer`],
+			] as const) {
+				const viaPath = await normalized(to);
+				assert.equal(viaPath.isError, true, to);
+				assert.deepEqual(viaPath, await normalized(unknown), to);
 			}
 			assert.deepEqual(inbox, []);
 		},

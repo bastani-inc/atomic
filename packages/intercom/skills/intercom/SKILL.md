@@ -80,7 +80,7 @@ intercom({ action: "list" })
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which option should I use?" })
 ```
 
-Live sessions accept an exact full Intercom session ID, a unique 8-hex prefix of a visible UUID-backed session, or an exact case-insensitive name. Ambiguous prefixes require a listed full UUID. Workflow stage targets (`workflow:<rootRunId>/...`) were removed with workflows in Atomic 0.10.0 and are refused.
+Live sessions accept an exact full Intercom session ID, a unique 8-hex prefix of a visible UUID-backed session, or an exact case-insensitive name. Ambiguous prefixes require a listed full UUID. Workflow stage targets (`workflow:<rootRunId>/...`) were removed with workflows in Atomic 0.10.0; they get `Session not found`, like any unknown name.
 
 ### Runtime named groups
 

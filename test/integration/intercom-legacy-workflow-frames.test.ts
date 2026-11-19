@@ -6,10 +6,6 @@ import net from "node:net";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, test, vi } from "vitest";
 import { createMessageReader, type JsonWireValue } from "../../packages/intercom/broker/framing.js";
-import {
-	WORKFLOW_ROUTE_REMOVED_REASON,
-	WORKFLOW_TARGET_REMOVED_REASON,
-} from "../../packages/intercom/broker/legacy-workflow-frames.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { bunExecutable, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
@@ -17,13 +13,15 @@ import { replaceEnvironmentVariable, temporaryAgentDir } from "../helpers/tempor
 
 /**
  * Atomic 0.10.0 removed workflows, but kept the Intercom protocol range, so versions mix on one machine:
- * - a 0.9.x session, which still sends its workflow route frames, uses a broker of this version: it keeps asking,
- *   answering and being steered, each workflow frame is answered in place, and no connection drops or registers again;
+ * - a 0.9.x session, which still sends its workflow route frames, uses a broker of this version: its workflow run's
+ *   stage routes are acknowledged, so its stages start, then keep asking, answering and being steered; each workflow
+ *   frame is answered in place, and no connection drops or registers again;
  * - a session of this version uses a 0.9.x broker that still routes a 0.9.x workflow run: it lists, sends, asks,
  *   replies, joins and leaves as usual, and never sees a workflow row.
  *
- * Every broker is a real process. The 0.9.x clients and broker are the releases vendored unmodified under
- * test/fixtures: intercom-0.9.71 (client and broker, no protocol range) and intercom-0.9.77-alpha.1 (client, with one).
+ * Every broker is a real process. The 0.9.x clients, route owner and broker are the releases vendored unmodified under
+ * test/fixtures: intercom-0.9.71 (client, workflow route owner and broker, no protocol range) and
+ * intercom-0.9.77-alpha.1 (client, with one).
  */
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -45,6 +43,12 @@ interface SendOutcome {
 	readonly id: string;
 	readonly delivered: boolean;
 	readonly reason?: string;
+	readonly reasonCode?: string;
+}
+
+/** A send outcome without its message id, which differs between any two sends. */
+function outcome({ id: _id, ...rest }: SendOutcome): Omit<SendOutcome, "id"> {
+	return rest;
 }
 
 interface SendOptions {
@@ -102,6 +106,43 @@ type PreviousClientClass = new (
 	returnAddress: string,
 	options: { acknowledgesReceipt: true; multiplexesPendingStageRoutes?: true; brokerSocketPath?: string },
 ) => PreviousClient;
+
+/** The event a 0.9.x workflow run announces its pending-stage route on, to its session's workflow route owner. */
+const PENDING_STAGE_ROUTE_EVENT = "atomic:workflow-pending-stage-route";
+
+/**
+ * A 0.9.x workflow run's pending-stage route announcement. The route owner sets `completion`; before each stage's
+ * session is created, the 0.9.x stage runner waits for it (`routeAuthorityReady`), and a rejection fails the stage.
+ */
+interface RouteAnnouncement {
+	readonly runId: string;
+	readonly group: string;
+	readonly capability: string;
+	readonly stages: readonly StageAnnouncement[];
+	completion?: Promise<void>;
+}
+
+/** The event a 0.9.x workflow run's settlement pass raises to tell a queued message's sender it will not be delivered. */
+const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+
+/** One such notice. The route owner sets `completion`, which says whether the notice was delivered. */
+interface UndeliverableNotice {
+	handled: boolean;
+	readonly runId: string;
+	readonly senderId: string;
+	readonly senderReturnAddress?: string;
+	readonly messageId: string;
+	readonly notificationId: string;
+	readonly reason: string;
+	completion?: Promise<boolean>;
+}
+
+/** The part of a 0.9.x session's workflow route owner a workflow run uses. Loaded by path, so not type-checked. */
+interface PreviousRouteOwner {
+	readonly events: { emit(channel: string, data: unknown): void };
+	registered(runId: string): Promise<boolean>;
+	closeGroup(group: string): Promise<void>;
+}
 
 /** A client with what it received, the errors it raised and how often it reported its connection lost. */
 interface Watched<Client> {
@@ -276,13 +317,7 @@ function settleRoute(request: Promise<void>): Promise<RouteOutcome> {
 	);
 }
 
-const REFUSED_IN_PLACE: RouteOutcome = {
-	outcome: "refused",
-	name: "IntercomPendingStageRouteRefusedError",
-	connectionKept: true,
-	code: "not_authorized",
-	message: WORKFLOW_ROUTE_REMOVED_REASON,
-};
+const ACKNOWLEDGED: RouteOutcome = { outcome: "acknowledged" };
 
 describe("0.9.x Intercom clients of a workflow run on this version's broker (Atomic 0.10.0 removed workflows)", () => {
 	const brokerFixture = new IntercomBrokerFixture(temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR));
@@ -293,6 +328,7 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 	let proxy: WireProxy | undefined;
 	/** Each 0.9.x release's client, and the socket it is given when it takes one rather than reading its agent dir. */
 	const releases = new Map<string, { readonly Client: PreviousClientClass; readonly brokerSocketPath?: string }>();
+	let createPreviousRouteOwner: (cwd: string) => PreviousRouteOwner;
 
 	beforeAll(async () => {
 		const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
@@ -317,6 +353,12 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 			Client: await load(RELEASE_0_9_77_ALPHA_1),
 			brokerSocketPath: proxySocketPath,
 		});
+		// The 0.9.71 route owner connects with that same 0.9.71 client module, so through the proxy.
+		createPreviousRouteOwner = (
+			(await import(join(RELEASE_0_9_71, "workflow-route-owner.ts"))) as {
+				createWorkflowRouteOwner(cwd: string): PreviousRouteOwner;
+			}
+		).createWorkflowRouteOwner;
 	}, HOOK_TIMEOUT_MS);
 
 	afterAll(async () => {
@@ -334,15 +376,16 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 		release: string,
 		name: string,
 		group: string,
-		options: { multiplexesPendingStageRoutes?: true } = {},
+		options: { multiplexesPendingStageRoutes?: true; returnAddress?: string } = {},
 	): Promise<Watched<PreviousClient>> {
 		const found = releases.get(release);
 		assert.ok(found, release);
 		const { Client, brokerSocketPath } = found;
+		const { returnAddress = randomUUID(), ...clientOptions } = options;
 		const watched = watch(
-			new Client(randomUUID(), {
+			new Client(returnAddress, {
 				acknowledgesReceipt: true,
-				...options,
+				...clientOptions,
 				...(brokerSocketPath === undefined ? {} : { brokerSocketPath }),
 			}),
 		);
@@ -367,12 +410,158 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 		);
 	}
 
+	test(
+		"a 0.9.71 workflow run's route owner has each pending-stage route acknowledged, so the wait before a stage starts settles, and never sends one again",
+		async () => {
+			assert.ok(proxy);
+			const runId = randomUUID();
+			const group = `workflow:${runId}`;
+			const owner = createPreviousRouteOwner(repoRoot);
+			cleanups.push(() => owner.closeGroup(group));
+			const announce = (lifecycle: StageAnnouncement["lifecycle"]): Promise<RouteOutcome> => {
+				const route: RouteAnnouncement = {
+					runId,
+					group,
+					capability: `cap-${runId}`,
+					stages: [
+						{
+							stageId: "iteration-1",
+							stageName: "iteration-1",
+							target: `${group}/iteration-1`,
+							lifecycle,
+							routeEligible: true,
+							recipientPurpose: "agent",
+							group,
+						},
+					],
+				};
+				owner.events.emit(PENDING_STAGE_ROUTE_EVENT, route);
+				assert.ok(route.completion, "the route owner takes the announcement");
+				return settleRoute(route.completion);
+			};
+
+			// The run announces its route before its first stage starts, and the stage's start waits for the answer.
+			assert.deepEqual(await announce("pending"), ACKNOWLEDGED);
+			assert.equal(await owner.registered(runId), true);
+			// It announces again once the stage runs.
+			assert.deepEqual(await announce("running"), ACKNOWLEDGED);
+
+			// The owner sends a refused route again on its backoff, the first time within a second; an acknowledged one never.
+			await new Promise((settle) => setTimeout(settle, QUIET_MS));
+			const routeConnections = proxy.connections.filter((connection) =>
+				connection.toBroker.some((frame) => frame.type === "register_pending_stage_route" && frame.runId === runId),
+			);
+			assert.equal(routeConnections.length, 1, "the run's routes share one connection");
+			const [connection] = routeConnections;
+			assert.ok(connection);
+			assert.equal(framesOfType(connection.toBroker, "register").length, 1, "the route connection registered once");
+			assert.equal(
+				framesOfType(connection.toBroker, "register_pending_stage_route").length,
+				2,
+				"the route went out once per announcement",
+			);
+			assert.equal(
+				framesOfType(connection.toClient, "pending_stage_route_registered").length,
+				2,
+				"each announcement was acknowledged",
+			);
+		},
+		TEST_TIMEOUT_MS,
+	);
+
 	test.each([
-		{ release: "0.9.71", mainConnectionRoute: { outcome: "acknowledged" } as RouteOutcome },
-		{ release: "0.9.77-alpha.1", mainConnectionRoute: REFUSED_IN_PLACE },
+		{ sender: "still connected", reconnected: false },
+		{ sender: "reconnected under a new session id", reconnected: true },
 	])(
-		"a $release stage asks its parent and is steered by name and id; workflow frames are answered in place, and no connection drops or registers again",
-		async ({ release, mainConnectionRoute }) => {
+		"a 0.9.71 run's notice that a queued message will not be delivered reaches its sender in the run's group ($sender) once, so the run's settlement passes send it once",
+		async ({ reconnected }) => {
+			assert.ok(proxy);
+			const runId = randomUUID();
+			const group = `workflow:${runId}`;
+			const owner = createPreviousRouteOwner(repoRoot);
+			cleanups.push(() => owner.closeGroup(group));
+			const route: RouteAnnouncement = {
+				runId,
+				group,
+				capability: `cap-${runId}`,
+				stages: [
+					{
+						stageId: "iteration-1",
+						stageName: "iteration-1",
+						target: `${group}/iteration-1`,
+						lifecycle: "pending",
+						routeEligible: true,
+						recipientPurpose: "agent",
+						group,
+					},
+				],
+			};
+			owner.events.emit(PENDING_STAGE_ROUTE_EVENT, route);
+			assert.ok(route.completion);
+			assert.deepEqual(await settleRoute(route.completion), ACKNOWLEDGED);
+
+			// A member of the run's group sent a message that an earlier broker queued for the stage; the run then ended
+			// before the stage started.
+			const returnAddress = randomUUID();
+			const original = await connect("0.9.71", `queued-sender-${runId}`, group, { returnAddress });
+			const senderId = idOf(original.client);
+			let sender = original;
+			if (reconnected) {
+				// It quit and came back as a new session with the same return address, as 0.9.x finds a sender again.
+				await original.client.disconnect();
+				sender = await connect("0.9.71", `queued-sender-${runId}`, group, { returnAddress });
+				assert.notEqual(idOf(sender.client), senderId);
+			}
+			const queuedMessageId = randomUUID();
+			const notificationId = randomUUID();
+			// 0.9.90's settlement pass notifies the sender of each undeliverable message on every pass, until a notice
+			// is delivered; only then does it mark the message notified.
+			let notified = false;
+			let notices = 0;
+			for (let pass = 0; pass < 3 && !notified; pass++) {
+				const notice: UndeliverableNotice = {
+					handled: false,
+					runId,
+					senderId,
+					senderReturnAddress: returnAddress,
+					messageId: queuedMessageId,
+					notificationId,
+					reason: "the run ended before the stage started",
+				};
+				owner.events.emit(PENDING_STAGE_UNDELIVERABLE_EVENT, notice);
+				assert.ok(notice.completion, "the route owner takes the notice");
+				notices += 1;
+				notified = await notice.completion;
+			}
+			assert.equal(notified, true, "the notice was delivered");
+			assert.equal(notices, 1, "one settlement pass sent it");
+
+			await waitFor("the sender receives the notice", () =>
+				sender.received.some((message) => message.replyTo === queuedMessageId),
+			);
+			await new Promise((settle) => setTimeout(settle, QUIET_MS));
+			const received = sender.received.filter((message) => message.replyTo === queuedMessageId);
+			assert.equal(received.length, 1, "the sender received the notice once");
+			assert.match(received[0]?.replyError ?? "", /the run ended before the stage started/);
+			const routeConnections = proxy.connections.filter((connection) =>
+				connection.toBroker.some((frame) => frame.type === "register_pending_stage_route" && frame.runId === runId),
+			);
+			assert.equal(routeConnections.length, 1, "the run's route connection");
+			const [connection] = routeConnections;
+			assert.ok(connection);
+			assert.equal(framesOfType(connection.toBroker, "send_pending_stage_notification").length, 1, "one notice");
+			assert.equal(
+				framesOfType(connection.toBroker, "register_pending_stage_route").length,
+				2,
+				"the announcement, and the registration the notice makes first",
+			);
+		},
+		TEST_TIMEOUT_MS,
+	);
+
+	test.each(["0.9.71", "0.9.77-alpha.1"])(
+		"a %s stage asks its parent and is steered by name and id; workflow frames are answered in place, and no connection drops or registers again",
+		async (release) => {
 			const runId = randomUUID();
 			const group = `workflow:${runId}`;
 			const capability = `cap-${runId}`;
@@ -383,8 +572,7 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 			const parent = await connect(release, parentName, group);
 			const parentId = idOf(parent.client);
 
-			// The run's owner announces its pending-stage route on its main connection. A client without a protocol range
-			// may predate the in-place refusal, so it is acknowledged; a client with one is refused in place.
+			// The run's owner announces its pending-stage route on its main connection; it is acknowledged, and no route kept.
 			const stages: StageAnnouncement[] = [
 				{
 					stageId: "reviewer-1",
@@ -400,17 +588,17 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 				await settleRoute(
 					parent.client.registerPendingStageRouteAcknowledged(runId, group, capability, stages, []),
 				),
-				mainConnectionRoute,
+				ACKNOWLEDGED,
 			);
 			assert.equal(parent.client.isConnected(), true, "the owner keeps its connection after its pending route");
 
-			// Its routes connection asks for in-place refusals, and is refused in place.
+			// Its routes connection, which asks for in-place refusals, is acknowledged too.
 			const route = await connect(release, routeName, group, { multiplexesPendingStageRoutes: true });
 			assert.deepEqual(
 				await settleRoute(route.client.registerPendingStageRouteAcknowledged(runId, group, capability, stages, [])),
-				REFUSED_IN_PLACE,
+				ACKNOWLEDGED,
 			);
-			assert.equal(route.client.isConnected(), true, "the route connection survives the refusal");
+			assert.equal(route.client.isConnected(), true, "the route connection stays up");
 			assert.equal(await parent.client.claimWorkflowInvocation(runId, "launcher-capability"), false);
 			assertRegisteredOnce(routeName, idOf(route.client));
 			await route.client.disconnect();
@@ -452,11 +640,19 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 				),
 			);
 
-			// A send to the stage's workflow path, and a pending-stage notification, are refused with the 0.10.0 reason.
-			const viaPath = await parent.client.send(`${group}/reviewer`, { text: "via path" });
-			assert.equal(viaPath.delivered, false);
-			assert.equal(viaPath.reason, WORKFLOW_TARGET_REMOVED_REASON);
-			assert.match(viaPath.reason ?? "", /removed in Atomic 0\.10\.0/);
+			// A send, ask or reply to the stage's workflow path is answered as one to a name no session has, and so is a
+			// pending-stage notice addressed to it, which goes on as an ordinary send.
+			for (const options of [
+				{ text: "via path" },
+				{ text: "via path", expectsReply: true },
+				{ text: "via path", replyTo: ask.id, requirePendingReply: true as const },
+			]) {
+				const viaPath = await parent.client.send(`${group}/reviewer`, options);
+				const unknownName = await parent.client.send(`nobody-${release}`, options);
+				assert.equal(viaPath.delivered, false);
+				assert.equal(viaPath.reason, "Session not found");
+				assert.deepEqual(outcome(viaPath), outcome(unknownName), JSON.stringify(options));
+			}
 			const notification = await parent.client.sendPendingStageNotification(
 				runId,
 				capability,
@@ -464,8 +660,15 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 				undefined,
 				{ text: "notice" },
 			);
-			assert.equal(notification.delivered, false);
-			assert.equal(notification.reason, WORKFLOW_ROUTE_REMOVED_REASON);
+			const unknownNotification = await parent.client.sendPendingStageNotification(
+				runId,
+				capability,
+				`nobody-${release}`,
+				undefined,
+				{ text: "notice" },
+			);
+			assert.equal(notification.reason, "Session not found");
+			assert.deepEqual(outcome(notification), outcome(unknownNotification));
 
 			// Nothing dropped, raised an error or registered again, on the client or on the wire.
 			await new Promise((settle) => setTimeout(settle, QUIET_MS));

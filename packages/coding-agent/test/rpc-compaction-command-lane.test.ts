@@ -28,8 +28,8 @@ async function createEngine(invocations: string[]): Promise<Harness> {
 	const harness = await createHarness({
 		extensionFactories: [
 			(pi) => {
-				pi.registerCommand("fixture-actions", {
-					description: "Show fixture actions",
+				pi.registerCommand("workflow", {
+					description: "Manage workflow runs",
 					handler: async (args) => {
 						invocations.push(args);
 					},
@@ -94,7 +94,7 @@ describe("interactive engine command lane during a manual compaction", () => {
 		await waitFor("the engine to start compacting", () => engine.session.isCompacting);
 		input.send({ id: "tasks", type: "open_task_inspector" });
 		input.send({ id: "models", type: "get_available_models" });
-		input.send({ id: "connect", type: "prompt", message: "/fixture-actions status" });
+		input.send({ id: "connect", type: "prompt", message: "/workflow status" });
 		input.send({ id: "catalog", type: "get_commands" });
 
 		await waitFor("commands sent during compaction to be answered", () =>
