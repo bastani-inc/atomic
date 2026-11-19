@@ -178,15 +178,18 @@ export async function handleList(
 ): Promise<SubagentToolResult> {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
 	const d = await discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
-	const agents = allAgents(d)
-		.filter(
-			(agent) =>
-				!agent.disabled &&
-				(scope === "both" ||
-					agent.source === "builtin" ||
-					agent.source === scope ||
-					(agent.source === "package" && packageAgentInScope(agent, scope))),
-		)
+	const listed = allAgents(d).filter(
+		(agent) =>
+			!agent.disabled &&
+			(scope === "both" ||
+				agent.source === "builtin" ||
+				agent.source === scope ||
+				(agent.source === "package" && packageAgentInScope(agent, scope))),
+	);
+	// A package agent that a user or project agent of the same full name overrides cannot run under that name.
+	const overridden = new Set(listed.filter((agent) => agent.source !== "package").map((agent) => agent.name));
+	const agents = listed
+		.filter((agent) => agent.source !== "package" || !overridden.has(agent.name))
 		.sort((a, b) => a.name.localeCompare(b.name));
 	const lines = [
 		"Executable agents:",
@@ -196,6 +199,13 @@ export async function handleList(
 						`- ${agent.name} (${sourceLabel(agent)}${agent.defaultContext ? `, context: ${agent.defaultContext}` : ""}): ${agent.description}`,
 				)
 			: ["- (none)"]),
+		...(d.packageDiagnostics.length
+			? [
+					"",
+					"Package agents not offered:",
+					...d.packageDiagnostics.map((diagnostic) => `- ${diagnostic.path}: ${diagnostic.message}`),
+				]
+			: []),
 	];
 	return {
 		...result(lines.join("\n")),

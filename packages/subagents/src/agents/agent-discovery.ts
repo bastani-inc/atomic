@@ -66,6 +66,11 @@ export function packageAgentInScope(agent: Pick<AgentConfig, "packageOrigin">, s
 	return scope === "both" || installed === "temporary" || installed === scope;
 }
 
+/** Every package agent discovery may offer, before user and project agents of the same full name replace any. */
+export async function discoverPackageAgents(options: AgentDiscoveryOptions): Promise<AgentConfig[]> {
+	return (await loadPackageAgents(options)).agents;
+}
+
 async function loadPackageAgents(options: AgentDiscoveryOptions): Promise<{
 	agents: AgentConfig[];
 	diagnostics: AgentLoadDiagnostic[];
@@ -153,6 +158,8 @@ export async function discoverAgentsAll(
 	userSettingsPath: string;
 	projectSettingsPath: string | null;
 	diagnostics: AgentLoadDiagnostic[];
+	/** Why package agent files were not offered: a shadowed full name, a dotted name, or no usable namespace. */
+	packageDiagnostics: AgentLoadDiagnostic[];
 }> {
 	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
@@ -207,6 +214,7 @@ export async function discoverAgentsAll(
 		user,
 		project,
 		package: packageLoad.agents,
+		packageDiagnostics: packageLoad.diagnostics,
 		userDir,
 		projectDir,
 		userSettingsPath,

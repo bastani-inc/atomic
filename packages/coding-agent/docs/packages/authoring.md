@@ -59,7 +59,7 @@ tools: read, search, bash, mcp:acme-search
 Review the change you are given without editing files. Cite each issue with file:line evidence and stop once the diff and its call paths are covered.
 ```
 
-- **Name.** A package agent runs as `<namespace>.<name>`. The namespace is the package's `name`, lowercased, with an npm scope turned into a dotted prefix, so this agent is `acme.review-kit.reviewer`. A package without a `name` uses its directory name. A `package:` field in the agent's frontmatter is ignored.
+- **Name.** A package agent runs as `<namespace>.<name>`. The namespace is the package's `name`, lowercased, with an npm scope turned into a dotted prefix, so this agent is `acme.review-kit.reviewer`. A package without a `name` uses its directory name. A `package:` field in the agent's frontmatter is ignored, and an agent whose `name` contains a dot is not loaded.
 - **Pins.** Put a [reasoning level](/subagents/reference#reasoning-levels) on `model` and on each `fallbackModels` entry. `tools` is the exact tool list; `mcp:<server>` adds all of a server's tools and `mcp:<server>/<tool>` adds one. Ship the server itself with [`mcpServers`](#mcp-servers).
 - **Launching.** From codemode, `await tools.subagent({ agent: "acme.review-kit.reviewer", task })`. Leave out `model` on the call to keep the agent's model.
 - **Overrides.** A user or project agent with the same full name replaces the package's agent. For example, `~/.atomic/agent/agents/reviewer.md` with `name: reviewer` and `package: acme.review-kit` overrides the agent above. Builtin agent names contain no dot, so package agents never replace builtins.

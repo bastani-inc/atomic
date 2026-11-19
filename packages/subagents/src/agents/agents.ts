@@ -7,6 +7,7 @@ export {
 	contextAgentDiscoveryOptions,
 	discoverAgents,
 	discoverAgentsAll,
+	discoverPackageAgents,
 	packageAgentInScope,
 } from "./agent-discovery.js";
 export type { AgentDirLoadResult, AgentLoadDiagnostic } from "./agent-loaders.js";

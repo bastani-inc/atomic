@@ -193,6 +193,15 @@ describe("agents shipped by installed packages (#5991)", () => {
 		assert.equal(reviewers.length, 1);
 		assert.equal(reviewers[0]!.source, "user");
 		assert.equal(reviewers[0]!.description, "My reviewer");
+		const got = await handleManagementAction("get", { agent: "acme.review-kit.reviewer" }, ctx, true);
+		const definitions = (got.structuredContent as { definitions: Array<{ scope: string }> }).definitions;
+		assert.deepEqual(
+			definitions.map((definition) => definition.scope),
+			["user", "package"],
+		);
+		const listed = text(await handleList({ action: "list" }, ctx));
+		assert.match(listed, /^- acme\.review-kit\.reviewer \(user\): My reviewer$/m);
+		assert.doesNotMatch(listed, /acme\.review-kit\.reviewer \(package/);
 
 		// The override is the user's own agent: update changes it, not the package's file.
 		const updated = await handleManagementAction(
@@ -269,6 +278,27 @@ describe("agents shipped by installed packages (#5991)", () => {
 				["temporary", "@acme/review-kit"],
 				["temporary", "@acme/review-kit"],
 			],
+		);
+	});
+
+	test("list names the package agent files it does not offer and why (#5991)", async () => {
+		const fixture = makeFixture();
+		write(join(fixture.reviewKit, "agents", "dotted.md"), agentFile({ name: "merge.review", description: "Dotted" }));
+		const twin = join(fixture.root, "packages", "twin");
+		write(join(twin, "package.json"), JSON.stringify({ name: "acme.review-kit", atomic: { agents: ["./agents"] } }));
+		write(join(twin, "agents", "reviewer.md"), agentFile({ name: "reviewer", description: "Twin reviewer" }));
+		writeSettings(join(fixture.agentDir, "settings.json"), { packages: [fixture.reviewKit, twin] });
+		const ctx = managementContext(fixture, await loadResources(fixture));
+
+		const listed = text(await handleList({ action: "list" }, ctx));
+
+		assert.match(listed, /- acme\.review-kit\.reviewer \(package [^)]*review-kit\): Reviews diffs/);
+		assert.doesNotMatch(listed, /Twin reviewer/);
+		const notOffered = listed.slice(listed.indexOf("Package agents not offered:"));
+		assert.match(notOffered, /dotted\.md: Package agent name 'merge\.review' must not contain '\.'/);
+		assert.match(
+			notOffered,
+			/reviewer\.md: Agent 'acme\.review-kit\.reviewer' from package [^ ]*twin is shadowed by the same name from package/,
 		);
 	});
 

@@ -24,7 +24,7 @@ import {
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
-import { contextAgentDiscoveryOptions } from "../../agents/agents.js";
+import { contextAgentDiscoveryOptions, discoverPackageAgents } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -417,6 +417,9 @@ async function rediscoverAgent(
 	name: string,
 	source: AgentSource | undefined,
 ): Promise<AgentConfig | undefined> {
+	// A user or project agent of the same full name hides a package agent in every scope; look it up directly.
+	if (source === "package")
+		return (await discoverPackageAgents(contextAgentDiscoveryOptions(ctx))).find((agent) => agent.name === name);
 	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
 	for (const scope of scopes) {
 		const { agents } = await deps.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx));

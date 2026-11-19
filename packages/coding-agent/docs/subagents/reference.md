@@ -14,11 +14,11 @@ Atomic reads agent definitions from four sources. When two share a full name, th
 3. **User** agents in `~/.atomic/agent/agents/`.
 4. **Project** agents in the nearest `.atomic/agents/`.
 
-Builtin names contain no dot, so a package agent never replaces a builtin. When several packages ship the same full name, the first is used: packages passed with `-e`, then project-installed packages, then globally installed ones. To replace a package agent, give a user or project agent the same full name, for example `name: reviewer` with `package: acme.review-kit`.
+Builtin names contain no dot, so a package agent never replaces a builtin. When several packages ship the same full name, the first is used: packages passed with `-e`, then project-installed packages, then globally installed ones. `subagent({ action: "list" })` names each package agent file it does not offer, and why, under **Package agents not offered**: a full name another package already ships, a `name` that contains a dot, or a package without a usable name. To replace a package agent, give a user or project agent the same full name, for example `name: reviewer` with `package: acme.review-kit`.
 
 In an untrusted project, Atomic reads neither the project's agents nor the agents of project-installed packages. Packages passed with `-e` still supply theirs. `agentScope: "user"` covers user agents and the agents of globally installed and `-e` packages; `"project"` covers project agents and the agents of project-installed and `-e` packages. Run `/reload` to pick up added, changed, or removed definitions; a running child keeps the definition it started with.
 
-`subagent({ action: "list" })` labels each package agent with its package source, as in `acme.review-kit.reviewer (package npm:@acme/review-kit)`. `get` adds its local name, namespace, and whether the package is installed globally, in the project, or for this run only. `/agents` lists them under **Package agents**. `create`, `update`, and `delete` change only user and project agents: `update` and `delete` refuse a package agent, and `create` with the same full name makes an override.
+`subagent({ action: "list" })` labels each package agent with its package source, as in `acme.review-kit.reviewer (package npm:@acme/review-kit)`. `get` adds its local name, namespace, and whether the package is installed globally, in the project, or for this run only. A package agent that a user or project agent overrides is left out of the list; `get` shows both definitions. `/agents` lists package agents under **Package agents**. `create`, `update`, and `delete` change only user and project agents: `update` and `delete` refuse a package agent, and `create` with the same full name makes an override.
 
 ## Automatic model selection
 

@@ -87,13 +87,16 @@ export async function findAgents(
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
 	// A package agent always matches, so update and delete refuse it by name rather than report it missing.
+	// Package matches come last: the definitions that run under the name keep their place.
 	return allAgents(d)
 		.filter(
 			(a) =>
 				(scope === "both" || a.source === scope || a.source === "package") &&
 				(a.name === raw || a.name === sanitized),
 		)
-		.sort((a, b) => a.source.localeCompare(b.source));
+		.sort(
+			(a, b) => Number(a.source === "package") - Number(b.source === "package") || a.source.localeCompare(b.source),
+		);
 }
 
 export async function nameExistsInScope(
