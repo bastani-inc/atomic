@@ -17,7 +17,7 @@ export interface DurableResumeCandidate {
 /** Live snapshot fields used by every workflow resume surface. */
 export interface WorkflowRunResumeCandidate {
 	readonly status: RunStatus;
-	readonly restored?: true;
+	readonly restored?: RunSnapshot["restored"];
 	readonly endedAt?: number;
 	readonly resumable?: boolean;
 	readonly failureRecoverability?: WorkflowFailureRecoverability;

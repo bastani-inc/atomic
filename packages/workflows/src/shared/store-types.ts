@@ -606,7 +606,7 @@ export type { WorkflowWorktreeRestoreOutcome } from "./worktree-restore-outcome.
 
 export interface RunSnapshot extends RunExecutionState {
 	/** A retained snapshot reopened for this session, not an executing attempt of this process. */
-	readonly restored?: true;
+	readonly restored?: "session" | "journal";
 	/** The journal attempt and status generation the restored session's block belongs to. */
 	readonly blockAttempt?: string;
 	/** Version shown for an older, unversioned block. It can select a journal resume but never repair its status. */

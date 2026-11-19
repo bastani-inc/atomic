@@ -742,7 +742,7 @@ export abstract class GraphViewState {
 		return (
 			status === "paused" ||
 			status === "blocked" ||
-			(run.restored === true && status === "failed" && run.resumable === true)
+			(run.restored === "journal" && status === "failed" && run.resumable === true)
 		);
 	}
 

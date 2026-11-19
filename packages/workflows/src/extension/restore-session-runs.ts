@@ -57,7 +57,7 @@ export async function restoreSessionRuns(
 				...run,
 				modelOwner: owner,
 				origin: handle.origin,
-				restored: true,
+				restored: "journal",
 				...(blocked ? { ...details, status: "blocked", blockedAt: blockedAt ?? handle.updatedAt } : {}),
 				...(root && uncommitted === "earlier" ? { earlierBlockVersion: handle.updatedAt } : {}),
 				...(root

@@ -329,13 +329,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				fromRecords?: true;
 		  }
 		| { ok: false; message: string } {
-		if (source.restored)
-			return stageId === undefined
-				? { ok: true, fromRecords: true }
-				: {
-						ok: false,
-						message: `This stage has no live attempt to retry. Resume the whole run ${source.id} from its journal.`,
-					};
+		if (source.restored && stageId !== undefined)
+			return {
+				ok: false,
+				message: `This stage has no live attempt to retry. Resume the whole run ${source.id} from its journal.`,
+			};
+		// A journal graph replays its checkpoints. A session-entry restore also carries completed stage results
+		// which may not exist as individual journal checkpoints in an older run.
+		if (source.restored === "journal") return { ok: true, fromRecords: true };
 		const budgetExceededSource =
 			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
 		if (stageId !== undefined) {

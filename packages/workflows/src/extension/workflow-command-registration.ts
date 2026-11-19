@@ -135,7 +135,7 @@ export function registerWorkflowSlashCommand(
 					reporter.error(`Could not load workflow definitions: ${safeErrorReason(error)}`);
 					return;
 				}
-				await deps.restoreSessionRuns?.(ctx);
+				if (deps.restoreSessionRuns) await deps.restoreSessionRuns(ctx);
 				await handleWorkflowsCommand(args, ctx, reporter, {
 					overlay,
 					store: owner.store,

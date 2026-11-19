@@ -226,7 +226,7 @@ function restoreSessionRuns(
 
 		if (blockedMeta !== undefined) {
 			const runSnapshot: RunSnapshot = {
-				restored: true,
+				restored: "session",
 				blockAttempt: blockedMeta.blockAttempt,
 				id: run.runId,
 				name: run.name,

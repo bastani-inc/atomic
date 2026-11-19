@@ -174,7 +174,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 					(effectiveRunStatus(run) === "blocked" ||
 						(backend !== undefined &&
 							isWorkflowRunResumable(workflowRunResumeCandidate(run, owner.store.runs(), backend))));
-				if (run.restored || isDurableAuthorExit) {
+				if (run.restored === "journal" || isDurableAuthorExit) {
 					await ensureWorkflowResourcesVisible();
 					const runtime = deps.runtime();
 					if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
