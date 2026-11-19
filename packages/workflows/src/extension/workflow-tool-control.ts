@@ -557,6 +557,7 @@ async function resolveExplicitDurableTarget(
 	const runtime = deps.getRuntime();
 	let durable: readonly ResumableWorkflowEntry[];
 	let completed: readonly ResumableWorkflowEntry[];
+	let storedIds: readonly string[] | undefined;
 	try {
 		await deps.ensureWorkflowResourcesLoaded();
 		deps.signal?.throwIfAborted();
@@ -571,6 +572,7 @@ async function resolveExplicitDurableTarget(
 			completed = historical ? [resumableEntryFromHandle(handle)] : [];
 		} else {
 			const catalog = await runtime.prepareDurableCatalog?.();
+			storedIds = catalog?.inspectableIds;
 			durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
 			completed =
 				catalog?.completed ??
@@ -589,6 +591,7 @@ async function resolveExplicitDurableTarget(
 		completed,
 		deps.owner?.store.runs(),
 		runtime.durableBackend(),
+		storedIds,
 	);
 	if (resolved.kind === "malformed" || resolved.kind === "ambiguous") {
 		return { action: "resume", runId: target, status: "noop", message: resolved.message, code: "run_not_found" };
@@ -612,8 +615,19 @@ async function resolveExplicitDurableTarget(
 			code: "not_resumable",
 		};
 	}
-	const durableHandle = runtime.durableBackend().getWorkflow(target);
-	if (durableHandle !== undefined) await deps.authorize?.(target);
+	if (resolved.kind === "stored") target = resolved.workflowId;
+	const backend = runtime.durableBackend();
+	const durableHandle = backend.getWorkflow(target);
+	let stored = durableHandle !== undefined;
+	if (!stored && isFullRunId(target)) {
+		try {
+			stored = (await backend.snapshotJournal?.getRun(target)) !== undefined;
+		} catch (error) {
+			return controlFailure("resume", target, error);
+		}
+		deps.signal?.throwIfAborted();
+	}
+	if (stored) await deps.authorize?.(target);
 	const isZeroProgressCandidate =
 		durableHandle !== undefined &&
 		(durableHandle.status === "paused" || durableHandle.status === "running") &&
@@ -628,12 +642,12 @@ async function resolveExplicitDurableTarget(
 			code: "not_resumable",
 		};
 	}
-	if (durableHandle !== undefined) {
+	if (stored) {
 		const refusal = refuseStageScopedDurableResume(target, args);
 		if (refusal !== undefined) return refusal;
 		return resumePreparedDurableTarget(target, deps, args.budget);
 	}
-	return runNotFoundResumeResult(runtime.durableBackend(), target);
+	return runNotFoundResumeResult(backend, target);
 }
 
 export async function workflowResumeAction(

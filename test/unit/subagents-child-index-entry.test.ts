@@ -474,6 +474,54 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		assert.equal(subagentChildIndexEntry("ix-legacy:0")?.entryId, entryId);
 	});
 
+	test("reloading during an accepted child's pending save preserves the order of its running and terminal records (#5609)", async () => {
+		const owner = session();
+		const ctx = { sessionManager: owner };
+		const id = "ix-pending-reload:0";
+		const prior = record(owner, { childId: id, state: "terminal", terminalStatus: "ok" });
+		await owner.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, prior);
+		bindSubagentChildCards(ctx);
+		const gate = Promise.withResolvers<void>();
+		const old = createSubagentChildRecordSink(
+			{
+				async appendEntry(type, data) {
+					await gate.promise;
+					await owner.appendCustomEntry(type, data);
+				},
+			},
+			ctx,
+		);
+		old.record(input({ runId: prior.runId, taskId: "admitted" }));
+		const nextModule = "../../packages/subagents/src/runs/foreground/subagent-child-records.ts?reload-pending-owner";
+		const next = (await import(
+			nextModule
+		)) as typeof import("../../packages/subagents/src/runs/foreground/subagent-child-records.js");
+		try {
+			bindSubagentChildCards(ctx);
+			assert.equal(
+				subagentChildRecordOf(owner.getSessionId(), id)?.state,
+				"running",
+				"reading the previous row must not hide an accepted child",
+			);
+			const terminal = next.recordSubagentChildStatus(writingHost(owner), prior, "quit");
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			gate.resolve();
+			await Promise.all([old.flushed?.(), terminal]);
+			assert.deepEqual(
+				childRecordsIn(owner, id)
+					.slice(1)
+					.map((row) => [row.state, row.taskId]),
+				[
+					["running", "admitted"],
+					["terminal", "admitted"],
+				],
+			);
+		} finally {
+			gate.resolve();
+			await old.flushed?.();
+		}
+	});
+
 	test("a record whose append the host defers stays in memory until a later record of the child is saved", async () => {
 		const owner = session();
 		const ownerSessionId = owner.getSessionId();
