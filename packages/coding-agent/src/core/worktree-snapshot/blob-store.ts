@@ -281,8 +281,27 @@ const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resol
 export const DEGRADED_RESTORE_RETENTION_DAYS = 30;
 const DEGRADED_PIN_SECONDS = DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60;
 
-/** Blobs one collection batch examines and deletes in one write transaction. */
+/** Aged blobs one page of a collection examines, read from the age index in one statement. */
 export const SNAPSHOT_COLLECTION_BATCH = 256;
+
+/**
+ * The most blobs one delete batch of a collection deletes, in one write transaction (#5530). Deleting a blob also
+ * deletes its chunks. On a chunk table an earlier release created `WITHOUT ROWID`, until collection moves it (#5541),
+ * finding them reads whole chunks of the rows each seek compares: about 3.5 ms per blob on a large store with its
+ * pages cached, so a batch of this many takes about 30 ms.
+ * The transaction also checks again, in one statement, the sessions that reference the batch's blobs: at most
+ * {@link SNAPSHOT_COLLECTION_SESSION_REFS} snapshot entries of them.
+ */
+export const SNAPSHOT_COLLECTION_DELETE_BATCH = 8;
+
+/**
+ * The most snapshot entries of sessions one collection statement walks to find the snapshots those sessions retain
+ * (#5530). Each session's retained snapshots are found by walking the snapshot entries on its open branches, about
+ * 2 µs per entry with its pages cached, so a statement over this many takes a few milliseconds, and the event loop
+ * gets a turn between statements. A session with more entries than this is walked in a statement of its own, and so
+ * is a blob whose sessions hold more together when its delete batch checks them again.
+ */
+export const SNAPSHOT_COLLECTION_SESSION_REFS = 2_048;
 
 /**
  * The most bytes of legacy blobs one write transaction of a collection stamps or moves. A blob stored before blob ages
@@ -345,6 +364,152 @@ type PageRow = SqliteRow & { created_at: number; hash: string };
  */
 function collectableAge(graceSeconds: number): number {
 	return graceSeconds === 0 ? 0 : graceSeconds + 1;
+}
+
+/**
+ * How long the light statements of a sweep, such as reading what walking a session costs, may hold the event loop
+ * together before the sweep gives it a turn, in milliseconds. Counting a session's snapshot entries reads them: a few
+ * milliseconds for a large session whose pages are not cached, so each session is counted in a statement of its own.
+ */
+const SWEEP_TURN_MS = 8;
+
+/**
+ * How long a sweep goes without a write before it renews its claim in a transaction of its own: a quarter of the claim
+ * lease, so pages with nothing to delete, which write nothing else, never let the lease run out.
+ */
+const SWEEP_CLAIM_RENEWAL_MS = (SNAPSHOT_COLLECTION_LEASE_SECONDS * 1_000) / 4;
+
+/** A blob a sweep may delete, with the sessions whose records reference it. */
+interface SweepCandidate {
+	readonly hash: string;
+	readonly sessions: readonly string[];
+}
+
+/** Blobs a sweep deletes in one write transaction, with the sessions whose records referenced them when it walked them. */
+interface SweepDeleteBatch {
+	readonly hashes: readonly string[];
+	readonly sessions: readonly string[];
+}
+
+/**
+ * Groups `costs`' sessions, in order, into groups whose costs add up to at most {@link SNAPSHOT_COLLECTION_SESSION_REFS};
+ * a session that costs more is a group of its own.
+ */
+function sessionGroups(costs: ReadonlyMap<string, number>): string[][] {
+	const groups: string[][] = [];
+	let group: string[] = [];
+	let total = 0;
+	for (const [session, cost] of costs) {
+		if (group.length > 0 && total + cost > SNAPSHOT_COLLECTION_SESSION_REFS) {
+			groups.push(group);
+			group = [];
+			total = 0;
+		}
+		group.push(session);
+		total += cost;
+	}
+	if (group.length > 0) groups.push(group);
+	return groups;
+}
+
+/**
+ * The turns of the event loop between the steps of a sweep that hold it, such as a statement that walks sessions, a
+ * delete batch or a page: {@link next} gives the loop a turn when a step has held it since the last turn, then checks
+ * the sweep's abort signal.
+ */
+class SweepTurns {
+	private readonly signal?: AbortSignal;
+	private readonly yieldTurn: () => Promise<void>;
+	private holding = false;
+	private turnedAt = performance.now();
+
+	constructor(options: { readonly signal?: AbortSignal }, yieldTurn: () => Promise<void>) {
+		this.signal = options.signal;
+		this.yieldTurn = yieldTurn;
+	}
+
+	async next(): Promise<void> {
+		if (this.holding) {
+			this.holding = false;
+			await this.yieldTurn();
+			this.turnedAt = performance.now();
+		}
+		this.signal?.throwIfAborted();
+	}
+
+	/** Records that a step held the event loop since the last turn. */
+	held(): void {
+		this.holding = true;
+	}
+
+	/** Gives the event loop a turn once the light steps since the last one have held it for {@link SWEEP_TURN_MS}. */
+	async light(): Promise<void> {
+		if (performance.now() - this.turnedAt >= SWEEP_TURN_MS) this.holding = true;
+		await this.next();
+	}
+}
+
+/**
+ * What one sweep has read about the sessions that reference its candidates (#5530): how many snapshot entries walking
+ * each costs, and the blobs the snapshots of those it walked retain. Only nominates candidates: each delete batch reads
+ * its sessions again in its transaction.
+ */
+class SweepSessions {
+	private readonly costs = new Map<string, number>();
+	private readonly walked = new Set<string>();
+	private readonly retained = new Set<string>();
+
+	/** Which of `sessions` this sweep has not walked yet. */
+	unwalked(sessions: Iterable<string>): string[] {
+		return [...new Set(sessions)].filter((session) => !this.walked.has(session));
+	}
+
+	cost(costs: ReadonlyMap<string, number>): void {
+		for (const [session, cost] of costs) this.costs.set(session, cost);
+	}
+
+	/** Records that `sessions` were walked and that their retained snapshots reference `hashes`. */
+	retain(sessions: readonly string[], hashes: readonly string[]): void {
+		for (const session of sessions) this.walked.add(session);
+		for (const hash of hashes) this.retained.add(hash);
+	}
+
+	retains(hash: string): boolean {
+		return this.retained.has(hash);
+	}
+
+	/**
+	 * `candidates` in delete batches, in order, of at most {@link SNAPSHOT_COLLECTION_DELETE_BATCH} blobs whose sessions
+	 * cost at most {@link SNAPSHOT_COLLECTION_SESSION_REFS} to walk together; a candidate whose own sessions cost more
+	 * is a batch of its own.
+	 */
+	batches(candidates: readonly SweepCandidate[]): SweepDeleteBatch[] {
+		const batches: SweepDeleteBatch[] = [];
+		let batch: string[] = [];
+		let sessions = new Set<string>();
+		let total = 0;
+		const added = (candidate: SweepCandidate) =>
+			candidate.sessions.reduce(
+				(sum, session) => (sessions.has(session) ? sum : sum + (this.costs.get(session) ?? 1)),
+				0,
+			);
+		for (const candidate of candidates) {
+			if (
+				batch.length === SNAPSHOT_COLLECTION_DELETE_BATCH ||
+				(batch.length > 0 && total + added(candidate) > SNAPSHOT_COLLECTION_SESSION_REFS)
+			) {
+				batches.push({ hashes: batch, sessions: [...sessions] });
+				batch = [];
+				sessions = new Set();
+				total = 0;
+			}
+			total += added(candidate);
+			batch.push(candidate.hash);
+			for (const session of candidate.sessions) sessions.add(session);
+		}
+		if (batch.length > 0) batches.push({ hashes: batch, sessions: [...sessions] });
+		return batches;
+	}
 }
 
 /**
@@ -1228,15 +1393,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Indexes the rows that referencing tables held before their triggers were installed, in transactions of
 	 * {@link SNAPSHOT_INDEX_BACKFILL_BATCH} rows, so that the index covers every reference. A one-time cost in the number
 	 * of existing rows, paid in the background by the first collection; resumes where it stopped. Does nothing once the
-	 * index is complete. Yields to the event loop between batches, and checks `signal` before each batch and rejects
-	 * with its reason.
+	 * index is complete. Yields to the event loop after every batch, so the next batch, of the same table or another,
+	 * or what follows the index, such as a sweep's first batch, starts on a turn of its own (#5530). Checks `signal`
+	 * before each batch and rejects with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
 		for (const { source, backfilled } of await this.installIndex(options.pace, true)) {
 			if (backfilled) continue;
-			for (;;) {
+			for (let done = false; !done; ) {
 				options.signal?.throwIfAborted();
-				if (await this.backfillBatch(source, options)) break;
+				done = await this.backfillBatch(source, options);
 				await this.betweenBatches(options.pace);
 			}
 		}
@@ -1280,20 +1446,26 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * Deletes every blob stored or re-stored at least `graceSeconds` ago on the database clock that no retained snapshot
-	 * and no snapshot dispatched work carries references, in batches of {@link SNAPSHOT_COLLECTION_BATCH}, and resolves
-	 * with the hashes deleted. Each batch is one write transaction whose delete re-checks age and references in the same
-	 * statement, so a reference published before the batch commits keeps its blob and a process killed mid-collection
-	 * leaves only garbage. Each batch's page holds only blobs it can delete, so a sweep started again after a process
-	 * exited makes progress even when the oldest blobs are all retained. Reads the reference index and the blob table's
-	 * age index, never a journal or a session. Ages are counted in whole seconds, so a blob can stay up to a second past
-	 * `graceSeconds`, never less.
+	 * and no snapshot dispatched work carries references, and resolves with the hashes deleted. Reads the reference index
+	 * and the blob table's age index, never a journal or a session. Ages are counted in whole seconds, so a blob can stay
+	 * up to a second past `graceSeconds`, never less.
 	 *
-	 * Every batch first checks, in its own transaction, that every referencing table has its triggers and a finished
+	 * Pages through the aged blobs, oldest first, {@link SNAPSHOT_COLLECTION_BATCH} at a time, and keeps as candidates
+	 * those no retaining run, no carried work and no session retains. A session's retained snapshots are found by walking
+	 * its snapshot entries, at most {@link SNAPSHOT_COLLECTION_SESSION_REFS} of them per statement, once per sweep
+	 * (#5530). The candidates are deleted in batches, each one write transaction that finds the retained snapshots of the
+	 * sessions it walked for its blobs again, in one statement, and deletes only the blobs none of them retains, no other
+	 * session records, and that are still old and unreferenced by runs and carried work. So a reference published before
+	 * the batch commits keeps its blob, and a process killed mid-collection leaves only garbage. The event loop never
+	 * gets a turn inside a write transaction: another connection of this process that wrote then would wait for the
+	 * write lock while holding the event loop, and the transaction could not end until it gave up.
+	 *
+	 * Every batch first checks, in its transaction, that every referencing table has its triggers and a finished
 	 * backfill, as {@link completeIndex} leaves them. When one does not, because a table appeared or lost its triggers
 	 * since, nothing is deleted until the index has been completed again. A sweep repairs the index once; when it is
 	 * incomplete again after that, because the schema keeps changing under it, the sweep stops without deleting
-	 * anything more and the next collection tries again. Yields to the event loop between batches, and checks `signal`
-	 * before each batch and rejects with its reason.
+	 * anything more and the next collection tries again. Gives the event loop a turn between statements that walk
+	 * sessions, between batches and between pages, and checks `signal` before each and rejects with its reason.
 	 */
 	async sweep(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		const t = this.tables;
@@ -1315,59 +1487,213 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			});
 			await this.betweenBatches(options.pace);
 		}
-		const unreferenced = `NOT EXISTS (
-				SELECT 1 FROM ${t.runRefs} AS ref WHERE ref.hash = ${t.blobs}.hash
-				AND NOT EXISTS (SELECT 1 FROM ${t.runState} AS state WHERE state.run_id = ref.run_id AND state.retained = 0)
-			) AND NOT EXISTS (
-				SELECT 1 FROM ${t.sessionRecords} AS record
-				WHERE record.hash = ${t.blobs}.hash AND (
-					(record.session_id, record.snapshot_id) IN (${this.sessionHeads()})
-					OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
-				)
-			) AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS carried WHERE carried.hash = ${t.blobs}.hash)`;
 		const minimumAge = collectableAge(options.graceSeconds);
 		const deleted: string[] = [];
+		const turns = new SweepTurns(options, () => this.betweenBatches(options.pace));
+		let sessions = new SweepSessions();
 		let cursor: PageRow | undefined;
 		let repaired = false;
+		let renewedAt = Number.NEGATIVE_INFINITY;
 		for (;;) {
-			options.signal?.throwIfAborted();
-			const after = cursor;
-			const batch = await this.write(options.pace, async (transaction) => {
-				const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
-				if (!states.every((state) => state.installed && state.backfilled)) return undefined;
-				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
-				const page = await this.page(transaction, minimumAge, unreferenced, after);
-				if (page.length === 0) return { page, deleted: [] };
-				const rows = await transaction.all<SqliteRow & { hash: string }>(
-					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} RETURNING hash`,
-					JSON.stringify(page.map((row) => row.hash)),
-					minimumAge,
-				);
-				return { page, deleted: rows.map((row) => row.hash) };
-			});
-			if (batch === undefined) {
+			await turns.next();
+			if (options.holder !== undefined && performance.now() - renewedAt >= SWEEP_CLAIM_RENEWAL_MS) {
+				// Pages that hold nothing to delete write nothing else; the claim is renewed when the sweep starts and then
+				// at least once per quarter lease.
+				const holder = options.holder;
+				await this.write(options.pace, (transaction) => this.renewClaim(transaction, holder));
+				renewedAt = performance.now();
+			}
+			const page = await this.page(minimumAge, cursor);
+			const candidates = await this.unretainedOf(
+				page.map((row) => row.hash),
+				sessions,
+				turns,
+			);
+			let incomplete = false;
+			for (const batch of sessions.batches(candidates)) {
+				// Every delete batch starts on a turn of its own and ends with one: never a turn while it holds the write lock.
+				await turns.next();
+				const removed = await this.deleteUnretained(batch, minimumAge, options);
+				turns.held();
+				if (removed === undefined) {
+					incomplete = true;
+					break;
+				}
+				renewedAt = performance.now();
+				deleted.push(...removed);
+				options.onBatch?.(removed);
+			}
+			if (incomplete) {
 				if (repaired) return deleted;
 				repaired = true;
 				await this.completeIndex(options);
+				sessions = new SweepSessions();
 				continue;
 			}
-			deleted.push(...batch.deleted);
-			options.onBatch?.(batch.deleted);
-			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) {
+			if (page.length < SNAPSHOT_COLLECTION_BATCH) {
 				await this.stampLegacyAges(options);
 				await this.moveChunksToRowTable(options);
 				return deleted;
 			}
-			cursor = batch.page.at(-1);
-			await this.betweenBatches(options.pace);
+			cursor = page.at(-1);
+			// Every page holds the event loop, also one whose blobs runs, carried work or sessions this sweep walked
+			// already retain, which walks no session and deletes nothing: the next page starts after a turn (#5530).
+			turns.held();
 		}
+	}
+
+	/**
+	 * Which of `hashes` no retaining run, no carried work and no session retains, as far as these reads see: the sweep's
+	 * candidates, which a delete batch checks again in its transaction. Finds the retained blobs of each session that
+	 * references one of them and that `sessions` has not walked yet, in statements of at most
+	 * {@link SNAPSHOT_COLLECTION_SESSION_REFS} snapshot entries, with a turn between them.
+	 */
+	private async unretainedOf(
+		hashes: readonly string[],
+		sessions: SweepSessions,
+		turns: SweepTurns,
+	): Promise<SweepCandidate[]> {
+		if (hashes.length === 0) return [];
+		const t = this.tables;
+		const free = await this.database.all<SqliteRow & { hash: string }>(
+			`SELECT value AS hash FROM ${this.dialect.jsonValues("?")} WHERE ${this.unreferencedByRuns("value")}`,
+			JSON.stringify(hashes),
+		);
+		if (free.length === 0) return [];
+		const referencing = new Map<string, string[]>(free.map((row) => [row.hash, []]));
+		for (const { hash, session_id } of await this.database.all<SqliteRow & { hash: string; session_id: string }>(
+			`SELECT DISTINCT hash, session_id FROM ${t.sessionRecords} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
+			JSON.stringify([...referencing.keys()]),
+		))
+			referencing.get(hash)?.push(session_id);
+		const unwalked = sessions.unwalked([...referencing.values()].flat());
+		if (unwalked.length > 0) {
+			const costs = await this.sessionCosts(unwalked, () => turns.light());
+			sessions.cost(costs);
+			for (const group of sessionGroups(costs)) {
+				await turns.next();
+				sessions.retain(group, await this.retainedBySessions(group));
+				turns.held();
+			}
+		}
+		return [...referencing]
+			.filter(([hash]) => !sessions.retains(hash))
+			.map(([hash, referencedBy]) => ({ hash, sessions: referencedBy }));
+	}
+
+	/**
+	 * Deletes the blobs of `batch` that are still old and that no retaining run, no carried work and no session retains,
+	 * in one write transaction, and resolves with the hashes deleted; undefined, deleting nothing, when the reference
+	 * index is incomplete. The transaction checks the batch's blobs again in one statement, so what it sees is what
+	 * holds when the batch commits: the snapshots the batch's sessions, those the sweep walked for its blobs, retain now,
+	 * and the sessions that record its blobs now. A blob a session the sweep did not walk records, such as one created
+	 * since, is kept; the next collection walks that session. Nothing in the transaction waits for a turn of the event
+	 * loop (#5530).
+	 */
+	private deleteUnretained(
+		batch: SweepDeleteBatch,
+		minimumAge: number,
+		options: SnapshotSweepOptions,
+	): Promise<string[] | undefined> {
+		const t = this.tables;
+		return this.write(options.pace, async (transaction) => {
+			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
+			if (!states.every((state) => state.installed && state.backfilled)) return undefined;
+			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+			const kept = new Set(await this.keptBySessions(transaction, batch));
+			const unretained = batch.hashes.filter((hash) => !kept.has(hash));
+			if (unretained.length === 0) return [];
+			const rows = await transaction.all<SqliteRow & { hash: string }>(
+				`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${this.unreferencedByRuns(`${t.blobs}.hash`)} RETURNING hash`,
+				JSON.stringify(unretained),
+				minimumAge,
+			);
+			return rows.map((row) => row.hash);
+		});
+	}
+
+	/** A condition that no retaining run and no carried work references the blob `hash` names. */
+	private unreferencedByRuns(hash: string): string {
+		const t = this.tables;
+		return `NOT EXISTS (
+				SELECT 1 FROM ${t.runRefs} AS ref WHERE ref.hash = ${hash}
+				AND NOT EXISTS (SELECT 1 FROM ${t.runState} AS state WHERE state.run_id = ref.run_id AND state.retained = 0)
+			) AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS carried WHERE carried.hash = ${hash})`;
+	}
+
+	/**
+	 * How many snapshot entries finding the retained snapshots of each of `sessions` walks: the entries of the session,
+	 * once for each distinct latest snapshot entry of its open leaves, which bounds the entries on those leaves'
+	 * branches. Reads one session per statement, waiting for `turn` between statements.
+	 */
+	private async sessionCosts(sessions: readonly string[], turn: () => Promise<void>): Promise<Map<string, number>> {
+		const t = this.tables;
+		const costs = new Map<string, number>();
+		for (const [index, session] of sessions.entries()) {
+			if (index > 0) await turn();
+			const row = await this.database.get<SqliteRow & { refs: number; anchors: number }>(
+				`SELECT count(*) AS refs,
+					(SELECT count(DISTINCT anchor_seq) FROM ${t.sessionLinks} WHERE session_id = ? AND children = 0 AND anchor_seq IS NOT NULL) AS anchors
+				FROM ${t.sessionRefs} WHERE session_id = ?`,
+				session,
+				session,
+			);
+			costs.set(session, Math.max(1, Number(row?.refs ?? 0) * Number(row?.anchors ?? 0)));
+		}
+		return costs;
+	}
+
+	/**
+	 * The blobs that the snapshots `sessions` retain reference, in one statement. A session whose tree the index could
+	 * not follow retains every snapshot it records.
+	 */
+	private async retainedBySessions(sessions: readonly string[]): Promise<string[]> {
+		const t = this.tables;
+		const ids = JSON.stringify(sessions);
+		const rows = await this.database.all<SqliteRow & { hash: string }>(
+			`SELECT DISTINCT record.hash FROM ${t.sessionRecords} AS record
+			WHERE record.session_id IN (SELECT value FROM ${this.dialect.jsonValues("?")})
+			AND (
+				(record.session_id, record.snapshot_id) IN (${this.sessionHeads(`session_id IN (SELECT value FROM ${this.dialect.jsonValues("?")})`)})
+				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
+			)`,
+			ids,
+			ids,
+		);
+		return rows.map((row) => row.hash);
+	}
+
+	/**
+	 * The blobs of `batch` that a session records and that the delete must keep, in one statement: those the snapshots
+	 * of `batch.sessions` retain, and those a session not among them records, whose snapshots the sweep did not walk.
+	 * Walks only `batch.sessions`, whose snapshot entries the sweep bounded when it made the batch (#5530).
+	 */
+	private async keptBySessions(executor: SqliteExecutor, batch: SweepDeleteBatch): Promise<string[]> {
+		const t = this.tables;
+		const ids = JSON.stringify(batch.sessions);
+		const walked = `(SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		const rows = await executor.all<SqliteRow & { hash: string }>(
+			`SELECT DISTINCT record.hash FROM ${t.sessionRecords} AS record
+			WHERE record.hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})
+			AND (
+				record.session_id NOT IN ${walked}
+				OR (record.session_id, record.snapshot_id) IN (${this.sessionHeads(`session_id IN ${walked}`)})
+				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
+			)`,
+			JSON.stringify(batch.hashes),
+			ids,
+			ids,
+		);
+		return rows.map((row) => row.hash);
 	}
 
 	/**
 	 * Stamps every blob of unknown age with the database clock, in hash order, in write transactions of at most
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} of blobs. Moves every in-row blob larger than
 	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} to chunks regardless of age. Chunk writes have the same byte bound;
-	 * publishing also frees the old in-row value, whose cost grows with its size.
+	 * publishing also frees the old in-row value, whose cost grows with its size. Starts with a turn of the event loop
+	 * when there is anything to do, so its first write does not share the turn of the sweep's last batch, and every
+	 * stamp and every statement of a move ends with a turn, whatever it found, so every page does too (#5530).
 	 */
 	private async stampLegacyAges(options: SnapshotIndexOptions): Promise<void> {
 		const oversized = `chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`;
@@ -1377,6 +1703,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			))
 		)
 			return;
+		await this.betweenBatches(options.pace);
 		let after = "";
 		for (;;) {
 			options.signal?.throwIfAborted();
@@ -1426,6 +1753,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} per transaction while readers retain the in-row value. Publishing stamps
 	 * only an unknown age and frees the old value under the writer, with time proportional to the freed size. It marks the
 	 * journal as requiring chunk support, as {@link putBlobs} does. A stopped move leaves chunks the next move reuses.
+	 * Gives the event loop a turn after reading the blob's bytes and after every transaction, also when another host
+	 * moved or deleted the blob first (#5530).
 	 */
 	private async moveLegacyBlobToChunks(hash: string, options: SnapshotIndexOptions): Promise<void> {
 		const t = this.tables;
@@ -1434,6 +1763,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			`SELECT data FROM ${t.blobs} WHERE ${unmoved}`,
 			hash,
 		);
+		await this.betweenBatches(options.pace);
 		if (legacy === undefined) return;
 		const { data } = legacy;
 		const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
@@ -1456,8 +1786,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				}
 				return true;
 			});
-			if (!pending) return;
 			await this.betweenBatches(options.pace);
+			if (!pending) return;
 		}
 		options.signal?.throwIfAborted();
 		const journal = await import("../storage/journal-adoption.js");
@@ -1639,7 +1969,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/**
-	 * The snapshots sessions keep, as a subquery of `(session_id, snapshot_id)`: for every leaf of every session tree,
+	 * The snapshots the sessions that `sessions` selects keep, a condition on `session_id` (#5530), as a subquery of
+	 * `(session_id, snapshot_id)`: for every leaf of their session trees,
 	 * the latest snapshot entry of each checkout on the leaf's branch, followed through each entry's link to the
 	 * nearest snapshot entry before it. A leaf costs the snapshot entries on its branch and never a message, and leaves
 	 * that share their latest snapshot are followed once. Roots are grouped into checkouts the way resume does: a root
@@ -1648,10 +1979,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * snapshot more than resume needs and never fewer. A head that records a partly restored worktree also keeps the
 	 * snapshot it lacks, named in `degraded_from`, for {@link DEGRADED_RESTORE_RETENTION_DAYS} (#4922).
 	 */
-	private sessionHeads(): string {
+	private sessionHeads(sessions: string): string {
 		const t = this.tables;
 		return `WITH RECURSIVE
-			open_anchors(session_id, seq) AS (SELECT DISTINCT session_id, anchor_seq FROM ${t.sessionLinks} WHERE children = 0 AND anchor_seq IS NOT NULL),
+			open_anchors(session_id, seq) AS (SELECT DISTINCT session_id, anchor_seq FROM ${t.sessionLinks} WHERE ${sessions} AND children = 0 AND anchor_seq IS NOT NULL),
 			branch(session_id, start_seq, root, snapshot_id, restore_from, restore_to, degraded_from, degraded_since, prev_seq, depth) AS (
 				SELECT ref.session_id, ref.seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.degraded_from, ref.degraded_since, ref.prev_seq, 0 FROM open_anchors AS anchor JOIN ${t.sessionRefs} AS ref ON ref.session_id = anchor.session_id AND ref.seq = anchor.seq
 				UNION ALL
@@ -1679,23 +2010,20 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * The next {@link SNAPSHOT_COLLECTION_BATCH} blobs whose `created_at` is at least `minimumAge` whole seconds behind
-	 * the database clock and that are `unreferenced`, oldest first, after `after`.
+	 * the database clock, oldest first, after `after`: a range of the age index, whatever references them. A page after
+	 * `after` searches the index from `after`, which already excludes an unknown age (0): with `created_at > 0` as a
+	 * second lower bound, SQLite searched from the oldest blob instead, so each page cost more than the one before (#5530).
 	 */
-	private page(
-		transaction: SqliteExecutor,
-		minimumAge: number,
-		unreferenced: string,
-		after: PageRow | undefined,
-	): Promise<PageRow[]> {
+	private page(minimumAge: number, after: PageRow | undefined): Promise<PageRow[]> {
 		const t = this.tables;
 		return after === undefined
-			? transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+			? this.database.all<PageRow>(
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					SNAPSHOT_COLLECTION_BATCH,
 				)
-			: transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+			: this.database.all<PageRow>(
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					after.created_at,
 					after.hash,

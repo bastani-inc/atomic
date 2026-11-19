@@ -314,10 +314,18 @@ test.each([
 		assert.deepEqual(calls, ["A"]);
 		if (cancellation === "explicit") cancel.abort();
 		else harness.session.agent.abort();
+		// B waits for its place in the session's tool scheduler: cancelled, it ends at once, while A still runs (#5486).
+		// Run one after another, B is only reached once A has ended.
+		const queuedInScheduler = mode === "native exclusive" || mode === "native shared";
+		if (queuedInScheduler) {
+			const deadline = Date.now() + 5_000;
+			while (ended.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+			assert.deepEqual(ended, [true], "the cancelled queued call ends before the call ahead of it");
+		}
 		release.resolve();
 		await prompt;
 		assert.deepEqual(calls, ["A"]);
-		assert.deepEqual(ended, [false, true]);
+		assert.deepEqual(ended, queuedInScheduler ? [true, false] : [false, true]);
 		const results = harness.session.messages.filter((message) => message.role === "toolResult");
 		assert.equal(results.length, 1);
 		assert.equal(results[0].isError, false);

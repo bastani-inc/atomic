@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { setImmediate } from "node:timers";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -41,6 +42,8 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 const ROOT = testRunId("pooled-root-own-checkpoints");
 const CHILDREN = 6;
 const CHILD_TOOLS = 4;
+/** Checkpoints of the root itself that make its history long enough to be rebuilt over several turns (#5480). */
+const LONG_ROOT_CHECKPOINTS = 10_000;
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -343,6 +346,68 @@ test("rebuilding a pooled root keeps released children out and retained ones in 
 		full.filter((checkpoint) => !under(released!, checkpoint)),
 	);
 	assert.equal(backend.getWorkflow(ROOT)?.completedCheckpoints, full.length);
+});
+
+test("a child released while its pooled root's long history is folded stays released (#5480)", async () => {
+	const recording = await recorded();
+	const backend = await recording.narrowed();
+	// Checkpoints committed together are written in batches.
+	await Promise.all(
+		Array.from({ length: LONG_ROOT_CHECKPOINTS }, (_, index) =>
+			backend.commitCheckpoint(ownTool(`long-${index}`, 20_000_000 + index)),
+		),
+	);
+	const full = backend.listCheckpoints(ROOT);
+	const [released, retained] = scopes(full);
+	// The child is released in the first turn after the root's history was read: the rebuild is folding it then.
+	const journal = backend.journal;
+	const read = journal.read.bind(journal);
+	let releasedDuringRebuild = false;
+	journal.read = async function* (runId: string, fromSeq?: number): AsyncIterable<JournalEntry> {
+		for await (const entry of read(runId, fromSeq)) yield entry;
+		if (runId !== ROOT) return;
+		setImmediate(() => {
+			backend.releaseCheckpointScope(ROOT, released!);
+			releasedDuringRebuild = true;
+		});
+	};
+	await backend.hydrateWorkflow(ROOT);
+	assert.ok(releasedDuringRebuild, "the child was released before the rebuild finished");
+	assert.equal(backend.checkpointScopeReleased(ROOT, released!), true);
+	assert.equal(
+		backend.getToolOutput(ROOT, childTool(full, released!).argsHash),
+		undefined,
+		"released child in memory",
+	);
+	assert.deepEqual(
+		backend.listCheckpoints(ROOT),
+		full.filter((checkpoint) => !under(released!, checkpoint)),
+	);
+	assert.equal(backend.getWorkflow(ROOT)?.completedCheckpoints, full.length);
+	// A child still retained is held as before, and lets go of its checkpoints when its boundary releases it.
+	const tool = childTool(full, retained!);
+	assert.deepEqual(backend.getToolOutput(ROOT, tool.argsHash), tool.output);
+	backend.releaseCheckpointScope(ROOT, retained!);
+	assert.equal(backend.getToolOutput(ROOT, tool.argsHash), undefined);
+	assert.deepEqual(
+		backend.listCheckpoints(ROOT),
+		full.filter((checkpoint) => !under(released!, checkpoint) && !under(retained!, checkpoint)),
+	);
+});
+
+test("a checkpoint noted under a child its pooled root lets go of is counted once when it is recorded (#4768)", async () => {
+	const recording = await recorded();
+	const backend = await recording.narrowed();
+	const [scope] = scopes(backend.listCheckpoints(ROOT));
+	const noted = ownTool(`${scope}:noted`, 30_000_000);
+	const foldedCount = backend.getWorkflow(ROOT)?.completedCheckpoints;
+	backend.noteRecordedCheckpoint(noted);
+	assert.equal(backend.getToolOutput(ROOT, noted.argsHash), noted.output);
+	backend.releaseCheckpointScope(ROOT, scope!);
+	assert.equal(backend.getWorkflow(ROOT)?.completedCheckpoints, foldedCount);
+	await backend.commitCheckpoint(noted);
+	const full = await recording.full();
+	assert.equal(backend.getWorkflow(ROOT)?.completedCheckpoints, full.getWorkflow(ROOT)?.completedCheckpoints);
 });
 
 test("a cached child of a pooled root replays the subtree a full backend rebuilds after other children left memory (#4318)", async () => {
