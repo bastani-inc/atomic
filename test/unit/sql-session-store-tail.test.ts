@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
 	SqliteDatabase,
@@ -34,7 +34,21 @@ function tailContent<T extends { epoch?: string; seqs?: readonly number[]; lastE
 }
 const createdAt = "2026-11-16T00:00:00.000Z";
 const header = { id: "session", version: 4 as const, createdAt, cwd: "/project" };
-const checkpointEntries = SESSION_RESUME_REBUILD.pageEntries * SESSION_RESUME_REBUILD.checkpointPages;
+const pageEntries = SESSION_RESUME_REBUILD.pageEntries;
+
+/** Let a complete checkpoint interval elapse while reading each of the given pages. */
+function advanceRebuildClockAt(db: SqliteDatabase, ...pageEnds: number[]): void {
+	let now = performance.now();
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	const all = db.all.bind(db);
+	db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+		const rows = await all<T>(sql, ...args);
+		const last = rows.at(-1);
+		if (last && "resume_type" in last && pageEnds.includes(Number(last.seq)))
+			now += SESSION_RESUME_REBUILD.checkpointIntervalMs;
+		return rows;
+	};
+}
 
 function entry(index: number, extra: Partial<SessionEntry> = {}): SessionEntry {
 	return {
@@ -109,6 +123,7 @@ function countingRows(database: SqliteDatabase): { database: SqliteDatabase; row
 
 const directories: string[] = [];
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true, maxRetries: 10 });
 });
 
@@ -289,8 +304,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 
 	it("reopens an interrupted old-index rebuild at its last saved checkpoint (#5590)", async () => {
 		const path = databasePath();
-		const savedThrough = 2 * checkpointEntries;
-		const interruptedAt = savedThrough + SESSION_RESUME_REBUILD.pageEntries;
+		const savedThrough = 2 * pageEntries;
+		const interruptedAt = savedThrough + pageEntries;
 		const suffix = compactedEntries(interruptedAt + 1, interruptedAt);
 		const interrupted = suffix[0]!;
 		assert.ok(interrupted.type === "message" && interrupted.message.role === "user");
@@ -304,6 +319,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
 			refuseChunkProjection(db, interrupted.id);
+			advanceRebuildClockAt(db, pageEntries, savedThrough);
 			const get = db.get.bind(db);
 			let chunks = 0;
 			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
@@ -393,11 +409,12 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		const path = databasePath();
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
-			await seedLegacyResumeSession(db, store, header, checkpointEntries + 1);
+			await seedLegacyResumeSession(db, store, header, pageEntries + 1);
+			advanceRebuildClockAt(db, pageEntries);
 			const all = db.all.bind(db);
 			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 				const rows = await all<T>(sql, ...args);
-				if (rows.some((row) => row.entry_id === `e${checkpointEntries}`)) {
+				if (rows.some((row) => row.entry_id === `e${pageEntries}`)) {
 					await onDatabase(path, async (other) => {
 						const peer = await SqlSessionStore.open(other);
 						try {
@@ -407,7 +424,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 						}
 					});
 				}
-				if (rows.some((row) => row.entry_id === `e${checkpointEntries + 1}`))
+				if (rows.some((row) => row.entry_id === `e${pageEntries + 1}`))
 					throw new Error("reader stopped after checkpoint");
 				return rows;
 			};
@@ -422,8 +439,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 
 	it("preserves overflowing usage totals across an interrupted page fold (#5590)", async () => {
 		const path = databasePath();
-		const prefix = checkpointEntries - 2;
-		const next = checkpointEntries + 1;
+		const prefix = pageEntries - 2;
+		const next = pageEntries + 1;
 		const suffix = compactedEntries(next, prefix);
 		for (const seq of [next - 2, next - 1, next]) {
 			const input = seq === next ? 1 : Number.MAX_VALUE;
@@ -446,6 +463,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 			const store = await SqlSessionStore.open(db);
 			await seedLegacyResumeSession(db, store, header, prefix);
 			await store.append(header.id, suffix, { expectSeq: prefix });
+			advanceRebuildClockAt(db, pageEntries);
 			const all = db.all.bind(db);
 			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 				const rows = await all<T>(sql, ...args);

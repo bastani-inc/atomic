@@ -52,14 +52,14 @@ for (const backend of storageBackends) {
 	const run = backend.skipReason === undefined ? test : test.skip;
 	if (backend.name === "libSQL server (sqld)") {
 		run(
-			"a short resume rebuild takes only the publication write while another session is writing (#5590)",
+			"a 17,500-entry resume rebuild writes only the completed index while another session appends (#5590)",
 			async () => {
 				const scope = await backend.openScope();
 				try {
 					const db = await scope.connect();
 					const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
 					const page = SESSION_RESUME_REBUILD.pageEntries;
-					const count = 2 * page + Math.floor(page / 2);
+					const count = 17_500;
 					const message = (i: number, parentId: string | null, content: string): SessionEntry => ({
 						type: "message",
 						id: `e${i}`,
@@ -82,7 +82,7 @@ for (const backend of storageBackends) {
 					};
 					// Count lock acquisitions, not milliseconds waiting for an unrelated writer or a CI worker.
 					const competingBody = "n".repeat(SESSION_ENTRY_CHUNK_BYTES + SESSION_ENTRY_CHUNK_BYTES / 2);
-					const competingAppends = 2 * Math.ceil(count / page);
+					const competingAppends = 6;
 					const results = await Promise.allSettled([
 						reader.findLatestCompaction(header.id),
 						(async () => {

@@ -1,10 +1,9 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
-import { dialectOf, type StorageDialect } from "../dialect.js";
+import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
-import { postgresJsonb } from "../postgres-json.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
@@ -94,8 +93,8 @@ export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
  * sqld's 10 MB response limit; a single row longer than this is a page of its own (#4954).
  */
 export const SESSION_READ_PAGE_CHARS = 1024 * 1024;
-/** Rows per metadata query and complete pages between durable resume checkpoints. */
-export const SESSION_RESUME_REBUILD = { pageEntries: 512, checkpointPages: 16 } as const;
+/** Rows per metadata query and minimum elapsed time between durable resume checkpoints. */
+export const SESSION_RESUME_REBUILD = { pageEntries: 512, checkpointIntervalMs: 60_000 } as const;
 /** Bound each write transaction while reusing the bytes already supplied to putBlob. */
 const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
@@ -1579,8 +1578,9 @@ export class SqlSessionStore implements SessionStore {
 			let topology = checkpoint?.topology;
 			let expectedSummary = this.database.readOnly ? undefined : row.summary_state;
 			index = checkpoint?.index;
+			let nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
 			for (let pass = topology === undefined ? 0 : 1; pass < 2; pass++) {
-				for (let after = index?.seq ?? 0, pages = 0; after < Number(row.last_seq); ) {
+				for (let after = index?.seq ?? 0; after < Number(row.last_seq); ) {
 					type ProjectedRow = SqliteRow & { seq: number; entry_id: string; chunks: number };
 					const args = [sessionId, after, row.last_seq] as const;
 					let rows: ProjectedRow[] = [];
@@ -1699,13 +1699,12 @@ export class SqlSessionStore implements SessionStore {
 					if (toolCalls > 0)
 						index = { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + toolCalls } };
 					after = Number(rows.at(-1)!.seq);
-					pages++;
-					// Checkpoints contend with every other writer on SQLite. Short passes need only the final publication.
+					// Checkpoints share SQLite's write lock with other sessions. Fast rebuilds need only the final publication.
 					if (
 						expectedSummary !== undefined &&
-						pages % SESSION_RESUME_REBUILD.checkpointPages === 0 &&
 						after < Number(row.last_seq) &&
-						index.seq === after
+						index.seq === after &&
+						performance.now() >= nextCheckpointAt
 					) {
 						// Checkpoints feed another fold, unlike the final index. JSON null would silently turn an
 						// overflowing sum back into zero on the next addition. JSON.parse("1e999") preserves Infinity.
@@ -1728,6 +1727,7 @@ export class SqlSessionStore implements SessionStore {
 							)
 							.catch(() => ({ changes: 0 }));
 						expectedSummary = saved.changes === 1 ? next : undefined;
+						nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
 					}
 					if (after < Number(row.last_seq)) await yieldTurn();
 				}

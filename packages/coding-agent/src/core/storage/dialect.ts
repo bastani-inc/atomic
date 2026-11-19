@@ -1,5 +1,4 @@
 import type { SqliteStatement } from "./database.js";
-import { POSTGRES_UNREPRESENTABLE_ESCAPE, postgresJsonb } from "./postgres-json.js";
 
 /** The database engines a store's SQL is written for. */
 export type StorageDialectName = "sqlite" | "postgres";
@@ -325,6 +324,23 @@ const POSTGRES_LOCKS: Readonly<Record<StorageLockKind, string>> = {
 	"update-skip-locked": " FOR UPDATE SKIP LOCKED",
 	"key-share": " FOR KEY SHARE",
 };
+
+/**
+ * A `\u0000` or UTF-16 surrogate escape in JSON text, after an even number of backslashes, so not the text `\u…` after
+ * an escaped `\`.
+ */
+const POSTGRES_UNREPRESENTABLE_ESCAPE = String.raw`'(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})'`;
+
+/**
+ * The JSON text in `column` as `jsonb`. SQLite reads any well-formed JSON, but Postgres's `jsonb` (and its `json`
+ * operators) reject a whole document with a `\u0000` escape or a lone surrogate escape anywhere in it, even outside
+ * the value read. Such a document reads with each NUL and surrogate escape as U+FFFD, so a write whose JSON carries
+ * one never fails on a query or trigger that reads it, and every other value reads as on SQLite. A document without
+ * an escape, or that `jsonb` accepts, reads unchanged.
+ */
+export function postgresJsonb(column: string): string {
+	return String.raw`(CASE WHEN strpos(${column}, '\u') = 0 OR pg_input_is_valid(${column}, 'jsonb') THEN ${column} ELSE regexp_replace(${column}, ${POSTGRES_UNREPRESENTABLE_ESCAPE}, '\1\\ufffd', 'g') END)::jsonb`;
+}
 
 /** The value at `path` in the `jsonb` expression `document`: as text with `text`, else as `jsonb`. */
 function postgresJson(document: string, path: readonly string[], text: boolean): string {
