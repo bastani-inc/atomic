@@ -69,6 +69,7 @@ test("atomic --session hydrates restored tool cards with extension renderers loa
 	});
 	service.bindSession(engine.session);
 	const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			listeners.push(listener);
 			return () => listeners.splice(listeners.indexOf(listener), 1);
@@ -148,6 +149,7 @@ test("atomic --session redraws a restored tool card when its engine renderer inv
 	});
 	service.bindSession(session as unknown as AgentSession);
 	const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			listeners.push(listener);
 			return () => listeners.splice(listeners.indexOf(listener), 1);

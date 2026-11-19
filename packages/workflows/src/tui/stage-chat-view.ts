@@ -18,7 +18,7 @@
  *  - packages/coding-agent/docs/tui.md (the @bastani/atomic-tui component contract)
  */
 
-import { repaintAfterSingleClick } from "@bastani/atomic";
+import { clickableHintText, repaintAfterSingleClick } from "@bastani/atomic";
 import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
@@ -177,7 +177,7 @@ export class StageChatView implements Component, Focusable {
 			!chatChromeHidden && this.promptState !== null && this.promptState.prompt.id === this.dismissedPromptId
 				? [
 						truncateToWidth(
-							` ${paint("◆", ctx.theme.warning)} ${paint(`${this.promptState.prompt.message} · enter to answer`, ctx.theme.textMuted)}`,
+							` ${paint("◆", ctx.theme.warning)} ${paint(`${this.promptState.prompt.message} · ${clickableHintText("enter to answer")}`, ctx.theme.textMuted)}`,
 							w,
 						),
 					]
