@@ -9,11 +9,13 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import {
 	INLINE_TASK_OUTPUT_MAX_BYTES,
 	runAgentTask,
+	settledOutputsFromRecords,
 	settledOutputsFromResponse,
 	settledTaskOutputText,
 	taskToolResultWithOutput,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { fileExists, makeTempDirectory, readText, removePathSync, removeTempDirectory } from "../helpers/runtime.js";
 
 const agent: AgentConfig = {
@@ -147,6 +149,61 @@ test("the full-output copy holds the exact settled text of a long answer (#3294)
 		assert.equal(await readText(fullOutputPath(text)), answer);
 	} finally {
 		await host.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a retained subagent's answer is readable after another owner finishes 256 tasks (#5703)", async () => {
+	const cwd = makeTempDirectory("subagent-output-owners-");
+	const first = new AgentTaskHost({ scope: { kind: "session", sessionId: `${cwd}-first` }, authorizeLaunch() {} });
+	const other = new AgentTaskHost({ scope: { kind: "session", sessionId: `${cwd}-other` }, authorizeLaunch() {} });
+	const answer = "Only the first child wrote 鳥.";
+	try {
+		const fileOnly = await launch({
+			host: first,
+			cwd,
+			output: "This text belongs only in the file.",
+			options: { outputPath: join(cwd, "only.md"), outputMode: "file-only" },
+		});
+		assert.match(await settledText(first, fileOnly), /Output saved to:/);
+		const response = await launch({ host: first, cwd, output: answer, options: {} });
+		const initial = await settledText(first, response);
+		assert.ok(initial.includes(answer));
+		const copy = fullOutputPath(initial);
+		for (let index = 0; index < 256; index++) {
+			if (index === 255) assert.equal(await settledText(first, response), initial);
+			const later = await runAgentTask({
+				host: other,
+				cwd,
+				agents: [agent],
+				agent: agent.name,
+				task: "report",
+				options: { runId: `other-${index}` },
+				runtime: {
+					runSync: async () => ({
+						agent: agent.name,
+						task: "report",
+						status: "ok",
+						finalOutput: "Another owner's answer.",
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+					}),
+				},
+			});
+			await settled(other, later);
+		}
+		assert.equal(await fileExists(copy), false, "the process-wide private copy limit still applies");
+		await collectGarbage(2);
+		const waited = await settledText(first, response);
+		assert.match(waited, /Only the first child wrote 鳥\./);
+		assert.doesNotMatch(waited, /Another owner's answer|Full output:/);
+		assert.ok(response.kind === "admitted");
+		const records = first.taskRecords(new Set([response.observation.taskId]));
+		assert.equal(await settledTaskOutputText(first, settledOutputsFromRecords(records)), waited);
+		const missing = await settledText(first, fileOnly);
+		assert.match(missing, /private copy.*recent output cache.*\/tasks task-/);
+		assert.doesNotMatch(missing, /This text belongs only in the file|Full output:/);
+	} finally {
+		await Promise.all([first.close("session-close"), other.close("session-close")]);
 		removeTempDirectory(cwd);
 	}
 });
