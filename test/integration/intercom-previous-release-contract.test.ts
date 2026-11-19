@@ -433,8 +433,8 @@ const { IntercomClient: AlphaIntercomClient } = (await import(join(alphaRelease,
 	IntercomClient: PreviousClientClass;
 };
 
-describe("the 0.9.77-alpha.1 Intercom client against a released stage hosted on this version's broker (#4642)", () => {
-	const STAGE_STATUS = "closed · reply: post-mortem only";
+describe("the 0.9.77-alpha.1 Intercom client against a session hosted on this version's broker (#4642)", () => {
+	const STAGE_STATUS = "idle";
 
 	interface HostedStage {
 		readonly host: Client;
@@ -493,7 +493,7 @@ describe("the 0.9.77-alpha.1 Intercom client against a released stage hosted on 
 					groups: [group],
 					group,
 				},
-				returnAddress: `${name}:released-stage`,
+				returnAddress: `${name}:hosted`,
 			},
 		]);
 		assert.ok(assigned);
@@ -501,9 +501,9 @@ describe("the 0.9.77-alpha.1 Intercom client against a released stage hosted on 
 	}
 
 	test(
-		"lists the hosted stage, asks it and receives its reply",
+		"lists the hosted session, asks it and receives its reply",
 		async () => {
-			const group = `workflow:${randomUUID()}`;
+			const group = `hosted-${randomUUID()}`;
 			const stage = await hostStage(group);
 			const alpha = await connectAlpha(`alpha-asker-${randomUUID()}`, group);
 
@@ -537,9 +537,9 @@ describe("the 0.9.77-alpha.1 Intercom client against a released stage hosted on 
 	);
 
 	test(
-		"keeps its connection, with a plain refusal, when it sends to a released stage whose hosted peer is gone",
+		"keeps its connection, with a plain refusal, when it sends to a hosted session its host removed",
 		async () => {
-			const group = `workflow:${randomUUID()}`;
+			const group = `hosted-${randomUUID()}`;
 			const stage = await hostStage(group);
 			const alpha = await connectAlpha(`alpha-sender-${randomUUID()}`, group);
 			await stage.host.unhostSessions([stage.hosted.id]);
@@ -548,7 +548,7 @@ describe("the 0.9.77-alpha.1 Intercom client against a released stage hosted on 
 				const refused = await alpha.client.send(target, { text: "are you there?" });
 				assert.equal(refused.delivered, false);
 				assert.ok((refused.reason ?? "").length > 0, "it carries a reason to show");
-				assert.match(refused.reason ?? "", /released and the session that answered for it has gone away/);
+				assert.match(refused.reason ?? "", /Session not found/);
 			}
 			assert.deepEqual(alpha.errors, [], "no protocol error was raised on the client");
 			assert.equal(alpha.client.isConnected(), true, "the connection survived the refusal");

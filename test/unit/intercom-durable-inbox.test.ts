@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { SessionEntry } from "@bastani/atomic";
-import { test, vi } from "vitest";
+import { test } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/types.js";
 import {
@@ -224,10 +224,7 @@ interface ShownMessage {
 }
 
 /** A real Intercom runtime whose branch already holds the arrival's `intercom_inbox` entry, as receive saves it. */
-async function runtimeWithSavedArrival(
-	arrival: Message,
-	context: { hasUI: boolean; ownsSubagentRun?: (runId: string) => boolean },
-) {
+async function runtimeWithSavedArrival(arrival: Message, context: { hasUI: boolean }) {
 	const branch: SessionEntry[] = [inboxEntry({ message: arrival, from: peer, receivedAt: 1 })];
 	const shown: string[] = [];
 	const handlers = new Map<string, Array<(event: object, ctx: ExtensionContext) => void | Promise<void>>>();
@@ -271,14 +268,6 @@ async function runtimeWithSavedArrival(
 		isIdle: () => false,
 		ui: { notify() {} },
 		sessionManager: { getSessionId: () => "busy-recipient", getBranch: () => branch, getEntries: () => branch },
-		...(context.ownsSubagentRun
-			? {
-					orchestrationContext: {
-						kind: "workflow-stage",
-						messageAdmission: { isOpen: () => false, boundary: { ownsSubagentRun: context.ownsSubagentRun } },
-					},
-				}
-			: {}),
 	} as unknown as ExtensionContext;
 	const fire = async (name: string) => {
 		for (const handler of handlers.get(name) ?? []) await handler({ type: name }, ctx);
@@ -298,21 +287,6 @@ test("resume does not replay a message a busy non-interactive recipient already 
 		await runtime.handle();
 		assert.deepEqual(runtime.shown, [], "a busy non-interactive recipient refuses without showing the message");
 		assert.deepEqual(unconsumedIntercomInbox(runtime.branch), []);
-	} finally {
-		await runtime.close();
-	}
-});
-
-test("resume does not replay retired child traffic a closed workflow stage dropped (#3761)", async () => {
-	const retired: Message = { ...message("retired-child"), source: { subagentRunId: "owned-run" } };
-	const runtime = await runtimeWithSavedArrival(retired, {
-		hasUI: true,
-		ownsSubagentRun: (runId) => runId === "owned-run",
-	});
-	try {
-		await runtime.handle();
-		await vi.waitFor(() => assert.deepEqual(unconsumedIntercomInbox(runtime.branch), []));
-		assert.deepEqual(runtime.shown, []);
 	} finally {
 		await runtime.close();
 	}

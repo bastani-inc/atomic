@@ -33,7 +33,6 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
 
 	let currentSession: SessionInfo;
 	let sessions: SessionInfo[];
-	let workflowStages: Awaited<ReturnType<IntercomClient["listDirectory"]>>["workflowStages"];
 	let duplicates: Set<string>;
 	try {
 		const mySessionId = overlayClient.sessionId;
@@ -47,7 +46,6 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
 		currentSession = foundCurrentSession;
 		duplicates = duplicateSessionNames(directory.sessions);
 		sessions = directory.sessions.filter((session) => session.id !== mySessionId);
-		workflowStages = directory.workflowStages;
 	} catch (error) {
       deps.notifyIfLive(ctx, `Failed to list sessions: ${getErrorMessage(error)}`, "error", overlayGeneration);
       return;
@@ -55,7 +53,7 @@ export function registerIntercomOverlay(pi: ExtensionAPI, deps: OverlayDeps): vo
 
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
 	  (_tui, theme, keybindings, done) =>
-		new SessionListOverlay(theme, keybindings, currentSession, sessions, done, workflowStages),
+		new SessionListOverlay(theme, keybindings, currentSession, sessions, done),
       { overlay: true, signal: ctx.sessionSignal }
     ).catch(() => undefined);
 

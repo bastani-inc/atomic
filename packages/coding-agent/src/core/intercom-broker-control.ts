@@ -90,7 +90,7 @@ export interface IntercomBrokerControl {
 	): Promise<UpgradeOutcome>;
 	describeMultiNodeStatus(multiNode: BrokerMultiNodeStatus): string;
 	/**
-	 * The group a session in `cwd` joins when no policy, workflow, `ATOMIC_INTERCOM_GROUP` or Intercom `config.json`
+	 * The group a session in `cwd` joins when no policy, `ATOMIC_INTERCOM_GROUP` or Intercom `config.json`
 	 * group applies, while multi-node routing is selected: `project:<owner>/<repo>` from the origin remote, or the
 	 * directory name. `undefined` while multi-node routing is off, where it is `default`.
 	 */

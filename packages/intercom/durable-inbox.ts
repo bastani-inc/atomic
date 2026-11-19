@@ -8,7 +8,7 @@ export const INTERCOM_INBOX_ENTRY = "intercom_inbox";
 
 /**
  * #3761: custom session entry recording that a saved message was handled without an `intercom_message` card
- * (refused while busy, or dropped as a closed stage's retired child traffic), so resume does not show it.
+ * (refused while busy), so resume does not show it.
  */
 export const INTERCOM_INBOX_HANDLED_ENTRY = "intercom_inbox_handled";
 
