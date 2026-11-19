@@ -121,8 +121,6 @@ test.each(["with Esc during preparation", "without a second Esc"] as const)(
 						});
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {
@@ -226,8 +224,6 @@ test.each(SAVE_FAILURE_CASES)(
 						});
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {
@@ -397,8 +393,6 @@ test.each(INTERRUPTING_MESSAGES)(
 						});
 					},
 					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
 				},
 			}),
 		}).finally(() => {

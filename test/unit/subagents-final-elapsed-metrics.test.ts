@@ -57,8 +57,6 @@ function metricsHooks(signal: AbortSignal, reports: number[]): TaskExecutionHook
 				reports.push(report.change.elapsedMs);
 		},
 		onExecution() {},
-		yieldTaskWait() {},
-		isParentObserving: () => false,
 	};
 }
 
@@ -142,7 +140,6 @@ test(
 				index: 0,
 			},
 			wakeDispatcher: new AgentWakeDispatcher(),
-			wait: { kind: "background" },
 			recordChild: createSubagentChildRecordSink(
 				{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
 				{ sessionManager: owner, orchestrationContext: undefined },
