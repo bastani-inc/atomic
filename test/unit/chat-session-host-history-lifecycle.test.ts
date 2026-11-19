@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Text } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
@@ -18,6 +19,7 @@ import { stripAnsi } from "../../packages/coding-agent/src/modes/interactive/com
 import type { ChatTranscriptEntryLike } from "../../packages/coding-agent/src/modes/interactive/components/chat-transcript.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 import type { StageNotice } from "../../packages/workflows/src/shared/store-types.js";
 import { stageNoticeCountsAsMessage } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
 import type { NoticeEntry } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
@@ -102,6 +104,130 @@ test("loadSession excludes hydrated session history from the scrolled-up new-mes
 	} finally {
 		host.dispose();
 		await store.close();
+	}
+});
+
+test("a saved chat reopens with the same failed attempts and warning as the live chat (#5613)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const live = new ChatSessionHost(hostOptions());
+	const reopened = new ChatSessionHost(hostOptions());
+	try {
+		const failure = fauxAssistantMessage([], { stopReason: "error", errorMessage: "529 · 暂时不可用" });
+		const warning = {
+			role: "custom" as const,
+			customType: "warning",
+			content: "retrying request",
+			display: true,
+			timestamp: 2,
+		};
+		for (const message of [failure, warning, failure]) {
+			live.applyAgentEvent({ type: "message_start", message });
+			live.applyAgentEvent({ type: "message_end", message });
+			const id =
+				message.role === "custom"
+					? await manager.appendCustomMessageEntry(message.customType, message.content, message.display)
+					: await manager.appendMessage(message);
+			await manager.appendContextEdit(id, null);
+		}
+		assert.deepEqual(manager.buildSessionContext().messages, [], "the next request must not repeat these attempts");
+		const expected = plain(live.renderBody(80, 18));
+		assert.equal(expected.match(/529/g)?.length, 2);
+		assert.match(expected, /retrying request/);
+		assert.equal(await reopened.loadSession(store, manager.getSessionId()), true);
+		assert.equal(plain(reopened.renderBody(80, 18)), expected);
+	} finally {
+		live.dispose();
+		reopened.dispose();
+		await store.close();
+	}
+});
+
+test("a compaction redraw keeps a failed attempt outside the compacted region (#5613)", async () => {
+	initTheme("dark");
+	const manager = SessionManager.inMemory();
+	const prior = await manager.appendMessage({ role: "user", content: "older request", timestamp: 1 });
+	const failure = fauxAssistantMessage([], { stopReason: "error", errorMessage: "529 after boundary" });
+	const failedId = await manager.appendMessage(failure);
+	await manager.appendContextEdit(failedId, null);
+	const result = {
+		compactedText: "earlier conversation",
+		tokensBefore: 100,
+		firstKeptEntryId: null,
+		form: "cleared" as const,
+		promptVersion: 7 as const,
+		parameters: { query: "" },
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 1,
+			linesKept: 1,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 50,
+			percentReduction: 50,
+		},
+	};
+	await manager.appendCompaction(
+		result.compactedText,
+		null,
+		result.tokensBefore,
+		{ ...result, strategy: "verbatim-lines" },
+		undefined,
+		prior,
+	);
+	const host = new ChatSessionHost(
+		hostOptions({
+			getCwd: () => manager.getCwd(),
+			getAgentSession: () =>
+				({ sessionManager: manager, messages: manager.buildSessionContext().messages }) as never,
+		}),
+	);
+	try {
+		host.applyAgentEvent({ type: "compaction_end", reason: "threshold", result, aborted: false, willRetry: false });
+		assert.match(plain(host.renderBody(80, 20)), /529 after boundary/);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("a compaction redraw shows a call saved without its result as interrupted, as the session does (#5613)", async () => {
+	initTheme("dark");
+	const harness = await createHarness();
+	const session = harness.session;
+	const host = new ChatSessionHost(
+		hostOptions({ getCwd: () => session.sessionManager.getCwd(), getAgentSession: () => session }),
+	);
+	try {
+		const manager = session.sessionManager;
+		const prior = await manager.appendMessage({ role: "user", content: "older request", timestamp: 1 });
+		const result = {
+			compactedText: "earlier conversation",
+			tokensBefore: 100,
+			firstKeptEntryId: null,
+			form: "cleared" as const,
+			promptVersion: 7 as const,
+			parameters: { query: "" },
+			stats: {
+				linesBefore: 2,
+				linesDeleted: 1,
+				linesKept: 1,
+				rangeCount: 1,
+				tokensBefore: 100,
+				tokensAfter: 50,
+				percentReduction: 50,
+			},
+		};
+		const details = { ...result, strategy: "verbatim-lines" as const };
+		await manager.appendCompaction(result.compactedText, null, result.tokensBefore, details, undefined, prior);
+		const call = fauxToolCall("bash", { command: "echo lost" }, { id: "call-without-result" });
+		await manager.appendMessage(fauxAssistantMessage([call], { stopReason: "toolUse" }));
+		session.refreshContext();
+		host.applyAgentEvent({ type: "compaction_end", reason: "threshold", result, aborted: false, willRetry: false });
+		assert.match(plain(host.renderBody(80, 20)), /interrupted after it started/);
+	} finally {
+		host.dispose();
+		await harness.cleanup();
 	}
 });
 

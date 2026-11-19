@@ -142,6 +142,12 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * `close` stops its listening connection.
 	 */
 	readonly notifications?: StorageNotifications;
+	/**
+	 * Optional. The bytes this process may still write on the file system that holds the database's file, or undefined
+	 * when the file system does not say; the facade exposes it as `SqliteDatabase.freeBytes`. Provide it only for a
+	 * database in a file this process can see, such as a local SQLite or libSQL file.
+	 */
+	freeBytes?(): Awaitable<number | undefined>;
 }
 
 /**
@@ -543,10 +549,13 @@ class DriverDatabase implements SqliteDatabase {
 	private readonly executor: SqliteExecutor;
 	readonly batch?: (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => Promise<SqliteRow[][]>;
 	readonly notifications?: StorageNotifications;
+	readonly freeBytes?: () => Promise<number | undefined>;
 
 	constructor(driver: SqliteDriver, redact: (text: string) => string) {
 		this.driver = driver;
 		if (driver.notifications !== undefined) this.notifications = driver.notifications;
+		const freeBytes = driver.freeBytes?.bind(driver);
+		if (freeBytes) this.freeBytes = async () => freeBytes();
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
 		this.dialect = driver.dialect ?? sqliteDialect;

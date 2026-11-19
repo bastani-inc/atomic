@@ -70,10 +70,13 @@ function stageWithFallback(options: {
 	settleStartMs?: number;
 	/** Holds the creation of the fallback model's session until it settles. */
 	holdFallbackSession?: Promise<void>;
+	/** Holds the failed primary's shutdown before the fallback session can be created. */
+	holdPrimaryShutdown?: Promise<void>;
 	/** The primary's session retries its failed request once, after a wait that holds until this settles. */
 	primaryRetryWait?: Promise<void>;
 }) {
 	const primaryWaiting = Promise.withResolvers<void>();
+	const primaryRetiring = Promise.withResolvers<void>();
 	const fallbackCreating = Promise.withResolvers<void>();
 	let fallbackSessions = 0;
 	const fallbackStreaming = Promise.withResolvers<void>();
@@ -166,6 +169,17 @@ function stageWithFallback(options: {
 					return model === FALLBACK ? "Fixed the picker." : undefined;
 				},
 			});
+			if (model === PRIMARY && options.holdPrimaryShutdown) {
+				Object.assign(session, {
+					extensionRunner: {
+						hasHandlers: (name: string) => name === "session_shutdown",
+						async emit() {
+							primaryRetiring.resolve();
+							await options.holdPrimaryShutdown;
+						},
+					},
+				});
+			}
 			return Object.defineProperty(session, "isStreaming", { get: () => streaming, configurable: true });
 		},
 	};
@@ -179,6 +193,7 @@ function stageWithFallback(options: {
 		name: "stage-a",
 		stageSnapshot: { status: "running" },
 		state: { liveHandleReleased: false, resumeContinuationPending: false },
+		activeStore: { recordStagePaused: () => false },
 		innerCtx: ctx,
 		throwIfStageMutationBlocked() {},
 		captureStageSessionMeta() {},
@@ -192,6 +207,7 @@ function stageWithFallback(options: {
 		fallbackStreaming: fallbackStreaming.promise,
 		fallbackCreating: fallbackCreating.promise,
 		primaryWaiting: primaryWaiting.promise,
+		primaryRetiring: primaryRetiring.promise,
 		status: () =>
 			chat
 				.renderWorkingStatus(100)
@@ -268,7 +284,11 @@ function openStageChat(handle: StageControlHandle) {
 		onClose: () => {},
 		piTui: makeTestTui(30),
 	});
-	return { rows: () => plain(view.render(100)), dispose: () => view.dispose() };
+	return {
+		rows: () => plain(view.render(100)),
+		pressEscape: () => view.handleInput("\x1b"),
+		dispose: () => view.dispose(),
+	};
 }
 
 const ATTEMPT = { workId: "work", generation: 1 };
@@ -315,6 +335,7 @@ async function workerStageHandle(handle: StageControlHandle) {
 			return { ok: false, refusal: "StageNotLive" };
 		},
 		async pause() {
+			await handle.pause();
 			return { ok: true };
 		},
 		async resume() {
@@ -347,6 +368,46 @@ describe("a stage chat opened after the stage moved its turn to the fallback mod
 			await stage.dispose();
 		}
 	});
+
+	test.each(["local", "worker"])(
+		"a %s stage chat opened during the failed model's shutdown can cancel the switch (#5564)",
+		async (host) => {
+			const release = Promise.withResolvers<void>();
+			const stage = stageWithFallback({ primaryMs: 6_400, fallbackMs: 200, holdPrimaryShutdown: release.promise });
+			const events: string[] = [];
+			const unsubscribe = stage.ctx.subscribe((event) => events.push(event.type));
+			const turn = stage.ctx.prompt("Fix the picker");
+			let worker: Awaited<ReturnType<typeof workerStageHandle>> | undefined;
+			let chat: ReturnType<typeof openStageChat> | undefined;
+			try {
+				await stage.primaryRetiring;
+				if (host === "worker") worker = await workerStageHandle(stage.handle);
+				chat = openStageChat(worker?.handle ?? stage.handle);
+				const rows = chat.rows().join("\n");
+				assert.match(rows, /switching model/);
+				assert.match(rows, /esc interrupt/);
+				chat.pressEscape();
+				await sleep(0);
+				assert.equal(stage.ctx.__isPaused(), true);
+				await stage.ctx.__resume();
+				release.resolve();
+				await turn;
+				assert.deepEqual(
+					events.filter((type) => ["agent_start", "model_fallback_start", "model_fallback_end"].includes(type)),
+					["agent_start", "model_fallback_start", "model_fallback_end"],
+				);
+			} finally {
+				release.resolve();
+				if (stage.ctx.__isPaused()) await stage.ctx.__resume();
+				await turn.catch(() => undefined);
+				chat?.dispose();
+				worker?.handle.dispose();
+				worker?.close();
+				unsubscribe();
+				await stage.dispose();
+			}
+		},
+	);
 
 	test("a chat opened while the stage switches models shows the switch, and the turn counts from its start (#5535)", async () => {
 		const release = Promise.withResolvers<void>();
