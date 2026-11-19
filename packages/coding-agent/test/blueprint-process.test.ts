@@ -325,10 +325,20 @@ describe("running a logged process (#4588)", () => {
 			timeoutMs: STEADY_TIMEOUT_MS,
 			signal: controller.signal,
 		});
-		await waitFor(
-			() => existsSync(path("grandchild.pid")) && readFileSync(path("grandchild.pid"), "utf8") !== "",
-			"the grandchild starting",
+		// A process that ends, or cannot start, before its grandchild starts fails the wait at once with how it ended.
+		let endedFirst: unknown;
+		pending.then(
+			({ exit, output }) => {
+				endedFirst = { ...exit, spawnError: exit.spawnError?.message, output };
+			},
+			(error: unknown) => {
+				endedFirst = error;
+			},
 		);
+		await waitFor(() => {
+			assert.equal(endedFirst, undefined, "the process ended before its grandchild started");
+			return existsSync(path("grandchild.pid")) && readFileSync(path("grandchild.pid"), "utf8") !== "";
+		}, "the grandchild starting");
 		const grandchildPid = Number(readFileSync(path("grandchild.pid"), "utf8"));
 		try {
 			controller.abort(reason);
