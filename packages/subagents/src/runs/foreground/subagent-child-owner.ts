@@ -97,6 +97,15 @@ export function subagentChildOwnerWriter(pi: Writer, manager: Manager): Writer {
 	return binding?.sessionId === manager.getSessionId() ? binding.writer : pi;
 }
 
+const currentEvents = Symbol.for("@bastani/subagents/current-owner-events@1");
+type Events = ChildOwnerAPI["events"];
+type OwnerEvents = Events & { [currentEvents]?: () => Events | undefined };
+
+/** A broker request and its eventual reply belong to the generation that sends it. */
+export function subagentChildRequestEvents(events: OwnerEvents): Events | undefined {
+	return events[currentEvents] ? events[currentEvents]() : events;
+}
+
 /** Keep the same owner across a reload, without retaining its old API or context in a suspended restoration. */
 export function subagentChildOwnerOperations(
 	pi: ChildOwnerAPI,
@@ -108,14 +117,16 @@ export function subagentChildOwnerOperations(
 		if (!binding.current) throw new Error("The subagent's owning session is closed.");
 		return binding.current;
 	};
+	const events: OwnerEvents = {
+		[currentEvents]: () => binding.current?.pi.events,
+		emit: (channel, data) => binding.current?.pi.events.emit(channel, data),
+		on: (channel, handler) => binding.current?.pi.events.on(channel, handler) ?? (() => {}),
+	};
 	return {
 		ctx: new Proxy({} as ExtensionContext, { get: (_, key) => Reflect.get(live().ctx, key) }),
 		pi: {
 			...binding.writer,
-			events: {
-				emit: (channel, data) => binding.current?.pi.events.emit(channel, data),
-				on: (channel, handler) => binding.current?.pi.events.on(channel, handler) ?? (() => {}),
-			},
+			events,
 			getSessionName: () => live().pi.getSessionName(),
 			get getResourceLoaderInheritanceSnapshot() {
 				return live().pi.getResourceLoaderInheritanceSnapshot;
