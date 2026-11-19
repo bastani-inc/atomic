@@ -10,7 +10,6 @@ import {
 	type WorktreeInfo,
 	type WorktreeSetup,
 	type WorktreeSetupHookConfig,
-	withWorktreeSweepTimeout,
 	worktreeHasUnsavedWork,
 } from "../shared/worktree.js";
 
@@ -95,15 +94,23 @@ export function registerNamedRunWorktrees(
 /**
  * Remove the run's worktrees once it returned and no execution holds them. A stopped child's worktree with unsaved work
  * is kept, so it can resume in it; a clean one is removed and resume recreates it. A worktree whose edits could not be
- * saved as a patch is kept too, and a later sweep tries again (#4876).
+ * saved as a patch is kept too, and a later sweep tries again (#4876). Every git command runs to completion, except
+ * the check of the child whose resume failed (`failedResume`): a stalled one is stopped and its worktree kept.
  */
-async function sweepIdle(run: RunWorktrees): Promise<void> {
+async function sweepIdle(run: RunWorktrees, failedResume?: number): Promise<void> {
 	if (!run.returned || run.holds.size || run.launching.size) return;
 	run.sweepNote = undefined;
+	const onStall = () => {
+		run.sweepNote = "Worktree cleanup timed out. Check the worktree before removing it.";
+	};
 	const removing: WorktreeInfo[] = [];
 	for (const worktree of run.setup.worktrees) {
 		if (run.removed.has(worktree.index)) continue;
-		if (run.stopped.has(worktree.index) && (await worktreeHasUnsavedWork(run.setup, worktree))) continue;
+		if (
+			run.stopped.has(worktree.index) &&
+			(await worktreeHasUnsavedWork(run.setup, worktree, worktree.index === failedResume ? onStall : undefined))
+		)
+			continue;
 		removing.push(worktree);
 	}
 	if (run.holds.size || run.launching.size) return;
@@ -136,26 +143,19 @@ async function sweepIdle(run: RunWorktrees): Promise<void> {
 		runs.delete(run.runId);
 }
 
-function sweep(run: RunWorktrees): Promise<void> {
-	const next = run.sweeping.then(() =>
-		withWorktreeSweepTimeout(
-			() => {
-				run.sweepNote = "Worktree cleanup timed out. Check the worktree before removing it.";
-			},
-			() => sweepIdle(run),
-		),
-	);
+function sweep(run: RunWorktrees, failedResume?: number): Promise<void> {
+	const next = run.sweeping.then(() => sweepIdle(run, failedResume));
 	run.sweeping = next.catch(() => {
 		run.sweepNote = "Worktree cleanup failed. Check the worktree before removing it.";
 	});
 	return next;
 }
 
-function hold(run: RunWorktrees): () => Promise<void> {
+function hold(run: RunWorktrees): (failedResume?: number) => Promise<void> {
 	const token = Symbol("worktree hold");
 	run.holds.add(token);
-	return () => {
-		if (run.holds.delete(token)) return sweep(run);
+	return (failedResume) => {
+		if (run.holds.delete(token)) return sweep(run, failedResume);
 		return run.sweeping;
 	};
 }
@@ -258,7 +258,9 @@ export function beginWorktreeExecution(runId: string, index: number) {
 	const run = runs.get(runId);
 	if (!run?.setup.worktrees.some((tree) => tree.index === index)) return undefined;
 	run.launching.delete(index);
-	const release = hold(run);
+	const held = hold(run);
+	// An ordinary execution's release: nothing of its sweep is stopped, whatever `closed` settles with.
+	const release = () => held();
 	let reply: Promise<string | undefined> | undefined;
 	return (closed?: Promise<unknown>) => {
 		if (reply) return reply;
@@ -315,7 +317,8 @@ export function runWorktreeRecord(runId: string, index: number): SubagentChildWo
  * its edits as a patch of its own, so no earlier patch is overwritten. The worktree stays kept for the stopped child
  * until its new execution starts ({@link claimRunWorktree}), so a resume that fails keeps its unsaved work. Returns the
  * release of the resume hold, which settles once the run's worktrees are swept: until then git may still be running in
- * the child's worktree, which on Windows keeps anyone from removing it (#5589).
+ * the child's worktree, which on Windows keeps anyone from removing it (#5589). A resume that failed releases with
+ * `failed`, so a stalled git command checking the child's worktree is stopped rather than left running.
  */
 export async function resumeRunWorktree(
 	child: {
@@ -327,7 +330,7 @@ export async function resumeRunWorktree(
 	},
 	setupHook?: WorktreeSetupHookConfig,
 	namedOptions: NamedWorktreeOptions = {},
-): Promise<() => Promise<void>> {
+): Promise<(failed?: boolean) => Promise<void>> {
 	// A named worktree is the caller's: put back where it was if it was removed, and never tracked for removal.
 	if (child.worktree?.named) {
 		try {
@@ -386,7 +389,7 @@ export async function resumeRunWorktree(
 	} catch {
 		// Left missing: resume then reports that the child's working directory no longer exists.
 	}
-	return release;
+	return (failed = false) => release(failed ? child.index : undefined);
 }
 
 /** Runs whose worktrees this process still tracks; counted by tests and the benchmark. */

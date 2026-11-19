@@ -3265,6 +3265,54 @@ test(
 	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
 );
 
+for (const resumed of [false, true])
+	test(
+		`a ${resumed ? "resumed" : "new"} worktree child's cleanup lets a slow but working Git clean filter finish, saves its patch and removes the worktree (#5589)`,
+		async () => {
+			const h = harness();
+			initGitRepository(h.cwd);
+			const first = Promise.withResolvers<void>();
+			const next = Promise.withResolvers<void>();
+			h.finishOn.set("filtered-file", first);
+			h.finishOn.set(SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT, next);
+			const [child] = await launchWorktreeRun(h, ["filtered-file"]);
+			assert.ok(child?.taskId && child.worktree?.diffsDir);
+			const diffsDir = child.worktree.diffsDir;
+			cleanups.push(async () => rmSync(diffsDir, { recursive: true, force: true }));
+			try {
+				let taskId = child.taskId;
+				await h.waitForLatest(child.childId, (record) => !!record.childSessionId);
+				if (resumed) {
+					first.resolve();
+					await settled(h, taskId);
+					await waitForWorktreeCleanup(h, child);
+					taskId = resumedTaskId(await h.call({ action: "resume", id: child.childId }));
+					await h.waitForLatest(child.childId, (record) => record.taskId === taskId && !!record.childSessionId);
+				}
+				// Git runs the filter with its own shell on every platform. It succeeds, just after the reply budget.
+				gitOutput(h.cwd, ["config", "filter.slow.clean", `sleep ${WORKTREE_REPLY_WAIT_MS / 1000 + 1}; cat`]);
+				writeFileSync(join(h.cwd, ".git", "info", "attributes"), "*.slow filter=slow\n");
+				writeFileSync(join(child.cwd, "result.slow"), "deliverable\n");
+				(resumed ? next : first).resolve();
+				await settled(h, taskId);
+				await vi.waitFor(
+					() =>
+						assert.ok(
+							savedPatches(child).some((patch) => readFileSync(patch, "utf8").includes("+deliverable")),
+							"cleanup saves the patch once the filter finishes",
+						),
+					{ timeout: RECORD_WAIT_MS, interval: 50 },
+				);
+				await waitForWorktreeCleanup(h, child);
+				assert.equal(existsSync(child.cwd), false, "the worktree is removed");
+			} finally {
+				first.resolve();
+				next.resolve();
+			}
+		},
+		LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+	);
+
 function savedPatches(record: SubagentChildRecord): string[] {
 	const diffsDir = record.worktree?.diffsDir;
 	assert.ok(diffsDir, "the child record names where its run saves its patches");
