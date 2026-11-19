@@ -15,8 +15,8 @@ async function registerIsolatedTests(): Promise<void> {
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { jest, mock, spyOn } = await import("bun:test");
 	const { replaceControlCharacters, stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
-	// The host theme's color environment, which the shared chat-input label reads, parses colors with pi-tui.
-	const { colorToHex, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
+	// Use real colour conversion for the shared input label and the graph’s status palette.
+	const { colorToHex, colorToRgb, foregroundAnsi, parseColor } = await import("@bastani/atomic-tui/dist/colors.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
@@ -25,6 +25,8 @@ async function registerIsolatedTests(): Promise<void> {
 	]);
 	mock.module("@bastani/atomic-tui", () => ({
 		colorToHex,
+		colorToRgb,
+		foregroundAnsi,
 		parseColor,
 		Box: TestComponent,
 		Editor: TestComponent,
