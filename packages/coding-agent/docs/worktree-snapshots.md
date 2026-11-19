@@ -215,7 +215,7 @@ Collection timers do not keep an otherwise idle process running. When the last s
 
 To collect immediately, for example after deleting many sessions, call `collectSnapshotGarbage` from the SDK (see below). Its `deleted` list contains only the hashes removed in that pass.
 
-A concurrent fork can leave an unused patch for the next collection. For example, snapshot A uses a patch that snapshot B supersedes. If a fork through B copies A’s record after collection has checked the session but before the delete batch runs, collection keeps the otherwise eligible patch on that pass. The next collection can reclaim it if it still meets the grace period and nothing retains it. A fork through A still needs the patch, so collection keeps it on both passes.
+A concurrent fork can leave an unused patch for the next collection. For example, snapshot A uses a patch that snapshot B supersedes. A fork through B defers deletion of A’s otherwise eligible patch only if it copies A’s record after collection checks which sessions record that patch but before collection tries to delete it. The next collection can reclaim it if it still meets the grace period and nothing retains it. A fork through A still needs the patch, so collection keeps it on both passes.
 
 ## SDK
 
