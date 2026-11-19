@@ -12,7 +12,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { seedCatalogSeries } from "../helpers/seed-catalog-series.js";
 import { storageBackends } from "../helpers/storage-backends.js";
@@ -208,12 +208,13 @@ for (const backend of storageBackends) {
 				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
 				try {
 					const count = database.descriptor.adapter === "node-sqlite" ? 128 : 4_096;
-					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${count})
+					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${2 * count})
 						INSERT INTO ${runJournalTables(scope.prefix).runs}(run_id, name, cwd, created_at, status, header_json)
 						SELECT 'run-' || i, 'run', '/project', 1, 'running',
 						'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
 					const controller = new AbortController();
 					const reason = new Error("catalog finished-page cancellation");
+					const releaseLimit = limitHeaderResponse(database, (rows) => rows.length <= count);
 					let armed = false;
 					let readsAfterAbort = 0;
 					const restore = observeSqlReads(database, {
@@ -233,6 +234,7 @@ for (const backend of storageBackends) {
 						expect(readsAfterAbort).toBe(0);
 					} finally {
 						restore();
+						releaseLimit();
 					}
 				} finally {
 					await journal.close();
@@ -292,6 +294,12 @@ for (const backend of storageBackends) {
 					const largestHeaderBytes = Math.max(
 						...headers.map((header) => Buffer.byteLength(JSON.stringify(header))),
 					);
+					const releaseLimit = limitHeaderResponse(
+						database,
+						(rows) =>
+							rows.reduce((total, row) => total + Buffer.byteLength(String(row.header_json)), 0) <=
+							4 * 1024 * 1024 + largestHeaderBytes,
+					);
 					let pages = 0;
 					const restore = observeSqlReads(database, {
 						after: (rows) => {
@@ -311,6 +319,7 @@ for (const backend of storageBackends) {
 						expect(pages).toBeGreaterThan(1);
 					} finally {
 						restore();
+						releaseLimit();
 					}
 				} finally {
 					await journal.close();

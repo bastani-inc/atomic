@@ -126,8 +126,6 @@ export interface StorageNotifications {
 }
 
 export interface SqliteDatabase extends SqliteExecutor {
-	/** @internal Private SQLite memory: temporary tables stay on this connection, and a second reader cannot open it. */
-	readonly privateSqliteMemory?: boolean;
 	/**
 	 * True when the connection refuses writes, as `openNodeSqliteDatabase(path, { readOnly: true })` sets it, so opening a
 	 * session store skips a cleanup write that would fail. Optional: a read-only connection that leaves it unset still

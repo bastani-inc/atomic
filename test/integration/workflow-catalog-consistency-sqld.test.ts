@@ -10,7 +10,7 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { JournalSchemaVersionError } from "../../packages/workflows/src/durable/journal/types.js";
-import { observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
@@ -127,7 +127,8 @@ for (const backend of storageBackends) {
 						await seed(db, scope.prefix);
 						let captured = false;
 						const restore = observeSqlReads(db, {
-							after: async (rows) => {
+							after: async (rows, _sql, pinned) => {
+								if (view === "run versions" && !pinned) return; // A full first page is discarded and reread in the snapshot.
 								if (captured || !rows.some((row) => typeof row.run_id === "string")) return;
 								captured = true;
 								await writer.createRun({ ...header, runId: "a-first", createdAt: 100 });
@@ -217,6 +218,7 @@ describe.skipIf(sqld.skipReason !== undefined)("warm sqld catalog", () => {
 				let armed = false;
 				let failed = false;
 				const send = vi.spyOn(globalThis, "fetch");
+				const releaseLimit = limitHeaderResponse(db, (rows) => rows.length <= 4096);
 				const restore = observeSqlReads(db, {
 					after: async (rows) => {
 						if (armed || !rows.some((row) => typeof row.header_json === "string")) return;
@@ -235,6 +237,7 @@ describe.skipIf(sqld.skipReason !== undefined)("warm sqld catalog", () => {
 				} finally {
 					send.mockRestore();
 					restore();
+					releaseLimit();
 				}
 			} finally {
 				await writer.close();

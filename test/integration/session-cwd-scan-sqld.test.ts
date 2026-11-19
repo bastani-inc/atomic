@@ -12,6 +12,48 @@ import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
 	describe.skipIf(backend.skipReason !== undefined)(`project directory scan: ${backend.name}`, () => {
+		it("reads repeated directory spellings once, not once per session (#5537)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, {
+					prefix: scope.prefix,
+					cwdMatcher: () => (cwd) => cwd === "/absent",
+				});
+				try {
+					const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
+					const distinct = db.descriptor.adapter === "node-sqlite" ? 256 : 16_384;
+					await store.create(
+						{ id: "s0", version: SESSION_FORMAT_VERSION, cwd: "/p0", createdAt: "2026-11-18T00:00:00Z" },
+						[],
+					);
+					await seedCatalogSeries(
+						db,
+						1,
+						50_000,
+						`INSERT INTO ${table}(id,cwd,created_at,header_json,internal,last_seq,modified_at,message_count,first_message,name,has_name,summary,summarized_through_id,summary_state,revision) SELECT 's'||i,'/p'||(i%${distinct}),created_at,header_json,internal,last_seq,modified_at,message_count,first_message,name,has_name,summary,summarized_through_id,summary_state,revision FROM n CROSS JOIN ${table} seed WHERE seed.id='s0'`,
+					);
+					const replies: number[] = [];
+					const restore = observeSqlReads(db, {
+						after(rows, sql) {
+							if (sql.includes(table) && /SELECT DISTINCT cwd FROM|SELECT id, cwd FROM/.test(sql))
+								replies.push(rows.length);
+						},
+					});
+					try {
+						expect(await Array.fromAsync(store.list({ cwd: "/absent" }))).toEqual([]);
+						expect(replies).toEqual([distinct]);
+					} finally {
+						restore();
+					}
+				} finally {
+					await store.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+
 		it("scans distinct directory spellings at most once while resolving a missing project (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {

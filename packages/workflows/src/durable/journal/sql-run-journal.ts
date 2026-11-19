@@ -619,24 +619,27 @@ export class SqlRunJournal implements RunJournal {
 		options?.signal?.throwIfAborted();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
+			const source = this.legacy === undefined ? this.tables.runs : `(${this.runHeaderSource}) AS runs`;
+			const from = `FROM ${source}${filter?.cwd === undefined ? "" : ` WHERE ${c.cwd} = ?`}`;
+			const select = `${c.headerJson}, ${c.status}, ${this.metaVersion}`;
 			const catalog = {
-				sql: `SELECT runs.${c.runId}, runs.${c.headerJson}, runs.${c.status}, meta.${META_VERSION}
-					FROM (SELECT ${this.metaVersion}) AS meta LEFT JOIN (${this.runHeaderSource}) AS runs
-					ON ${filter?.cwd === undefined ? "1 = 1" : `runs.${c.cwd} = ?`}`,
+				first: { sql: `SELECT ${select} ${from} ORDER BY ${c.runId}` },
+				sql: `SELECT ${c.runId}, ${select} ${from}`,
+				columns: `${c.headerJson}, ${c.status}, ${META_VERSION}`,
+				cursor: (row: SqliteRow) => (JSON.parse(String(row[c.headerJson])) as RunHeader).runId,
 				params: filter?.cwd === undefined ? [] : [filter.cwd],
 				key: c.runId,
-				size: `coalesce(length(${c.headerJson}) + length(${c.runId}) + length(${c.status}), 0)`,
+				size: `length(${c.headerJson}) + length(${c.status})`,
 				signal: options?.signal,
 				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
 			};
 			const append = (listed: RunSummary[], page: HeaderRow[]) => {
 				for (const row of page) {
 					assertRowVersion(row);
-					if (row[c.headerJson] !== null)
-						listed.push({
-							...(JSON.parse(row[c.headerJson]) as RunHeader),
-							status: runStatusFromRecord(row[c.status]),
-						});
+					listed.push({
+						...(JSON.parse(row[c.headerJson]) as RunHeader),
+						status: runStatusFromRecord(row[c.status]),
+					});
 				}
 			};
 			const { value: listed, paged } = await reduceSqlCatalog<HeaderRow, RunSummary[]>(
@@ -646,7 +649,7 @@ export class SqlRunJournal implements RunJournal {
 				append,
 			);
 			options?.signal?.throwIfAborted();
-			if (paged) await this.assertVersion(this.database);
+			if (paged || listed.length === 0) await this.assertVersion(this.database);
 			options?.signal?.throwIfAborted();
 			return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
@@ -678,15 +681,24 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		return this.operation(async () => {
 			const current = `SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`;
+			const sql =
+				this.legacy === undefined
+					? current
+					: `SELECT * FROM (${current} UNION ALL ${this.legacy.versionSource}) AS runs`;
+			const pageRows =
+				this.database.descriptor.adapter === "node-sqlite" ? RUN_VERSIONS_PAGE : RUN_VERSIONS_SERVER_PAGE;
+			const page = (continued: boolean) =>
+				`${sql}${continued ? ` WHERE runs.${c.runId} > ?` : ""} ORDER BY runs.${c.runId} LIMIT ?`;
 			const { value } = await reduceSqlCatalog<RunVersionRow, Map<string, RunVersion>>(
 				this.database,
 				{
-					sql: this.legacy === undefined ? current : `${current} UNION ALL ${this.legacy.versionSource}`,
+					sql,
+					first: { sql: page(false), limit: pageRows },
+					pacedPage: page,
 					key: c.runId,
 					size: `length(${c.runId})`,
 					signal: stop,
-					pageRows:
-						this.database.descriptor.adapter === "node-sqlite" ? RUN_VERSIONS_PAGE : RUN_VERSIONS_SERVER_PAGE,
+					pageRows,
 				},
 				() => new Map(),
 				(versions, page) => {

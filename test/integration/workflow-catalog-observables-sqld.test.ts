@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
@@ -28,7 +28,7 @@ for (const backend of storageBackends) {
 						}
 						reads = 0;
 						expect(await journal.listRuns({ cwd: "/missing" })).toEqual([]);
-						expect(reads).toBe(1);
+						expect(reads).toBe(2); // An empty row set carries no schema version.
 					} finally {
 						restore();
 					}
@@ -51,6 +51,7 @@ for (const backend of storageBackends) {
 						INSERT INTO ${runJournalTables(scope.prefix).runs}(run_id, name, cwd, created_at, status, header_json)
 						SELECT 'm-' || i, 'run', '/project', 1, 'running',
 						'{"runId":"m-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+					const releaseLimit = limitHeaderResponse(database, (rows) => rows.length <= 4096);
 					let wrote = false;
 					const restore = observeSqlReads(database, {
 						after: async (rows) => {
@@ -76,6 +77,7 @@ for (const backend of storageBackends) {
 						expect(wrote).toBe(true);
 					} finally {
 						restore();
+						releaseLimit();
 					}
 				} finally {
 					await writer.close();

@@ -1,8 +1,6 @@
-import { withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import { StoragePayloadTooLargeError } from "./errors.js";
 
-/** A conservative text budget: even four-byte characters and JSON escaping fit below a server's response limit. */
 const CATALOG_PAGE_CHARS = 1024 * 1024;
 const CATALOG_PAGE_ROWS = 256;
 
@@ -17,148 +15,138 @@ export interface SqlCatalogReadOptions {
 	readonly sql: string;
 	readonly params?: readonly SqliteValue[];
 	readonly key: string;
+	readonly start?: SqliteValue;
 	readonly size: string;
 	readonly signal?: AbortSignal;
-	/** Checks the owner's lifetime before and after each request, including after a yielded page. */
 	readonly assertOpen?: () => void;
 	readonly pageRows?: number;
-	/** The caller already began a read transaction on this connection. */
 	readonly inSnapshot?: boolean;
-	/** A preceding bounded probe already established that a snapshot is needed. */
 	readonly skipProbe?: boolean;
+	/** The ordinary query, whose reply is complete unless it reaches its original pacing limit. */
+	readonly first?: { readonly sql: string; readonly limit?: number };
+	/** Return only the ordinary columns. The continuation key may already be encoded in one of them. */
+	readonly columns?: string;
+	readonly cursor?: (row: SqliteRow) => SqliteValue;
+	/** The original, paced keyset query. Use it unchanged until a server actually refuses its response. */
+	readonly pacedPage?: (continued: boolean) => string;
 }
 
-/** A complete short catalog in one statement, or no data at all: a longer read must start afresh in its snapshot. */
+function check(options: SqlCatalogReadOptions) {
+	options.assertOpen?.();
+	options.signal?.throwIfAborted();
+}
+
+function responseRefused(error: unknown): boolean {
+	return error instanceof StoragePayloadTooLargeError && error.kind === "response";
+}
+
+/** A short catalog is complete in one statement. Never mix a discarded first reply with a new snapshot. */
 async function readCompleteCatalog<Row extends SqliteRow>(
 	db: SqliteExecutor,
 	options: SqlCatalogReadOptions,
 ): Promise<Row[] | undefined> {
-	const { sql, key, size, signal, params = [], pageRows = CATALOG_PAGE_ROWS } = options;
-	signal?.throwIfAborted();
+	const { sql, key, size, params = [], pageRows = CATALOG_PAGE_ROWS, first } = options;
 	try {
-		const rows = await db.all<Row & { catalog_complete: number; catalog_count: number }>(
+		if (first) {
+			const rows = await db.all<Row>(
+				first.sql,
+				...params,
+				...(options.start === undefined ? [] : [options.start]),
+				...(first.limit === undefined ? [] : [first.limit]),
+			);
+			return rows.length === first.limit ? undefined : rows;
+		}
+		// Other catalogs use bounded first batches. Return no rows for an empty catalog, or a single
+		// null key for an incomplete one; neither case adds control fields to the data rows.
+		const rows = await db.all<Row>(
 			`WITH candidates AS MATERIALIZED (SELECT * FROM (${sql}) AS catalog LIMIT ?),
-			stats AS (SELECT count(*) AS catalog_count, CASE WHEN count(*) < ? AND
-				(count(*) <= 1 OR sum(${size}) <= ?) THEN 1 ELSE 0 END AS catalog_complete FROM candidates)
-			SELECT candidates.*, stats.* FROM stats LEFT JOIN candidates ON catalog_complete = 1 ORDER BY ${key}`,
+			stats AS (SELECT count(*) AS n, count(*) < ? AND (count(*) <= 1 OR sum(${size}) <= ?) AS complete FROM candidates)
+			SELECT candidates.* FROM stats LEFT JOIN candidates ON stats.complete WHERE stats.n > 0 ORDER BY candidates.${key}`,
 			...params,
 			pageRows,
 			pageRows,
 			CATALOG_PAGE_CHARS,
 		);
-		signal?.throwIfAborted();
-		if (Number(rows[0]!.catalog_complete) !== 1) return undefined;
-		return Number(rows[0]!.catalog_count) === 0
-			? []
-			: rows.map(({ catalog_count: _count, catalog_complete: _complete, ...row }) => row as unknown as Row);
+		return rows[0]?.[key] === null ? undefined : rows;
 	} catch (error) {
-		signal?.throwIfAborted();
-		if (error instanceof StoragePayloadTooLargeError && error.kind === "response") return undefined;
-		throw error;
+		if (!responseRefused(error)) throw error;
+		return undefined;
 	}
 }
 
-/**
- * Reads a catalog in unique-key order, bounding both rows examined and text returned on every backend. `sql`, `key`
- * and `size` are trusted SQL; `size` counts the returned row's text. Oversized responses retry the same cursor with
- * fewer rows, never advancing past a row that was not returned. A single oversized row retains the backend's error.
- * Consumers can process each page before the next yield, rather than parse an entire catalog in one event-loop turn.
- */
+/** The cutoff stays in SQL: a one-row response contains no counts, sizes or duplicated cursor. */
 export async function* readSqlCatalogPages<Row extends SqliteRow>(
 	executor: SqliteExecutor,
 	options: SqlCatalogReadOptions,
 ): AsyncIterable<Row[]> {
-	const { sql, key, size, signal, params = [] } = options;
-	let after: SqliteValue | undefined;
-	let limit = options.pageRows ?? CATALOG_PAGE_ROWS;
+	const { sql, key, size, params = [], columns = "*", pageRows = CATALOG_PAGE_ROWS } = options;
+	let after = options.start;
 	for (;;) {
-		options.assertOpen?.();
-		signal?.throwIfAborted();
-		let page: (Row & {
-			catalog_chars: number | bigint;
-			catalog_row: number | bigint;
-			catalog_fetched: number | bigint;
-		})[];
-		try {
-			page = await executor.all<(typeof page)[number]>(
-				`SELECT * FROM (
-					SELECT page.*, sum(${size}) OVER (ORDER BY ${key}) AS catalog_chars,
-						row_number() OVER (ORDER BY ${key}) AS catalog_row, count(*) OVER () AS catalog_fetched
-					FROM (SELECT * FROM (${sql}) AS catalog ${after === undefined ? "" : `WHERE ${key} > ?`} ORDER BY ${key} LIMIT ?) AS page
-				) AS sized WHERE catalog_chars <= ? OR catalog_row = 1 ORDER BY ${key}`,
-				...params,
-				...(after === undefined ? [] : [after]),
-				limit,
-				CATALOG_PAGE_CHARS,
-			);
-		} catch (error) {
-			if (!(error instanceof StoragePayloadTooLargeError) || error.kind !== "response" || limit === 1) throw error;
-			limit = Math.max(1, Math.floor(limit / 2));
-			await nextTurn();
-			continue;
-		}
-		options.assertOpen?.();
-		signal?.throwIfAborted();
-		if (page.length === 0) return;
-		const last = page.at(-1)!;
-		const complete =
-			Number(last.catalog_fetched) < limit && Number(last.catalog_row) === Number(last.catalog_fetched);
-		after = last[key];
-		yield page.map(
-			({ catalog_chars: _chars, catalog_row: _row, catalog_fetched: _fetched, ...row }) => row as unknown as Row,
-		);
-		options.assertOpen?.();
-		signal?.throwIfAborted();
-		if (complete) return;
+		check(options);
+		const binds = [...params, ...(after === undefined ? [] : [after]), pageRows];
+		const page = options.pacedPage
+			? await executor.all<Row>(options.pacedPage(after !== undefined), ...binds)
+			: await executor.all<Row>(
+					`WITH page AS MATERIALIZED (
+				SELECT * FROM (${sql}) AS catalog ${after === undefined ? "" : `WHERE ${key} > ?`} ORDER BY ${key} LIMIT ?
+			), sized AS (SELECT ${key}, sum(${size}) OVER (ORDER BY ${key}) AS chars FROM page)
+			SELECT ${columns} FROM page WHERE ${key} <= coalesce((SELECT max(${key}) FROM sized WHERE chars <= ?), (SELECT min(${key}) FROM page)) ORDER BY ${key}`,
+					...binds,
+					CATALOG_PAGE_CHARS,
+				);
+		check(options);
+		if (!page.length) return;
+		after = options.cursor ? options.cursor(page.at(-1)!) : page.at(-1)![key];
+		yield page;
+		check(options);
+		if (options.pacedPage && page.length < pageRows) return;
 		await nextTurn();
 	}
 }
 
-/** The whole reduction belongs to one read attempt. A retry never retains rows or a cursor from its predecessor. */
+/** Response refusals can close the server's transaction. Reduce each attempt from scratch on a fresh snapshot. */
 export async function reduceSqlCatalog<Row extends SqliteRow, Result>(
 	executor: SqliteExecutor,
 	options: SqlCatalogReadOptions,
 	initial: () => Result,
 	append: (value: Result, page: Row[]) => void,
 ): Promise<{ value: Result; paged: boolean }> {
-	const collect = async (tx: SqliteExecutor, source = options) => {
+	let limit = options.pageRows ?? CATALOG_PAGE_ROWS;
+	const collect = async (tx: SqliteExecutor) => {
 		const value = initial();
-		for await (const page of readSqlCatalogPages<Row>(tx, source)) append(value, page);
+		for await (const page of readSqlCatalogPages<Row>(tx, { ...options, pageRows: limit })) append(value, page);
 		return { value, paged: true };
 	};
 	const db = executor as Partial<SqliteDatabase>;
 	if (options.inSnapshot || !db.transaction) return collect(executor);
-	options.assertOpen?.();
+	check(options);
 	const complete = options.skipProbe ? undefined : await readCompleteCatalog<Row>(executor, options);
-	options.assertOpen?.();
-	options.signal?.throwIfAborted();
+	check(options);
 	if (complete !== undefined) {
 		const value = initial();
-		append(value, complete);
+		// Decoding a fitting response is still cancellable, without issuing more SQL.
+		for (let i = 0; i < complete.length; i += limit) {
+			append(value, complete.length <= limit ? complete : complete.slice(i, i + limit));
+			if (i + limit < complete.length) {
+				await nextTurn();
+				check(options);
+			}
+		}
 		return { value, paged: false };
 	}
-	await nextTurn();
-	options.assertOpen?.();
-	options.signal?.throwIfAborted();
-	if (db.privateSqliteMemory) {
-		// Only this connection can see its database. Copy just the catalog in one statement, then page the
-		// indexed temporary copy without occupying the connection between reads. No persistent data changes.
-		const table = `catalog_${crypto.randomUUID().replaceAll("-", "")}`;
-		await executor.run(`CREATE TEMP TABLE ${table} AS ${options.sql}`, ...(options.params ?? []));
-		return withCleanup(
-			async () => {
-				options.assertOpen?.();
-				options.signal?.throwIfAborted();
-				await executor.exec(`CREATE INDEX ${table}_key ON ${table}(${options.key})`);
-				return collect(executor, { ...options, sql: `SELECT * FROM ${table}`, params: [] });
-			},
-			() => executor.exec(`DROP TABLE temp.${table}`),
-		);
+	for (;;) {
+		await nextTurn();
+		check(options);
+		try {
+			return await db.transaction(collect, { readOnly: true, retryTransientFailures: true });
+		} catch (error) {
+			check(options);
+			if (!responseRefused(error) || limit === 1) throw error;
+			limit = Math.max(1, Math.floor(limit / 2));
+		}
 	}
-	return db.transaction(collect, { readOnly: true, retryTransientFailures: true });
 }
 
-/** Collects size-bounded catalog pages without an unbounded argument spread. */
 export async function readSqlCatalog<Row extends SqliteRow>(
 	executor: SqliteExecutor,
 	options: SqlCatalogReadOptions,

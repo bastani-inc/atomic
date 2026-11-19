@@ -9,7 +9,7 @@ import {
 	JOURNAL_SCHEMA_VERSION,
 	JournalSchemaVersionError,
 } from "../../packages/workflows/src/durable/journal/types.js";
-import { observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 describe("journal catalog paging", () => {
@@ -18,8 +18,8 @@ describe("journal catalog paging", () => {
 		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
 		const journal = await SqlRunJournal.open(database);
 		try {
-			// An exact page still needs the empty-page completion check; a short first page now finishes immediately.
-			for (let index = 0; index < 128; index++) {
+			// Two exact pages at this ceiling need an empty-page completion check.
+			for (let index = 0; index < 256; index++) {
 				await journal.createRun({
 					runId: `run-${index}`,
 					name: "run",
@@ -30,6 +30,7 @@ describe("journal catalog paging", () => {
 			}
 			const writer = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
 			const order: string[] = [];
+			const releaseLimit = limitHeaderResponse(database, (rows) => rows.length <= 128);
 			const restore = observeSqlReads(database, {
 				after: async (rows) => {
 					if (rows.length === 0) order.push("empty page");
@@ -47,6 +48,7 @@ describe("journal catalog paging", () => {
 				expect(order).toEqual(["upgrade committed", "empty page"]);
 			} finally {
 				restore();
+				releaseLimit();
 				await writer.close();
 			}
 		} finally {
