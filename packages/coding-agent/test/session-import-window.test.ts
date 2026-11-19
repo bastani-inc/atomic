@@ -8,8 +8,10 @@ import { exportToJsonl } from "../src/core/agent-session-export.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { buildSessionContext, buildSessionIndex, getBranchPath } from "../src/core/session-manager-history.ts";
 import type { SessionEntry } from "../src/core/session-manager-types.ts";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -68,41 +70,53 @@ async function wholeSession(store: SessionStore, id: string) {
 const texts = (entries: readonly SessionEntry[]) =>
 	entries.flatMap((entry) => (entry.type === "message" ? [JSON.stringify(entry.message.content)] : []));
 
-for (const via of ["static", "manager"] as const) {
-	test(`an import through the ${via} API keeps only the current window, as /resume does, and shows what the whole session did (#5554)`, async () => {
-		const { file, directory } = await compactedExport();
-		const target = new MemorySessionStore();
-		cleanups.push(() => target.close());
-		const imported =
-			via === "static"
-				? await SessionManager.importFromJsonl(file, directory, target)
-				: await (await SessionManager.create(target, directory)).importFromJsonl(file);
-		const id = imported.getSessionId();
-		const whole = await wholeSession(target, id);
-		const resumed = await SessionManager.open(target, id);
+const targets: Record<string, (directory: string) => Promise<SessionStore>> = {
+	memory: async () => new MemorySessionStore(),
+	jsonl: (directory) =>
+		JsonlSessionStore.open(join(directory, "target"), { exactDirectory: true, scanExisting: false }),
+	sql: async (directory) => {
+		const database = await openNodeSqliteDatabase(join(directory, "target.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		cleanups.push(() => database.close());
+		return store;
+	},
+};
 
-		// Retention: the conversation before the clear stays in the store, exactly as a resume leaves it.
-		assert.equal(imported.hasFullHistory(), false);
-		assert.ok(imported.getEntries().length < whole.entries.length);
-		assert.ok(!texts(imported.getEntries()).includes(JSON.stringify("turn 0")));
-		assert.deepEqual(imported.getEntries(), resumed.getEntries());
+for (const [kind, open] of Object.entries(targets))
+	for (const via of ["static", "manager"] as const)
+		test(`an import into a ${kind} store through the ${via} API keeps only the current window, as /resume does, and shows what the whole session did (#5554)`, async () => {
+			const { file, directory } = await compactedExport();
+			const target = await open(directory);
+			cleanups.push(() => target.close());
+			const imported =
+				via === "static"
+					? await SessionManager.importFromJsonl(file, directory, target)
+					: await (await SessionManager.create(target, directory)).importFromJsonl(file);
+			const id = imported.getSessionId();
+			const whole = await wholeSession(target, id);
+			const resumed = await SessionManager.open(target, id);
 
-		// What the session shows and continues from is unchanged.
-		assert.equal(imported.getLeafId(), whole.leafId);
-		assert.deepEqual(imported.buildSessionContext(), whole.context);
-		const read: SessionEntry[] = [];
-		for await (const { items } of imported.readHistory())
-			for (const item of items) if ("entry" in item) read.push(item.entry);
-		assert.deepEqual(read, whole.entries);
+			// Retention: the conversation before the clear stays in the store, exactly as a resume leaves it.
+			assert.equal(imported.hasFullHistory(), false);
+			assert.ok(imported.getEntries().length < whole.entries.length);
+			assert.ok(!texts(imported.getEntries()).includes(JSON.stringify("turn 0")));
+			assert.deepEqual(imported.getEntries(), resumed.getEntries());
 
-		// An export of the imported session carries the whole branch, as before.
-		const out = join(directory, "exported.jsonl");
-		await exportToJsonl.call({ sessionManager: imported } as unknown as AgentSession, out);
-		const [header, ...exported] = readFileSync(out, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
-		assert.equal(header.id, id);
-		assert.deepEqual(exported, whole.branch);
-	});
-}
+			// What the session shows and continues from is unchanged.
+			assert.equal(imported.getLeafId(), whole.leafId);
+			assert.deepEqual(imported.buildSessionContext(), whole.context);
+			const read: SessionEntry[] = [];
+			for await (const { items } of imported.readHistory())
+				for (const item of items) if ("entry" in item) read.push(item.entry);
+			assert.deepEqual(read, whole.entries);
+
+			// An export of the imported session carries the whole branch, as before.
+			const out = join(directory, "exported.jsonl");
+			await exportToJsonl.call({ sessionManager: imported } as unknown as AgentSession, out);
+			const [header, ...exported] = readFileSync(out, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			assert.equal(header.id, id);
+			assert.deepEqual(exported, whole.branch);
+		});
