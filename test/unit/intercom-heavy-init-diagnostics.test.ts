@@ -162,7 +162,7 @@ function runnerOwner(mode: ExtensionContext["mode"]) {
 	const notifications: Array<{ message: string; level?: string }> = [];
 	const runner = new ExtensionRunner(
 		[],
-		{ workflowActivityHub: { bindDispatcher() {} }, invalidate() {} } as never,
+		{ invalidate() {} } as never,
 		"/tmp",
 		{} as never,
 		{} as never,
