@@ -67,11 +67,6 @@ export class TerminalTextSanitizer {
 	private controlStringHighSurrogate = false;
 	private unterminated = false;
 
-	/** A newline here belongs to a control-string payload, unless it terminates an overlong sequence. */
-	get inControlString(): boolean {
-		return this.state === State.ControlString || this.state === State.ControlStringEscape;
-	}
-
 	write(chunk: string): string {
 		let output = "";
 		let runStart = 0;

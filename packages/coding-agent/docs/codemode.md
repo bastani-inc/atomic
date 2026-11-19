@@ -11,8 +11,6 @@ The `codemode` tool lets the model write a JavaScript script that calls Atomic's
 
 The tool input is raw JavaScript source, not JSON and not a markdown code fence. It runs as the body of an async function in a QuickJS sandbox, so top-level `await` and `return` work. The sandbox has no Node APIs, file system, network, or timers; scripts reach the outside world only through tools and `models`.
 
-Chat and `/tasks` show the script as the argument to `codemode`. Scripts longer than ten lines show their first ten; press Ctrl+O to read the rest and wrap long lines.
-
 A script may start with an options line. It must be the first line; an options line anywhere else fails the call before the script runs:
 
 ```js

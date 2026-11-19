@@ -35,25 +35,6 @@ test("tool blocks share one header and connector anatomy without a tinted frame 
 	}
 });
 
-test("tool blocks render component titles without probing extension members", () => {
-	const title = new Proxy(new Text("Valid extension title", 0, 0), {
-		has() {
-			throw new Error("opaque title");
-		},
-	});
-	assert.deepEqual(plain(new ToolBlock({ status: "success", title }).render(50)), [" ● Valid extension title"]);
-});
-
-test("extensions can give their tool blocks a withBody builder", () => {
-	class AlertBlock extends ToolBlock {
-		withBody(details: Text): AlertBlock {
-			return new AlertBlock({ status: "success", title: "Saved", details });
-		}
-	}
-	const block = new AlertBlock({ status: "success", title: "Saving" }).withBody(new Text("Everything written", 0, 0));
-	assert.deepEqual(plain(block.render(50)), [" ● Saved", "   ⎿  Everything written"]);
-});
-
 test("notices share the prose column and the tool block's connector indentation (#5224)", () => {
 	const notice = new NoticeLine(
 		{

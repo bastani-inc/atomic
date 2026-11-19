@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
-import { CURRENT_SESSION_VERSION } from "../src/core/session-manager.ts";
+import { exportFromFile, exportSessionToHtml } from "../src/core/export-html/index.js";
+import { CURRENT_SESSION_VERSION, SessionManager } from "../src/core/session-manager.ts";
 import { openExportedPage } from "./helpers/exported-page.ts";
 
-async function exportSavedMessages(dir: string, messages: unknown[], env: NodeJS.ProcessEnv = {}) {
+async function exportSavedMessages(
+	dir: string,
+	messages: unknown[],
+	env: NodeJS.ProcessEnv = {},
+	withoutArrayAt = false,
+) {
 	const input = join(dir, "session.jsonl");
 	const entries = [
 		{
@@ -38,8 +44,46 @@ async function exportSavedMessages(dir: string, messages: unknown[], env: NodeJS
 			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: join(dir, "profile"), ...env },
 		},
 	);
-	return openExportedPage(output);
+	return openExportedPage(output, "", withoutArrayAt);
 }
+
+test("without a recorded card the standalone export is byte-identical to the ordinary viewer (#5658)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-file-export-bytes-"));
+	try {
+		const sm = await SessionManager.create(dir, dir);
+		await sm.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+		const file = sm.getSessionFile();
+		assert.ok(file);
+		const checkBytes = async (label: string) => {
+			const ordinary = await exportSessionToHtml(sm, undefined, join(dir, "ordinary.html"));
+			const standalone = await exportFromFile(file, join(dir, "standalone.html"));
+			assert.ok(readFileSync(standalone).equals(readFileSync(ordinary)), `${label}: the complete documents differ`);
+		};
+		await checkBytes("chat");
+		const args = { agent: "worker", task: "Inspect the sample" };
+		const launch = await sm.appendMessage(fauxAssistantMessage([fauxToolCall("subagent", args, { id: "launch" })]));
+		const receipt = (history: Record<string, unknown>) =>
+			sm.appendMessage({
+				role: "toolResult",
+				toolName: "subagent",
+				toolCallId: "launch",
+				isError: false,
+				timestamp: 2,
+				content: [{ type: "text", text: "Original receipt" }],
+				details: { mode: "single", results: [{ ...args, status: "ok", ...history }] },
+			});
+		await receipt({
+			messages: [fauxAssistantMessage([fauxToolCall("todo", { value: "nested arguments" })])],
+			finalOutput: "",
+		});
+		await checkBytes("no child answer");
+		await sm.branch(launch);
+		await receipt({ sessionFile: "external.jsonl", progressSummary: { toolCount: 1 }, finalOutput: "Done" });
+		await checkBytes("compacted fork");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 test("a saved subagent call opens as a card with its recorded prompt, tool calls and result (#5658)", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-agent-file-export-"));
@@ -72,7 +116,7 @@ test("a saved subagent call opens as a card with its recorded prompt, tool calls
 			isError: false,
 			timestamp: 2,
 		};
-		const page = await exportSavedMessages(dir, [message, result]);
+		const page = await exportSavedMessages(dir, [message, result], {}, true);
 		const card = page.getElementById("tool-call-launch");
 		assert.match(card?.querySelector(".tool-header")?.textContent ?? "", /Agent\(worker · Inspect the sample\)/);
 		assert.match(
@@ -123,6 +167,61 @@ test("two turns can reuse a provider call ID without sharing either child's card
 			assert.ok(cards[i]?.querySelector("details")?.textContent?.includes(`${owner}'s receipt`));
 			assert.ok(!cards[i]?.textContent?.includes(i ? "amber" : "violet"));
 		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("switching forks switches both the card and its recorded receipt, and keeps ambiguous branches raw (#5658)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-file-export-fork-"));
+	try {
+		const sm = await SessionManager.create(dir, dir);
+		const args = { agent: "worker", task: "Inspect the sample" };
+		const launch = await sm.appendMessage(fauxAssistantMessage([fauxToolCall("subagent", args, { id: "launch" })]));
+		const receipt = (answer: string) =>
+			sm.appendMessage({
+				role: "toolResult",
+				toolName: "subagent",
+				toolCallId: "launch",
+				isError: false,
+				timestamp: 2,
+				content: [{ type: "text", text: `Original ${answer}` }],
+				details: {
+					mode: "single",
+					results: [{ ...args, status: "ok", finalOutput: answer, toolCalls: [{ text: "read sample.txt" }] }],
+				},
+			});
+		const end = (text: string) => sm.appendMessage({ role: "user", content: text, timestamp: 3 });
+		await receipt("first");
+		const first = await end("First branch");
+		await sm.branch(launch);
+		const secondReceipt = await receipt("second");
+		const second = await end("Second branch");
+		await sm.branch(secondReceipt);
+		await receipt("duplicate");
+		const ambiguous = await end("Ambiguous branch");
+		const file = sm.getSessionFile();
+		assert.ok(file);
+		const html = await exportFromFile(file, join(dir, "out.html"));
+		const page = openExportedPage(html, `?leafId=${first}`);
+		const row = () => page.getElementById("tool-call-launch");
+		const click = (id: string) => {
+			const link = page.querySelector<HTMLElement>(`[data-id="${id}"]`);
+			assert.ok(link);
+			link.click();
+		};
+		for (const [id, answer] of [
+			[first, "first"],
+			[second, "second"],
+			[first, "first"],
+		]) {
+			click(id);
+			assert.ok(row()?.querySelector(".output-full")?.textContent?.includes(`Result${answer}`));
+			assert.ok(row()?.querySelector("details")?.textContent?.includes(`Original ${answer}`));
+		}
+		click(ambiguous);
+		assert.equal(row()?.querySelector(".tool-header")?.textContent, "subagent");
+		assert.equal(row()?.querySelector("details"), null);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -205,7 +304,7 @@ test("a template installation without the extension cards still exports the orig
 		const assets = join(dir, "assets");
 		const templates = join(assets, "src/core/export-html");
 		cpSync(new URL("../src/core/export-html", import.meta.url), templates, { recursive: true });
-		rmSync(join(templates, "extension-cards.mjs"), { force: true });
+		rmSync(join(templates, "saved-agent-viewer.js"));
 		cpSync(new URL("../src/modes/interactive/theme", import.meta.url), join(assets, "src/modes/interactive/theme"), {
 			recursive: true,
 		});
@@ -214,8 +313,23 @@ test("a template installation without the extension cards still exports the orig
 		const message = fauxAssistantMessage([fauxToolCall("subagent", args, { id: "launch" })], {
 			stopReason: "toolUse",
 		});
-		const page = await exportSavedMessages(dir, [message], { ATOMIC_PACKAGE_DIR: assets });
-		assert.ok(page.getElementById("tool-call-launch")?.textContent?.includes(JSON.stringify(args, null, 2)));
+		const receipt = {
+			role: "toolResult",
+			toolName: "subagent",
+			toolCallId: "launch",
+			isError: false,
+			timestamp: 2,
+			content: [{ type: "text", text: "Original receipt" }],
+			details: {
+				mode: "single",
+				results: [{ ...args, status: "ok", finalOutput: "Done", toolCalls: [{ text: "read sample.txt" }] }],
+			},
+		};
+		const page = await exportSavedMessages(dir, [message, receipt], { ATOMIC_PACKAGE_DIR: assets });
+		const row = page.getElementById("tool-call-launch");
+		assert.equal(row?.querySelector(".tool-header")?.textContent, "subagent");
+		assert.ok(row?.textContent?.includes(JSON.stringify(args, null, 2)));
+		assert.ok(row.textContent.includes("Original receipt"));
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

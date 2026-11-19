@@ -30,13 +30,10 @@ import {
 	collapseToolBlockLines,
 	componentNeedsWorkingClock,
 	isToolBlock,
-	renderToolBlockTitleRows,
 	ToolBlock,
 	ToolBlockRecords,
 	type ToolBlockStatus,
 	type ToolGroupRole,
-	type TranscriptTitleLayout,
-	transcriptRenderContext,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
 import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
@@ -80,7 +77,7 @@ function blockStatusMarkPrefix(): RegExp {
 
 export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
-	private contentContainer?: Container;
+	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
 	private readonly toolRendererReader: ToolExecutionOptions["getToolDefinition"];
@@ -91,7 +88,6 @@ export class ToolExecutionComponent extends Container {
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: Record<string, unknown> = {};
-	private transcriptLayout?: TranscriptTitleLayout;
 	private imageComponents: Image[] = [];
 	private imageSpacers: Spacer[] = [];
 	private toolName: string;
@@ -183,35 +179,31 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private getRenderContext(lastComponent: Component | undefined): ToolRenderContext {
-		this.transcriptLayout ??= {};
-		return transcriptRenderContext(
-			{
-				args: this.args,
-				toolCallId: this.toolCallId,
-				invalidate: () => {
-					if (this.disposed) return;
-					this.invalidate();
-					this.ui.requestRender();
-				},
-				lastComponent,
-				state: this.rendererState,
-				cwd: this.cwd,
-				executionStarted: this.executionStarted,
-				argsComplete: this.argsComplete,
-				isPartial: this.isPartial,
-				expanded: this.expanded,
-				showImages: this.showImages,
-				isError: this.result?.isError ?? false,
-				durationMs: this.isPartial ? undefined : (this.result?.durationMs ?? this.elapsedMs),
-				outputPad: this.outputPad,
-				getTaskRecord: this.taskRecordReader,
-				getElapsedMs: () => this.currentElapsedMs(),
-				getToolDefinition: this.toolRendererReader,
-				keyText,
-				keyHint,
+		return {
+			args: this.args,
+			toolCallId: this.toolCallId,
+			invalidate: () => {
+				if (this.disposed) return;
+				this.invalidate();
+				this.ui.requestRender();
 			},
-			this.transcriptLayout,
-		);
+			lastComponent,
+			state: this.rendererState,
+			cwd: this.cwd,
+			executionStarted: this.executionStarted,
+			argsComplete: this.argsComplete,
+			isPartial: this.isPartial,
+			expanded: this.expanded,
+			showImages: this.showImages,
+			isError: this.result?.isError ?? false,
+			durationMs: this.isPartial ? undefined : (this.result?.durationMs ?? this.elapsedMs),
+			outputPad: this.outputPad,
+			getTaskRecord: this.taskRecordReader,
+			getElapsedMs: () => this.currentElapsedMs(),
+			getToolDefinition: this.toolRendererReader,
+			keyText,
+			keyHint,
+		};
 	}
 
 	private createCallFallback(): Component {
@@ -370,14 +362,7 @@ export class ToolExecutionComponent extends Container {
 		this.clearRendererStateTimer(SUBAGENT_RESULT_ANIMATION_TIMER_KEY, SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY);
 		this.clearRendererStateTimer("interval");
 		this.rendererState = {};
-		if (this.transcriptLayout) {
-			this.transcriptLayout.title = undefined;
-			this.transcriptLayout.mounted = undefined;
-			this.transcriptLayout.cache = undefined;
-		}
-		// Drop the last drawn child as well as today's children: Container keeps the former for mouse hit testing.
-		this.contentContainer?.clear();
-		this.contentContainer = undefined;
+		this.contentContainer.clear();
 		this.imageComponents = [];
 		this.imageSpacers = [];
 		this.renderedImageSpecs = [];
@@ -387,7 +372,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		if (!this.contentContainer || this.disposed) return [];
+		if (this.disposed) return [];
 		if (this.argsPending) this.updateDisplay();
 		this.syncWorkingClock();
 		if (this.hideComponent || width < 1 || (!this.expanded && this.groupRole.kind === "hidden")) return [];
@@ -498,7 +483,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		if (!this.contentContainer || this.disposed) return;
+		if (this.disposed) return;
 		this.argsPending = false;
 		this.hideComponent = false;
 		this.contentContainer.clear();
@@ -533,12 +518,6 @@ export class ToolExecutionComponent extends Container {
 				call = new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0);
 			}
 		} else call = this.createCallFallback();
-		// A decorating renderer may delegate to the stock call and then replace its component entirely.
-		const titleRows = this.transcriptLayout?.title === call;
-		if (this.transcriptLayout) {
-			this.transcriptLayout.mounted = undefined;
-			if (!titleRows) this.transcriptLayout.title = undefined;
-		}
 		let details: Component | undefined;
 		if (canonicalResult && presentation) {
 			details = presentation.details;
@@ -606,7 +585,6 @@ export class ToolExecutionComponent extends Container {
 				});
 			}
 		} else {
-			if (titleRows && this.transcriptLayout) this.transcriptLayout.mounted = call;
 			this.contentContainer.addChild({
 				invalidate() {
 					call.invalidate();
@@ -619,15 +597,14 @@ export class ToolExecutionComponent extends Container {
 								? [...(this.blockMetadata() ?? []), ...staticMeta]
 								: presentation.meta
 							: this.blockMetadata();
-					const spec = {
+					return new ToolBlock({
 						status: canonicalResult ? (presentation?.status ?? this.blockStatus()) : this.blockStatus(),
 						title: canonicalCall && presentation ? presentation.title : call,
 						args: canonicalCall ? presentation?.args : undefined,
 						meta,
 						details: connectedDetails,
 						outputPad: this.outputPad,
-					};
-					return titleRows ? renderToolBlockTitleRows(spec, call, width) : new ToolBlock(spec).render(width);
+					}).render(width);
 				},
 			});
 		}

@@ -3,9 +3,10 @@ import { runInNewContext } from "node:vm";
 import { parseHTML } from "linkedom";
 
 /** Open a standalone page, including its initial navigation to the selected branch. */
-export function openExportedPage(file: string, search = "") {
+export function openExportedPage(file: string, search = "", withoutArrayAt = false) {
 	const { window, document } = parseHTML(readFileSync(file, "utf8"));
 	Object.assign(window.HTMLElement.prototype, { scrollIntoView: () => undefined });
+	Object.defineProperty(window, "getSelection", { configurable: true, value: () => ({ toString: () => "" }) });
 	const location = { search, hash: "" };
 	Object.defineProperty(window, "location", { configurable: true, value: location });
 	const context = {
@@ -27,6 +28,9 @@ export function openExportedPage(file: string, search = "") {
 		setTimeout: () => 0,
 		clearTimeout: () => undefined,
 	};
+	// The standalone viewer must also open in browsers predating the newer array search helpers.
+	runInNewContext("delete Array.prototype.findLast; delete Array.prototype.findLastIndex", context);
+	if (withoutArrayAt) runInNewContext("delete Array.prototype.at", context);
 	for (const script of document.querySelectorAll("script")) {
 		if (script.getAttribute("type") !== "application/json") runInNewContext(script.textContent ?? "", context);
 	}
