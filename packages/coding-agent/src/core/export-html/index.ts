@@ -10,6 +10,7 @@ import type { ToolDefinition } from "../extensions/types.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import { SessionManager } from "../session-manager.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
+import { type SavedAgentCard, savedAgentCards } from "./saved-agent-cards.js";
 
 /**
  * Interface for rendering custom tools to HTML.
@@ -143,7 +144,7 @@ interface SessionData {
 /**
  * Core HTML generation logic shared by both export functions.
  */
-async function generateHtml(sessionData: SessionData, themeName?: string): Promise<string> {
+async function generateHtml(sessionData: SessionData, themeName?: string, cards?: SavedAgentCard[]): Promise<string> {
 	const templateDir = await getExportTemplateDirAsync();
 	const [template, templateCss, templateJs, markedJs, markedCjkFriendlyJs, hljsJs] = await Promise.all(
 		[
@@ -164,8 +165,32 @@ async function generateHtml(sessionData: SessionData, themeName?: string): Promi
 	const containerBg = themeExport.cardBg ?? derivedExportColors.cardBg;
 	const infoBg = themeExport.infoBg ?? derivedExportColors.infoBg;
 
+	// Keep the ordinary viewer asset verbatim. Only a file containing a proven card needs the
+	// alternate row painter. Older/custom template installations keep their ordinary export.
+	let viewer = templateJs;
+	let payload: SessionData & { savedAgentCards?: SavedAgentCard[] } = sessionData;
+	const toolRow = /function renderToolCall\(call\) \{\r?\n +const result = findToolResult\(call\.id\);/;
+	const startRows = "        const fragment = document.createDocumentFragment();";
+	const paintedRows = "        messagesEl.appendChild(fragment);";
+	const initialRender = "      // Initial render";
+	if (
+		cards &&
+		toolRow.test(viewer) &&
+		[startRows, paintedRows, initialRender].every((slot) => viewer.includes(slot))
+	) {
+		const cardViewer = await readFile(join(templateDir, "saved-agent-viewer.js"), "utf8").catch(() => undefined);
+		if (cardViewer) {
+			viewer = viewer
+				.replace(toolRow, "function renderToolCall(call, result = findToolResult(call.id)) {")
+				.replace(startRows, () => `${startRows}\n        acceptedCards = null;`)
+				.replace(paintedRows, () => `${paintedRows}\n        paintSavedAgentCards();`)
+				.replace(initialRender, () => `${cardViewer}\n${initialRender}`);
+			payload = { ...sessionData, savedAgentCards: cards };
+		}
+	}
+
 	// Base64 encode session data to avoid escaping issues
-	const sessionDataBase64 = Buffer.from(JSON.stringify(sessionData)).toString("base64");
+	const sessionDataBase64 = Buffer.from(JSON.stringify(payload)).toString("base64");
 
 	// Build the CSS with theme variables injected
 	const css = templateCss
@@ -176,7 +201,7 @@ async function generateHtml(sessionData: SessionData, themeName?: string): Promi
 
 	return template
 		.replace("{{CSS}}", () => css)
-		.replace("{{JS}}", () => templateJs)
+		.replace("{{JS}}", () => viewer)
 		.replace("{{SESSION_DATA}}", () => sessionDataBase64)
 		.replace("{{MARKED_JS}}", () => markedJs)
 		.replace("{{MARKED_CJK_FRIENDLY_JS}}", () => markedCjkFriendlyJs)
@@ -309,7 +334,6 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	}
 
 	const sm = await SessionManager.open(resolvedInputPath);
-
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
 		entries: sm.getEntries(),
@@ -318,7 +342,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		tools: undefined,
 	};
 
-	const html = await generateHtml(sessionData, opts.themeName);
+	const html = await generateHtml(sessionData, opts.themeName, savedAgentCards(sm, sessionData.entries));
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
