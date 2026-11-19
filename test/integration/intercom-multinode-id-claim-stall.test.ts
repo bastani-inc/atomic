@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
+import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
 	TwoBrokerHarness,
 	type TwoBrokerHarnessOptions,
 	twoBrokerHarnessStartTimeoutMs,
 } from "../helpers/intercom-two-broker-harness.js";
+import { IntercomWireProxy } from "../helpers/intercom-wire-proxy.js";
 
 /**
  * #5607: with multi-node routing, a session that registers again asks for its Intercom id back, and its broker waits a
@@ -14,7 +18,7 @@ import {
  * but not delay a fresh id when there is no confirmation and the client's registration deadline is running.
  */
 
-const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { nodes: ["a"], stallableIdClaims: true, parkableRegistrations: true };
+const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { stallableIdClaims: true, parkableRegistrations: true };
 /** Spawning a real broker process is the structural cost of this suite. */
 const REAL_BROKERS_HOOK_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs(HARNESS_OPTIONS);
 /**
@@ -82,6 +86,59 @@ test(
 		} finally {
 			harness.releaseRegistration();
 		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+async function reconnectWithSlowFreshBinding(socketPath?: string) {
+	const original = await harness.connect("a", unique("returning"));
+	const preferredSessionId = original.sessionId;
+	await original.client.disconnect({ resumable: true });
+	original.disconnected = true;
+	harness.stallIdClaim(original.returnAddress, 2_800, 3_200, 3_050);
+	const back = await harness.connect("a", original.name, {
+		returnAddress: original.returnAddress,
+		preferredSessionId,
+		connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+		socketPath,
+	});
+	assert.ok(harness.idClaimStalled(original.returnAddress));
+	assert.notEqual(back.sessionId, preferredSessionId);
+	return back;
+}
+
+test(
+	"a late-accepted registration gets its fresh id before the client deadline when the store responds during a second broker stall (#5607)",
+	async () => {
+		const socketPath = getBrokerSocketPath(process.platform, join(harness.root, "front"));
+		const proxy = new IntercomWireProxy(socketPath, harness.socketPath("a"));
+		await proxy.listen();
+		try {
+			proxy.hold(() => true);
+			await Promise.all([
+				reconnectWithSlowFreshBinding(socketPath),
+				(async () => {
+					await vi.waitFor(() => assert.equal(proxy.heldConnections(), 1), { interval: 10, timeout: 15_000 });
+					await delay(2_600);
+					proxy.release();
+				})(),
+			]);
+		} finally {
+			await proxy.close();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a peer can send to the acknowledged fresh id immediately when the store responds during a second broker stall (#5607)",
+	async () => {
+		const peer = await harness.connect("b", unique("peer"));
+		const back = await reconnectWithSlowFreshBinding();
+		const listed = await peer.client.listSessions();
+		const sent = await peer.client.send(back.sessionId, { text: "at registration" });
+		assert.equal(sent.delivered, true, sent.reason);
+		assert.ok(listed.some((session) => session.id === back.sessionId));
 	},
 	TEST_TIMEOUT_MS,
 );

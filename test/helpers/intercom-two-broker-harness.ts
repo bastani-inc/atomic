@@ -65,6 +65,8 @@ export interface ReceivedFrame {
 }
 
 export interface TwoBrokerConnectOptions {
+	/** Connect through a socket proxy instead of directly to the broker. */
+	readonly socketPath?: string;
 	readonly group?: string;
 	/** Reuse a disconnected client's address to reconnect as the same recipient. */
 	readonly returnAddress?: string;
@@ -379,12 +381,18 @@ export class TwoBrokerHarness {
 	/**
 	 * #5607: the next claim of an id back for `returnAddress` (`stallableIdClaims`) gets no answer from the shared database,
 	 * and the broker making it does not run for `stallMs` right after it asked. Optionally a second due callback
-	 * occupies the broker for `overdueCallbackMs` before it can poll for I/O.
+	 * occupies the broker for `overdueCallbackMs` before it can poll for I/O. The next binding request can take
+	 * `freshBindingDelayMs` from when the broker issues it.
 	 */
-	stallIdClaim(returnAddress: string, stallMs: number, overdueCallbackMs?: number): void {
+	stallIdClaim(
+		returnAddress: string,
+		stallMs: number,
+		overdueCallbackMs?: number,
+		freshBindingDelayMs?: number,
+	): void {
 		writeFileSync(
 			join(this.root, ID_CLAIM_STALL_GATE),
-			JSON.stringify({ returnAddress, stallMs, overdueCallbackMs }),
+			JSON.stringify({ returnAddress, stallMs, overdueCallbackMs, freshBindingDelayMs }),
 		);
 	}
 
@@ -547,7 +555,7 @@ export class TwoBrokerHarness {
 		const group = options.group ?? "default";
 		const returnAddress = options.returnAddress ?? randomUUID();
 		const client = new IntercomClient(returnAddress, {
-			brokerSocketPath: getBrokerSocketPath(process.platform, state.fixture.agentDir),
+			brokerSocketPath: options.socketPath ?? getBrokerSocketPath(process.platform, state.fixture.agentDir),
 			...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
 			acknowledgesReceipt: true,
 			connectTimeoutMs: options.connectTimeoutMs ?? CLIENT_REGISTRATION_TIMEOUT_MS,

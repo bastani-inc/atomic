@@ -35,6 +35,7 @@ import {
 	holdsSessionId,
 	KNOWN_SESSION_RETENTION_MS,
 	type KnownSession,
+	type KnownSessionBindResult,
 	type KnownSessionState,
 	type Lease,
 	type LeaseState,
@@ -364,6 +365,13 @@ interface TrackedHold {
 	readonly timer: ReturnType<typeof setTimeout>;
 }
 
+/** Binding a fresh id does not publish a known session or take its presence lease. */
+export interface FreshIdFallback {
+	readonly id: string;
+	readonly binding: Promise<KnownSessionBindResult>;
+	readonly startedAt: number;
+}
+
 interface PresenceEntry {
 	lease?: Lease;
 	/** `Date.now()` when this broker last wrote the session's known-session record. */
@@ -639,14 +647,14 @@ export class MultiNodeRouter {
 	/**
 	 * Whether a registration with `returnAddress` may take the Intercom id `sessionId`, binding the id to it when free.
 	 * In multi-node mode an id carries authority (shared ask routes and known sessions name sessions by id), so only the
-	 * session that registered it gets it back. If the deadline fired, its timestamp starts the presence wait.
+	 * session that registered it gets it back. At the deadline, start binding the fallback id while polling for a ready answer.
 	 */
 	async claimSessionId(
 		sessionId: string,
 		returnAddress: string,
-	): Promise<{ claimed: boolean; presenceWaitStartedAt: number | undefined }> {
-		let presenceWaitStartedAt: number | undefined;
-		if (this.closed) return { claimed: false, presenceWaitStartedAt };
+	): Promise<{ claimed: boolean; fallback?: FreshIdFallback }> {
+		if (this.closed) return { claimed: false };
+		let fallback: FreshIdFallback | undefined;
 		let claimed = false;
 		let deadline: ReturnType<typeof setTimeout> | undefined;
 		let afterPoll: ReturnType<typeof setImmediate> | undefined;
@@ -657,8 +665,14 @@ export class MultiNodeRouter {
 					.then((result) => result.status === "bound"),
 				new Promise<boolean>((resolve) => {
 					deadline = setTimeout(() => {
-						// Waiting for this poll uses the presence budget, even if another overdue callback stalls the broker.
-						presenceWaitStartedAt = performance.now();
+						if (!this.closed) {
+							const startedAt = performance.now();
+							const id = randomUUID();
+							const binding = this.state.knownSessions.bind(id, returnAddress, KNOWN_SESSION_RETENTION_MS);
+							// The preferred id may still win the poll, or the socket may close without using this binding.
+							void binding.catch(() => {});
+							fallback = { id, binding, startedAt };
+						}
 						afterPoll = setImmediate(() => resolve(false));
 						afterPoll.unref?.();
 					}, SESSION_ID_CLAIM_BOUND_MS);
@@ -671,7 +685,7 @@ export class MultiNodeRouter {
 			clearTimeout(deadline);
 			if (afterPoll !== undefined) clearImmediate(afterPoll);
 		}
-		return { claimed, presenceWaitStartedAt };
+		return { claimed, fallback };
 	}
 
 	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
@@ -686,7 +700,7 @@ export class MultiNodeRouter {
 	sessionRegistered(
 		session: BrokerConnectedSession,
 		consumed?: ConsumedReservation,
-		presenceWaitStartedAt?: number,
+		fallback?: FreshIdFallback,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = {};
@@ -696,20 +710,18 @@ export class MultiNodeRouter {
 		const insertedBy = consumed?.childName === undefined ? undefined : this.state.reservations.insertionMark();
 		insertedBy?.catch(() => {});
 		return new Promise<void>((resolve) => {
-			const remaining = presenceWaitStartedAt === undefined
+			const remaining = fallback === undefined
 				? PRESENCE_REGISTRATION_BOUND_MS
-				: presenceWaitStartedAt + PRESENCE_REGISTRATION_BOUND_MS - performance.now();
+				: fallback.startedAt + PRESENCE_REGISTRATION_BOUND_MS - performance.now();
 			const bound = remaining > 0 ? setTimeout(resolve, remaining) : undefined;
 			if (bound === undefined) resolve();
 			else bound.unref?.();
 			this.serial(identity, async () => {
 				try {
 					// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
-					const binding = await this.state.knownSessions.bind(
-						session.info.id,
-						session.registrationReturnAddress ?? "",
-						KNOWN_SESSION_RETENTION_MS,
-					);
+					const binding = await (fallback?.id === session.info.id
+						? fallback.binding
+						: this.state.knownSessions.bind(session.info.id, session.registrationReturnAddress ?? "", KNOWN_SESSION_RETENTION_MS));
 					if (binding.status === "refused") {
 						entry.unbound = true;
 						return;

@@ -143,13 +143,19 @@ function withPresenceReadGate(database: SqliteDatabase, gate: string): SqliteDat
 
 /**
  * #5607: the broker stalls while it claims an id back for the return address named in the file at `gate` (JSON
- * `{ returnAddress, stallMs, overdueCallbackMs? }`). The shared database binds the id but its answer never reaches
+ * `{ returnAddress, stallMs, overdueCallbackMs?, freshBindingDelayMs? }`). The database binds the id but its answer never reaches
  * the broker. After it asks, its event loop does not run for `stallMs`, as on a host that stops scheduling it. Once: the
  * file is removed as it fires, and `<gate>.stalled` names the address.
  */
 function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabase {
+	let nextBindingDelayMs: number | undefined;
 	const stallIfNamed = async <T>(returnAddress: SqliteValue | undefined, answer: T): Promise<T> => {
-		let named: { readonly returnAddress?: unknown; readonly stallMs?: unknown; readonly overdueCallbackMs?: unknown } = {};
+		let named: {
+			readonly returnAddress?: unknown;
+			readonly stallMs?: unknown;
+			readonly overdueCallbackMs?: unknown;
+			readonly freshBindingDelayMs?: unknown;
+		} = {};
 		try {
 			named = JSON.parse(readFileSync(gate, "utf8")) as typeof named;
 		} catch {
@@ -162,6 +168,7 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 		writeFileSync(`${gate}.stalled`, `${returnAddress}\n`);
 		const stall = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 		const { stallMs, overdueCallbackMs } = named;
+		if (typeof named.freshBindingDelayMs === "number") nextBindingDelayMs = named.freshBindingDelayMs;
 		if (typeof overdueCallbackMs === "number") {
 			// Both timers come due during the stall: the claim deadline first, then this unrelated callback before poll.
 			setTimeout(() => stall(overdueCallbackMs), stallMs);
@@ -176,6 +183,17 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.get<T>(sql, ...params),
 		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.all<T>(sql, ...params),
 		transaction: async (callback, options) => {
+			const concurrency = options?.concurrency;
+			if (
+				nextBindingDelayMs !== undefined &&
+				concurrency?.kind === "serial" &&
+				concurrency.domain?.endsWith("intercom_session_bindings")
+			) {
+				// Store service starts at request issue and need not stop just because the broker later stalls.
+				const delay = nextBindingDelayMs;
+				nextBindingDelayMs = undefined;
+				await new Promise<void>((resolve) => setTimeout(resolve, delay));
+			}
 			let returnAddress: SqliteValue | undefined;
 			const answer = await database.transaction(
 				(tx) =>

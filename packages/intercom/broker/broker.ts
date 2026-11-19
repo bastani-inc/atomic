@@ -90,6 +90,7 @@ import {
 import { type ReturnPathParty, type ReturnPathSender, ReturnPaths } from "./return-paths.js";
 import {
   type BrokerStateOpener,
+  type FreshIdFallback,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
   MultiNodeRouter,
   readSharedStorageSetting,
@@ -2105,7 +2106,7 @@ class IntercomBroker {
     id: string,
     supervisorId: string | undefined,
     setId: (id: string | null) => void,
-    presenceWaitStartedAt?: number,
+    fallback?: FreshIdFallback,
   ): void {
         setId(id);
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -2258,7 +2259,7 @@ class IntercomBroker {
                       groups: sessionGroups(info),
                       ...(supervisorId ? { authorizedBy: supervisorId } : {}),
                     },
-                presenceWaitStartedAt,
+                fallback,
               );
         if (presence === undefined) completeRegistration();
         else {
@@ -2423,7 +2424,7 @@ class IntercomBroker {
           this.claimingSessionIds.add(socket);
           void multiNode
             .claimSessionId(preferred, returnAddress)
-            .then(({ claimed, presenceWaitStartedAt }) => {
+            .then(({ claimed, fallback }) => {
               this.claimingSessionIds.delete(socket);
               if (socket.destroyed || socket.writableEnded) return;
               if (this.shuttingDown) {
@@ -2434,10 +2435,10 @@ class IntercomBroker {
               this.completeSessionRegistration(
                 socket,
                 registration,
-                claimed && !this.sessions.has(preferred) ? preferred : randomUUID(),
+                claimed && !this.sessions.has(preferred) ? preferred : fallback?.id ?? randomUUID(),
                 supervisorId,
                 setId,
-                presenceWaitStartedAt,
+                fallback,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
