@@ -250,8 +250,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			call.startup = startup;
 			if (sessionCloseReason(call.session) === undefined) startup.open = new WeakRef(call.session);
 		}
+		const sessionStartup = this.sessionStartup;
 		await eventStartupScope.run(startup, () => this.init());
-		if (this.initialStartupCancelled) return;
+		if (sessionStartup?.cancelled || this.sessionStartup?.cancelled) return;
 	}
 
 	this.footer.invalidate();

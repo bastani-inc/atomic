@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ExtensionBindings } from "./agent-session-types.ts";
+import type { ExtensionBindings } from "./agent-session-types.js";
 
 /** One eager interactive start. Independent SDK binds (even on this session) have no claim on its outcome. */
 export interface InitialBind {

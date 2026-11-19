@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- `InteractiveMode.init()` and `run()` now resolve instead of rejecting with `SessionClosed` when the session closes during its initial extension bind. An event that was starting the UI, including a replayed provider retry, no longer leaves an unhandled rejection. If your host used that rejection to detect closure, track the session you close instead. A direct `session.bindExtensions()` call still rejects ([#5697](https://github.com/bastani-inc/atomic/issues/5697), [#5804](https://github.com/bastani-inc/atomic/issues/5804)).
+- `InteractiveMode.init()` and `run()` now resolve instead of rejecting with `SessionClosed` if you quit the host or dispose the session during its initial extension bind. An event that was starting the UI, including a replayed provider retry, no longer leaves an unhandled rejection on quit or disposal. Replacing the session during that bind still rejects, as does a direct `session.bindExtensions()` call. Track your own shutdown request rather than catching `SessionClosed` to detect it. If you dispose only the session, you can run the same mode again after creating a replacement ([#5697](https://github.com/bastani-inc/atomic/issues/5697), [#5804](https://github.com/bastani-inc/atomic/issues/5804)).
 
 ## [0.9.90] - 2026-11-19
 

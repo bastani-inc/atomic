@@ -997,7 +997,9 @@ const mode = new InteractiveMode(runtime, {
 await mode.run();
 ```
 
-If you close the session while its initial interactive extension bind is in progress, `await mode.init()` or `await mode.run()` returns normally. The closed session does not enter the input loop. This also applies when an incoming event or a pending provider retry started the UI. Do not rely on catching `SessionClosed` from interactive startup to detect a close your host requested; use your host's shutdown path instead. A direct `session.bindExtensions()` or `mode.handleEvent(event)` call remains strict. Custom event handlers can still catch startup failures and report errors from their own recovery work.
+If you quit the host or call `session.dispose()` during the initial interactive extension bind, `await mode.init()` or `await mode.run()` returns normally. The disposed session does not enter the input loop. This also applies when an incoming event or a pending provider retry started the UI. Track your own shutdown request instead of catching `SessionClosed` to detect it.
+
+Replacing the session during the initial bind is not a quit: the interrupted startup still rejects. If you dispose only the session and then create a replacement with `await runtime.newSession()`, call `mode.run()` again to accept input for the replacement. Direct `session.bindExtensions()` and `mode.handleEvent(event)` calls still reject on close, so custom handlers can catch startup failures and report errors from their recovery work.
 
 ### runPrintMode
 

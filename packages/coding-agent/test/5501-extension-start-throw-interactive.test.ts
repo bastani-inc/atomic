@@ -426,6 +426,74 @@ test.each(["before run", "during session_start", "before a later runtime quit"] 
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
+test.each(["after", "before"] as const)(
+	"a later run accepts editor input when the replacement binds %s the cancelled startup returns (#5697)",
+	async (timing) => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode, faux } = await createMode((pi) =>
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			}),
+		);
+		const returning = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		if (timing === "before") {
+			// An SDK host can finish its own cleanup after the cancelled bind has returned.
+			const rebind = mode.rebindCurrentSession.bind(mode);
+			vi.spyOn(mode, "rebindCurrentSession").mockImplementationOnce(async () => {
+				await rebind();
+				returning.resolve();
+				await finish.promise;
+			});
+		}
+		const readInput = mode.getUserInput.bind(mode);
+		const endOfInput = new Error("end of test input");
+		const input = vi.spyOn(mode, "getUserInput").mockRejectedValue(endOfInput);
+		try {
+			const first = mode.run();
+			await Promise.race([entered.promise, first]);
+			const closed = mode.session.dispose();
+			release.resolve();
+			await closed;
+			if (timing === "after") {
+				await first;
+				await mode.run();
+			} else {
+				await Promise.race([returning.promise, first]);
+			}
+			assert.equal((await mode.runtimeHost.newSession()).cancelled, false);
+			finish.resolve();
+			await first;
+			assert.equal(input.mock.calls.length, 0, "the cancelled session must not prompt");
+			faux.setResponses([fauxAssistantMessage("replacement received the submission")]);
+			const ready = Promise.withResolvers<void>();
+			input.mockImplementationOnce(() => {
+				const submission = readInput();
+				ready.resolve();
+				return submission;
+			});
+			const later = mode.run();
+			assert.equal(
+				await Promise.race([ready.promise.then(() => true), later.then(() => false)]),
+				true,
+				"the replacement must enter the input loop",
+			);
+			await mode.defaultEditor.onSubmit?.("hello replacement");
+			await assert.rejects(later, (error) => error === endOfInput);
+			const last = mode.session.messages.at(-1);
+			assert.deepEqual(last?.role === "assistant" ? last.content : undefined, [
+				{ type: "text", text: "replacement received the submission" },
+			]);
+		} finally {
+			finish.resolve();
+			release.resolve();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
 test(
 	"interactive startup returns the loader's original error after rollback revokes its proxy (#5697)",
 	async () => {

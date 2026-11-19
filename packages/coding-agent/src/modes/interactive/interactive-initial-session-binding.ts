@@ -14,6 +14,7 @@ export const eventStartupScope = new AsyncLocalStorage<EventStartup>();
 export async function bindInitialEagerSession(mode: InteractiveModeBase): Promise<void> {
 	try {
 		mode.initialStartupBinding = true;
+		const startup = mode.sessionStartup;
 		const delivery = eventStartupScope.getStore();
 		const event = delivery?.mode.deref() === mode ? delivery : undefined;
 		const bind: InitialBind = { mode, active: !event?.strict, deliveredWhileOpen: event?.open?.deref() };
@@ -24,7 +25,7 @@ export async function bindInitialEagerSession(mode: InteractiveModeBase): Promis
 			mode.initialStartupBinding = false;
 		}
 		if (bind.cancelled) {
-			mode.initialStartupCancelled = true;
+			startup.cancelled = true;
 			return;
 		}
 		mode.showLoadedResources({
