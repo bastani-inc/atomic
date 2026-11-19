@@ -128,7 +128,7 @@ export class WorkflowStageAdmissionBoundary {
 		this.taskHost ??= outsideAnySession(() => new AgentTaskHost({ ...binding, scope }));
 		if (this.parked) this.taskHost.reportSettledTasks();
 		this.parked = false;
-		this.taskHost.updateBinding({ authorizeCommandLaunch: undefined, ...binding });
+		this.taskHost.updateBinding({ authorizeCommandLaunch: undefined, authorizeToolLaunch: undefined, ...binding });
 		return this.taskHost;
 	}
 	hasAgentTaskHost(): boolean {
@@ -172,6 +172,10 @@ export class WorkflowStageAdmissionBoundary {
 			// The stage's live workers keep running their shells in its owner while it is released (#4639).
 			authorizeCommandLaunch: (_intent, origin) => {
 				if (origin !== "subagent-child") refuseParkedLaunch();
+			},
+			// So do their background searches; the stage's own session launches none while it is released.
+			authorizeToolLaunch: (intent) => {
+				if (intent.launchedBy === undefined) refuseParkedLaunch();
 			},
 			onTaskSettled: (ref, settled, timing) => {
 				host.retainTaskRecord(settled.taskId);

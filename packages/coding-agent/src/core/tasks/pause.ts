@@ -1,6 +1,7 @@
 import type { AgentTaskHost } from "./agent-adapter.js";
 import { TaskCleanupError } from "./cleanup-error.js";
 import type { CancelCause, OwnerSnapshot, TaskId, TaskRecord } from "./contracts.js";
+import { isShellLikeTask } from "./task-kind.js";
 
 /**
  * The caller synchronously blocks new launches; this never closes the owner or its messages. Agents are stopped
@@ -38,7 +39,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 		await supervisor.drainCommandAdmissions(owner);
 		watch.drain();
 		await cancel(
-			watch.snapshot.tasks.filter((task) => task.kind === "command" && task.execution.kind !== "settled"),
+			watch.snapshot.tasks.filter((task) => isShellLikeTask(task.kind) && task.execution.kind !== "settled"),
 			"pause",
 		);
 		if (errors.length) throw new AggregateError(errors, "Workflow stage task cancellation failed");

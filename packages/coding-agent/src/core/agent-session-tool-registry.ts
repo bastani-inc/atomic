@@ -327,6 +327,7 @@ export function _buildRuntime(
 					search: {
 						contextBefore: this.settingsManager.getSearchContextBefore(),
 						contextAfter: this.settingsManager.getSearchContextAfter(),
+						taskOwner: getTaskOwner,
 					},
 				},
 				options.powerShellAvailable,

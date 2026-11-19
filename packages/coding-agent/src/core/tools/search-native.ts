@@ -1,6 +1,7 @@
 import { createModuleRequire } from "../../utils/module-require.js";
 
 type NativeBinding = {
+	TaskSupervisor?: typeof import("@bastani/atomic-natives").TaskSupervisor;
 	glob: (options: NativeGlobOptions) => Promise<NativeGlobResult>;
 	grep: (options: NativeGrepOptions) => Promise<NativeGrepResult>;
 	search?: (content: string | Uint8Array, options: NativeTextSearchOptions) => NativeTextSearchResult;

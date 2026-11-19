@@ -199,7 +199,7 @@ export interface AgentIntent {
 /** The only statuses emitted by a child status watch. */
 export type AgentStatus = 'pending' | 'running' | 'ok' | 'error' | 'interrupted' | 'continued'
 
-export type AgentTaskKind = 'agent'
+export type AgentTaskKind = 'agent' | 'tool'
 
 export type Attention =
   | { kind: 'none' }

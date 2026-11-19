@@ -93,6 +93,7 @@ export type InteractiveEngineMessage =
 			agents?: number;
 			needsInput: number;
 			shells?: number;
+			searches?: number;
 			subagents?: number;
 			hiddenWorkflow?: boolean;
 	  }
@@ -636,6 +637,8 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				value.needsInput <= value.total &&
 				(value.shells === undefined ||
 					(typeof value.shells === "number" && Number.isSafeInteger(value.shells) && value.shells >= 0)) &&
+				(value.searches === undefined ||
+					(typeof value.searches === "number" && Number.isSafeInteger(value.searches) && value.searches >= 0)) &&
 				(value.subagents === undefined ||
 					(typeof value.subagents === "number" &&
 						Number.isSafeInteger(value.subagents) &&
@@ -652,6 +655,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						...(value.agents === undefined ? {} : { agents: value.agents }),
 						needsInput: value.needsInput,
 						...(value.shells === undefined ? {} : { shells: value.shells }),
+						...(value.searches === undefined ? {} : { searches: value.searches }),
 						...(value.subagents === undefined ? {} : { subagents: value.subagents }),
 						...(value.hiddenWorkflow === undefined ? {} : { hiddenWorkflow: value.hiddenWorkflow }),
 					}

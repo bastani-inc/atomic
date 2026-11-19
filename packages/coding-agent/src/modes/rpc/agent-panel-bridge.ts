@@ -61,13 +61,15 @@ export interface AgentPanelCounts {
 	readonly needsInput: number;
 	/** Running background shells: counted in the hint line, listed in /tasks rather than the panel. */
 	readonly shells?: number;
+	/** Running background searches: counted in the hint line with their own noun, listed in /tasks. */
+	readonly searches?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not: the hint points there once the panel lists none. */
 	readonly subagents?: number;
 	/** A paused or blocked run left the panel and can still be found in /workflows. */
 	readonly hiddenWorkflow?: boolean;
 }
 
-const EMPTY_PANEL_COUNTS: AgentPanelCounts = { ...NO_PANEL_ROWS, shells: 0, subagents: 0 };
+const EMPTY_PANEL_COUNTS: AgentPanelCounts = { ...NO_PANEL_ROWS, shells: 0, searches: 0, subagents: 0 };
 
 type PanelRankCache = PanelRanking & {
 	readonly store: OwnerTaskStore | undefined;
@@ -268,11 +270,12 @@ function rankPanelSession(
 	if (!active) {
 		for (const task of tasks) {
 			if (task.parentTaskId !== undefined || (superseded.size > 0 && superseded.has(task.ref.taskId))) continue;
-			// Background work that is not a row (a shell) is active while it runs.
+			// A running shell keeps resting rows listed; a search does not.
+			const role = taskPanelRole(task);
 			if (
-				taskPanelRole(task) === "agent"
+				role === "agent"
 					? isActivePanelRow({ state: taskPanelState(task) })
-					: task.execution.kind !== "settled"
+					: role === "shell" && task.execution.kind !== "settled"
 			) {
 				active = true;
 				break;
@@ -287,6 +290,7 @@ function rankPanelSession(
 	const finishedRows: AgentPanelRow[] = [];
 	let counts = NO_PANEL_ROWS;
 	let shells = 0;
+	let searches = 0;
 	let subagents = 0;
 	let hiddenWorkflow = false;
 	const room = () => inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap;
@@ -343,10 +347,13 @@ function rankPanelSession(
 			const task = tasks[i]!;
 			if (superseded.size > 0 && superseded.has(task.ref.taskId)) continue;
 			if (task.parentTaskId !== undefined) continue;
-			// Only subagents are rows. A shell is counted on the hint line and listed in /tasks.
+			// Only subagents are rows. A shell or a search is counted on the hint line and listed in /tasks.
 			const role = taskPanelRole(task);
 			if (role !== "agent") {
-				if (role === "shell" && task.execution.kind !== "settled") shells++;
+				if (task.execution.kind !== "settled") {
+					if (role === "shell") shells++;
+					else searches++;
+				}
 				continue;
 			}
 			subagents++;
@@ -374,7 +381,7 @@ function rankPanelSession(
 		if (item.kind !== "workflow") pushItem(item, false);
 	}
 
-	const panelCounts = { ...counts, shells, subagents, ...(hiddenWorkflow ? { hiddenWorkflow } : {}) };
+	const panelCounts = { ...counts, shells, searches, subagents, ...(hiddenWorkflow ? { hiddenWorkflow } : {}) };
 	// The main row leads the panel whenever it lists a subagent.
 	const main = counts.agents > 0;
 	state.model.endPass(pass);
@@ -526,6 +533,7 @@ export function bindAgentPanel(
 			counts.total === lastCounts.total &&
 			counts.needsInput === lastCounts.needsInput &&
 			counts.shells === lastCounts.shells &&
+			counts.searches === lastCounts.searches &&
 			counts.subagents === lastCounts.subagents &&
 			counts.agents === lastCounts.agents &&
 			counts.hiddenWorkflow === lastCounts.hiddenWorkflow

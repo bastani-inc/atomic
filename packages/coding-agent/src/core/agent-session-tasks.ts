@@ -18,13 +18,19 @@ import {
 	type TaskCompletionEnvelope,
 	TaskCompletionOutbox,
 } from "./tasks/completion.js";
-import { type CommandOutputExcerpt, commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
+import {
+	type CommandOutputExcerpt,
+	commandOutputExcerpt,
+	taskCompletionMessage,
+	toolOutputExcerpt,
+} from "./tasks/completion-message.js";
 import type { TaskCompletionSource } from "./tasks/completion-ordering.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
 import { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
 import { loadTaskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
+import { isShellLikeTask } from "./tasks/task-kind.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import { recordParkedStageTasks } from "./workflow-stage-parked-tasks.ts";
@@ -105,7 +111,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
 		// Foreground shell results already return through their tool call. Do not
 		// create a second model turn or background card for that same execution.
-		if (task?.kind === "command" && !task.wasBackground) return undefined;
+		if (isShellLikeTask(task?.kind) && !task?.wasBackground) return undefined;
 		const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
 		const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
 		// A finished child keeps its history in its session store, not in memory (#5186).
@@ -129,6 +135,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 						.join("\n")
 				: undefined;
 		if (task?.kind === "command" && lease?.ok && host) output = await commandOutputExcerpt(host, lease.value, task);
+		if (task?.kind === "tool" && lease?.ok && host) output = await toolOutputExcerpt(host, lease.value);
 		return {
 			envelope,
 			message: taskCompletionMessage(envelope, task, output),
@@ -264,15 +271,16 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			>
 		) => {
 			// Save the task's kind with the intent: a notice replayed after a restart has no task record to read it from.
-			const kind =
-				closingTaskKinds.get(this)?.get(receipt.taskId) ??
-				this._agentTaskHost?.taskRecords(new Set([receipt.taskId]))[0]?.kind;
+			const record = this._agentTaskHost?.taskRecords(new Set([receipt.taskId]))[0];
+			const kind = closingTaskKinds.get(this)?.get(receipt.taskId) ?? record?.kind;
 			this._agentTaskHost?.retainTaskRecord(receipt.taskId);
 			// The intent keeps how long a command ran, for its notice line.
 			outbox.record(
 				ref.ownerId,
 				timing?.elapsedMs === undefined ? receipt : { ...receipt, elapsedMs: timing.elapsedMs },
 				kind,
+				false,
+				record?.toolName,
 			);
 			void outbox.flush();
 		},

@@ -4,7 +4,7 @@
  * line call these, so every path lists the same rows and counts them the same way.
  */
 
-export type PanelRowKind = "agent" | "shell" | "workflow";
+export type PanelRowKind = "agent" | "shell" | "search" | "workflow";
 export type PanelRowState =
 	| "running"
 	| "queued"
@@ -33,7 +33,10 @@ export function isRestingPanelRow(kind: PanelRowKind, state: PanelRowState): boo
 
 /** What decides whether one row is listed, besides its own kind and state. */
 export interface PanelRowContext {
-	/** Something in the panel is active: a row in an active state, or a running background shell. */
+	/**
+	 * Something in the panel is active: a row in an active state, or a running background shell. A background search
+	 * is not: it is a tool call's work, so it does not keep stopped subagents listed.
+	 */
 	readonly active: boolean;
 	/** The row is resting and already left the panel, because nothing was active, and has not run since. */
 	readonly retired: boolean;
@@ -52,7 +55,7 @@ export function panelRowListed(
 	finished: boolean,
 	context: PanelRowContext,
 ): boolean {
-	if (kind === "shell") return false;
+	if (kind === "shell" || kind === "search") return false;
 	if (isRestingPanelRow(kind, state)) return context.active && !context.retired;
 	if (finished) return kind === "workflow" && context.kept;
 	return true;
@@ -105,26 +108,39 @@ export interface PanelHintParts {
 	readonly needsInput: number;
 	/** `N shells`; 0 means no such segment. */
 	readonly shells: number;
-	/** `/tasks to manage` for running shells, or `/tasks to see subagents`, when the panel has nothing to focus. */
+	/** `N searches`; 0 means no such segment. */
+	readonly searches: number;
+	/**
+	 * `/tasks to manage` for running shells or searches, or `/tasks to see subagents`, when the panel has nothing to
+	 * focus.
+	 */
 	readonly tasks: PanelTasksHint;
+}
+
+/** Running background work that is never a row, which the hint line counts and /tasks lists. */
+export interface PanelBackground {
+	readonly shells: number;
+	readonly searches: number;
 }
 
 /**
  * The hint line's background-work parts. `focusBound`: a key focuses the panel. `subagents`: the chat's subagents in
  * /tasks, listed or not. Only subagent rows count as agents; with none there is no ↓ segment, even when workflow runs
- * are listed. A question waiting anywhere in the panel is counted. Without rows to focus, running shells point to
- * /tasks, and otherwise subagents the panel no longer lists do.
+ * are listed. A question waiting anywhere in the panel is counted. Running shells and searches are counted each with
+ * its own noun. Without rows to focus, they point to /tasks, and otherwise subagents the panel no longer lists do.
  */
 export function panelHintParts(
 	counts: PanelRowCounts,
-	shells: number,
+	background: PanelBackground,
 	subagents: number,
 	focusBound: boolean,
 ): PanelHintParts {
 	const focusable = focusBound && counts.total > 0;
+	const shells = Math.max(0, background.shells);
+	const searches = Math.max(0, background.searches);
 	const tasks: PanelTasksHint = focusable
 		? "hidden"
-		: shells > 0
+		: shells > 0 || searches > 0
 			? "manage"
 			: counts.total === 0 && subagents > 0
 				? "subagents"
@@ -132,14 +148,15 @@ export function panelHintParts(
 	return {
 		agents: focusBound ? counts.agents : 0,
 		needsInput: counts.needsInput,
-		shells: shells > 0 ? shells : 0,
+		shells,
+		searches,
 		tasks,
 	};
 }
 
 /** One worded hint segment: `agents` follows the focus key, and `tasks` names the /tasks command. */
 export interface PanelHintSegment {
-	readonly kind: "agents" | "needsInput" | "shells" | "tasks";
+	readonly kind: "agents" | "needsInput" | "shells" | "searches" | "tasks";
 	readonly text: string;
 }
 
@@ -151,6 +168,8 @@ export function panelHintSegments(parts: PanelHintParts, focusKey: string): Pane
 	if (parts.needsInput > 0) segments.push({ kind: "needsInput", text: `${parts.needsInput} needs input` });
 	if (parts.shells > 0)
 		segments.push({ kind: "shells", text: `${parts.shells} ${parts.shells === 1 ? "shell" : "shells"}` });
+	if (parts.searches > 0)
+		segments.push({ kind: "searches", text: `${parts.searches} ${parts.searches === 1 ? "search" : "searches"}` });
 	if (parts.tasks === "manage") segments.push({ kind: "tasks", text: "/tasks to manage" });
 	else if (parts.tasks === "subagents") segments.push({ kind: "tasks", text: "/tasks to see subagents" });
 	return segments;

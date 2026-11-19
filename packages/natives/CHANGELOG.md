@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AgentTaskKind.Tool`: the task supervisor admits a tool call's in-process work as a task of its own kind (`kind: "tool"` on its record), observed, retained and cancelled like an agent task but never given process resources
+
 ### Fixed
 
 - On Windows, `TaskSupervisor` no longer reports a command started with `keepBackgroundOnExit` that ran to completion as failed with `Windows stdin worker stop was not confirmed` when a loaded machine has not yet run its input thread by the end of the cleanup grace. Such a command keeps its background processes, so its job never counts as ended and the earlier fix did not apply. An input thread that is not writing is now confirmed once the supervisor closes the command's input under it, which leaves it nothing to write; one blocked in a write still fails the cleanup ([#5512](https://github.com/bastani-inc/atomic/issues/5512))

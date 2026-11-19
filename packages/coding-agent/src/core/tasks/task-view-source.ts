@@ -32,6 +32,8 @@ export interface TaskOutputView {
 	readonly text: string;
 	/** Some of the requested bytes are no longer retained. */
 	readonly omitted: boolean;
+	/** More output follows the page that was read. */
+	readonly more?: boolean;
 }
 
 /** One page of an agent task's transcript, oldest first. */

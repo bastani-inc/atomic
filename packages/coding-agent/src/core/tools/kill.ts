@@ -3,13 +3,16 @@ import { Type } from "typebox";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { CancelReceipt } from "../tasks/contracts.js";
+import { isShellLikeTask } from "../tasks/task-kind.js";
 import { lookupOwnedTask, type SupervisedCommandOwner } from "./bash-pty-native.js";
 import { formatKillCall, rebuildKillResult } from "./shell-task-render.ts";
 import { cancelReceiptSentence, TaskToolError } from "./shell-task-status.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const killSchema = Type.Object({
-	id: Type.String({ description: "Task ID returned by a background or auto-yielded bash or powershell call" }),
+	id: Type.String({
+		description: "Task ID returned by a background or auto-yielded bash, powershell or search call",
+	}),
 });
 
 export interface KillToolOptions {
@@ -22,10 +25,10 @@ export function createKillToolDefinition(options?: KillToolOptions): ToolDefinit
 		name: "kill",
 		label: "Kill",
 		description:
-			"Stop an owned background bash or PowerShell task by its task ID, not a PID. Does not stop subagents or other owners' tasks. Returns the cancellation decision and current execution/cleanup state; a cancellation request alone does not confirm termination.",
+			"Stop an owned background bash, PowerShell or search task by its task ID, not a PID. Does not stop subagents or other owners' tasks. Returns the cancellation decision and current execution/cleanup state; a cancellation request alone does not confirm termination.",
 		parameters: killSchema,
 		...experimentalToolSamplingProperty(),
-		promptSnippet: "Stop an owned background shell task by task ID",
+		promptSnippet: "Stop an owned background shell or search task by task ID",
 		execute: async (_toolCallId, { id }) => {
 			const binding = options?.taskOwner?.();
 			if (!binding) throw new Error("kill requires a supported task owner");
@@ -35,7 +38,8 @@ export function createKillToolDefinition(options?: KillToolOptions): ToolDefinit
 			if (!watched.ok) throw new TaskToolError(watched.error, id);
 			try {
 				const record = watched.value.snapshot.tasks.find((entry) => entry.ref.taskId === id);
-				if (record?.kind !== "command") throw new Error("kill only supports shell tasks");
+				if (record === undefined || !isShellLikeTask(record.kind))
+					throw new Error("kill only supports shell and background search tasks");
 				const result = await supervisor.cancelTask(task, "user");
 				if (!result.ok) throw new TaskToolError(result.error, id);
 				const receipt = result.value;

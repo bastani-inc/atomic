@@ -187,7 +187,7 @@ Results include `scopePath`, `fileCount`, `files`, truncation and missing-path m
 
 ### Searching contents
 
-`search` accepts `pattern`, optional `paths`, `i`, `case`, `gitignore`, and `skip`. It searches files, directories, globs, archive members, SQLite selectors, and supported local resource selectors.
+`search` accepts `pattern`, optional `paths`, `i`, `case`, `gitignore`, and `skip`. It searches files, directories, globs, archive members, SQLite selectors, and supported local resource selectors. A search whose paths are all `history://` URLs also accepts `timeout` and `wait`, and `search({ action: "wait", id, budgetMs })` observes one that runs in the background; see [Searching history](/sessions#searching-history-in-the-background).
 
 - Omitted, empty-string, or empty-array `paths` search the workspace root.
 - Quoted and delimiter-separated paths follow the same rules as `find`.

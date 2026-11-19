@@ -841,3 +841,45 @@ fn runner_terminal_identity_preserves_cancellation_fence() {
 	stale.cap.attempt += 1;
 	assert_eq!(a.runner_outcome(&stale, late).unwrap_err().code, "StaleAttempt");
 }
+
+// An in-process tool task (a background search) is recorded as a tool, never as an agent, and runs like one.
+#[test]
+fn tool_task_records_its_own_kind_and_settles_like_an_agent_task() {
+	let actor = Actor::new();
+	let scope = OwnerScope::Session { session_id: "s".into() };
+	let host = actor.bind(scope.clone());
+	let owner = actor.open(&host, scope).unwrap();
+	let tool = AgentIntent {
+		kind: AgentTaskKind::Tool,
+		agent: "search".into(),
+		task: "search history://sessions for needle".into(),
+		description: Some("search needle in history://sessions".into()),
+		cwd: None,
+		parent_task_id: None,
+	};
+	let task = actor.start(&owner, tool.clone(), "tool-op".into()).unwrap();
+	assert_eq!(actor.start(&owner, tool, "tool-op".into()).unwrap().cap, task.cap);
+	let agent = actor.start(&owner, intent(), "agent-op".into()).unwrap();
+	let tasks = actor.snapshot(&owner).unwrap().tasks;
+	let record = |lease: &TaskLease| {
+		let id = actor.task_ref(lease).unwrap().task_id;
+		tasks.iter().find(|t| t.reference.task_id == id).unwrap().clone()
+	};
+	assert_eq!(record(&task).kind, "tool");
+	assert_eq!(record(&task).title, JsString::from("search needle in history://sessions"));
+	assert_eq!(record(&agent).kind, "agent");
+	let runner = actor.claim(&task).unwrap();
+	actor
+		.outcome(
+			&runner,
+			OutcomeReport {
+				report_id: "done".into(),
+				result: TaskResult::Completed { output: record(&task).output, exit_code: None },
+			},
+		)
+		.unwrap();
+	assert!(matches!(
+		actor.snapshot(&owner).unwrap().tasks.iter().find(|t| t.kind == "tool").unwrap().execution,
+		Execution::Settled { .. }
+	));
+}

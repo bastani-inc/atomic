@@ -1,12 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFindToolDefinition } from "../src/core/tools/find.js";
 import { createGrepToolDefinition } from "../src/core/tools/grep.js";
 import { createToolDefinition } from "../src/core/tools/index.js";
-import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { createSearchPageDefinition, createSearchToolDefinition } from "../src/core/tools/search.js";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
@@ -121,6 +123,43 @@ describe("find/search edge parity", () => {
 		expect(truncated.details?.resultLimitReached).toBe(1);
 	});
 
+	it("searching a tar member reads the archive no more than three times (#5479)", async () => {
+		const archive = join(testDir, "sample.tar");
+		const writer = createToolDefinition("write", testDir);
+		await writer.execute(
+			"member",
+			{ path: "sample.tar:inner.txt", content: "needle\n" },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		await writer.execute(
+			"padding",
+			{ path: "sample.tar:padding", content: "a".repeat(8 * 1024 * 1024) },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		const reads = vi.spyOn(fsPromises, "readFile");
+		syncBuiltinESMExports();
+		try {
+			const params = { pattern: "needle", paths: "sample.tar:inner.txt" };
+			const reference = await createSearchPageDefinition(testDir).execute("member-search", params);
+			const ordinaryReads = reads.mock.calls.filter(([file]) => file === archive).length;
+			reads.mockClear();
+			const result = await createSearchToolDefinition(testDir).execute("member-search", params);
+			expect(result).toEqual(reference);
+			expect(textOutput(result)).toContain("needle");
+			const count = reads.mock.calls.filter(([file]) => file === archive).length;
+			expect(count).toBe(ordinaryReads);
+			expect(count).toBeGreaterThan(0);
+			expect(count).toBeLessThanOrEqual(3);
+		} finally {
+			reads.mockRestore();
+			syncBuiltinESMExports();
+		}
+	});
+
 	it("splits delimiter-joined ranged archive searches", async () => {
 		await createToolDefinition("write", testDir).execute(
 			"zip-range-a",
@@ -144,6 +183,51 @@ describe("find/search edge parity", () => {
 		);
 		expect(output).toContain("needle a");
 		expect(output).toContain("needle b");
+	});
+
+	it("complete SDK file and history searches do not open a task owner or read the transcript (#5479)", async () => {
+		const { createAgentSession } = await import("../src/core/sdk.js");
+		const { SessionManager } = await import("../src/core/session-manager.js");
+		const { SettingsManager } = await import("../src/core/settings-manager.js");
+		const { getOwnerTaskStore } = await import("../src/core/tasks/owner-store.js");
+		writeFileSync(join(testDir, "entry.txt"), "needle");
+		const manager = SessionManager.inMemory(testDir);
+		const { session } = await createAgentSession({
+			cwd: testDir,
+			agentDir: join(testDir, "agent"),
+			sessionManager: manager,
+			settingsManager: SettingsManager.inMemory(),
+			builtins: { subagents: false, workflows: false, intercom: false, "web-access": false, mcp: false },
+		});
+		try {
+			const transcript = vi.spyOn(manager, "getEntries");
+			const result = await session
+				.getToolDefinition("search")!
+				.execute("file", { paths: "entry.txt:1-1", pattern: "needle" }, undefined, undefined, {
+					cwd: testDir,
+				} as never);
+			expect(textOutput(result)).toBe("entry.txt:1: needle");
+			const path = `history://sessions/${manager.getSessionId()}`;
+			const ctx = { cwd: testDir, internalResourceRouter: { search: async () => `${path}:1: needle` } } as never;
+			const params = { paths: `${path}:1-1`, pattern: "needle" };
+			const direct = await createSearchPageDefinition(testDir).execute("history", params, undefined, undefined, ctx);
+			const registered = await session
+				.getToolDefinition("search")!
+				.execute("history", params, undefined, undefined, ctx);
+			expect(registered).toEqual(direct);
+			expect(transcript).not.toHaveBeenCalled();
+			expect(getOwnerTaskStore(session)).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("a partial SDK history page and its cursor work without native task support", () => {
+		const probe = spawnSync("bun", [join(import.meta.dirname, "fixtures/search-no-native.ts"), testDir], {
+			env: { ...process.env, NAPI_RS_FORCE_WASI: "error" },
+			encoding: "utf8",
+		});
+		expect(probe.status, probe.stderr || probe.stdout).toBe(0);
 	});
 
 	it("keeps verbose-regex comments in native-unavailable ranged search", () => {
