@@ -13,6 +13,10 @@
 - On Linux and macOS, worktree pool leases and session-open markers are aged by the shared filesystem's time when the clock reading finishes, as on Windows, so the cleanup of the reading's probe file no longer makes them look younger than they are. A change to this machine's wall clock during the reading is not counted as elapsed time ([#5674](https://github.com/bastani-inc/atomic/issues/5674)).
 - A worktree pool admission whose temporary record name is already taken leaves that file untouched and writes under a fresh name. On Linux and macOS it used to overwrite the other file and remove its name; on Windows the admission failed ([#5824](https://github.com/bastani-inc/atomic/issues/5824)).
 
+### Breaking Changes
+
+- `InteractiveMode.init()` and `run()` now resolve instead of rejecting with `SessionClosed` if you quit the host or dispose the session during its initial extension bind. An event that was starting the UI, including a replayed provider retry, no longer leaves an unhandled rejection on quit or disposal. Replacing the session during that bind still rejects, as does a direct `session.bindExtensions()` call. Track your own shutdown request rather than catching `SessionClosed` to detect it. If you dispose only the session, you can run the same mode again after creating a replacement ([#5697](https://github.com/bastani-inc/atomic/issues/5697), [#5804](https://github.com/bastani-inc/atomic/issues/5804)).
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.
