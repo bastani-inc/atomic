@@ -14,7 +14,11 @@ import {
 } from "../../../core/messages.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { confirmQueuedChatSessionMessages, flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
-import { chatSessionTokenCount, chatSessionWorkingMeta } from "./chat-session-host-rendering.ts";
+import {
+	chatSessionTokenCount,
+	chatSessionWorkingMeta,
+	restoreChatSessionTokens,
+} from "./chat-session-host-rendering.ts";
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
@@ -171,31 +175,35 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 	state: ChatSessionHostState<TExtraEntry>,
 	result: VerbatimCompactionResult,
 ): void {
-	const compactedMessages = state.getAgentSession?.()?.messages;
-	if (compactedMessages && hasVerbatimCompactionMessage(compactedMessages)) {
-		if (state.bodyViewport.getScrollFromBottom() > 0) {
-			state.newMessages.observe(false, countableTranscriptLength(state));
-		}
-		const firstUser = firstRawUserExactText(compactedMessages);
-		state.seenFirstRawUser = firstUser.seenUser;
-		state.firstUserEntryExactText = firstUser.exactText;
-		state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
-		syncFirstUserEntry(state);
-		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
-		return;
-	}
+	const session = state.getAgentSession?.();
+	const manager = session?.sessionManager;
+	// The session's transcript keeps rows a context edit left out of the next request. A session or session manager
+	// that cannot give one shows its messages.
+	const compactedMessages =
+		session?.transcriptMessages ??
+		(typeof manager?.buildSessionProjection === "function"
+			? manager.buildSessionProjection("transcript").messages
+			: session?.messages);
 	// A session in another process sent its compacted messages as plain data, so its boundary is
 	// recognised by its custom type rather than by identity.
-	const remoteMessages = state.getAgentSession?.() === undefined ? state.getSessionMessages?.() : undefined;
-	if (remoteMessages?.some((message) => message.role === "custom" && message.customType === "compaction") === true) {
+	const remoteMessages = session === undefined ? state.getSessionMessages?.() : undefined;
+	const messages =
+		compactedMessages && hasVerbatimCompactionMessage(compactedMessages)
+			? compactedMessages
+			: remoteMessages?.some((message) => message.role === "custom" && message.customType === "compaction")
+				? remoteMessages
+				: undefined;
+	if (messages) {
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));
 		}
-		const firstUser = firstRawUserExactText(remoteMessages);
+		const firstUser = firstRawUserExactText(messages);
 		state.seenFirstRawUser = firstUser.seenUser;
 		state.firstUserEntryExactText = firstUser.exactText;
-		state.liveChat.replaceMessages(remoteMessages, state.extraEntries);
+		state.liveChat.replaceMessages(messages, state.extraEntries);
 		syncFirstUserEntry(state);
+		const meter = state.getSessionContextMeter?.(messages);
+		if (meter) restoreChatSessionTokens(state, meter);
 		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
