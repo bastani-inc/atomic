@@ -24,7 +24,7 @@ InteractiveModeBase.prototype.renderWidgets = function (this: InteractiveModeBas
 		this.widgetContainerBelow,
 		navigationMounted ? new Map() : this.extensionWidgetsBelow,
 		// leadingSpacer: blank line between the footer (model + cwd identity) and
-		// below-editor widgets such as the workflow companion counter, so the
+		// below-editor widgets, so the
 		// transient run status is visually separated from the session identity
 		// line. Only emitted when a below-editor widget is actually present.
 		true,
@@ -46,9 +46,7 @@ InteractiveModeBase.prototype.renderWidgetContainer = function (
 	}
 	let firstWidget = true;
 	for (const component of widgets.values()) {
-		// Separate stacked widgets (e.g. the async-subagent widget and the
-		// workflow run counter, both belowEditor) with a blank line so each
-		// panel reads as its own block.
+		// Separate stacked widgets with a blank line so each panel reads as its own block.
 		if (!firstWidget) {
 			container.addChild(new Spacer(1));
 		}

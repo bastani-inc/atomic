@@ -589,7 +589,7 @@ export class AgentSessionRuntime {
 			try {
 				this.assertOpen();
 				// A concurrently admitted factory may have published since preflight.
-				// Retire that successor before displacing it, retaining workflow lineage.
+				// Retire that successor before displacing it.
 				await this.disposeCurrentSession({ type: "session_shutdown", reason: "new" });
 				this.assertOpen();
 				this.candidates.delete(result.session);

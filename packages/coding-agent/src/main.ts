@@ -115,7 +115,6 @@ import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-inp
 import { runFirstTimeSetup } from "./main-first-time-setup.ts";
 import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import {
-	applyInheritedWorkflowSessionClassification,
 	cliResumeTrust,
 	createResumeProgress,
 	openCliSession,
@@ -483,12 +482,6 @@ export async function main(argv: string[], options?: MainOptions) {
 		await exitAfterCommand();
 		return;
 	}
-	if (args[0] === "worker") {
-		const { runWorkerCommand } = await import("./cli/worker-command.js");
-		process.exitCode = await runWorkerCommand(args.slice(1), { cwd, agentDir });
-		await exitAfterCommand();
-		return;
-	}
 	if (args[0] === "intercom") {
 		const { runIntercomCommand } = await import("./cli/intercom-command.js");
 		process.exitCode = await runIntercomCommand(args.slice(1), { agentDir });
@@ -677,7 +670,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// starts and is never subject to project trust. An invalid selection prints its message and exits 1.
 	try {
 		setCliStorageSelection(parsed.storage, cwd);
-		selectProcessStorage("journal", agentDir, cwd);
+		selectProcessStorage("shared", agentDir, cwd);
 		if (engineEnv.child !== "1") {
 			const { assertTeamAdapterInstalled } = await import("./core/storage/team.js");
 			await assertTeamAdapterInstalled(agentDir);
@@ -904,7 +897,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				ownedSessionManagerStores.delete(sessionManager);
 				ownedSessionStores.set(startupSession, store);
 			}
-			await applyInheritedWorkflowSessionClassification(sessionManager);
 			if (parsed.name !== undefined) await sessionManager.appendSessionInfo(parsed.name.trim());
 			storageFinalized = true;
 		};

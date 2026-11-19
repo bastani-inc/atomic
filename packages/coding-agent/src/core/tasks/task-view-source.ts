@@ -193,7 +193,7 @@ export interface TaskDetailText {
 
 /**
  * What the task inspector and a chat's task footer read and do: a session's own task store, or
- * the tasks of a session that runs in another process (a workflow stage on a local worker). It
+ * the tasks of a session that runs in another process. It
  * names tasks by id, so a view never holds a task lease.
  */
 export interface TaskViewSource {
@@ -470,7 +470,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const { session, taskId } = bound.value;
 			const file = fileArchives.get(session);
 			if (file && archiveReader(session) && !session.subscribe)
-				return import("./task-file-history.js").then(({ taskFilePages }) =>
+				return import("./task-file-history.js").then(({ taskFilePages, taskFileUnavailable }) =>
 					savedTranscriptView(
 						session,
 						taskId,
@@ -482,7 +482,11 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 						cursor,
 						file,
 						signal,
-					),
+					).catch(async (error): Promise<TaskViewResult<TaskTranscriptView>> => {
+						// As a whole read of the file says: a history that is gone is a result, not a failed read.
+						if (signal?.aborted) throw error;
+						return { ok: false, error: { message: await taskFileUnavailable(file.path, error) } };
+					}),
 				);
 			if (session.readHistory && ((session.loadHistory && !session.subscribe) || cursor?.includes(":")))
 				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor, undefined, signal);
@@ -1004,7 +1008,7 @@ function pageChatScope(
 	const generation = historyPageGeneration(page);
 	if (!generation) return undefined;
 	try {
-		const store = generation.store.chatRecords;
+		const store = generation.records();
 		return store ? { store, owner: { id: generation.sessionId, epoch: generation.epoch } } : undefined;
 	} catch {
 		return undefined;

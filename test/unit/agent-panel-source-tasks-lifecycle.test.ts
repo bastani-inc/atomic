@@ -15,10 +15,8 @@ import {
 	answerAgentPanelItem,
 	openAgentPanelItem,
 	stopAgentPanelItem,
-	viewedAgentPanelItems,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
-import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
 import {
@@ -28,8 +26,6 @@ import {
 } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.ts";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.ts";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { answerPanelRun, panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 test("a source whose subscribe throws is not listed and is reported once as an extension error (#5224)", () => {
@@ -45,7 +41,7 @@ test("a source whose subscribe throws is not listed and is reported once as an e
 	};
 	const item: AgentPanelItem = {
 		id: "run:sub-throws",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "deploy",
 		task: "stage build",
@@ -84,7 +80,7 @@ test("throwing source.open returns false, reports an extension error, and keeps 
 	const liveItems: AgentPanelItem[] = [
 		{
 			id: "run: broken",
-			kind: "workflow",
+			kind: "agent",
 			state: "done",
 			name: "deploy\x1b[2J\u202e",
 			task: "stage 1/1",
@@ -144,7 +140,6 @@ test("throwing source.open returns false, reports an extension error, and keeps 
 		active.handleInput?.("\r");
 		assert.equal(inspectorClosed, 0);
 		assert.deepEqual(errors, ["graph boom"]);
-		assert.equal(viewedAgentPanelItems(session).has("run: broken"), false);
 		const frame = active
 			.render(100)
 			.map((line: string) => stripVTControlCharacters(line))
@@ -153,10 +148,8 @@ test("throwing source.open returns false, reports an extension error, and keeps 
 
 		shouldThrow = false;
 		assert.equal(openAgentPanelItem(session, "run: broken"), true);
-		assert.equal(viewedAgentPanelItems(session).has("run: broken"), true);
 		liveItems.length = 0;
 		agentPanelExtensionItems(session);
-		assert.equal(viewedAgentPanelItems(session).size, 0);
 
 		active.handleInput?.("\x1b");
 		await shown;
@@ -220,7 +213,7 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 
 		itemsByGeneration[1]!.push({
 			id: "run:after-reload",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "reloaded-wf",
 			task: "stage verify",
@@ -239,7 +232,7 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 	}
 });
 
-test("showTaskInspector hides the agent panel in-process, across workflow reopen, and reports reopen rejection (#5224)", async () => {
+test("showTaskInspector hides the agent panel in-process, across a task reopening, and reports reopen rejection (#5224)", async () => {
 	initTheme("dark");
 	const previousKeys = getKeybindings();
 	const keys = new KeybindingsManager();
@@ -251,7 +244,7 @@ test("showTaskInspector hides the agent panel in-process, across workflow reopen
 		items: () => [
 			{
 				id: "run:wf-1",
-				kind: "workflow",
+				kind: "agent",
 				state: "running",
 				name: "alpha",
 				task: "stage build",
@@ -377,7 +370,7 @@ test("re-registering a source after subscribe threw clears the stored subscribe 
 	let shouldThrow = true;
 	const source = {
 		items: (): readonly AgentPanelItem[] => [
-			{ id: "run:recovered", kind: "workflow", state: "running", name: "deploy", task: "stage verify" },
+			{ id: "run:recovered", kind: "agent", state: "running", name: "deploy", task: "stage verify" },
 		],
 		subscribe: () => {
 			if (shouldThrow) throw new Error("transient subscribe failure");
@@ -403,121 +396,5 @@ test("re-registering a source after subscribe threw clears the stored subscribe 
 		assert.deepEqual(errors, []);
 	} finally {
 		second.dispose();
-	}
-});
-
-test("/tasks refuses a workflow reply when the pending prompt changed after the card was painted or drafted (#5224)", async () => {
-	initTheme("dark");
-	const previousKeys = getKeybindings();
-	const keys = new KeybindingsManager();
-	setKeybindings(keys);
-	const fixture = taskFixture();
-	const wfStore = createStore();
-	wfStore.recordRunStart({
-		id: "deploy-run",
-		name: "deploy-wf",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [{ id: "gate", name: "gate", status: "running", parentIds: [], toolEvents: [] }],
-		startedAt: 1_000,
-	});
-	wfStore.recordStagePendingPrompt("deploy-run", "gate", {
-		id: "prompt-1",
-		kind: "select",
-		message: "Deploy to staging?",
-		choices: ["yes", "no"],
-		createdAt: 1_000,
-	});
-
-	const hub = new AgentPanelSourceHub();
-	let itemReads = 0;
-	const owner = { store: wfStore } as unknown as Parameters<typeof answerPanelRun>[2];
-	const reg = hub.register({
-		items: () => {
-			itemReads++;
-			return panelItemsFromSnapshot(wfStore.graphSnapshot().runs, 2_000, wfStore);
-		},
-		subscribe: (listener) => wfStore.subscribeInvalidation(listener),
-		answer: (id, text, options) => answerPanelRun(id, text, owner, options),
-	});
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	const board = agentPanelBoardSource(session);
-	const inspector = new TaskInspector(
-		fixture.store,
-		() => {},
-		() => {},
-	);
-	inspector.setBoardSource(board);
-
-	try {
-		inspector.renderPicker(120, 24);
-		inspector.handleInput(" ");
-		const paintedCard = inspector
-			.renderPicker(120, 24)
-			.map((line) => stripVTControlCharacters(line))
-			.join("\n");
-		assert.match(paintedCard, /Deploy to staging\?/);
-
-		inspector.handleInput("1");
-		wfStore.resolveStagePendingPrompt("deploy-run", "gate", "prompt-1", "yes");
-		wfStore.recordStagePendingPrompt("deploy-run", "gate", {
-			id: "prompt-2",
-			kind: "select",
-			message: "Delete the production database?",
-			choices: ["yes", "no"],
-			createdAt: 2_000,
-		});
-		agentPanelItems(session);
-
-		const readsBeforeEnter = itemReads;
-		inspector.handleInput("\r");
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(itemReads, readsBeforeEnter, "answering must not re-read source.items() on the action path");
-
-		const afterRefusal = inspector
-			.renderPicker(120, 24)
-			.map((line) => stripVTControlCharacters(line))
-			.join("\n");
-		assert.match(afterRefusal, /The question changed; your reply was cleared\./);
-		assert.doesNotMatch(afterRefusal, /❯ yes/);
-		assert.equal(
-			wfStore.run("deploy-run")?.stages[0]?.pendingPrompt?.id,
-			"prompt-2",
-			"replacement prompt stays pending after stale reply is refused",
-		);
-
-		inspector.handleInput("\x1b");
-		inspector.handleInput(" ");
-		for (const ch of "no") inspector.handleInput(ch);
-		inspector.handleInput("\x1b");
-
-		wfStore.resolveStagePendingPrompt("deploy-run", "gate", "prompt-2", "no");
-		wfStore.recordStagePendingPrompt("deploy-run", "gate", {
-			id: "prompt-3",
-			kind: "select",
-			message: "Rotate production keys?",
-			choices: ["yes", "no"],
-			createdAt: 3_000,
-		});
-		inspector.renderPicker(120, 24);
-		inspector.handleInput(" ");
-		inspector.renderPicker(120, 24);
-		inspector.handleInput("\r");
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(
-			wfStore.run("deploy-run")?.stages[0]?.pendingPrompt?.id,
-			"prompt-3",
-			"draft typed for an earlier prompt is refused even after the new prompt is painted",
-		);
-
-		reg.dispose();
-		const afterDispose = await answerAgentPanelItem(session, "run:deploy-run", "no");
-		assert.equal(afterDispose.ok, false);
-	} finally {
-		inspector.dispose();
-		reg.dispose();
-		setKeybindings(previousKeys);
-		await fixture.dispose();
 	}
 });

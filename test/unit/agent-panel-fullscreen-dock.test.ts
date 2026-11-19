@@ -45,7 +45,7 @@ function panelSession(items: () => AgentPanelItem[]) {
 
 const run = (index: number): AgentPanelItem => ({
 	id: `run:dock-${index}`,
-	kind: "workflow",
+	kind: "agent",
 	state: "running",
 	name: `dummy-${index}`,
 	task: "stage build",

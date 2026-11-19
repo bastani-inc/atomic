@@ -32,7 +32,7 @@ async function flush(): Promise<void> {
 	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-/** A workflow-run source like the one the workflows extension registers, recording what /tasks asks of it. */
+/** An extension row source, recording what /tasks asks of it. */
 function runSource(items: AgentPanelItem[]) {
 	const listeners = new Set<() => void>();
 	const calls = {
@@ -74,7 +74,7 @@ function runSource(items: AgentPanelItem[]) {
 
 const waitingRun: AgentPanelItem = {
 	id: "run:ralph",
-	kind: "workflow",
+	kind: "agent",
 	state: "input",
 	name: "ralph",
 	task: "stage plan",
@@ -85,7 +85,7 @@ const waitingRun: AgentPanelItem = {
 };
 const failedRun: AgentPanelItem = {
 	id: "run:review",
-	kind: "workflow",
+	kind: "agent",
 	state: "failed",
 	name: "review-pr",
 	task: "stage verify",
@@ -123,7 +123,7 @@ async function harness(items: AgentPanelItem[] = []) {
 	};
 }
 
-test("/tasks groups subagents, shells and workflow runs as Needs input, Working and Done, with counts (#5224)", async () => {
+test("/tasks groups native tasks and extension rows as Needs input, Working and Done, with counts (#5224)", async () => {
 	const h = await harness([waitingRun, failedRun]);
 	try {
 		await h.fixture.start("Spawn lock fix");
@@ -196,10 +196,10 @@ test("Esc closes a peek without leaving /tasks, and typed reply text is answered
 	}
 });
 
-test("Enter on a workflow row opens it through its source and closes /tasks; x x stops it; x dismisses a finished one (#5224)", async () => {
+test("Enter on an extension row opens it through its source and closes /tasks; x x stops it; x dismisses a finished one (#5224)", async () => {
 	const running: AgentPanelItem = {
 		id: "run:build",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "build",
 		task: "stage compile",
@@ -271,10 +271,10 @@ test("a source's change repaints /tasks, and its rows render at 80 and 160 colum
 	}
 });
 
-test("a finished run with no current stage reads its stage count, the filter box has no prompt mark, and a sent notice clears on the next key (#5224)", async () => {
+test("a finished run with no current stage reads its progress, the filter box has no prompt mark, and a sent notice clears on the next key (#5224)", async () => {
 	const finished: AgentPanelItem = {
 		id: "run:done",
-		kind: "workflow",
+		kind: "agent",
 		state: "done",
 		name: "approve-demo",
 		task: "",
@@ -283,7 +283,7 @@ test("a finished run with no current stage reads its stage count, the filter box
 	};
 	const h = await harness([waitingRun, finished]);
 	try {
-		assert.match(h.text(), /✓ approve-demo +stage 1\/1 +done · 10s/);
+		assert.match(h.text(), /✓ approve-demo +1\/1 +done · 10s/);
 		assert.doesNotMatch(h.text(), /approve-demo +·/, "no separator before an empty task");
 		h.inspector.handleInput(SPACE);
 		h.text();
@@ -331,7 +331,7 @@ test("/tasks formats only visible rows when navigating a large board (#5224)", a
 	let taskReads = 0;
 	const items: AgentPanelItem[] = Array.from({ length: 1_000 }, (_, index) => ({
 		id: `run:${index}`,
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: `run-${index}`,
 		get task() {
@@ -458,7 +458,7 @@ test("/tasks fits a short viewport: the selected row first, then its hint line (
 test("a run's graph opened from /tasks comes back to /tasks on that run (#5224)", async () => {
 	const running: AgentPanelItem = {
 		id: "run:build",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "build",
 		task: "stage compile",
@@ -480,7 +480,7 @@ test("a run's graph opened from /tasks comes back to /tasks on that run (#5224)"
 test("a run that finishes between the two presses of x is not dismissed unseen (#5224)", async () => {
 	const run: AgentPanelItem = {
 		id: "run:build",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "build",
 		task: "stage compile",

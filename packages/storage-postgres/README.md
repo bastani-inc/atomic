@@ -1,6 +1,6 @@
 # @bastani/atomic-storage-postgres
 
-A [PostgreSQL](https://www.postgresql.org) storage adapter for [Atomic](https://github.com/bastani-inc/atomic). It stores sessions, workflow journals, and Intercom multi-node routing in one shared PostgreSQL database, so several machines can use the same state. It is a separate package: install it only where you want Postgres storage.
+A [PostgreSQL](https://www.postgresql.org) storage adapter for [Atomic](https://github.com/bastani-inc/atomic). It stores sessions and Intercom multi-node routing in one shared PostgreSQL database, so several machines can use the same state. It is a separate package: install it only where you want Postgres storage.
 
 ## Install
 
@@ -46,7 +46,7 @@ PostgreSQL 14 or newer is required. A URL that names no `sslmode` gets `sslmode=
 
 The adapter works through a transaction-mode connection pooler (PgBouncer, Supavisor, and the poolers of managed services): it sets nothing outside a transaction, takes no session locks, and uses no named prepared statements.
 
-Each process also keeps one connection outside the pool that `LISTEN`s for wake-ups (`notifications` on the opened database), so worker hosts and Intercom brokers find new work at once. A transaction-mode pooler does not deliver notifications to it: the adapter detects that with a probe and falls back to polling alone, unless `listenUrl` names the server's direct endpoint. Nothing is lost without wake-ups; work is found at the next poll. `atomic storage status` says which applies.
+Each process also keeps one connection outside the pool that `LISTEN`s for wake-ups (`notifications` on the opened database), so Intercom brokers find new messages at once. A transaction-mode pooler does not deliver notifications to it: the adapter detects that with a probe and falls back to polling alone, unless `listenUrl` names the server's direct endpoint. Nothing is lost without wake-ups; work is found at the next poll. `atomic storage status` says which applies.
 
 A failure that passes, such as a refused or lost connection, a lock conflict (SQLSTATE `40001`, `40P01`, `55P03`) or a cancelled statement (`57014`), is reported as `StorageTransientError`, and a call that wrote nothing runs again. Refused credentials (`28P01`), a missing database (`3D000`) and a refused server certificate fail at once. A missing privilege (`42501`) fails at once with `StorageConfigError` reason `missing-privilege`, which names the privilege and the grant or `atomic storage migrate` that fixes it. The password is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence and the other storage options.
 
@@ -166,7 +166,7 @@ const database = await openPostgresDatabase({
 });
 ```
 
-`password` is a string or a function called for each new connection. The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }` or workflow `journal: { database }`.
+`password` is a string or a function called for each new connection. The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }`.
 
 For a custom transport, pass `socket`, a function that opens a connection to `{ host, port }` and returns a stream (or a promise of one) that carries the PostgreSQL protocol there; the adapter negotiates TLS over it as over a socket. It is used instead of a proxy from the environment; passing it with `proxy` is refused with `StorageConfigError` reason `conflicting-transport`, and a socket directory is still reached directly. `{ host, port }` is the endpoint pg connects to: the URL's, else `PGHOST` and `PGPORT`.
 

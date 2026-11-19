@@ -177,7 +177,7 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, event.type)) {
 		const tokens = copies ? startupRegistrationTokens(ext, handlers, copies) : undefined;
 		for (const [index, handler] of handlers.entries()) {
-			// Workflow publishers can retire while a previous handler awaits.
+			// The event source can retire while a previous handler awaits.
 			if (isCurrent && !isCurrent()) return result as RunnerEmitResult<TEvent>;
 			try {
 				const invocation = runCallback(

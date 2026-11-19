@@ -2659,7 +2659,7 @@ test("reload seals captured input before candidate preparation and keeps success
 });
 
 // #3105: synchronous setters must retain their asynchronous extension execution.
-test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context", "shortcut"] as const)(
+test.each(["thinking", "name", "bus", "context", "forwarded context", "shortcut"] as const)(
 	"disposal drains detached %s handlers before registered cleanup",
 	async (kind) => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-thinking-drain-"));
@@ -2680,14 +2680,14 @@ test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context
 			settingsManager,
 			noExtensions: true,
 			extensionsOverride:
-				kind === "forwarded observer"
+				kind === "forwarded context"
 					? (result) => ({ ...result, runtime: new Proxy(result.runtime, {}) })
 					: undefined,
 			extensionFactories: [
 				(pi) => {
 					pi.on("thinking_level_select", kind === "thinking" ? suspend : () => {});
 					pi.on("session_info_changed", kind === "name" ? suspend : () => {});
-					if (kind === "context") pi.on("context", suspend);
+					if (kind === "context" || kind === "forwarded context") pi.on("context", suspend);
 					pi.registerShortcut("ctrl+shift+j", { handler: suspend });
 					pi.events.on("drain", suspend);
 					emitBus = () => pi.events.emit("drain", {});
@@ -2712,8 +2712,6 @@ test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context
 		if (kind === "thinking") assert.equal(await session.setThinkingLevel("high"), undefined);
 		else if (kind === "name") await session.setSessionName("raw name  ");
 		else if (kind === "bus") emitBus();
-		else if (kind === "observer" || kind === "forwarded observer")
-			session.extensionRunner.createContext().observeWorkflowActivity(suspend);
 		else if (kind === "shortcut")
 			void session.extensionRunner
 				.getShortcuts({})
@@ -4739,7 +4737,7 @@ test.each(["manual", "invalidate", "throwing", "invalidate-throwing"])(
 			Symbol.for("atomic.extension-api-lifetime.v1")
 		].releases;
 		const unsubscribe = api.events.on("ephemeral", () => {});
-		const publisher = api.registerWorkflowActivityPublisher();
+		const panelSource = api.registerAgentPanelSource({ items: () => [], subscribe: () => () => {} });
 		const closing = session.dispose().then(
 			() => undefined,
 			(error: unknown) => error,
@@ -4751,8 +4749,8 @@ test.each(["manual", "invalidate", "throwing", "invalidate-throwing"])(
 				if (mode === "throwing") assert.throws(unsubscribe, /release failed/);
 				else unsubscribe();
 				unsubscribe();
-				publisher.dispose();
-				publisher.dispose();
+				panelSource.dispose();
+				panelSource.dispose();
 				assert.equal(ledger.size, 0);
 			}
 			finish();
@@ -5136,150 +5134,6 @@ test.each([false, true])(
 			await session?.dispose().catch(() => {});
 			for (const timer of live) clearInterval(timer);
 			rmSync(cwd, { recursive: true, force: true });
-		}
-	},
-);
-
-// #3105: SDK-invoked resource providers retain ownership until their acquisitions settle.
-test.each(["dispose", "reload", "control", "error", "replay", "replay-error"])(
-	"admitted workflow refresh drains before cleanup (%s)",
-	async (mode) => {
-		const cwd = mkdtempSync(join(tmpdir(), "sdk-refresh-drain-"));
-		const settingsManager = SettingsManager.inMemory({ sessionSummary: { enabled: false } });
-		const modelRuntime = await ModelRuntime.create({
-			authPath: join(cwd, "auth"),
-			modelsPath: null,
-			allowModelNetwork: false,
-		});
-		let release!: () => void;
-		let enter!: () => void;
-		const held = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const entered = new Promise<void>((resolve) => {
-			enter = resolve;
-		});
-		const order: string[] = [];
-		let api!: import("../src/core/extensions/types.ts").ExtensionAPI;
-		let live = 0;
-		let generation = 0;
-		const replay = mode.startsWith("replay");
-		const primary = new Error("refresh replay primary");
-		const providerError = new Error("refresh provider failed");
-		const cleanupError = new Error("refresh cleanup failed");
-		let refreshing!: ReturnType<import("../src/core/extensions/types.ts").ExtensionAPI["refreshWorkflowResources"]>;
-		class Loader extends DefaultResourceLoader {
-			async refreshWorkflowResources() {
-				enter();
-				await held;
-				// Completion retains its own API authority while unrelated fresh calls are sealed.
-				const unsubscribe = api.events.on("late-refresh", () => {});
-				unsubscribe();
-				live++;
-				order.push("acquired");
-				if (mode.endsWith("error")) throw providerError;
-				return [];
-			}
-		}
-		const resourceLoader = new Loader({
-			cwd,
-			agentDir: cwd,
-			settingsManager,
-			noExtensions: true,
-			extensionFactories: [
-				(pi) => {
-					const id = ++generation;
-					api = pi;
-					pi.on("session_shutdown", () => {
-						order.push(`shutdown${id}`);
-						live = 0;
-						if (mode.endsWith("error")) throw cleanupError;
-					});
-					if (replay && id === 2) {
-						refreshing = pi.refreshWorkflowResources();
-						void refreshing.catch(() => {});
-						throw primary;
-					}
-				},
-			],
-		});
-		await resourceLoader.reload();
-		let session: AgentSession | undefined;
-		const creating = createAgentSession({
-			cwd,
-			agentDir: cwd,
-			settingsManager,
-			modelRuntime,
-			resourceLoader,
-			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
-			tools: [],
-		});
-		let settled = false;
-		let observed: Promise<unknown>;
-		if (replay) {
-			observed = creating
-				.catch((error: unknown) => error)
-				.finally(() => {
-					settled = true;
-				});
-		} else {
-			({ session } = await creating);
-			refreshing = api.refreshWorkflowResources();
-			void refreshing.catch(() => {});
-			await entered;
-			if (mode === "control") {
-				release();
-				await refreshing;
-			}
-			const closing = mode === "reload" ? session.reload() : session.dispose();
-			if (mode !== "reload") assert.equal(session.dispose(), closing);
-			observed = closing
-				.catch((error: unknown) => error)
-				.finally(() => {
-					settled = true;
-				});
-		}
-		await entered;
-		let outcome: unknown;
-		let refreshOutcome: unknown;
-		try {
-			await assert.rejects(api.refreshWorkflowResources(), /closed|stale/i);
-			await new Promise((resolve) => setTimeout(resolve, 25));
-			if (mode !== "control") {
-				assert.equal(settled, false, `${mode} completed before refresh`);
-				assert.deepEqual(order, []);
-			}
-		} finally {
-			release();
-			[refreshOutcome, outcome] = await Promise.all([refreshing.catch((error: unknown) => error), observed]);
-			await session?.dispose().catch(() => {});
-			rmSync(cwd, { recursive: true, force: true });
-		}
-		assert.equal(live, 0);
-		assert.equal(order[0], "acquired");
-		assert.equal(order.filter((item) => item === "shutdown2").length, 1);
-		assert.ok(!order.includes("shutdown1"), "borrowed discovery is not shut down");
-		if (mode.endsWith("error")) {
-			assert.equal(refreshOutcome, providerError);
-			assert.ok(outcome instanceof AggregateError);
-			const causes = (value: unknown): unknown[] =>
-				value instanceof AggregateError
-					? [value, ...value.errors.flatMap(causes)]
-					: value instanceof Error && value.cause
-						? [value, ...causes(value.cause)]
-						: [value];
-			if (replay) {
-				assert.ok(causes(outcome).includes(cleanupError));
-				assert.ok(causes(outcome).includes(primary));
-			} else {
-				// Runner diagnostics attribute shutdown errors; factory rollback preserves objects.
-				assert.match(causes(outcome).map(String).join("\n"), /refresh cleanup failed/);
-			}
-		} else {
-			assert.deepEqual(refreshOutcome, []);
-			if (replay) assert.equal(outcome, primary);
-			else assert.equal(outcome, undefined);
 		}
 	},
 );

@@ -1,6 +1,5 @@
 import { atomicWorkingFrame, watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { type ChatSessionHostState, isChatSessionRetryStatus } from "./chat-session-host-state.ts";
-import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
 import type { ChatSessionSubmitMode } from "./chat-session-host-types.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
@@ -51,9 +50,8 @@ export function stopChatSessionWorkingLifecycle<TExtraEntry extends ChatTranscri
 }
 
 /**
- * Begin a Working lifecycle for a prompt this host did not submit itself —
- * currently a workflow-authored `sendUserMessage()` accepted on an idle
- * retained stage. Mirrors the manual submit path so an accepted delivery paints
+ * Begin a Working lifecycle for a prompt this host did not submit itself.
+ * Mirrors the manual submit path so an accepted delivery paints
  * immediately and then hands the same visible period to the agent turn.
  *
  * Returns the lifecycle generation that identifies this delivery. Pass it back
@@ -179,23 +177,6 @@ export function syncChatSessionAnimationTick<TExtraEntry extends ChatTranscriptE
 		return;
 	}
 	if (!active) clearChatSessionAnimation(state);
-}
-
-export function clearChatSessionBusyForTerminalWorkflowStage<TExtraEntry extends ChatTranscriptEntryLike>(
-	state: ChatSessionHostState<TExtraEntry>,
-): void {
-	state.sdkBusy = false;
-	state.workingMessage = undefined;
-	state.compacting = false;
-	state.workingRunMeter.stop();
-	stopChatSessionWorkingLifecycle(state);
-	if (finalizeTerminalWorkflowToolEntries(state.transcript)) {
-		state.transcriptComponent.invalidate();
-	}
-	state.liveChat.clearPendingTools();
-	state.statusMessage = "";
-	if (state.noticeMessage !== state.lastWarningMessage) state.noticeMessage = "";
-	syncChatSessionAnimationTick(state);
 }
 
 export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(

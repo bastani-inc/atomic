@@ -211,28 +211,6 @@ test("orphans are bounded: the oldest is forgotten first and its held sends are 
 	assert.equal(held.heldSendCount, 0);
 });
 
-test("the end of a run forgets the orphans in its invocation and returns their held sends (#4639)", () => {
-	const { recipients: held } = recipients();
-	reserveReleased(held, "stage-1", "subagent-run-1", "workflow:run/lane");
-	reserveReleased(held, "stage-1", "subagent-other-1", "default");
-	held.dropOwner("stage-1", HOST);
-	held.admit("subagent-run-1", sender("member", ["workflow:run/lane"]), send("m1", "subagent-run-1"), true);
-	assert.deepEqual(
-		held.dropOrphans((group) => group.startsWith("workflow:run")).map((entry) => entry.messageId),
-		["m1"],
-	);
-	assert.equal(held.orphanCount, 1);
-	assert.deepEqual(held.admit("subagent-run-1", sender("member", ["workflow:run/lane"]), send("m2"), true), {
-		kind: "none",
-	});
-	assert.deepEqual(
-		held.dropOrphans(() => false),
-		[],
-	);
-	held.clear();
-	assert.equal(held.orphanCount, 0);
-});
-
 test("a restoring supervisor's reservation of the child takes an orphan's held sends over (#4639)", () => {
 	const { recipients: held } = recipients();
 	reserveReleased(held, "stage-1");

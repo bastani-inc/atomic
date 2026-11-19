@@ -114,7 +114,7 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 /**
  * How long a SIGTERMed interactive engine may spend running extension
  * `session_shutdown` handlers before its guardian and then a tree kill take over.
- * Builtin shutdown (MCP servers, durable workflow storage) routinely exceeds a
+ * Builtin shutdown (MCP servers, session storage) routinely exceeds a
  * few hundred milliseconds on a loaded machine.
  */
 export const ENGINE_SHUTDOWN_GRACE_MS = 5_000;

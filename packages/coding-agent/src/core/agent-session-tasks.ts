@@ -4,6 +4,7 @@ import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
+import { MessageAdmissionBoundary } from "./message-admission.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import {
@@ -23,14 +24,11 @@ import type { TaskCompletionSource } from "./tasks/completion-ordering.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
-import { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
+import { bindOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
 import { loadTaskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
-import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
-import { recordParkedStageTasks } from "./workflow-stage-parked-tasks.ts";
 
 // Native owners identify live generations, never borrowed persisted storage.
-// Explicit workflow-stage owners remain borrowed across session replacement.
 const replacementOwnerScopes = new WeakMap<object, string>();
 
 /** An admitted in-process subagent child; top-level sessions may carry a policy without `depth`. */
@@ -38,34 +36,15 @@ export function isSubagentChildSession(session: Pick<AgentSession, "_subagentPol
 	return (session._subagentPolicy?.depth ?? 0) >= 1;
 }
 
-/**
- * A child launched from a workflow stage inherits the stage's admission boundary for
- * message delivery, but must never bind or rebind the stage's own task owner.
- */
-function stageTaskAdmission(session: AgentSession) {
-	return isSubagentChildSession(session) ? undefined : session._workflowStageAdmission;
-}
-
-/** Whether the session runs its tasks on a workflow stage's own task host, which outlives each of its sessions. */
-export function isWorkflowStageTaskOwner(session: AgentSession): boolean {
-	return stageTaskAdmission(session) !== undefined;
-}
-
 export function replaceSessionTaskOwner(session: AgentSession): void {
-	if (stageTaskAdmission(session)) return;
 	replacementOwnerScopes.set(session, randomUUID());
 	session._agentTaskHost = undefined;
 	session._taskAdmission = undefined;
 	session._taskCompletionOutbox = undefined;
 }
 
-/**
- * The task host a subagent child of this session runs its shells in. A workflow stage's host outlives each of the
- * stage's sessions, so its workers keep their shells when the session that launched them is released or replaced
- * (#4639).
- */
 export function childCommandTaskHost(session: AgentSession): AgentTaskHost {
-	return stageTaskAdmission(session)?.agentTaskHost() ?? session.getAgentTaskHost();
+	return session.getAgentTaskHost();
 }
 
 /** A finished task's notice, built and ready to deliver. */
@@ -80,21 +59,17 @@ interface PreparedNotice {
 /** {@link childCommandTaskHost} when the session already holds it, without opening one. */
 export function openChildCommandTaskHost(session: AgentSession): AgentTaskHost | undefined {
 	if (session._disposed) return undefined;
-	return stageTaskAdmission(session)?.agentTaskHost() ?? session._agentTaskHost;
+	return session._agentTaskHost;
 }
 
 export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	if (this._disposed || sessionGenerationClosing.has(this)) throw new Error("Task owner is closed");
 	if (this._agentTaskHost) return this._agentTaskHost;
-	const stageAdmission = stageTaskAdmission(this);
-	const admission =
-		stageAdmission ??
-		WorkflowStageAdmissionBoundary.restore(
-			this.sessionManager.getEntries(),
-			undefined,
-			undefined,
-			this.sessionManager.getSessionRecoveryState?.().admissionDigests,
-		);
+	const admission = MessageAdmissionBoundary.restore(
+		this.sessionManager.getEntries(),
+		undefined,
+		this.sessionManager.getSessionRecoveryState?.().admissionDigests,
+	);
 	this._taskAdmission = admission;
 	/** A settled task's notice, read from the owner's snapshot; undefined for a foreground shell, which has none. */
 	const prepare = async (envelope: TaskCompletionEnvelope): Promise<PreparedNotice | undefined> => {
@@ -142,7 +117,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	 * The notices of tasks that finished together reach their session as one message, so as one turn. A shell a subagent
 	 * launched in this owner belongs to that subagent's session: its notice goes there, now or when it runs again, and
 	 * never to this session; it is acknowledged here once the subagent took it. This session's own notices reach it or
-	 * wait for it: a closed stage keeps them rather than sending them on to the chat that launched the workflow.
+	 * wait for it.
 	 */
 	const admitBatch = async (
 		envelopes: readonly TaskCompletionEnvelope[],
@@ -187,7 +162,6 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				triggerTurn: live,
 				...(live ? { persistWhenStreaming: true } : {}),
 				stageAdmissionKey: key,
-				stayInSession: true,
 			};
 			const deliver = () =>
 				own.length === 1
@@ -197,11 +171,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 							// Each notice keeps its own entry, recognized by its own completion after a restart.
 							{ ...options, stageAdmissionKeys: own.map((notice) => notice.envelope.completionId) },
 						);
-			if (stageAdmission) await deliver();
-			else
-				await admission.admit(key, deliver, () => {
-					throw new Error("Task owner is closed");
-				}).completion;
+			await admission.admit(key, deliver, () => {
+				throw new Error("Task owner is closed");
+			});
 			// Without a turn, a notice admitted mid-turn waits in memory for that turn's end; it is acknowledged once saved (#5047).
 			if (!live)
 				for (const notice of own) {
@@ -236,7 +208,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		hasUnreadHeartbeat: () => hasUnreadProtectedCustomMessage(this, TASK_HEARTBEAT_MESSAGE_TYPE),
 		deliver: async (message) => {
 			if (this._disposed || !admission.isOpen()) throw new Error("Task owner is closed");
-			// The workflow heartbeat delivery: a visible card plus a steer that waits for the next safe boundary,
+			// A task heartbeat: a visible card plus a steer that waits for the next safe boundary,
 			// never interrupting a response in progress, and that starts a turn in a chat left idle by an interrupt.
 			const deliver = () =>
 				this.sendCustomMessage(message, {
@@ -245,11 +217,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					persistWhenStreaming: true,
 					wakeIdleSession: true,
 				});
-			if (stageAdmission) await deliver();
-			else
-				await admission.admit(undefined, deliver, () => {
-					throw new Error("Task owner is closed");
-				}).completion;
+			await admission.admit(undefined, deliver, () => {
+				throw new Error("Task owner is closed");
+			});
 		},
 	};
 	const binding = {
@@ -286,26 +256,20 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		onTaskCleanupQuarantined: (ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]) =>
 			this._emit({ type: "task_cleanup_quarantined", taskId: ref.taskId, resources }),
 	};
-	if (!stageAdmission && !replacementOwnerScopes.has(this)) replacementOwnerScopes.set(this, randomUUID());
-	const host = stageAdmission
-		? stageAdmission.bindAgentTaskHost(binding)
-		: new AgentTaskHost({
-				...binding,
-				scope: {
-					kind: "session",
-					sessionId: replacementOwnerScopes.get(this)!,
-				},
-			});
+	if (!replacementOwnerScopes.has(this)) replacementOwnerScopes.set(this, randomUUID());
+	const host = new AgentTaskHost({
+		...binding,
+		scope: {
+			kind: "session",
+			sessionId: replacementOwnerScopes.get(this)!,
+		},
+	});
 	this._agentTaskHost = host;
 	const { supervisor, owner } = host.ownerBinding;
 	const store = new OwnerTaskStore(supervisor, owner);
 	const connected = store.connect();
 	if (!connected.ok) throw new Error(connected.error.message);
 	bindOwnerTaskStore(this, store);
-	// Tasks that settled while the stage was released reach this session's transcript as a restart's would.
-	const parked = stageAdmission?.takeParkedTaskSettlements() ?? [];
-	for (const settlement of parked) outbox.record(settlement.ownerId, settlement.receipt, settlement.kind, true);
-	if (parked.length > 0) void outbox.flushRestored();
 	return this._agentTaskHost;
 }
 
@@ -416,15 +380,6 @@ const closingTaskKinds = new WeakMap<AgentSession, ReadonlyMap<string, C.TaskRec
 
 export async function closeSessionTasks(this: AgentSession): Promise<void> {
 	this._parentCommandTaskOwner?.unbind(this.sessionManager.getSessionId());
-	// Replacement stage sessions share generation lifetime; disposal is not stage closure. The session's own view of
-	// the stage's tasks ends with it: the stage opens a new one for each session.
-	const stageAdmission = stageTaskAdmission(this);
-	if (stageAdmission) {
-		getOwnerTaskStore(this)?.dispose();
-		// A released stage's running shells, saved so that a restart before the stage wakes can tell it of them (#5079).
-		await recordParkedStageTasks(this.sessionManager, stageAdmission);
-		return;
-	}
 	this._taskAdmission?.seal();
 	const host = this._agentTaskHost;
 	const watched = host?.watchOwnerTasks();
@@ -439,7 +394,7 @@ export async function closeSessionTasks(this: AgentSession): Promise<void> {
 	if (closed && !closed.ok) throw host!.closeError("session-close", closed.error);
 }
 
-/** Workflow controller only: main-chat message pause does not stop owned tasks. */
+/** Main-chat message pause does not stop owned tasks. */
 export async function pauseTasks(this: AgentSession): Promise<void> {
 	await this.getAgentTaskHost().pauseTasks();
 }

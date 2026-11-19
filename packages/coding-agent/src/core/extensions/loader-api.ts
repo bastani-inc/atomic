@@ -25,13 +25,7 @@ import {
 	resolveInvocationRuntime,
 	startupSourceId,
 } from "./loader-bindings.ts";
-import { getWorkflowHostModules } from "./loader-host-modules.js";
-import {
-	emptyWorkflowResourceProvider,
-	normalizeWorkflowResourceProvider,
-	type ResourceLoaderInheritanceSnapshotProvider,
-	type WorkflowResourceProviderInput,
-} from "./loader-resources.ts";
+import type { PackageMcpServerSource, ResourceLoaderInheritanceSnapshotProvider } from "./loader-resources.ts";
 import { boundExtensionRuntimes } from "./loader-runtime.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./stale-context.ts";
 import { projectTrustHandlerRegistered } from "./startup-trust-inventory.ts";
@@ -50,7 +44,6 @@ import type {
 	ToolDefinition,
 	ToolRendererResolver,
 } from "./types.ts";
-import type { WorkflowRunControl } from "./workflow-run-control.js";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
@@ -114,7 +107,7 @@ export function createExtensionAPI(
 	runtime: ExtensionRuntime,
 	cwd: string,
 	eventBus: EventBus,
-	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+	packageSource?: PackageMcpServerSource,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	registrationSource: object | string = extension,
 ): { api: ExtensionAPI; commit: () => void; discard: () => void } {
@@ -124,8 +117,7 @@ export function createExtensionAPI(
 	const captureRegistrationInvocation = <T>(value: T): T => captureInvocation(value, originalRuntime);
 	runtime = invocationRuntime(runtime);
 	extension = invocationExtension(extension);
-	const workflowResources = normalizeWorkflowResourceProvider(workflowResourceProvider);
-	originalRuntime.mcpServerRegistry.addPackageSource(workflowResources);
+	if (packageSource) originalRuntime.mcpServerRegistry.addPackageSource(packageSource);
 	const pendingRuntimeChanges: Array<{ apply: () => void; rollback: () => void }> = [];
 	const loadingUnsubscribers: Array<() => void> = [];
 	const nextStartupHandlerSlot = new Map<string, number>();
@@ -200,19 +192,9 @@ export function createExtensionAPI(
 		get lifecycleScope() {
 			return lifecycleScopeForOwner(resolveInvocationRuntime(originalRuntime));
 		},
-		registerWorkflowActivityPublisher() {
-			assertActive();
-			const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-			return { ...publisher, dispose: trackRelease(() => publisher.dispose()) };
-		},
 		registerAgentPanelSource(source: AgentPanelSource) {
 			assertActive();
 			const registration = runtime.agentPanelSourceHub.register(source);
-			return { dispose: trackRelease(() => registration.dispose()) };
-		},
-		registerWorkflowRunControl(control: WorkflowRunControl) {
-			assertActive();
-			const registration = runtime.workflowRunControlHub.register(control);
 			return { dispose: trackRelease(() => registration.dispose()) };
 		},
 		on(event: string, handler: HandlerFn): () => void {
@@ -368,24 +350,6 @@ export function createExtensionAPI(
 			return runtime.flagValues.get(name) ?? pendingDefault;
 		},
 
-		getWorkflowHostModules() {
-			assertActive(true);
-			return trackAPIWork(getWorkflowHostModules);
-		},
-
-		getWorkflowResources() {
-			assertActive(true);
-			return [...workflowResources.get()];
-		},
-
-		async refreshWorkflowResources() {
-			assertActive();
-			return trackAPIWork(async () => {
-				const refreshed = await workflowResources.refresh?.();
-				return [...(refreshed ?? workflowResources.get())];
-			});
-		},
-
 		registerMcpServer(name: string, config: McpServerConfig): void {
 			assertActive();
 			if (typeof name !== "string" || name.trim() === "") {
@@ -439,10 +403,6 @@ export function createExtensionAPI(
 		getChildSessionOptions(options) {
 			assertActive();
 			return runtime.getChildSessionOptions?.(options) ?? options;
-		},
-		getWorkflowJournal() {
-			assertActive(true);
-			return runtime.workflowJournal;
 		},
 		getStorageAgentDir() {
 			assertActive(true);

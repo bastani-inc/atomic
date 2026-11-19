@@ -103,7 +103,7 @@ In `models.json`, `headers` values must be strings. A `null` suppression marker 
 | `compat.supportsMessageThreads` | No | `true` for a `baseUrl` on `api.anthropic.com`, else `false` | Anthropic: use message threads (beta), so each request with a session sends only the new messages; set `true` for gateways that forward the `thread` field |
 
 Current behavior:
-- `/model`, `--list-models`, the interactive footer, status messages, fallback notices, and subagent and workflow labels show a model by its raw `provider/id` (or `id` where the provider is already clear), followed by the reasoning level it runs at, e.g. `anthropic/claude-sonnet-4-5  high`. That is the string `--model provider/id:level` takes.
+- `/model`, `--list-models`, the interactive footer, status messages, fallback notices, and subagent labels show a model by its raw `provider/id` (or `id` where the provider is already clear), followed by the reasoning level it runs at, e.g. `anthropic/claude-sonnet-4-5  high`. That is the string `--model provider/id:level` takes.
 - The configured `name` is used for model matching and secondary model detail text, such as the dim column in `/model`. It never replaces the model id.
 - `input` lists the modalities **Atomic can send**. Possible values are `["text"]`, `["text", "image"]`, and `["text", "image", "pdf"]`.
 

@@ -44,8 +44,7 @@ export function getSkillCatalogCommands(
 }
 
 /**
- * The slash commands a session offers to a chat that shows it from another process, such as a
- * workflow stage running on a local worker: plain data, so it can cross a process boundary.
+ * The slash commands a session offers to a chat that shows it from another process: plain data, so it can cross a process boundary.
  */
 export interface SessionCommandCatalog {
 	/** Working directory that path completion resolves against. */
@@ -81,7 +80,7 @@ function sharedFdPath(): Promise<string | null> {
 }
 
 /**
- * The completion of a chat whose session the main chat does not own, such as a workflow stage's or a subagent's:
+ * The completion of a chat whose session the main chat does not own, such as a subagent's:
  * `/tasks`, the session's skill commands, and `@` and Tab paths under the session's cwd.
  *
  * Resolve again for every completion so lazy attachment and resource reload cannot leave a stale catalog.
@@ -119,7 +118,7 @@ export function createSessionSkillAutocompleteProvider(
 				const session = resolved as AgentSession | undefined;
 				if (!session?.resourceLoader || !session.settingsManager) {
 					onUnavailable?.(
-						"Skill discovery unavailable: this stage host does not expose its session command metadata.",
+						"Skill discovery unavailable: this chat's host does not expose its session command metadata.",
 					);
 					return null;
 				}

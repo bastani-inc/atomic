@@ -7,14 +7,6 @@ import type { TaskCompletionEnvelope } from "../../packages/coding-agent/src/cor
 import type { OperationId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 
-const STAGE_CONTEXT = {
-	kind: "workflow-stage",
-	workflowRunId: "restore-run",
-	workflowStageId: "restore-stage",
-	workflowStageName: "Restore stage",
-	constraints: { disableWorkflowTool: true },
-} as const;
-
 function intentOf(manager: SessionManager, taskId: string): TaskCompletionEnvelope | undefined {
 	const entry = manager
 		.getEntries()
@@ -36,10 +28,10 @@ async function replayedNotice(intent: object): Promise<string> {
 		ownerId: "previous-owner",
 		taskId: "previous-task",
 	});
-	const harness: Harness = await createHarness({ sessionManager: manager, orchestrationContext: STAGE_CONTEXT });
-	harness.setResponses(Array.from({ length: 3 }, () => fauxAssistantMessage("stage saw notice")));
+	const harness: Harness = await createHarness({ sessionManager: manager });
+	harness.setResponses(Array.from({ length: 3 }, () => fauxAssistantMessage("saw notice")));
 	try {
-		const report = await harness.session.startPendingRecovery("workflow_stage_resume");
+		const report = await harness.session.startPendingRecovery("resume");
 		assert.equal(report.completions, 1);
 		const notice = harness
 			.eventsOfType("message_end")
@@ -57,8 +49,8 @@ test.runIf(process.platform !== "win32")(
 	async () => {
 		// The live process records the stopped task's kind with the completion intent.
 		const manager = SessionManager.inMemory();
-		const live = await createHarness({ sessionManager: manager, orchestrationContext: STAGE_CONTEXT });
-		live.setResponses(Array.from({ length: 3 }, () => fauxAssistantMessage("stage saw notice")));
+		const live = await createHarness({ sessionManager: manager });
+		live.setResponses(Array.from({ length: 3 }, () => fauxAssistantMessage("saw notice")));
 		let intent: TaskCompletionEnvelope | undefined;
 		try {
 			const host = live.session.getAgentTaskHost();

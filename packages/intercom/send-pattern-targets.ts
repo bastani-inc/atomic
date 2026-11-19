@@ -21,7 +21,6 @@ export interface ListIntercomChildrenRequest {
 }
 
 const SUBAGENTS_TARGET_PREFIX = "subagents:";
-const WORKFLOW_TARGET_PREFIX = "workflow:";
 const CLOSE_NAME_LIMIT = 5;
 
 /**
@@ -33,7 +32,7 @@ export type SendPatternTarget =
 	| { readonly kind: "subagents"; readonly runId?: string }
 	| { readonly kind: "invalid"; readonly reason: string };
 
-/** The pattern a send target names, or undefined for an exact target or a workflow-stage path. */
+/** The pattern a send target names, or undefined for an exact target. */
 export function parseSendPatternTarget(target: string): SendPatternTarget | undefined {
 	const trimmed = target.trim();
 	if (trimmed.startsWith(SUBAGENTS_TARGET_PREFIX)) {
@@ -46,7 +45,7 @@ export function parseSendPatternTarget(target: string): SendPatternTarget | unde
 			reason: `Invalid subagents target "${trimmed}": use \`subagents:*\` for every subagent this session launched, or \`subagents:<runId>/*\` for those of one run.`,
 		};
 	}
-	if (trimmed.startsWith(WORKFLOW_TARGET_PREFIX) || !trimmed.includes("*")) return undefined;
+	if (!trimmed.includes("*")) return undefined;
 	return { kind: "sessions", pattern: trimmed };
 }
 

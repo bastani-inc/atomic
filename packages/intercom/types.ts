@@ -1,4 +1,3 @@
-import type { LiveWorkflowStageRouteRefusalCode } from "./live-route-refusal.js";
 import type {
 	IntercomRecipientGoneErrorCode,
 	SerializedIntercomRecipientGoneError,
@@ -26,92 +25,11 @@ export interface SessionInfo {
   group?: string;
 }
 
-export interface WorkflowStageRosterEntry {
-	readonly kind: "workflow-stage";
-	readonly runId: string;
-	readonly stageId: string;
-	readonly stageName: string;
-	readonly target: string;
-	readonly lifecycle: "pending" | "running";
-	readonly group: string;
-	/** Broker session identity, present only while the workflow stage is connected. */
-	readonly sessionId?: string;
-}
-
-/** Internal run-tree edge used to resolve known recipients before dispatching to the owner. */
-export interface WorkflowRunParentAnnouncement {
-	readonly runId: string;
-	/** Boundary spellings that resolve uniquely to this child, with stage-ID precedence applied by the host. */
-	readonly stageKeys: readonly string[];
-}
-
-export interface WorkflowStickyDeliveryState {
-	readonly messageId: string;
-	readonly runId: string;
-	readonly stageId: string;
-	readonly sessionId?: string;
-	readonly state: string;
-	readonly reason: string;
-}
-
-/** How a workflow send's target relates to the run's stages: covered by the scan or a started stage, expected by the decision model, or neither. */
-export type WorkflowSendPrediction = "known" | "predicted" | "unknown";
-
-/** A decision-model prediction row in `intercom list`: still predicted, came true, or can no longer. */
-export type WorkflowFutureStagePrediction = "predicted" | "confirmed" | "unused";
-
-export interface WorkflowPossibleStageAnnouncement {
-	/** Canonical depth-faithful path target, e.g. `workflow:<rootRunId>/orchestrator-*`. */
-	readonly target: string;
-	/** Current number of queued sticky entries matching this target. */
-	readonly queuedCount: number;
-	/** At most a fixed number of exemplar states: unresolved states first, then the latest delivered. */
-	readonly deliveryStates?: readonly WorkflowStickyDeliveryState[];
-	/** Delivery states per state, over every state of this row, including omitted ones. */
-	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
-	/** Delivery states left out of `deliveryStates`. */
-	readonly omittedDeliveryStates?: number;
-	readonly deliveryOnly?: true;
-	/** Present on rows the decision model predicted; scan rows carry none. */
-	readonly prediction?: WorkflowFutureStagePrediction;
-	/** The probability that accepted the prediction. */
-	readonly probability?: number;
-}
-
-export interface WorkflowFutureStageRosterEntry {
-	readonly kind: "workflow-future-stage";
-	readonly runId: string;
-	readonly target: string;
-	readonly queuedCount: number;
-	readonly group: string;
-	readonly deliveryStates?: readonly WorkflowStickyDeliveryState[];
-	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
-	readonly omittedDeliveryStates?: number;
-	readonly deliveryOnly?: true;
-	readonly prediction?: WorkflowFutureStagePrediction;
-	readonly probability?: number;
-}
-
 export interface SessionDirectory {
 	readonly sessions: SessionInfo[];
- 	readonly workflowStages: WorkflowStageRosterEntry[];
-	readonly workflowFutureStages: WorkflowFutureStageRosterEntry[];
-	/** The peeked workflow invocation group exists but is visible only to its members. */
+	/** The peeked group is outside this session's Intercom reach policy, so its sessions are not listed. */
 	readonly restricted?: true;
- }
-
-export interface WorkflowStageRosterAnnouncement {
-	readonly stageId: string;
-	readonly stageName: string;
-	readonly target: string;
-	readonly lifecycle: "pending" | "running";
-	readonly routeEligible: boolean;
-	/** Host-declared node purpose, independent of legacy pending-route eligibility. */
-	readonly recipientPurpose?: "agent" | "control";
-	/** Actual stage group after workflow invocation ownership resolution. */
-	readonly group: string;
 }
-
 
 export interface GroupSummary {
 	group: string;
@@ -201,14 +119,12 @@ export interface HostedSessionFrameItem {
 	key: string;
 	session: Omit<SessionInfo, "id">;
 	returnAddress?: string;
-	liveRoute?: { runId: string; stageKeys: string[]; capability: string };
 }
 
-/** The broker id of one hosted session, and whether its live workflow-stage route was registered or why not. */
+/** The broker id of one hosted session. */
 export interface HostedSessionAssignment {
 	key: string;
 	sessionId: string;
-	liveRouteRefusal?: LiveWorkflowStageRouteRefusalCode;
 }
 
 /** One subagent in a `mark_ended_children` frame: its owner reports how its last run ended (#4639). */
@@ -236,6 +152,7 @@ export type ReleasedChildRefusalCode =
 	| "invalid_group"
 	| "unknown_released_child"
 	| "not_owner"
+	/** Sent only by a 0.9.x broker, for a workflow group the owner was not a member of. */
 	| "group_not_allowed";
 
 /** The broker's typed refusal of a released-child request; `childName` names the offending item when there is one. */
@@ -268,7 +185,7 @@ export interface Message {
   retryLater?: true;
   /**
    * Shared by every copy of one pattern send (`subagent-*`, `subagents:*`), each of which has its own `id`. A session
-   * that several copies reach, its own and those relayed by the released workflow stages it hosts, shows it once.
+   * that several copies reach shows it once.
    */
   broadcastId?: string;
   source?: {
@@ -394,67 +311,6 @@ export type ClientMessage =
       message: Message;
       attemptId?: string;
     }
-	| {
-			type: "send_pending_stage_notification";
-			runId: string;
-			capability: string;
-			to: string;
-			senderRegistrationName?: string;
-			senderReturnAddress?: string;
-			message: Message;
-			attemptId?: string;
-	  }
-	| { type: "pending_stage_notification_result"; requestId: string; delivered: boolean }
- | {
-		type: "register_pending_stage_route";
-		/** Identifies this ownership lifetime on the registering socket, across roster updates. */
-		generation?: string;
-		/** When present, the broker answers with `pending_stage_route_registered` once the route is applied. */
-		requestId?: string;
-		runId: string;
-		group: string;
-		capability: string;
-		stages?: WorkflowStageRosterAnnouncement[];
-		possibleStages?: WorkflowPossibleStageAnnouncement[];
-		parent?: WorkflowRunParentAnnouncement;
-		/** Interrupted run queued by its restarted owner before resume; yields to the process that resumes it (#3760). */
-		dormant?: true;
-		/**
-		 * #4006: a secret held only by the process that launched the run, never given to its stages. The launching
-		 * session presents it in `claim_workflow_invocation`.
-		 */
-		launcherCapability?: string;
-		/**
-		 * #3906: the connection carries the routes of many runs, so a refusal of this one is answered with
-		 * `pending_stage_route_refused` and leaves the connection open. Honoured only with a `requestId`, and sent only to
-		 * a broker that advertised `refusesPendingStageRoutesInPlace`; an older broker ignores it and ends the connection.
-		 */
-		refusalKeepsConnection?: true;
-	}
-	| { type: "withdraw_pending_stage_route"; requestId: string; runId: string; generation: string }
-  | {
-      type: "register_live_workflow_stage_route";
-      requestId: string;
-      runId: string;
-      stageKeys: string[];
-      capability: string;
-    }
-	/**
-	 * #4006: the session that launched a run proves it with the run's launcher capability (not the route
-	 * capability its stages hold) and gains the invocation's send authority without joining
-	 * `workflow:<rootRunId>`. Sent only to a broker that advertised `claimsWorkflowInvocations`; the broker
-	 * answers with `workflow_invocation_claimed`.
-	 */
-	| { type: "claim_workflow_invocation"; requestId: string; runId: string; capability: string }
-	| {
-		type: "pending_stage_message_result";
-		requestId: string;
-		outcome: "queued" | "delivered" | "forward" | "refused";
-		position?: number;
-		target?: string;
-		reason?: string;
-		reasonCode?: "message_id_conflict";
-	  }
   | {
       type: "presence";
       name?: string;
@@ -472,9 +328,6 @@ export type ClientMessage =
 	/** Allowed before `register`: shut the broker down; its sessions reconnect to a new broker. */
 	| { type: "shutdown"; requestId: string };
 
-/** Why the broker refused a pending-stage route registration (#3906). Authorization decides these, not the client. */
-export type PendingStageRouteRefusalCode = "not_authorized" | "invalid_stage_roster" | "invalid_possible_stage_roster";
-
 export type BrokerMessage =
 	| { type: "health"; requestId: string; instanceId: string }
 	| {
@@ -483,15 +336,15 @@ export type BrokerMessage =
 			supervisorSessionId?: string;
 			/** #3761: echoed only to a client that advertised it; that client may now send `received`. */
 			acknowledgesReceipt?: true;
-			/** This broker acknowledges a `register_pending_stage_route` that carries a `requestId`; absent on older brokers. */
+			/**
+			 * Kept for 0.9.x clients, which register workflow routes only with these: they then send each one with a
+			 * `requestId`, which this broker answers in place (see `broker/legacy-workflow-frames.ts`).
+			 */
 			acknowledgesPendingStageRoutes?: true;
 			withdrawsPendingStageRoutes?: true;
-			/** #3906: this broker honours `refusalKeepsConnection`; absent on older brokers, which end the connection. */
 			refusesPendingStageRoutesInPlace?: true;
 			/** This broker answers `broker_status`; absent on older brokers, which drop a client that sends it. */
 			brokerStatus?: true;
-			/** #4006: this broker accepts `claim_workflow_invocation`; absent on older brokers, which drop a client that sends it. */
-			claimsWorkflowInvocations?: true;
 			/** #3983: this broker accepts `saving`; absent on older brokers, which drop a client that sends it. */
 			extendsSaves?: true;
 			/** #4639: this broker accepts `mark_ended_children`; absent on older brokers, which drop a client that sends it. */
@@ -504,15 +357,14 @@ export type BrokerMessage =
 			protocol?: { min: number; max: number };
 			enforcesReach?: true;
 	  }
-	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
   | {
       type: "registration_failed";
       reason: string;
-      code?: LiveWorkflowStageRouteRefusalCode | "reach_policy_refused" | "supervisor_authorization_refused";
+      code?: "broker_retiring" | "broker_routing_changed" | "reach_policy_refused" | "supervisor_authorization_refused";
       requestId?: string;
     }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
- | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
+  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; restricted?: true }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
 	| { type: "reach_ack"; requestId: string; reachable: string[]; groups: string[] }
@@ -536,33 +388,6 @@ export type BrokerMessage =
        */
       senderIdentity?: string;
     }
-	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }
-	| {
-			type: "pending_stage_message";
-			requestId: string;
-			from: SessionInfo;
-			senderRegistrationName?: string;
-			senderReturnAddress?: string;
-			runId: string;
-			target: string;
-			message: Message;
-			live?: boolean;
-			/** #4006: the broker authorized the sender as the session that launched this run, not by membership. */
-			invocationControl?: true;
-	  }
-  | { type: "live_workflow_stage_route_registered"; requestId: string }
-	/** The requested pending-stage registration change (publish or withdraw) was processed. */
-	| { type: "pending_stage_route_registered"; requestId: string }
-	/** #3906: the registration `requestId` of run `runId` was refused; the connection and its other routes are kept. */
-	| {
-			type: "pending_stage_route_refused";
-			requestId: string;
-			runId: string;
-			code: PendingStageRouteRefusalCode;
-			reason: string;
-	  }
-	/** A dormant route's run was resumed by another process, which now owns the run's routes (#3760). */
-	| { type: "pending_stage_route_revoked"; runId: string }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }

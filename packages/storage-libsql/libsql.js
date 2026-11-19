@@ -1107,7 +1107,7 @@ function driverResult(result) {
 /**
  * How long a connection to a local `file:` database waits for a lock another connection holds before failing with
  * `SQLITE_BUSY`, as Atomic's own SQLite stores wait. Without it the driver fails at once, so two processes writing
- * one file, such as a workflow root, its coordinator and its workers, lose statements to each other.
+ * one file, such as two Atomic processes that share a session store, lose statements to each other.
  */
 const FILE_BUSY_TIMEOUT_MS = 5000;
 
@@ -1717,9 +1717,9 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 			local ? undefined : writeTransaction,
 			protocol === undefined ? undefined : (separate) => stepBatch(protocol[0], protocol[3], remote(), separate),
 		),
-		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
-		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing (`lockBusy`). A
-		// server's batch counts against this process's writes in flight to that server, unless it has priority.
+		// One request for the whole batch, in a write transaction. Only its `BEGIN IMMEDIATE` waits for the write lock,
+		// so a batch the busy timeout ended wrote nothing (`lockBusy`). A server's batch counts against this process's
+		// writes in flight to that server, unless it has priority.
 		batch: (batched, options) => {
 			const send = () => writeTransaction(batched);
 			if (local) return waitForLock(send);

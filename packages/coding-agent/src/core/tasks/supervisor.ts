@@ -199,7 +199,7 @@ export type FakeExecution = {
 };
 /**
  * Who asks an owner to run a command: the session that owns it, or a subagent child that runs its shells in its
- * parent's owner. A released workflow stage still lets its live workers launch (#4639).
+ * parent's owner.
  */
 export type CommandLaunchOrigin = "owner" | "subagent-child";
 export type TrustedTaskHost = {
@@ -674,7 +674,7 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 		execution: execution(value.execution, value.ref.taskId, launches),
 		observation: observation(value.observation),
 		...(value.wasBackground === undefined ? {} : { wasBackground: value.wasBackground }),
-		attention: value.attention,
+		attention: value.attention.kind === "input-needed" ? promptAttention(value.attention) : value.attention,
 		cleanup: value.cleanup,
 		...(value.currentAction === undefined
 			? {}
@@ -697,16 +697,31 @@ function snapshot(value: native.OwnerSnapshot, launches: LaunchMetadata): C.Owne
 		throw new Error(`Invalid native owner state: ${value.state}`);
 	return {
 		ownerId: value.ownerId as C.OwnerId,
-		scope: value.scope,
+		scope: { kind: "session", sessionId: value.scope.sessionId },
 		generation: value.generation as C.Generation,
 		state: value.state,
 		tasks: value.tasks.map((task) => record(task, launches)),
 		cursor: cursor(value.cursor),
 	};
 }
+function promptAttention(
+	value: Extract<native.Attention, { kind: "input-needed" }>,
+): Extract<C.Attention, { kind: "input-needed" }> {
+	const { sessionId, promptId } = value.route;
+	return { ...value, route: { sessionId, promptId } };
+}
 function activity(value: native.ActivityReport): C.ActivityReport {
-	if (value.change.kind === "attention-set" && value.change.attention.kind === "none")
-		throw new Error("Native attention-set cannot clear attention");
+	if (value.change.kind === "attention-set") {
+		const attention = value.change.attention;
+		if (attention.kind === "none") throw new Error("Native attention-set cannot clear attention");
+		return {
+			reportId: value.reportId,
+			change: {
+				kind: "attention-set",
+				attention: attention.kind === "input-needed" ? promptAttention(attention) : attention,
+			},
+		};
+	}
 	// Native tagged variants are owned wire data; only attention-set has a wider generated declaration.
 	return value as C.ActivityReport;
 }

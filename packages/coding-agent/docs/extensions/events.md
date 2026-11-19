@@ -150,7 +150,7 @@ pi.on("session_start", async (event, ctx) => {
 });
 ```
 
-If the handler throws, the interactive terminal shows the error with the extension's path and keeps the session; print mode, RPC mode, SDK sessions and workflow stages fail startup instead. See [Error Handling](/extensions/api-reference#error-handling).
+If the handler throws, the interactive terminal shows the error with the extension's path and keeps the session; print mode, RPC mode and SDK sessions fail startup instead. See [Error Handling](/extensions/api-reference#error-handling).
 
 #### session_recovery_restore / session_recovery_replay
 
@@ -164,7 +164,7 @@ Notices from either event go into one message for the user and the agent. That m
 
 ```typescript
 pi.on("session_recovery_restore", async (event, ctx) => {
-  // event.reason - "startup" | "resume" | "workflow_stage_resume"
+  // event.reason - "startup" | "resume"
   return { notices: ["Worker reviewer could not be restored and is gone."] };
 });
 
@@ -389,7 +389,7 @@ Each provider request is built from the persisted session after every queued han
 These notification-only events wrap blocking user-facing prompts. Each event has `reason: "ui_prompt" | "project_trust"`, the prompt `kind`, and the prompt `title` when available. Host and status integrations can use the pair to distinguish waiting for the user from active work.
 
 - `ui_prompt`: extension prompts opened through `ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`, `ctx.ui.editor()`, and `ctx.ui.custom()`.
-  Custom inspection/navigation components can pass `{ purpose: "navigation" }` to omit their own prompt span. The default remains `"prompt"`. Nested approval calls still emit events; mounting or hiding the workflow graph is not itself an approval.
+  Custom inspection/navigation components can pass `{ purpose: "navigation" }` to omit their own prompt span. The default remains `"prompt"`. Nested approval calls still emit events.
 - `project_trust`: interactive startup/resume trust dialogs, trust-hook dialogs, borrowed extension-source authorization, and the built-in `/trust` selector. Silent saved/default/CLI decisions and noninteractive startup do not emit artificial waits.
 
 Trust-safe extensions receive a live context before the trust prompt. Newly authorized project extensions load afterward and do not receive historical prompt events. Resume trust dialogs use the outgoing session context; failed preparation leaves that session active.
@@ -849,78 +849,6 @@ pi.on("input", async (event, ctx) => {
 Transforms change the input sent to the agent and the prompt the session saves, including input queued while a turn runs or while queued messages are paused, and Ctrl+R prompt search lists the transformed text. ↑ and ↓ in the editor still walk through what was typed during the current run.
 
 Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts) and [input-transform-streaming.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform-streaming.ts) for `streamingBehavior`-aware routing.
-
-## Workflow activity and lifecycle hooks
-
-The host exposes typed workflow observation contracts. A workflow provider must register and publish activity; these APIs alone do not connect the workflow scheduler. Without a publisher snapshot, availability is `unavailable`, not an empty ready state.
-
-Use `ctx.observeWorkflowActivity` rather than importing internal workflow helpers. Root summaries distinguish live work from stored history: independent work remains `working` even when another stage needs attention; paused roots are `idle`, and unresolved waits without progressing work are `blocked`. A control event does not prove execution has stopped.
-
-The workflows extension registers a publisher on activation and publishes this activity stream for its owning session: root snapshots and changes, plus `workflow_lifecycle`, `workflow_stage_completed`, and `workflow_heartbeat` hooks (the runtime state table is in [`workflows/operations.md`](/workflows/operations#workflow-activity-for-extensions)). It does not change chat notifications. The built-in [Herdr reporter](/herdr) consumes this stream to reflect workflow execution and human-input waits in the owning pane.
-
-| Hook | Payload and semantics |
-| --- | --- |
-| `workflow_lifecycle` | `WorkflowLifecycleEvent`: run, stage, tool, or prompt target with typed status, optional previous status, event identity, cursor, ownership, timestamps, and `live` or `replay` delivery. Run targets may carry a control `action`, distinct from its eventual outcome. |
-| `workflow_activity_changed` | `WorkflowActivityChangedEvent`: full root replacement and the same cursor as the observer's `changed` frame. No initial snapshot guarantee. |
-| `workflow_stage_completed` | `WorkflowStageCompletedEvent`: the lifecycle envelope with a stage target whose status is `completed`. Shares the lifecycle event ID and cursor. Failed, skipped, cancelled, and killed outcomes do not produce this hook. |
-| `workflow_heartbeat` | `WorkflowHeartbeatEvent`: run/root/owner identity, `scheduledAt`, and `intervalMinutes`. Observation only, with no scheduler or cadence change. |
-
-Run control actions describe the caller's request: an already-aborted caller signal still emits `kill` after run registration, and a whole-run pause at a task-result checkpoint emits `pause` while graceful suspension retains the paused outcome and `exitReason: "quit"`. A control event alone does not mean execution has drained.
-
-Use `ctx.observeWorkflowActivity` for status consumers. Registration captures a snapshot atomically with attaching the observer. Delivery is asynchronous, snapshot first, then FIFO updates. Each callback finishes before the next callback for that observer starts; a slow observer does not delay the publisher or other observers.
-
-Each frame and each `workflow_activity_changed` event has its own copy of the root, its `graph` and the graph's `nodes` array. The nodes themselves are deep-frozen and shared between frames and observers, so changing one throws in strict mode: copy a node (`{ ...node }`) before changing it.
-
-```typescript
-import type { ExtensionAPI, WorkflowActivitySubscription, WorkflowRootActivity } from "@bastani/atomic";
-
-export default function (pi: ExtensionAPI) {
-  let lease: WorkflowActivitySubscription | undefined;
-  const roots = new Map<string, WorkflowRootActivity>();
-
-  pi.on("session_start", (_event, ctx) => {
-    lease?.dispose();
-    lease = ctx.observeWorkflowActivity((frame) => {
-      if (frame.kind === "snapshot") {
-        roots.clear();
-        if (frame.availability !== "ready") {
-          // Unknown activity must not be interpreted as idle.
-          return;
-        }
-        for (const root of frame.roots) roots.set(root.rootRunId, root);
-      } else if (frame.kind === "changed") {
-        roots.set(frame.root.rootRunId, frame.root);
-      } else {
-        roots.delete(frame.rootRunId);
-      }
-    });
-  });
-  pi.on("session_shutdown", () => lease?.dispose());
-  pi.on("workflow_stage_completed", (event) => {
-    // Canonical nested identity, not the display name.
-    console.log(event.eventId, event.target.stageId, event.delivery);
-  });
-}
-```
-
-Frames are ordinary objects with a `{ epoch: string, revision: number }` cursor. Revisions increase within an epoch; lifecycle publication may leave gaps between activity revisions. A new publisher starts a new epoch and an `unavailable` snapshot. Never compare revision numbers across epochs. A `ready` snapshot has a `roots` array, including an empty array when known empty. `recovering` and `unavailable` snapshots omit `roots`. Subsequent snapshots replace all prior knowledge. Changes replace a complete root, not increment counters. Removals contain `rootRunId`. Root summaries include `state`, `reason`, execution/wait counts, and `needsAttention`. Roots published by the workflows extension also carry an optional `graph: { nodes }`. It holds the root's expanded workflow graph, including the nodes of nested child workflows. Each node is a `stage` or `tool` node with `id`, `runId`, `nodeId`, `name`, `status`, `parentIds`, `depth`, and `executionOrder` when it is known. Tool nodes add their `ordinal`. Stages waiting on a prompt add `pendingPrompt` (`id`, `kind`, `message`, `choices`, `createdAt`). Prompts raised by a run rather than a stage appear in `graph.runPrompts`, each with the same fields plus its `runId`. A node status change publishes a `changed` frame. Treat `graph` as optional, because other publishers may omit it.
-
-The workflows extension also calls `pi.registerWorkflowRunControl(control)` with a `WorkflowRunControl` to back `session.workflows`, the typed pause, quit, and resume API for SDK hosts (see [Workflow run control](/sdk#workflow-run-control)). SDK hosts follow this same activity stream through `session.workflows.observe(observer)`. The registration is released with the extension generation, and only the most recent registration is active.
-
-Providers call `pi.registerWorkflowActivityPublisher()` and retain its returned `WorkflowActivityPublisher`. Its methods are `publishSnapshot({ availability: "ready", roots })`, `publishSnapshot({ availability: "recovering" | "unavailable" })`, `publishChanged(root)`, `publishRemoved(rootRunId)`, `publishLifecycle(event)`, `publishHeartbeat(event)`, and `dispose()`. Lifecycle input includes `type: "workflow_lifecycle"` and the envelope except `cursor`, which the host supplies. Heartbeat input includes `type: "workflow_heartbeat"`. IDs, names, timestamps, zero counts and optional attribution are preserved. Roots are keyed by `rootRunId`; duplicate snapshot IDs use the last value at the first insertion position. Removing an absent ID is permitted. Changes do not turn an unknown source into `ready`; publish a snapshot to establish readiness.
-
-Workflow hooks published during extension factory initialization are retained until the runner binds dispatch, then delivered asynchronously in publication order before later live publications. Buffered events keep their original payloads and cursors; publisher retirement and runner disposal fence them just like live events.
-
-Observation leases and publisher disposal are idempotent. Runner retirement on reload disposes every observer and fences publishers. Already-running callbacks cannot be cancelled, but no queued observer callbacks run after disposal. Runner retirement, publisher disposal, and publisher replacement also fence every workflow hook handler that has not started, including later handlers in the same or another extension when a previous handler is awaiting. Already-published activity frames remain ordered before the new source snapshot. Activity recovery never synthesizes lifecycle completions; explicit lifecycle replay retains the supplied event ID and `delivery: "replay"`.
-
-The host hub retains at most 256 diagnostics, available through its host-side `diagnostics()` inspection API. These are diagnostic records, not thrown observation errors:
-
-- `ObserverDisposed`: an observation lease was retired.
-- `SourceRecovering`: the provider is hydrating state.
-- `SourceUnavailable`: no current source snapshot is known.
-- `ObserverDeliveryFailed`: a callback threw or rejected; other observers and publication continue.
-- `ObserverOverflow`: a per-observer queue reached its 256-frame limit. Pending frames are cleared and a fresh snapshot replaces them, invalidating continuity instead of silently losing updates.
-- `PublisherFenced`: a disposed or superseded publisher attempted publication.
 
 ## Next steps
 

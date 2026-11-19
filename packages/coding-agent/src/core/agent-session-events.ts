@@ -76,7 +76,6 @@ import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ow
 import { saveChatRecord } from "./storage/session/chat-records.js";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
-import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	if (event.type === "agent_start") {
@@ -849,7 +848,6 @@ export function closeAgentSession(
 				);
 			else resolveRetired();
 		}
-		await attempt("terminal workflow summaries", () => drainTerminalWorkflowSummaries(session));
 		await attempt("active work", () => drainSessionWork(session));
 		await attempt("detached calls", () => releaseDetachedCallHolds(session));
 		await attempt("events", async () => {
@@ -876,7 +874,6 @@ export function closeAgentSession(
 		await attempt("subscriptions", async () => {
 			session._disconnectFromAgent();
 			session._eventListeners = [];
-			await session._workflows?.disposeObservers(session._extensionRunner.getWorkflowActivitySnapshot());
 		});
 		// Empty stored IDs have no provider cache key; empty-key cleanup would close other sessions' caches.
 		if (session.sessionId !== "") await attempt("provider", () => cleanupSessionResources(session.sessionId));

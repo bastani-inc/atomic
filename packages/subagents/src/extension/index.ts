@@ -29,18 +29,10 @@ import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/fore
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
 import { bindSubagentChildOwner, subagentChildOwnerWriter } from "../runs/foreground/subagent-child-owner.js";
-import {
-	endWorkflowRunStageSubagentChildren,
-	saveUnsavedSubagentChildRecords,
-	subagentChildOwner,
-	WORKFLOW_RUN_ENDED_STAGE_SUBAGENTS_EVENT,
-	type WorkflowRunEndedStageSubagentsRequest,
-	watchWorkflowStageSubagentChildren,
-} from "../runs/foreground/subagent-child-records.js";
+import { saveUnsavedSubagentChildRecords, subagentChildOwner } from "../runs/foreground/subagent-child-records.js";
 import {
 	type ArchivedSubagentChildren,
 	awaitSubagentChildRestoration,
-	holdDormantRunSubagentChildren,
 	holdRunningSubagentChildren,
 	recordReportedGoneSubagentChildren,
 	releaseEarlyChildHolds,
@@ -51,8 +43,6 @@ import {
 	type SubagentAwaitChildRestorationRequest,
 	type SubagentRestoredIntercomPeersRequest,
 	subagentChildRestoreNotices,
-	WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT,
-	type WorkflowDormantRunSubagentHoldRequest,
 } from "../runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import { resumeAwaitingSubagentChildren } from "../runs/foreground/subagent-run-control.js";
@@ -100,7 +90,6 @@ export {
 } from "../runs/foreground/subagent-child-records.js";
 export {
 	awaitSubagentChildRestoration,
-	holdDormantRunSubagentChildren,
 	holdRunningSubagentChildren,
 	recordReportedGoneSubagentChildren,
 	restoredChildrenAwaitingIntercom,
@@ -121,9 +110,6 @@ export {
 	type SubagentRestoredIntercomPeer,
 	type SubagentRestoredIntercomPeersRequest,
 	subagentChildRestoreNotices,
-	WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT,
-	type WorkflowDormantRunSubagentHold,
-	type WorkflowDormantRunSubagentHoldRequest,
 } from "../runs/foreground/subagent-child-restore.js";
 export {
 	PROMPT_TEMPLATE_SUBAGENT_CANCEL_EVENT,
@@ -515,8 +501,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				);
 				const started = publishExtensionContextEffect(ctx, () => {
 					const writer = subagentChildOwnerWriter(pi, ctx.sessionManager);
-					// Children from earlier generations end with the stage when it closes for good.
-					watchWorkflowStageSubagentChildren(writer, ctx);
 					void saveUnsavedSubagentChildRecords(writer, subagentChildOwner(ctx).sessionId);
 					startWakes?.();
 					// A finished child continues from its chat: the message the reader sends resumes it in its own session.
@@ -535,7 +519,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			}
 		});
 		pi.on("session_recovery_restore", async (_event, ctx) => {
-			// Subagent children never own children; workflow stages carry a policy but do (#3760).
+			// Subagent children never own children.
 			if (!lifecycle.isCurrent() || isSubagentChildSession(ctx)) return undefined;
 			const writer = subagentChildOwnerWriter(pi, ctx.sessionManager);
 			const outcomes = await restoreSubagentChildren(executorDeps, ctx);
@@ -574,28 +558,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			request.completion = Promise.resolve(restoredChildrenAwaitingIntercom(request.ownerSessionId));
 		});
 		eventUnsubscribes.push(unsubscribeRestoredPeers);
-		// The workflows extension of this session asks to keep an interrupted run's stage subagents addressable.
-		const unsubscribeDormantRunHold = pi.events.on(WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT, (payload) => {
-			const request = payload as Partial<WorkflowDormantRunSubagentHoldRequest> | null;
-			const ctx = request?.context ?? state.lastUiContext;
-			if (!lifecycle.isCurrent() || !request || request.completion || !ctx) return;
-			if (typeof request.group !== "string" || !Array.isArray(request.stageSessionIds)) return;
-			const stageSessionIds = request.stageSessionIds.filter((id): id is string => typeof id === "string");
-			request.completion = Promise.resolve(
-				holdDormantRunSubagentChildren(pi.events, ctx, { group: request.group, stageSessionIds }),
-			);
-		});
-		eventUnsubscribes.push(unsubscribeDormantRunHold);
-		// The workflows extension of this session ended a run for good: its stages' subagents end with it.
-		const unsubscribeRunEnded = pi.events.on(WORKFLOW_RUN_ENDED_STAGE_SUBAGENTS_EVENT, (payload) => {
-			const request = payload as Partial<WorkflowRunEndedStageSubagentsRequest> | null;
-			const ctx = request?.context ?? state.lastUiContext;
-			if (!lifecycle.isCurrent() || !request || request.completion || !ctx) return;
-			if (!Array.isArray(request.stageSessionIds)) return;
-			const stageSessionIds = request.stageSessionIds.filter((id): id is string => typeof id === "string");
-			request.completion = endWorkflowRunStageSubagentChildren(ctx, stageSessionIds);
-		});
-		eventUnsubscribes.push(unsubscribeRunEnded);
 		pi.on("session_shutdown", (_event, ctx) => {
 			releaseCards?.();
 			releaseCards = undefined;

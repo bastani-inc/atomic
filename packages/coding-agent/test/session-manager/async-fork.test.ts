@@ -42,7 +42,6 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 		};
 		const content = `${JSON.stringify(header)}\n${JSON.stringify(entry)}`;
 		await writeFile(source, content);
-		const workflow = { runId: "run", stageId: "stage", stageName: "build" };
 		const syncCalls = [
 			"existsSync",
 			"statSync",
@@ -62,7 +61,7 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 		const writes = vi.mocked(fsPromises.writeFile).mockClear();
 		let fork: SessionManager;
 		try {
-			fork = await SessionManager.forkFrom(source, dir, join(dir, "forks"), { internal: true, workflow });
+			fork = await SessionManager.forkFrom(source, dir, join(dir, "forks"));
 			assert.equal(opens.mock.calls.filter(([path]) => path === source).length, 1, "one pinned source file");
 			assert.ok(!wholeReads.mock.calls.some(([path]) => path === source), "do not load the whole source file");
 			assert.equal(writes.mock.calls.length, 1);
@@ -73,7 +72,6 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 		}
 		assert.equal(fork.getLeafId(), "history");
 		assert.deepEqual(fork.getEntries(), [entry]);
-		assert.deepEqual(fork.getHeader()?.workflow, workflow);
 		assert.equal(fork.getHeader()?.parentSessionId, "source");
 		await fork.appendCustomEntry("after-fork", { saved: true });
 		const reopened = await SessionManager.open(fork.getSessionFile()!);

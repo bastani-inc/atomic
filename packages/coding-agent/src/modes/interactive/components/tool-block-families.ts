@@ -1083,7 +1083,7 @@ function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 
 	if (classified.kind === "background") {
 		const taskId = asString(asRecord(asRecord(input.result?.details)?.observation)?.taskId);
-		// Shells are managed in /tasks; the agent panel lists subagents and workflow runs only.
+		// Shells are managed in /tasks; the agent panel lists subagents only.
 		const manage = taskId !== undefined && taskId !== "" && input.canManageTask?.(taskId) === true;
 		const bgLine = `${theme.fg("text", "Running in background")}${manage ? theme.fg("dim", ` · ${slashCommandHint("/tasks to manage")}`) : ""}`;
 		const hasOutput = classified.output !== "" && classified.output !== EMPTY_OUTPUT_TEXT;

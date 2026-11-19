@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, test, vi } from "vitest";
-import type { PendingStageMessageRequest } from "../../packages/intercom/broker/client.js";
+
 import { sleep } from "../helpers/runtime.ts";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -37,17 +37,7 @@ const { getBrokerPidPath, getBrokerSocketPath } = await import("../../packages/i
 const { isSocketAnswering } = await import("../../packages/intercom/broker/socket-liveness.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
-const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 const { reconnectDelayMs } = await import("../../packages/intercom/reconnect-backoff.js");
-const { createMemoryTestBackend } = await import("../helpers/workflow-journal.js");
-const { setDurableBackend } = await import("../../packages/workflows/src/durable/factory.js");
-const { registerPendingStageIntercomBridge } = await import(
-	"../../packages/workflows/src/extension/pending-stage-intercom.js"
-);
-const { createWorkflowPendingStageDelivery } = await import(
-	"../../packages/workflows/src/runs/foreground/pending-stage-delivery.js"
-);
-const { createStore } = await import("../../packages/workflows/src/shared/store.js");
 const { SupervisorAuthorizationRegistry } = await import(
 	"../../packages/intercom/supervisor-authorization-registry.js"
 );
@@ -76,15 +66,6 @@ const KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS =
 	2 * RECOVERY_TIMEOUT_MS + PROCESS_IDENTITY_QUERY_MS + KILLED_BROKER_EXIT_MS;
 const FORCED_FAILURE_MESSAGE = "forced first reconnect failure";
 
-interface OrchestrationContext {
-	intercomGroup: string;
-	kind?: "workflow-stage";
-	workflowRunId?: string;
-	workflowStageId?: string;
-	workflowStageName?: string;
-	pendingStageDelivery?: ReturnType<typeof createWorkflowPendingStageDelivery>;
-}
-
 interface ToolResult {
 	content: Array<{ type: string; text: string }>;
 	details: { delivered?: boolean; queued?: boolean; group?: string; error?: boolean };
@@ -105,7 +86,7 @@ interface CapturedTool {
 type LifecycleHandler = (event: Record<string, string>, ctx: unknown) => void | Promise<void>;
 type EventHandler = (payload: object) => void | Promise<void>;
 
-function extensionFixture(sessionId: string, name: string, orchestrationContext: OrchestrationContext) {
+function extensionFixture(sessionId: string, name: string) {
 	const lifecycleHandlers = new Map<string, LifecycleHandler[]>();
 	const eventHandlers = new Map<string, EventHandler[]>();
 	const eventCompletions = new Map<string, Promise<void>>();
@@ -120,7 +101,6 @@ function extensionFixture(sessionId: string, name: string, orchestrationContext:
 		cwd: repoRoot,
 		isIdle: () => true,
 		model: { id: "test-model" },
-		orchestrationContext,
 		sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
 		ui: { confirm: async () => true, notify() {} },
 	};
@@ -469,7 +449,6 @@ async function waitForKilledBrokerExit(killed: KilledBroker): Promise<void> {
 }
 
 afterAll(() => {
-	setDurableBackend(undefined);
 	const broker = readBrokerIdentity();
 	if (broker !== undefined) killBroker(broker);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
@@ -479,188 +458,11 @@ afterAll(() => {
 	removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 });
 
-test("an ordinary host controls a second invocation after joining the first and re-registering", async () => {
-	const groupA = "workflow:16adff11-b761-44b7-b265-cd84e5e89b20";
-	const runB = "f5f1d680-cfc0-429e-a511-a6c5f0029dc4";
-	const groupB = `workflow:${runB}`;
-	const stageTarget = `${groupB}/reviewer`;
-	const host = extensionFixture("multigroup-host-session", "multigroup-host", { intercomGroup: "default" });
-	intercomHeavy(host.pi as never);
-	const owner = new IntercomClient();
-	const stage = new IntercomClient();
-	const sessionInfo = { cwd: repoRoot, model: "test", pid: process.pid, startedAt: 1, lastActivity: 1 };
-	const requests: PendingStageMessageRequest[] = [];
-	const received = Promise.withResolvers<void>();
-	stage.on("message", () => received.resolve());
-	owner.on("pending_stage_message", (request: PendingStageMessageRequest) => {
-		requests.push(request);
-		owner.respondPendingStageMessage(
-			request.requestId,
-			request.live
-				? { outcome: "forward", target: request.target }
-				: { outcome: "queued", position: requests.length },
-		);
-	});
-	try {
-		await host.start();
-		assert.equal((await host.execute({ action: "join", group: groupA })).isError, false);
-		const firstBroker = await waitForBroker();
-		killBroker(firstBroker);
-		await waitForBroker(firstBroker);
-		await waitFor("the multigroup host to re-register without a tool call", async () =>
-			(await probeSessionNames()).includes("multigroup-host") ? true : undefined,
-		);
-
-		await owner.connect({ ...sessionInfo, name: "invocation-b-owner", group: groupB });
-		owner.registerPendingStageRoute(runB, groupB, "multigroup-capability", [
-			{
-				stageId: "reviewer",
-				stageName: "reviewer",
-				target: stageTarget,
-				group: `${groupB}/isolated`,
-				lifecycle: "running",
-				routeEligible: true,
-			},
-		]);
-		await owner.listSessions();
-		await stage.connect({ ...sessionInfo, name: "isolated-reviewer", group: `${groupB}/isolated` });
-		await stage.registerLiveWorkflowStageRoute(runB, ["reviewer"], "multigroup-capability");
-		const joined = await host.execute({ action: "join", group: groupB });
-		assert.equal(joined.isError, false, joined.content[0]?.text);
-		const status = await host.execute({ action: "status" });
-		assert.ok(status.content[0]?.text.includes(groupA));
-		assert.ok(status.content[0]?.text.includes(groupB));
-		const direct = await host.execute({ action: "send", to: owner.sessionId!, message: "direct works" });
-		assert.equal(direct.details.delivered, true, direct.content[0]?.text);
-
-		for (const target of [`${groupB}/**`, `${groupB}/review-*`, `${groupB}/future`]) {
-			const sent = await host.execute({ action: "send", to: target, message: `control ${target}` });
-			assert.equal(sent.details.queued, true, sent.content[0]?.text);
-		}
-		const listed = await host.execute({ action: "list", group: `${groupB}/isolated` });
-		assert.ok(listed.content[0]?.text.includes(stageTarget), listed.content[0]?.text);
-		const live = await host.execute({ action: "send", to: stageTarget, message: "live control" });
-		assert.equal(live.details.delivered, true, live.content[0]?.text);
-		await received.promise;
-		assert.equal((await host.execute({ action: "leave", group: groupA })).isError, false);
-		const afterLeave = await host.execute({ action: "send", to: `${groupB}/**`, message: "still control B" });
-		assert.equal(afterLeave.details.queued, true, afterLeave.content[0]?.text);
-		assert.deepEqual(
-			requests.map((request) => request.target),
-			[`${groupB}/**`, `${groupB}/review-*`, `${groupB}/future`, stageTarget, `${groupB}/**`],
-		);
-	} finally {
-		await stage.disconnect();
-		await owner.disconnect();
-		await host.shutdown();
-	}
-});
-
-test.each(["", "/worker"])(
-	"a workflow stage in invocation subgroup '%s' cannot gain control by joining and reconnecting (#4434)",
-	async (suffix) => {
-		const runA = "82a2d5fd-56a5-4bc9-93ef-27c5e857c74d";
-		const homeGroup = `workflow:${runA}${suffix}`;
-		const runB = "6e55df27-a9d9-43a2-87d9-49f16b669c74";
-		const groupB = `workflow:${runB}`;
-		const stageTarget = `${groupB}/reviewer`;
-		const worker = extensionFixture("multigroup-worker-session", "multigroup-worker", {
-			intercomGroup: homeGroup,
-			kind: "workflow-stage",
-			workflowRunId: runA,
-			workflowStageId: "worker",
-			workflowStageName: "worker",
-		});
-		intercomHeavy(worker.pi as never);
-		const owner = new IntercomClient();
-		const stage = new IntercomClient();
-		const sessionInfo = { cwd: repoRoot, model: "test", pid: process.pid, startedAt: 1, lastActivity: 1 };
-		const requests: PendingStageMessageRequest[] = [];
-		owner.on("pending_stage_message", (request: PendingStageMessageRequest) => {
-			requests.push(request);
-			owner.respondPendingStageMessage(
-				request.requestId,
-				request.live ? { outcome: "forward", target: request.target } : { outcome: "queued", position: 1 },
-			);
-		});
-		const connectVictim = async () => {
-			await owner.connect({ ...sessionInfo, name: "victim-owner", group: groupB });
-			owner.registerPendingStageRoute(runB, groupB, "victim-capability", [
-				{
-					stageId: "reviewer",
-					stageName: "reviewer",
-					target: stageTarget,
-					group: `${groupB}/isolated`,
-					lifecycle: "running",
-					routeEligible: true,
-				},
-			]);
-			await owner.listSessions();
-			await stage.connect({ ...sessionInfo, name: "victim-stage", group: `${groupB}/isolated` });
-			await stage.registerLiveWorkflowStageRoute(runB, ["reviewer"], "victim-capability");
-		};
-		const assertIsolated = async () => {
-			const registration = (await owner.listSessions()).find((session) => session.name === "multigroup-worker");
-			assert.ok(registration);
-			assert.deepEqual(
-				registration.groups,
-				suffix ? [groupB, "default"] : [groupB],
-				"reconnect must not restore a deliberately left home group",
-			);
-			const direct = await worker.execute({
-				action: "send",
-				to: owner.sessionId!,
-				message: "joined member traffic",
-			});
-			assert.equal(direct.details.delivered, true, direct.content[0]?.text);
-			for (const target of [`${groupB}/**`, `${groupB}/review-*`, `${groupB}/future`, stageTarget]) {
-				const sent = await worker.execute({ action: "send", to: target, message: "must not gain control" });
-				assert.equal(sent.isError, true, `worker gained control of ${target}: ${sent.content[0]?.text}`);
-				// A workflow stage can't gain control by joining, so the refusal says so instead of suggesting a join (#4006).
-				assert.match(
-					sent.content[0]?.text ?? "",
-					new RegExp(
-						`A workflow stage in ${homeGroup} cannot send to stages of ${groupB}; joining that group does not grant it control`,
-					),
-				);
-			}
-			const listed = await worker.execute({ action: "list", group: `${groupB}/isolated` });
-			assert.ok(!listed.content[0]?.text.includes(stageTarget), listed.content[0]?.text);
-			assert.deepEqual(requests, [], "unauthorized operations must never reach the route owner");
-		};
-		try {
-			await worker.start();
-			assert.equal((await worker.execute({ action: "join", group: groupB })).isError, false);
-			// Cover both reclassification as another invocation owner and as an ordinary host.
-			if (suffix) assert.equal((await worker.execute({ action: "join", group: "default" })).isError, false);
-			assert.equal((await worker.execute({ action: "leave", group: homeGroup })).isError, false);
-			await connectVictim();
-			await assertIsolated();
-			await stage.disconnect();
-			await owner.disconnect();
-			const firstBroker = await waitForBroker();
-			killBroker(firstBroker);
-			await waitForBroker(firstBroker);
-			await waitFor("the workflow worker to re-register", async () =>
-				(await probeSessionNames(groupB)).includes("multigroup-worker") ? true : undefined,
-			);
-			await connectVictim();
-			await assertIsolated();
-		} finally {
-			await stage.disconnect();
-			await owner.disconnect();
-			await worker.shutdown();
-		}
-	},
-);
-
 test(
 	"a failed background reconnect still recovers the session with no intercom tool call",
 	async () => {
 		const forced = failFirstConnectAttempt("background");
-		const session = extensionFixture("reconnect-recovery-session", "reconnect-recovery", {
-			intercomGroup: "default",
-		});
+		const session = extensionFixture("reconnect-recovery-session", "reconnect-recovery");
 		intercomHeavy(session.pi as never, forced.overrides);
 		try {
 			await session.start();
@@ -704,9 +506,7 @@ test(
 
 test("a failed explicit tool connect surfaces the error and still leaves a scheduled retry", async () => {
 	const forced = failFirstConnectAttempt("tool");
-	const session = extensionFixture("reconnect-tool-failure-session", "reconnect-tool-failure", {
-		intercomGroup: "default",
-	});
+	const session = extensionFixture("reconnect-tool-failure-session", "reconnect-tool-failure");
 	intercomHeavy(session.pi as never, forced.overrides);
 	try {
 		await session.start();
@@ -742,143 +542,8 @@ test("a failed explicit tool connect surfaces the error and still leaves a sched
 	}
 });
 
-test(
-	"a running workflow stage regains list visibility and both route aliases after broker churn",
-	async () => {
-		const runId = "6a1f3c2e-84b1-4d0b-9b7c-2f5a1c0d4e39";
-		const stageId = "b2f9a7c4-30ab-4a1e-8f6d-91c7de5b2a08";
-		const stageName = "reviewer";
-		const workflowGroup = `workflow:${runId}`;
-		const store = createStore();
-		const backend = await createMemoryTestBackend();
-		await backend.commitWorkflowRegistration({
-			workflowId: runId,
-			name: "reconnect-flow",
-			inputs: {},
-			status: "running",
-			createdAt: 1,
-		});
-		setDurableBackend(backend);
-
-		const owner = extensionFixture("reconnect-owner-session", "reconnect-owner", { intercomGroup: "default" });
-		intercomHeavy(owner.pi as never);
-		const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
-		const sender = extensionFixture("reconnect-sender-session", "reconnect-sender", {
-			intercomGroup: workflowGroup,
-		});
-		intercomHeavy(sender.pi as never);
-
-		const forced = failFirstConnectAttempt("background");
-		const pendingStageDelivery = createWorkflowPendingStageDelivery(store, runId, stageId, stageName);
-		const stage = extensionFixture("reconnect-stage-session", stageName, {
-			intercomGroup: workflowGroup,
-			kind: "workflow-stage",
-			workflowRunId: runId,
-			workflowStageId: stageId,
-			workflowStageName: stageName,
-			pendingStageDelivery,
-		});
-		intercomHeavy(stage.pi as never, forced.overrides);
-
-		const stageTarget = `workflow:${runId}/${stageId}`;
-		const stageNameTarget = `workflow:${runId}/${stageName}`;
-		const stageIsRunning = (): boolean => store.runs()[0]?.stages[0]?.status === "running";
-
-		try {
-			await owner.start();
-			store.recordRunStart({
-				id: runId,
-				name: "reconnect-flow",
-				inputs: {},
-				status: "running",
-				toolNodes: [],
-				stages: [
-					{
-						id: stageId,
-						name: stageName,
-						status: "running",
-						sessionId: "reconnect-stage-session",
-						parentIds: [],
-						toolEvents: [],
-						pendingStageDeliveryAvailable: true,
-					},
-				],
-				startedAt: 1,
-			});
-			await owner.settleRouteAnnouncement();
-			await sender.start();
-			await stage.start();
-
-			const baselineList = await sender.execute({ action: "list" });
-			assert.equal(baselineList.isError, false);
-			assert.ok(
-				(baselineList.content[0]?.text ?? "").includes(
-					`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``,
-				),
-			);
-			for (const target of [stageTarget, stageNameTarget]) {
-				const sent = await sender.execute({ action: "send", to: target, message: `baseline to ${target}` });
-				assert.equal(sent.details.delivered, true, `baseline send to ${target} must be delivered live`);
-			}
-			await waitFor("both baseline stage messages", async () =>
-				stage.injectedMessages.length >= 2 ? true : undefined,
-			);
-			assert.equal(stageIsRunning(), true);
-
-			const firstBroker = await waitForBroker();
-			forced.arm();
-			const killedBroker = await killBrokerProcess(firstBroker);
-			await forced.failed;
-			assert.equal(stageIsRunning(), true, "broker churn must not change the workflow stage lifecycle");
-
-			// Wait for the replacement broker before touching any tool, so the sender's polling can
-			// never be what respawned it. The owner's route client and the stage both recover on
-			// their own timers; whichever wins the spawn, only the stage can restore its live route.
-			const recoveredBroker = await waitForBroker(firstBroker);
-			await waitForKilledBrokerExit(killedBroker);
-			assert.equal(processIsAlive(recoveredBroker.pid), true);
-			assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
-
-			const recoveredList = await waitFor("the stage to return to the intercom roster", async () => {
-				const listed = await sender.execute({ action: "list" });
-				const text = listed.content[0]?.text ?? "";
-				return text.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``)
-					? text
-					: undefined;
-			});
-			assert.ok(recoveredList.includes(`- \`${stageTarget}\` [RUNNING] workflow stage: reviewer session: \``));
-			assert.equal(forced.failures(), 1, "exactly one stage reconnect attempt must have been forced to fail");
-			assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
-
-			const before = stage.injectedMessages.length;
-			for (const target of [stageTarget, stageNameTarget]) {
-				const sent = await waitFor(`delivery to ${target} after broker churn`, async () => {
-					const result = await sender.execute({ action: "send", to: target, message: `recovered to ${target}` });
-					return result.details.delivered === true ? result : undefined;
-				});
-				assert.equal(sent.isError, false);
-				assert.equal(
-					sent.details.queued,
-					undefined,
-					`${target} must route live, not fall back to durable queueing`,
-				);
-			}
-			await waitFor("both recovered stage messages", async () =>
-				stage.injectedMessages.length >= before + 2 ? true : undefined,
-			);
-			assert.equal(stageIsRunning(), true, "the workflow stage must never have left running");
-		} finally {
-			await stage.shutdown();
-			await sender.shutdown();
-			disposeBridge();
-			await owner.shutdown();
-		}
-	},
-	KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS,
-);
-
 test("a reconnect that fails after the broker accepted it leaves no second registration", async () => {
-	const session = extensionFixture("reconnect-orphan-session", "reconnect-orphan", { intercomGroup: "default" });
+	const session = extensionFixture("reconnect-orphan-session", "reconnect-orphan");
 	intercomHeavy(session.pi as never);
 	// `beforeConnectAttempt` fires before `spawnBrokerIfNeeded`, so it can only fail an attempt
 	// that never opened a socket. This failure has to land *after* `connect()` resolved — that is
@@ -967,62 +632,3 @@ test("a reconnect that fails after the broker accepted it leaves no second regis
  * as forward-looking falsifiers: `attempts` rises above 1 if a startup retry is ever made real,
  * and `heavyShutdowns` drops to 0 if the rejected-candidate disposal regresses.
  */
-test("a failed lazy workflow-stage startup connect disposes the candidate instead of retrying", async () => {
-	const runId = "0f4c8a2b-71de-4b93-9a5f-6c2d81e0b7a4";
-	const stageId = "a91b6d3c-52f8-4e17-8c0a-3d7b45f9e128";
-	const store = createStore();
-	store.recordRunStart({
-		id: runId,
-		name: "startup-disposal-flow",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [{ id: stageId, name: "reviewer", status: "running", parentIds: [], toolEvents: [] }],
-		startedAt: 1,
-	});
-	const stage = extensionFixture("startup-disposal-session", "startup-disposal", {
-		intercomGroup: `workflow:${runId}`,
-		kind: "workflow-stage",
-		workflowRunId: runId,
-		workflowStageId: stageId,
-		workflowStageName: "reviewer",
-		pendingStageDelivery: createWorkflowPendingStageDelivery(store, runId, stageId, "reviewer"),
-	});
-	let attempts = 0;
-	let heavyShutdowns = 0;
-	// Drive the real lightweight wrapper so the disposal path is production code, and observe the
-	// disposal directly through one extra handler on the proxy `pi` it hands to heavy. That is
-	// what keeps this sleep-free: waiting out a 1s backoff to assert a negative would be both
-	// slower and weaker evidence.
-	intercomLightweight(stage.pi as never, {
-		importHeavy: async () => ({
-			default: (heavyPi) => {
-				heavyPi.on("session_shutdown", () => {
-					heavyShutdowns += 1;
-				});
-				return intercomHeavy(heavyPi, {
-					beforeConnectAttempt: (reason) => {
-						if (reason !== "startup") return;
-						attempts += 1;
-						throw new Error(FORCED_FAILURE_MESSAGE);
-					},
-				});
-			},
-		}),
-	});
-
-	let startupError = "";
-	try {
-		await stage.start();
-	} catch (error) {
-		startupError = String(error);
-	}
-
-	assert.match(startupError, new RegExp(FORCED_FAILURE_MESSAGE), "the startup failure must reach the caller");
-	assert.equal(attempts, 1, "a failed startup connect must not be retried behind the caller");
-	assert.ok(
-		heavyShutdowns >= 1,
-		"the rejected candidate must be disposed, which is what clears the timer the finally armed",
-	);
-	assert.equal(stage.toolExecutions, 0);
-});

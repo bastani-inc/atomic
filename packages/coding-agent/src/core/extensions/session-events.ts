@@ -37,7 +37,7 @@ export interface SessionStartEvent {
 }
 
 /** Why a session's interrupted-work recovery is running. */
-export type SessionRecoveryReason = "startup" | "resume" | "workflow_stage_resume";
+export type SessionRecoveryReason = "startup" | "resume";
 
 /**
  * Fired once per session, after the host has shown the transcript and before interrupted

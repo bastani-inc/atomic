@@ -20,6 +20,7 @@ export function isSubagentChildRecord(value: SessionEntry): value is CustomEntry
 	const data = value.data as Partial<SubagentChildRecord> | undefined;
 	return (
 		data?.version === 1 &&
+		(data.owner === undefined || data.owner?.kind === "session") &&
 		typeof data.childId === "string" &&
 		typeof data.runId === "string" &&
 		typeof data.index === "number" &&
@@ -744,7 +745,7 @@ export function subagentChildRecordOf(ownerSessionId: string, childId: string): 
 /**
  * The latest record of one of `ownerSessionId`'s children, or undefined when it did not launch it or when the session
  * holding that record is not open in this process. For callers that must not fail on a record they cannot read: a
- * workflow stage's close, a restore that reads the owner's own session instead, a wake that only looks for results.
+ * restore that reads the owner's own session instead, or a wake that only looks for results.
  */
 export function readableSubagentChildRecordOf(
 	ownerSessionId: string,
@@ -954,21 +955,13 @@ export function reservationRecordLookup(
 	};
 }
 
-/** Ids of every child of `ownerSessionId` in the index, without reading their records. */
-export function subagentChildIdsOf(ownerSessionId: string): string[] {
-	const childIds: string[] = [];
-	for (const entry of entries.values()) if (entry.ownerSessionId === ownerSessionId) childIds.push(entry.childId);
-	return childIds;
-}
-
 /** How many children the index holds; counted by tests and the benchmark. */
 export function subagentChildIndexSize(): number {
 	return entries.size;
 }
 
 /**
- * What the index keeps of a child, by its child id: where it stands even when its full record cannot be read, as a
- * closing workflow stage needs. Read by tests and the benchmark too.
+ * What the index keeps of a child, by its child id, even when its full record cannot be read.
  */
 export function subagentChildIndexEntry(childId: string): SubagentChildIndexEntry | undefined {
 	return entries.get(childId);
@@ -999,8 +992,8 @@ export function observedSubagentRunIds(ownerSessionId: string): Set<string> {
 }
 
 /**
- * Redraw a card when its child's records change. A card shown outside its owner's session (a workflow stage's
- * transcript) reads that session's records from the store once.
+ * Redraw a card when its child's records change. A card shown outside its owner's session reads that session's
+ * records from the store once.
  */
 export function watchSubagentChildCard(
 	card: object,

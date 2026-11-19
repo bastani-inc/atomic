@@ -2,12 +2,10 @@ import assert from "node:assert/strict";
 import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, type TranscriptContext } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
-import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
 import { createHarness, getMessageText } from "./suite/harness.ts";
 
-test.each(["followUp", "interrupt"] as const)(
-	"protected idle %s applies the custom starter hook once",
+test.each(["followUp", "steer"] as const)(
+	"a protected idle %s invokes the custom starter hook once with the delivered text",
 	async (deliverAs) => {
 		const starters: string[] = [];
 		const requests: TranscriptContext[] = [];
@@ -15,7 +13,8 @@ test.each(["followUp", "interrupt"] as const)(
 			extensionFactories: [
 				(pi) => {
 					pi.on("before_agent_start", (event) => {
-						if (event.messageType === "custom") starters.push(event.message.customType);
+						if (event.messageType === "custom" && typeof event.message.content === "string")
+							starters.push(event.message.content);
 						return {
 							systemPrompt: "protected starter system prompt",
 							message: { customType: "hook-context", content: "hook supplied context", display: false },
@@ -25,9 +24,6 @@ test.each(["followUp", "interrupt"] as const)(
 			],
 		});
 		try {
-			(
-				harness.session as AgentSession & { _workflowStageAdmission: WorkflowStageAdmissionBoundary }
-			)._workflowStageAdmission = new WorkflowStageAdmissionBoundary();
 			harness.setResponses([
 				(context) => {
 					requests.push(context);
@@ -47,7 +43,7 @@ test.each(["followUp", "interrupt"] as const)(
 				{ triggerTurn: true, persistWhenStreaming: true, deliverAs },
 			);
 			await settled;
-			assert.deepEqual(starters, ["protected-starter"]);
+			assert.deepEqual(starters, ["protected task"]);
 			assert.ok(requests.length > 0);
 			assert.equal(getCurrentSystemPrompt(requests[0]!.messages), "protected starter system prompt");
 			assert.ok(

@@ -40,8 +40,7 @@ import type { TaskTranscriptEnvironment } from "../../packages/coding-agent/src/
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
-import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
-import { runStageTaskAction } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
+
 import { countingDatabase } from "../helpers/counting-database.js";
 import { agent } from "../helpers/released-task-launch.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -1151,74 +1150,25 @@ test.each([
 	},
 );
 
-test.each(["local", "worker"] as const)(
-	"paging a long failed reply in the %s transcript shows its error only after the last block (#5651)",
-	async (location) => {
-		const session = SessionManager.inMemory();
-		await session.appendMessage({
-			...assistant(
-				Array.from({ length: 101 }, (_, i) => ({ type: "text", text: `part-${String(i).padStart(3, "0")}` })),
-				"error",
-			),
-			errorMessage: "request failed here",
-		});
-		const host = await openTranscript(session, {
-			height: 480,
-			source: (owner) => {
-				if (location === "local") return owner;
-				const worker = new PooledStageTaskSource(async (id, action) =>
-					structuredClone(await runStageTaskAction(owner, id, action)),
-				);
-				return Object.assign(Object.create(owner) as TaskViewSource, {
-					readTaskTranscript: worker.readTaskTranscript.bind(worker),
-				});
-			},
-		});
-		try {
-			host.inspector.handleInput(CTRL_HOME);
-			host.frame();
-			await flush();
-			const body = host.text();
-			assert.match(body, /part-000[\s\S]*part-100[\s\S]*request failed here/);
-			assert.equal(body.split("request failed here").length - 1, 1);
-		} finally {
-			await host.dispose();
-		}
-	},
-);
-
-test("worker pages containing only failed tool calls send just the transcript (#5651)", async () => {
+test("paging a long failed reply in the local transcript shows its error only after the last block (#5651)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({
 		...assistant(
-			Array.from({ length: 101 }, (_, i) => ({ type: "toolCall", id: `tool-${i}`, name: "read", arguments: {} })),
+			Array.from({ length: 101 }, (_, i) => ({ type: "text", text: `part-${String(i).padStart(3, "0")}` })),
 			"error",
 		),
-		errorMessage: "provider outage",
+		errorMessage: "request failed here",
 	});
-	const entry = { ...session.getEntries()[0], id: "x".repeat(65_536) };
-	const fixture = taskFixture();
+	const host = await openTranscript(session, { height: 480 });
 	try {
-		await fixture.start();
-		fixture.runners[0].context.bindTranscript({
-			getSessionId: () => session.getSessionId(),
-			getEntries: () => [entry],
-		});
-		const owner = ownerTaskViewSource(fixture.store);
-		const id = fixture.runners[0].context.ref.taskId;
-		let cursor: string | undefined;
-		for (const blocks of [100, 1]) {
-			const reply = await runStageTaskAction(owner, id, { kind: "transcript", cursor });
-			assert.ok(reply.kind === "transcript" && reply.result.ok);
-			const [message] = reply.result.value.messages;
-			assert.ok(message.role === "assistant");
-			assert.equal(message.content.length, blocks);
-			assert.equal(message.stopReason, "error");
-			assert.deepEqual(Object.keys(reply), ["kind", "result"]);
-			cursor = reply.result.value.nextCursor;
-		}
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		const body = host.text();
+		assert.match(body, /part-000[\s\S]*part-100[\s\S]*request failed here/);
+		assert.equal(body.split("request failed here").length - 1, 1);
 	} finally {
-		await fixture.dispose();
+		await host.dispose();
 	}
 });
 

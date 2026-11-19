@@ -7,7 +7,6 @@ import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { carryRowSource, noteRowSource, noteSavedSeq } from "../../core/tasks/transcript-origin.js";
-import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -230,10 +229,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 			this.workingRunMeter.awaitRetry(session.turnStartedAt, runInProgress(session.messages).settledTokens);
 		void deliverAgentEvent(frame, wait);
 	}
-	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
-	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
-		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
-	});
 	const panelUi = this.runtimeHost instanceof IsolatedInteractiveRuntime ? undefined : this.createExtensionUIContext();
 	const disposeAgentPanel =
 		panelUi === undefined
@@ -264,7 +259,6 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 			this.fallbackLoader.stop();
 			this.fallbackLoader = undefined;
 		}
-		disposeWorkflowActivity();
 		disposeAgentPanel();
 		disposeInteractiveTasks(this);
 	};
@@ -294,9 +288,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 	this.footer.invalidate();
 	this.programStatus.handleEvent(event);
 	// Rows this event draws for a saved line stand for that line, wherever a compaction keeps them.
-	const liveChat = this.chatContainer;
-	const drawnFrom = liveChat.children.length;
-	const drawnAfter = liveChat.children.at(-1);
+	const liveChat = chatReceipt(event) ? this.chatContainer : undefined;
+	const drawnFrom = liveChat?.children.length ?? 0;
+	const drawnAfter = liveChat?.children.at(-1);
 
 	switch (event.type) {
 		case "agent_start":
@@ -864,7 +858,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 	if (receipt) {
 		chatRecordsChanged(this, receipt);
 		chatLineDrawnLive(this, receipt.id);
-		if (this.chatContainer === liveChat && liveChat.children[drawnFrom - 1] === drawnAfter)
+		if (liveChat && this.chatContainer === liveChat && liveChat.children[drawnFrom - 1] === drawnAfter)
 			noteLiveChatRows(
 				liveChat.children.slice(drawnFrom).filter((row) => !isChatMessageComponent(row)),
 				receipt.id,

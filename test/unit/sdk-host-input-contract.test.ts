@@ -58,7 +58,8 @@ test("public ExtensionBindings export retains its exact concrete binding contrac
 
 test("public host-input exports retain concrete original questionnaire types", () => {
 	assert.deepEqual(exact, [true, true, true, false, false]);
-	assert.equal(options.workflowRunId, undefined);
+	assert.equal(options.requestId, "request");
+	assert.equal(options.sessionId, "session");
 	assert.equal(diagnostic.level, "warning");
 	assert.equal(typeof incomplete.confirm, "function");
 	assert.equal(typeof invalidConfirm, "function");

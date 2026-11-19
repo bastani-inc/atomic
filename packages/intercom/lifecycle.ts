@@ -34,7 +34,6 @@ interface LifecycleDeps {
   releaseRunningReplyWaits?(error: Error): void;
   replyTracker: ReplyTracker | (() => ReplyTracker);
   bindReplyTracker?(ctx: ExtensionContext): void;
-  preserveReplyTrackerOnCleanup?(): boolean;
   pendingIdleMessages: InboundIdleQueue;
   clearInboundFlushTimer(): void;
   scheduleInboundFlush(delayMs?: number): void;
@@ -42,18 +41,14 @@ interface LifecycleDeps {
   syncPresenceIdentity(sessionId: string): void;
   currentStatus(): string;
   restoreIntercomSessionIdEnv?(): void;
-  disconnectAuxiliaryClients?(): Promise<void>;
 }
 
 export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps): void {
   const activeReplyTracker = (): ReplyTracker =>
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   let hasActiveSession = false;
-  let unbindStageClose: (() => void) | undefined;
 
   async function cleanupRuntime(reason: string): Promise<void> {
-    unbindStageClose?.();
-    unbindStageClose = undefined;
     deps.setRuntimeStarted(false);
     deps.setShuttingDown(true);
     deps.setDisposed(true);
@@ -62,7 +57,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     const brokerStarts = deps.abortBrokerStarts?.();
     if (deps.releaseRunningReplyWaits !== undefined) deps.releaseRunningReplyWaits(new Error(reason));
     else deps.rejectReplyWaiter(new Error(reason));
-    if (deps.preserveReplyTrackerOnCleanup?.() !== true) activeReplyTracker().reset();
+    activeReplyTracker().reset();
     deps.pendingIdleMessages.clear();
     deps.clearInboundFlushTimer();
     deps.setAgentRunning(false);
@@ -78,13 +73,6 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     }
     // A broker this session already launched is waited for, so it never writes into the agent directory afterwards.
     await brokerStarts;
-    if (deps.disconnectAuxiliaryClients) {
-      try {
-        await deps.disconnectAuxiliaryClients();
-      } catch (error) {
-        if (!reportOwnedIntercomDiagnostic()) console.error(`Intercom failed to disconnect auxiliary clients during ${reason.toLowerCase()}; continuing cleanup:`, error);
-      }
-    }
     deps.restoreIntercomSessionIdEnv?.();
     await deps.setRuntimeContext(null);
     deps.setCurrentSessionId(null);
@@ -107,11 +95,6 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.activeTools.clear();
     await deps.setRuntimeContext(ctx);
     deps.bindReplyTracker?.(ctx);
-    const stage = ctx.orchestrationContext;
-    const closeSignal = stage?.kind === "workflow-stage" ? stage.messageAdmission?.boundary?.closeSignal : undefined;
-    closeSignal?.addEventListener("abort", deps.syncPresenceStatus, { once: true });
-    unbindStageClose = () => closeSignal?.removeEventListener("abort", deps.syncPresenceStatus);
-    if (closeSignal?.aborted) deps.syncPresenceStatus();
   });
 
   pi.on("session_shutdown", async () => {

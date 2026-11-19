@@ -12,11 +12,7 @@ import {
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import {
-	type AgentPanelAnswerOptions,
-	agentPanelItemReadAt,
-	promptAnswerOptionsOf,
-} from "../../../core/tasks/agent-panel-source.ts";
+import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
 import {
 	supersededReleasedAttempts,
 	waitingReleasedShells,
@@ -25,7 +21,6 @@ import {
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
 	bindTaskClock,
-	liveElapsedFromRead,
 	type TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
@@ -265,7 +260,6 @@ export class TaskInspector implements Component {
 		{ readonly text: string; readonly raw: string; readonly index: number }
 	>();
 	private readonly paintedItemFinished = new Map<string, boolean>();
-	private readonly workflowReadAt = new WeakMap<TaskBoardItem, number>();
 
 	private sending = false;
 
@@ -497,6 +491,7 @@ export class TaskInspector implements Component {
 		if (sourceItems.length === 0) return tasks;
 		const items: TaskBoardRow[] = [];
 		for (const item of sourceItems) {
+			if (item.kind !== "agent" && item.kind !== "shell") continue;
 			const row: TaskBoardRow = { id: item.id, kind: "item", item };
 			if (!rowFinished(row)) this.dismissedItems.delete(item.id);
 			if (!this.dismissedItems.has(item.id)) items.push(row);
@@ -1508,16 +1503,6 @@ export class TaskInspector implements Component {
 	private withBoardElapsed(row: TaskBoardRow): TaskBoardRow {
 		if (row.kind === "task") return { ...row, task: this.withLiveElapsed(row.task) };
 		if (row.item.state === "queued") return row;
-		if (row.item.kind === "workflow") {
-			if (!taskClockRunning(row.item.state) || row.item.elapsedMs === undefined) return row;
-			let since = agentPanelItemReadAt(row.item) ?? this.workflowReadAt.get(row.item);
-			if (since === undefined) {
-				since = Date.now();
-				this.workflowReadAt.set(row.item, since);
-			}
-			const elapsedMs = liveElapsedFromRead(row.item.elapsedMs, since, true) ?? row.item.elapsedMs;
-			return elapsedMs === row.item.elapsedMs ? row : { ...row, item: { ...row.item, elapsedMs } };
-		}
 		const clocks = taskClockOf(row.item);
 		if (clocks === undefined) return row;
 		const elapsedMs = clocks.elapsedMs(row.item.id, row.item.elapsedMs, taskClockRunning(row.item.state));
@@ -1801,8 +1786,7 @@ export class TaskInspector implements Component {
 		const body: (string | TaskBoardRow)[] = [];
 		let selectedLine = -1;
 		let selectedEnd = -1;
-		if (!all.length)
-			body.push(theme.fg("muted", "   No background work. Subagents, shells and workflow runs appear here."));
+		if (!all.length) body.push(theme.fg("muted", "   No background work. Subagents and shells appear here."));
 		else if (!rows.length) body.push(theme.fg("muted", `   Nothing matches "${taskDisplayText(this.filter)}".`));
 		for (const group of groups) {
 			body.push(theme.fg("muted", theme.bold(`   ${group.title}`)));

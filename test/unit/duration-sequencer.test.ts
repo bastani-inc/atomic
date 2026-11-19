@@ -110,7 +110,7 @@ interface ShardedSuite {
 
 const SHARDED_SUITES: readonly ShardedSuite[] = [
 	{ name: "unit", projects: ["unit"] },
-	{ name: "integration", projects: ["integration", "integration-load-gate", "integration-ui-gate"] },
+	{ name: "integration", projects: ["integration", "integration-ui-gate"] },
 	{ name: "coding-agent", root: "packages/coding-agent" },
 ];
 
@@ -162,10 +162,6 @@ for (const suite of SHARDED_SUITES) {
 				}
 				assert.ok(all.length > count, `the ${suite.name} suite globbed no files`);
 				if (suite === INTEGRATION) {
-					assert.ok(
-						all.some((file) => file.endsWith("workflow-pool-load-gate.test.ts")),
-						"the load gate is not sharded",
-					);
 					assert.ok(
 						all.some((file) => file.endsWith("interactive-event-loop-guard.test.ts")),
 						"the interactive event-loop guard is not sharded",
@@ -226,12 +222,9 @@ test(
 			)[process.platform === "win32" ? "win32" : "linux"];
 			const sorted = await sequencer.sort([...specifications]);
 			assert.equal(sorted.length, specifications.length);
-			assert.deepEqual(
-				sorted.slice(-2).map((specification) => specification.project.name),
-				["integration-load-gate", "integration-ui-gate"],
-			);
+			assert.equal(sorted.at(-1)?.project.name, "integration-ui-gate");
 			const weights = sorted
-				.slice(0, -2)
+				.slice(0, -1)
 				.map(
 					(specification) =>
 						record[relative(vitest.config.root, specification.moduleId).replaceAll("\\", "/")] ?? UNKNOWN_FILE_MS,

@@ -106,7 +106,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	isBashMode = false;
 	localBashRunning = false;
 	sdkBusy = false;
-	/** Escape interrupt plus asynchronous workflow pause acknowledgement. */
+	/** Escape interrupt plus asynchronous pause acknowledgement. */
 	interruptSettlement: Promise<void> | undefined;
 	/** Recorded pause failure consumed by the first submit after settlement. */
 	interruptFailureMessage: string | undefined;

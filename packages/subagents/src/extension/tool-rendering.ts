@@ -39,8 +39,6 @@ import {
 import {
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 } from "../runs/foreground/subagent-child-records.js";
 import { getBurstDisplay } from "../runs/foreground/subagent-executor-burst-display.js";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor-types.js";
@@ -79,7 +77,6 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	web_search: "WebSearch",
 	fetch_content: "Fetch",
 	subagent: "Agent",
-	workflow: "Workflow",
 	intercom: "Intercom",
 	contact_supervisor: "Supervisor",
 };
@@ -892,33 +889,15 @@ function buildOutcomeToolBlock(input: {
 				if (terminal === "ok") {
 					status = "success";
 					statusLine = statJoin(theme, ["Done", elapsedText, tokenText]);
-				} else if (
-					terminal === "error" ||
-					terminal === SUBAGENT_CHILD_GONE_STATUS ||
-					terminal === SUBAGENT_CHILD_STAGE_CLOSED_STATUS
-				) {
+				} else if (terminal === "error" || terminal === SUBAGENT_CHILD_GONE_STATUS) {
 					status = "failure";
 					const reason = firstDisplayLine(
-						failure ??
-							(terminal === SUBAGENT_CHILD_GONE_STATUS
-								? "gone after a restart"
-								: terminal === SUBAGENT_CHILD_STAGE_CLOSED_STATUS
-									? "its workflow stage ended"
-									: ""),
+						failure ?? (terminal === SUBAGENT_CHILD_GONE_STATUS ? "gone after a restart" : ""),
 					);
 					statusLine = theme.fg("error", ["Failed", elapsedText, reason].filter(Boolean).join(" · "));
-				} else if (
-					terminal === "paused" ||
-					terminal === "quit" ||
-					terminal === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
-				) {
+				} else if (terminal === "paused" || terminal === "quit") {
 					status = "paused";
-					const label =
-						terminal === "quit"
-							? "Quit · paused · awaiting resume"
-							: terminal === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
-								? "Paused with its workflow stage · awaiting resume"
-								: "Paused · awaiting resume";
+					const label = terminal === "quit" ? "Quit · paused · awaiting resume" : "Paused · awaiting resume";
 					statusLine = statJoin(theme, [label, elapsedText]);
 				} else if (terminal === SUBAGENT_CHILD_RELEASED_STATUS) {
 					status = "waiting";

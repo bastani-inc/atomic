@@ -1,26 +1,9 @@
 import type { McpServerContribution } from "../mcp-servers.ts";
-import type { ResolvedResource } from "../package-manager.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "../resource-loader.ts";
 
-export interface WorkflowResourceProvider {
-	get(): ResolvedResource[];
-	refresh?(): Promise<ResolvedResource[]>;
-	/** Package-manifest MCP servers resolved alongside the workflow resources. */
-	getMcpServers?(): McpServerContribution[];
+/** Package-manifest MCP servers available to this loader's extensions. */
+export interface PackageMcpServerSource {
+	getMcpServers(): McpServerContribution[];
 }
-
-export type WorkflowResourceProviderInput = WorkflowResourceProvider | ResolvedResource[];
 
 export type ResourceLoaderInheritanceSnapshotProvider = () => DefaultResourceLoaderInheritanceSnapshot;
-
-function createStaticWorkflowResourceProvider(workflowResources: ResolvedResource[]): WorkflowResourceProvider {
-	return {
-		get: () => workflowResources,
-	};
-}
-
-export function normalizeWorkflowResourceProvider(input: WorkflowResourceProviderInput): WorkflowResourceProvider {
-	return Array.isArray(input) ? createStaticWorkflowResourceProvider(input) : input;
-}
-
-export const emptyWorkflowResourceProvider = createStaticWorkflowResourceProvider([]);

@@ -18,7 +18,7 @@ beforeEach(() => {
 afterEach(() => setKeybindings(previousKeys));
 
 function item(id: string, state: AgentPanelItem["state"]): AgentPanelItem {
-	return { id: `run:${id}`, kind: "workflow", state, name: id, task: "Build release" };
+	return { id: `run:${id}`, kind: "agent", state, name: id, task: "Build release" };
 }
 
 function harness(initial: AgentPanelItem[]) {
@@ -194,7 +194,7 @@ test("an empty task sheet advertises its live filter key (#5224)", async () => {
 	}
 });
 
-test("a paused workflow remains unfinished and needs confirmation to stop (#5224)", async () => {
+test("a paused extension row remains unfinished and needs confirmation to stop (#5224)", async () => {
 	const h = harness([item("release", "paused")]);
 	try {
 		const frame = h.paint();

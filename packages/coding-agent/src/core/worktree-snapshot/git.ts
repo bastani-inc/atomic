@@ -52,8 +52,7 @@ export function withWorktreeSnapshotGit<T>(
 
 /**
  * Why a snapshot cannot be recorded with the Git already on this machine, checked without downloading one: recording
- * only uses an installed or provisioned Git, so a session or workflow run that never needs Git otherwise starts no
- * download (#4322). Undefined when such a Git exists, or when an injected resolver decides.
+ * only uses an installed or provisioned Git, so a session that never needs Git otherwise starts no download (#4322). Undefined when such a Git exists, or when an injected resolver decides.
  */
 export async function installedGitUnavailable(): Promise<GitUnavailableError | undefined> {
 	if (resolveExecutable !== provisionedGit) return undefined;

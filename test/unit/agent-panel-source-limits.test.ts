@@ -8,7 +8,7 @@ import {
 	agentPanelItems,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 
-const row: AgentPanelItem = { id: "run:healthy", kind: "workflow", state: "running", name: "job", task: "implement" };
+const row: AgentPanelItem = { id: "run:healthy", kind: "agent", state: "running", name: "job", task: "implement" };
 
 function fixture(items: () => readonly AgentPanelItem[]) {
 	const hub = new AgentPanelSourceHub();

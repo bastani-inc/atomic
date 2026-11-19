@@ -232,8 +232,7 @@ async function buildSessionInfo(
 
 		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
 		const parentSessionPath = (header as SessionHeader).parentSessionId;
-		const workflow = classifiedWorkflowMetadata(header as SessionHeader);
-		const internal = workflow ? true : undefined;
+		const internal = classifiedWorkflowMetadata(header as SessionHeader) ? true : undefined;
 
 		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
 
@@ -247,7 +246,6 @@ async function buildSessionInfo(
 			...(hasName ? { hasName: true } : {}),
 			parentSessionPath,
 			...(internal ? { internal } : {}),
-			...(workflow ? { workflow } : {}),
 			created: new Date((header as SessionHeader).createdAt),
 			modified,
 			messageCount,

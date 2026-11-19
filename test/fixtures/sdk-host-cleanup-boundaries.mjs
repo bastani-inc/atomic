@@ -138,7 +138,7 @@ try {
 			handles.push(api.events.on(`ephemeral-${index}`, () => assert.ok(payload.bytes)));
 			return ref;
 		});
-		const publisher = api.registerWorkflowActivityPublisher();
+		const panelSource = api.registerAgentPanelSource({ items: () => [], subscribe: () => () => {} });
 		const lifetime = session.resourceLoader.getExtensions().extensions[0][Symbol.for("atomic.extension-api-lifetime.v1")];
 		assert.equal(lifetime.releases.size, 101);
 		const closing = session.dispose().then(() => undefined, (error) => error);
@@ -149,7 +149,7 @@ try {
 				else unsubscribe();
 				unsubscribe();
 			}
-			publisher.dispose();
+			panelSource.dispose();
 			assert.equal(lifetime.releases.size, 0);
 			for (let n = 0; n < 8; n++) { await tick(); global.gc(); }
 			assert.equal(weak.filter((ref) => ref.deref()).length, 0, "manual release retained callback captures");
@@ -166,7 +166,7 @@ try {
 		assert.equal(lifetime.releases.size, 0);
 		assert.equal(released, 100);
 		for (const unsubscribe of handles) unsubscribe();
-		publisher.dispose();
+		panelSource.dispose();
 		assert.equal(released, 100);
 	} else throw new Error(`Unknown scenario: ${mode}`);
 	console.log(JSON.stringify({ mode, verified: true }));

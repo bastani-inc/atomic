@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import type { IntercomClient } from "./broker/client.js";
 import type { SessionInfo } from "./types.js";
 
-/** Execution termination is not agent_end: interactive idle and workflow post-mortem remain replyable. */
+/** Execution termination is not agent_end: interactive idle remains replyable. */
 export function registerSubagentReplyCapability(
   pi: Pick<ExtensionAPI, "on">,
   client: () => Pick<IntercomClient, "updatePresence"> | null,

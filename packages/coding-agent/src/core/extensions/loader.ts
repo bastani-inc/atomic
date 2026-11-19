@@ -11,9 +11,8 @@ export {
 } from "./loader-core.js";
 export { discoverAndLoadExtensions } from "./loader-discovery.ts";
 export type {
+	PackageMcpServerSource,
 	ResourceLoaderInheritanceSnapshotProvider,
-	WorkflowResourceProvider,
-	WorkflowResourceProviderInput,
 } from "./loader-resources.ts";
 export { createExtensionRuntime } from "./loader-runtime.ts";
 export { clearExtensionCache } from "./loader-virtual-modules.js";

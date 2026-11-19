@@ -1,7 +1,7 @@
 import { replaceControlCharacters, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { INPUT_LABEL_MIN_COLUMNS } from "./input-label.ts";
 
-/** Every composer rule, the main chat's and the attached subagent and stage chats', draws this light glyph. */
+/** Every composer rule, the main chat's and the attached subagent chats', draws this light glyph. */
 const RULE_GLYPH = "─";
 
 export interface ComposerRuleLabel {
