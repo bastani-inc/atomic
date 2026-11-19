@@ -9,7 +9,7 @@ import type {
 	WidgetScrollRequest,
 	WidgetScrollState,
 } from "../../core/extensions/ui-types.js";
-import { parseHostSessionPickerRows } from "../../core/host-session-picker-rows.ts";
+import { parseHostSessionPickerRows } from "../../core/host-session-picker-rows.js";
 import type { KeyId } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import type { ToolGroupFamily, ToolGroupRole } from "../interactive/components/tool-block.ts";

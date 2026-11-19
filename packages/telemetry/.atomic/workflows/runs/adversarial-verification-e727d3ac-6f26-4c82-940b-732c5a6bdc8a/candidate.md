@@ -1,1 +1,0 @@
-[spy-prompt-result]

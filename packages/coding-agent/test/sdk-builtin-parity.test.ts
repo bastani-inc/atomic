@@ -2653,7 +2653,7 @@ test("reload seals captured input before candidate preparation and keeps success
 });
 
 // #3105: synchronous setters must retain their asynchronous extension execution.
-test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context", "shortcut"] as const)(
+test.each(["thinking", "name", "bus", "context", "forwarded context", "shortcut"] as const)(
 	"disposal drains detached %s handlers before registered cleanup",
 	async (kind) => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-thinking-drain-"));
@@ -2674,14 +2674,14 @@ test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context
 			settingsManager,
 			noExtensions: true,
 			extensionsOverride:
-				kind === "forwarded observer"
+				kind === "forwarded context"
 					? (result) => ({ ...result, runtime: new Proxy(result.runtime, {}) })
 					: undefined,
 			extensionFactories: [
 				(pi) => {
 					pi.on("thinking_level_select", kind === "thinking" ? suspend : () => {});
 					pi.on("session_info_changed", kind === "name" ? suspend : () => {});
-					if (kind === "context") pi.on("context", suspend);
+					if (kind === "context" || kind === "forwarded context") pi.on("context", suspend);
 					pi.registerShortcut("ctrl+shift+j", { handler: suspend });
 					pi.events.on("drain", suspend);
 					emitBus = () => pi.events.emit("drain", {});
@@ -2706,8 +2706,6 @@ test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context
 		if (kind === "thinking") assert.equal(await session.setThinkingLevel("high"), undefined);
 		else if (kind === "name") await session.setSessionName("raw name  ");
 		else if (kind === "bus") emitBus();
-		else if (kind === "observer" || kind === "forwarded observer")
-			session.extensionRunner.createContext().observeWorkflowActivity(suspend);
 		else if (kind === "shortcut")
 			void session.extensionRunner
 				.getShortcuts({})
@@ -4733,7 +4731,7 @@ test.each(["manual", "invalidate", "throwing", "invalidate-throwing"])(
 			Symbol.for("atomic.extension-api-lifetime.v1")
 		].releases;
 		const unsubscribe = api.events.on("ephemeral", () => {});
-		const publisher = api.registerWorkflowActivityPublisher();
+		const panelSource = api.registerAgentPanelSource({ items: () => [], subscribe: () => () => {} });
 		const closing = session.dispose().then(
 			() => undefined,
 			(error: unknown) => error,
@@ -4745,8 +4743,8 @@ test.each(["manual", "invalidate", "throwing", "invalidate-throwing"])(
 				if (mode === "throwing") assert.throws(unsubscribe, /release failed/);
 				else unsubscribe();
 				unsubscribe();
-				publisher.dispose();
-				publisher.dispose();
+				panelSource.dispose();
+				panelSource.dispose();
 				assert.equal(ledger.size, 0);
 			}
 			finish();

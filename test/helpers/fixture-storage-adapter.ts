@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import { loadStorageAdapter, type StorageAdapterModule } from "@bastani/atomic/storage";
 import { beforeAll } from "vitest";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
 import { moduleDir } from "./runtime.js";
 import { temporaryAgentDir } from "./temporary-agent-dir.js";
 
@@ -22,7 +21,7 @@ export function useFixtureStorageAdapter(): () => StorageAdapterModule {
 	let adapter: StorageAdapterModule | undefined;
 	beforeAll(async () => {
 		adapter = await loadStorageAdapter(join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"), {
-			agentDir: temporaryAgentDir(process.env[ENV_WORKFLOW_ARTIFACT_DIR]),
+			agentDir: temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR),
 			domain: "sessions",
 		});
 	}, FIRST_ADAPTER_LOAD_TIMEOUT_MS);

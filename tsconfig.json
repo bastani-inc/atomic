@@ -21,13 +21,6 @@
         "paths": {
             "@bastani/atomic": ["./packages/coding-agent/src/index.ts"],
             "@bastani/atomic/storage": ["./packages/coding-agent/src/core/storage/index.ts"],
-            "@bastani/atomic/workflows": ["./packages/workflows/src/authoring.ts"],
-            "@bastani/atomic/workflows/builtin": ["./packages/workflows/builtin/index.ts"],
-            "@bastani/atomic/workflows/builtin/*": ["./packages/workflows/builtin/*"],
-            "@bastani/workflows": ["./packages/workflows/src/index.ts"],
-            "@bastani/workflows/builtin": ["./packages/workflows/builtin/index.ts"],
-            "@bastani/workflows/builtin/*": ["./packages/workflows/builtin/*"],
-            "@bastani/workflows/*": ["./packages/workflows/src/*"],
             "@bastani/subagents": [
                 "./packages/subagents/src/extension/index.ts"
             ],
@@ -44,10 +37,9 @@
         "packages/coding-agent/src/**/*.d.ts",
         "packages/storage-libsql/*.js",
         "packages/storage-postgres/*.js",
-        "packages/workflows/**/*",
         "test/**/*",
         "examples/**/*",
-        ".atomic/workflows/**/*"
+        "scripts/release/*.ts"
     ],
     "exclude": [
         "node_modules",
@@ -63,7 +55,6 @@
         "test/fixtures/snapshot-store-0.9.89",
         "test/fixtures/intercom-0.9.88-pre-5067",
         "test/fixtures/intercom-pre-5218",
-        "test/fixtures/intercom-socket-lock-main",
-        "test/fixtures/shared-pool-0.9.88"
+        "test/fixtures/intercom-socket-lock-main"
     ]
 }

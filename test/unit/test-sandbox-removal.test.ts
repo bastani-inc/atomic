@@ -4,8 +4,7 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
-import setupWorkflowArtifacts from "../global-setup-workflow-artifacts.js";
+import setupTestDirectory from "../global-setup-test-directory.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 import { workspaceSandbox } from "../helpers/workspace-repos.js";
@@ -117,11 +116,11 @@ test("cleaning up a workspace sandbox Windows still holds returns at once, and t
 });
 
 test("a directory still held when its retries run out is removed by the run's teardown once it is let go", async () => {
-	const inherited = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
-	delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+	const inherited = process.env.ATOMIC_TEST_RUN_DIR;
+	delete process.env.ATOMIC_TEST_RUN_DIR;
 	const directory = makeTempDirectory("atomic-held-test-directory-");
 	try {
-		const teardown = setupWorkflowArtifacts();
+		const teardown = setupTestDirectory();
 		windows.held.add(directory);
 		removeTestDirectory(directory, { retries: 0, retryDelayMs: 0 });
 		windows.held.delete(directory);
@@ -131,7 +130,7 @@ test("a directory still held when its retries run out is removed by the run's te
 	} finally {
 		windows.held.delete(directory);
 		removeTempDirectory(directory);
-		if (inherited === undefined) delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
-		else process.env[ENV_WORKFLOW_ARTIFACT_DIR] = inherited;
+		if (inherited === undefined) delete process.env.ATOMIC_TEST_RUN_DIR;
+		else process.env.ATOMIC_TEST_RUN_DIR = inherited;
 	}
 });

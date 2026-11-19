@@ -69,7 +69,6 @@ function parentContext(cwd: string, group: string): ExtensionContext {
 		compact: () => {},
 		getSystemPrompt: () => "",
 		getDecisionModel: () => "",
-		observeWorkflowActivity: () => ({ dispose() {} }),
 	} satisfies ExtensionContext;
 }
 
