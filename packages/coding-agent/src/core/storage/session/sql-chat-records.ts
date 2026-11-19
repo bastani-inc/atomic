@@ -1,6 +1,11 @@
 import type { SqliteDatabase } from "../database.js";
 import { dialectOf } from "../dialect.js";
-import { decodeChatRecord, type SessionChatRecords } from "./chat-records.js";
+import {
+	type AnchoredChatRecord,
+	boundedChatRecord,
+	decodeChatRecord,
+	type SessionChatRecords,
+} from "./chat-records.js";
 
 /** A new physical table per format version; the main sessions schema (and all its old readers) stay unchanged. */
 export function sqlChatRecords(
@@ -26,6 +31,7 @@ export function sqlChatRecords(
 	const current = dialect.jsonText("summary_state", "epoch");
 	return {
 		async append(owner, anchor, record) {
+			record = boundedChatRecord(record);
 			await initialize();
 			// Use the session writer's own connection and serialization. A replacement with the same public ID
 			// cannot accept a delayed record from the old session. No revision or last-modified column is touched.
@@ -47,16 +53,27 @@ export function sqlChatRecords(
 		},
 		async read(owner, anchors) {
 			if (!anchors.length) return [];
-			const rows = await database.all<{ anchor: string; data: string }>(
-				`SELECT anchor,data FROM ${table} WHERE session_id=? AND epoch=? AND anchor IN (${anchors.map(() => "?").join(",")}) ORDER BY position`,
-				owner.id,
-				owner.epoch,
-				...anchors,
-			);
-			return rows.flatMap(({ anchor, data }) => {
-				const record = decodeChatRecord(data);
-				return record ? [{ anchor, record }] : [];
-			});
+			const result: AnchoredChatRecord[] = [];
+			let after: number | bigint = 0;
+			for (;;) {
+				const rows: { position: number | bigint; anchor: string; data: string }[] = await database.all<{
+					position: number | bigint;
+					anchor: string;
+					data: string;
+				}>(
+					`SELECT position,anchor,data FROM ${table} WHERE session_id=? AND epoch=? AND position>? AND anchor IN (${anchors.map(() => "?").join(",")}) ORDER BY position LIMIT 64`,
+					owner.id,
+					owner.epoch,
+					after,
+					...anchors,
+				);
+				for (const { anchor, data } of rows) {
+					const record = decodeChatRecord(data);
+					if (record) result.push({ anchor, record });
+				}
+				if (rows.length < 64) return result;
+				after = rows[rows.length - 1]!.position;
+			}
 		},
 	};
 }

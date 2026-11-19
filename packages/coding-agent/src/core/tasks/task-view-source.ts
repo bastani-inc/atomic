@@ -5,6 +5,7 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import { type ChatPosition, chatPosition } from "../storage/session/chat-records.js";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
@@ -22,6 +23,12 @@ import {
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
 import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
+import {
+	bindTaskChatPage,
+	type CaptureTaskChatFile,
+	captureTaskChatFile,
+	chatPageRequest,
+} from "./task-chat-records.js";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
 
@@ -62,6 +69,7 @@ type ArchiveReader = (
 		identifyRow?: (generation: string, row: number) => string | undefined,
 	) => PageResult | Promise<PageResult>,
 	loadSnapshot: typeof loadArchiveSnapshot,
+	captureFile?: CaptureTaskChatFile,
 ) => Promise<PageResult>;
 const archives = new WeakMap<
 	TaskTranscriptSource,
@@ -514,31 +522,35 @@ function readArchivedPage(
 	cursor: string | undefined,
 	read: ArchiveReader,
 ): Promise<PageResult> {
-	return read((entries, storedRows, generation, identifyRow) => {
-		const records: { row: number; notice: NoticePosition }[] = [];
-		const page = transcriptView(session, taskId, entries, cursor, {
-			storedRows,
-			collect: (row, notice) => records.push({ row, notice }),
-		});
-		if (!records.length) return page;
-		return generation().then((key) => {
-			let missing = key === undefined;
-			if (key !== undefined) {
-				for (const { row, notice } of records) {
-					const record = identifyRow ? identifyRow(key, row) : key;
-					if (record === undefined) missing = true;
-					else notice.occurrence = `${record}:${row}`;
+	return read(
+		(entries, storedRows, generation, identifyRow) => {
+			const records: { row: number; notice: NoticePosition }[] = [];
+			const page = transcriptView(session, taskId, entries, cursor, {
+				storedRows,
+				collect: (row, notice) => records.push({ row, notice }),
+			});
+			if (!records.length) return page;
+			return generation().then((key) => {
+				let missing = key === undefined;
+				if (key !== undefined) {
+					for (const { row, notice } of records) {
+						const record = identifyRow ? identifyRow(key, row) : key;
+						if (record === undefined) missing = true;
+						else notice.occurrence = `${record}:${row}`;
+					}
 				}
-			}
-			if (missing) {
-				// Without a record identity keep both failures. An unsaved final answer still has its live identity.
-				const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
-				if (notices.length) bindTaskTranscriptFragments(page, { notices });
-				else fragmentsByResult.delete(page);
-			}
-			return page;
-		});
-	}, loadArchiveSnapshot);
+				if (missing) {
+					// Without a record identity keep both failures. An unsaved final answer still has its live identity.
+					const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
+					if (notices.length) bindTaskTranscriptFragments(page, { notices });
+					else fragmentsByResult.delete(page);
+				}
+				return page;
+			});
+		},
+		loadArchiveSnapshot,
+		chatPageRequest.getStore() ? captureTaskChatFile : undefined,
+	);
 }
 
 /** The page of a task's transcript ending before `cursor`, read from `entries`, its session's history. */
@@ -561,10 +573,24 @@ function transcriptView(
 	const itemIds = new Set(items.map((item) => item.id));
 	let notices: NoticePosition[] | undefined;
 	let repeats: Map<string, number> | undefined;
+	const displayRequest = chatPageRequest.getStore();
+	const scope =
+		displayRequest &&
+		(displayRequest.scope ?? (!archive ? session.chatSession?.sessionManager?.chatRecordScope?.() : undefined));
+	const screen = scope && {
+		scope,
+		positions: new Map<string, number>(),
+		entries: [] as ChatPosition[],
+		root: page.ok && !page.value.nextCursor,
+	};
 	let nextMessageIndex = 0;
 	const messages = entries.flatMap<AgentMessage>((entry, row) => {
 		const id = entry.id;
 		if (!entryIds.has(id)) return [];
+		if (screen && (!archive || row < archive.storedRows) && id !== intoLater) {
+			screen.entries.push(chatPosition(entry));
+			screen.positions.set(id, nextMessageIndex);
+		}
 		if (entry.type !== "message") {
 			const projected = sessionEntryToContextMessages(entry);
 			nextMessageIndex += projected.length;
@@ -612,5 +638,6 @@ function transcriptView(
 	};
 	const result = { ok: true, value } as const;
 	if (notices) bindTaskTranscriptFragments(result, { notices });
+	if (screen) bindTaskChatPage(result, screen);
 	return result;
 }

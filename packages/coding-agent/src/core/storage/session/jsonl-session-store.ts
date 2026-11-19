@@ -21,7 +21,7 @@ import lockfile from "proper-lockfile";
 import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { bindChatEpoch, type ChatRecordOwner, type SessionChatRecords } from "./chat-records.js";
+import { bindChatEpoch, boundedChatRecord, type ChatRecordOwner, type SessionChatRecords } from "./chat-records.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
@@ -533,12 +533,19 @@ export class JsonlSessionStore implements SessionStore {
 		this.chatStore ??= {
 			has: hasFileChatRecords,
 			read: readFileChatRecords,
-			append: (owner, anchor, record) =>
-				this.run(async () => {
+			append: (owner, anchor, record) => {
+				record = boundedChatRecord(record);
+				return this.run(async () => {
 					const held = await this.locate(owner.id);
-					if (held && held.path === owner.file && epochOf(held.stats, JSON.stringify(held.header)) === owner.epoch)
+					if (
+						held &&
+						held.stats.birthtimeNs > 0n &&
+						held.path === owner.file &&
+						epochOf(held.stats, JSON.stringify(held.header)) === owner.epoch
+					)
 						await appendFileChatRecord(owner, anchor, record);
-				}),
+				});
+			},
 		};
 		return this.chatStore;
 	}

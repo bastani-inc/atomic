@@ -39,6 +39,22 @@ import {
 } from "./tool-group-tracker.ts";
 import type { RowRange } from "./transcript-block-clicks.ts";
 import { UserMessageComponent } from "./user-message.ts";
+
+type DisplayLine = { level: "error" | "warning" | "dim"; text: string; childUnprefixed?: true };
+const displayLines = new WeakMap<object, DisplayLine>();
+/** Only reader-created messages have this provenance; a legacy extension may own the very same custom type. */
+export function taskDisplayLine(line: DisplayLine): ChatMessageEntry {
+	const message: CustomMessage = {
+		role: "custom",
+		customType: HOST_NOTICE_TYPE,
+		content: line.text,
+		display: true,
+		details: line.level,
+		timestamp: 0,
+	};
+	displayLines.set(message, line.childUnprefixed ? { ...line, text: line.text.slice("Error: ".length) } : line);
+	return { role: "custom", kind: "custom", message };
+}
 export interface PersistedMessageMeta {
 	id: string;
 	timestamp: string;
@@ -110,6 +126,8 @@ type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 export interface ChatEntryGrouping {
 	/** The final row produced by each assistant occurrence, including its tool calls. */
 	readonly onAssistantGroup?: (lastRow: ChatMessageEntry) => void;
+	/** Source-row boundary after converting one message. No callbacks for consumers that don't need provenance. */
+	readonly onMessageGroup?: (lastRow: ChatMessageEntry | undefined) => void;
 	readonly tracker?: ToolGroupTracker;
 	readonly groupBash?: boolean;
 }
@@ -118,7 +136,7 @@ export function chatEntriesFromAgentMessages(
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
 	grouping: ChatEntryGrouping = {},
 ): ChatMessageEntry[] {
-	const entries = buildChatEntries(messages, messageMeta, grouping.onAssistantGroup);
+	const entries = buildChatEntries(messages, messageMeta, grouping.onAssistantGroup, grouping.onMessageGroup);
 	groupChatEntries(entries, grouping.tracker ?? new ToolGroupTracker({ groupBash: grouping.groupBash }));
 	return entries;
 }
@@ -126,8 +144,9 @@ function groupedChatEntries(
 	messages: readonly AgentMessage[],
 	tracker: ToolGroupTracker,
 	carried: boolean,
+	onMessageGroup?: ChatEntryGrouping["onMessageGroup"],
 ): { readonly entries: ChatMessageEntry[]; readonly carried: boolean } {
-	const entries = buildChatEntries(messages);
+	const entries = buildChatEntries(messages, undefined, undefined, onMessageGroup);
 	return { entries, carried: groupChatEntries(entries, tracker, carried) };
 }
 export function groupChatEntries(
@@ -187,11 +206,15 @@ function buildChatEntries(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
 	onAssistantGroup?: (lastRow: ChatMessageEntry) => void,
+	onMessageGroup?: (lastRow: ChatMessageEntry | undefined) => void,
 ): ChatMessageEntry[] {
 	const entries: ChatMessageEntry[] = [];
 	const pendingTools = new Map<string, Extract<ChatMessageEntry, { kind: "tool" }>>();
 	for (const message of messages) {
-		if (isLegacyCompactionSummaryMessage(message)) continue;
+		if (isLegacyCompactionSummaryMessage(message)) {
+			onMessageGroup?.(entries.at(-1));
+			continue;
+		}
 		switch (message.role) {
 			case "assistant": {
 				const meta = messageMeta?.get(message);
@@ -302,6 +325,7 @@ function buildChatEntries(
 				break;
 			}
 		}
+		onMessageGroup?.(entries.at(-1));
 	}
 	return entries;
 }
@@ -328,6 +352,14 @@ interface ToolEntryUpdate {
 	executionStarted?: boolean;
 	startedAt?: number;
 	breakBefore?: boolean;
+}
+const nextGroups = new WeakMap<LiveChatEntriesController, NonNullable<ChatEntryGrouping["onMessageGroup"]>>();
+/** @internal Only the next projected page of this controller supplies source positions. */
+export function bindNextChatGroups(
+	controller: LiveChatEntriesController,
+	observer: ChatEntryGrouping["onMessageGroup"],
+): void {
+	if (observer) nextGroups.set(controller, observer);
 }
 export class LiveChatEntriesController {
 	private streamingAssistantIndex: number | undefined;
@@ -411,16 +443,20 @@ export class LiveChatEntriesController {
 	}
 	/** Adds earlier history ahead of every entry, keeping a stream in progress and its pending tools in place. */
 	prependMessages(messages: readonly AgentMessage[]): void {
-		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
+		const onMessageGroup = nextGroups.get(this);
+		if (onMessageGroup) nextGroups.delete(this);
+		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash, onMessageGroup });
 		if (entries.length === 0) return;
 		this.entries.unshift(...entries);
 		if (this.streamingAssistantIndex !== undefined) this.streamingAssistantIndex += entries.length;
 		this.reindexPendingTools();
 	}
 	replaceMessages(messages: readonly AgentMessage[], preservedEntries: readonly { role: string }[] = []): void {
+		const onMessageGroup = nextGroups.get(this);
+		if (onMessageGroup) nextGroups.delete(this);
 		const started = this.startedToolEntries();
 		this.tracker.reset();
-		const grouped = groupedChatEntries(messages, this.tracker, false);
+		const grouped = groupedChatEntries(messages, this.tracker, false, onMessageGroup);
 		const entries = grouped.entries;
 		this.carriedToolBreak = grouped.carried;
 		if (started.size > 0) {
@@ -441,6 +477,41 @@ export class LiveChatEntriesController {
 		}
 		this.streamingAssistantIndex = undefined;
 		this.reindexPendingTools();
+	}
+	/** Patch only captured row objects, leaving live events that arrived after their page in place. */
+	decorateRows(
+		moves: ReadonlyMap<ChatMessageEntry, ChatMessageEntry>,
+		after: ReadonlyMap<ChatMessageEntry | null, readonly ChatMessageEntry[]>,
+	): boolean {
+		if (!moves.size && !after.size) return false;
+		const streaming =
+			this.streamingAssistantIndex === undefined ? undefined : this.entries[this.streamingAssistantIndex];
+		for (const [notice, prompt] of moves) {
+			const start = this.entries.indexOf(notice),
+				end = this.entries.indexOf(prompt);
+			if (start >= 0 && end > start) {
+				this.entries.splice(end, 1);
+				this.entries.splice(start, 0, prompt);
+			}
+		}
+		for (let i = this.entries.length - 1; i >= 0; i--) {
+			const row = this.entries[i];
+			if (isChatMessageEntry(row)) {
+				const added = after.get(row);
+				if (added?.length) for (let j = added.length - 1; j >= 0; j--) this.entries.splice(i + 1, 0, added[j]!);
+			}
+		}
+		const leading = after.get(null);
+		if (leading) for (let j = leading.length - 1; j >= 0; j--) this.entries.unshift(leading[j]!);
+		if (streaming) {
+			const i = this.entries.indexOf(streaming);
+			this.streamingAssistantIndex = i >= 0 ? i : undefined;
+		}
+		this.reindexPendingTools();
+		return true;
+	}
+	appendTaskLine(line: DisplayLine): void {
+		this.entries.push(taskDisplayLine(line));
 	}
 	appendUserText(text: string): void {
 		this.entries.push({ role: "user", kind: "user", text });
@@ -890,14 +961,13 @@ export function renderHostedChatEntry(
 				messageEntry.timestamp,
 			);
 		case "custom": {
-			const { customType, content, details } = messageEntry.message;
-			if (
-				customType === HOST_NOTICE_TYPE &&
-				typeof content === "string" &&
-				(details === "error" || details === "warning" || details === "dim")
-			) {
-				return new Text(theme.fg(details, stripTerminalControls(content)), options.outputPad ?? 1, 0);
-			}
+			const diagnostic = displayLines.get(messageEntry.message);
+			if (diagnostic)
+				return new Text(
+					theme.fg(diagnostic.level, stripTerminalControls(diagnostic.text)),
+					options.outputPad ?? 1,
+					0,
+				);
 			if (isVerbatimCompactionMessage(messageEntry.message)) {
 				return compactionBoundaryFromMessage(
 					messageEntry.message,

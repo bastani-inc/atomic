@@ -1,5 +1,7 @@
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
+import { bindChatReceipt } from "./chat-receipts.js";
 import { physicalForkHeader, type SessionManager } from "./session-manager-core.ts";
+import { saveChatRecord } from "./storage/session/chat-records.js";
 
 type Pending = NonNullable<AgentSessionInternalSurface["_transcriptAppend"]>;
 type Scope = NonNullable<ReturnType<SessionManager["chatRecordScope"]>>;
@@ -23,7 +25,7 @@ export function noticeOvertookPrompt(session: AgentSessionInternalSurface, id: s
 }
 
 /** Publish only an uninterrupted chain of overtaking notices on this incarnation of this branch. */
-export function recordPromptOrder(session: AgentSessionInternalSurface, promptId: string): void {
+export function recordPromptOrder(session: AgentSessionInternalSurface, promptId: string, event: object): void {
 	const pending = session._transcriptAppend;
 	if (!pending) return;
 	const moved = overtakings.get(pending);
@@ -39,5 +41,6 @@ export function recordPromptOrder(session: AgentSessionInternalSurface, promptId
 		manager.getEntry(promptId)?.parentId !== moved.lastNotice
 	)
 		return;
-	void scope.store.append(scope.owner, moved.firstNotice, { kind: "promptBefore", promptId }).catch(() => {});
+	bindChatReceipt(event, { id: promptId, anchor: moved.firstNotice });
+	saveChatRecord(scope, moved.firstNotice, { kind: "promptBefore", promptId });
 }

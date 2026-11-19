@@ -34,6 +34,7 @@ import {
 	replacementAbortContent,
 } from "./agent-session-types.js";
 import { recordPromptOrder } from "./chat-admission-order.js";
+import { bindChatReceipt } from "./chat-receipts.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
 import { assignMissingToolCallIds } from "./context-tool-pairing.js";
 import {
@@ -69,9 +70,10 @@ import {
 	sessionLifetime,
 	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
-import { physicalForkHeader } from "./session-manager-core.js";
+import { physicalForkHeader } from "./session-manager-core.ts";
 import { retryStatusUpdate } from "./session-retry-status.js";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { saveChatRecord } from "./storage/session/chat-records.js";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
@@ -90,8 +92,12 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 		// owns the live line; persistence, subsequent prompts and model decisions never await it.
 		const manager = this.sessionManager;
 		const scope = manager.chatRecordScope();
-		if (scope)
-			void scope.store.append(scope.owner, manager.getLeafId() ?? "", { kind: "line", ...notice }).catch(() => {});
+		if (scope) {
+			const anchor = manager.getLeafId() ?? "",
+				id = crypto.randomUUID();
+			bindChatReceipt(event, { anchor, id });
+			saveChatRecord(scope, anchor, { kind: "line", id, ...notice });
+		}
 	}
 	for (const l of this._eventListeners) {
 		l(event);
@@ -408,7 +414,7 @@ export async function _processAgentEvent(
 			this._messagesAwaitingPersistence.delete(event.message);
 		}
 		if (entryId) {
-			if (event.message.role === "user") recordPromptOrder(this, entryId);
+			if (event.message.role === "user") recordPromptOrder(this, entryId, event);
 			this._entryIdsByMessage.set(event.message, entryId);
 			noteMessageSaved(this, event.message);
 		}

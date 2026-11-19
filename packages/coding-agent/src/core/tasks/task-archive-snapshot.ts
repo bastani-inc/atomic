@@ -2,6 +2,7 @@ import { isProxy } from "node:util/types";
 import { asyncScope } from "../async-scope.ts";
 import { observeArchiveLoad, type SnapshotObserver } from "../storage/session/snapshot-generation.ts";
 import type { SessionSnapshot, SessionStore } from "../storage/session/types.js";
+import { captureChatSnapshot } from "./task-chat-records.js";
 
 interface Capture {
 	store: SessionStore;
@@ -35,6 +36,7 @@ export async function loadArchiveSnapshot(
 	const scope: { capture?: Capture } = { capture };
 	try {
 		const snapshot = await archiveRead.run(scope, read);
+		captureChatSnapshot(store, snapshot);
 		return { snapshot, generation: capture.snapshot === snapshot ? capture.version : undefined };
 	} finally {
 		// A driver's asynchronous work can outlive the read. It must not pin the returned session or the store.

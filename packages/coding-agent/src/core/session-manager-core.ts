@@ -399,10 +399,13 @@ export class SessionManager {
 	/** @internal The display reader's authority. A missing generation or unsupported adapter fails closed. */
 	chatRecordScope(): { store: SessionChatRecords; owner: ChatRecordOwner } | undefined {
 		const epoch = this.historyEpoch ?? this.chatEpoch;
-		const store = this.store.chatRecords;
-		return epoch && store && !this.deletedFromStore
-			? { store, owner: { id: this.sessionId, epoch, file: this.sessionFile } }
-			: undefined;
+		if (!epoch || this.deletedFromStore || isProxy(this.store)) return undefined;
+		try {
+			const store = this.store.chatRecords;
+			return store ? { store, owner: { id: this.sessionId, epoch, file: this.sessionFile } } : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	getEntrySeq(id: string): number | undefined {

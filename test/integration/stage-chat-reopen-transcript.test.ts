@@ -83,36 +83,6 @@ async function retriedFailure(fixture: Fixture): Promise<void> {
 	fixture.stage.session.refreshContext();
 }
 
-test("a discarded branch's compaction notice does not make the healthy stage walk its history (#5649)", async () => {
-	const fixture = await createStageSkillFixture({
-		extensionFactories: [
-			(pi) => {
-				pi.on("session_before_compact", () => ({ cancel: true }));
-			},
-		],
-	});
-	try {
-		const session = fixture.stage.session;
-		const manager = session.sessionManager;
-		const fork = manager.getLeafId();
-		assert.ok(fork);
-		await assert.rejects(session.compact(), /cancel/i);
-		await manager.branch(fork);
-		for (let index = 0; index < 64; index++)
-			await manager.appendMessage({ role: "user", content: `healthy ${index}`, timestamp: index });
-		session.refreshContext();
-		const reads = vi.spyOn(manager, "getEntries");
-		const result = stageTranscript(fixture);
-		assert.equal(result.inlineMode, "path_only");
-		assert.equal(result.entryCount, session.messages.length);
-		assert.deepEqual(result.entries, []);
-		assert.equal(session.transcriptMessages, session.messages, "the active branch uses its resident rows");
-		assert.equal(reads.mock.calls.length, 0);
-	} finally {
-		await fixture.cleanup();
-	}
-});
-
 test.each([
 	{ kind: "provider error", reason: "error", content: "", output: 0, liveTokens: 24 },
 	{ kind: "provider error with billed output", reason: "error", content: "", output: 12, liveTokens: 36 },

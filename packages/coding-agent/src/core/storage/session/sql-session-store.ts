@@ -1345,8 +1345,8 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
-		const row = await tx.get<HeaderRow>(
-			`SELECT header_json, last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+		const row = await tx.get<HeaderRow & { chat_epoch: string | null }>(
+			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
@@ -1355,8 +1355,7 @@ export class SqlSessionStore implements SessionStore {
 			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
 			lastSeq: row.last_seq,
 		};
-		const state = JSON.parse(String(row.summary_state)) as StoredSummaryState;
-		if (state?.epoch) bindChatEpoch(snapshot.header, state.epoch);
+		if (typeof row.chat_epoch === "string") bindChatEpoch(snapshot.header, row.chat_epoch);
 		// The revision comes from the same transaction. An intervening write conservatively starts a new view.
 		return noteSnapshotGeneration(this, snapshot, nativeLoad, row, "revision");
 	}

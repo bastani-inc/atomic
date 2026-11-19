@@ -11,6 +11,34 @@ import type { Component, Container } from "./interactive-mode-deps.ts";
  */
 export class StartupChatContainer extends WindowedContainer {
 	private startupOutputReleased = false;
+	private holdScrollback = false;
+	private abandonPaint?: () => void;
+	/** Renderers have already run. Only committing ordered terminal history waits for this optional read. */
+	awaitChatRecords<T>(
+		page: Promise<T | undefined>,
+		paint: (data?: T) => void,
+		scrollback: boolean,
+		timeoutMs: number,
+	): void {
+		this.abandonPaint?.();
+		this.holdScrollback = scrollback;
+		const receiver: { done?: (data?: T) => void } = {};
+		const finish = (data?: T) => {
+			delete receiver.done;
+			this.abandonPaint = undefined;
+			this.holdScrollback = false;
+			clearTimeout(timer);
+			paint(data);
+		};
+		const timer = setTimeout(finish, timeoutMs);
+		receiver.done = finish;
+		this.abandonPaint = () => finish();
+		settlePaint(page, receiver);
+	}
+	cancelChatRecordPaint(): void {
+		this.abandonPaint?.();
+		this.onVisibleChild = undefined;
+	}
 	private renderedWidth?: number;
 	private counted: { children: Component[]; length: number; count: number } | undefined;
 	private readonly isCounted: (child: Component) => boolean;
@@ -98,7 +126,10 @@ export class StartupChatContainer extends WindowedContainer {
 
 	override render(width: number): string[] {
 		this.renderedWidth = width;
-		return this.startupOutputReleased ? super.render(width) : [];
+		if (!this.startupOutputReleased || this.holdScrollback) return [];
+		// render() requests the entire scrollback; a row window instead observes just the children it returned.
+		if (this.onVisibleChild) for (const child of this.children) this.onVisibleChild(child);
+		return super.render(width);
 	}
 
 	protected override windowChildren(): readonly Component[] {
@@ -107,10 +138,19 @@ export class StartupChatContainer extends WindowedContainer {
 
 	/** A cleared transcript is rebuilt from new rows; the engine-rendered rows it drops are disposed. */
 	override clear(): void {
+		this.cancelChatRecordPaint();
 		disposeRemoteRenderers(this.children);
 		super.clear();
 		this.counted = { children: this.children, length: 0, count: 0 };
 	}
+}
+
+// A never-answering third-party read retains only its empty receiver after the deadline, not the view or its rows.
+function settlePaint<T>(page: Promise<T | undefined>, receiver: { done?: (data?: T) => void }): void {
+	void page.then(
+		(data) => receiver.done?.(data),
+		() => receiver.done?.(),
+	);
 }
 
 interface ChatHistoryBuild {

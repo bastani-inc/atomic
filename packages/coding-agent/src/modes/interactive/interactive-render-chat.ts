@@ -22,6 +22,13 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
+import { bindChatLayout, ChatReaderLayout } from "./chat-reader-layout.js";
+import {
+	CHAT_RECORD_FIRST_PAINT_MS,
+	type ChatPageDecorations,
+	readMountedAnchors,
+	sessionChatMount,
+} from "./chat-reader-records.js";
 import { applyToolEntryState } from "./components/chat-message-renderer.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import type { NewMessageCounter } from "./components/jump-to-latest.ts";
@@ -857,11 +864,13 @@ function planTranscript(
 	mode: InteractiveModeBase,
 	sessionEntries: SessionEntry[],
 	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult },
+	layout?: ChatReaderLayout,
 ): TranscriptStep[] {
 	const steps: TranscriptStep[] = [];
 	const grouping = mainToolGrouping(mode);
 	resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
+	const sources = layout ? ([] as string[]) : undefined;
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
 	const models = mode.settingsManager.getShowCacheMissNotices()
 		? createCacheMissModelSource(mode.session.modelRuntime)
@@ -883,6 +892,7 @@ function planTranscript(
 			const boundaryIndex = messageBuffer.findIndex((message) => message.role !== "system");
 			if (isSynthesizedCompactionBoundary(messageBuffer[boundaryIndex], options.suppressCompactionBoundary)) {
 				messageBuffer = messageBuffer.filter((_, index) => index !== boundaryIndex);
+				sources?.splice(boundaryIndex, 1);
 			}
 		}
 		firstMessage = false;
@@ -890,8 +900,10 @@ function planTranscript(
 		// Pair by occurrence, not by message identity: an SDK caller can append the very same object twice.
 		let occurrence = 0;
 		const groups = replyGroups.length ? new Map<ChatMessageEntry, ReplyNotices>() : undefined;
+		let source = 0;
 		const entries = chatEntriesFromAgentMessages(messageBuffer, messageMeta, {
 			tracker: grouping.tracker,
+			onMessageGroup: layout && sources ? (row) => layout.bind(sources[source++]!, row) : undefined,
 			onAssistantGroup: groups && ((lastRow) => groups.set(lastRow, replyGroups[occurrence++]!)),
 		});
 		for (const entry of entries) {
@@ -910,6 +922,7 @@ function planTranscript(
 			if (options.populateHistory && entry.kind === "user") mode.editor.addToHistory?.(entry.text);
 		}
 		replyGroups.length = 0;
+		if (sources) sources.length = 0;
 		messageBuffer = [];
 	};
 	for (const entry of sessionEntries) {
@@ -918,9 +931,11 @@ function planTranscript(
 			if (!mode.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
 			flushMessages();
 			steps.push({ kind: "custom", entry });
+			layout?.bind(entry.id, entry);
 		} else {
 			const messages = sessionEntryToContextMessages(entry);
 			for (const message of messages) {
+				sources?.push(entry.id);
 				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
 				if (models && firstOccurrence && message.role === "assistant") {
 					const notes: ReplyNotices = { message, previousReply, summarizedParent, previousRequest, models };
@@ -977,7 +992,12 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 	}
 }
 
-function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly TranscriptStep[], end: Component): void {
+function buildHistoryInSlices(
+	mode: InteractiveModeBase,
+	history: readonly TranscriptStep[],
+	end: Component,
+	layout?: WeakRef<ChatReaderLayout>,
+): void {
 	const chat = mode.chatContainer;
 	let remaining = history.length;
 	let before = end;
@@ -992,7 +1012,9 @@ function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly Trans
 		try {
 			for (let steps = 0; remaining > 0 && steps < maxSteps; steps++) {
 				scratch.children = [preceding];
-				addTranscriptStep(mode, history[--remaining]!, false);
+				const step = history[--remaining]!;
+				addTranscriptStep(mode, step, false);
+				if (layout && step.kind !== "cost") layout.deref()?.paint(step.entry, scratch, 1);
 				built.push(scratch.children.slice(1));
 				if (performance.now() >= deadline) break;
 			}
@@ -1040,14 +1062,46 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}
-	const steps = planTranscript(this, sessionEntries, options);
+	const chat = this.chatContainer;
+	const regular = this.ui.mode !== "fullscreen";
+	const mount = sessionChatMount(this, this.sessionManager);
+	let layout = mount ? new ChatReaderLayout(sessionEntries, chat) : undefined;
+	if (layout) bindChatLayout(this, layout);
+	const steps = planTranscript(this, sessionEntries, options, layout);
 	const tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
 	if (tailStart > 0) {
 		const historyEnd = new Spacer(0);
 		this.chatContainer.addChild(historyEnd);
-		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
+		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd, layout && new WeakRef(layout));
 	}
-	for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
+	for (let index = tailStart; index < steps.length; index++) {
+		const step = steps[index]!;
+		const start = chat.children.length;
+		addTranscriptStep(this, step);
+		if (layout && step.kind !== "cost") layout.paint(step.entry, chat, start);
+	}
+	if (mount && layout) {
+		if (!regular && chat instanceof StartupChatContainer) {
+			chat.awaitChatRecords(
+				Promise.resolve(mount.present),
+				(present) => {
+					if (present) layout?.observeWindow(chat, mount, () => this.ui.requestRender());
+					layout = undefined;
+				},
+				false,
+				CHAT_RECORD_FIRST_PAINT_MS,
+			);
+		} else {
+			const page = readMountedAnchors(mount, () => layout?.anchors() ?? []);
+			const apply = (data?: ChatPageDecorations) => {
+				if (data && layout) layout.apply(chat, data);
+				layout = undefined;
+				this.ui.requestRender();
+			};
+			if (chat instanceof StartupChatContainer) chat.awaitChatRecords(page, apply, true, CHAT_RECORD_FIRST_PAINT_MS);
+			else void page.then(apply);
+		}
+	}
 	restoreDeferredEchoes(this, pendingEchoes);
 	this.ui.requestRender();
 };

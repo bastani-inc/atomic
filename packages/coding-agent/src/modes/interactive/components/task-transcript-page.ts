@@ -24,6 +24,7 @@ import {
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import { readTaskChatPage, withTaskChatRows } from "../../../core/tasks/task-chat-records.js";
 import {
 	launchedTaskViewSource,
 	type TaskTranscriptView,
@@ -397,7 +398,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.loading = true;
 		try {
 			// A synchronous read subscribes in the same turn, so no event queued during the read is missed.
-			const read = this.source.readTaskTranscript(this.taskId);
+			const read = readTaskChatPage(this, this.source, this.taskId);
 			const page = read instanceof Promise ? await read : read;
 			if (this.disposed) return;
 			this.adoptLatestPage(page);
@@ -687,7 +688,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.followedSessionId = nextSessionId;
 		this.cursor = page.value.nextCursor;
 		const messages = page.value.messages;
-		this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged });
+		withTaskChatRows(this.chat, page, () => this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged }));
 		this.#notices.adopt(page, messages, this.cursor !== undefined);
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
@@ -713,7 +714,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				turnAborted = false;
 				setTaskTurnInterrupted(this.source, this.taskId, true);
 			}
-			this.chat.applyAgentEvent(event);
+			this.chat.applyTaskAgentEvent(event);
 			this.requestRender();
 		});
 	}
@@ -754,7 +755,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.loadingEarlier = true;
 		void (async () => {
 			try {
-				const page = await settled(this.source.readTaskTranscript(this.taskId, cursor));
+				const page = await settled(readTaskChatPage(this, this.source, this.taskId, cursor));
 				if (this.disposed || cursor !== this.cursor) return;
 				if (!page.ok) {
 					this.cursor = undefined;
@@ -764,7 +765,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				this.cursor = page.value.nextCursor;
 				const messages = page.value.messages;
 				this.#notices.adopt(page, messages, this.cursor !== undefined);
-				this.chat.prependMessages(messages);
+				withTaskChatRows(this.chat, page, () => this.chat.prependMessages(messages));
 			} catch (error) {
 				if (this.disposed) return;
 				this.cursor = undefined;

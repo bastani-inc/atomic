@@ -345,7 +345,13 @@ Fields:
 - `details`: Optional extension-specific metadata (not sent to LLM)
 - `excludeFromContext`: `true` for a display-only message that is not sent to the model
 
-Atomic saves its turn-ending diagnostics as display-only messages of type `atomic.turn-outcome.v1`. For example, a cancelled retry leaves `Error: Retry failed after 1 attempts: Retry cancelled` in the session. A chat reading that history shows the line inline, in order with the surrounding messages.
+### Reader-only chat records
+
+For built-in stores, the terminal records turn-ending lines separately from the conversation. For example, reopening a chat after a cancelled retry can show `Error: Retry failed after 1 attempts: Retry cancelled` just after the failed request. A saved line is limited to 4,096 UTF-8 bytes and ends with `… [diagnostic truncated]` if cut; the live error is not shortened. The same side storage remembers when an already-displayed prompt was saved after a displayed, context-excluded notice. These records are not entries: `/tree`, model requests, compaction, the token meter, conversation exports and continuation logic do not consume them.
+
+The side records are versioned and scoped to the session and its storage generation. Older versions ignore them; an older session is not rewritten to infer events that were never recorded. External stores without the capability behave as before. JSONL stores keep `.atomic-chat-*` siblings beside the session. Copying a session file to another filesystem or importing it as a new session does not transfer these records. Filesystems without a reliable file creation time do not save or replay them. Deleting a JSONL session with an older Atomic can leave its side files behind, but recreating the session does not attach those records to the new chat. This version cleans them when it deletes the session; it does not scan for orphaned files at startup.
+
+Opening a chat does one optional file or indexed database lookup. On a regular terminal, history can wait up to 100 ms before it is written to scrollback. If the optional read is still pending, Atomic shows the conversation without the extra lines, rather than holding up the terminal. A later full redraw can show them. A side-record write in a shared SQLite database invalidates the session catalog cache just as any other committed write does.
 
 ### LabelEntry
 

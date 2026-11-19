@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeAll, test } from "vitest";
+import { afterEach, beforeAll, test, vi } from "vitest";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.js";
 import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
+import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.js";
 import { releaseStartupChatOutput } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -17,6 +19,8 @@ import { createEngineHostPair } from "../../packages/coding-agent/test/helpers/i
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import { createHarnessWithExtensions } from "../../packages/coding-agent/test/test-harness.js";
+import { taskFixture } from "../helpers/task-projection.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { editorTheme, plainStyle } from "./chat-session-host-working-lifecycle-fixture.js";
 
 beforeAll(() => initTheme("dark", false));
@@ -48,6 +52,48 @@ const rows = (mode: InteractiveMode) =>
 		.render(180)
 		.map((line) => stripVTControlCharacters(line).trim())
 		.filter(Boolean);
+
+test("a main chat reopened after a notice overtakes its admitted prompt keeps live order (#5668)", async () => {
+	const h = await createHarness({ settings: { retry: { enabled: false } } });
+	cleanups.push(() => h.cleanup());
+	const mode = chat(h.session);
+	cleanups.push(h.session.subscribe((event) => void mode.handleEvent(event as never)));
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const append = h.sessionManager.appendMessage.bind(h.sessionManager);
+	const promptText = "the admitted user prompt";
+	const notice = "overtaking display notice";
+	h.sessionManager.appendMessage = async (message) => {
+		if (message.role === "user") {
+			entered.resolve();
+			await release.promise;
+		}
+		return append(message);
+	};
+	h.setResponses([fauxAssistantMessage("Done")]);
+	const turn = h.session.prompt(promptText);
+	try {
+		await entered.promise;
+		await h.session.sendCustomMessage(
+			{ customType: "note", display: true, content: notice },
+			{ excludeFromContext: true },
+		);
+		const order = (view: InteractiveMode) =>
+			rows(view).flatMap((line) => [promptText, notice].filter((text) => line.includes(text)));
+		assert.deepEqual(order(mode), [promptText, notice]);
+		release.resolve();
+		await turn;
+		const reopened = await SessionManager.open(h.sessionManager.getSessionStore(), h.sessionManager.getSessionId());
+		const other = await createHarness({ sessionManager: reopened });
+		cleanups.push(() => other.cleanup());
+		const resumed = chat(other.session);
+		resumed.renderInitialMessages();
+		await vi.waitFor(() => assert.deepEqual(order(resumed), [promptText, notice]));
+	} finally {
+		release.resolve();
+		await turn;
+	}
+});
 
 test.each(["in-process", "isolated"])(
 	"on the %s host, a failed and a cancelled retry reopen in order, exactly as shown (#5649)",
@@ -83,13 +129,27 @@ test.each(["in-process", "isolated"])(
 		cleanups.push(() => resumedSession.cleanup());
 		const resumed = chat(resumedSession.session);
 		resumed.renderInitialMessages();
-		assert.deepEqual(outcomes(rows(resumed)), expected);
-		const attached = new ChatSessionHost({ style: plainStyle, editorTheme });
+		await vi.waitFor(() => assert.deepEqual(outcomes(rows(resumed)), expected));
+		const tasks = taskFixture();
+		cleanups.push(() => tasks.dispose());
+		await tasks.start("Child chat");
+		const child = resumedSession.session;
+		tasks.runners[0].context.bindTranscript({
+			getSessionId: () => child.sessionId,
+			getEntries: () => child.sessionManager.getEntries(),
+			chatSession: child,
+			subscribe: (listener) => child.subscribe(listener),
+		});
+		const attached = new TaskAgentTranscriptPage(
+			ownerTaskViewSource(tasks.store),
+			tasks.store.tasks[0]!.ref.taskId,
+			taskTranscriptEnvironment(),
+			() => {},
+		);
 		cleanups.push(() => attached.dispose());
-		assert.ok(await attached.loadSession(manager.getSessionStore(), manager.getSessionId()));
-		assert.deepEqual(
-			outcomes(attached.renderBody(180, 100).map((s) => stripVTControlCharacters(s).trim())),
-			expected,
+		await attached.load();
+		await vi.waitFor(() =>
+			assert.deepEqual(outcomes(attached.render(180, 100).map((s) => stripVTControlCharacters(s).trim())), expected),
 		);
 	},
 );

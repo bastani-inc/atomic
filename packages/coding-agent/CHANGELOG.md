@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reopened main and subagent chats keep failed and cancelled retries and compactions, failed continuations after compaction, and checkout snapshot warnings. Saved lines are reader-only; they do not change the conversation, context meter, or exit status. A displayed prompt also keeps its place ahead of an excluded notice that finished saving first ([#5649](https://github.com/bastani-inc/atomic/issues/5649), [#5668](https://github.com/bastani-inc/atomic/issues/5668)).
+- Redrawing or resuming the main chat shows prompt-cache misses and dropped-thinking notices beside the replies they describe. The in-process chat now also shows a live thinking-drop warning and reports a cache miss’s model-switch or expiry cause, as the isolated terminal does ([#5681](https://github.com/bastani-inc/atomic/issues/5681)).
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.

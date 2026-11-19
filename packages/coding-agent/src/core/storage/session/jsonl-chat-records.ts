@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, open, unlink } from "node:fs/promises";
+import { type FileHandle, lstat, open, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { type AnchoredChatRecord, type ChatRecord, type ChatRecordOwner, decodeChatRecord } from "./chat-records.js";
 
@@ -50,14 +50,18 @@ async function create(path: string, header: string): Promise<FileHandle> {
 		throw e;
 	}
 }
+export function hasStableFileOwner(epoch: string): boolean {
+	return /^\d+:\d+:[1-9]\d*:[\da-f]{16}$/.test(epoch);
+}
+export async function discoverChatFile(file: string, id: string): Promise<boolean> {
+	const { path } = files({ file, id, epoch: "" });
+	return (await lstat(path).catch(() => undefined))?.isFile() === true;
+}
 export async function hasFileChatRecords(owner: ChatRecordOwner): Promise<boolean> {
-	const { path, header } = files(owner);
-	const index = await owned(path, header);
-	if (!index) return false;
-	await index.close();
-	return true;
+	return !!owner.file && hasStableFileOwner(owner.epoch) && discoverChatFile(owner.file, owner.id);
 }
 export async function appendFileChatRecord(owner: ChatRecordOwner, anchor: string, record: ChatRecord): Promise<void> {
+	if (!hasStableFileOwner(owner.epoch)) return;
 	const { path, header } = files(owner);
 	const index = (await owned(path, header, true)) ?? (await create(path, header));
 	try {
@@ -83,6 +87,7 @@ export async function readFileChatRecords(
 	owner: ChatRecordOwner,
 	anchors: readonly string[],
 ): Promise<AnchoredChatRecord[]> {
+	if (!hasStableFileOwner(owner.epoch)) return [];
 	const { path, header } = files(owner);
 	const result: AnchoredChatRecord[] = [];
 	for (const anchor of anchors) {
