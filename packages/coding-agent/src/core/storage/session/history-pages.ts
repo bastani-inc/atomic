@@ -58,7 +58,8 @@ export function transcriptCursorWithin(
 
 /** The stored generation a page was read from. Not part of the page's data: it identifies its reader-only records. */
 interface PageGeneration {
-	readonly store: { readonly chatRecords?: SessionChatRecords };
+	/** The reader-only records of the store the page was read from, if it keeps any. */
+	readonly records: () => SessionChatRecords | undefined;
 	readonly sessionId: string;
 	readonly epoch: string;
 }
@@ -262,7 +263,13 @@ export async function* historyPages(
 					}
 				: {}),
 		};
-		if (stamp !== undefined) pageGenerations.set(read, { store, sessionId, epoch: stamp });
+		if (stamp !== undefined)
+			pageGenerations.set(read, {
+				records: () =>
+					"chatRecords" in store ? (store as { chatRecords?: SessionChatRecords }).chatRecords : undefined,
+				sessionId,
+				epoch: stamp,
+			});
 		yield read;
 		if (!hasNext) return;
 		await yieldToEventLoop();

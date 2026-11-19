@@ -1272,3 +1272,60 @@ test("a compaction while the reader is above the end keeps the saved lines they 
 	}
 	inPlace([95, 96]);
 });
+
+test.each([false, true])(
+	"a copy across a saved tool card whose result is too large for a page has the card's rows, as on screen (jump: %s) (#5593)",
+	async (jump) => {
+		const steps: Record<number, SavedStep> = {
+			20: { call: { id: "call-big", name: "read", args: { path: "big.txt" } } },
+			21: { result: { id: "call-big", name: "read", text: twoMiB } },
+		};
+		const whole = await openResumedSession(0);
+		await appendSavedHistory(whole.mode.sessionManager, 40, steps, false);
+		whole.mode.renderInitialMessages();
+		const mainRows = () => stripVTControlCharacters(whole.mode.chatContainer.render(COLUMNS).join("\n")).split("\n");
+		for (let i = 0; i < 60 && !mainRows().some((row) => row.includes("P-001")); i++) await nextTurn();
+		const rows = mainRows();
+		const from = rows.findIndex((row) => row.includes("P-015"));
+		const through = rows.findIndex((row) => row.includes("P-030"));
+		const main = [
+			rows[from]!.slice(3).trimEnd(),
+			...rows.slice(from + 1, through + 1).map((row) => row.trimEnd()),
+		].join("\n");
+		assert.match(main, /● Read\(big\.txt\)\n\s+⎿\s+Read 66000 lines/, "the whole transcript draws the card");
+
+		const { mode, tui, transcript, terminal } = await openResumedSession(0);
+		const copies = recordCopies(tui);
+		await appendSavedHistory(mode.sessionManager, 40, steps);
+		mode.renderInitialMessages();
+		transcript.scrollToStart();
+		let screen = await settle(tui, (lines) => lines.some((line) => line.includes("P-001")));
+		for (let i = 0; i < 200 && !screen.slice(0, ROWS - 2).some((line) => line.includes("P-015")); i++) {
+			transcript.scrollBy(1);
+			screen = await settle(tui, () => true);
+		}
+		mouse(terminal, "press", 3, rowOf(screen, "P-015"));
+		if (jump) {
+			transcript.scrollToEnd();
+			screen = await settle(tui, (lines) => lines.some((line) => line.includes("at the end")));
+			const tail = rowOf(screen, "at the end");
+			mouse(terminal, "drag", 60, tail);
+			mouse(terminal, "release", 60, tail);
+		} else {
+			for (let i = 0; i < 200 && !screen.slice(0, ROWS - 2).some((line) => line.includes("P-030")); i++) {
+				transcript.scrollBy(1);
+				for (let turn = 0; turn < 8; turn++) await nextTurn();
+				screen = await settle(tui, () => true);
+				mouse(terminal, "drag", 4, ROWS - 3);
+			}
+			assert.match(screen.join("\n"), /Read\(big\.txt\)|P-030/);
+			const end = rowOf(screen, "P-030");
+			mouse(terminal, "drag", 60, end);
+			mouse(terminal, "release", 60, end);
+		}
+		for (let i = 0; i < 2000 && copies.length === 0; i++) await nextTurn();
+		assert.equal(copies.length, 1, "the release did not copy");
+		const copied = copies[0]!;
+		assert.ok(copied.startsWith(main), `the copy differs from main:\n${copied.slice(0, 2000)}`);
+	},
+);

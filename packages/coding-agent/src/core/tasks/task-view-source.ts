@@ -1004,7 +1004,7 @@ function pageChatScope(
 	const generation = historyPageGeneration(page);
 	if (!generation) return undefined;
 	try {
-		const store = generation.store.chatRecords;
+		const store = generation.records();
 		return store ? { store, owner: { id: generation.sessionId, epoch: generation.epoch } } : undefined;
 	} catch {
 		return undefined;

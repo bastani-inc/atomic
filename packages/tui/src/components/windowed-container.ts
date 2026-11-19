@@ -63,7 +63,8 @@ export interface WindowRows {
 	/** The mounted history anchor of this document, if any. */
 	historyAnchor?(): HistoryAnchorView | undefined;
 	/** Visit the rows of the mounted saved entries around `index` from `from` through `to`, in order, drawing an entry
-	 * not yet drawn at this width as the background sweep would. Never requests an unmounted page. */
+	 * not yet drawn at this width as the background sweep would. A provisional leaf that draws no row is visited once,
+	 * with an empty line. Never requests an unmounted page. */
 	visitHistoryRun?(
 		index: number,
 		from: HistoryLeaf | undefined,
@@ -302,6 +303,9 @@ export class WindowedContainer extends Container {
 					if (to && compareLeaves(position, to) > 0) continue;
 					if (!entry.current || entry.width !== this.width) moved = this.renderEntry(entry, this.width) || moved;
 					for (let line = 0; line < entry.lines.length; line++) visit(entry.lines[line]!, { ...position, line });
+					// A provisional leaf that draws nothing now (its card is drawn at the other end of the pair) is still
+					// provisional: a copy draws its entry as the whole transcript does.
+					if (position.provisional && entry.lines.length === 0) visit("", { ...position, line: 0 });
 				}
 				if (moved) this.requestRender?.();
 			},
