@@ -117,7 +117,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.taskDecorations ??= new TaskChatDecoration();
 		const decorations = this.taskDecorations;
 		this.state.transcriptComponent.onVisibleEntry = (entry) => decorations.observe(entry);
-		return decorations.capture(this, page, this.state.liveChat, () => this.state.requestRender?.());
+		return decorations.capture(this, page, this.state.liveChat, this.state.transcript, () =>
+			this.state.requestRender?.(),
+		);
 	}
 	private readonly taskTranscriptEnvironment: () => TaskTranscriptEnvironment;
 

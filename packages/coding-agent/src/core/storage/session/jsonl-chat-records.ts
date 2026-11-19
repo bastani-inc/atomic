@@ -2,7 +2,16 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, open, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { type AnchoredChatRecord, type ChatRecord, type ChatRecordOwner, decodeChatRecord } from "./chat-records.js";
+import {
+	type AnchoredChatRecord,
+	type ChatOrder,
+	type ChatRecord,
+	type ChatRecordOwner,
+	decodeChatOrder,
+	decodeChatRecord,
+	encodeChatOrder,
+	firstChatOrders,
+} from "./chat-records.js";
 
 // A manifest and one regular file per annotated branch position. No name ends in .jsonl, so old file
 // discovery neither enters a new directory nor reads an additional header. The manifest contains no bodies.
@@ -15,6 +24,10 @@ function files(owner: ChatRecordOwner) {
 }
 function slotFor(owner: ChatRecordOwner, anchor: string): string {
 	return digest(JSON.stringify([owner.epoch, anchor]));
+}
+/** One file of reverse edges per incarnation. Three elements, so no anchor's slot can share its name. */
+function orderSlot(owner: ChatRecordOwner): string {
+	return digest(JSON.stringify([owner.epoch, null, "orders"]));
 }
 const noFollow = constants.O_NOFOLLOW ?? 0;
 async function owned(path: string, header: string, write = false): Promise<FileHandle | undefined> {
@@ -50,8 +63,9 @@ async function create(path: string, header: string): Promise<FileHandle> {
 		throw e;
 	}
 }
+/** Device, a known inode, a recorded creation time and the header: an unknown inode or creation time proves no owner. */
 export function hasStableFileOwner(epoch: string): boolean {
-	return /^\d+:\d+:[1-9]\d*:[\da-f]{16}$/.test(epoch);
+	return /^\d+:[1-9]\d*:[1-9]\d*:[\da-f]{16}$/.test(epoch);
 }
 export async function discoverChatFile(file: string, id: string): Promise<boolean> {
 	const { path } = files({ file, id, epoch: "" });
@@ -62,11 +76,16 @@ export async function hasFileChatRecords(owner: ChatRecordOwner): Promise<boolea
 }
 export async function appendFileChatRecord(owner: ChatRecordOwner, anchor: string, record: ChatRecord): Promise<void> {
 	if (!hasStableFileOwner(owner.epoch)) return;
+	await appendSlot(owner, slotFor(owner, anchor), JSON.stringify({ v: 1, ...record }));
+	// The anchored record is the edge; this index only finds it from the prompt, without the notice's file.
+	if (record.kind === "promptBefore")
+		await appendSlot(owner, orderSlot(owner), encodeChatOrder({ anchor, promptId: record.promptId }));
+}
+async function appendSlot(owner: ChatRecordOwner, slot: string, line: string): Promise<void> {
 	const { path, header } = files(owner);
 	const index = (await owned(path, header, true)) ?? (await create(path, header));
 	try {
-		const slot = slotFor(owner, anchor),
-			bodyPath = `${path}.${slot}`,
+		const bodyPath = `${path}.${slot}`,
 			bodyHeader = `${header.trimEnd()} ${slot}\n`;
 		let data = await owned(bodyPath, bodyHeader, true);
 		if (!data) {
@@ -75,7 +94,7 @@ export async function appendFileChatRecord(owner: ChatRecordOwner, anchor: strin
 			data = await create(bodyPath, bodyHeader);
 		}
 		try {
-			await data.appendFile(`\n${JSON.stringify({ v: 1, ...record })}\n`);
+			await data.appendFile(`\n${line}\n`);
 		} finally {
 			await data.close();
 		}
@@ -83,29 +102,37 @@ export async function appendFileChatRecord(owner: ChatRecordOwner, anchor: strin
 		await index.close();
 	}
 }
+async function readSlot(owner: ChatRecordOwner, slot: string): Promise<string[]> {
+	const { path, header } = files(owner);
+	const data = await owned(`${path}.${slot}`, `${header.trimEnd()} ${slot}\n`);
+	if (!data) return [];
+	try {
+		const text = await data.readFile({ encoding: "utf8" });
+		return text
+			.slice(0, text.lastIndexOf("\n"))
+			.split("\n")
+			.filter((line) => line.startsWith("{"));
+	} finally {
+		await data.close();
+	}
+}
 export async function readFileChatRecords(
 	owner: ChatRecordOwner,
 	anchors: readonly string[],
 ): Promise<AnchoredChatRecord[]> {
 	if (!hasStableFileOwner(owner.epoch)) return [];
-	const { path, header } = files(owner);
 	const result: AnchoredChatRecord[] = [];
-	for (const anchor of anchors) {
-		const slot = slotFor(owner, anchor);
-		const data = await owned(`${path}.${slot}`, `${header.trimEnd()} ${slot}\n`);
-		if (!data) continue;
-		try {
-			const text = await data.readFile({ encoding: "utf8" });
-			for (const line of text.slice(0, text.lastIndexOf("\n")).split("\n")) {
-				if (!line.startsWith("{")) continue;
-				const record = decodeChatRecord(line);
-				if (record) result.push({ anchor, record });
-			}
-		} finally {
-			await data.close();
+	for (const anchor of anchors)
+		for (const line of await readSlot(owner, slotFor(owner, anchor))) {
+			const record = decodeChatRecord(line);
+			if (record) result.push({ anchor, record });
 		}
-	}
 	return result;
+}
+export async function readFileChatOrders(owner: ChatRecordOwner, promptIds: readonly string[]): Promise<ChatOrder[]> {
+	if (!promptIds.length || !owner.file || !hasStableFileOwner(owner.epoch)) return [];
+	const orders = (await readSlot(owner, orderSlot(owner))).flatMap((line) => decodeChatOrder(line) ?? []);
+	return firstChatOrders(orders, promptIds);
 }
 export async function deleteFileChatRecords(owner: ChatRecordOwner): Promise<void> {
 	const { path, header } = files(owner);

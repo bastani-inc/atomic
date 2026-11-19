@@ -31,7 +31,14 @@ export async function loadArchiveSnapshot(
 ): Promise<{ snapshot: SessionSnapshot; generation?: string }> {
 	const load = store.load;
 	const read = () => Reflect.apply(load, store, [sessionId]);
-	if (isProxy(store) || !observeArchiveLoad(load, captureGeneration)) return { snapshot: await read() };
+	if (isProxy(store)) return { snapshot: await read() };
+	if (!observeArchiveLoad(load, captureGeneration)) {
+		// A wrapper such as the default store's legacy adapter certifies no generation. Its chat records still
+		// belong to the snapshot it actually returned, never to a live session of the task.
+		const snapshot = await read();
+		captureChatSnapshot(store, snapshot);
+		return { snapshot };
+	}
 	const capture: Capture = { store, load };
 	const scope: { capture?: Capture } = { capture };
 	try {

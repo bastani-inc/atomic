@@ -33,13 +33,13 @@ export type ChatRecord =
 export const MAX_CHAT_LINE_BYTES = 4096;
 const CUT = " … [diagnostic truncated]";
 let graphemes: Intl.Segmenter | undefined;
+/** Copies text into a string of its own, so a kept preview never pins the larger string it was sliced from. */
+const detached = (text: string) => Buffer.from(text, "utf16le").toString("utf16le");
 /** The live event keeps the original text. A stored preview is bounded in UTF-8 bytes, including its marker. */
 export function boundedChatRecord(record: ChatRecord): ChatRecord {
-	if (
-		record.kind !== "line" ||
-		(record.text.length <= MAX_CHAT_LINE_BYTES && Buffer.byteLength(record.text) <= MAX_CHAT_LINE_BYTES)
-	)
-		return record;
+	if (record.kind !== "line") return record;
+	if (record.text.length <= MAX_CHAT_LINE_BYTES && Buffer.byteLength(record.text) <= MAX_CHAT_LINE_BYTES)
+		return { ...record, text: detached(record.text) };
 	const budget = MAX_CHAT_LINE_BYTES - Buffer.byteLength(CUT);
 	let bytes = 0,
 		end = 0;
@@ -50,7 +50,7 @@ export function boundedChatRecord(record: ChatRecord): ChatRecord {
 		end = index + segment.length;
 	}
 	// Detach a small slice from the provider's potentially very large response allocation.
-	return { ...record, text: Buffer.from(record.text.slice(0, end), "utf16le").toString("utf16le") + CUT };
+	return { ...record, text: detached(record.text.slice(0, end)) + CUT };
 }
 export interface AnchoredChatRecord {
 	readonly anchor: string;
@@ -61,12 +61,52 @@ export interface ChatRecordOwner {
 	readonly epoch: string;
 	readonly file?: string;
 }
+/** A prompt shown before the chain of notices starting at `anchor`, which it was persisted after. */
+export interface ChatOrder {
+	readonly anchor: string;
+	readonly promptId: string;
+}
 export interface SessionChatRecords {
-	/** The empty anchor is the start of an empty conversation. Unknown record versions are ignored. */
+	/**
+	 * The empty anchor is the start of an empty conversation. Unknown record versions are ignored. A `promptBefore`
+	 * record also indexes its edge by prompt, in the same write where the backend can make it one.
+	 */
 	append(owner: ChatRecordOwner, anchor: string, record: ChatRecord): Promise<void>;
 	/** One indexed, nonblocking question at mount. Reading a transcript for any other purpose never asks it. */
 	has(owner: ChatRecordOwner): Promise<boolean>;
 	read(owner: ChatRecordOwner, anchors: readonly string[]): Promise<readonly AnchoredChatRecord[]>;
+	/**
+	 * Metadata only: the first saved edge of each of `promptIds` that has one, found from the prompt alone. It never
+	 * reads a diagnostic body, so a reader whose first notice is offscreen still learns where its prompt was shown.
+	 */
+	readOrders?(owner: ChatRecordOwner, promptIds: readonly string[]): Promise<readonly ChatOrder[]>;
+}
+
+/** The reverse edge's own record: never a `ChatRecord`, so an anchored read skips it. */
+export function encodeChatOrder(order: ChatOrder): string {
+	return JSON.stringify({ v: 1, kind: "order", anchor: order.anchor, promptId: order.promptId });
+}
+export function decodeChatOrder(json: string): ChatOrder | undefined {
+	try {
+		const r = JSON.parse(json);
+		if (r?.v === 1 && r.kind === "order" && typeof r.anchor === "string" && typeof r.promptId === "string")
+			return { anchor: r.anchor, promptId: r.promptId };
+	} catch {
+		/* An unreadable edge only loses its hint. */
+	}
+	return undefined;
+}
+/** Keeps the first saved edge of each requested prompt, in the order they were saved. */
+export function firstChatOrders(orders: Iterable<ChatOrder>, promptIds: readonly string[]): ChatOrder[] {
+	const wanted = new Set(promptIds),
+		seen = new Set<string>(),
+		result: ChatOrder[] = [];
+	for (const order of orders)
+		if (wanted.has(order.promptId) && !seen.has(order.promptId)) {
+			seen.add(order.promptId);
+			result.push(order);
+		}
+	return result;
 }
 
 /** An optional adapter can refuse synchronously or asynchronously. Neither failure replaces the original event. */

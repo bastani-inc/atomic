@@ -12,10 +12,15 @@ import type { TaskTranscriptView, TaskViewResult, TaskViewSource } from "./task-
 type Scope = { store: SessionChatRecords; owner: ChatRecordOwner };
 export interface TaskChatPage {
 	scope: Scope;
-	/** Source positions of whole/end fragments only; never inject a line in the middle of a split reply. */
+	/**
+	 * The source rows this page owns, by the converted message after whose row their lines go; -1 is ahead of the
+	 * page's first row. A split reply belongs to the page with its end, a hidden row to the row before it.
+	 */
 	positions: Map<string, number>;
+	/** Stored order: the off-page start of a notice run continuing onto this page, then the rows it owns. */
 	entries: ChatPosition[];
-	root: boolean;
+	/** How many leading `entries` belong to earlier pages. */
+	prefix: number;
 }
 const pages = new WeakMap<object, TaskChatPage>();
 export function bindTaskChatPage(page: object, record: TaskChatPage): void {
@@ -52,9 +57,13 @@ export function readTaskChatPage(
 export function captureChatSnapshot(store: SessionStore, snapshot: SessionSnapshot): void {
 	const capture = chatPageRequest.getStore();
 	if (!capture) return;
-	const epoch = chatEpoch(snapshot.header) ?? snapshot.epoch;
-	if (epoch && store.chatRecords)
-		capture.scope = { store: store.chatRecords, owner: { id: snapshot.header.id, epoch } };
+	try {
+		const epoch = chatEpoch(snapshot.header) ?? snapshot.epoch;
+		const records = epoch ? store.chatRecords : undefined;
+		if (epoch && records) capture.scope = { store: records, owner: { id: snapshot.header.id, epoch } };
+	} catch {
+		/* An optional reader that refuses leaves the transcript as it was read. */
+	}
 }
 const fileReader: SessionChatRecords = {
 	has: async () => true,
