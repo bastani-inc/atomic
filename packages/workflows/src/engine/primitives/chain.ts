@@ -1,3 +1,4 @@
+import { reserveTaskReplayKey } from "../../durable/stage-primitive.js";
 import {
 	chainStepPrompt,
 	replaceTaskPlaceholder,
@@ -13,6 +14,13 @@ import type { WorkflowTaskPrimitive } from "./task.js";
 export function createChainPrimitive(input: {
 	readonly runtime: EngineRuntime;
 	readonly task: WorkflowTaskPrimitive;
+	/**
+	 * The run's replay keys. A chain launched in a durable run reserves its steps' keys when it is launched, so a step
+	 * that starts when the one before it ends replays its own result, also while another chain with the same step names
+	 * runs (#5481). Absent in a run resumed from a record that has results but no launch-time keys, such as one an
+	 * earlier release started: its steps take their keys when they start, as they were recorded.
+	 */
+	readonly nextReplayKey?: (name: string) => string;
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowChainOptions) => Promise<WorkflowTaskResult[]> {
 	return async (
 		steps: readonly WorkflowTaskStep[],
@@ -20,6 +28,10 @@ export function createChainPrimitive(input: {
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
 		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
+		const nextReplayKey = input.nextReplayKey;
+		const replayKeys = steps.map((step) =>
+			nextReplayKey === undefined ? undefined : reserveTaskReplayKey(nextReplayKey, step.name),
+		);
 		const results: WorkflowTaskResult[] = [];
 		for (let index = 0; index < steps.length; index += 1) {
 			input.runtime.exit.throwIfWorkflowExitSelected();
@@ -28,7 +40,12 @@ export function createChainPrimitive(input: {
 			const previous = explicitPrevious ?? (index > 0 ? results[index - 1] : undefined);
 			const prompt = replaceTaskPlaceholder(chainStepPrompt(step, index), options.task ?? "");
 			results.push(
-				await input.task(step.name, taskWithSharedDefaults(taskOptionsFromStep(step, prompt, previous), options)),
+				await input.task(
+					step.name,
+					taskWithSharedDefaults(taskOptionsFromStep(step, prompt, previous), options),
+					undefined,
+					replayKeys[index],
+				),
 			);
 		}
 		return results;

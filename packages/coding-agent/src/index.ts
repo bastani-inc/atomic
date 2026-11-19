@@ -802,6 +802,14 @@ export {
 	serializeMissingSessionCwdError,
 } from "./core/session-cwd.ts";
 export {
+	appendForkToolResults,
+	createForkedSession,
+	type ForkToolCallAnswer,
+	forkPointEntryId,
+	forkToolResults,
+	unansweredToolCalls,
+} from "./core/session-fork.ts";
+export {
 	type BranchSummaryEntry,
 	buildContextEntries,
 	buildSessionContext,

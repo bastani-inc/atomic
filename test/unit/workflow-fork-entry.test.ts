@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -78,6 +78,27 @@ test("forkFromEntryId starts the stage session at that exact entry of the source
 		);
 	}
 	assert.equal((await store.load(source.sessionId)).entries.length, 3, "the source session is unchanged");
+});
+
+test("a fork reads the branch to its recorded point without loading later turns (#5481)", async () => {
+	const store = new MemorySessionStore();
+	const source = await SessionManager.create(store, process.cwd());
+	const before = Array.from({ length: 130 }, (_, i) => `turn ${i}`);
+	for (const content of before) await source.appendMessage({ role: "user", content, timestamp: 1 });
+	const point = source.getLeafId()!;
+	await source.appendMessage({ role: "user", content: "later", timestamp: 2 });
+	const fullReads = vi.spyOn(store, "load");
+	const ranges = vi.spyOn(store, "readRange");
+	const child = await forkStageSession(store, source.getSessionId(), process.cwd(), {}, store, point);
+	assert.deepEqual(
+		child.buildSessionContext().messages.map((m) => ("content" in m ? m.content : m.role)),
+		before,
+	);
+	assert.ok(!fullReads.mock.calls.some(([id]) => id === source.getSessionId()), "no full source read");
+	assert.ok(
+		ranges.mock.calls.filter(([id]) => id === source.getSessionId()).every(([, , end]) => end <= before.length),
+		"nothing beyond the recorded fork point is read",
+	);
 });
 
 test("a forkFromEntryId missing from the source session fails stage setup with ForkEntryNotFoundError (#4321)", async () => {

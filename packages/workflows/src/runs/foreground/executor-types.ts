@@ -6,6 +6,7 @@ import type {
 	resumeClaim,
 	resumeLaunchCwd,
 } from "../../durable/run-restore-preconditions.js";
+import type { ForkPoint } from "../../durable/stage-fork-point.js";
 import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
 import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import type * as AuthoringContract from "../../shared/authoring-contract.js";
@@ -235,6 +236,8 @@ export interface ParallelFailFastScope {
 	failed: boolean;
 	firstFailure?: unknown;
 	readonly activeStages: Map<string, ParallelFailFastStage>;
+	/** Older journals claim keys at admission. Only a cache miss needs the parallel's durable fork points. */
+	readonly forkPointsBeforeLiveTask?: Promise<ReadonlyMap<number, ForkPoint>>;
 	readonly parentIds?: readonly string[];
 	/** Spawned stages never join the graph frontier, so later stages do not depend on them. */
 	readonly detached?: boolean;

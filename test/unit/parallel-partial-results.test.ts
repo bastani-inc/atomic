@@ -4,6 +4,60 @@ import { mapParallelSteps } from "../../packages/workflows/src/runs/foreground/e
 import { assert, createStore, run, test, workflow } from "./executor-shared.js";
 
 describe("ctx.parallel partial results", () => {
+	test.each(["prompt", "options"])(
+		"a fresh fail-fast parallel does not prepare a queued worker's %s (#5481)",
+		async (field) => {
+			const called: string[] = [];
+			let caught: unknown;
+			const def = workflow({
+				name: "fresh-fail-fast",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					try {
+						const later =
+							field === "prompt"
+								? { name: "later", prompt: "{task}".repeat(8192) }
+								: {
+										name: "later",
+										get forkFromSessionId(): string {
+											throw new Error("fresh worker has no source");
+										},
+									};
+						await ctx.parallel([{ name: "first", prompt: "admitted" }, later], {
+							context: "fresh",
+							concurrency: 1,
+							failFast: true,
+							task: "a".repeat(65536),
+						});
+					} catch (error) {
+						caught = error;
+					}
+					return {};
+				},
+			});
+			const result = await run(
+				def,
+				{},
+				{
+					store: createStore(),
+					adapters: {
+						prompt: {
+							async prompt(text) {
+								called.push(text);
+								throw new Error("admitted worker failure");
+							},
+						},
+					},
+				},
+			);
+			assert.match(String(caught), /admitted worker failure/);
+			assert.deepEqual(called, ["admitted"]);
+			assert.equal(result.status, "completed", result.error);
+		},
+	);
+
 	test("failFast:false attaches completed step results to the AggregateError (#3809)", async () => {
 		let caught: unknown;
 		const def = workflow({

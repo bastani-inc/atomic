@@ -275,7 +275,7 @@ ctx.chain(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`.
+Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`. Every step takes its place in the run's record when `ctx.chain` is called, so a resumed run replays each step's own result, also when another chain with steps of the same name ran at the same time. A run resumed from a record that has results but no such places yet, such as a run an earlier release started, keeps giving each step its place when the step starts, as it did when it recorded its results.
 
 ### `ctx.parallel(steps, options?)`
 
@@ -286,7 +286,7 @@ ctx.parallel(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches.
+Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches. Every step takes its place in the run's record when `ctx.parallel` is called, so a resumed run replays each step's own result whatever order the steps start in, also when another parallel with steps of the same name ran at the same time. A run resumed from a record that has results but no such places yet, such as a run an earlier release started, keeps giving each step its place when it gets a concurrency slot, as it did when it recorded its results. In those older runs, a cached step replays without waiting for a fork record; a step that needs to run live still waits for the record. When forked and fresh groups run concurrently, their queued steps keep the same replay order. A fresh step's prompt is expanded only when it gets a slot.
 
 ### `ctx.workflow(definition, options?)`
 
@@ -727,6 +727,10 @@ readonly forkFromEntryId?: string;
 Select a clean session or a forked context, with `forkFromSessionId` naming an explicit session ID in the selected session store. Use the earlier task's `sessionId`, not its transcript file path. IDs are preserved verbatim, including an empty stored ID. Omitting `context` creates a fresh session unless the runtime is reopening durable state; see [Locally Scoped Stage Prompts](/workflows/reliable-design#locally-scoped-stage-prompts) for choosing fresh reviewer context versus coherent implementation context.
 
 `forkFromEntryId` forks at an exact entry instead of the session's latest one. With `context: "fork"` and `forkFromSessionId`, the new session holds the entries on the path from the source session's root to that entry, with their ids, so a stage can retry from just before a bad turn. The path is copied as recorded: unlike `/fork` in chat, labels set with `/tree` after that entry are not carried over. It applies to `ctx.stage`, `ctx.task`, `ctx.chain` and `ctx.parallel` steps alike, and is ignored without `forkFromSessionId`. Stage setup fails with `ForkEntryNotFoundError` when the entry is not in the source session; nothing is created. The source session is never changed.
+
+Without `forkFromEntryId`, the stage uses the last committed entry of the named session in the store it will fork from. This includes changes already saved by another writer, even if an open stage still shows an older conversation. A session with no entries gives the stage an empty copy. The run records that point, so a stage that starts later, because it waited for a concurrency slot, the run resumed, or `workflow fork` runs it again from a copy of the source session, copies the same conversation and none of the source's later turns. Stages launched from the same point get identical copies. `ctx.parallel` records one such point for all of its forked steps before it starts any live step, so a step still waiting for a slot when the run stops, or when a failed parallel is run again, forks at the same point as the steps that ran. A stage opens its session only once the run has recorded its point. When the run cannot record it, the stage fails before its session opens, and a parallel fails before it starts any live step; running it again forks every step from one point.
+
+A forked stage's session holds the copied entries unchanged, then one result for each tool call the source's last turn left open, then the stage's own prompt. The copied conversation is what the source itself would send for its next request, so a provider that signs its reasoning accepts it.
 
 ```typescript
 await ctx.task("retry-impl", {

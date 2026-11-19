@@ -16,6 +16,8 @@ import type { NamedWorktree, NamedWorktreeRequest } from "../shared/named-worktr
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
+/** The `subagent` tool call a task of a merged burst came from, so its forked children answer that call as theirs. */
+export const BURST_TASK_LAUNCH_CALL_ID = Symbol("burstTaskLaunchCallId");
 /** The caller's tasks[] index before prepending a mixed call's top-level child, for input diagnostics. */
 export const BURST_TASK_INPUT_INDEX = Symbol("burstTaskInputIndex");
 /** Retain the expanded tasks' actual working directories for call-local output checks if a merged run fails. */
@@ -43,6 +45,7 @@ export interface TaskParam {
 
 export type BurstTaskParam = TaskParam & {
 	[BURST_TASK_DISCOVERY_CWD]?: string;
+	[BURST_TASK_LAUNCH_CALL_ID]?: string;
 };
 
 export interface SubagentParamsLike {
@@ -121,6 +124,7 @@ export interface ExecutionContextData {
 	onUpdate?: (r: SubagentToolResult) => void;
 	agents: AgentConfig[];
 	parallelAgentConfigs?: AgentConfig[];
+	parallelTaskLimitError?: SubagentToolResult;
 	runId: string;
 	shareEnabled: boolean;
 	sessionRoot: string;

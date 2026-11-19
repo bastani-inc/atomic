@@ -104,6 +104,8 @@ export async function stripWorkflowOnlyOptions(
 		context,
 		forkFromSessionId,
 		forkFromEntryId,
+		forkFromEmptySource,
+		durableForkPoint,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
 		resumeInsideCall: _resumeInsideCall,
@@ -150,7 +152,9 @@ export async function stripWorkflowOnlyOptions(
 			cwd,
 			classification,
 			undefined,
-			forkFromEntryId,
+			durableForkPoint !== undefined
+				? await durableForkPoint()
+				: (forkFromEntryId ?? (forkFromEmptySource === true ? null : undefined)),
 		);
 	} else if (sessionOptions.sessionManager === undefined) {
 		if (sessionStore !== undefined) {
@@ -218,21 +222,28 @@ export function readReplayedStageMessages(
 	},
 	sessionId: string,
 ): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
+	return readStoredStageMessages(stageStoreOptions(options, run), run.defaultSessionDir, sessionId);
+}
+
+/** Resolve the same source store for a launch snapshot and the session that will open it. */
+export function stageStoreOptions(
+	options: StageOptions,
+	run: {
+		readonly adapters?: Partial<Pick<StageAdapters, "sessionStore" | "agentSession">>;
+		readonly defaultCwd: string;
+	},
+): StageOptions {
 	const ownStore =
 		options.sessionStore !== undefined || options.sessionDir !== undefined || options.sessionManager !== undefined;
-	const runStore = run.adapters?.sessionStore;
-	return readStoredStageMessages(
-		{
-			...(ownStore || runStore === undefined ? options : { ...options, sessionStore: runStore }),
-			cwd:
-				options.cwd ??
-				options.sessionManager?.getCwd() ??
-				agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
-				run.defaultCwd,
-		},
-		run.defaultSessionDir,
-		sessionId,
-	);
+	return {
+		...options,
+		...(!ownStore && run.adapters?.sessionStore !== undefined ? { sessionStore: run.adapters.sessionStore } : {}),
+		cwd:
+			options.cwd ??
+			options.sessionManager?.getCwd() ??
+			agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
+			run.defaultCwd,
+	};
 }
 
 /** Close `store` after `primary` failed: a failure to close is attached to `primary` as `cleanupCause`, never thrown. */

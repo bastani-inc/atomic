@@ -17,6 +17,7 @@ import {
 	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
 	BURST_TASK_INPUT_INDEX,
+	BURST_TASK_LAUNCH_CALL_ID,
 	type BurstTaskParam,
 	type SubagentParamsLike,
 	type TaskParam,
@@ -171,6 +172,7 @@ function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
 		task: item.params.task ?? "",
 		cwd: originatingTaskCwd(callCwd, undefined),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		[BURST_TASK_LAUNCH_CALL_ID]: item.id,
 		...(namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(item.params.output !== undefined ? { output: item.params.output } : {}),
 		...(item.params.outputMode !== undefined ? { outputMode: item.params.outputMode } : {}),
@@ -189,6 +191,7 @@ function existingParallelTask(item: BurstItem, task: TaskParam): BurstTaskParam 
 		...task,
 		cwd: originatingTaskCwd(callCwd, task.cwd),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		[BURST_TASK_LAUNCH_CALL_ID]: item.id,
 		...(task.worktree === undefined && namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(task.group === undefined && item.params.group !== undefined ? { group: item.params.group } : {}),
 		...(task.heartbeatMs === undefined && item.params.heartbeatMs !== undefined
