@@ -246,6 +246,39 @@ describe.runIf(posix && hasPython)("skill-creator description scripts on POSIX (
 		});
 	}
 
+	test("an evaluation started with SIGHUP ignored, as nohup does, keeps ignoring it and finishes (#5625)", async () => {
+		const space = workspace(["first question"], "trigger");
+		// Ignore SIGHUP, then become the evaluator, as `nohup python -m scripts.run_eval ...` would.
+		const nohup =
+			"import os, signal, sys; signal.signal(signal.SIGHUP, signal.SIG_IGN); os.execvp(sys.argv[1], sys.argv[1:])";
+		const args = [
+			"--eval-set",
+			space.evalSet,
+			"--skill-path",
+			space.skill,
+			"--runs-per-query",
+			"1",
+			"--timeout",
+			"600",
+		];
+		const program = spawn(python, ["-c", nohup, python, "-m", "scripts.run_eval", ...args, "--num-workers", "1"], {
+			cwd: space.project,
+			env: space.env,
+			detached: true,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		programs.push(program);
+		let stdout = "";
+		program.stdout?.on("data", (data) => {
+			stdout += data;
+		});
+		const closed = new Promise<number | null>((resolveClose) => program.on("close", (code) => resolveClose(code)));
+		await startedFakes(space, 1);
+		process.kill(program.pid ?? 0, "SIGHUP");
+		assert.equal(await closed, 0);
+		assert.equal(JSON.parse(stdout).results[0].triggers, 1);
+	});
+
 	test("SIGTERM to the description improver stops its command and the command's children (#5625)", async () => {
 		const space = workspace([], "wait");
 		const run = improve(space, { FAKE_CLAUDE_IMPROVE_MODE: "wait" });

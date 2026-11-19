@@ -34,6 +34,7 @@ kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel32.GetConsoleWindow.restype = wintypes.HWND
 kernel32.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
+kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
 
 
 def running(pid):
@@ -119,7 +120,10 @@ def host(scenario, root):
         wait_for_fakes(root, 2)
         os.kill(program.pid, signal.CTRL_BREAK_EVENT)
     elif scenario == "ctrl-c":
-        signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C goes to everything on this console, this host too.
+        # Whatever started this host may have disabled Ctrl+C for its descendants, which a terminal does not:
+        # enable it for the evaluator, and ignore it here, since Ctrl+C reaches everything on this console.
+        kernel32.SetConsoleCtrlHandler(None, False)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         program = subprocess.Popen(evaluator(root), cwd=project, env=env)
         wait_for_fakes(root, 2)
         kernel32.GenerateConsoleCtrlEvent(0, 0)  # CTRL_C_EVENT
