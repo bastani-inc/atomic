@@ -26,7 +26,7 @@ export type SessionStorageOption =
 	| { memory: true }
 	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string };
 
-export type AtomicBuiltin = "workflows" | "subagents" | "mcp" | "web-access" | "intercom";
+export type AtomicBuiltin = "subagents" | "mcp" | "web-access" | "intercom";
 
 export interface CreateAgentSessionOptions {
 	/** Shipped packages are enabled unless explicitly false. Independent of tool selection. */

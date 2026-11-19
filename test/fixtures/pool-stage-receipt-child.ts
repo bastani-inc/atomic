@@ -179,7 +179,7 @@ export const child = workflow({
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				},
 			],
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		} as never);
 		return { text: await stage.complete("Stream a reply") };
 	},

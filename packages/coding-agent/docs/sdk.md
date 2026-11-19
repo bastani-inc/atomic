@@ -107,17 +107,15 @@ Use the installed package's ESM exports, not checkout paths or extension-loader 
 
 ```typescript
 import { createAgentSession, type HostInput } from "@bastani/atomic";
-import { workflow } from "@bastani/atomic/workflows";
-import openClaudeDesign from "@bastani/atomic/workflows/builtin/open-claude-design";
 ```
 
-For TypeScript Node applications, use `"type": "module"` in `package.json` and `module: "NodeNext"`, `moduleResolution: "NodeNext"`, and `strict: true` in `tsconfig.json`. Declaration checking works with `skipLibCheck: false`; disabling it is not required. No separate workflows install, ambient module declarations, source aliases, CLI process, or terminal is needed.
+For TypeScript Node applications, use `"type": "module"` in `package.json` and `module: "NodeNext"`, `moduleResolution: "NodeNext"`, and `strict: true` in `tsconfig.json`. Declaration checking works with `skipLibCheck: false`; disabling it is not required. No ambient module declarations, source aliases, CLI process, or terminal is needed.
 
 When upgrading an existing host:
 
 - Remove manual registration of Atomic's shipped builtin extensions. They and their resources are included by default. Use `builtins` to disable packages; use `tools`/`excludedTools` to control tool access. An empty tool allowlist also excludes Intercom.
-- Supply all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) through `extensionBindings.humanInput`. Preserve question text and option values, honor each request's abort signal, and return literal `true` only for explicit approval. No adapter is not consent: ordinary dialogs reject with `HumanInputUnavailable`, while required durable workflow gates remain pending. Do not translate cancellation into approval.
-- Treat a headless workflow launch as acceptance, not completion. Inspect its run ID/status. After reconnecting, resume that run and bind the new adapter with `session.bindExtensions({ humanInput })`; do not start a second run to answer an outstanding question. Restore journal access before retrying a storage failure.
+- Supply all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) through `extensionBindings.humanInput`. Preserve question text and option values, honor each request's abort signal, and return literal `true` only for explicit approval. No adapter is not consent: ordinary dialogs reject with `HumanInputUnavailable`. Do not translate cancellation into approval.
+- Remove `workflows` from the `builtins` option. The workflow SDK and builtin definition subpaths are no longer exported. To migrate an old workflow, ask Atomic to convert its definition to a skill. The agent reads the file as text, leaves it untouched, and writes a new skill in the matching project or global skills directory. Run the new skill with codemode and subagents.
 - Always `await session.dispose()` in `finally`, including on failure. Disposal is asynchronous and can reject with `ShutdownFailed` after attempting all cleanup; do not hide that rejection or call `process.exit()` to force a successful shutdown. Each session owns its own work, even when services are shared.
 
 MCP servers and web providers still require their normal configuration and credentials. Importing the SDK does not connect them or take over standard input. Route host diagnostics through `extensionBindings.onDiagnostic`; a missing provider or extractor is an error, not an empty successful result.
@@ -138,7 +136,7 @@ For the current supported integration, start with [createAgentSession()](#create
 
 The main factory function for a single `AgentSession`.
 
-`createAgentSession()` includes Atomic's shipped workflows, subagents, MCP, web access and Intercom, plus their bundled resources. It uses normal user, project and configured-package discovery when no `resourceLoader` is supplied. A custom loader supplies your resources; the factory adds shipped builtins without changing the loader's options. Services still need their existing configuration and credentials.
+`createAgentSession()` includes Atomic's shipped subagents, MCP, web access and Intercom, plus their bundled resources. It uses normal user, project and configured-package discovery when no `resourceLoader` is supplied. A custom loader supplies your resources; the factory adds shipped builtins without changing the loader's options. Services still need their existing configuration and credentials.
 
 Use `builtins: { "web-access": false, intercom: false }` to disable specific shipped packages and their resources. Omitted keys remain enabled, including with `builtins: {}`. Tool selection is separate: `tools: []` and `noTools: "all"` expose no tools, including Intercom; `noTools: "all"` also overrides a nonempty allowlist. `excludedTools` wins over selection. Suppression survives reload. See [tool precedence](/sdk/reference#tools) for `defaultTools` and `noTools: "builtin"`.
 

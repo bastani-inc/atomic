@@ -44,7 +44,6 @@ test.each(["true", "false", "cancelled", "invalid", "late"] as const)(
 				const late = Promise.withResolvers<boolean>();
 				const { session: cli } = await createAgentSession({
 					...options,
-					builtins: { ...options.builtins, workflows: false },
 					sessionManager: SessionManager.inMemory(cwd),
 					extensionBindings: { uiContext: presentation.uiContext },
 				});

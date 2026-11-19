@@ -34,7 +34,7 @@ for path in \
     atomic/atomic \
     atomic/app.js \
     atomic/package.json \
-    atomic/builtin/workflows/package.json \
+    atomic/builtin/subagents/package.json \
     atomic/node_modules/@bastani/atomic-natives/package.json \
     atomic/lib/libgcc_s.so.1 \
     atomic/lib/libstdc++.so.6; do

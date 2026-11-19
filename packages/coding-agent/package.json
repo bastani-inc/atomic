@@ -42,21 +42,6 @@
     "./hooks": {
       "types": "./dist/core/hooks/index.d.ts",
       "import": "./dist/core/hooks/index.js"
-    },
-    "./workflows": {
-      "types": "./dist/builtin/workflows/src/authoring.d.ts",
-      "import": "./dist/builtin/workflows/src/index.js",
-      "default": "./dist/builtin/workflows/src/index.js"
-    },
-    "./workflows/builtin": {
-      "types": "./dist/builtin/workflows/builtin/index.d.ts",
-      "import": "./dist/builtin/workflows/builtin/index.js",
-      "default": "./dist/builtin/workflows/builtin/index.js"
-    },
-    "./workflows/builtin/*": {
-      "types": "./dist/builtin/workflows/builtin/*.d.ts",
-      "import": "./dist/builtin/workflows/builtin/*.js",
-      "default": "./dist/builtin/workflows/builtin/*.js"
     }
   },
   "files": [
@@ -81,7 +66,6 @@
     "copy-assets": "node ../../scripts/package-files.mjs copy src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && node ../../scripts/package-files.mjs copy src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && node ../../scripts/package-files.mjs copy src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js src/core/export-html/saved-agent-viewer.js dist/core/export-html/ && node ../../scripts/package-files.mjs copy src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && bun run copy-builtin-packages",
     "copy-binary-assets": "node ../../scripts/package-files.mjs copy package.json dist/ && node ../../scripts/package-files.mjs copy README.md dist/ && node ../../scripts/package-files.mjs copy CHANGELOG.md dist/ && node ../../scripts/package-files.mjs copy src/modes/interactive/theme/*.json dist/theme/ && node ../../scripts/package-files.mjs copy src/modes/interactive/assets/*.png dist/assets/ && node ../../scripts/package-files.mjs copy src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js src/core/export-html/saved-agent-viewer.js dist/export-html/ && node ../../scripts/package-files.mjs copy src/core/export-html/vendor/*.js dist/export-html/vendor/ && node ../../scripts/package-files.mjs copy ../../node_modules/@bastani/atomic-tui/dist/native-modifiers.js dist/ && node ../../scripts/package-files.mjs copy ../../node_modules/@bastani/atomic-tui/dist/native-module-path.js dist/ && node ../../scripts/package-files.mjs copy ../../node_modules/@bastani/atomic-tui/dist/native-platform.js dist/ && node ../../scripts/package-files.mjs copy ../../node_modules/@bastani/atomic-tui/native/win32/prebuilds/win32-* dist/native/win32/prebuilds/ && node ../../scripts/package-files.mjs copy docs dist/ && node ../../scripts/package-files.mjs copy examples dist/ && node ../../scripts/package-files.mjs copy ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/ && bun run copy-builtin-packages",
     "copy-builtin-packages": "bun run scripts/copy-builtin-packages.ts",
-    "copy-builtin-workflows": "bun run copy-builtin-packages",
     "assert-binary-assets": "bun run scripts/assert-pi-runtime-assets.ts --app dist/app.js",
     "docs:check": "bun run scripts/validate-docs-links.ts",
     "generate:schemas": "bun run scripts/generate-schemas.ts",

@@ -30,8 +30,6 @@ export const CORE_COMMAND_NAMES = [
 
 export const BUNDLED_COMMAND_NAMES = [
 	"agents",
-	"workflows",
-	"workflow-authoring",
 	"mcp",
 	"mcp-auth",
 	"curator",

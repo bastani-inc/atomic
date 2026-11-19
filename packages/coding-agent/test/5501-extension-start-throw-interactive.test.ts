@@ -28,7 +28,7 @@ import { normalizeRenderedOutput } from "./interactive-mode-status-helpers.js";
 
 /** Each case builds a real interactive host over a real session, which is slow on loaded Windows runners. */
 const INTERACTIVE_HOST_TIMEOUT_MS = 90_000;
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 class FakeTerminal implements Terminal {
 	columns = 160;
@@ -187,18 +187,48 @@ test(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
-test(
-	"one interactive startup shows a resources_discover failure once when startup discovers resources twice (#5501)",
-	async () => {
-		const { mode } = await createMode((pi) => {
-			pi.on("resources_discover", () => {
-				throw new Error("review discovery failure");
-			});
-		});
+test.each([
+	{ label: "default loader", extensionsOverride: undefined },
+	{
+		label: "copied handler map",
+		extensionsOverride: (base: LoadExtensionsResult) => ({
+			...base,
+			// Copy only public fields, without depending on private extension metadata.
+			extensions: base.extensions.map((ext) => ({
+				path: ext.path,
+				resolvedPath: ext.resolvedPath,
+				sourceInfo: ext.sourceInfo,
+				handlers: new Map(ext.handlers),
+				tools: ext.tools,
+				commands: ext.commands,
+				flags: ext.flags,
+				shortcuts: ext.shortcuts,
+				messageRenderers: ext.messageRenderers,
+				entryRenderers: ext.entryRenderers,
+			})),
+		}),
+	},
+])(
+	"$label shows a repeated startup discovery failure once and reports it again on /reload (#5501, #5657)",
+	async ({ extensionsOverride }) => {
+		const reasons: string[] = [];
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", ({ reason }) => {
+					reasons.push(reason);
+					throw new Error("directory unavailable");
+				});
+			},
+			{ extensionsOverride },
+		);
 		mode.deferredStartupPending = true;
 		await mode.completeDeferredStartup();
-		const chat = normalizeRenderedOutput(mode.chatContainer);
-		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: review discovery failure'), 1, chat);
+		const row = 'Extension "<inline:1>" error: directory unavailable';
+		assert.deepEqual(reasons, ["startup", "startup"]);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 1);
+		await mode.handleReloadCommand();
+		assert.deepEqual(reasons, ["startup", "startup", "reload"]);
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 2);
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
