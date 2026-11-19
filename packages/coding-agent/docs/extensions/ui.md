@@ -428,7 +428,9 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 });
 ```
 
-In fullscreen mode a click anywhere on the message toggles `expanded` for that message alone, as Ctrl+O does for every block, and Atomic calls your renderer again. If your renderer draws the same rows either way, the click leaves the message as it is. A component your renderer returns that handles a click itself, such as a button whose `handleMouse` returns `{ handled: true }`, keeps that click, and the message stays as it is. The same control must still be under the pointer when the user releases the mouse; a button that moves into the pressed row does not receive the click. This holds when the session runs in the same process as the terminal UI, as it does in a folder you have not trusted; a session in a separate engine process sends its messages to the screen as drawn rows, so there a click always toggles the message.
+In fullscreen mode a click on the message toggles `expanded` for that message alone, as Ctrl+O does for every block. If the renderer draws the same rows either way, the message stays as it is.
+
+When the session runs in the same process as the terminal UI (for example, in a folder you have not trusted), the component your renderer returns can take the click instead. Implement `handleMouse` on that component, check the click's local `x` and `y`, and return `{ handled: true }` to keep the message from toggling. The chat does not search for buttons inside layout containers. In a separate engine process, the renderer sends rows, not interactive components, so clicks there still act on the message.
 
 Messages are sent via `pi.sendMessage()`:
 

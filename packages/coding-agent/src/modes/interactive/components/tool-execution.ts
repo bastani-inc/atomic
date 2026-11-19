@@ -36,7 +36,7 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
-import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRenderTime, type RowRange, rendererRows, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -77,9 +77,6 @@ function blockStatusMarkPrefix(): RegExp {
 
 export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
-	/** The title follows the tool block's leading blank row. */
-	readonly titleRow = 1;
-	private readonly leadingSpacer = new Spacer(1);
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
@@ -139,7 +136,7 @@ export class ToolExecutionComponent extends Container {
 		this.ui = ui;
 		this.cwd = cwd;
 
-		this.addChild(this.leadingSpacer);
+		this.addChild(new Spacer(1));
 
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
@@ -299,7 +296,18 @@ export class ToolExecutionComponent extends Container {
 
 	/** Every row of the block, below the blank row it leads with. */
 	clickArea(width: number): RowRange | undefined {
-		return rowsFrom(1, this.render(width).length);
+		const rows = this.render(width);
+		if (!this.toolDefinition || (!this.expanded && this.groupRole.kind === "head")) return rowsFrom(1, rows.length);
+		return rendererRows(
+			1,
+			rows,
+			this.contentContainer,
+			[
+				this.toolDefinition.renderCall && this.callRendererComponent,
+				this.toolDefinition.renderResult && this.resultRendererComponent,
+			],
+			{ top: 1, title: 1 },
+		);
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -375,32 +383,20 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		this.mouseLayout.set(width, []);
 		if (this.disposed) return [];
 		if (this.argsPending) this.updateDisplay();
 		this.syncWorkingClock();
 		if (this.hideComponent || width < 1 || (!this.expanded && this.groupRole.kind === "hidden")) return [];
 		if (!this.expanded && this.groupRole.kind === "head") return this.renderGroupSummary(width, this.groupRole);
 		const content = this.contentContainer.render(width);
-		const children: Array<{ component: Component; height: number }> = [];
-		const rows: string[] = [];
-		if (content.length > 0) {
-			children.push(
-				this.mouseLayout.child(this.leadingSpacer, 1),
-				this.mouseLayout.child(this.contentContainer, content.length),
-			);
-			rows.push("");
-			for (const line of content) rows.push(line);
-		}
+		if (content.length === 0 && this.imageComponents.length === 0) return [];
+		const rows = content.length > 0 ? ["", ...content] : [];
 		for (let index = 0; index < this.imageComponents.length; index += 1) {
-			for (const component of [this.imageSpacers[index], this.imageComponents[index]]) {
-				if (!component) continue;
-				const lines = component.render(width);
-				children.push(this.mouseLayout.child(component, lines.length));
-				rows.push(...lines);
-			}
+			const spacer = this.imageSpacers[index];
+			if (spacer) rows.push(...spacer.render(width));
+			const image = this.imageComponents[index];
+			if (image) rows.push(...image.render(width));
 		}
-		this.mouseLayout.set(width, children);
 		return rows;
 	}
 

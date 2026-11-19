@@ -17,7 +17,7 @@ import {
 } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { type RowRange, rendererRows } from "./transcript-block-clicks.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -96,7 +96,9 @@ export class CustomMessageComponent extends Container {
 	/** Every row of the card, under the blank row this message leads with. */
 	clickArea(width: number): RowRange | undefined {
 		if (this.spacer === undefined) return undefined;
-		return rowsFrom(this.spacer.render(width).length, this.render(width).length);
+		return rendererRows(this.spacer.render(width).length, this.render(width), this, [
+			this.customRenderer && this.customComponent,
+		]);
 	}
 
 	setExpanded(expanded: boolean): void {

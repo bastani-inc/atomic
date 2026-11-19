@@ -1,4 +1,3 @@
-import { type ChildRow, type Frame, frameOf } from "../mouse-layout.ts";
 import { type Component, Container } from "../tui.ts";
 
 export interface WindowRows {
@@ -28,8 +27,6 @@ interface Entry {
 	/** The windowed container whose children include `component`. */
 	owner: WindowedContainer | undefined;
 	lines: readonly string[];
-	/** The child layout that produced these lines, even if a later size check renders the component again. */
-	frame?: Frame;
 	width: number;
 	current: boolean;
 	height: number;
@@ -145,9 +142,9 @@ export class WindowedContainer extends Container {
 	 * children took. A nested container answers from the layout of the container that laid it out, so its own mouse
 	 * handler sees the rows that were painted. Without a layout at `width`, the children are rendered to measure them.
 	 */
-	override childAtRow(width: number, row: number, paintedOnly = false): ChildRow | undefined {
+	override childAtRow(width: number, row: number): { component: Component; row: number; height: number } | undefined {
 		const window = this.windowAt(width);
-		if (!window) return super.childAtRow(width, row, paintedOnly);
+		if (!window) return super.childAtRow(width, row);
 		const { host, first, end } = window;
 		const base = host.offsets[first] ?? 0;
 		const absolute = base + row;
@@ -165,14 +162,7 @@ export class WindowedContainer extends Container {
 		const start = host.offsets[span.first] ?? 0;
 		const stop = host.offsets[span.end] ?? start;
 		if (absolute < start || absolute >= stop) return undefined;
-		return {
-			component: child,
-			row: absolute - start,
-			height: stop - start,
-			...(paintedOnly
-				? { entry: { component: entry.component, row: absolute - (host.offsets[index] ?? 0), frame: entry.frame } }
-				: {}),
-		};
+		return { component: child, row: absolute - start, height: stop - start };
 	}
 
 	private windowAt(width: number): { host: WindowedContainer; first: number; end: number } | undefined {
@@ -333,7 +323,6 @@ export class WindowedContainer extends Container {
 			this.measuredChildren++;
 		}
 		entry.lines = lines;
-		entry.frame = frameOf(entry.component);
 		entry.width = width;
 		entry.current = true;
 		if (entry.height === lines.length) return false;

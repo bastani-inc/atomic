@@ -1,4 +1,17 @@
-import type { Component, Container, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
+import {
+	Box,
+	type Component,
+	Container,
+	Editor,
+	Input,
+	MouseRegion,
+	SelectList,
+	SettingsList,
+	stripTerminalSequences,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import { isSingleLeftClick } from "./single-click.ts";
 import type { ToolGroupRole } from "./tool-block.ts";
 
@@ -9,6 +22,8 @@ export type ContainerMouseResult = ReturnType<Container["handleMouse"]>;
 export interface RowRange {
 	readonly start: number;
 	readonly end: number;
+	/** A local renderer may take a click before this block toggles. */
+	readonly clickRenderer?: (event: TuiMouseEvent) => ContainerMouseResult;
 }
 
 /**
@@ -25,8 +40,6 @@ export interface ClickExpandableBlock extends Component {
 	 * that only separate it from the block above. Undefined while it draws nothing.
 	 */
 	clickArea(width: number): RowRange | undefined;
-	/** The row within the painted block where a click toggles it before a control drawn there gets the click. */
-	readonly titleRow?: number;
 	/** The block's place in a group of finished calls; blocks that never group omit it. */
 	getGroupRole?(): ToolGroupRole;
 	/**
@@ -44,6 +57,52 @@ export function isClickExpandableBlock(component: Component | undefined): compon
 /** Every row of a block that renders `rendered` rows from row `start` on, or undefined when it draws none there. */
 export function rowsFrom(start: number, rendered: number): RowRange | undefined {
 	return rendered > start ? { start, end: rendered } : undefined;
+}
+
+// The public TUI classes that supply a mouse handler. Extensions can load another copy of the package,
+// so comparing a handler only to this copy's prototype would mistake a stock dispatcher for an override.
+const tuiMouseClasses = { Box, Container, Editor, Input, MouseRegion, SelectList, SettingsList };
+const tuiMouseMethods = new Set(Object.values(tuiMouseClasses).map((type) => type.prototype.handleMouse));
+
+/** A direct control handles its own click. Do not enter a wrapper's default dispatcher to look for one. */
+function isRendererControl(component: Component): boolean {
+	const handler = component.handleMouse;
+	if (typeof handler !== "function" || tuiMouseMethods.has(handler)) return false;
+	if (Object.hasOwn(component, "handleMouse")) return true;
+	// Find the declaration, not just the immediate subclass: HStack inherits Container's row-only dispatcher.
+	for (
+		let owner = Object.getPrototypeOf(component), depth = 0;
+		owner && depth < 32;
+		owner = Object.getPrototypeOf(owner), depth++
+	) {
+		if (Object.hasOwn(owner, "handleMouse")) return !Object.hasOwn(tuiMouseClasses, owner.constructor?.name);
+	}
+	return false;
+}
+
+/** Use the rows the block already measured for clickArea, and only its directly mounted renderer(s). */
+export function rendererRows(
+	start: number,
+	rows: readonly string[],
+	host: Container,
+	renderers: readonly (Component | undefined)[],
+	{ top = 0, title }: { top?: number; title?: number } = {},
+): RowRange | undefined {
+	const area = rowsFrom(start, rows.length);
+	if (!area || !renderers.some((renderer) => renderer !== undefined)) return area;
+	return {
+		...area,
+		clickRenderer(event) {
+			if (event.y === title) return undefined;
+			const y = event.y - top;
+			const hit = host.childAtRow(event.width, y);
+			if (!hit || !renderers.includes(hit.component) || !isRendererControl(hit.component)) return undefined;
+			const line = stripTerminalSequences(rows[event.y] ?? "");
+			const leftPadding = line.slice(0, line.length - line.trimStart().length);
+			if (event.x < visibleWidth(leftPadding) || event.x >= visibleWidth(line.trimEnd())) return undefined;
+			return host.handleMouse({ ...event, y, height: event.height - top });
+		},
+	};
 }
 
 function roleOf(block: ClickExpandableBlock): ToolGroupRole["kind"] {
@@ -176,28 +235,20 @@ function clickUnitAt(
 	container: Container,
 	width: number,
 	row: number,
-): (() => readonly ClickExpandableBlock[] | undefined) | undefined {
+	event?: TuiMouseEvent,
+): (() => readonly ClickExpandableBlock[] | undefined) | ContainerMouseResult {
 	const hit = container.childAtRow(width, row);
 	if (!hit || !container.children.includes(hit.component)) return undefined;
 	if (isClickExpandableBlock(hit.component)) {
 		const area = hit.component.clickArea(width);
 		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
-		return () => clickUnit(container.children, container.children.indexOf(hit.component));
+		const handled = event && area.clickRenderer?.({ ...event, y: hit.row, height: hit.height });
+		return handled ?? (() => clickUnit(container.children, container.children.indexOf(hit.component)));
 	}
 	const nested = hit.component as Container;
 	if (!nested.children || !nested.childAtRow) return undefined;
-	const unit = clickUnitAt(nested, width, hit.row);
-	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
-}
-
-/** Only decides who gets the click first. `clickUnitAt` checks that the painted block is still present before claiming it. */
-export function isBlockTitleRow(container: Container, width: number, row: number): boolean {
-	const hit = container.childAtRow(width, row, true);
-	if (!hit) return false;
-	if (isClickExpandableBlock(hit.component)) return hit.row === hit.component.titleRow;
-	const nested = hit.component as Container;
-	if (!nested.children || !nested.childAtRow) return false;
-	return isBlockTitleRow(nested, width, hit.row);
+	const unit = clickUnitAt(nested, width, hit.row, event);
+	return typeof unit === "function" ? () => (container.children.includes(nested) ? unit() : undefined) : unit;
 }
 
 // A global expansion supersedes only transcript toggles, not other controls' single-click actions.
@@ -216,6 +267,7 @@ export function handleTranscriptBlockClick(
 	event: TuiMouseEvent,
 	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
+	allowRendererClick = false,
 ): ContainerMouseResult {
 	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
 	let scope = clickScopes.get(container);
@@ -231,8 +283,8 @@ export function handleTranscriptBlockClick(
 	pressedScopes.delete(container);
 	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
-	const unit = clickUnitAt(container, event.width, event.y);
-	if (!unit) return undefined;
+	const unit = clickUnitAt(container, event.width, event.y, allowRendererClick ? event : undefined);
+	if (typeof unit !== "function") return unit;
 	return {
 		handled: true,
 		whenSingleClick: () => {

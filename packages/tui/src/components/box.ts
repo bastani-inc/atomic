@@ -1,4 +1,3 @@
-import { MouseLayout } from "../mouse-layout.ts";
 import { type Component, dispatchMouseEvent, type TuiMouseDispatchResult, type TuiMouseEvent } from "../tui.ts";
 import { flattenLines, visibleWidth } from "../utils.ts";
 
@@ -20,7 +19,7 @@ export class Box implements Component {
 
 	// Cache for rendered output
 	private cache?: RenderCache;
-	private readonly mouseLayout = new MouseLayout();
+	private mouseLayout?: { width: number; children: Array<{ component: Component; height: number }> };
 
 	constructor(paddingX = 1, paddingY = 1, bgFn?: (text: string) => string) {
 		this.paddingX = paddingX;
@@ -85,8 +84,9 @@ export class Box implements Component {
 		if (contentY < 0 || contentX < 0 || contentX >= contentWidth) return undefined;
 
 		const mouseChildren =
-			this.mouseLayout.atWidth(contentWidth) ??
-			this.children.map((component) => ({ component, height: component.render(contentWidth).length }));
+			this.mouseLayout?.width === contentWidth
+				? this.mouseLayout.children
+				: this.children.map((component) => ({ component, height: component.render(contentWidth).length }));
 		let childY = 0;
 		for (const { component: child, height: childHeight } of mouseChildren) {
 			if (contentY >= childY && contentY < childY + childHeight) {
@@ -105,7 +105,6 @@ export class Box implements Component {
 
 	render(width: number): string[] {
 		if (this.children.length === 0) {
-			this.mouseLayout.set(Math.max(1, width - this.paddingX * 2), []);
 			return [];
 		}
 
@@ -119,12 +118,12 @@ export class Box implements Component {
 		const mouseChildren: Array<{ component: Component; height: number }> = [];
 		for (const child of this.children) {
 			const lines = child.render(contentWidth);
-			mouseChildren.push(this.mouseLayout.child(child, lines.length));
+			mouseChildren.push({ component: child, height: lines.length });
 			for (const line of lines) {
 				childLines.push(line);
 			}
 		}
-		this.mouseLayout.set(contentWidth, mouseChildren, this.paddingX, this.paddingY);
+		this.mouseLayout = { width: contentWidth, children: mouseChildren };
 
 		if (childLines.length === 0) {
 			return [];
