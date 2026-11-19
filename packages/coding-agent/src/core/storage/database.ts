@@ -25,8 +25,10 @@ export interface SqliteStatement {
 	readonly params: readonly SqliteValue[];
 }
 
-/** How one write transaction waits for the database's write lock, and whether it may run again. */
+/** How a transaction takes its snapshot or write lock, and whether it may run again. */
 export interface SqliteTransactionOptions {
+	/** @internal A consistent read snapshot without a writer lock. The callback must only read. */
+	readonly readOnly?: boolean;
 	/**
 	 * How long the transaction keeps waiting for the write lock while it is held and no other connection commits,
 	 * instead of the connection's own lock wait. A writer whose work must not fail because another process stalled
@@ -43,7 +45,7 @@ export interface SqliteTransactionOptions {
 	readonly retryTransientFailures?: boolean;
 	/**
 	 * How the transaction excludes other writers; `{ kind: "serial" }` when absent. SQLite runs every kind as
-	 * `BEGIN IMMEDIATE`; only a driver that runs transactions concurrently (Postgres) tells them apart.
+	 * `BEGIN IMMEDIATE` unless `readOnly` is set; only a driver that runs transactions concurrently (Postgres) tells them apart.
 	 */
 	readonly concurrency?: TransactionConcurrency;
 }
@@ -131,10 +133,20 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 */
 	readonly readOnly?: boolean;
 	readonly descriptor: StorageDescriptor;
+	/** @internal Checks whether this embedded connection can prepare a JSONB extraction without issuing a read. */
+	supportsJsonbExtract?(): Promise<boolean>;
 	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */
 	readonly dialect?: StorageDialect;
 	/** Wake-ups through the database; present only on a database that delivers them (Postgres). */
 	readonly notifications?: StorageNotifications;
+	/**
+	 * The bytes this process may still write on the file system that holds the database's file (where a link to the file
+	 * points, and where its write-ahead log goes), as a SQLite or libSQL file database reports them. Absent, or resolving
+	 * undefined, when this process cannot see the database's disk (a server, memory) or the file system does not say.
+	 */
+	freeBytes?(): Promise<number | undefined>;
+	/** Opens a separate handle on this same database for reads. It has its own call queue; the caller must close it. */
+	openReader?(): Promise<SqliteDatabase>;
 	transaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,

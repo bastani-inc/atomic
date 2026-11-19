@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Usage } from "@bastani/atomic-ai/compat";
 import { Container, getKeybindings, setKeybindings, Text } from "@bastani/atomic-tui";
@@ -24,6 +23,7 @@ import {
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { stripVTControlCharacters } from "./helpers/visible-text.js";
 import { createHarness, getUserTexts } from "./suite/harness.js";
 import { assistantMsg, userMsg } from "./utilities.js";
 

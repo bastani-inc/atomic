@@ -27,6 +27,8 @@ import {
 } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
@@ -122,6 +124,86 @@ describe("ensurePostMortemStageHandle", () => {
 	});
 
 	for (const resolve of [ensurePostMortemStageHandle, acquirePostMortemStageHandle]) {
+		test(`${resolve.name} does not deliver a newer worker's chat to a still-held earlier transcript (#5577)`, async () => {
+			const registry = createStageControlRegistry();
+			const store = createStore();
+			const stageUiBroker = new StageUiBroker(store);
+			const older = completedStage({
+				...retainedSession("earlier"),
+				workerExecution: { worker: "w", generation: 1, renewedAt: 1, expiresAt: 2 },
+			});
+			const newer = completedStage({
+				...retainedSession("later"),
+				workerExecution: { ...older.workerExecution!, generation: 2 },
+			});
+			store.recordRunStart({
+				id: "run-1",
+				name: "reopen",
+				status: "completed",
+				startedAt: 1,
+				inputs: {},
+				toolNodes: [],
+				stages: [older],
+			});
+			const deps = { registry, store, stageUiBroker, adapters: adaptersRecording(mockSession(), { creates: 0 }) };
+			const old = await ensurePostMortemStageHandle("run-1", older, deps);
+			assert.ok(old.ok);
+			const unhold = old.handle.subscribe(() => {});
+			try {
+				store.editRun("run-1", (run) => {
+					run.stages[0] = newer;
+					return { stageIds: [newer.id] };
+				});
+				assert.deepEqual(await resolve("run-1", newer, deps), { ok: false, reason: "closed" });
+				assert.equal(old.handle.isDisposed, false);
+				await old.handle.dispose?.();
+				const opened = await resolve("run-1", newer, deps);
+				assert.ok(opened.ok);
+				assert.equal(("handle" in opened ? opened.handle : opened.lease.handle).sessionId, newer.sessionId);
+			} finally {
+				unhold();
+				await registry.clear();
+			}
+		});
+		test(`${resolve.name} leaves a successor's stage alone when its saved transcript finishes loading (#5577)`, async () => {
+			const registry = createStageControlRegistry();
+			const store = createStore();
+			const stageUiBroker = new StageUiBroker(store);
+			const stage = completedStage(retainedSession("old-story"));
+			store.recordRunStart({
+				id: "run-1",
+				name: "reopen",
+				status: "completed",
+				inputs: {},
+				stages: [stage],
+				toolNodes: [],
+				startedAt: 1,
+			});
+			const saved = await sessionStore.load(stage.sessionId!);
+			const read = Promise.withResolvers<typeof saved>();
+			const started = Promise.withResolvers<void>();
+			vi.spyOn(sessionStore, "load").mockImplementationOnce(() => {
+				started.resolve();
+				return read.promise;
+			});
+			const opening = resolve("run-1", stage, {
+				registry,
+				adapters: adaptersRecording(mockSession(), { creates: 0 }),
+				store,
+				stageUiBroker,
+			});
+			await started.promise;
+			const successor = stageUiBroker.claimStage("run-1", stage.id);
+			try {
+				read.resolve(saved);
+				assert.deepEqual(await opening, { ok: false, reason: "closed" });
+				assert.equal(registry.peek("run-1", stage.id), undefined);
+				assert.equal(successor.signal.aborted, false);
+			} finally {
+				successor.release();
+				await registry.clear();
+			}
+		});
 		test(`${resolve.name} reopens the session of a restored run's stage in the run's restores (#4329)`, async () => {
 			const restore = {
 				from: "/node-a/repo",
@@ -259,6 +341,54 @@ describe("ensurePostMortemStageHandle", () => {
 		assert.deepEqual(registry.forRun("run-1"), []);
 	});
 	for (const resolve of [ensurePostMortemStageHandle, acquirePostMortemStageHandle]) {
+		test(`${resolve.name} does not resurrect a disposed run's registration after clear(runId) (#5577)`, async () => {
+			const registry = createStageControlRegistry();
+			const stage = completedStage(retainedSession("clear-one"));
+			const missing = await JsonlSessionStore.open(join(tempDir, "host"), { exactDirectory: true });
+			const pooled = await JsonlSessionStore.open(tempDir, { exactDirectory: true });
+			const closed = vi.spyOn(pooled, "close");
+			const store = createStore();
+			const stageUiBroker = new StageUiBroker(store);
+			store.recordRunStart({
+				id: "run-1",
+				name: "reopen",
+				status: "completed",
+				startedAt: 1,
+				inputs: {},
+				toolNodes: [],
+				stages: [stage],
+			});
+			const started = Promise.withResolvers<void>();
+			const finish = Promise.withResolvers<void>();
+			const load = pooled.load.bind(pooled);
+			vi.spyOn(pooled, "load").mockImplementationOnce(async (id) => {
+				started.resolve();
+				await finish.promise;
+				return load(id);
+			});
+			try {
+				const opening = resolve("run-1", stage, {
+					registry,
+					store,
+					stageUiBroker,
+					adapters: adaptersRecording(mockSession(), { creates: 0 }),
+					sessionStore: missing,
+					pooledSessionStore: async () => pooled,
+				});
+				await started.promise;
+				await registry.clear("run-1");
+				finish.resolve();
+				assert.deepEqual(await opening, { ok: false, reason: "closed" });
+				assert.equal(stageUiBroker.currentStageOwner("run-1", stage.id), undefined);
+				assert.equal(closed.mock.calls.length, 1, "no registered handle took ownership of the opened pooled store");
+			} finally {
+				finish.resolve();
+				if (closed.mock.calls.length === 0) await pooled.close();
+				closed.mockRestore();
+				await missing.close();
+				await registry.clear();
+			}
+		});
 		test(`${resolve.name} does not register a retained handle after its registry is cleared during validation`, async () => {
 			const registry = createStageControlRegistry();
 			const stage = completedStage(retainedSession("shutdown-race"));

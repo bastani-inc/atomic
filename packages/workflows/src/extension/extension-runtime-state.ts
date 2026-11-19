@@ -1,4 +1,5 @@
 import { registerExtensionContextRetirementEffect, reportDebugAsync as reportDebug } from "@bastani/atomic";
+import type { CatalogReadOptions } from "../durable/backend.js";
 import { outsideWorkflowExecutions } from "../durable/execution-context-boundary.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import {
@@ -424,7 +425,7 @@ export function createWorkflowExtensionRuntimeState(
 		get prepareDurableCatalog() {
 			const runtime = runtimeRef.current;
 			const catalog = runtime.prepareDurableCatalog;
-			return catalog === undefined ? undefined : () => catalog.call(runtime);
+			return catalog === undefined ? undefined : (options?: CatalogReadOptions) => catalog.call(runtime, options);
 		},
 		prepareCompletedDurable() {
 			return runtimeRef.current.prepareCompletedDurable?.() ?? Promise.resolve([]);

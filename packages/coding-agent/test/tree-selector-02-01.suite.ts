@@ -126,6 +126,29 @@ function buildTree(entries: Array<SessionEntry>): SessionTreeNode[] {
 
 describe("TreeSelectorComponent", () => {
 	describe("filter switching with parent traversal", () => {
+		test("withdrawing a startup default leaves an explicitly selected tree filter alone (#5693)", () => {
+			const tree = buildTree([userMessage("user", null, "question"), assistantMessage("reply", "user", "answer")]);
+			const open = () =>
+				new TreeSelectorComponent(
+					tree,
+					"reply",
+					24,
+					() => {},
+					() => {},
+					undefined,
+					undefined,
+					"user-only",
+				);
+			const implicit = open();
+			implicit.getTreeList().updateInitialFilter("all");
+			expect(implicit.render(100).join("\n")).toContain("answer");
+			const chosen = open();
+			chosen.handleInput("\x15");
+			chosen.handleInput("\x15"); // Explicitly return to user-only.
+			chosen.getTreeList().updateInitialFilter("all");
+			expect(chosen.render(100).join("\n")).not.toContain("answer");
+		});
+
 		test("switches to nearest visible user message when changing to user-only filter", () => {
 			// In user-only filter: [user-1, user-2, user-3]
 			const entries = [

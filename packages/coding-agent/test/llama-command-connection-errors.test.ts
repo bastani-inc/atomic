@@ -91,6 +91,31 @@ afterEach(() => {
 	scriptedUi.current = undefined;
 });
 
+it.each([true, false])(
+	"startup preserves command registration (throws: %s) when a host's provider promise is no longer accessible (#5639)",
+	async (throws) => {
+		const registration = Promise.resolve();
+		Object.defineProperty(registration, "constructor", {
+			get() {
+				throw new Error("provider promise is no longer accessible");
+			},
+		});
+		const commandFailure = new Error("command registration failed");
+		const pi = {
+			registerProvider: () => registration,
+			registerCommand: () => {
+				if (throws) throw commandFailure;
+			},
+		} as Partial<ExtensionAPI> as ExtensionAPI;
+		if (throws)
+			assert.throws(
+				() => llamaExtension(pi),
+				(cause) => cause === commandFailure,
+			);
+		else await llamaExtension(pi);
+	},
+);
+
 describe("/llama connection failures", () => {
 	it("returns to the catalog without an error notification when a model action cannot reach the server", async () => {
 		stubServer((path) => (path === "/models/unload" ? networkFailure() : modelsResponse()));

@@ -75,6 +75,8 @@ export interface SqliteDriverTransientFailure {
 
 /** How the facade asks a driver to begin a transaction. */
 export interface SqliteDriverTransactionOptions {
+	/** @internal A consistent read snapshot without acquiring the database's writer lock. */
+	readonly readOnly?: boolean;
 	/** Always present when the facade calls; `{ kind: "serial" }` unless the transaction asked for another. */
 	readonly concurrency: TransactionConcurrency;
 	/** The transaction's `SqliteTransactionOptions.lockWaitMs`, when it set one. */
@@ -102,7 +104,8 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	/**
 	 * Begins a write transaction. With `options.concurrency` `{ kind: "serial" }` (the default) it holds the write lock of the whole database
 	 * or of `concurrency.domain`, like `BEGIN IMMEDIATE`; with `fenced` it may take no lock, and the body locks its rows.
-	 * A SQLite driver runs both as `BEGIN IMMEDIATE` and may ignore the argument.
+	 * A SQLite driver runs both as `BEGIN IMMEDIATE` and may ignore the concurrency argument. An internal `readOnly`
+	 * request instead opens a consistent read snapshot without any writer lock.
 	 */
 	beginTransaction(options?: SqliteDriverTransactionOptions): Awaitable<SqliteDriverTransaction>;
 	/**
@@ -139,6 +142,12 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * `close` stops its listening connection.
 	 */
 	readonly notifications?: StorageNotifications;
+	/**
+	 * Optional. The bytes this process may still write on the file system that holds the database's file, or undefined
+	 * when the file system does not say; the facade exposes it as `SqliteDatabase.freeBytes`. Provide it only for a
+	 * database in a file this process can see, such as a local SQLite or libSQL file.
+	 */
+	freeBytes?(): Awaitable<number | undefined>;
 }
 
 /**
@@ -540,10 +549,13 @@ class DriverDatabase implements SqliteDatabase {
 	private readonly executor: SqliteExecutor;
 	readonly batch?: (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => Promise<SqliteRow[][]>;
 	readonly notifications?: StorageNotifications;
+	readonly freeBytes?: () => Promise<number | undefined>;
 
 	constructor(driver: SqliteDriver, redact: (text: string) => string) {
 		this.driver = driver;
 		if (driver.notifications !== undefined) this.notifications = driver.notifications;
+		const freeBytes = driver.freeBytes?.bind(driver);
+		if (freeBytes) this.freeBytes = async () => freeBytes();
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
 		this.dialect = driver.dialect ?? sqliteDialect;
@@ -776,8 +788,11 @@ class DriverDatabase implements SqliteDatabase {
 		} catch (error) {
 			return Promise.reject(error);
 		}
-		const begin: SqliteDriverTransactionOptions =
-			options?.lockWaitMs === undefined ? { concurrency } : { concurrency, lockWaitMs: options.lockWaitMs };
+		const begin: SqliteDriverTransactionOptions = {
+			concurrency,
+			...(options?.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
+			...(options?.readOnly === true ? { readOnly: true } : {}),
+		};
 		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
 		if (concurrency.kind === "serial" || this.driver.concurrentTransactions !== true) return this.queue.push(run);
 		const result = run();

@@ -5,9 +5,9 @@ import { countRows, type FakeLibsqlFault, useFakeLibsqlServers } from "../helper
 
 /**
  * Which texts of one `exec` the libSQL adapter sends again after the server answered them busy or schema-changed: one
- * statement may run again, as the server ran nothing of it; several statements never do, as the ones before the
- * statement the server refused may have committed. The texts are generated, and SQLite itself tells how many
- * statements each holds.
+ * statement may run again, as the server ran nothing of it; several statements are never sent again whole, as the
+ * ones before the statement the server refused may have committed, though the refused statement may run again on its
+ * own (#5652). The texts are generated, and SQLite itself tells how many statements each holds.
  */
 
 const { server, open } = useFakeLibsqlServers();
@@ -122,30 +122,52 @@ function writesSqliteRuns(sql: string): number {
 	}
 }
 
-test("no generated text of several statements, with names outside ASCII, comments and literals, is sent again after the server answered it busy or schema-changed (#5509)", async () => {
+test("no statement of a generated text of several statements, with names outside ASCII, comments and literals, runs twice, and no such text is sent again whole, after the server answered it busy or schema-changed (#5509, #5652)", async () => {
+	// One server answers every text at once, the other refuses its first statement busy or schema-changed.
+	const plain = await server();
 	const fake = await server();
+	const plainDatabase = await open(plain.url);
 	const database = await open(fake.url);
-	await database.exec(TABLE);
-	await database.run("INSERT INTO events (n) VALUES (0)");
+	for (const each of [plainDatabase, database]) {
+		await each.exec(TABLE);
+		await each.run("INSERT INTO events (n) VALUES (0)");
+	}
+	const count = (on: typeof fake) => countRows(on, "SELECT n AS count FROM events");
 	const texts = sqlTexts(SEED, true);
-	const sentAgain: string[] = [];
+	const wrong: string[] = [];
+	let landed = 0;
 	for (let index = 0; index < SEVERAL_STATEMENT_TEXTS; index++) {
 		const { sql, writes } = texts.several(index);
 		assert.equal(writesSqliteRuns(sql), writes, `SQLite runs ${JSON.stringify(sql)} as several statements`);
+		// Without a refusal every statement runs once, as SQLite runs the text.
+		const plainBefore = count(plain);
+		const plainRan = await plainDatabase.exec(sql).then(
+			() => true,
+			() => false,
+		);
+		if (!plainRan || count(plain) - plainBefore !== writes) wrong.push(`without a refusal: ${JSON.stringify(sql)}`);
+		// After a refusal the text either fails having run nothing, sent once, or runs each statement once, never sent
+		// again whole.
+		const before = count(fake);
 		fake.fail(FAULTS[index % FAULTS.length]!);
 		const ran = await database.exec(sql).then(
 			() => true,
 			() => false,
 		);
-		if (ran || fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length !== 1)
-			sentAgain.push(JSON.stringify(sql));
+		const added = count(fake) - before;
+		const whole = fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length;
+		if (ran ? added !== writes || whole !== 0 : added !== 0 || whole !== 1)
+			wrong.push(
+				`after a refusal (ran ${ran}, wrote ${added} of ${writes}, sent whole ${whole}): ${JSON.stringify(sql)}`,
+			);
+		if (ran) landed += writes;
 	}
 	assert.deepEqual(
-		sentAgain.slice(0, 3),
+		wrong.slice(0, 3),
 		[],
-		`${sentAgain.length} of ${SEVERAL_STATEMENT_TEXTS} texts of several statements were sent again`,
+		`${wrong.length} of ${SEVERAL_STATEMENT_TEXTS} texts of several statements ran a statement twice, or not as SQLite does`,
 	);
-	assert.equal(countRows(fake, "SELECT n AS count FROM events"), 0);
+	assert.equal(count(fake), landed);
 });
 
 test("a generated trigger alone in one exec, with names outside ASCII, comments and literals, lands once after the server answered it busy or schema-changed (#5509)", async () => {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripHintMarkers } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
 import type { ChatSessionHostOpts } from "../src/modes/interactive/components/chat-session-host-types.ts";
@@ -53,7 +54,7 @@ test("reduced-motion compaction repaints once a second and stops after completio
 		assert.equal(host.hasAnimationTick(), false);
 		vi.advanceTimersByTime(2_900);
 		assert.equal(renders - before, 3);
-		assert.match(host.renderWorkingStatus(80).join("\n"), /3s · esc to cancel/);
+		assert.match(host.renderWorkingStatus(80).map(stripHintMarkers).join("\n"), /3s · esc to cancel/);
 		host.applyAgentEvent({
 			type: "compaction_end",
 			reason: "manual",
@@ -82,7 +83,7 @@ test("reduced-motion working clocks repaint through a silent tool and stop on di
 		vi.advanceTimersByTime(2_900);
 		assert.equal(renders - before, 3);
 		assert.equal(host.hasAnimationTick(), false);
-		assert.match(host.renderWorkingStatus(80).join("\n"), /3s/);
+		assert.match(host.renderWorkingStatus(80).map(stripHintMarkers).join("\n"), /3s/);
 		host.applyAgentEvent({ type: "agent_end", messages: [] });
 		vi.advanceTimersByTime(100);
 		const ended = renders;

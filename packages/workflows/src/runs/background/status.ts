@@ -176,6 +176,7 @@ export async function killRun(
 	if (recorded && opts?.persistence) {
 		await appendRunEnd(opts.persistence, {
 			runId,
+			finishSequence: run.finishSequence,
 			status: "killed",
 			error: errorMessage,
 			...metadata,

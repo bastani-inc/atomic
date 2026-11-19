@@ -158,6 +158,8 @@ async function openDurableBackend(
 			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal, runs: [] }))
 			.then(async (opened) => {
 				// Every run is listed from its latest snapshot; a run's history is folded only when it is needed (#3892).
+				// This catch-up runs to its end in bounded turns whoever stops waiting for the backend (#5480): stopped, it would
+				// close the backend with what it caught up, and the next caller would open the journal and start again.
 				try {
 					await opened.hydrateResumableWorkflows();
 				} catch (error) {

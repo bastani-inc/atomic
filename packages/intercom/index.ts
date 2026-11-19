@@ -1073,12 +1073,14 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		const runId = routeRunId(payload);
 		// Only a runtime that is loaded or loading holds routes, and a route on its way reserved its run's dispatch.
 		if (runId === undefined || (loadedHeavy === null && heavyAttempt === null && !runRouteDispatches.has(runId))) return;
-		void dispatchInRunOrder(runId, async () => {
+		const completion = dispatchInRunOrder(runId, async () => {
 			const handle = loadedHeavy ?? (await heavyAttempt?.promise.catch(() => null)) ?? null;
 			if (handle === null) return;
 			handle.assertCurrent();
 			await dispatchEventHandlers(handle.heavy, PENDING_STAGE_ROUTE_RETIRED_EVENT, payload as object);
-		}).catch(() => {});
+		});
+		(payload as { completion?: Promise<void> }).completion = completion;
+		void completion.catch(() => {});
 	});
 	for (const eventName of [
 		SUBAGENT_CONTROL_INTERCOM_EVENT,

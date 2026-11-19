@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -21,6 +20,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { coercePrimitivePromptAnswer } from "../../packages/workflows/src/shared/prompt-answer.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const ESC = "\x1b";
 const ENTER = "\r";

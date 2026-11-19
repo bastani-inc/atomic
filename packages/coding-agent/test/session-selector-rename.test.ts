@@ -57,6 +57,20 @@ describe("session selector rename", () => {
 		expect(stripAnsi(output)).toContain("ctrl+r rename");
 	});
 
+	it("shows a literal slash as the cancel binding in the resume picker (#5528)", async () => {
+		const selector = new SessionSelectorComponent(
+			async () => [makeSession({ id: "a" })],
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings: new KeybindingsManager({ "tui.select.cancel": "/" }) },
+		);
+		await flushPromises();
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain("/ cancel");
+	});
+
 	it("does not show rename hint in --resume picker configuration", async () => {
 		const sessions = [makeSession({ id: "a" })];
 		const keybindings = new KeybindingsManager();

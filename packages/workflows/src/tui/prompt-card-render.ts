@@ -1,5 +1,12 @@
-import { keyHint, keyText, rawKeyHint } from "@bastani/atomic";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { hintKeyParts, keyHint, keyText, rawKeyHint } from "@bastani/atomic";
+import {
+	clickableHintText,
+	clickableKeysHint,
+	clickableKeyTextHint,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
 import { boldOn, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -283,16 +290,17 @@ function renderReducedPromptBlock(
 	return { lines, totalQuestionRows, visibleQuestionRows: messageCount };
 }
 
+/** The keys a prompt card too short for its own hint row names in its title; a click on one presses it. */
 function compactSurfaceHint(kind: PendingPrompt["kind"]): string {
 	switch (kind) {
 		case "confirm":
-			return "y Yes";
+			return clickableKeyTextHint("y", " Yes");
 		case "select":
-			return "↑↓ Choose";
+			return clickableHintText("↑↓ Choose");
 		case "custom":
-			return "enter";
+			return clickableHintText("enter");
 		default:
-			return "enter Submit";
+			return clickableHintText("enter Submit");
 	}
 }
 
@@ -595,7 +603,10 @@ function graphRawKeyHint(key: string, description: string, theme: GraphTheme): s
 }
 
 function localKeyHint(key: string, description: string, theme: GraphTheme): string {
-	return paint(key, theme.text) + paint(` ${description}`, theme.textMuted);
+	return clickableKeysHint(
+		hintKeyParts(key).map((part) => ({ ...part, text: paint(part.text, theme.text) })),
+		paint(` ${description}`, theme.textMuted),
+	);
 }
 
 function renderHints(kind: PendingPrompt["kind"], theme: GraphTheme): string {

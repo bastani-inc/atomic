@@ -213,6 +213,7 @@ for (;;) {
 		startedAt,
 		replayKey: "stage",
 		sessionId: SESSION_ID,
+		chatActivity: work.generation === 1 ? "retrying" : "working",
 		pendingStageDeliveryAvailable: true,
 		inputRequest: {
 			id: QUESTION.promptId,

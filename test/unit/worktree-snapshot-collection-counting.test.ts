@@ -119,7 +119,7 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
 /**
  * One check that the reference index is complete: which of the 3 referencing tables and 9 triggers exist (12 schema
  * rows) and how far each of the 3 sources is backfilled (3 rows), with the row that says the session entries'
- * triggers are this build's (#5065) and this build's own backfill progress of them (#5553). A collection makes one
+ * triggers are this build's (#5065) and this build's own backfill progress of them (#5558). A collection makes one
  * before it sweeps and one inside each delete batch's own transaction.
  */
 const INDEX_CHECK = { statements: 2, rows: 17 } as const;

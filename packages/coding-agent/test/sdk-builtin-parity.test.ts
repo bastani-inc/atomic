@@ -2661,7 +2661,7 @@ test("reload seals captured input before candidate preparation and keeps success
 });
 
 // #3105: synchronous setters must retain their asynchronous extension execution.
-test.each(["thinking", "name", "bus", "observer", "context", "shortcut"] as const)(
+test.each(["thinking", "name", "bus", "observer", "forwarded observer", "context", "shortcut"] as const)(
 	"disposal drains detached %s handlers before registered cleanup",
 	async (kind) => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-thinking-drain-"));
@@ -2681,6 +2681,10 @@ test.each(["thinking", "name", "bus", "observer", "context", "shortcut"] as cons
 			agentDir: cwd,
 			settingsManager,
 			noExtensions: true,
+			extensionsOverride:
+				kind === "forwarded observer"
+					? (result) => ({ ...result, runtime: new Proxy(result.runtime, {}) })
+					: undefined,
 			extensionFactories: [
 				(pi) => {
 					pi.on("thinking_level_select", kind === "thinking" ? suspend : () => {});
@@ -2710,7 +2714,8 @@ test.each(["thinking", "name", "bus", "observer", "context", "shortcut"] as cons
 		if (kind === "thinking") assert.equal(await session.setThinkingLevel("high"), undefined);
 		else if (kind === "name") await session.setSessionName("raw name  ");
 		else if (kind === "bus") emitBus();
-		else if (kind === "observer") session.extensionRunner.createContext().observeWorkflowActivity(suspend);
+		else if (kind === "observer" || kind === "forwarded observer")
+			session.extensionRunner.createContext().observeWorkflowActivity(suspend);
 		else if (kind === "shortcut")
 			void session.extensionRunner
 				.getShortcuts({})

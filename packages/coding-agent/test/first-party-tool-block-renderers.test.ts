@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { type Component, getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
@@ -14,6 +13,7 @@ import { AssistantMessageComponent, interruptedNotice } from "../src/modes/inter
 import { keyHint, keyText } from "../src/modes/interactive/components/keybinding-hints.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { stripVTControlCharacters } from "./helpers/visible-text.js";
 
 const previousKeys = getKeybindings();
 beforeEach(() => {

@@ -61,7 +61,7 @@ async function runAndCollectAnnouncements(
 		{},
 		{ store, stageControlRegistry: registry, adapters: fixture.adapters },
 	);
-	return { announcements, fixture, dispose, runId: store.runs()[0]!.id };
+	return { announcements, fixture, dispose, store, registry, runId: store.runs()[0]!.id };
 }
 
 test("a released stage is announced to Intercom with ids and its invocation group, and only if it was a peer (#3622)", async () => {
@@ -93,6 +93,122 @@ test("a released stage answers an ask by reopening its saved conversation, and r
 
 	dispose();
 	await assert.rejects(reviewer.answer("still there?"), /its owning session has closed/);
+});
+
+test("a released stage's old route cannot reopen a successor even when it uses the same transcript (#5577)", async () => {
+	const { announcements, fixture, store, runId } = await runAndCollectAnnouncements([{ name: "reviewer" }]);
+	const [old] = announcements;
+	assert.ok(old);
+	store.recordRunStart(structuredClone(store.run(runId)!));
+	await assert.rejects(old.answer("old conversation"), /replaced/);
+	assert.equal(fixture.sessions.length, 1);
+});
+
+test.each(["before ask", "during transcript read"] as const)(
+	"an old address refuses an ask when another registration takes the same stored stage %s (#5577)",
+	async (when) => {
+		const { announcements, fixture, registry, store, runId } = await runAndCollectAnnouncements([
+			{ name: "reviewer" },
+		]);
+		const route = announcements[0]!;
+		const started = Promise.withResolvers<void>(),
+			finish = Promise.withResolvers<void>();
+		let ask: Promise<string> | undefined;
+		if (when === "during transcript read") {
+			const read = fixture.store.load.bind(fixture.store);
+			vi.spyOn(fixture.store, "load").mockImplementationOnce(async (id) => {
+				started.resolve();
+				await finish.promise;
+				return read(id);
+			});
+			ask = route.answer("for old address");
+			await started.promise;
+		}
+		const reopen = createPostMortemHandleResolver({
+			store,
+			stageControlRegistry: registry,
+			adapters: fixture.adapters,
+			resolveDefaultStageSessionDir: () => undefined,
+		});
+		const replacement = await reopen(runId, route.stageId);
+		assert.ok(replacement?.ok);
+		const letGo = replacement.handle.subscribe(() => {});
+		try {
+			finish.resolve();
+			await assert.rejects(ask ?? route.answer("for old address"), /replaced/);
+			assert.equal(fixture.sessions.flatMap((session) => session.prompts).includes("for old address"), false);
+		} finally {
+			finish.resolve();
+			letGo();
+		}
+	},
+);
+
+test("an admitted ask cannot use a different registration of its reopened handle after attachment yields (#5577)", async () => {
+	const { announcements, fixture, registry, runId } = await runAndCollectAnnouncements([{ name: "reviewer" }]);
+	const started = Promise.withResolvers<void>(),
+		finish = Promise.withResolvers<void>();
+	const adapter = fixture.adapters.agentSession!;
+	const create = adapter.create.bind(adapter);
+	vi.spyOn(adapter, "create").mockImplementationOnce(async (...args) => {
+		started.resolve();
+		await finish.promise;
+		return create(...args);
+	});
+	const route = announcements[0]!;
+	const ask = route.answer("for the original registration");
+	await started.promise;
+	try {
+		registry.register(registry.peek(runId, route.stageId)!);
+		finish.resolve();
+		await assert.rejects(ask, /replaced/);
+		assert.equal(
+			fixture.sessions.flatMap((session) => session.prompts).includes("for the original registration"),
+			false,
+		);
+	} finally {
+		finish.resolve();
+	}
+});
+
+test("replacing a stage during disposal cannot announce an old route under the successor's ID (#5577)", async () => {
+	const store = createStore();
+	const registry = createStageControlRegistry();
+	const events: string[] = [];
+	const stop = registerReleasedStageIntercomRoutes(
+		{ events: { emit: (_, route) => events.push(route.stageId) } },
+		registry,
+		store,
+		() => undefined,
+	);
+	cleanups.push(async () => {
+		stop();
+		await registry.clear();
+	});
+	const fixture = createPersistedStageFixture({
+		reply: () => "done",
+		async onCreate() {
+			return async () => {
+				store.recordRunStart(structuredClone(store.runs()[0]!));
+			};
+		},
+	});
+	await run(
+		workflow({
+			name: "stage-route",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.stage("reviewer").prompt("work");
+				return {};
+			},
+		}),
+		{},
+		{ store, stageControlRegistry: registry, adapters: fixture.adapters },
+	);
+	assert.equal(fixture.disposals(), 1);
+	assert.deepEqual(events, []);
 });
 
 test("a host that closed its session mid-teardown does not warn per released stage, but other emit failures still do (#3966)", async () => {

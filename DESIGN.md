@@ -165,7 +165,7 @@ A Catppuccin Mocha palette, addressed by role. The Mantle/Base/Crust trio carrie
 
 **The Status-Is-Truth Rule.** Yellow, Green, Red, Sky, and dim-Overlay1 map one-to-one to the orchestrator's session statuses. Never use a status color decoratively. If a node-card border is yellow, an agent is running. Full stop.
 
-**The Pulse Rule.** Running and awaiting-input borders pulse via `lerpColor(border, hue, t)` where `t` follows a sine. Steady-state colors don't pulse — pulse means "this is live, watch it."
+**The Pulse Rule.** Running and awaiting-input borders dim and brighten in their own status hue. Focus holds the border at full brightness. Connectors and steady-state borders do not pulse.
 
 ## 3. Typography
 
