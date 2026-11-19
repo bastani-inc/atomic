@@ -263,7 +263,6 @@ test(
 			task: "build, then wait for the build",
 			options: { ...withChildOptions({ ...base, releaseWhenWaiting: subagentReleasePolicy(0) }), index: 0 },
 			wakeDispatcher: dispatcher,
-			wait: { kind: "background" },
 			recordChild: createSubagentChildRecordSink(pi, ctx),
 			runtime,
 		});

@@ -430,6 +430,24 @@ export function subagentChildRecordsOf(ownerSessionId: string): SubagentChildRec
 	return records;
 }
 
+/** Look up the latest records for one reservation batch: index names once, on demand, but never cache a child's state. */
+export function reservationRecordLookup(ownerSessionId: string): (name: string) => SubagentChildRecord | undefined {
+	let ids: Map<string, string> | undefined;
+	return (name) => {
+		if (ids === undefined) {
+			ids = new Map();
+			for (const entry of entries.values()) {
+				if (entry.ownerSessionId !== ownerSessionId) continue;
+				const target = entry.intercomTarget;
+				if (target !== undefined) ids.set(target, entry.childId);
+			}
+		}
+		const id = ids.get(name);
+		const record = id === undefined ? undefined : readableSubagentChildRecordOf(ownerSessionId, id);
+		return record?.intercomTarget === name ? record : undefined;
+	};
+}
+
 /** Ids of every child of `ownerSessionId` in the index, without reading their records. */
 export function subagentChildIdsOf(ownerSessionId: string): string[] {
 	const childIds: string[] = [];

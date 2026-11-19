@@ -183,6 +183,17 @@ test("a statement outside a transaction that the server answered schema-changed 
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
 
+test("a write whose schema-change fallback opened with an outdated schema refreshes it under the write lock (#5536)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER PRIMARY KEY)");
+	await database.run("INSERT INTO events VALUES (1), (2)");
+	fake.fail(SCHEMA_CHANGED, { kind: "stale-schema", table: "events" });
+	assert.equal((await database.run("DELETE FROM events WHERE n = 1")).changes, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 0);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 1);
+});
+
 test("a statement in a transaction that the server answered schema-changed is not run again in it, and the transaction writes nothing", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
@@ -252,6 +263,63 @@ test("a schema change in one exec lands once while other connections keep changi
 		fake.churnSchema(false);
 	}
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events'"), 1);
+});
+
+test("a trigger created in one exec lands once while other connections keep changing the server's schema longer than the adapter waits (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE blobs(hash TEXT PRIMARY KEY, chunks INTEGER NOT NULL)");
+	await database.exec("CREATE TABLE chunks(hash TEXT NOT NULL)");
+	fake.churnSchema(true);
+	try {
+		// The body's `;` and the `END` of a `CASE` inside it belong to the one statement.
+		await database.exec(
+			"CREATE TRIGGER IF NOT EXISTS blobs_delete AFTER DELETE ON blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM chunks WHERE hash = CASE WHEN OLD.hash = ';' THEN '' ELSE OLD.hash END; END;",
+		);
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'blobs_delete'"), 1);
+});
+
+test("a trigger followed by another statement in one exec that the server answered schema-changed is not run again (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.fail(SCHEMA_CHANGED);
+	const sql = "CREATE TRIGGER events_insert AFTER INSERT ON events BEGIN SELECT 1; END; INSERT INTO events VALUES (1)";
+	await assert.rejects(database.exec(sql));
+	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+});
+
+test("a trigger whose name ends in a combining accent, a write and another trigger in one exec that the server answered schema-changed are not run again (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec('CREATE TABLE events(n INTEGER NOT NULL, "case\u0301" TEXT)');
+	await database.run("INSERT INTO events VALUES (0, 'ok')");
+	fake.fail(SCHEMA_CHANGED);
+	// SQLite reads `case` followed by a combining accent (U+0301) as one name, not as the keyword CASE: the first trigger
+	// ends at its own END, and the UPDATE and the second trigger are statements of their own.
+	const sql =
+		"CREATE TRIGGER events_first AFTER INSERT ON events BEGIN SELECT new.case\u0301; END; UPDATE events SET n = n + 1; CREATE TRIGGER events_last AFTER DELETE ON events BEGIN SELECT 1; END;";
+	await assert.rejects(database.exec(sql));
+	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
+	assert.equal(countRows(fake, "SELECT n AS count FROM events"), 0);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'trigger'"), 0);
+});
+
+test("a trigger with a byte-order mark inside a literal, a quoted name, a comment or a name lands once after the server answered it schema-changed (#5509)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec('CREATE TABLE events(n INTEGER NOT NULL, "n\uFEFF" TEXT)');
+	fake.fail(SCHEMA_CHANGED);
+	// SQLite skips a byte-order mark where a token starts and sqld reads it as part of a name, but inside a literal, a
+	// quoted name or a comment, or after a name's first character, both read it as part of that token: one trigger.
+	await database.exec(
+		"CREATE TRIGGER events_marked AFTER INSERT ON events BEGIN SELECT 'a\uFEFFb' AS \"a\uFEFFb\", [n\uFEFF], n\uFEFF /* \uFEFF */ FROM events; END;",
+	);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events_marked'"), 1);
 });
 
 test("a read that starts with WITH or VALUES the server answered schema-changed is sent again as it was, while a WITH that writes lands once under churn", async () => {

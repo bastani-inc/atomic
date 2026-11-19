@@ -245,6 +245,7 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 		return;
 	}
 
+	this._retryCancelled = false;
 	this._retryPromise = new Promise((resolve) => {
 		this._retryResolve = resolve;
 	});

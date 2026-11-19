@@ -389,6 +389,7 @@ test("keeps first-route abort as shared-run cancellation and cleans later listen
 		isActive: () => false,
 		setActive: () => {},
 		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+		ownError: async () => undefined,
 	});
 	const first = dispatcher(
 		"first",
@@ -427,6 +428,7 @@ test("preserves every explicit later-route abort reason and only defaults undefi
 			isActive: () => false,
 			setActive: () => {},
 			duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+			ownError: async () => undefined,
 		});
 		const first = dispatcher(
 			"first",
@@ -467,6 +469,7 @@ test("preserves every explicit later-route abort reason and only defaults undefi
 		isActive: () => false,
 		setActive: () => {},
 		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+		ownError: async () => undefined,
 	});
 	const first = dispatcher(
 		"first",
@@ -506,6 +509,7 @@ test("removes a later listener after final success before a subsequent abort", a
 		isActive: () => false,
 		setActive: () => {},
 		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+		ownError: async () => undefined,
 	});
 	const first = dispatcher(
 		"first",
@@ -556,6 +560,7 @@ test("stops a later route that aborts synchronously inside its own update callba
 		isActive: () => false,
 		setActive: () => {},
 		duplicateResult: () => assert.fail("the same-turn calls must coalesce"),
+		ownError: async () => undefined,
 	});
 	const first = dispatcher(
 		"first",

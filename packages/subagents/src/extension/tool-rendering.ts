@@ -1265,7 +1265,12 @@ export function renderSubagentToolResult(
 			d.progress?.length ? Math.max(...d.progress.map((p) => p.index + 1)) : 0,
 			d.mode === "parallel" ? (d.totalSteps ?? labels.length) : 0,
 		);
-		if (count > 0) {
+		// A call that failed before any child started has only its error to show, not a card per requested task.
+		const failedBeforeStart =
+			(context.isError || (result as { isError?: boolean }).isError) &&
+			d.results.length === 0 &&
+			!d.progress?.length;
+		if (count > 0 && !failedBeforeStart) {
 			const blocks = Array.from({ length: count }, (_, index) => {
 				const child = d.results[index];
 				const progress =

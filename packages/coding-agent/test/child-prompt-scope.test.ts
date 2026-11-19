@@ -434,7 +434,6 @@ test("space or enter on a Needs input task opens the subagent transcript, and â†
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		foregroundTask: async () => ({ ok: false, error: { message: "unsupported" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
 		interruptTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,

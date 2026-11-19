@@ -299,4 +299,6 @@ InteractiveModeBase.prototype.resetExtensionUI = function (this: InteractiveMode
 		this.loadingAnimation.setMessage(`${this.defaultWorkingMessage} (${keyTextHint("app.interrupt", "Interrupt")})`);
 	}
 	this.setHiddenThinkingLabel();
+	// The extensions that replace these report their startup errors before the transcript is redrawn: keep them for it.
+	this.restartExtensionErrors = [];
 };

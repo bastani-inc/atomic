@@ -265,8 +265,7 @@ test("update catch in bindAgentPanel remains total even when widget teardown thr
 		assert.notEqual(widget, undefined);
 		broken = true;
 		for (const listener of listeners) listener();
-		await Promise.resolve();
-		assert.equal(widget, undefined);
+		await vi.waitFor(() => assert.equal(widget, undefined));
 		assert.equal(agentPanelHasRows(session), true);
 		assert.equal(warnings.length, 1);
 		assert.match(warnings[0]!, /^Agent panel: a source failed:/);
@@ -485,8 +484,9 @@ test("unfocused panel skips row recomputation while hidden and reuses cached ren
 		setAgentPanelVisible(session, false);
 		assert.equal(reads, 0, "hiding the panel reuses cached source items");
 		for (const listener of listeners) listener();
-		await Promise.resolve();
-		assert.equal(reads, 1, "notifications while hidden sample updated sources at publish time");
+		await vi.waitFor(() =>
+			assert.equal(reads, 1, "notifications while hidden sample updated sources at publish time"),
+		);
 		assert.equal(widget, undefined);
 
 		setAgentPanelVisible(session, true);
