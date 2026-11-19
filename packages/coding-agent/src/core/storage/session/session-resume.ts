@@ -572,6 +572,57 @@ export async function selectResumeLeaf(
 	return { ...index, ...protocols.serialize(), leafSeq, assistants };
 }
 
+/** Where the entries outside the conversation are, by kind, and the latest entry carrying each snapshot record. */
+interface StatePositions {
+	state: string;
+	readonly universal: number[];
+	lastStateSeq: number;
+	settingsHistory: string;
+	lastSettingSeq: number;
+	snapshotRefs: string;
+	lastSnapshotRef: number;
+	readonly snapshotRecords: Record<string, number>;
+}
+
+function statePositions(previous?: Pick<SessionResumeIndex, keyof StatePositions>): StatePositions {
+	return {
+		state: previous?.state ?? "",
+		universal: [...(previous?.universal ?? [])],
+		lastStateSeq: previous?.lastStateSeq ?? 0,
+		settingsHistory: previous?.settingsHistory ?? "",
+		lastSettingSeq: previous?.lastSettingSeq ?? 0,
+		snapshotRefs: previous?.snapshotRefs ?? "",
+		lastSnapshotRef: previous?.lastSnapshotRef ?? 0,
+		snapshotRecords: { ...previous?.snapshotRecords },
+	};
+}
+
+function addStatePosition(positions: StatePositions, entry: SessionEntry, seq: number): void {
+	const plainSnapshot =
+		entry.type === "worktree_snapshot" && !entry.restore && !entry.unrestored && !entry.degradedFrom;
+	if (entry.type === "worktree_snapshot" && entry.snapshot !== undefined)
+		positions.snapshotRecords[entry.snapshotId] = seq;
+	if (isSessionHistoryEntry(entry)) return;
+	if (entry.type === "custom" && entry.customType.startsWith("event_subscription")) positions.universal.push(seq);
+	if (
+		entry.type === "model_change" ||
+		entry.type === "thinking_level_change" ||
+		(entry.type === "message" && entry.message.role === "system")
+	) {
+		const delta = (seq - positions.lastSettingSeq).toString(36);
+		positions.settingsHistory = positions.settingsHistory === "" ? delta : `${positions.settingsHistory}.${delta}`;
+		positions.lastSettingSeq = seq;
+	} else if (plainSnapshot) {
+		const delta = (seq - positions.lastSnapshotRef).toString(36);
+		positions.snapshotRefs = positions.snapshotRefs === "" ? delta : `${positions.snapshotRefs}.${delta}`;
+		positions.lastSnapshotRef = seq;
+	} else {
+		const delta = (seq - positions.lastStateSeq).toString(36);
+		positions.state = positions.state === "" ? delta : `${positions.state}.${delta}`;
+		positions.lastStateSeq = seq;
+	}
+}
+
 export function foldSessionResume(
 	previous: SessionResumeIndex | undefined,
 	entries: readonly SessionEntry[],
@@ -601,14 +652,7 @@ export function foldSessionResume(
 	const compactions = [...(previous?.compactions ?? [])];
 	let nameSeq = previous?.nameSeq;
 	let summarySeq = previous?.summarySeq;
-	const universal = [...(previous?.universal ?? [])];
-	let state = previous?.state ?? "";
-	let lastStateSeq = previous?.lastStateSeq ?? 0;
-	let settingsHistory = previous?.settingsHistory ?? "";
-	let lastSettingSeq = previous?.lastSettingSeq ?? 0;
-	let snapshotRefs = previous?.snapshotRefs ?? "";
-	let lastSnapshotRef = previous?.lastSnapshotRef ?? 0;
-	const snapshotRecords: Record<string, number> = { ...previous?.snapshotRecords };
+	const positions = statePositions(previous);
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
 	let needsBranchRebuild = previous?.needsBranchRebuild ?? false;
@@ -649,29 +693,7 @@ export function foldSessionResume(
 			}
 		}
 		applyBranchState(protocols, assistants, entry, seq, branchActive, modelTransition);
-		const plainSnapshot =
-			entry.type === "worktree_snapshot" && !entry.restore && !entry.unrestored && !entry.degradedFrom;
-		if (entry.type === "worktree_snapshot" && entry.snapshot !== undefined) snapshotRecords[entry.snapshotId] = seq;
-		if (!isSessionHistoryEntry(entry)) {
-			if (entry.type === "custom" && entry.customType.startsWith("event_subscription")) universal.push(seq);
-			if (
-				entry.type === "model_change" ||
-				entry.type === "thinking_level_change" ||
-				(entry.type === "message" && entry.message.role === "system")
-			) {
-				const delta = (seq - lastSettingSeq).toString(36);
-				settingsHistory = settingsHistory === "" ? delta : `${settingsHistory}.${delta}`;
-				lastSettingSeq = seq;
-			} else if (plainSnapshot) {
-				const delta = (seq - lastSnapshotRef).toString(36);
-				snapshotRefs = snapshotRefs === "" ? delta : `${snapshotRefs}.${delta}`;
-				lastSnapshotRef = seq;
-			} else {
-				const delta = (seq - lastStateSeq).toString(36);
-				state = state === "" ? delta : `${state}.${delta}`;
-				lastStateSeq = seq;
-			}
-		}
+		addStatePosition(positions, entry, seq);
 		totals = addEntryToHistoryTotals(totals, entry);
 		if (entry.type === "message" && entry.message?.role === "assistant" && countedUsage(entry.message.usage)) {
 			latestAssistantSeq = seq;
@@ -693,16 +715,144 @@ export function foldSessionResume(
 		compactions,
 		...(nameSeq !== undefined ? { nameSeq } : {}),
 		...(summarySeq !== undefined ? { summarySeq } : {}),
-		state,
-		universal,
-		lastStateSeq,
-		settingsHistory,
-		lastSettingSeq,
-		snapshotRefs,
-		lastSnapshotRef,
-		snapshotRecords,
+		...positions,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
+	};
+}
+
+/** The index format the 0.9 releases save. Its successor is converted, never folded from every entry again. */
+const UPGRADABLE_RESUME_INDEX_VERSION = 5;
+/**
+ * The format `sessionResumeUpgrade` produces. Any other current version disables the upgrade (a full rebuild
+ * follows) until the upgrade is checked against that version's fold.
+ */
+const UPGRADED_RESUME_INDEX_VERSION = 10;
+
+/** A version-5 index: admissions are keys, and the fields an upgrade derives are absent or in an older form. */
+export type UpgradableSessionResumeIndex = Omit<
+	SessionResumeIndex,
+	| "version"
+	| "admissions"
+	| "childAliases"
+	| "workflowStarts"
+	| "settingsHistory"
+	| "lastSettingSeq"
+	| "snapshotRefs"
+	| "lastSnapshotRef"
+	| "snapshotHeads"
+	| "snapshotPins"
+	| "snapshotRecords"
+> & { readonly version: typeof UPGRADABLE_RESUME_INDEX_VERSION; readonly admissions: readonly string[] };
+
+const isObject = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The version-5 validity check, and the shape of each field an upgrade carries over. */
+export function isUpgradableSessionResumeIndex(value: unknown, lastSeq: number): value is UpgradableSessionResumeIndex {
+	if (!isObject(value) || RESUME_INDEX_VERSION !== UPGRADED_RESUME_INDEX_VERSION) return false;
+	const index = value as Partial<UpgradableSessionResumeIndex>;
+	return (
+		index.version === UPGRADABLE_RESUME_INDEX_VERSION &&
+		!index.needsBranchRebuild &&
+		typeof index.epoch === "string" &&
+		index.seq === lastSeq &&
+		typeof index.leafSeq === "number" &&
+		Array.isArray(index.jumps) &&
+		Array.isArray(index.compactions) &&
+		Array.isArray(index.intents) &&
+		Array.isArray(index.acks) &&
+		typeof index.state === "string" &&
+		typeof index.lastStateSeq === "number" &&
+		isObject(index.totals) &&
+		isObject(index.latest) &&
+		Array.isArray(index.admissions) &&
+		index.admissions.every((key) => typeof key === "string") &&
+		Array.isArray(index.delivered) &&
+		Array.isArray(index.deliveryOps) &&
+		Array.isArray(index.settled) &&
+		isObject(index.pending) &&
+		isObject(index.parks) &&
+		Array.isArray(index.models) &&
+		Array.isArray(index.assistants)
+	);
+}
+
+/** Custom entries outside the branch state whose positions or records the upgrade derives again. */
+const UPGRADED_CUSTOM_TYPES = new Set(["subagent-child", "workflow.run.start", "workflow.run.end"]);
+
+/**
+ * The entries a version-5 upgrade reads: every entry outside the conversation (`!isSessionHistoryEntry`: these
+ * types, system messages, and the custom types of branch state) and the child and workflow-run records, which are
+ * the other custom types here. A store may select a superset; the upgrade ignores the rest.
+ */
+export const RESUME_UPGRADE_SOURCES = {
+	types: [...SESSION_STATE_TYPES],
+	customTypes: [...BRANCH_CUSTOM_STATE_TYPES, ...UPGRADED_CUSTOM_TYPES],
+} as const;
+
+function upgradeSource(entry: SessionEntry): boolean {
+	return !isSessionHistoryEntry(entry) || (entry.type === "custom" && UPGRADED_CUSTOM_TYPES.has(entry.customType));
+}
+
+/**
+ * Convert a version-5 index to this format from its sources (`RESUME_UPGRADE_SOURCES`) alone, as the first resume
+ * after an upgrade; the result equals the index a fold of every entry builds. The conversation fields (topology,
+ * totals, models, assistants, compactions) and the recovery protocols this version folds as version 5 did carry
+ * over, and admission keys become digests. The rest is derived again from the sources: the child records and
+ * aliases, open workflow runs, the active branch's settings and checkout snapshots, and the state positions.
+ * Add the sources in sequence order, on any branch.
+ */
+export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
+	add(entry: SessionEntry, seq: number): void;
+	finish(): SessionResumeIndex;
+} {
+	// A rebuild folds again with the final topology whenever the session has branched, as here.
+	const ranges = previous.jumps.length === 0 ? undefined : branchRanges(previous, previous.leafSeq);
+	const admissions = new SessionKeyDigests();
+	for (const key of previous.admissions) admissions.add(key);
+	const protocols = new ResumeProtocols({
+		...previous,
+		latest: Object.fromEntries(
+			Object.entries(previous.latest).filter(([key]) => !/^(run|setting|snapshot-capture):/.test(key)),
+		),
+		fields: {},
+		firstChildren: {},
+		childAliases: {},
+		workflowStarts: {},
+		admissions: admissions.serialize(),
+		snapshotHeads: {},
+		snapshotPins: [],
+	});
+	const positions = statePositions();
+	let lastSeq = 0;
+	return {
+		add(entry, seq) {
+			if (seq <= lastSeq || seq > previous.seq) throw new RangeError(`Resume upgrade source ${seq} out of order`);
+			lastSeq = seq;
+			if (!upgradeSource(entry)) return;
+			// None of the sources is an assistant message or a protocol record the carried fields fold.
+			applyBranchState(protocols, [], entry, seq, ranges === undefined || onBranch(ranges, seq), false);
+			addStatePosition(positions, entry, seq);
+		},
+		finish() {
+			return {
+				version: RESUME_INDEX_VERSION,
+				epoch: previous.epoch,
+				...protocols.serialize(),
+				models: previous.models,
+				assistants: previous.assistants,
+				seq: previous.seq,
+				lastId: previous.lastId,
+				leafSeq: previous.leafSeq,
+				jumps: previous.jumps,
+				compactions: previous.compactions,
+				...(previous.nameSeq !== undefined ? { nameSeq: previous.nameSeq } : {}),
+				...(previous.summarySeq !== undefined ? { summarySeq: previous.summarySeq } : {}),
+				...positions,
+				totals: previous.totals,
+				...(previous.latestAssistantSeq !== undefined ? { latestAssistantSeq: previous.latestAssistantSeq } : {}),
+			};
+		},
 	};
 }
 
