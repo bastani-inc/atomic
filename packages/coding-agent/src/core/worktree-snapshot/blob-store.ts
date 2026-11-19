@@ -1779,11 +1779,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		options.signal?.throwIfAborted();
 		const trigger = `${t.blobs}_chunks_delete_all`;
 		const required = [trigger, `${t.blobs}_age`, `${t.blobs}_inline_size`];
-		const schema = this.dialect.schemaObjects(required);
+		const watchTable = `${this.prefix}snapshot_walk_sessions`;
+		const schema = this.dialect.schemaObjects([...required, watchTable]);
 		const present = new Set(
 			(await this.database.all<SqliteRow & { name: string }>(schema.sql, ...schema.params)).map((row) => row.name),
 		);
-		if (present.size < required.length) {
+		if (present.has(watchTable)) await this.removeExpiredSessionWatch(options);
+		if (required.some((name) => !present.has(name))) {
 			options.signal?.throwIfAborted();
 			await this.write(options.pace, async (transaction) => {
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
@@ -2006,14 +2008,57 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		});
 	}
 
+	private sessionWatchTriggers(unchanged: string): StorageTrigger[] {
+		const { sessionLinks, sessionRefs, sessionRecords } = this.tables;
+		return [sessionLinks, sessionRefs, sessionRecords].flatMap((table, i) =>
+			["INSERT", "UPDATE", "DELETE"].map((event) =>
+				createTrigger(`${this.prefix}snapshot_walk_${i}${event.toLowerCase()[0]}`, event, table, [
+					`DELETE FROM ${unchanged} WHERE session_id = ${event === "DELETE" ? "OLD" : "NEW"}.session_id${event === "UPDATE" ? " OR session_id = OLD.session_id" : ""}`,
+				]),
+			),
+		);
+	}
+
+	private dropSessionWatch(tx: SqliteExecutor): Promise<void> {
+		const table = `${this.prefix}snapshot_walk_sessions`;
+		return withShortSchemaLockWaits(tx, this.dialect, () =>
+			tx.exec(
+				[
+					...this.sessionWatchTriggers(table).map((t) => this.dialect.dropTrigger(t.name, t.table, true)),
+					`DROP TABLE IF EXISTS ${table}`,
+				].join(";\n"),
+			),
+		);
+	}
+
+	/** A collector may have stopped before cleanup. An ordinary sweep, even with no candidates, releases its
+	 * registrations and triggers after the lease. A live collector that has fallen behind can still check under lock. */
+	private async removeExpiredSessionWatch(options: SnapshotSweepOptions): Promise<void> {
+		const sources = this.tables.sources;
+		const recent = `SELECT 1 FROM ${sources} WHERE source LIKE 'walk@%' AND watermark > ${this.dialect.nowSeconds} - ${SNAPSHOT_COLLECTION_LEASE_SECONDS}`;
+		if (await this.database.get(recent).catch(() => true)) return;
+		options.signal?.throwIfAborted();
+		await this.database
+			.transaction(
+				async (tx) => {
+					if (await tx.get(recent)) return;
+					await this.dropSessionWatch(tx);
+					await tx.run(`DELETE FROM ${sources} WHERE source LIKE 'walk@%'`);
+				},
+				{ lockWaitMs: this.dialect.name === "postgres" ? 1 : 0 },
+			)
+			.catch(() => undefined);
+		await this.betweenBatches(options.pace);
+	}
+
 	/** Observe changes to the index rows a split walk reads. Even writes by older builds and index rebuilds
 	 * go through the database triggers. One watch per store: a concurrent collector invalidates the first, and a
-	 * stopped process leaves at most one marker and the same fixed triggers, reused by the next split walk. */
+	 * stopped process leaves at most one marker and the same fixed triggers, reclaimed by an ordinary sweep after the lease. */
 	private async watchSessionWalk(
 		options: SnapshotSweepOptions,
 		initial: readonly string[],
 	): Promise<SessionWalkWatch> {
-		const { sources, sessionLinks, sessionRefs, sessionRecords } = this.tables;
+		const { sources } = this.tables;
 		const unchanged = `${this.prefix}snapshot_walk_sessions`;
 		const tracked = new Set(initial);
 		const register = (tx: SqliteExecutor, ids: readonly string[]) =>
@@ -2023,13 +2068,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			);
 		const token = `walk@${globalThis.crypto.randomUUID()}`;
 		const marker = "source LIKE 'walk@%'";
-		const triggers = [sessionLinks, sessionRefs, sessionRecords].flatMap((table, i) =>
-			["INSERT", "UPDATE", "DELETE"].map((event) =>
-				createTrigger(`${this.prefix}snapshot_walk_${i}${event.toLowerCase()[0]}`, event, table, [
-					`DELETE FROM ${unchanged} WHERE session_id = ${event === "DELETE" ? "OLD" : "NEW"}.session_id${event === "UPDATE" ? " OR session_id = OLD.session_id" : ""}`,
-				]),
-			),
-		);
+		const triggers = this.sessionWatchTriggers(unchanged);
 		// Speculative: never wait for the writer to start observing. On failure the transaction rolls back;
 		// checking the groups under the eventual delete lock still works without any auxiliary objects.
 		await this.database.transaction(
@@ -2040,7 +2079,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 							`CREATE TABLE IF NOT EXISTS ${unchanged} (session_id TEXT PRIMARY KEY)${this.dialect.tableOptions};`,
 							...triggers.map((t) => this.dialect.renderTrigger(t)),
 							`DELETE FROM ${unchanged}; DELETE FROM ${sources} WHERE ${marker};`,
-							`INSERT INTO ${sources} (source,watermark,backfilled_through) VALUES ('${token}',0,0);`,
+							`INSERT INTO ${sources} (source,watermark,backfilled_through) VALUES ('${token}',${this.dialect.nowSeconds},0);`,
 						].join("\n"),
 					),
 				);
@@ -2075,14 +2114,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			close: () =>
 				this.write(options.pace, async (tx) => {
 					if (!(await tx.run(`DELETE FROM ${sources} WHERE source = ?`, token)).changes) return;
-					await withShortSchemaLockWaits(tx, this.dialect, async () => {
-						await tx.exec(
-							[
-								...triggers.map((t) => this.dialect.dropTrigger(t.name, t.table, true)),
-								`DROP TABLE IF EXISTS ${unchanged}`,
-							].join(";\n"),
-						);
-					});
+					await this.dropSessionWatch(tx);
 				}),
 		};
 		return watch;

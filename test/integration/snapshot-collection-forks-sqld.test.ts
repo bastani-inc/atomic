@@ -50,9 +50,20 @@ for (const backend of storageBackends) {
 				const walks: number[] = [];
 				const locked: number[] = [];
 				let interleave = false;
+				let interruptCleanup = true;
 				const measured = (executor: SqliteExecutor): SqliteExecutor => ({
 					exec: executor.exec.bind(executor),
-					run: executor.run.bind(executor),
+					run: (sql, ...args) => {
+						if (
+							interruptCleanup &&
+							sql === `DELETE FROM ${scope.prefix}snapshot_index_sources WHERE source = ?` &&
+							String(args[0]).startsWith("walk@")
+						) {
+							interruptCleanup = false;
+							throw new Error("connection lost before cleanup");
+						}
+						return executor.run(sql, ...args);
+					},
 					get: executor.get.bind(executor),
 					async all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) {
 						if (sql.includes("open_anchors(")) {
@@ -95,6 +106,14 @@ for (const backend of storageBackends) {
 				assert.ok(walks.length >= ids.length);
 				assert.ok(Math.max(...walks) <= 1, `long sessions per statement: ${walks}`);
 				assert.ok(Math.max(...locked) <= 1, `long sessions per write transaction: ${locked}`);
+				// Simulate an interrupted collector whose lease has elapsed. Even with nothing left to delete,
+				// the next collection must remove the extra triggers ordinary session writers would otherwise run.
+				assert.equal(interruptCleanup, false);
+				const guard = d.schemaObjects([`${scope.prefix}snapshot_walk_sessions`, `${scope.prefix}snapshot_walk_0i`]);
+				assert.equal((await db.all(guard.sql, ...guard.params)).length, 2);
+				await db.run(`UPDATE ${scope.prefix}snapshot_index_sources SET watermark = 0 WHERE source LIKE 'walk@%'`);
+				assert.deepEqual((await collectSnapshotGarbage(reader.snapshotBlobs, { graceSeconds: 0 })).deleted, []);
+				assert.deepEqual(await db.all(guard.sql, ...guard.params), []);
 				await writer.snapshotBlobs.putBlobs([gone]);
 				interleave = true;
 				walks.length = 0;
