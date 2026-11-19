@@ -338,7 +338,7 @@ const POSTGRES_UNREPRESENTABLE_ESCAPE = String.raw`'(?<!\\)((?:\\\\)*)\\u(?:0000
  * one never fails on a query or trigger that reads it, and every other value reads as on SQLite. A document without
  * an escape, or that `jsonb` accepts, reads unchanged.
  */
-function postgresJsonb(column: string): string {
+export function postgresJsonb(column: string): string {
 	return String.raw`(CASE WHEN strpos(${column}, '\u') = 0 OR pg_input_is_valid(${column}, 'jsonb') THEN ${column} ELSE regexp_replace(${column}, ${POSTGRES_UNREPRESENTABLE_ESCAPE}, '\1\\ufffd', 'g') END)::jsonb`;
 }
 
