@@ -11,7 +11,12 @@ import {
 	type StorageFailureCause,
 } from "@bastani/atomic/storage";
 import { pathExists } from "../../shared/path-exists.js";
-import { type JournalKeyRangeReadOptions, journalKeyRangeRead, type RunJournalVersions } from "./internal.js";
+import {
+	cancellableRunListings,
+	type JournalKeyRangeReadOptions,
+	journalKeyRangeRead,
+	type RunJournalVersions,
+} from "./internal.js";
 import {
 	type AppendOutcome,
 	JOURNAL_LEASE,
@@ -107,6 +112,10 @@ function byRunId(left: { runId: string }, right: { runId: string }): number {
  * resolve any run through the catalog, including runs of adopted journal files, which stay where they are.
  */
 export class ShardedRunJournal implements RunJournal {
+	static {
+		cancellableRunListings.add(ShardedRunJournal.prototype.listRuns);
+	}
+
 	readonly [SHARDED_RUN_JOURNAL] = true;
 	readonly directory: string;
 	private readonly catalog: JournalCatalog;
@@ -457,7 +466,9 @@ export class ShardedRunJournal implements RunJournal {
 				const journal = await this.listable(record);
 				options?.signal?.throwIfAborted();
 				if (journal !== undefined) {
-					const rows = await journal.listRuns(filter, options);
+					const rows = await (options?.signal && cancellableRunListings.has(journal.listRuns)
+						? journal.listRuns(filter, options)
+						: journal.listRuns(filter));
 					options?.signal?.throwIfAborted();
 					for (const run of rows) {
 						const owner = owners.get(run.runId);

@@ -13,27 +13,89 @@ export function responseRefused(error: unknown): boolean {
 	return error instanceof StoragePayloadTooLargeError && error.kind === "response";
 }
 
-/** A refusal can close the server's transaction. Never reuse its rows, cursor or connection transaction. */
-export async function retryCatalogRead<T>(
+/** Start only after the ordinary read failed. A point lookup or hydration failure cannot be reduced by shrinking the page. */
+export async function recoverCatalogRead<T>(
 	db: SqliteDatabase,
-	ordinary: () => Promise<T>,
+	failure: unknown,
 	paged: (tx: SqliteExecutor, limit: number) => Promise<T>,
 	pageRows = 256,
 	check?: () => void,
+	canShrink: (error: unknown) => boolean = responseRefused,
 ): Promise<T> {
-	try {
-		return await ordinary();
-	} catch (error) {
-		if (!responseRefused(error)) throw error;
-	}
+	check?.();
+	if (!responseRefused(failure)) throw failure;
 	for (let limit = pageRows; ; limit = Math.max(1, Math.floor(limit / 2))) {
 		await catalogTurn();
 		check?.();
 		try {
-			return await db.transaction((tx) => paged(tx, limit), { readOnly: true, retryTransientFailures: true });
+			return await db.transaction((tx) => paged(tx, limit), {
+				readOnly: true,
+				retryTransientFailures: true,
+				retryReadOnlyCommit: true,
+			});
 		} catch (error) {
-			if (!responseRefused(error) || limit === 1) throw error;
+			check?.();
+			if (limit === 1 || !canShrink(error)) throw error;
 		}
+	}
+}
+
+/** Recover a refused header catalog in the caller's snapshot. Diagnose a permanently oversized header before fetching the unrelated prefix. */
+export async function visitRunHeaderPages<Row extends SqliteRow>(
+	tx: SqliteExecutor,
+	source: { sql: string; params: readonly SqliteValue[]; width: string; withoutKey?: string },
+	limit: number,
+	failure: unknown,
+	visit: (row: Row, key: string) => void,
+	pageFailed: (error: unknown) => never,
+	check?: () => void,
+): Promise<void> {
+	const from = `FROM (${source.sql}) AS catalog`;
+	const { params } = source;
+	const select = `SELECT ${source.withoutKey ?? "*"} ${from}`;
+	// Compare lengths on the server. Only its response to the actual singleton decides whether that row fits.
+	const largest = await tx.get<{ run_id: string }>(
+		`SELECT run_id ${from} ORDER BY ${source.width} DESC LIMIT 1`,
+		...params,
+	);
+	check?.();
+	if (!largest) return;
+	let first: Row | undefined;
+	try {
+		first = await tx.get<Row>(`${select} WHERE run_id = ?`, ...params, largest.run_id);
+	} catch (error) {
+		if (responseRefused(error)) throw failure;
+		throw error;
+	}
+	check?.();
+	if (!first) throw failure;
+	visit(first, largest.run_id);
+	// The first row belongs to this snapshot. Count it in the first batch and never transfer it twice.
+	let remaining = Math.max(1, limit - 1);
+	for (let after: string | undefined; ; ) {
+		const order = `WHERE run_id <> ?${after === undefined ? "" : " AND run_id > ?"} ORDER BY run_id LIMIT ?`;
+		const bindings =
+			after === undefined ? [...params, largest.run_id, remaining] : [...params, largest.run_id, after, remaining];
+		let page: Row[], keys: SqliteRow[];
+		try {
+			page = await tx.all<Row>(`${select} ${order}`, ...bindings);
+			check?.();
+			// Appending the physical key to a near-limit published header can make that single header too wide.
+			keys = source.withoutKey && page.length ? await tx.all(`SELECT run_id ${from} ${order}`, ...bindings) : page;
+		} catch (error) {
+			pageFailed(error);
+		}
+		check?.();
+		for (const [i, row] of page.entries()) {
+			const key = keys[i]?.run_id;
+			if (typeof key !== "string") throw failure;
+			visit(row, key);
+		}
+		if (page.length < remaining) return;
+		after = keys.at(-1)!.run_id as string;
+		remaining = limit;
+		await catalogTurn();
+		check?.();
 	}
 }
 

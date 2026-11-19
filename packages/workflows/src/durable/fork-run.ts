@@ -64,6 +64,7 @@ import {
 	type ForkStorageScope,
 	ForkTargetNotFoundError,
 } from "./fork-errors.js";
+import { cancellableRunListings } from "./journal/internal.js";
 import {
 	decodeJournalEventHandle,
 	isJournalDurableBackend,
@@ -331,7 +332,11 @@ async function readForkSource(
 				? (await journal.getRun(target)) === undefined
 					? []
 					: [target]
-				: (await journal.listRuns(undefined, { signal })).map((run) => run.runId);
+				: (
+						await (signal && cancellableRunListings.has(journal.listRuns)
+							? journal.listRuns(undefined, { signal })
+							: journal.listRuns())
+					).map((run) => run.runId);
 			signal?.throwIfAborted();
 			const resolution = resolveRunIdTarget(target, runIds);
 			if (resolution.kind === "ambiguous")

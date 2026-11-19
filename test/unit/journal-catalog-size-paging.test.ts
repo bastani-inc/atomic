@@ -13,6 +13,100 @@ import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-rea
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 describe("journal catalog paging", () => {
+	it.each([16, 512])(
+		"a permanently oversized header after %i fitting rows does not replay the prefix (#5537)",
+		async (count) => {
+			const database = await openNodeSqliteDatabase(":memory:");
+			const journal = await SqlRunJournal.open(database, { prefix: "tail_" });
+			try {
+				await database.run(
+					`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?) INSERT INTO ${runJournalTables("tail_").runs}(run_id,name,cwd,created_at,status,header_json) SELECT 'a'||i,'r','/p',1,'completed','{"runId":"a'||i||'"}' FROM n`,
+					count,
+				);
+				await journal.createRun({
+					runId: "z",
+					name: "wide",
+					cwd: "/p",
+					createdAt: 1,
+					status: "completed",
+					inputs: { text: "x".repeat(2000) },
+				});
+				let requests = 0,
+					transferred = 0;
+				const release = limitHeaderResponse(database, (rows) => {
+					requests++;
+					if (rows.some((row) => String(row.header_json).length > 1000)) return false;
+					transferred += rows.length;
+					return true;
+				});
+				try {
+					await expect(journal.listRuns()).rejects.toMatchObject({ code: "payload-too-large", kind: "response" });
+					expect({ requests, transferred }).toEqual({ requests: 2, transferred: 0 });
+				} finally {
+					release();
+				}
+			} finally {
+				await journal.close();
+				await database.close();
+			}
+		},
+	);
+
+	it("does not claim a complete catalog when a stored key differs from the published run ID (#5537)", async () => {
+		const database = await openNodeSqliteDatabase(":memory:");
+		const journal = await SqlRunJournal.open(database, { prefix: "keys_" });
+		try {
+			const header = { runId: "zzz", name: "r", cwd: "/p", createdAt: 1, status: "completed" as const };
+			const accepted = journal.createRun(header);
+			header.runId = "a";
+			await accepted;
+			await journal.createRun({ ...header, runId: "z" });
+			expect((await journal.listRuns()).map((r) => r.runId)).toEqual(["z", "zzz"]);
+			const restore = limitHeaderResponse(database, (rows) => rows.length <= 1);
+			try {
+				await expect(journal.listRuns()).rejects.toMatchObject({ code: "payload-too-large", kind: "response" });
+			} finally {
+				restore();
+			}
+		} finally {
+			await journal.close();
+			await database.close();
+		}
+	});
+
+	it("run versions returns an opaque abort reason without inspecting its prototype (#5537)", async () => {
+		const database = await openNodeSqliteDatabase(":memory:");
+		const journal = await SqlRunJournal.open(database, { prefix: "stop_" });
+		try {
+			await database.run(
+				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 257) INSERT INTO ${runJournalTables("stop_").runs}(run_id,name,cwd,created_at,status,header_json) SELECT 'a'||i,'r','/p',1,'completed','{"runId":"a'||i||'"}' FROM n`,
+			);
+			const reason = new Proxy(
+				{},
+				{
+					getPrototypeOf() {
+						throw new Error("opaque reason");
+					},
+				},
+			);
+			const stop = new AbortController();
+			const turn = setImmediate(() => stop.abort(reason));
+			try {
+				expect(
+					await journal.runVersions(stop.signal).then(
+						() => false,
+						(error) => error === reason,
+					),
+				).toBe(true);
+			} finally {
+				clearImmediate(turn);
+			}
+		} finally {
+			await journal.close();
+			await database.close();
+		}
+	});
+
 	it("refuses a schema upgrade that arrives before the final empty catalog page (#5537)", async () => {
 		const directory = makeTempDirectory("atomic-catalog-version-");
 		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));

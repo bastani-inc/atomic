@@ -69,6 +69,16 @@ async function journalEvents(journal: RunJournal, runId: string): Promise<Journa
 	return entries;
 }
 
+test("prefix lookup calls an older journal without an options argument when no signal was supplied (#5537)", async () => {
+	const { backend, runId } = await linearSource("prefix-without-options");
+	const list = vi.spyOn(backend.journal, "listRuns");
+	assert.deepEqual(
+		(await Array.fromAsync(durableForkPoints(backend, runId.slice(0, 8)))).map((point) => point.stagePath),
+		["plan", "implement", "review"],
+	);
+	assert.deepEqual(list.mock.calls, [[]]);
+});
+
 function promptUi(answers: string[], asked: string[]): WorkflowUIAdapter {
 	return {
 		input: async (prompt) => {

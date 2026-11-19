@@ -9,8 +9,9 @@ import {
 	openNodeSqliteDatabase,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
 	readCatalogPages,
+	recoverCatalogRead,
 	renderStorageIdentifiers,
-	retryCatalogRead,
+	responseRefused,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
@@ -25,10 +26,12 @@ import {
 	type StoredJournalPayload,
 	upgradeRunJournalSchema,
 	validateStoragePrefix,
+	visitRunHeaderPages,
 	withJournalPayloads,
 	writeJournalPayloadChunks,
 } from "@bastani/atomic/storage";
 import {
+	cancellableRunListings,
 	JOURNAL_READ_PAGE_CHARS,
 	JOURNAL_READ_PAGE_SIZE,
 	JOURNAL_TRANSACTION,
@@ -151,30 +154,51 @@ function overviewEventColumns(dialect: StorageDialect): string {
 }
 
 async function readSizedPage(
-	database: SqliteExecutor,
+	database: SqliteDatabase,
 	chunkTable: string,
 	meta: string,
 	pageRows: string,
 	order: string,
 	params: readonly SqliteValue[],
 	limit: number,
+	reader: SqliteExecutor = database,
+	pageRefused?: (error: unknown) => never,
 ): Promise<{ readonly page: JournalEntry[]; readonly more: boolean; readonly limit: number }> {
-	const rows = await database.all<EventRow & { fetched: number | bigint }>(
-		`SELECT *, (SELECT ${c.schemaVersion} FROM ${meta}) AS ${META_VERSION} FROM (
+	let rows: (EventRow & { fetched: number | bigint })[];
+	try {
+		rows = await reader.all<EventRow & { fetched: number | bigint }>(
+			`SELECT *, (SELECT ${c.schemaVersion} FROM ${meta}) AS ${META_VERSION} FROM (
 			SELECT page.*, sum(length(page.${c.payload})) OVER (ORDER BY page.${order}) - length(page.${c.payload}) AS before_chars,
 				count(*) OVER () AS fetched
 			FROM (${pageRows}) AS page
 		) AS sized WHERE before_chars < ? ORDER BY ${order}`,
-		...params,
-		limit,
-		JOURNAL_READ_PAGE_CHARS,
-	);
+			...params,
+			limit,
+			JOURNAL_READ_PAGE_CHARS,
+		);
+	} catch (error) {
+		if (pageRefused) pageRefused(error);
+		if (limit === 1) throw error;
+		let failedPage: unknown;
+		return recoverCatalogRead(
+			database,
+			error,
+			(tx, count) =>
+				readSizedPage(database, chunkTable, meta, pageRows, order, params, count, tx, (failure) => {
+					failedPage = failure;
+					throw failure;
+				}),
+			Math.max(1, Math.floor(limit / 2)),
+			undefined,
+			(failure) => failure === failedPage && responseRefused(failure),
+		);
+	}
 	const fetched = Number(rows[0]?.fetched ?? 0);
 	if (rows.length === 0) {
-		assertRowVersion(await database.get(`SELECT ${c.schemaVersion} AS ${META_VERSION} FROM ${meta}`));
+		assertRowVersion(await reader.get(`SELECT ${c.schemaVersion} AS ${META_VERSION} FROM ${meta}`));
 	}
 	return {
-		page: (await withJournalPayloads(database, chunkTable, rows)).map(entryFromRow),
+		page: (await withJournalPayloads(reader, chunkTable, rows)).map(entryFromRow),
 		more: rows.length > 0 && (rows.length < fetched || fetched === limit),
 		limit: nextReadBatch(limit, fetched, rows.length, JOURNAL_READ_PAGE_SIZE),
 	};
@@ -232,6 +256,10 @@ async function readTransaction<T>(
 }
 
 export class SqlRunJournal implements RunJournal {
+	static {
+		cancellableRunListings.add(SqlRunJournal.prototype.listRuns);
+	}
+
 	private closed = false;
 	private tail: Promise<void> = Promise.resolve();
 	private closePromise?: Promise<void>;
@@ -622,50 +650,68 @@ export class SqlRunJournal implements RunJournal {
 				...(JSON.parse(row[c.headerJson]) as RunHeader),
 				status: runStatusFromRecord(row[c.status]),
 			});
-			const ordinary = async () => {
+			let listed: RunSummary[];
+			let readingLegacy = false;
+			try {
 				const rows = await this.database.all<HeaderRow>(`${sql} ORDER BY ${c.runId}`, ...params);
 				check();
 				if (rows.length === 0) await this.assertVersion(this.database);
 				assertRowVersion(rows[0]);
+				readingLegacy = true;
 				const legacy = (await this.legacy?.pending(this.database, filter)) ?? [];
 				check();
-				return [...rows, ...legacy].map(decode);
-			};
-			let paged = false;
-			const listed = await retryCatalogRead(
-				this.database,
-				ordinary,
-				async (tx, limit) => {
-					paged = true;
-					const runs: RunSummary[] = [];
-					for (let after: string | undefined; ; ) {
+				listed = [...rows, ...legacy].map(decode);
+			} catch (failure) {
+				check();
+				if (!responseRefused(failure)) throw failure;
+				const bytes = this.dialect.textByteLength;
+				const width = `${bytes(c.headerJson)} + ${bytes(c.status)}`;
+				const current = {
+					sql: `SELECT ${c.runId}, ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} ${where}`,
+					withoutKey: `${c.headerJson}, ${c.status}, ${META_VERSION}`,
+					params,
+					width,
+				};
+				const legacy = this.legacy && {
+					sql: this.legacy.pendingSource + (where ? ` AND ${c.cwd} = ?` : ""),
+					params,
+					width: `${width} + ${bytes(c.runId)}`,
+				};
+				const sources = legacy ? (readingLegacy ? [legacy, current] : [current, legacy]) : [current];
+				let pageFailure: unknown;
+				listed = await recoverCatalogRead(
+					this.database,
+					failure,
+					async (tx, limit) => {
+						await this.assertVersion(tx);
 						check();
-						const cursor = after === undefined ? "" : `${where ? "AND" : "WHERE"} ${c.runId} > ?`;
-						const page = await tx.all<HeaderRow>(
-							`${sql} ${cursor} ORDER BY ${c.runId} LIMIT ?`,
-							...params,
-							...(after === undefined ? [] : [after]),
-							limit,
-						);
-						check();
-						assertRowVersion(page[0]);
-						for (const row of page) runs.push(decode(row));
-						if (page.length < limit) break;
-						after = runs.at(-1)!.runId;
-						await new Promise<void>((resolve) => setImmediate(resolve));
-					}
-					if (this.legacy) {
-						const source = this.legacy.pendingSource + (where ? ` AND ${c.cwd} = ?` : "");
-						for (const row of await readCatalogPages<HeaderRow>(tx, source, params, c.runId, limit, check))
-							runs.push(decode(row));
-					}
-					return runs;
-				},
-				this.database.descriptor.adapter === "node-sqlite" ? 128 : 4096,
-				check,
-			);
-			check();
-			if (paged) await this.assertVersion(this.database);
+						const runs: RunSummary[] = [];
+						for (const source of sources)
+							await visitRunHeaderPages<HeaderRow>(
+								tx,
+								source,
+								limit,
+								failure,
+								(row, key) => {
+									const summary = decode(row);
+									if (summary.runId !== key) throw failure;
+									runs.push(summary);
+								},
+								(error) => {
+									pageFailure = error;
+									throw error;
+								},
+								check,
+							);
+						return runs;
+					},
+					this.database.descriptor.adapter === "node-sqlite" ? 128 : 4096,
+					check,
+					(error) => error === pageFailure && responseRefused(error),
+				);
+				check();
+				await this.assertVersion(this.database);
+			}
 			check();
 			return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
@@ -722,45 +768,49 @@ export class SqlRunJournal implements RunJournal {
 				if (local) await new Promise<void>((resolve) => setImmediate(resolve));
 				stop?.throwIfAborted();
 			};
-			return retryCatalogRead(
-				this.database,
-				async () => {
-					const first = await readPage(this.database);
-					if (first.length < pageRuns) {
-						for (const row of first) add(row);
-					} else {
-						// Reread even the first page in the snapshot: a writer may have deleted one of its runs and created
-						// another beyond the cursor. Combining those pages would list runs that never coexisted.
-						await nextPage();
-						await this.database.transaction(
-							async (reader) => {
-								for (let after: string | undefined; ; ) {
-									stop?.throwIfAborted();
-									const page = await readPage(reader, after);
-									for (const row of page) add(row);
-									if (page.length < pageRuns) break;
-									after = page.at(-1)![c.runId];
-									await nextPage();
-								}
-							},
-							{ readOnly: true },
-						);
-					}
-					for (const row of (await this.legacy?.versions(this.database)) ?? []) add(row);
-					return versions;
-				},
-				async (tx, limit) => {
-					versions.clear();
-					for (const sql of [select, ...(this.legacy ? [this.legacy.versionSource] : [])])
-						for (const row of await readCatalogPages<RunVersionRow>(tx, sql, [], c.runId, limit, () =>
-							stop?.throwIfAborted(),
-						))
-							add(row);
-					return versions;
-				},
-				pageRuns,
-				() => stop?.throwIfAborted(),
-			);
+			try {
+				const first = await readPage(this.database);
+				if (first.length < pageRuns) {
+					for (const row of first) add(row);
+				} else {
+					// Reread even the first page in the snapshot: a writer may have deleted one of its runs and created
+					// another beyond the cursor. Combining those pages would list runs that never coexisted.
+					await nextPage();
+					await this.database.transaction(
+						async (reader) => {
+							for (let after: string | undefined; ; ) {
+								stop?.throwIfAborted();
+								const page = await readPage(reader, after);
+								for (const row of page) add(row);
+								if (page.length < pageRuns) break;
+								after = page.at(-1)![c.runId];
+								await nextPage();
+							}
+						},
+						{ readOnly: true },
+					);
+				}
+				for (const row of (await this.legacy?.versions(this.database)) ?? []) add(row);
+				return versions;
+			} catch (error) {
+				if (stop?.aborted && error === stop.reason) throw error;
+				return recoverCatalogRead(
+					this.database,
+					error,
+					async (tx, limit) => {
+						await this.assertVersion(tx);
+						versions.clear();
+						for (const sql of [select, ...(this.legacy ? [this.legacy.versionSource] : [])])
+							for (const row of await readCatalogPages<RunVersionRow>(tx, sql, [], c.runId, limit, () =>
+								stop?.throwIfAborted(),
+							))
+								add(row);
+						return versions;
+					},
+					pageRuns,
+					() => stop?.throwIfAborted(),
+				);
+			}
 		});
 	}
 
@@ -1420,24 +1470,37 @@ export class SqlRunJournal implements RunJournal {
 		const legacy = this.legacy;
 		const readsLegacy = legacy !== undefined && (await this.operation(() => this.isUnconvertedLegacyRun(runId)));
 		for (;;) {
-			const read = async (tx: SqliteExecutor, count: number) => {
+			const { page, more, ...next } = await this.operation(async () => {
 				if (readsLegacy) {
-					const rows = (await legacy.events(tx, runId, nextSeq, count)) as EventRow[];
+					let count = limit;
+					let rows: EventRow[];
+					try {
+						rows = (await legacy.events(this.database, runId, nextSeq, count)) as EventRow[];
+					} catch (error) {
+						if (count === 1) throw error;
+						rows = await recoverCatalogRead(
+							this.database,
+							error,
+							async (tx, width) => {
+								await this.assertVersion(tx);
+								count = width;
+								return (await legacy.events(tx, runId, nextSeq, width)) as EventRow[];
+							},
+							Math.max(1, Math.floor(count / 2)),
+						);
+					}
 					return { page: rows.map(entryFromRow), more: rows.length === count, limit: count };
 				}
 				return readSizedPage(
-					tx,
+					this.database,
 					this.tables.eventChunks,
 					this.tables.meta,
 					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
 					c.seq,
 					[runId, nextSeq],
-					count,
+					limit,
 				);
-			};
-			const { page, more, ...next } = await this.operation(() =>
-				retryCatalogRead(this.database, () => read(this.database, limit), read, Math.max(1, Math.floor(limit / 2))),
-			);
+			});
 			for (const entry of page) {
 				this.assertOpen();
 				yield entry;
@@ -1497,24 +1560,17 @@ export class SqlRunJournal implements RunJournal {
 		let after: string | undefined;
 		let limit = JOURNAL_READ_PAGE_SIZE;
 		for (;;) {
-			const read = (tx: SqliteExecutor, count: number) =>
-				readSizedPage(
-					tx,
+			const { page, more, ...next } = await journal.operation(async () => {
+				return readSizedPage(
+					journal.database,
 					journal.tables.eventChunks,
 					journal.tables.meta,
 					`SELECT ${selectColumns} FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
 					c.key,
 					[runId, after ?? fromKey, toKey],
-					count,
+					limit,
 				);
-			const { page, more, ...next } = await journal.operation(() =>
-				retryCatalogRead(
-					journal.database,
-					() => read(journal.database, limit),
-					read,
-					Math.max(1, Math.floor(limit / 2)),
-				),
-			);
+			});
 			for (const entry of page) {
 				journal.assertOpen();
 				yield entry;

@@ -75,6 +75,37 @@ for (const backend of storageBackends)
 		},
 	);
 
+const postgres = storageBackends.find((backend) => backend.name === "Postgres")!;
+it.skipIf(postgres.skipReason)(
+	"a sparse PostgreSQL lookup accepts 50,000 matching directory aliases (#5537)",
+	async () => {
+		const scope = await postgres.openScope();
+		try {
+			const db = await scope.connect();
+			const store = await SqlSessionStore.open(db, {
+				prefix: scope.prefix,
+				cwdMatcher: () => (cwd) => cwd?.startsWith("/alias/") ?? false,
+			});
+			try {
+				await store.create(header("needle-good", "/alias/0"), []);
+				await seedCatalogSeries(
+					db,
+					1,
+					49_999,
+					seed(renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions, "'/alias/'||i"),
+				);
+				expect(
+					(await Array.fromAsync(store.list({ cwd: "/project", idPrefix: "needle-" }))).map((r) => r.id),
+				).toEqual(["needle-good"]);
+			} finally {
+				await store.close();
+			}
+		} finally {
+			await scope.close();
+		}
+	},
+);
+
 it.each(["native", "libSQL"])(
 	"%s memory: a same-store write commits between useful directory replies (#5537)",
 	async (mode) => {

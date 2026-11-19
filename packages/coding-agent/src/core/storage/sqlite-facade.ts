@@ -793,7 +793,7 @@ class DriverDatabase implements SqliteDatabase {
 			...(options?.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
 			...(options?.readOnly === true ? { readOnly: true } : {}),
 		};
-		const replayableRead = begin.readOnly === true && replay;
+		const replayableRead = begin.readOnly === true && replay && options?.retryReadOnlyCommit === true;
 		const run = () =>
 			this.retrying((attempt) => this.runTransaction(callback, attempt, begin, replayableRead), replay);
 		if (concurrency.kind === "serial" || this.driver.concurrentTransactions !== true) return this.queue.push(run);
