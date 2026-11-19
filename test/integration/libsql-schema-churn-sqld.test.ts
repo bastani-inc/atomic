@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, describe, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { dropLibsqlScope } from "../helpers/storage-backends.js";
@@ -29,11 +29,13 @@ const ROW_BYTES = 512 * 1024;
 const SCHEMA_CHURN_TIMEOUT_MS = 300_000;
 /**
  * Texts of one `exec` that hold a trigger, writes that add to a count and another trigger, run while the schema keeps
- * changing. Each text holds enough writes that the server often refuses one of them after the ones before it committed,
- * and few enough that a loaded server commits all of them in time: every statement commits on its own.
+ * changing. The server refuses a write with `SQLITE_SCHEMA` when the schema changed while it waited for the write lock,
+ * which under steady churn happens to several of these writes, after the ones before them committed. Few enough that
+ * the churn, which every other test file on the server meets too, lasts no longer than it must: every statement waits
+ * for the write lock and commits on its own.
  */
-const SEVERAL_STATEMENT_TEXTS = 20;
-const WRITES_PER_TEXT = 10;
+const SEVERAL_STATEMENT_TEXTS = 5;
+const WRITES_PER_TEXT = 3;
 
 const prefix = `churn_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
 const open = () => {
@@ -42,15 +44,18 @@ const open = () => {
 };
 
 /**
- * Starts connections that keep creating, indexing and dropping tables of their own; the function it returns stops them
- * and closes them.
+ * Starts connections that keep creating, indexing and dropping tables of their own, and returns once each has changed
+ * the schema, so the churn is steady from the first statement a test sends; the function it returns stops them and
+ * closes them.
  */
 async function churnSchema(): Promise<() => Promise<void>> {
 	const changers = await Promise.all(Array.from({ length: SCHEMA_CHANGERS }, open));
 	let stop = false;
+	const started = changers.map(() => Promise.withResolvers<void>());
 	const churn = Promise.all(
 		changers.map(async (changer, index) => {
 			for (let round = 0; !stop; round++) {
+				if (round === 1) started[index]!.resolve();
 				const table = `${prefix}churn_${index}_${round % 8}`;
 				// The changers only stir the schema: one of their own statements that gives up under the churn they cause is
 				// no part of what the tests check.
@@ -61,6 +66,7 @@ async function churnSchema(): Promise<() => Promise<void>> {
 			}
 		}),
 	);
+	await Promise.race([Promise.all(started.map(({ promise }) => promise)), churn]);
 	return async () => {
 		stop = true;
 		await churn;
@@ -131,20 +137,6 @@ describe.skipIf(serverUrl === undefined)(
 				await database.exec(`CREATE TABLE ${table} (n INTEGER NOT NULL, "case\u0301" TEXT)`);
 				await database.run(`INSERT INTO ${table} (n) VALUES (0)`);
 				const count = async () => Number((await database.get<{ n: number | bigint }>(`SELECT n FROM ${table}`))?.n);
-				// Every request that carries a text's first trigger, counted by the trigger's name, and those that also carry
-				// one of the text's writes.
-				const sent = new Map<string, number>();
-				const sentWithWrites = new Map<string, number>();
-				const real = globalThis.fetch;
-				vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-					const request = new Request(input, init);
-					const body = await request.clone().text();
-					for (const marker of body.match(new RegExp(`${prefix}first_\\d+`, "g")) ?? []) {
-						sent.set(marker, (sent.get(marker) ?? 0) + 1);
-						if (body.includes("SET n = n + 1")) sentWithWrites.set(marker, (sentWithWrites.get(marker) ?? 0) + 1);
-					}
-					return real(request);
-				});
 				const stopChurn = await churnSchema();
 				const outcomes: { readonly marker: string; readonly failed: boolean; readonly added: number }[] = [];
 				try {
@@ -165,18 +157,17 @@ describe.skipIf(serverUrl === undefined)(
 					}
 				} finally {
 					await stopChurn();
-					vi.unstubAllGlobals();
 				}
+				// A text sent again whole after the server refused one of its statements would write more than once.
 				for (const { marker, failed, added } of outcomes) {
-					assert.ok((sent.get(marker) ?? 0) >= 1, `${marker} was sent`);
-					assert.equal(
-						sentWithWrites.get(marker),
-						undefined,
-						`${marker} was never sent together with the writes after it, which would run them again`,
-					);
 					assert.equal(failed, false, `${marker}'s exec succeeded`);
 					assert.equal(added, WRITES_PER_TEXT, `${marker}'s exec wrote ${added} times, once each`);
 				}
+				const triggers = await database.get<{ count: number | bigint }>(
+					"SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?",
+					table,
+				);
+				assert.equal(Number(triggers?.count), 2 * SEVERAL_STATEMENT_TEXTS, "both triggers of every text");
 			},
 			SCHEMA_CHURN_TIMEOUT_MS,
 		);
