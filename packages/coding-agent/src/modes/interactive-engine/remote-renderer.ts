@@ -104,6 +104,7 @@ abstract class RemoteRenderer implements Component {
 	/** Each settled click compares both expansions at its own width and data revision. Only the front request is in flight. */
 	private readonly clickChecks: { command: RemoteRenderCommand; baseline?: string[]; changed(): void }[] = [];
 	private toggleAfterChecks = false;
+	private clickCancellation?: AbortSignal;
 	protected expanded = false;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
@@ -216,8 +217,14 @@ abstract class RemoteRenderer implements Component {
 		this.requestRender();
 	}
 
+	private readonly cancelClickChecks = (): void => {
+		this.clearClickChecks();
+		this.requestRender();
+	};
+
 	private readonly clearClickChecks = (): void => {
-		this.routes.clicks.signal.removeEventListener("abort", this.clearClickChecks);
+		this.clickCancellation?.removeEventListener("abort", this.cancelClickChecks);
+		this.clickCancellation = undefined;
 		this.clickChecks.length = 0;
 		this.toggleAfterChecks = false;
 		this.markDirty();
@@ -233,12 +240,15 @@ abstract class RemoteRenderer implements Component {
 		this.changed();
 	}
 
-	expandByClick(expanded: boolean, changed: () => void, width = this.width): void {
-		if (this.disposed || this.routes.clicks.signal.aborted || expanded === this.expanded) return;
+	expandByClick(expanded: boolean, changed: () => void, width = this.width, signal?: AbortSignal): void {
+		if (this.disposed || signal?.aborted || this.routes.clicks.signal.aborted || expanded === this.expanded) return;
 		const command = { ...this.command(++this.requestId, width), compareExpansion: true as const };
 		this.clickChecks.push({ command, changed });
 		if (this.clickChecks.length === 1) {
-			this.routes.clicks.signal.addEventListener("abort", this.clearClickChecks, { once: true });
+			this.clickCancellation = signal
+				? AbortSignal.any([signal, this.routes.clicks.signal])
+				: this.routes.clicks.signal;
+			this.clickCancellation.addEventListener("abort", this.cancelClickChecks, { once: true });
 			this.runtime.sendEngineCommand(command);
 		}
 	}

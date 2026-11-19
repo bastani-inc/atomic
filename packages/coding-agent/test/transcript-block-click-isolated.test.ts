@@ -14,7 +14,10 @@ import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
 import type { CustomMessage } from "../src/core/messages.js";
-import { toggleClickedBlocks } from "../src/modes/interactive/components/transcript-block-clicks.js";
+import {
+	supersedeBlockClicks,
+	toggleClickedBlocks,
+} from "../src/modes/interactive/components/transcript-block-clicks.js";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -220,7 +223,19 @@ async function mountIsolatedChat() {
 		quickClick(pattern, text);
 		await settle();
 	};
-	return { transcript, frames, bash, message, screen, shows, waitFor, quickClick, settle, click };
+	return {
+		transcript,
+		frames,
+		bash,
+		message,
+		screen,
+		shows,
+		waitFor,
+		quickClick,
+		settle,
+		click,
+		cancelBlockClicks: () => supersedeBlockClicks(chat),
+	};
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -378,6 +393,20 @@ test("a running tool's elapsed time changing during a click does not count as ex
 	} finally {
 		clock.mockRestore();
 	}
+});
+
+test("keeping the current global expansion can discard a click already waiting for engine rows (#5562)", async () => {
+	const chat = await mountIsolatedChat();
+	const row = chat.bash("waiting", "status", lines(20, "output"));
+	await chat.waitFor(/Bash\(status\)/);
+	chat.frames.hold();
+	await chat.click(/Bash\(status\)/, "status");
+	await vi.waitFor(() => assert.ok(chat.frames.hasClickComparison()), ENGINE_FRAME_WAIT);
+	chat.cancelBlockClicks();
+	chat.frames.release();
+	assert.equal(row.isExpanded(), false);
+	await chat.click(/Bash\(status\)/, "status");
+	await chat.waitFor(/output 1$/);
 });
 
 for (const length of [1, 20]) {

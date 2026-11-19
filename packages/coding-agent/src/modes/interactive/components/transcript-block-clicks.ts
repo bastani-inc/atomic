@@ -32,7 +32,7 @@ export interface ClickExpandableBlock extends Component {
 	 * isolated engine renders. It calls `changed` once the new rows differ from the old ones, and otherwise goes back
 	 * to the expansion it had. Blocks drawn in place omit it: they are drawn in both states at once instead.
 	 */
-	expandByClick?(expanded: boolean, changed: () => void, width: number): void;
+	expandByClick?(expanded: boolean, changed: () => void, width: number, signal?: AbortSignal): void;
 }
 
 export function isClickExpandableBlock(component: Component | undefined): component is ClickExpandableBlock {
@@ -148,6 +148,7 @@ export function toggleClickedBlocks(
 	unit: readonly ClickExpandableBlock[],
 	width: number,
 	changed: (expanded: boolean) => void,
+	signal?: AbortSignal,
 ): void {
 	const [head] = unit;
 	if (head === undefined) return;
@@ -159,7 +160,7 @@ export function toggleClickedBlocks(
 		return;
 	}
 	if (head.expandByClick) {
-		head.expandByClick(expanded, () => changed(expanded), width);
+		head.expandByClick(expanded, () => changed(expanded), width, signal);
 		return;
 	}
 	if (expandIfItChangesRows(head, width, expanded)) changed(expanded);
@@ -188,11 +189,12 @@ function clickUnitAt(
 }
 
 // A global expansion supersedes only transcript toggles, not other controls' single-click actions.
-const expansionGenerations = new WeakMap<Container, number>();
-const pressedGenerations = new WeakMap<Container, number>();
+const clickScopes = new WeakMap<Container, AbortController>();
+const pressedScopes = new WeakMap<Container, AbortSignal>();
 
 export function supersedeBlockClicks(container: Container): void {
-	expansionGenerations.set(container, (expansionGenerations.get(container) ?? 0) + 1);
+	clickScopes.get(container)?.abort();
+	clickScopes.delete(container);
 }
 
 /** A click names the block it landed on. It toggles that block in its current group at the current width. */
@@ -203,19 +205,30 @@ export function handleTranscriptBlockClick(
 	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
 ): ContainerMouseResult {
-	const generation = expansionGenerations.get(container) ?? 0;
-	if (event.type === "press") pressedGenerations.set(container, generation);
-	if (!isSingleLeftClick(event) || (pressedGenerations.get(container) ?? generation) !== generation) return undefined;
+	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
+	let scope = clickScopes.get(container);
+	if (!scope) {
+		scope = new AbortController();
+		clickScopes.set(container, scope);
+	}
+	if (event.type === "press") {
+		pressedScopes.set(container, scope.signal);
+		return undefined;
+	}
+	const signal = pressedScopes.get(container) ?? scope.signal;
+	pressedScopes.delete(container);
+	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
 	const unit = clickUnitAt(container, event.width, event.y);
 	if (!unit) return undefined;
 	return {
 		handled: true,
 		whenSingleClick: () => {
-			if ((expansionGenerations.get(container) ?? 0) !== generation) return;
+			if (signal.aborted) return;
 			const blocks = unit();
 			const width = currentWidth();
-			if (blocks && width !== undefined) toggleClickedBlocks(blocks, width, (expanded) => onToggled?.(expanded));
+			if (blocks && width !== undefined)
+				toggleClickedBlocks(blocks, width, (expanded) => onToggled?.(expanded), signal);
 		},
 		target: {
 			component: owner,

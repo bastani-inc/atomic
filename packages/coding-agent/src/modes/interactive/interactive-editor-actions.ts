@@ -71,6 +71,7 @@ InteractiveModeBase.prototype.toggleToolOutputExpansion = function (this: Intera
 InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveModeBase, expanded: boolean): void {
 	supersedeBlockClicks(this.chatContainer);
 	supersedeBlockClicks(this.pendingMessagesContainer);
+	if (this.toolOutputExpanded === expanded) return;
 	this.toolOutputExpanded = expanded;
 	const activeHeader = this.customHeader ?? this.builtInHeader;
 	if (isExpandable(activeHeader)) {

@@ -334,6 +334,23 @@ describe("clicking transcript blocks in the main chat", () => {
 		});
 	}
 
+	test("repeating the current expansion setting cancels a waiting click without resetting other blocks (#5562)", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const second = chat.rowOf(/Bash\(second-command\)/);
+			chat.click(chat.columnOf(second, "Bash"), second);
+			assert.ok(chat.expanded("second"));
+			const first = chat.rowOf(/Bash\(first-command\)/);
+			chat.quickClick(chat.columnOf(first, "Bash"), first);
+			mode(chat).setToolsExpanded(false);
+			chat.settle();
+			assert.ok(!chat.expanded("first"), "the pending click did not open the first block");
+			assert.ok(chat.expanded("second"), "the already-open block keeps its individual expansion");
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("pressing Ctrl+O twice before the next paint collapses a block a click expanded, with every other block", async () => {
 		const chat = await mountChat(100, 60);
 		try {
