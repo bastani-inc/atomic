@@ -1684,6 +1684,91 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
+	it("copies selected volatile rows twice after their components change and forgets them on reset (#5593)", async () => {
+		const terminal = new RecordingTerminal(30, 4);
+		const copied: string[] = [];
+		const content = new WindowedContainer();
+		const component = (line: string) => ({
+			selectionTextMayChangeOnReplay: true,
+			render: () => [line],
+			invalidate() {},
+		});
+		const paint = (v: string) => {
+			content.clear();
+			content.addChild(component(`rendered value ${v}`));
+			content.addChild(new Text("stock", 0, 0));
+		};
+		paint("1");
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copyOnSelect: false,
+			copySelection: async (text) => {
+				copied.push(text);
+				return true;
+			},
+		});
+		tui.setLayoutRoot(new ScrollView(content, { primary: true }));
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			const select = async () => {
+				terminal.sendInput("\x1b[<0;1;1M");
+				terminal.sendInput("\x1b[<32;5;2M");
+				terminal.sendInput("\x1b[<0;5;2m");
+				await terminal.waitForRender();
+			};
+			await select();
+			paint("2");
+			tui.requestRender();
+			await terminal.waitForRender();
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			assert.deepEqual(copied, ["rendered value 1\nstock", "rendered value 1\nstock"]);
+			tui.resetTextSelection();
+			assert.equal(await tui.copyActiveSelectionToClipboard(), false);
+			await select();
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			assert.equal(copied.at(-1), "rendered value 2\nstock");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("copies the updated text of a selected live renderer that was not evicted (#5593)", async () => {
+		const terminal = new RecordingTerminal(30, 4);
+		const copied: string[] = [];
+		const content = new WindowedContainer();
+		let value = "running";
+		content.addChild({
+			selectionTextMayChangeOnReplay: true,
+			render: () => [value],
+			invalidate() {},
+		});
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copyOnSelect: false,
+			copySelection: async (text) => {
+				copied.push(text);
+				return true;
+			},
+		});
+		tui.setLayoutRoot(new ScrollView(content, { primary: true }));
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<0;1;1M");
+			terminal.sendInput("\x1b[<32;7;1M");
+			terminal.sendInput("\x1b[<0;7;1m");
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			value = "stopped";
+			content.invalidate();
+			tui.requestRender();
+			await terminal.waitForRender();
+			assert.ok(await tui.copyActiveSelectionToClipboard());
+			assert.deepEqual(copied, ["running", "stopped"]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("copies an active selection programmatically", async () => {
 		const terminal = new RecordingTerminal(20, 4);
 		const copied: string[] = [];

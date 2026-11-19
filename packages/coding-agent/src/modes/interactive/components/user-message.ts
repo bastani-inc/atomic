@@ -2,7 +2,7 @@ import { Container, Markdown, type MarkdownTheme } from "@bastani/atomic-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
-import { createMarkdownTransform } from "./markdown-transform.ts";
+import { createMarkdownTransform, hasExtensionMarkdownTransform } from "./markdown-transform.ts";
 
 export const USER_PROMPT_ZONE_START = "\x1b]133;A;atomic=user\x07";
 const OSC133_ZONE_START = USER_PROMPT_ZONE_START;
@@ -13,6 +13,10 @@ const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
  * Component that renders a user message
  */
 export class UserMessageComponent extends Container {
+	get selectionTextMayChangeOnReplay(): boolean {
+		return hasExtensionMarkdownTransform(this.markdownTransformers);
+	}
+
 	private text: string;
 	private markdownTheme: MarkdownTheme;
 	private outputPad: number;

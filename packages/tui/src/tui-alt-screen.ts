@@ -340,6 +340,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly uploadedKittyImages = new Map<number, CachedKittyImage>();
 	private selectionAnchor?: SelectionPoint;
 	private selectionFocus?: SelectionPoint;
+	private readonly selectedFragments = new Map<
+		number,
+		{ renderer: symbol; start: number; end: number; text: string }
+	>();
 	private selectionGranularity: SelectionGranularity = "character";
 	private selectionInitialRange?: SelectionRange;
 	private lastClick?: ClickTarget;
@@ -491,6 +495,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.invalidate();
 		}
 		this.lastDocument = [];
+		this.selectedFragments.clear();
 		this.selectionAnchor = undefined;
 		this.selectionFocus = undefined;
 		this.selectionGranularity = "character";
@@ -517,6 +522,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStop(_options: TuiStopOptions): void {
+		this.selectedFragments.clear();
 		this.closeSearch();
 		this.dropWaitingSingleClicks();
 		this.stopSelectionAutoScroll();
@@ -911,6 +917,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.selectionDragged = false;
 			this.clearComponentMouseGesture();
 			if (hadActiveSelection) {
+				this.selectedFragments.clear();
 				this.selectionAnchor = undefined;
 				this.selectionFocus = undefined;
 				this.selectionGranularity = "character";
@@ -1145,6 +1152,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private clearTextSelection(): void {
+		this.selectedFragments.clear();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.selectionAnchor = undefined;
@@ -1393,6 +1401,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (event.release || (event.button & 32) !== 0 || (event.button & 3) !== 0) return false;
 		const target = this.getScrollbarTargetAt(event.x, event.y);
 		if (!target) return false;
+		this.selectedFragments.clear();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.selectionAnchor = undefined;
@@ -1502,6 +1511,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private updateSelectionFocus(point: SelectionPoint): void {
+		this.setSelectionFocus(point);
+		this.captureVolatileSelection();
+	}
+
+	private setSelectionFocus(point: SelectionPoint): void {
 		if (this.selectionGranularity === "character" || !this.selectionInitialRange) {
 			this.selectionFocus = point;
 			return;
@@ -1702,6 +1716,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 		this.stopSelectionAutoScroll();
+		this.selectedFragments.clear();
 		this.selectionPressActive = true;
 		const scrollView =
 			!this.hasOverlay() && this.currentLayout
@@ -1726,6 +1741,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionInitialRange = range;
 		this.selectionAnchor = range?.start ?? anchor;
 		this.selectionFocus = range?.end ?? anchor;
+		this.captureVolatileSelection();
 		this.selectionDragged = false;
 		this.pressFrame = pressFrame;
 		this.pressedUrl = range
@@ -1775,6 +1791,46 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return { start: Math.max(minColumn, start), end: Math.min(maxColumn, end) };
 	}
 
+	private captureVolatileSelection(): void {
+		const selection = this.getSelectionBounds();
+		if (!selection) {
+			this.selectedFragments.clear();
+			return;
+		}
+		for (const row of this.selectedFragments.keys())
+			if (row < selection.start.row || row > selection.end.row) this.selectedFragments.delete(row);
+		this.capturePaintedFragments(selection, this.currentLayout);
+	}
+
+	private capturePaintedFragments(selection: SelectionRange, layout: LayoutFrame | undefined): void {
+		const view = selection.start.scrollView;
+		if (!layout || !view) return;
+		const rows = getScrollContentRows(getScrollViewBox(layout, view));
+		const first = Math.max(selection.start.row, view.scrollTop);
+		const last = Math.min(selection.end.row, view.scrollTop + view.viewportHeight - 1);
+		rows?.visitVolatileRows?.(first, last, (row, line, renderer) => {
+			const { start, end } = this.getSelectionColumns(line, row, selection);
+			const previous = this.selectedFragments.get(row);
+			// The same live component can publish new text. A recreated historical component, however, cannot
+			// reproduce its predecessor's private state: preserve the overlap that was already selected.
+			const replay = previous && previous.renderer !== renderer ? previous : undefined;
+			if (replay && replay.start === start && replay.end === end) return;
+			const slice = (value: string, a: number, b: number) =>
+				stripTerminalSequences(sliceByColumn(value, a, Math.max(0, b - a), true));
+			let text: string;
+			if (!replay || start >= replay.end || end <= replay.start) text = slice(line, start, end);
+			else {
+				const from = Math.max(start, replay.start),
+					to = Math.min(end, replay.end);
+				text =
+					slice(line, start, from) +
+					slice(replay.text, from - replay.start, to - replay.start) +
+					slice(line, to, end);
+			}
+			this.selectedFragments.set(row, { renderer: replay?.renderer ?? renderer, start, end, text });
+		});
+	}
+
 	private getActiveSelectionText(): string | undefined {
 		const selection = this.getSelectionBounds();
 		if (!selection) return undefined;
@@ -1787,6 +1843,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const lines: string[] = [];
 		for (let row = selection.start.row; row <= selection.end.row; row++) {
+			const pinned = this.selectedFragments.get(row);
+			if (pinned) {
+				lines.push(pinned.text.trimEnd());
+				continue;
+			}
 			const line = sourceLines.at(row) ?? "";
 			const columns = this.getSelectionColumns(line, row, selection);
 			lines.push(
@@ -1928,6 +1989,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.highlightedRows.clear();
 		const selection = this.getSelectionBounds();
 		if (!selection) return screen;
+		this.capturePaintedFragments(selection, layout);
 		let screenSelection = selection;
 		let minRow = 0;
 		let maxRow = screen.length - 1;

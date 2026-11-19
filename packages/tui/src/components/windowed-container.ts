@@ -3,6 +3,8 @@ import { type Component, Container } from "../tui.ts";
 export interface WindowRows {
 	readonly length: number;
 	at(index: number): string | undefined;
+	/** Visit already rendered, non-replayable rows of an active selection, without requesting historical content. */
+	visitVolatileRows?(first: number, last: number, visit: (row: number, line: string, renderer: symbol) => void): void;
 }
 
 export interface WindowRequest {
@@ -24,6 +26,8 @@ const MAX_WINDOW_PASSES = 4;
 
 interface Entry {
 	readonly component: Component;
+	/** Opaque identity for selections. Holding it does not keep this entry or its component alive. */
+	selectionRenderer?: symbol;
 	/** The windowed container whose children include `component`. */
 	owner: WindowedContainer | undefined;
 	lines: readonly string[];
@@ -107,7 +111,23 @@ export class WindowedContainer extends Container {
 		this.scheduleSweep();
 		this.lastTop = top;
 		const length = this.rowCount();
-		return { top, length, at: (index) => this.rowAt(index) };
+		return {
+			top,
+			length,
+			at: (index) => this.rowAt(index),
+			visitVolatileRows: (first, last, visit) => {
+				if (!length || first >= length || last < 0) return;
+				for (let i = this.indexAt(Math.max(0, first)); i < this.laidOut.length; i++) {
+					const entry = this.laidOut[i]!,
+						start = this.offsets[i]!;
+					if (start > last) break;
+					if (!entry.current || entry.component.selectionTextMayChangeOnReplay !== true) continue;
+					entry.selectionRenderer ??= Symbol();
+					for (let row = Math.max(first, start); row <= last && row < start + entry.lines.length; row++)
+						visit(row, entry.lines[row - start]!, entry.selectionRenderer);
+				}
+			},
+		};
 	}
 
 	settleRows(): void {

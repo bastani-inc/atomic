@@ -84,6 +84,7 @@ function jsonValue(value: unknown): JsonValue {
 }
 
 abstract class RemoteRenderer implements Component {
+	readonly selectionTextMayChangeOnReplay = true;
 	protected readonly componentId = `remote_renderer_${++nextRemoteRendererId}`;
 	private lines = NOT_RENDERED_YET;
 	private width = 0;

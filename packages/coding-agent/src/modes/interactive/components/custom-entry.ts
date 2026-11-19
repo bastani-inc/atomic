@@ -8,6 +8,7 @@ import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
+	readonly selectionTextMayChangeOnReplay = true;
 	private customComponent?: Component;
 	private expanded = false;
 	private outputPad: number;

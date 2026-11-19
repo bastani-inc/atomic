@@ -256,6 +256,7 @@ interface Component {
   handleInput?(data: string): void;
   handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
   capturesViewportInput?: boolean;
+  readonly selectionTextMayChangeOnReplay?: boolean;
   invalidate(): void;
 }
 ```
@@ -266,6 +267,7 @@ interface Component {
 | `handleInput?(data)` | Called when the component has focus and receives keyboard input. The `data` string contains raw terminal input (may include ANSI escape sequences). |
 | `handleMouse?(event)` | Called by `TuiAltScreen` for normalized pointer input targeted at the component. |
 | `capturesViewportInput?` | If true while the component has focus, `TuiAltScreen` passes its viewport scrolling and prompt-jump keys (`tui.altScreen.*` except search) to it instead of scrolling the viewport, as it does for a focused overlay. Set by `SelectList`, `SettingsList`, and `Editor` while autocomplete is open, so PageUp/PageDown move the selection. Only the focused component is checked: a wrapper that forwards input to a list must expose the list's value itself. Use `getSelectPageIndex(keybindings, data, selectedIndex, itemCount, pageSize)` to compute the new selection. |
+| `selectionTextMayChangeOnReplay` | Set to `true` for a component in a `WindowedContainer` whose text cannot be recreated from its saved input. A fullscreen selection then keeps the selected fragments in memory until the selection is dismissed or replaced. While the original component is on screen, copying uses its latest painted text. If it is evicted and recreated, repeated copies keep the original selection. Leave this unset for deterministic rows. |
 | `invalidate()` | Required. Clear any cached render state so the next `render()` starts from scratch. Components without cached render state can use an empty implementation. |
 
 The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line. Styles do not carry across lines. If you emit multi-line text with styling, reapply styles per line or use `wrapTextWithAnsi()` so styles are preserved for each wrapped line.

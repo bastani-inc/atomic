@@ -8,7 +8,7 @@ import { TASK_HEARTBEAT_MESSAGE_TYPE } from "../../../core/tasks/heartbeat-notic
 import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
-import { createMarkdownTransform } from "./markdown-transform.ts";
+import { createMarkdownTransform, hasExtensionMarkdownTransform } from "./markdown-transform.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import {
 	completionNoticeFromDetails,
@@ -36,6 +36,9 @@ function isRenderableComponent(value: unknown): value is Component {
  */
 export class CustomMessageComponent extends Container {
 	readonly ownsLeadingSpacer = true;
+	get selectionTextMayChangeOnReplay(): boolean {
+		return this.customRenderer !== undefined || hasExtensionMarkdownTransform(this.markdownTransformers);
+	}
 	private disposed = false;
 	private message: CustomMessage<unknown>;
 	private customRenderer?: MessageRenderer;

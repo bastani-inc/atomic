@@ -3,7 +3,7 @@ import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import type { BranchSummaryMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
-import { createMarkdownTransform } from "./markdown-transform.ts";
+import { createMarkdownTransform, hasExtensionMarkdownTransform } from "./markdown-transform.ts";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /**
@@ -11,6 +11,10 @@ import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
  * Uses same background color as custom messages for visual consistency.
  */
 export class BranchSummaryMessageComponent extends Box {
+	get selectionTextMayChangeOnReplay(): boolean {
+		return this.expanded && hasExtensionMarkdownTransform(this.markdownTransformers);
+	}
+
 	private expanded = false;
 	private message: BranchSummaryMessage;
 	private markdownTheme: MarkdownTheme;

@@ -75,6 +75,9 @@ function blockStatusMarkPrefix(): RegExp {
 }
 
 export class ToolExecutionComponent extends Container {
+	get selectionTextMayChangeOnReplay(): boolean {
+		return this.toolDefinition !== undefined;
+	}
 	readonly expandsOnClick = true;
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
