@@ -1,23 +1,36 @@
 ---
-title: "Use an earlier workflow file"
-description: "Turn an old Atomic workflow definition into a task for the parent chat without executing its module."
+title: "Convert an earlier workflow into a skill"
+description: "Keep the procedure in a reusable skill without running or changing the old workflow file."
 ---
 
-# Use an earlier workflow file
+# Convert an earlier workflow into a skill
 
-Ask **“Read `.atomic/workflows/triage.ts` and carry out its steps on these reports”**, or give the path to `/skill:workflow-files`. Interactive startup can flag earlier files in trusted project `.atomic/workflows/` (or `.pi/workflows/`), `~/.atomic/agent/workflows/`, configured workflow paths, and enabled packages. A notice doesn't run anything. If more than one file matches, name the path you mean.
+Ask **“Convert `.atomic/workflows/triage.ts` into a skill”** or use `/skill:workflow-files .atomic/workflows/triage.ts`. To both convert and run it, say what inputs to use: **“Run the triage workflow on these reports.”** Startup can tell you that files exist, but doesn't write anything. If more than one file matches, give the path.
 
-The parent reads the definition and any relevant helpers **as text**. It confirms missing inputs, follows branches and stop conditions, and uses the tools available in this session. The file is not imported or rewritten. To reuse its instructions without the TypeScript, turn them into a [skill](/skills#skills-as-workflows).
+The parent reads the definition and its helpers as text. It uses `skill-creator` to write a `SKILL.md` with the procedure and `scripts/` for deterministic work. The original file is never imported, executed, modified, or deleted during conversion. If a skill of that name already exists, choose another name or ask to use the existing skill; conversion must not overwrite it.
 
-| Earlier definition | How the task works now |
+| Where the workflow came from | Where the skill goes |
 | --- | --- |
-| `ctx.stage`, `ctx.task` | Launch a child with the stage prompt and its inputs. Pass the original model when it is available and required. |
-| `ctx.parallel`, `Promise.all` | Launch independent children together with `tasks`. Join on their actual results. Use an Intercom `group` when they need to communicate. |
-| `ctx.tool` | Use a permitted direct tool or codemode call with the original timeout and success check. |
-| Output schema | Ask the child for JSON, parse it, and check its required fields before using it. |
-| Approval, `ctx.exit`, blocked state | Ask the user for the decision, or stop and report what is missing. Don't turn a blocked step into a pass. |
+| Trusted project `.atomic/workflows/` or `.pi/workflows/`, project settings paths, project-installed packages | `.atomic/skills/<name>/` in the current project |
+| `~/.atomic/agent/workflows/`, global settings paths, globally installed packages | `~/.atomic/agent/skills/<name>/` (or `skills/` in your configured agent directory) |
+| A package supplied with `-e`, or a trusted borrowed project folder | The current trusted project's `.atomic/skills/<name>/`, never the external source tree |
 
-**This starts a new task.** An old workflow run ID cannot resume an old checkpoint. Confirm which external actions already happened before repeating any. Each new child has a saved session, but the JavaScript orchestrating the work does not replay; see [recovery](/orchestration#what-survives-interruption).
+An untrusted project's own files aren't offered for conversion. You can still convert your global workflows. If you explicitly supplied a trusted external source but the current project is untrusted, Atomic can offer to save globally instead; it should ask you first.
+
+Review the new skill and its scripts. Use `/reload`, then `/skill:<name>` with your inputs. From then on the skill, not the TypeScript file, is the reusable procedure. See [skills as workflows](/skills#skills-as-workflows) and [orchestration with codemode](/orchestration).
+
+## What conversion preserves
+
+| Earlier definition | In the new skill |
+| --- | --- |
+| `ctx.stage`, `ctx.task`, pinned model and thinking level | Steps launching subagents from codemode in the parent chat, with the original prompt, inputs, and model requirements. |
+| `ctx.parallel`, loops, retries | `tasks` batches, explicit round limits and checks between completion notices. Use an Intercom `group` when peers communicate. |
+| `ctx.tool`, deterministic helpers | Reviewed scripts in `scripts/`, called with validated arguments, original timeouts and success checks. |
+| Inputs, `ctx.ui`, human approval | Skill arguments and defaults; `ask_user_question` steps for missing information or decisions. A missing approval is not a pass. |
+| Nested `ctx.workflow` | A separately converted skill referenced by name. The parent still owns every subagent launch. |
+| Structured results, `ctx.exit` and blocked states | Per-child output files; codemode parses and validates them, preserves the output shape, and stops on failure or a missing prerequisite. |
+
+**Running the skill starts new work.** An old workflow run ID cannot resume a checkpoint. Confirm which external actions already happened before repeating any. New children have saved sessions; their orchestration script does not replay. See [recovery](/orchestration#what-survives-interruption).
 
 ## If you used a builtin name
 
@@ -25,4 +38,4 @@ The parent reads the definition and any relevant helpers **as text**. It confirm
 
 ## Old data on disk
 
-Leaving old data in place is safe. If you choose to reclaim space, first back it up and stop any earlier Atomic version using it. In the default local store, the old run artifacts are under `~/.atomic/workflows/runs/`, the worker pool under `~/.atomic/workflows/pool/`, and the workflow journal shards under `~/.atomic/workflows/journal/`. Remove only the workflow-only directories you no longer need. **Keep `~/.atomic/workflows/journal.sqlite` and its sidecar files: they also hold sessions.** Do not remove the whole `~/.atomic/workflows/` directory, a shared database, or the recipe files you want to keep. Custom storage paths can differ.
+Leaving old data in place is safe. If you choose to reclaim space, first back it up and stop any earlier Atomic version using it. In the default local store, the old run artifacts are under `~/.atomic/workflows/runs/`, the worker pool under `~/.atomic/workflows/pool/`, and the workflow journal shards under `~/.atomic/workflows/journal/`. Remove only the workflow-only directories you no longer need. **Keep `~/.atomic/workflows/journal.sqlite` and its sidecar files: they also hold sessions.** Do not remove the whole `~/.atomic/workflows/` directory, a shared database, or the workflow files themselves. Custom storage paths can differ.

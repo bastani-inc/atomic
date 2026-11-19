@@ -10,7 +10,7 @@
 
 ### Added
 
-- Interactive startup points out earlier workflow files. Ask Atomic to read a file and carry out its steps with codemode and subagents, or describe the procedure in a reusable skill.
+- Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
 
 ## [0.9.90] - 2026-11-19
 
