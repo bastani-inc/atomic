@@ -21,8 +21,13 @@ export async function runResourceRegistrationBatch<T>(
 	runtime: ExtensionRuntime,
 	run: () => Promise<T>,
 	completion = false,
+	admission?: { closed?: Error },
 ): Promise<T> {
-	if (!completion && !extensionWorkOpen(runtime)) throw hostInputError("SessionClosed");
+	if (!completion && !extensionWorkOpen(runtime)) {
+		const error = hostInputError("SessionClosed");
+		if (admission) admission.closed = error;
+		throw error;
+	}
 	return trackExtensionWork(runtime, async () => {
 		if (!runtime.beginResourceRegistrationBatch || !runtime.endResourceRegistrationBatch) return run();
 		runtime.beginResourceRegistrationBatch();

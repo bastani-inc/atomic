@@ -530,6 +530,145 @@ test(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
+test.each(["mirror", "catalog"] as const)(
+	"a detached interactive subscriber reports a closed %s session's own error (#5697)",
+	async (peer) => {
+		const { mode: remote } = await createMode(() => {});
+		const closedSession = remote.session;
+		await remote.runtimeHost.dispose();
+		const { mode } = await createMode((pi) => pi.on("resources_discover", () => ({})));
+		const failure = Promise.withResolvers<unknown>();
+		const reported: unknown[] = [];
+		const record = (error: unknown) => reported.push(error);
+		process.on("unhandledRejection", record);
+		try {
+			if (peer === "mirror") {
+				await mode.init();
+				const handle = mode.handleEvent.bind(mode);
+				mode.handleEvent = async (event) => {
+					await handle(event);
+					if (event.type !== "session_info_changed") return;
+					try {
+						await closedSession.sendCustomMessage({
+							customType: "title",
+							content: event.name ?? "",
+							display: false,
+						});
+					} catch (error) {
+						failure.resolve(error);
+						throw error;
+					}
+				};
+				await mode.session.setSessionName("renamed after startup");
+			} else {
+				const runner = mode.session.extensionRunner;
+				const discover = runner.emitResourcesDiscover.bind(runner);
+				runner.emitResourcesDiscover = async (...args) => {
+					const paths = await discover(...args);
+					try {
+						await closedSession.extendResourcesFromExtensions("reload");
+					} catch (error) {
+						failure.resolve(error);
+						throw error;
+					}
+					return paths;
+				};
+				const handle = vi.spyOn(mode, "handleEvent");
+				mode.subscribeToAgent();
+				mode.session.clearQueue();
+				// The event settles after startup rollback. Its caller is separate from the detached listener.
+				await assert.rejects(handle.mock.results[0].value, { code: "SessionClosed" });
+			}
+			const original = await failure.promise;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(reported.length, 1);
+			assert.equal(reported[0], original);
+		} finally {
+			process.off("unhandledRejection", record);
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"an independent UI rebind during startup discovery still reports its own closed-session error (#5697)",
+	async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode } = await createMode((pi) => {
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			});
+			pi.on("resources_discover", () => ({}));
+		});
+		const session = mode.session;
+		const discover = session.extensionRunner.emitResourcesDiscover.bind(session.extensionRunner);
+		let independent: unknown;
+		session.extensionRunner.emitResourcesDiscover = async (...args) => {
+			try {
+				return await discover(...args);
+			} catch {
+				try {
+					await mode.bindCurrentSessionExtensions();
+				} catch (error) {
+					independent = error;
+					throw error;
+				}
+				throw new Error("expected the separate rebind to reject");
+			}
+		};
+		const unhandled: unknown[] = [];
+		const record = (error: unknown) => unhandled.push(error);
+		process.on("unhandledRejection", record);
+		try {
+			const handle = vi.spyOn(mode, "handleEvent");
+			mode.subscribeToAgent();
+			session.clearQueue();
+			const event = handle.mock.results[0].value;
+			await Promise.race([entered.promise, event]);
+			const closed = session.dispose();
+			release.resolve();
+			await Promise.all([assert.rejects(event, { code: "SessionClosed" }), closed]);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.ok(independent);
+			assert.equal(unhandled.length, 1);
+			assert.equal(unhandled[0], independent);
+		} finally {
+			release.resolve();
+			process.off("unhandledRejection", record);
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"an SDK host awaiting event startup can read the original catalog response (#5697)",
+	async () => {
+		const { mode } = await createMode((pi) => pi.on("resources_discover", () => ({})));
+		const response = new Response("Service unavailable", { status: 503 });
+		const failure = new (class extends Error {
+			get code() {
+				return response.json();
+			}
+		})("Catalog responded 503");
+		mode.session.extensionRunner.emitResourcesDiscover = async () => {
+			throw failure;
+		};
+		const subscribe = vi.spyOn(mode.session, "subscribe");
+		mode.subscribeToAgent();
+		const listener = subscribe.mock.calls[0][0];
+		assert.ok(typeof listener === "function");
+		const original = await Promise.resolve(listener({ type: "agent_start" })).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		assert.equal(original, failure);
+		assert.equal(await response.text(), "Service unavailable");
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
 test(
 	"an SDK host awaiting its interactive subscriber receives the original rejection (#5697)",
 	async () => {
@@ -554,9 +693,9 @@ test(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
-test(
-	"closing during an event's startup rejects the event without an unhandled subscriber rejection (#5697)",
-	async () => {
+test.each([false, true])(
+	"closing during an event's startup rejects the event without an unhandled subscriber rejection (resource discovery: %s) (#5697)",
+	async (discoversResources) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const { mode } = await createMode((pi) => {
@@ -564,6 +703,7 @@ test(
 				entered.resolve();
 				await release.promise;
 			});
+			if (discoversResources) pi.on("resources_discover", () => ({}));
 		});
 		const handle = vi.spyOn(mode, "handleEvent");
 		const unhandled: unknown[] = [];

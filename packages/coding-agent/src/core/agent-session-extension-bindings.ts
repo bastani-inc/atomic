@@ -16,6 +16,7 @@ import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
 import { migrateCompactionModelSettings } from "./compaction/model-resolver.js";
 import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
+import { bindClosed, claimInteractiveBind } from "./extension-startup-close.ts";
 import {
 	ExtensionStartupError,
 	type ExtensionStartupFailure,
@@ -28,7 +29,7 @@ import {
 	factoryRollbackError,
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
-import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { emitSessionShutdownEvent, refusedStartupDiscovery } from "./extensions/runner.ts";
 import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
 import { startupErrorHandlerTokens } from "./extensions/runner-events.ts";
 import type { ExtensionRuntime, ProviderConfig, RegisteredTool } from "./extensions/types.ts";
@@ -200,14 +201,17 @@ async function extendRunnerResources(
 	loader: ResourceLoader,
 	reason: "startup" | "reload",
 	reportError?: (error: ExtensionError) => void,
+	initialBind = false,
 ): Promise<void> {
 	if (!runner.hasHandlers("resources_discover")) return;
-	const { skillPaths, promptPaths, themePaths } = await runner.emitResourcesDiscover(
-		session._cwd,
-		reason,
-		reportError,
-	);
-	if (session._disposed) throw hostInputError("SessionClosed");
+	const discover = runner.emitResourcesDiscover;
+	const discovery = Reflect.apply(discover, runner, [session._cwd, reason, reportError]);
+	if (initialBind) {
+		const closed = refusedStartupDiscovery(runner, discover, discovery);
+		if (closed) bindClosed(session, true, closed);
+	}
+	const { skillPaths, promptPaths, themePaths } = await discovery;
+	if (session._disposed) throw bindClosed(session, initialBind);
 	if (skillPaths.length === 0 && promptPaths.length === 0 && themePaths.length === 0) return;
 	const extensionPaths: ResourceExtensionPaths = {
 		skillPaths: buildExtensionResourcePathsForLoader(session, loader, skillPaths),
@@ -249,6 +253,7 @@ function startExtensions(
 	loader: ResourceLoader,
 	event: AgentSession["_sessionStartEvent"],
 	finalize?: () => Promise<void>,
+	initialBind = false,
 ): Promise<void> {
 	const existing = extensionStarts.get(runner);
 	if (existing) return finalize ? existing.then(finalize) : existing;
@@ -276,7 +281,14 @@ function startExtensions(
 				)
 					await session.sessionManager.loadFullHistory();
 				await runner.emit(event);
-				await extendRunnerResources(session, runner, loader, event.reason === "reload" ? "reload" : "startup");
+				await extendRunnerResources(
+					session,
+					runner,
+					loader,
+					event.reason === "reload" ? "reload" : "startup",
+					undefined,
+					initialBind,
+				);
 				// A reported failure leaves the extension loaded, as a failing handler for any other event does.
 				if (failures.length && !reportsStartupErrors) throw new ExtensionStartupError(failures);
 				await finalize?.();
@@ -308,10 +320,11 @@ function startExtensions(
 const uiPromptBindings = new WeakMap<AgentSession, NonNullable<ExtensionBindings["onUIPrompt"]>>();
 
 export async function bindExtensions(this: AgentSession, bindings: ExtensionBindings): Promise<void> {
+	const initialBind = claimInteractiveBind(this, bindings);
 	if (this._disposed) {
 		// Failed creation retains its original rejection; it never admits another startup.
 		if (failedExtensionStarts.has(this._extensionRunner)) return extensionStarts.get(this._extensionRunner)!;
-		throw hostInputError("SessionClosed");
+		throw bindClosed(this, initialBind);
 	}
 	if (bindings.onUIPrompt !== undefined) uiPromptBindings.set(this, bindings.onUIPrompt);
 	if (bindings.humanInput !== undefined) {
@@ -339,10 +352,17 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	}
 
 	this._applyExtensionBindings(this._extensionRunner);
-	await startExtensions(this, this._extensionRunner, this._resourceLoader, this._sessionStartEvent, async () => {
-		if (this._disposed) throw hostInputError("SessionClosed");
-		this._rebuildSystemPrompt(this.getActiveToolNames());
-	});
+	await startExtensions(
+		this,
+		this._extensionRunner,
+		this._resourceLoader,
+		this._sessionStartEvent,
+		async () => {
+			if (this._disposed) throw bindClosed(this, initialBind);
+			this._rebuildSystemPrompt(this.getActiveToolNames());
+		},
+		initialBind,
+	);
 	migrateSavedCompactionModel(this);
 	scheduleOpeningSummary(this);
 	scheduleOpeningCollection(this);

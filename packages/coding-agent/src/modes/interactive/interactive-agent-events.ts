@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import { closingSessions, isOwnBindClose } from "../../core/extension-startup-close.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -149,30 +151,31 @@ function createToolComponent(
 			);
 }
 
-function isSessionClosed(error: unknown): boolean {
-	try {
-		return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "SessionClosed";
-	} catch {
-		return false; // An SDK error can have a throwing code getter, or be a revoked proxy.
-	}
+interface EventDelivery {
+	mode: InteractiveModeBase;
+	session: object;
+	event: object;
+	startupClose?: Error;
 }
+const currentDelivery = new AsyncLocalStorage<WeakRef<EventDelivery>>();
 
 InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
 	refreshInteractiveTasks(this);
 	const session = this.session;
 	const unsubscribe = session.subscribe((event) => {
-		const delivery: Promise<void> = (async () => {
+		const receipt: EventDelivery = { mode: this, session, event };
+		const delivery: Promise<void> = currentDelivery.run(new WeakRef(receipt), async () => {
 			try {
 				await this.handleEvent(event);
 			} catch (error) {
-				if (isSessionClosed(error)) {
+				if (receipt.startupClose !== undefined && receipt.startupClose === error) {
 					// The session doesn't await its listeners. Observe this delivery without changing its rejection.
 					// An SDK override can throw synchronously, before delivery is assigned.
 					queueMicrotask(() => void delivery.catch(() => {}));
 				}
 				throw error;
 			}
-		})();
+		});
 		return delivery;
 	});
 	// A rebind can miss the start of a wait. Subscribe and read it in one turn; don't restart its countdown.
@@ -228,7 +231,14 @@ InteractiveModeBase.prototype.handleEvent = async function (
 ): Promise<void> {
 	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) return;
 	if (!this.isInitialized) {
-		await this.init();
+		const delivery = currentDelivery.getStore()?.deref();
+		const starting = delivery?.mode === this && delivery.event === event && !closingSessions.has(delivery.session);
+		try {
+			await this.init();
+		} catch (error) {
+			if (starting && isOwnBindClose(delivery.session, error)) delivery.startupClose = error as Error;
+			throw error;
+		}
 	}
 
 	this.footer.invalidate();
