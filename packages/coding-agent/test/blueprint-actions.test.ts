@@ -2227,30 +2227,35 @@ describe("the file commands of a step", () => {
 });
 
 describe("the budget of a step", () => {
-	test("is spent before a process starts when the deadline has already passed (#4588)", async () => {
-		const started = 1_700_000_000_000;
-		const timeoutMs = 5_000;
-		let now = started;
-		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-		const planting = planted({
-			"acme/late": nodeAction(`require("node:fs").appendFileSync(process.env.RESULT_FILE, "ran\\n");\n`),
-		});
-		const fetchAction: ActionFetcher = async (request) => {
-			await planting(request);
-			now = started + timeoutMs;
-		};
+	test.each([0, -10_000])(
+		"is spent before a process starts even with a wall-clock correction of %i ms (#4588, #5707)",
+		async (correction) => {
+			const started = 1_700_000_000_000;
+			const timeoutMs = 5_000;
+			let elapsed = 0;
+			const clock = vi.spyOn(Date, "now").mockImplementation(() => started + elapsed + (elapsed ? correction : 0));
+			const monotonic = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+			const planting = planted({
+				"acme/late": nodeAction(`require("node:fs").appendFileSync(process.env.RESULT_FILE, "ran\\n");\n`),
+			});
+			const fetchAction: ActionFetcher = async (request) => {
+				await planting(request);
+				elapsed = timeoutMs;
+			};
 
-		try {
-			const run = startRun("github.com/acme/late@v1", { fetchAction, timeoutMs });
-			const exit = await run.result;
+			try {
+				const run = startRun("github.com/acme/late@v1", { fetchAction, timeoutMs });
+				const exit = await run.result;
 
-			assert.deepEqual(exit, { exitStatus: null, signal: null, timedOut: true, elapsedMs: timeoutMs });
-			assert.deepEqual(resultLines(), []);
-			assert.ok(!readText(run.logPath).includes("=== main of"));
-		} finally {
-			clock.mockRestore();
-		}
-	});
+				assert.deepEqual(exit, { exitStatus: null, signal: null, timedOut: true, elapsedMs: timeoutMs });
+				assert.deepEqual(resultLines(), []);
+				assert.ok(!readText(run.logPath).includes("=== main of"));
+			} finally {
+				monotonic.mockRestore();
+				clock.mockRestore();
+			}
+		},
+	);
 });
 
 async function withEnvironment<T>(

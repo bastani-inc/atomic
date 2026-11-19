@@ -132,7 +132,8 @@ export async function runLoggedProcess(
 	options: LoggedProcessOptions,
 ): Promise<ProcessExit> {
 	options.signal?.throwIfAborted();
-	const startedAt = Date.now();
+	const startedAt = performance.now();
+	const elapsedMs = () => performance.now() - startedAt;
 	const copiesOutput = copiesOutputToLog(process.platform);
 	let started: ChildProcess;
 	// How long the step waited to try again before its process started: that time counts toward its timeout.
@@ -143,10 +144,16 @@ export async function runLoggedProcess(
 		// Also cancelled while it waited to try again, or by what ran in between: then nothing may start.
 		options.signal?.throwIfAborted();
 		if (refusal !== undefined) {
-			waitedMs = Date.now() - startedAt;
+			waitedMs = elapsedMs();
 			// A try that wakes late, as when the event loop was busy, starts nothing once the step's time is up.
 			if (waitedMs >= options.timeoutMs) {
-				return { exitStatus: null, signal: null, timedOut: false, elapsedMs: waitedMs, spawnError: refusal };
+				return {
+					exitStatus: null,
+					signal: null,
+					timedOut: false,
+					elapsedMs: Math.floor(waitedMs),
+					spawnError: refusal,
+				};
 			}
 		}
 		try {
@@ -164,10 +171,16 @@ export async function runLoggedProcess(
 			break;
 		} catch (error) {
 			// spawn throws, rather than emitting "error", when the system refuses at once (EPERM, EBUSY, ETXTBSY, ENOTDIR).
-			const elapsedMs = Date.now() - startedAt;
+			const elapsed = elapsedMs();
 			refusal = error as Error;
-			if (!triesStartAgain(error, tries, elapsedMs, options.timeoutMs)) {
-				return { exitStatus: null, signal: null, timedOut: false, elapsedMs, spawnError: refusal };
+			if (!triesStartAgain(error, tries, elapsed, options.timeoutMs)) {
+				return {
+					exitStatus: null,
+					signal: null,
+					timedOut: false,
+					elapsedMs: Math.floor(elapsed),
+					spawnError: refusal,
+				};
 			}
 			await pause(SPAWN_RETRY_MS, options.signal);
 		}
@@ -180,6 +193,7 @@ export async function runLoggedProcess(
 		let timedOut = false;
 		let stopped = false;
 		let treeTerminated = false;
+		let warnedAboutDescendants = false;
 		let writeError: Error | undefined;
 		let copying = Promise.resolve();
 		const stop = () => {
@@ -188,7 +202,14 @@ export async function runLoggedProcess(
 			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
 			if (treeTerminated) return;
 			// Once the command's exit is reported, its pid may name another process: nothing is killed by that pid.
-			killChildProcessTree(child, child.exitCode !== null || child.signalCode !== null);
+			const exited = child.exitCode !== null || child.signalCode !== null;
+			if (process.platform === "win32" && tree === undefined && exited && !warnedAboutDescendants) {
+				warnedAboutDescendants = true;
+				process.emitWarning(
+					"The blueprint command exited without a Windows Job object; its descendants may still be running.",
+				);
+			}
+			killChildProcessTree(child, exited);
 		};
 		const timer = setTimeout(
 			() => {
@@ -241,7 +262,7 @@ export async function runLoggedProcess(
 				exitStatus: null,
 				signal: null,
 				timedOut: false,
-				elapsedMs: Date.now() - startedAt,
+				elapsedMs: Math.floor(elapsedMs()),
 				spawnError: error,
 			});
 		};
@@ -259,7 +280,7 @@ export async function runLoggedProcess(
 				reject(writeError);
 				return;
 			}
-			resolveExit({ exitStatus, signal: exitSignal, timedOut, elapsedMs: Date.now() - startedAt });
+			resolveExit({ exitStatus, signal: exitSignal, timedOut, elapsedMs: Math.floor(elapsedMs()) });
 		};
 		if (copiesOutput) {
 			waitForChildProcess(child).then((exitStatus) => ended(exitStatus, child.signalCode), onSpawnError);

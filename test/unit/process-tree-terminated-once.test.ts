@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as realSleep } from "node:timers/promises";
@@ -195,16 +195,21 @@ test.skipIf(process.platform === "win32")(
 // Only Windows copies a step's output through pipes, which a process the step started can hold after the step's command
 // exits; once that exit is reported, the command's pid may name another process.
 test.skipIf(process.platform !== "win32")(
-	"a blueprint step aborted after its command exited, while a process it started still writes its output, kills nothing by the command's pid (#5601)",
+	"a blueprint step aborted after its command exited, while a process it started still writes its output, warns that descendants may still be running without killing by the command's pid (#5601, #5664)",
 	async () => {
 		containment.enabled = true;
 		containment.available = false;
 		const directory = realpathSync(mkdtempSync(join(tmpdir(), "process-tree-once-exited-step-")));
 		const log = await openStepLog(join(directory, "step.log"));
-		const writer =
-			"const end = Date.now() + 3000; const t = setInterval(() => { process.stdout.write('x'); if (Date.now() > end) clearInterval(t); }, 20);";
+		const warning = vi.spyOn(process, "emitWarning");
+		const writer = [
+			"process.stdout.on('error', () => {});",
+			"setInterval(() => { if (!require('node:fs').existsSync(process.argv[1])) process.exit(0); process.stdout.write('x'); }, 20);",
+			"setTimeout(() => process.exit(0), 30_000);",
+		].join("\n");
 		const command = [
-			`require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(writer)}], { stdio: "inherit", detached: true, windowsHide: true }).unref();`,
+			`const writer = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(writer)}, process.cwd()], { cwd: require("node:os").tmpdir(), stdio: "inherit", detached: true, windowsHide: true });`,
+			'require("node:fs").writeFileSync("writer.pid", String(writer.pid)); writer.unref();',
 			// The writer is writing before the command exits, so the step's output stays open past that exit.
 			"Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);",
 		].join("\n");
@@ -225,13 +230,21 @@ test.skipIf(process.platform !== "win32")(
 			assert.ok(child?.pid, "the step's command was spawned");
 			const commandPid = String(child.pid);
 			if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+			const writerPid = Number(readFileSync(join(directory, "writer.pid"), "utf8"));
+			process.kill(writerPid, 0);
 			controller.abort(reason);
 			await assert.rejects(pending, (error: unknown) => error === reason);
 			const killsByPid = vi
 				.mocked(spawn)
 				.mock.calls.filter(([file, args]) => /taskkill/i.test(String(file)) && (args ?? []).includes(commandPid));
 			assert.deepEqual(killsByPid, []);
+			assert.equal(
+				warning.mock.calls.filter(([message]) => /descendants may still be running/i.test(String(message))).length,
+				1,
+			);
 		} finally {
+			warning.mockRestore();
+			// Removing the directory tells the detached fixture to exit, without ever signalling a recycled PID.
 			await log.close();
 			rmSync(directory, { recursive: true, force: true });
 		}

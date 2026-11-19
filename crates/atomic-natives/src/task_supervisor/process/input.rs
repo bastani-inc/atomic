@@ -74,7 +74,15 @@ impl InputQueue {
 		}
 		Ok(())
 	}
+	#[cfg(any(unix, test))]
 	pub(super) fn drain(&mut self, writer: &mut Option<impl Write>) {
+		self.drain_with(writer, Write::write);
+	}
+	pub(super) fn drain_with<W: Write>(
+		&mut self,
+		writer: &mut Option<W>,
+		write: impl FnOnce(&mut W, &[u8]) -> io::Result<usize>,
+	) {
 		let Some(id) = self.pending.front().cloned() else {
 			return;
 		};
@@ -89,7 +97,7 @@ impl InputQueue {
 				kind: "bytes".into(),
 			}))
 		} else if let Some(writer) = writer.as_mut() {
-			match writer.write(&op.bytes[op.offset..]) {
+			match write(writer, &op.bytes[op.offset..]) {
 				Ok(0) => Some(Err(fail("InputDeliveryUnknown"))),
 				Ok(count) => {
 					op.offset += count;
