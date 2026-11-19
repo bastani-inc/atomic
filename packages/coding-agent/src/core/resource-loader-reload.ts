@@ -221,6 +221,7 @@ export async function reloadDefaultResourceLoader(
 export async function prepareDefaultResourceLoaderReload(
 	loader: DefaultResourceLoader,
 	options?: ResourceLoaderReloadOptions,
+	startupSessionQuit?: () => boolean,
 ): Promise<() => Promise<void>> {
 	const state = resourceInternals(loader);
 	resetTimings("extensions");
@@ -388,6 +389,7 @@ export async function prepareDefaultResourceLoaderReload(
 					preTrustExtensions,
 					workflowResourceProvider,
 					inheritanceSnapshotProvider,
+					startupSessionQuit,
 				);
 		if (!options?.deferExtensions) mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 		const mandatoryExtensionPaths = new Set(

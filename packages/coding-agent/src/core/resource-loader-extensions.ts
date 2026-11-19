@@ -1,4 +1,5 @@
 import type { KeyId } from "@bastani/atomic-tui";
+import llamaExtension, { finishLlamaAfterQuit } from "../extensions/llama/index.js";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
@@ -22,6 +23,7 @@ export async function loadExtensionPaths(
 	workflowResourceProvider: WorkflowResourceProvider,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 	runtime?: ExtensionRuntime,
+	startupSessionQuit?: () => boolean,
 ): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
 	const result = await loadExtensionsCached(
@@ -43,8 +45,9 @@ export async function loadExtensionPaths(
 			continue;
 		}
 		try {
+			const factory = builtin.factory;
 			const extension = await loadExtensionFromFactory(
-				builtin.factory,
+				factory === llamaExtension && startupSessionQuit?.() ? finishLlamaAfterQuit : factory,
 				state.cwd,
 				state.eventBus,
 				result.runtime,
@@ -70,6 +73,7 @@ export async function loadFinalExtensionSet(
 	preTrustExtensions: LoadExtensionsResult | undefined,
 	workflowResourceProvider: WorkflowResourceProvider,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
+	startupSessionQuit?: () => boolean,
 ): Promise<LoadExtensionsResult> {
 	if (!preTrustExtensions) {
 		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
@@ -120,6 +124,7 @@ export async function loadFinalExtensionSet(
 		workflowResourceProvider,
 		inheritanceSnapshotProvider,
 		preTrustExtensions.runtime,
+		startupSessionQuit,
 	);
 	endTimingSpan(loadExtensionsSpan);
 	const loadedByPath = new Map(preloadedByPath);
