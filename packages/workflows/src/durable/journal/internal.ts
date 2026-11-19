@@ -184,6 +184,11 @@ export interface SqlPoolStorage {
 	readonly dialect: StorageDialect;
 	/** The database's adapter, as its descriptor names it, such as `"libsql"` or `"postgres"`. */
 	readonly adapter: string;
+	/**
+	 * Whether the database waits for another process's write lock on the calling thread, even to begin a transaction: a
+	 * local libSQL file, whose driver runs SQLite's busy handler synchronously (#5682).
+	 */
+	readonly locksOnThread: boolean;
 	/** Wake-ups through the journal's database, when it delivers them (Postgres): see {@link poolReadyChannel}. */
 	readonly notifications?: StorageNotifications;
 }

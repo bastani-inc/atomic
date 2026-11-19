@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
+import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -25,6 +26,7 @@ import {
 	isSessionStartTimeoutError,
 	type PackageSource,
 	type SessionEntry,
+	type SessionHeader,
 	SessionManager,
 	type SessionStartError,
 	type SessionStats,
@@ -1035,10 +1037,22 @@ async function historyUnavailable(sessionFile: string | undefined, cause?: unkno
  * file's directory, which every child of a run saving there shares, so a task view reading a finished child's history
  * would make them wait. The file is append-only JSON lines; a last line its writer has not finished is left out.
  */
-async function readSessionFileEntries(file: string, sessionId: string): Promise<SessionEntry[]> {
+async function readSessionFileEntries(
+	file: string,
+	sessionId: string,
+	capture?: (header: SessionHeader, stats: BigIntStats) => void,
+): Promise<SessionEntry[]> {
 	let text: string;
+	let stats: BigIntStats | undefined;
 	try {
-		text = await readFile(file, "utf8");
+		if (capture) {
+			const handle = await open(file, "r");
+			try {
+				[text, stats] = await Promise.all([handle.readFile("utf8"), handle.stat({ bigint: true })]);
+			} finally {
+				await handle.close();
+			}
+		} else text = await readFile(file, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(await historyUnavailable(file));
 		throw error;
@@ -1047,6 +1061,7 @@ async function readSessionFileEntries(file: string, sessionId: string): Promise<
 	const header = JSON.parse(lines[0] ?? "") as { type?: string; id?: string };
 	if (header.type !== "session" || header.id !== sessionId)
 		throw new Error(`History unavailable: its session file now belongs to another session (${file}).`);
+	if (stats && capture) capture(header as SessionHeader, stats);
 	const entries: SessionEntry[] = [];
 	for (const [index, line] of lines.slice(1).entries()) {
 		if (!line.trim()) continue;
@@ -1096,12 +1111,12 @@ function withArchivedPages(
 			);
 		});
 	if (file === undefined) return source;
-	return withTaskTranscriptArchive(source, async (project) => {
+	return withTaskTranscriptArchive(source, async (project, _load, capture) => {
 		let records: SessionEntry[];
 		let entries: SessionEntry[];
 		try {
 			// Release the file before projecting the page: a writer may need to rename over it on Windows.
-			records = await readSessionFileEntries(file, sessionId);
+			records = await readSessionFileEntries(file, sessionId, capture ? await capture(file, sessionId) : undefined);
 			entries = withUnsavedAnswer(records, unsaved);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

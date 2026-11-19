@@ -335,7 +335,7 @@ A resume that restored a checkout or ran a blueprint step records where its time
 
 ### CustomMessageEntry
 
-Extension-injected messages that DO participate in LLM context.
+Messages that participate in LLM context unless `excludeFromContext` is true.
 
 ```json
 {"type":"custom_message","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:25:00.000Z","customType":"my-extension","content":"Injected context...","display":true}
@@ -345,6 +345,17 @@ Fields:
 - `content`: String or `(TextContent | ImageContent)[]` (same as UserMessage)
 - `display`: `true` = show in TUI with distinct styling, `false` = hidden
 - `details`: Optional extension-specific metadata (not sent to LLM)
+- `excludeFromContext`: `true` for a display-only message that is not sent to the model
+
+### Reader-only chat records
+
+For built-in stores, the terminal records turn-ending lines separately from the conversation. For example, reopening a chat after a cancelled retry can show `Error: Retry failed after 1 attempts: Retry cancelled` just after the failed request. A saved line is limited to 4,096 UTF-8 bytes and ends with `… [diagnostic truncated]` if cut; the live error is not shortened. The same side storage remembers when an already-displayed prompt was saved after a displayed, context-excluded notice. These records are not entries: `/tree`, model requests, compaction, the token meter, conversation exports and continuation logic do not consume them.
+
+The side records are versioned and scoped to the session and its storage generation. Older versions ignore them; an older session is not rewritten to infer events that were never recorded. External stores without the capability behave as before. The default SQLite store, libSQL servers and PostgreSQL keep them in a separate table on the session writer's connection; each record is written in a transaction of its own, which waits for another process's write lock without blocking the terminal. A local libSQL `file:` database keeps none: its driver waits for that lock on the calling thread, so its chats behave as before. JSONL stores keep `.atomic-chat-*` siblings beside the session. Copying a session file to another filesystem or importing it as a new session does not transfer these records. Filesystems without a reliable file creation time do not save or replay them. Deleting a JSONL session with an older Atomic can leave its side files behind, but recreating the session does not attach those records to the new chat. This version cleans them when it deletes the session; it does not scan for orphaned files at startup.
+
+Opening a chat does one optional file or indexed database lookup. Fullscreen reads line bodies for the visible anchors; if several errors followed one visible entry, it reads all of them there. On a regular terminal, one frame of history (up to 64 KiB) can wait up to 100 ms before it is written to scrollback. If the frame is too large, the terminal needs to show a newer frame, or the optional read is still pending at the deadline, Atomic shows the conversation without the extra lines, rather than holding up the terminal. A later full redraw can show them. A side-record write in a shared SQLite database invalidates the session catalog cache just as any other committed write does.
+
+Cache-miss and dropped-thinking notices are derived from replies. When an older compacted session opens with only its retained tail, the previous assistant’s cumulative thinking-drop count might no longer be loaded. Atomic does not guess whether the count increased or reload discarded history to decide.
 
 ### LabelEntry
 

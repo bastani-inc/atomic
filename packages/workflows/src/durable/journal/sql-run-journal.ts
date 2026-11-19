@@ -316,6 +316,7 @@ export class SqlRunJournal implements RunJournal {
 			snapshotBlobs,
 			dialect: this.dialect,
 			adapter: database.descriptor.adapter,
+			locksOnThread: database.descriptor.adapter === "libsql" && /^file:/i.test(database.descriptor.location),
 			...(database.notifications === undefined ? {} : { notifications: database.notifications }),
 		});
 		registerJournalKeyRangeRead(this, (runId, fromKey, toKey, options) =>

@@ -468,6 +468,35 @@ export class Container implements Component {
 		this.mouseLayout = { width, children: mouseChildren };
 		return lines;
 	}
+
+	/**
+	 * Where this container's last render at `width` drew `target`, searched through nested containers: the first row and
+	 * the rows each of the target's own children drew. Undefined when that render did not draw it.
+	 */
+	drawnRowsOf(
+		target: Container,
+		width: number,
+	): { row: number; children: ReadonlyArray<{ component: Component; height: number }> } | undefined {
+		const visit = (container: Container, row: number, height?: number): ReturnType<Container["drawnRowsOf"]> => {
+			const layout = container.mouseLayout;
+			if (layout?.width !== width) return undefined;
+			let drawn = 0;
+			for (const child of layout.children) drawn += child.height;
+			// A container whose own render skipped Container.render keeps an older layout.
+			if (height !== undefined && drawn !== height) return undefined;
+			if (container === target) return { row, children: layout.children };
+			let at = row;
+			for (const child of layout.children) {
+				if (child.height > 0 && child.component instanceof Container) {
+					const found = visit(child.component, at, child.height);
+					if (found) return found;
+				}
+				at += child.height;
+			}
+			return undefined;
+		};
+		return visit(this, 0);
+	}
 }
 
 /**
@@ -523,6 +552,29 @@ export interface TuiStopOptions {
 	writeInSlices?: boolean;
 }
 
+/**
+ * A side lookup that adds rows to a container which the main-screen renderer may already have drawn. The renderer can
+ * only append to terminal scrollback, so it holds at most one rendered frame while the lookup is outstanding. It never
+ * delays or repeats a component's render.
+ */
+export interface ScrollbackFrameGate {
+	/**
+	 * The lookup answered. `update` may change the container's children. A held frame is written with the rows it
+	 * already drew for the children that remain; only children that `update` added are rendered. If no frame has drawn
+	 * the container yet, `update` runs and the next frame draws its result. Once the gate has released, `update` never runs.
+	 */
+	settle(update?: () => void): void;
+	/** End the lookup without an answer: a held frame is written exactly as it was rendered. */
+	release(): void;
+}
+
+export interface ScrollbackFrameGateOptions {
+	/** The longest a rendered frame is held, counted from when the gate holds it. */
+	readonly timeoutMs: number;
+	/** Runs once, whatever releases the gate, so its owner can drop the lookup. */
+	readonly onRelease?: () => void;
+}
+
 export interface TUI extends Component {
 	readonly mode: TuiMode;
 	children: Component[];
@@ -550,6 +602,11 @@ export interface TUI extends Component {
 	 * keystroke, as the renderer does after it routes a key.
 	 */
 	requestImmediateRender(): void;
+	/**
+	 * Main-screen renderers only: gate the frames that draw `container` while a side lookup for its rows is outstanding.
+	 * A newer gate releases an older one.
+	 */
+	gateScrollbackFrame?(container: Container, options: ScrollbackFrameGateOptions): ScrollbackFrameGate | undefined;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	/** Run the slash command a clicked hint names, such as `/tasks` in `/tasks to manage`. */

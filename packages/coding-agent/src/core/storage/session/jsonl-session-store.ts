@@ -22,6 +22,7 @@ import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { branchStatePages } from "./branch-state-pages.js";
+import { bindChatEpoch, boundedChatRecord, type ChatRecordOwner, type SessionChatRecords } from "./chat-records.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
@@ -38,6 +39,13 @@ import {
 } from "./errors.js";
 import { registerForkScope } from "./fork-store-scope.js";
 import type { SessionHistorySource } from "./history-pages.js";
+import {
+	appendFileChatRecord,
+	deleteFileChatRecords,
+	hasFileChatRecords,
+	readFileChatOrders,
+	readFileChatRecords,
+} from "./jsonl-chat-records.js";
 import { entryProjector, jsonlEntryProjection, type ProjectedEntry } from "./jsonl-entry-projection.js";
 import {
 	isCurrentSessionHeader,
@@ -773,6 +781,28 @@ export class JsonlSessionStore implements SessionStore {
 	private closed = false;
 	private poisoned: JsonlStoragePoisonedError | StorageUnavailableError | undefined;
 	private readonly directory: string;
+	private chatStore?: SessionChatRecords;
+	get chatRecords(): SessionChatRecords {
+		this.chatStore ??= {
+			has: hasFileChatRecords,
+			read: readFileChatRecords,
+			readOrders: readFileChatOrders,
+			append: (owner, anchor, record) => {
+				record = boundedChatRecord(record);
+				return this.run(async () => {
+					const held = await this.locate(owner.id);
+					if (
+						held &&
+						held.stats.birthtimeNs > 0n &&
+						held.path === owner.file &&
+						epochOf(held.stats, JSON.stringify(held.header)) === owner.epoch
+					)
+						await appendFileChatRecord(owner, anchor, record);
+				});
+			},
+		};
+		return this.chatStore;
+	}
 	private readonly fileStates = new Map<string, SessionFileState>();
 	private readonly rangeIndexes = new Map<string, RangeIndex>();
 	private readonly indexes = new Map<string, JsonlIndex>();
@@ -2171,9 +2201,15 @@ export class JsonlSessionStore implements SessionStore {
 				if (known) throw new SessionNotFoundError(sessionId);
 				return;
 			}
+			const owner: ChatRecordOwner = {
+				file: located.path,
+				id: sessionId,
+				epoch: epochOf(located.stats, JSON.stringify(located.header)),
+			};
 			await unlink(located.path);
 			this.fileStates.delete(located.path);
 			await this.forgetIndex(located.path);
+			await deleteFileChatRecords(owner).catch(() => {});
 		});
 	}
 
@@ -2561,7 +2597,7 @@ export class JsonlSessionStore implements SessionStore {
 		}
 		validateSessionEntryStructure(entries, path);
 		validateSessionEntries(entries);
-		await this.remember(
+		const stats = await this.remember(
 			path,
 			{
 				headerStamp: JSON.stringify(header),
@@ -2575,6 +2611,7 @@ export class JsonlSessionStore implements SessionStore {
 			},
 			torn ? size : undefined,
 		);
+		bindChatEpoch(header, epochOf(stats, JSON.stringify(header)));
 		return { header, entries, lastSeq: entries.length };
 	}
 
