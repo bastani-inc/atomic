@@ -304,7 +304,7 @@ By default, `run()` persists workflow state in the local [journal store](/storag
 
 Use `journal: { path: "/var/lib/my-service/workflows.sqlite" }` to select a file for a run, or `journal: { memory: true }` for process-local state that cannot survive a restart. Supply a caller-owned async SQLite facade as `{ database, prefix? }`; Atomic does not close it. You can also supply a `RunJournal` instance or `{ adapter, options?, secrets?, prefix? }` for a user-installed driver module.
 
-`RunOpts.journal` (or `createAgentSession({ journal })` for sessions) overrides `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`, then the default journal store. Nearer settings replace whole selections. Relative settings paths resolve against the [storage home](/storage#storage-home). Configuration or storage failures stop the run instead of switching to memory. See [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
+`RunOpts.journal` (or `createAgentSession({ journal })` for sessions) overrides `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`, then the default journal store. Nearer settings replace whole selections. Relative settings paths resolve against the [storage home](/storage#storage-home). Configuration or storage failures stop the run instead of switching to memory.
 
 ## Secure the endpoint
 
@@ -321,4 +321,4 @@ A route that drives an agent session lets whoever calls it run tools on your ser
 
 - [SDK](/sdk) for sessions, prompting, and events.
 - [SDK API reference](/sdk/reference) for every `createAgentSession()` option.
-- [Workflow API reference](/workflows/api-reference) for `run()` and `RunOpts`.
+- [Migrating workflows](/orchestration/migrating-workflows) for replacing earlier workflow definitions.

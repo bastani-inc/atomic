@@ -301,6 +301,7 @@ describe("buildSystemPrompt", () => {
 			/agent-desktop reads accessibility trees, not pixels, and has no native iOS or Android support: say what stayed unverified, and use `xcrun simctl`, Appium or `adb` for native mobile apps/,
 		);
 		assert.match(prompt, /terminal automation\/testing, prefer herdr on macOS, Linux and Windows/);
+		assert.ok(prompt.includes(`${getDocsPath()}/verification.md`), "the prompt points to the shipped evidence guide");
 		assert.match(prompt, /install it if missing/);
 		assert.match(prompt, /fall back to tmux or native Windows psmux/);
 		assert.match(prompt, /explicit-request and HERDR_ENV=1 requirements/);

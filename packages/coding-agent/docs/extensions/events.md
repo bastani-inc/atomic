@@ -854,7 +854,7 @@ The host exposes typed workflow observation contracts. A workflow provider must 
 
 Use `ctx.observeWorkflowActivity` rather than importing internal workflow helpers. Root summaries distinguish live work from stored history: independent work remains `working` even when another stage needs attention; paused roots are `idle`, and unresolved waits without progressing work are `blocked`. A control event does not prove execution has stopped.
 
-The workflows extension registers a publisher on activation and publishes this activity stream for its owning session: root snapshots and changes, plus `workflow_lifecycle`, `workflow_stage_completed`, and `workflow_heartbeat` hooks (the runtime state table is in [`workflows/operations.md`](/workflows/operations#workflow-activity-for-extensions)). It does not change chat notifications. The built-in [Herdr reporter](/herdr) consumes this stream to reflect workflow execution and human-input waits in the owning pane.
+The workflows extension registers a publisher on activation and publishes this activity stream for its owning session: root snapshots and changes, plus `workflow_lifecycle`, `workflow_stage_completed`, and `workflow_heartbeat` hooks. It does not change chat notifications. The built-in [Herdr reporter](/herdr) consumes this stream to reflect workflow execution and human-input waits in the owning pane.
 
 | Hook | Payload and semantics |
 | --- | --- |
