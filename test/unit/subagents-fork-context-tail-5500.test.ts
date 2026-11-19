@@ -89,6 +89,131 @@ test("an uncovered turn survives without copying the payload of the entry the cl
 	);
 });
 
+const tool = (name: string) => ({ name, description: name, parameters: { type: "object" as const, properties: {} } });
+
+for (const backend of ["memory", "sqlite", "jsonl"] as const)
+	test(`a ${backend} fork keeps the settings, tool history and extension state its branch recorded before a clear (#5500)`, async () => {
+		const dir = await mkdtemp(join(tmpdir(), "fork-state-"));
+		const db = backend === "sqlite" ? await openNodeSqliteDatabase(join(dir, "test.db")) : undefined;
+		const store =
+			backend === "memory"
+				? new MemorySessionStore()
+				: db
+					? await SqlSessionStore.open(db)
+					: await JsonlSessionStore.open(dir, { exactDirectory: true });
+		try {
+			const parent = await SessionManager.create(store, process.cwd());
+			await parent.appendThinkingLevelChange("high");
+			await parent.appendMessage({
+				role: "system",
+				content: "",
+				toolsAdded: [tool("read"), tool("bash")],
+				timestamp: 1,
+			});
+			await parent.appendCustomEntry("todo-extension", { todos: ["first"] });
+			const retired = await parent.appendMessage({ role: "user", content: "retired", timestamp: 2 });
+			await parent.appendCustomEntry("todo-extension", { todos: ["other branch"] });
+			await parent.branch(retired);
+			await parent.appendMessage({ role: "system", content: "", toolsRemoved: [tool("bash")], timestamp: 3 });
+			await parent.appendCustomEntry("todo-extension", { todos: ["first", "second"] });
+			await parent.appendCompaction("cleared", null, 300, cleared);
+			await parent.appendMessage({ role: "user", content: "the current request", timestamp: 4 });
+			// What the complete-branch copy before #5506 gave the child.
+			const full = await SessionManager.open(store, parent.getSessionId());
+			await full.createBranchedSession(parent.getLeafId()!);
+			const state = (manager: SessionManager) => ({
+				context: manager.buildSessionContext(),
+				recorded: manager
+					.getBranch()
+					.flatMap((e) =>
+						e.type === "message" && e.message.role === "system"
+							? [e.message]
+							: e.type === "custom" && e.customType === "todo-extension"
+								? [e.data]
+								: [],
+					),
+			});
+			assert.equal(state(full).recorded.length, 4);
+			const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+			assert.ok(child);
+			for (const manager of [child, await SessionManager.open(store, child.getSessionId())]) {
+				assert.deepEqual(state(manager), state(full));
+				assert.equal(manager.buildSessionContext().thinkingLevel, "high");
+				assert.equal(manager.getEntry(retired), undefined, "the retired conversation was copied into the child");
+			}
+		} finally {
+			await store.close();
+			await db?.close();
+			await rm(dir, { recursive: true, force: true, maxRetries: 10 });
+		}
+	});
+
+test("a fork copies the extension state a current index lists without reparsing retired messages (#5500)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "fork-extension-index-"));
+	const store = await JsonlSessionStore.open(dir, { exactDirectory: true });
+	try {
+		const parent = await SessionManager.create(store, process.cwd());
+		for (let i = 0; i < 64; i++)
+			await parent.appendMessage({ role: "user", content: `retired-extension-test-payload ${i}`, timestamp: 1 });
+		await parent.appendCustomEntry("todo-extension", { todos: ["first"] });
+		await parent.appendCompaction("cleared", null, 300, cleared);
+		await parent.appendMessage({ role: "user", content: "current", timestamp: 2 });
+		await store.readResume(parent.getSessionId());
+		const parse = vi.spyOn(JSON, "parse");
+		try {
+			const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+			assert.ok(child);
+			assert.deepEqual(
+				child
+					.getBranch()
+					.flatMap((e) => (e.type === "custom" && e.customType === "todo-extension" ? [e.data] : [])),
+				[{ todos: ["first"] }],
+			);
+			assert.ok(
+				!parse.mock.calls.some(([json]) => json.includes('"content":"retired-extension-test-payload')),
+				"the fork scanned retired messages for extension state instead of using the index",
+			);
+		} finally {
+			parse.mockRestore();
+		}
+	} finally {
+		await store.close();
+		await rm(dir, { recursive: true, force: true, maxRetries: 10 });
+	}
+});
+
+test("a fork of a session an earlier build indexed still copies its extension state (#5500)", async () => {
+	const db = await openNodeSqliteDatabase(":memory:");
+	const store = await SqlSessionStore.open(db);
+	try {
+		const parent = await SessionManager.create(store, process.cwd());
+		await parent.appendMessage({ role: "user", content: "retired", timestamp: 1 });
+		await parent.appendCustomEntry("todo-extension", { todos: ["first"] });
+		await parent.appendCompaction("cleared", null, 300, cleared);
+		await parent.appendMessage({ role: "user", content: "current", timestamp: 2 });
+		// The saved index of an earlier build does not list extension state.
+		await db.run(
+			"UPDATE session_sessions SET summary_state = json_remove(summary_state, '$.resume.extensionState') WHERE id = ?",
+			parent.getSessionId(),
+		);
+		const earlier = await SqlSessionStore.open(db);
+		const child = await SessionManager.forkContext(
+			earlier,
+			parent.getSessionId(),
+			parent.getLeafId()!,
+			process.cwd(),
+		);
+		assert.deepEqual(
+			child.getBranch().flatMap((e) => (e.type === "custom" && e.customType === "todo-extension" ? [e.data] : [])),
+			[{ todos: ["first"] }],
+		);
+		await earlier.close();
+	} finally {
+		await store.close();
+		await db.close();
+	}
+});
+
 for (const backend of ["sqlite", "jsonl"] as const)
 	test(`a ${backend} fork preserves the exact model from a covered signed reply without copying that reply (#5500)`, async () => {
 		const dir = await mkdtemp(join(tmpdir(), "fork-model-"));
@@ -258,6 +383,74 @@ for (const labelCount of [0, 64])
 			await counted.wrapped.close();
 		}
 	});
+
+test("a fork after a branch tells system messages apart without reading the payloads of large messages (#5500)", async () => {
+	const counted = countingDatabase(await openNodeSqliteDatabase(":memory:"));
+	const store = await SqlSessionStore.open(counted.wrapped);
+	try {
+		const parent = await SessionManager.create(store, process.cwd());
+		const image = "i".repeat(1536 * 1024);
+		for (let i = 0; i < 4; i++)
+			await parent.appendMessage({
+				role: "user",
+				content: [
+					{ type: "text", text: `image ${i}` },
+					{ type: "image", data: image, mimeType: "image/png" },
+				],
+				timestamp: 1,
+			});
+		// The model the child needs is set after the images, so finding it does not read them either.
+		for (let i = 0; i < 128; i++) await parent.appendMessage({ role: "user", content: `turn ${i}`, timestamp: 2 });
+		await parent.appendModelChange("provider", "model");
+		const point = parent.getLeafId()!;
+		await parent.appendMessage({ role: "user", content: "another branch", timestamp: 3 });
+		await parent.branch(point);
+		await parent.appendCompaction("cleared", null, 300, cleared);
+		await parent.appendMessage({ role: "user", content: "current", timestamp: 4 });
+		counted.statements.length = 0;
+		const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+		assert.ok(child);
+		assert.deepEqual(child.buildSessionContext(), parent.buildSessionContext());
+		const read = counted.statements.reduce((sum, statement) => sum + statement.bytes, 0);
+		assert.ok(read < image.length, `the fork read ${read} bytes; one image alone is ${image.length}`);
+	} finally {
+		await store.close();
+		await counted.wrapped.close();
+	}
+});
+
+test("a fork after a branch keeps large system messages wherever their role is written (#5500)", async () => {
+	const db = await openNodeSqliteDatabase(":memory:");
+	const store = await SqlSessionStore.open(db);
+	try {
+		const parent = await SessionManager.create(store, process.cwd());
+		const large = "d".repeat(1536 * 1024);
+		await parent.appendMessage({
+			role: "system",
+			content: "",
+			toolsAdded: [{ ...tool("read"), description: large }],
+			timestamp: 1,
+		});
+		// A message written with its role after a large field does not show its role at its start.
+		await parent.appendMessage({ content: large, toolsRemoved: [tool("read")], role: "system", timestamp: 2 });
+		const point = await parent.appendMessage({ role: "user", content: "retired", timestamp: 3 });
+		await parent.appendMessage({ role: "user", content: "another branch", timestamp: 4 });
+		await parent.branch(point);
+		await parent.appendCompaction("cleared", null, 300, cleared);
+		await parent.appendMessage({ role: "user", content: "current", timestamp: 5 });
+		const full = await SessionManager.open(store, parent.getSessionId());
+		await full.createBranchedSession(parent.getLeafId()!);
+		const systemMessages = (manager: SessionManager) =>
+			manager.getBranch().flatMap((e) => (e.type === "message" && e.message.role === "system" ? [e.message] : []));
+		assert.equal(systemMessages(full).length, 2);
+		const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+		assert.ok(child);
+		assert.deepEqual(systemMessages(child), systemMessages(full));
+	} finally {
+		await store.close();
+		await db.close();
+	}
+});
 
 test("a child inherits the name and summary from its own branch before a clear (#5500)", async () => {
 	const store = new MemorySessionStore();
