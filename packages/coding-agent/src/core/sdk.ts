@@ -436,6 +436,38 @@ async function constructAgentSession(
 	const hasExistingSession = existingMessages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
+	const provider =
+		options.model?.provider ??
+		(hasExistingSession ? existingSession.model?.provider : undefined) ??
+		settingsManager.getDefaultProvider();
+	// The CLI has already resolved its provider (including errors and --api-key) before creating an unstarted session.
+	if (
+		!deferStart &&
+		provider &&
+		modelRuntime.needsModelList(provider, true) &&
+		(modelRuntime.needsModelList(provider) ||
+			resourceLoader
+				.getExtensions()
+				.runtime.pendingProviderRegistrations.some((r) => ("provider" in r ? r.provider.id : r.name) === provider))
+	) {
+		// SDK discovery returns registrations for the session to bind. Apply these before fetching from a provider it replaces.
+		const extensions = resourceLoader.getExtensions().runtime;
+		extensions.pendingProviderRegistrations = extensions.pendingProviderRegistrations.filter((registration) => {
+			try {
+				if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
+				else modelRuntime.registerProvider(registration.name, registration.config);
+				extensions.extensionProviderIds.add(
+					"provider" in registration ? registration.provider.id : registration.name,
+				);
+				return false;
+			} catch {
+				return true;
+			} // Leave invalid registrations for normal extension error reporting.
+		});
+		await modelRuntime.whenRegistrationRefreshesSettled();
+		await modelRuntime.refreshMissingModelList(provider, options.signal);
+	}
+
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
 	let modelFallbackReason: import("./model-resolver-types.ts").ModelFallbackReason | undefined;
