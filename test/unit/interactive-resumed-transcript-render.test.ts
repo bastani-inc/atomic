@@ -12,6 +12,7 @@ import { InteractiveMode } from "../../packages/coding-agent/src/modes/interacti
 import { releaseStartupChatOutput } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
+import { stripTerminalSequences } from "../../packages/tui/src/utils.ts";
 import { measureStringWork } from "../../packages/tui/test/string-work.ts";
 
 const COLUMNS = 100;
@@ -146,6 +147,7 @@ interface ResumedTranscript {
 	readonly mode: InteractiveMode;
 	readonly tui: TuiAltScreen;
 	readonly transcript: ScrollView;
+	readonly terminal: RecordingTerminal;
 }
 
 async function openResumedSession(turns: number): Promise<ResumedTranscript> {
@@ -161,7 +163,7 @@ async function openResumedSession(turns: number): Promise<ResumedTranscript> {
 	releaseStartupChatOutput(mode);
 	tui.start();
 	stops.push(() => tui.stop());
-	return { mode, tui, transcript };
+	return { mode, tui, transcript, terminal };
 }
 
 function nextTurn(): Promise<void> {
@@ -330,4 +332,135 @@ test("resuming a long transcript builds and renders it in bounded slices across 
 		);
 		assertHoldsEveryTurn(mode, turns);
 	}
+});
+
+const CLEARED = {
+	strategy: "verbatim-lines",
+	promptVersion: 7,
+	parameters: { query: "test" },
+	stats: {
+		linesBefore: 1,
+		linesDeleted: 1,
+		linesKept: 0,
+		rangeCount: 0,
+		tokensBefore: 100,
+		tokensAfter: 2,
+		percentReduction: 98,
+	},
+	form: "cleared",
+} as const;
+
+/** What the selection copies, without touching the host clipboard. */
+function recordCopies(tui: TuiAltScreen): string[] {
+	const copies: string[] = [];
+	(tui as unknown as { copyTextToClipboard: (text: string) => Promise<boolean> }).copyTextToClipboard = async (
+		text,
+	) => {
+		copies.push(text);
+		return true;
+	};
+	return copies;
+}
+
+async function settle(tui: TuiAltScreen, done: (screen: string[]) => boolean): Promise<string[]> {
+	for (let i = 0; i < 60; i++) {
+		tui.renderNow();
+		const screen = tui.getScreenLines().map(stripTerminalSequences);
+		if (done(screen)) return screen;
+		await nextTurn();
+	}
+	throw new Error(`screen never settled:\n${tui.getScreenLines().join("\n")}`);
+}
+
+function rowOf(screen: string[], text: string): number {
+	const row = screen.findIndex((line) => line.includes(text));
+	assert.ok(row >= 0, `${text} is not on screen`);
+	return row;
+}
+
+/** SGR mouse input at a screen cell. */
+function mouse(terminal: RecordingTerminal, kind: "press" | "drag" | "release", column: number, row: number): void {
+	const button = kind === "drag" ? 32 : 0;
+	terminal.input(`\x1b[<${button};${column + 1};${row + 1}${kind === "release" ? "m" : "M"}`);
+}
+
+test("copies saved rows a jump released before they were ever selected, as when every page stayed mounted (#5593)", async () => {
+	const copy = async (jump: boolean) => {
+		// Two saved pages, so the newer one is read while scrolling down from the first.
+		const { mode, tui, transcript, terminal } = await openResumedSession(30);
+		const copies = recordCopies(tui);
+		await mode.sessionManager.appendCompaction("cleared history", null, 100, CLEARED);
+		await mode.sessionManager.appendMessage({ role: "user", content: "current input", timestamp: Date.now() });
+		mode.renderInitialMessages();
+		transcript.scrollToStart();
+		let screen = await settle(tui, (lines) => lines.some((line) => line.includes("Turn 1:")));
+		mouse(terminal, "press", 4, rowOf(screen, "Turn 1:"));
+		if (jump) transcript.scrollToEnd();
+		// Without the jump, read newer pages, the selection following, until the last saved answer and the live
+		// rows are mounted together.
+		const reached = (lines: string[]) =>
+			lines.some((line) => line.includes("current input")) &&
+			(jump || lines.some((line) => line.includes("Answer 29")));
+		for (let step = 0; !reached(screen); step++) {
+			assert.ok(step < 200, `never reached the live rows:\n${screen.join("\n")}`);
+			if (!jump) {
+				transcript.scrollBy(ROWS - 4);
+				for (let i = 0; i < 5; i++) await settle(tui, () => true);
+				mouse(terminal, "drag", 4, ROWS - 2);
+			}
+			screen = await settle(tui, () => true);
+		}
+		const tail = rowOf(screen, "current input");
+		mouse(terminal, "drag", 60, tail);
+		mouse(terminal, "release", 60, tail);
+		for (let i = 0; i < 20 && copies.length === 0; i++) await nextTurn();
+		assert.equal(copies.length, 1, "the release did not copy");
+		tui.resetTextSelection();
+		return copies[0]!;
+	};
+	const mounted = await copy(false);
+	assert.match(mounted, /^n 1: check the loader/);
+	for (let turn = 2; turn < 30; turn++) assert.match(mounted, new RegExp(`Turn ${turn}:[\\s\\S]*Answer ${turn}\\n`));
+	assert.match(mounted, /Answer 29[\s\S]*Context cleared[\s\S]*current input$/);
+	assert.equal(await copy(true), mounted);
+});
+
+test("a saved page's compaction cost notice is copied with the saved rows around it (#5593)", async () => {
+	const { mode, tui, transcript, terminal } = await openResumedSession(3);
+	const copies = recordCopies(tui);
+	mode.settingsManager.setShowCacheMissNotices(true);
+	const manager = mode.sessionManager;
+	const usage = {
+		input: 1_000,
+		output: 200,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 1_200,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	await manager.appendCompaction("older summary", null, 100, CLEARED, usage);
+	await manager.appendMessage({ role: "user", content: "after the older compaction", timestamp: Date.now() });
+	await manager.appendCompaction("cleared history", null, 100, CLEARED);
+	await manager.appendMessage({ role: "user", content: "current input", timestamp: Date.now() });
+	mode.renderInitialMessages();
+	transcript.scrollToStart();
+	let screen = await settle(tui, (lines) => lines.some((line) => line.includes("Turn 0:")));
+	// Keep the last selected row off the bottom row, where the jump-to-latest pill is drawn.
+	const shows = (lines: string[]) =>
+		["Answer 2", "tokens billed", "after the older compaction"].every((text) =>
+			lines.slice(0, ROWS - 2).some((line) => line.includes(text)),
+		);
+	for (let i = 0; i < 40 && !shows(screen); i++) {
+		transcript.scrollBy(2);
+		screen = await settle(tui, () => true);
+	}
+	const from = rowOf(screen, "Answer 2");
+	const to = rowOf(screen, "after the older compaction");
+	mouse(terminal, "press", 0, from);
+	mouse(terminal, "drag", 99, to);
+	mouse(terminal, "release", 99, to);
+	for (let i = 0; i < 20 && copies.length === 0; i++) await nextTurn();
+	const shown = screen.slice(from, to + 1).map((line) => line.trimEnd());
+	assert.match(shown.join("\n"), /Compaction: 1,200 tokens billed/);
+	assert.equal(copies[0], shown.join("\n"));
 });

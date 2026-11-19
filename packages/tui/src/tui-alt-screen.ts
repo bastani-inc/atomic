@@ -8,6 +8,8 @@ import { type HintAction, type HintSpan, hintActionAt, readHintSpans } from "./c
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
 import {
+	type HistoryAnchorView,
+	type HistoryLeaf,
 	type HistoryRowPosition,
 	type HistoryRunEdges,
 	WindowedContainer,
@@ -116,8 +118,9 @@ interface CachedKittyImage {
 	estimatedDecodedBytes: number;
 }
 
-function compareArchivedRows(a: HistoryRowPosition, b: HistoryRowPosition): number {
-	return a.seq - b.seq || a.block - b.block || a.part - b.part || a.line - b.line;
+/** Document order of two saved rows; a leaf without a row stands for its first row. */
+function compareArchivedRows(a: HistoryLeaf & { line?: number }, b: HistoryLeaf & { line?: number }): number {
+	return a.seq - b.seq || a.block - b.block || a.part - b.part || (a.line ?? 0) - (b.line ?? 0);
 }
 function archivedRowKey(p: HistoryRowPosition): string {
 	return `${p.seq}:${p.block}:${p.part}:${p.line}`;
@@ -140,10 +143,64 @@ function savedRunSide(edges: HistoryRunEdges, row: number): number {
 	const above = edges.above?.();
 	return above !== undefined && row <= above ? -1 : 0;
 }
+/** The saved rows a selection holds: a range of saved positions, open where the selection continues into live rows,
+ * and the live rows around them. */
+interface SavedSpan {
+	readonly source: symbol;
+	readonly edges?: HistoryRunEdges;
+	readonly from?: HistoryRowPosition | HistoryLeaf;
+	readonly to?: HistoryRowPosition;
+	readonly liveAbove: boolean;
+	readonly liveBelow: boolean;
+	/** The selection holds live rows on both sides of the saved rows, but none of the saved rows. */
+	readonly empty?: boolean;
+}
+
+/** Sorted, disjoint inclusive ranges without one entry. */
+function withoutEntry(ranges: ReadonlyArray<readonly [number, number]>, seq: number): Array<[number, number]> {
+	const kept: Array<[number, number]> = [];
+	for (const [a, b] of ranges) {
+		if (a < seq) kept.push([a, Math.min(b, seq - 1)]);
+		if (b > seq) kept.push([Math.max(a, seq + 1), b]);
+	}
+	return kept;
+}
+/** Add an inclusive range to sorted, disjoint ranges. */
+function addRange(ranges: ReadonlyArray<readonly [number, number]>, from: number, to: number): Array<[number, number]> {
+	const merged: Array<[number, number]> = [];
+	let next: [number, number] = [from, to];
+	for (const range of [...ranges].sort((x, y) => x[0] - y[0])) {
+		if (range[1] + 1 < next[0] || next[1] + 1 < range[0]) merged.push([range[0], range[1]]);
+		else next = [Math.min(next[0], range[0]), Math.max(next[1], range[1])];
+	}
+	merged.push(next);
+	return merged.sort((x, y) => x[0] - y[0]);
+}
+/** The parts of `from` through `to` that no range covers. */
+function missingRanges(
+	from: number,
+	to: number,
+	covered: ReadonlyArray<readonly [number, number]>,
+): Array<[number, number]> {
+	const missing: Array<[number, number]> = [];
+	let next = from;
+	for (const [a, b] of covered) {
+		if (b < next) continue;
+		if (a > to) break;
+		if (a > next) missing.push([next, Math.min(a - 1, to)]);
+		next = Math.max(next, b + 1);
+	}
+	if (next <= to) missing.push([next, to]);
+	return missing;
+}
+
 interface SelectionPoint {
 	archive?: HistoryRowPosition;
 	/** The live rows around the saved run of an archived point; they stay in place when the run is released. */
 	edges?: HistoryRunEdges;
+	/** For a live point in a document with a history anchor: whether it is below the saved rows, and for a point above
+	 * them, the first saved leaf that was mounted below it when it was placed. */
+	saved?: { readonly source: symbol; readonly below: boolean; readonly first?: HistoryLeaf };
 	row: number;
 	col: number;
 	scrollView?: ScrollView;
@@ -399,6 +456,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly selectedFragments = new Map<string, LiveFragment>();
 	/** A saved run found between the two live endpoints of the selection. */
 	private selectionRun?: HistoryRunEdges;
+	/** Sequence ranges of saved entries whose selected rows were all captured while mounted. */
+	private savedCoverage: Array<[number, number]> = [];
+	/** The saved range the coverage was captured for. */
+	private savedCoverageBounds?: Pick<SavedSpan, "source" | "from" | "to">;
 	private selectionGranularity: SelectionGranularity = "character";
 	private selectionInitialRange?: SelectionRange;
 	private lastClick?: ClickTarget;
@@ -502,9 +563,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	/** Copy the active fullscreen text selection, if any, using the configured selection clipboard path. */
 	async copyActiveSelectionToClipboard(): Promise<boolean> {
-		const text = this.getActiveSelectionText();
-		if (!text) return false;
-		return this.copyTextToClipboard(text);
+		return this.copyActiveSelection();
 	}
 
 	/** Drop the text selection and multi-click history, e.g. before the host replaces the transcript. */
@@ -1221,6 +1280,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectedFragments.clear();
 		this.archiveSelection.clear();
 		this.selectionRun = undefined;
+		this.savedCoverage = [];
+		this.savedCoverageBounds = undefined;
 	}
 	private clearTextSelection(): void {
 		this.clearSelectionFragments();
@@ -1524,10 +1585,22 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const maxContentRow = Math.max(0, (lines?.length ?? 1) - 1);
 		const row = Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y));
 		const archive = scrollView.hasHistoryNavigation ? lines?.historyRow?.(row) : undefined;
+		const anchor = scrollView.hasHistoryNavigation && !archive ? lines?.historyAnchor?.() : undefined;
+		const side = anchor ? savedRunSide(anchor.edges, row) : 0;
 		return {
 			row,
 			...(scrollView.hasHistoryNavigation ? { trackRow: lines?.trackRow?.(row), archive } : {}),
 			...(archive ? { edges: lines?.historyEdges?.(row) } : {}),
+			...(anchor && side
+				? {
+						edges: anchor.edges,
+						saved: {
+							source: anchor.source,
+							below: side > 0,
+							...(side < 0 && anchor.first ? { first: anchor.first } : {}),
+						},
+					}
+				: {}),
 			col: Math.max(0, Math.min(box.rect.width - 1, x - box.rect.x)),
 			scrollView,
 		};
@@ -1883,8 +1956,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let order = pRow - qRow;
 		if (a && b && a.source === b.source) order = compareArchivedRows(a, b);
 		else if (a || b) {
+			const saved = (a ? q : p).saved;
 			const edges = (a ? p : q).edges;
-			const side = edges && savedRunSide(edges, a ? qRow : pRow);
+			const side =
+				saved && saved.source === (a ?? b)?.source
+					? saved.below
+						? 1
+						: -1
+					: edges && savedRunSide(edges, a ? qRow : pRow);
 			if (side) order = a ? -side : side;
 		}
 		return order || p.col - q.col;
@@ -1917,51 +1996,86 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.clearSelectionFragments();
 			return;
 		}
-		const run = this.savedRunOf(selection);
-		const a = selection.start.archive,
-			b = selection.end.archive;
-		const source = run?.source ?? (a && b && a.source === b.source ? a.source : undefined);
+		const span = this.savedSpanOf(selection);
 		for (const [key, fragment] of this.archiveSelection)
-			if (fragment.position.source !== source || !this.selectsSavedRow(fragment.position, selection))
-				this.archiveSelection.delete(key);
+			if (!span || !this.savedSelects(fragment.position, span)) this.archiveSelection.delete(key);
+		// When an end of the selection moves outward, the entry it was on holds rows that were never captured.
+		const old = this.savedCoverageBounds;
+		let coverage = span && span.source === old?.source ? this.savedCoverage : [];
+		if (span && old && coverage.length) {
+			if (old.from && (!span.from || compareArchivedRows(span.from, old.from) < 0))
+				coverage = withoutEntry(coverage, old.from.seq);
+			if (old.to && (!span.to || compareArchivedRows(span.to, old.to) > 0))
+				coverage = withoutEntry(coverage, old.to.seq);
+		}
+		this.savedCoverage = coverage;
+		this.savedCoverageBounds = span && { source: span.source, from: span.from, to: span.to };
 		for (const [key, fragment] of this.selectedFragments) {
 			const base =
 				fragment.part === "anchor"
 					? this.selectionAnchor?.row
 					: fragment.part === "below"
-						? run?.below?.()
-						: run?.above?.();
-			if (base === undefined || !this.holdsLiveRow(base + fragment.offset, selection, run))
+						? span?.edges?.below?.()
+						: span?.edges?.above?.();
+			if (base === undefined || !this.holdsLiveRow(base + fragment.offset, selection, span))
 				this.selectedFragments.delete(key);
 		}
 		this.capturePaintedFragments(selection, this.currentLayout, true);
 	}
 
-	/** The saved run whose selected rows are kept as text, while the live rows around it stay cursors. */
-	private savedRunOf(selection: SelectionRange): HistoryRunEdges | undefined {
+	/** The saved rows a selection holds, as a range of saved positions, and the live rows around them. */
+	private savedSpanOf(selection: SelectionRange): SavedSpan | undefined {
 		const { start, end } = selection;
-		if (start.archive || end.archive) return start.archive ? start.edges : end.edges;
+		const a = start.archive,
+			b = end.archive;
+		if (a && b)
+			return a.source === b.source
+				? { source: a.source, edges: start.edges ?? end.edges, from: a, to: b, liveAbove: false, liveBelow: false }
+				: undefined;
+		if (a) return { source: a.source, edges: start.edges, from: a, liveAbove: false, liveBelow: true };
+		if (b) {
+			// A live start above saved rows holds them from the first one that was mounted below it when it was placed.
+			const from = start.saved?.source === b.source ? start.saved.first : undefined;
+			if (start.saved?.source === b.source && !from) return undefined;
+			return {
+				source: b.source,
+				edges: end.edges,
+				...(from ? { from } : {}),
+				to: b,
+				liveAbove: true,
+				liveBelow: false,
+			};
+		}
+		const above = start.saved,
+			below = end.saved;
+		if (above && below && above.source === below.source && !above.below && below.below) {
+			return above.first
+				? { source: above.source, edges: end.edges, from: above.first, liveAbove: true, liveBelow: true }
+				: { source: above.source, edges: end.edges, liveAbove: true, liveBelow: true, empty: true };
+		}
 		const run = this.selectionRun;
-		const above = run?.above?.(),
-			below = run?.below?.();
-		return above !== undefined && below !== undefined && start.row <= above && below <= end.row ? run : undefined;
+		const top = run?.above?.(),
+			bottom = run?.below?.();
+		return run && top !== undefined && bottom !== undefined && start.row <= top && bottom <= end.row
+			? { source: run.source, edges: run, liveAbove: true, liveBelow: true }
+			: undefined;
 	}
 
-	private selectsSavedRow(position: HistoryRowPosition, selection: SelectionRange): boolean {
-		const a = selection.start.archive,
-			b = selection.end.archive;
+	private savedSelects(position: HistoryRowPosition, span: SavedSpan): boolean {
 		return (
-			(a?.source !== position.source || compareArchivedRows(position, a) >= 0) &&
-			(b?.source !== position.source || compareArchivedRows(position, b) <= 0)
+			!span.empty &&
+			position.source === span.source &&
+			(!span.from || compareArchivedRows(position, span.from) >= 0) &&
+			(!span.to || compareArchivedRows(position, span.to) <= 0)
 		);
 	}
 
-	/** Whether the selection holds a live row: one before the saved run it spans, or after it. */
-	private holdsLiveRow(row: number, selection: SelectionRange, run: HistoryRunEdges | undefined): boolean {
+	/** Whether the selection holds a live row: one before the saved rows it spans, or after them. */
+	private holdsLiveRow(row: number, selection: SelectionRange, span: SavedSpan | undefined): boolean {
 		const { start, end } = selection;
-		if (!run) return row >= start.row && row <= end.row;
-		if (!start.archive && row >= start.row && row <= (run.above?.() ?? -1)) return true;
-		return !end.archive && row >= (run.below?.() ?? Number.POSITIVE_INFINITY) && row <= end.row;
+		if (!span) return row >= start.row && row <= end.row;
+		if (span.liveAbove && row >= start.row && row <= (span.edges?.above?.() ?? -1)) return true;
+		return span.liveBelow && row >= (span.edges?.below?.() ?? Number.POSITIVE_INFINITY) && row <= end.row;
 	}
 
 	/** The columns of the live endpoints only; an archived endpoint's row number may be out of date. */
@@ -1973,10 +2087,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		};
 	}
 
-	private liveFragmentKey(row: number, run: HistoryRunEdges | undefined): Pick<LiveFragment, "part" | "offset"> {
-		const below = run?.below?.();
+	private liveFragmentKey(row: number, span: SavedSpan | undefined): Pick<LiveFragment, "part" | "offset"> {
+		const below = span?.edges?.below?.();
 		if (below !== undefined && row >= below) return { part: "below", offset: row - below };
-		const above = run?.above?.();
+		const above = span?.edges?.above?.();
 		if (above !== undefined && row <= above) return { part: "above", offset: row - above };
 		return { part: "anchor", offset: row - (this.selectionAnchor?.row ?? 0) };
 	}
@@ -1987,25 +2101,23 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const rows = getScrollContentRows(getScrollViewBox(layout, view));
 		if (!rows?.visitVolatileRows) return;
 		const { start, end } = selection;
-		const a = start.archive,
-			b = end.archive;
-		const sameSource = a && b && a.source === b.source;
-		let run = this.savedRunOf(selection);
+		const live = !start.archive && !end.archive;
+		let span = this.savedSpanOf(selection);
 		const top = view.scrollTop,
 			bottom = top + view.viewportHeight - 1;
 		let looked = false;
 		const visit = (row: number, line: string, renderer: symbol, position?: HistoryRowPosition) => {
-			if (position && !run && !looked && !a && !b && row >= start.row && row <= end.row) {
+			if (position && !span && !looked && live && row >= start.row && row <= end.row) {
 				looked = true;
 				this.selectionRun = rows.historyEdges?.(row);
-				run = this.savedRunOf(selection);
+				span = this.savedSpanOf(selection);
 			}
-			if (position && position.source === (run?.source ?? (sameSource ? a.source : undefined))) {
-				this.captureSavedRow(position, line, selection);
+			if (position && position.source === span?.source) {
+				if (this.savedSelects(position, span)) this.captureSavedRow(position, line, selection);
 				return;
 			}
-			if (row >= top && row <= bottom && this.holdsLiveRow(row, selection, run))
-				this.captureLiveRow(row, line, renderer, selection, run);
+			if (row >= top && row <= bottom && this.holdsLiveRow(row, selection, span))
+				this.captureLiveRow(row, line, renderer, selection, span);
 		};
 		rows.visitVolatileRows(top, bottom, visit);
 		if (!full) return;
@@ -2013,64 +2125,84 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		// the selected cells of every mounted saved row as the user selects, drawing those the background sweep has
 		// not reached; plain repaint and merely asking whether a selection exists do not perform this work. Never
 		// request an unmounted archive page here.
-		if (!run && !a && !b && view.hasHistoryNavigation && !this.selectionPressActive)
+		if (!span && live && view.hasHistoryNavigation && !this.selectionPressActive)
 			rows.visitVolatileRows(start.row, end.row, visit);
-		const inside = run && this.rowInsideRun(run, selection);
-		if (run && inside !== undefined && rows.visitHistoryRun) {
-			const saved = run;
-			rows.visitHistoryRun(
-				inside,
-				a?.source === saved.source ? a : undefined,
-				b?.source === saved.source ? b : undefined,
-				(line, position) => position.source === saved.source && this.captureSavedRow(position, line, selection),
-			);
-		} else if (sameSource) rows.visitVolatileRows(start.trackRow?.() ?? top, end.trackRow?.() ?? bottom, visit);
+		const inside = span && !span.empty ? this.rowInsideRun(span, selection) : undefined;
+		if (span && inside !== undefined && rows.visitHistoryRun) {
+			const saved = span;
+			let first = Number.POSITIVE_INFINITY,
+				last = Number.NEGATIVE_INFINITY;
+			rows.visitHistoryRun(inside, saved.from, saved.to, (line, position) => {
+				if (position.source !== saved.source || !this.savedSelects(position, saved)) return;
+				this.captureSavedRow(position, line, selection);
+				first = Math.min(first, position.seq);
+				last = Math.max(last, position.seq);
+			});
+			// Every mounted saved leaf of these entries is now captured; a copy need not draw them again.
+			if (first <= last && this.savedCoverageBounds?.source === saved.source)
+				this.savedCoverage = addRange(this.savedCoverage, first, last);
+		} else if (start.archive && end.archive && start.archive.source === end.archive.source)
+			rows.visitVolatileRows(start.trackRow?.() ?? top, end.trackRow?.() ?? bottom, visit);
 	}
 
 	/** A row of the mounted part of a saved run, if any of it is mounted. */
-	private rowInsideRun(run: HistoryRunEdges, selection: SelectionRange): number | undefined {
+	private rowInsideRun(span: SavedSpan, selection: SelectionRange): number | undefined {
 		for (const point of [selection.start, selection.end]) {
-			const row = point.archive?.source === run.source ? point.trackRow?.() : undefined;
+			const row = point.archive?.source === span.source ? point.trackRow?.() : undefined;
 			if (row !== undefined) return row;
 		}
-		if (!run.above) return 0;
-		const above = run.above();
+		if (!span.edges) return undefined;
+		if (!span.edges.above) return 0;
+		const above = span.edges.above();
 		return above === undefined ? undefined : above + 1;
 	}
 
-	private captureSavedRow(position: HistoryRowPosition, line: string, selection: SelectionRange): void {
-		if (!this.selectsSavedRow(position, selection)) return;
+	/** The selected text of a saved row, with the columns of an archived endpoint on its own row. */
+	private savedRowText(
+		position: HistoryRowPosition,
+		line: string,
+		selection: SelectionRange,
+		old?: { start: number; end: number; text: string },
+	): { start: number; end: number; text: string; whole: boolean } {
 		const a = selection.start.archive,
 			b = selection.end.archive;
 		const first = a?.source === position.source && !compareArchivedRows(position, a),
 			last = b?.source === position.source && !compareArchivedRows(position, b);
-		const key = archivedRowKey(position),
-			old = this.archiveSelection.get(key);
-		// A row between the endpoints is selected whole; once captured, it stays as it was selected.
-		if (old?.whole && !first && !last) return;
 		const { start, end } = this.getSelectionColumns(line, 0, {
 			start: { ...selection.start, row: first ? 0 : -1 },
 			end: { ...selection.end, row: last ? 0 : 1 },
 		});
-		if (old && old.start === start && old.end === end) return;
 		const slice = (s: string, p: number, n: number) => selectedCells(s, p, p + n);
 		const before = old ? Math.max(start, old.start) : end,
 			after = old ? Math.min(end, old.end) : start;
-		const value =
+		const text =
 			old && after > before
 				? slice(line, start, before - start) +
 					slice(old.text, before - old.start, after - before) +
 					slice(line, after, end - after)
 				: slice(line, start, end - start);
+		return { start, end, text, whole: !first && !last };
+	}
+
+	private captureSavedRow(position: HistoryRowPosition, line: string, selection: SelectionRange): void {
+		const a = selection.start.archive,
+			b = selection.end.archive;
+		const key = archivedRowKey(position),
+			old = this.archiveSelection.get(key);
+		// A row between the endpoints is selected whole; once captured, it stays as it was selected.
+		const edge =
+			(a?.source === position.source && !compareArchivedRows(position, a)) ||
+			(b?.source === position.source && !compareArchivedRows(position, b));
+		if (old?.whole && !edge) return;
+		const next = this.savedRowText(position, line, selection, old);
+		if (old && old.start === next.start && old.end === next.end) return;
 		// Detach narrow selections from potentially large source strings, preserving UTF-16 code units, and keep
 		// one-byte text one byte per character.
-		const encoding = ONE_BYTE_TEXT.test(value) ? "latin1" : "utf16le";
+		const encoding = ONE_BYTE_TEXT.test(next.text) ? "latin1" : "utf16le";
 		this.archiveSelection.set(key, {
 			position,
-			start,
-			end,
-			text: Buffer.from(value, encoding).toString(encoding),
-			whole: !first && !last,
+			...next,
+			text: Buffer.from(next.text, encoding).toString(encoding),
 		});
 	}
 
@@ -2079,10 +2211,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		line: string,
 		renderer: symbol,
 		selection: SelectionRange,
-		run: HistoryRunEdges | undefined,
+		span: SavedSpan | undefined,
 	): void {
 		const { start, end } = this.getSelectionColumns(line, row, this.liveColumnsSelection(selection));
-		const position = this.liveFragmentKey(row, run);
+		const position = this.liveFragmentKey(row, span);
 		const key = `${position.part}:${position.offset}`;
 		const previous = this.selectedFragments.get(key);
 		// The same live component can publish new text. A recreated historical component, however, cannot
@@ -2103,24 +2235,45 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectedFragments.set(key, { ...position, renderer: replay?.renderer ?? renderer, start, end, text });
 	}
 
-	/** The selected text of the saved rows, in document order. */
-	private savedSelectionText(source: symbol, selection: SelectionRange): string[] {
-		return [...this.archiveSelection.values()]
-			.filter((f) => f.position.source === source && this.selectsSavedRow(f.position, selection))
-			.sort((x, y) => compareArchivedRows(x.position, y.position))
-			.map((f) => f.text.trimEnd());
+	/** The selected text of the saved rows, in document order: what was captured as the user selected it, and what
+	 * a copy draws on request for the selected entries that were released before they were ever captured. */
+	private savedSelectionText(
+		span: SavedSpan,
+		selection: SelectionRange,
+		anchor: HistoryAnchorView | undefined,
+	): string[] | Promise<string[]> {
+		const rows: Array<{ position: HistoryRowPosition; text: string }> = [];
+		for (const fragment of this.archiveSelection.values())
+			if (this.savedSelects(fragment.position, span)) rows.push(fragment);
+		const ordered = () =>
+			rows.sort((x, y) => compareArchivedRows(x.position, y.position)).map((row) => row.text.trimEnd());
+		const missing =
+			span.from && anchor?.source === span.source
+				? missingRanges(span.from.seq, Math.min(span.to?.seq ?? anchor.last, anchor.last), this.savedCoverage)
+				: [];
+		if (!anchor || missing.length === 0) return ordered();
+		const captured = new Set(this.archiveSelection.keys());
+		return (async () => {
+			for (const [from, to] of missing) {
+				for (const block of await anchor.read(from, to)) {
+					for (let line = 0; line < block.lines.length; line++) {
+						const position = { ...block.position, line };
+						if (!this.savedSelects(position, span) || captured.has(archivedRowKey(position))) continue;
+						rows.push({ position, text: this.savedRowText(position, block.lines[line]!, selection).text });
+					}
+				}
+			}
+			return ordered();
+		})();
 	}
 
-	private getActiveSelectionText(): string | undefined {
+	/** The selected text, at once unless saved entries the selection holds must be drawn first. */
+	private getActiveSelectionText(): string | undefined | Promise<string | undefined> {
 		// Fill in what the selection holds that is still mounted, as the user asks for it.
 		this.captureVolatileSelection();
 		const selection = this.getSelectionBounds();
 		if (!selection) return undefined;
 		const { start, end } = selection;
-		const a = start.archive,
-			b = end.archive;
-		if (a && b && a.source === b.source && this.archiveSelection.size)
-			return this.savedSelectionText(a.source, selection).join("\n") || undefined;
 		let sourceLines: WindowRows = this.previousScreen;
 		if (start.scrollView) {
 			if (!this.currentLayout) return undefined;
@@ -2128,12 +2281,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (!rows) return undefined;
 			sourceLines = rows;
 		}
-		const run = a && b && a.source === b.source ? undefined : this.savedRunOf(selection);
+		const span = this.savedSpanOf(selection);
 		const columns = this.liveColumnsSelection(selection);
-		const lines: string[] = [];
 		const live = (from: number, to: number) => {
+			const lines: string[] = [];
 			for (let row = from; row <= to; row++) {
-				const { part, offset } = this.liveFragmentKey(row, run);
+				const { part, offset } = this.liveFragmentKey(row, span);
 				const pinned = this.selectedFragments.get(`${part}:${offset}`);
 				if (pinned) {
 					lines.push(pinned.text.trimEnd());
@@ -2143,23 +2296,51 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				const { start, end } = this.getSelectionColumns(line, row, columns);
 				lines.push(stripTerminalSequences(sliceByColumn(line, start, Math.max(0, end - start), true)).trimEnd());
 			}
+			return lines;
 		};
-		// Rows of a saved run come from the selected text kept for them; the live rows around it are read in place.
-		const above = run && !a ? run.above?.() : undefined,
-			below = run && !b ? run.below?.() : undefined;
-		if (run && (a || above !== undefined) && (b || below !== undefined)) {
-			if (above !== undefined) live(start.row, above);
-			lines.push(...this.savedSelectionText(run.source, selection));
-			if (below !== undefined) live(below, end.row);
-		} else live(start.row, end.row);
-		const text = lines.join("\n");
-		return text.length === 0 ? undefined : text;
+		// Rows of a saved run come from the selected text kept or drawn for them; the live rows around it are read in
+		// place, before anything is awaited.
+		const above = span?.liveAbove ? span.edges?.above?.() : undefined,
+			below = span?.liveBelow ? span.edges?.below?.() : undefined;
+		const anchor = span && !span.empty ? sourceLines.historyAnchor?.() : undefined;
+		const composed =
+			span &&
+			(span.liveAbove ? above !== undefined : true) &&
+			(span.liveBelow ? below !== undefined : true) &&
+			(span.liveAbove || span.liveBelow || this.archiveSelection.size > 0 || anchor?.source === span.source);
+		if (!composed) {
+			const text = live(start.row, end.row).join("\n");
+			return text.length === 0 ? undefined : text;
+		}
+		const head = above !== undefined ? live(start.row, above) : [];
+		const tail = below !== undefined ? live(below, end.row) : [];
+		const join = (saved: string[]) => {
+			const text = [...head, ...saved, ...tail].join("\n");
+			return text.length === 0 ? undefined : text;
+		};
+		const saved = span.empty ? [] : this.savedSelectionText(span, selection, anchor);
+		return Array.isArray(saved) ? join(saved) : saved.then(join);
 	}
 
-	private async copySelectionToClipboard(): Promise<boolean> {
-		const text = this.getActiveSelectionText();
+	private async copyActiveSelection(): Promise<boolean> {
+		let text: string | undefined;
+		try {
+			// Copy in the same turn when nothing has to be drawn.
+			const selected = this.getActiveSelectionText();
+			text = typeof selected === "object" ? await selected : selected;
+		} catch (error) {
+			this.flash(
+				`Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+				COPY_ERROR_FLASH_DURATION_MS,
+			);
+			return false;
+		}
 		if (!text) return false;
 		return this.copyTextToClipboard(text);
+	}
+
+	private copySelectionToClipboard(): Promise<boolean> {
+		return this.copyActiveSelection();
 	}
 
 	private async copyTextToClipboard(text: string): Promise<boolean> {
@@ -2321,11 +2502,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				end: { ...end, row: top + end.row, col: box.rect.x + end.col },
 			};
 			const rows = getScrollContentRows(box);
-			const source = (selection.start.archive ?? selection.end.archive)?.source;
-			if (source && rows?.historyRow)
+			const span = this.savedSpanOf(selection);
+			if (span && rows?.historyRow)
 				unselectedSaved = (row) => {
 					const position = rows.historyRow?.(row - top);
-					return position?.source === source && !this.selectsSavedRow(position, selection);
+					return position?.source === span.source && !this.savedSelects(position, span);
 				};
 		}
 		return screen.map((line, row) => {

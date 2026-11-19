@@ -61,7 +61,7 @@ import {
 import {
 	installSavedChatHistory,
 	releaseSavedChatHistory,
-	type SavedRendererInstances,
+	type SavedRenderers,
 } from "./interactive-saved-chat-history.js";
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
@@ -774,7 +774,13 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 type TranscriptStep =
 	| { readonly kind: "entry"; readonly entry: ChatMessageEntry }
 	| { readonly kind: "custom"; readonly entry: CustomEntry }
-	| { readonly kind: "cost"; readonly type: "compaction" | "branch_summary"; readonly usage: Usage };
+	| {
+			readonly kind: "cost";
+			readonly type: "compaction" | "branch_summary";
+			readonly usage: Usage;
+			/** The saved entry whose cost this is, on a saved page. */
+			readonly seq?: number;
+	  };
 
 const TAIL_STEPS = 128;
 const HISTORY_SLICE_BUDGET_MS = 8;
@@ -861,7 +867,14 @@ function planTranscript(
 					options.suppressCompactionBoundary !== undefined &&
 					entry.summary === options.suppressCompactionBoundary.compactedText &&
 					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
-				if (!suppressedLiveBoundary) steps.push({ kind: "cost", type: entry.type, usage: entry.usage });
+				const seq = options.saved?.seqs.get(entry);
+				if (!suppressedLiveBoundary)
+					steps.push({
+						kind: "cost",
+						type: entry.type,
+						usage: entry.usage,
+						...(seq === undefined ? {} : { seq }),
+					});
 			}
 		}
 	}
@@ -894,20 +907,30 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 	}
 }
 
+/** A cost notice follows every row of its saved entry. */
+const COST_BLOCK = Number.MAX_SAFE_INTEGER;
+
 /** Render an archived page on its own. Never register historical tools as pending in the live turn. */
 function savedChatComponents(
 	mode: InteractiveModeBase,
 	entries: SessionEntry[],
 	seqs: number[],
-	exceptions: SavedRendererInstances,
+	exceptions: SavedRenderers,
 ): Component[] {
 	const scratch = new Container();
+	// Each page draws after earlier rows, as the whole transcript does: its first message keeps its spacing.
+	scratch.addChild(new Spacer(0));
 	const chat = mode.chatContainer;
 	try {
 		mode.chatContainer = scratch;
 		const saved = { seqs: new Map(entries.map((e, i) => [e, seqs[i]!])), owners: new WeakMap<object, string>() };
 		for (const step of planTranscript(mode, entries, { saved })) {
-			const key = step.kind === "cost" ? undefined : saved.owners.get(step.entry);
+			const key =
+				step.kind !== "cost"
+					? saved.owners.get(step.entry)
+					: step.seq === undefined
+						? undefined
+						: `${step.seq}:cost`;
 			const kept = key && exceptions.get(key);
 			if (kept) {
 				for (const component of kept) scratch.addChild(component);
@@ -919,11 +942,11 @@ function savedChatComponents(
 				const [seq, block] = key.split(":");
 				exceptions.remember(key, scratch.children.slice(index), {
 					seq: Number(seq),
-					block: block === "entry" ? 0 : Number(block),
+					block: block === "entry" ? 0 : block === "cost" ? COST_BLOCK : Number(block),
 				});
 			}
 		}
-		return scratch.children;
+		return scratch.children.slice(1);
 	} finally {
 		mode.chatContainer = chat;
 	}

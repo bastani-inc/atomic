@@ -104,6 +104,9 @@ export {
 	VStack,
 } from "./components/v-stack.ts";
 export {
+	type HistoryLeaf,
+	type HistoryRowsBlock,
+	type HistorySource,
 	WindowedContainer,
 	type WindowLayout,
 	type WindowRequest,

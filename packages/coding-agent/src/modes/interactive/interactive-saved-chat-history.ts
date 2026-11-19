@@ -1,13 +1,20 @@
-import { type Component, type ScrollView, Text } from "@bastani/atomic-tui";
+import {
+	type Component,
+	type HistoryLeaf,
+	type HistoryRowsBlock,
+	type ScrollView,
+	Text,
+	WindowedContainer,
+} from "@bastani/atomic-tui";
 import type { SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import type {
 	SessionHistoryItem,
 	SessionHistoryPage,
 	SessionHistoryReadOptions,
 } from "../../core/storage/session/types.js";
-import { SavedRendererInstances } from "./components/saved-renderer-instances.js";
+import { SavedRendererInstances, type SavedRenderers } from "./components/saved-renderer-instances.js";
 
-export type { SavedRendererInstances } from "./components/saved-renderer-instances.js";
+export type { SavedRendererInstances, SavedRenderers } from "./components/saved-renderer-instances.js";
 
 import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { disposeRenderer } from "./components/renderer-disposal.js";
@@ -19,7 +26,7 @@ type Draw = (
 	mode: InteractiveModeBase,
 	entries: SessionEntry[],
 	seqs: number[],
-	exceptions: SavedRendererInstances,
+	exceptions: SavedRenderers,
 ) => Component[];
 
 const exceptionsByHost = new WeakMap<
@@ -152,7 +159,45 @@ class SavedChatHistory {
 		this.through = through;
 		this.counter = (mode.ui as typeof mode.ui & { newMessages?: NewMessageCounter }).newMessages;
 		chat.addChild(this.marker);
+		// A copy of a selection that holds saved entries never mounted while it was made draws just those entries.
+		const owner = new WeakRef(this);
+		WindowedContainer.markHistoryAnchor(this.marker, exceptions.source, {
+			last: through,
+			read: async (from, to, width) => {
+				const history = owner.deref();
+				if (!history) throw new Error("Saved history is closed");
+				return history.readRows(from, to, width);
+			},
+		});
 		view.setHistoryNavigation((action) => this.navigate(action));
+	}
+
+	/** Draw the saved rows of entries `from` through `to` at `width` without mounting them or keeping new renderer
+	 * instances, one bounded page at a time. */
+	async readRows(from: number, to: number, width: number): Promise<HistoryRowsBlock[]> {
+		if (this.mode.sessionManager !== this.manager || !this.chat.children.includes(this.marker))
+			throw new Error("Saved history is no longer shown");
+		const blocks: HistoryRowsBlock[] = [];
+		const toSeq = Math.min(to, this.through);
+		if (from > toSeq) return blocks;
+		const read = this.manager.readHistory({ branchLeafSeq: this.leaf, fromSeq: from, toSeq, direction: "forward" });
+		for await (const page of read) {
+			const positions = new Map<Component, HistoryLeaf>();
+			const renderers = this.exceptions.transient(positions);
+			const entries = page.items.map(entryForDisplay);
+			const components = this.draw(
+				this.mode,
+				entries,
+				page.items.map((item) => item.seq),
+				renderers,
+			);
+			for (const component of components) {
+				const position = positions.get(component);
+				if (position) blocks.push({ position, lines: component.render(width) });
+				if (!renderers.owns(component)) disposeRenderer(component);
+			}
+		}
+		return blocks;
 	}
 
 	private navigate(direction: Direction): void {

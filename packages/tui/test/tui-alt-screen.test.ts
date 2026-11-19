@@ -1933,7 +1933,7 @@ describe("TuiAltScreen", () => {
 	});
 
 	/** A main chat with a saved page between the marker and the live rows: 0 marker, 1-6 saved 0-5, 7-12 live 0-5. */
-	function pagedChat(live: (text: string) => Component = (text) => new Text(text, 0, 0)) {
+	function pagedChat(live: (text: string) => Component = (text) => new Text(text, 0, 0), stored?: number) {
 		const document = new WindowedContainer();
 		const source = Symbol("saved chat");
 		const saved = Array.from({ length: 6 }, (_, i) => {
@@ -1941,7 +1941,28 @@ describe("TuiAltScreen", () => {
 			WindowedContainer.markHistoryComponent(leaf, source, i + 1, 0, 0);
 			return leaf;
 		});
-		document.addChild(new Text("older above", 0, 0));
+		const marker = new Text("older above", 0, 0);
+		/** The saved entries a copy asked to draw, and what was drawn. */
+		const reads: Array<[number, number]> = [];
+		const drawn: WeakRef<object>[] = [];
+		if (stored !== undefined)
+			WindowedContainer.markHistoryAnchor?.(marker, source, {
+				last: stored,
+				read: async (from, to, width) => {
+					reads.push([from, to]);
+					const blocks = [];
+					for (let seq = Math.max(1, from); seq <= Math.min(stored, to); seq++) {
+						const block = {
+							position: { source, seq, block: 0, part: 0 },
+							lines: new Text(`saved ${seq - 1}`, 0, 0).render(width),
+						};
+						drawn.push(new WeakRef(block));
+						blocks.push(block);
+					}
+					return blocks;
+				},
+			});
+		document.addChild(marker);
 		for (const leaf of saved) document.addChild(leaf);
 		for (let i = 0; i < 6; i++) document.addChild(live(`live ${i}`));
 		const view = new ScrollView(document, { primary: true });
@@ -1974,8 +1995,92 @@ describe("TuiAltScreen", () => {
 			tui.start();
 			await terminal.waitForRender();
 		};
-		return { document, saved, terminal, tui, start, paint, copy, dropSavedPage };
+		return { document, saved, terminal, tui, start, paint, copy, dropSavedPage, reads, drawn };
 	}
+
+	it("draws exactly the saved entries a jump released before they were ever selected when the selection is copied (#5593)", async () => {
+		const chat = pagedChat(undefined, 6);
+		await chat.start();
+		try {
+			await chat.paint(3);
+			chat.terminal.sendInput("\x1b[<0;3;1M");
+			await chat.dropSavedPage();
+			chat.terminal.sendInput("\x1b[<32;3;2M");
+			chat.terminal.sendInput("\x1b[<0;3;2m");
+			await chat.paint(3);
+			assert.equal(chat.tui.hasActiveSelection(), true);
+			assert.deepEqual(chat.reads, [], "a repaint or a selection check read saved history");
+			assert.equal(await chat.copy(), "ved 2\nsaved 3\nsaved 4\nsaved 5\nlive 0\nlive 1\nlive 2\nliv");
+			assert.deepEqual(chat.reads, [[3, 6]]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	it("draws only the saved entries between the captured rows and the live rows when a copy needs them (#5593)", async () => {
+		const chat = pagedChat(undefined, 9);
+		await chat.start();
+		try {
+			await chat.paint(3);
+			chat.terminal.sendInput("\x1b[<0;3;1M");
+			await chat.paint(9);
+			chat.terminal.sendInput("\x1b[<32;3;2M");
+			chat.terminal.sendInput("\x1b[<0;3;2m");
+			await chat.dropSavedPage();
+			const everything = "ved 2\nsaved 3\nsaved 4\nsaved 5\nsaved 6\nsaved 7\nsaved 8\nlive 0\nlive 1\nlive 2\nliv";
+			assert.equal(await chat.copy(), everything);
+			assert.deepEqual(chat.reads, [[7, 9]]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	it("draws the saved entries below a live start that a jump released before they were selected (#5593)", async () => {
+		const chat = pagedChat(undefined, 6);
+		await chat.start();
+		try {
+			chat.terminal.sendInput("\x1b[<0;1;1M");
+			await chat.dropSavedPage();
+			chat.terminal.sendInput("\x1b[<32;3;4M");
+			chat.terminal.sendInput("\x1b[<0;3;4m");
+			const saved = ["saved 0", "saved 1", "saved 2", "saved 3", "saved 4", "saved 5"];
+			assert.equal(await chat.copy(), ["older above", ...saved, "live 0", "live 1", "liv"].join("\n"));
+			assert.deepEqual(chat.reads, [[1, 6]]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	it("keeps nothing a copy drew for a released saved page once the selection is reset (#5593)", async () => {
+		setFlagsFromString("--expose-gc");
+		const gc = runInNewContext("gc") as () => void;
+		const chat = pagedChat(undefined, 6);
+		await chat.start();
+		try {
+			await chat.paint(3);
+			chat.terminal.sendInput("\x1b[<0;3;1M");
+			await chat.dropSavedPage();
+			chat.terminal.sendInput("\x1b[<32;3;2M");
+			chat.terminal.sendInput("\x1b[<0;3;2m");
+			await chat.paint();
+			assert.match((await chat.copy()) ?? "", /^ved 2\nsaved 3/);
+			assert.equal(chat.drawn.length, 4);
+			chat.tui.resetTextSelection();
+			for (let i = 0; i < 4; i++) {
+				await new Promise((resolve) => setImmediate(resolve));
+				gc();
+			}
+			assert.deepEqual(
+				chat.drawn.map((block) => block.deref()),
+				chat.drawn.map(() => undefined),
+				"the selection kept rows a copy drew",
+			);
+			assert.equal(await chat.tui.copyActiveSelectionToClipboard(), false);
+			assert.deepEqual(chat.reads, [[3, 6]]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
 
 	it("copies a selection from a saved page into the live rows after a jump releases the page (#5593)", async () => {
 		const chat = pagedChat();
