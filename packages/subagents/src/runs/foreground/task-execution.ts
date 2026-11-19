@@ -3,10 +3,12 @@ import {
 	type AgentTaskHost,
 	type AgentWakeDispatcher,
 	agentWakeDispatcher,
+	finishedSubagentResumeText,
 	type OperationId,
 	ranOnModelLine,
 	sessionStartStepText,
 	spanElapsedMs,
+	subagentResumeId,
 	withTaskTranscriptArchive,
 } from "@bastani/atomic";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
@@ -195,6 +197,7 @@ function settledOutputSection(
 	output: OutputExcerpt,
 	ranOn: string | undefined,
 	worktreeNote?: string,
+	resume?: string,
 ): string {
 	const truncated =
 		output.shown < output.total
@@ -202,7 +205,7 @@ function settledOutputSection(
 			: "";
 	// Keep the observation in the header, not in the answer a replayed card extracts from this section.
 	const lines = [
-		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${worktreeNote ? ` ${worktreeNote}` : ""}`,
+		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${worktreeNote ? ` ${worktreeNote}` : ""}${resume ? ` ${resume}` : ""}`,
 	];
 	if (ranOn) lines.push(ranOn);
 	if (output.requestedPath) lines.push(`Requested output: ${output.requestedPath}`);
@@ -300,11 +303,21 @@ export async function settledTaskOutputText(
 			const note = tree && (await observeChildWorktreeAtReply(tree.runId, tree.index, undefined, signal));
 			if (!output) return note ? `${entry.taskId}: ${note}` : undefined;
 			const label = subagentTaskResultLabel(entry.result);
+			// A subagent that completed or failed keeps its session: its header names the call that continues it. Output
+			// kept without its task record is a subagent's; the task id then resolves for resume.
+			const agent = record ? record.kind === "agent" : Boolean(kept);
+			const resume =
+				agent && entry.result.kind !== "cancelled"
+					? finishedSubagentResumeText(subagentResumeId(entry.taskId, record))
+					: undefined;
 			return "unavailable" in output
-				? [`Output of ${entry.taskId} (${label}) is unavailable: ${output.unavailable}`, note]
+				? [
+						`Output of ${entry.taskId} (${label}) is unavailable: ${output.unavailable}${resume ? ` ${resume}` : ""}`,
+						note,
+					]
 						.filter(Boolean)
 						.join("\n")
-				: settledOutputSection(entry.taskId, label, output, ranOnModelLine(record), note);
+				: settledOutputSection(entry.taskId, label, output, ranOnModelLine(record), note, resume);
 		}),
 	);
 	const present = sections.filter((section): section is string => section !== undefined);
