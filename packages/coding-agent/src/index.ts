@@ -170,14 +170,18 @@ export { belongsToSession, scopedBackgroundTasks, sessionTasks, taskSessionKey }
 export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
+	bindTaskTranscriptFragments,
 	ownerTaskViewSource,
 	type TaskCommandCatalog,
 	type TaskDetailText,
 	type TaskOutputView,
 	type TaskTranscriptFollow,
+	type TaskTranscriptFragments,
 	type TaskTranscriptView,
 	type TaskViewResult,
 	type TaskViewSource,
+	taskTranscriptFragments,
+	withTaskTranscriptArchive,
 } from "./core/tasks/task-view-source.js";
 export { formatReadLineRange, formatToolCallWithArgs } from "./core/tools/render-utils.ts";
 export {

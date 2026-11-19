@@ -419,10 +419,19 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 
 InteractiveModeBase.prototype.getMarkdownTransformers = function (this: InteractiveModeBase) {
 	const mode = this.settingsManager.getMermaidRenderingMode();
-	if (this.mermaidMarkdownTransformerMode !== mode) {
+	const withheld =
+		this.runtimeHost instanceof IsolatedInteractiveRuntime &&
+		this.runtimeHost.isProjectTrustPending() &&
+		!this.settingsManager.isProjectTrusted();
+	if (this.mermaidMarkdownTransformerMode !== mode || withheld !== (this.mermaidTransformerWithheldProject === true)) {
 		this.mermaidMarkdownTransformerMode = mode;
+		this.mermaidTransformerWithheldProject = withheld;
+		const edit = this.mermaidUserEdit;
 		this.mermaidMarkdownTransformer = createMermaidMarkdownTransformer({
-			getMode: () => this.settingsManager.getMermaidRenderingMode(),
+			// Invalidating a message for a redraw isn't permission to replace a mounted diagram with source text.
+			// The user's own subsequent rendering choice, unlike approval, still applies to visible messages.
+			getMode: () =>
+				withheld && edit === this.mermaidUserEdit ? mode : this.settingsManager.getMermaidRenderingMode(),
 			theme,
 		});
 	}
@@ -906,10 +915,11 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	options: {
 		updateFooter?: boolean;
 		populateHistory?: boolean;
+		preserveViewportInput?: boolean;
 		suppressCompactionBoundary?: VerbatimCompactionResult;
 	} = {},
 ): void {
-	this.resetTranscriptSelection();
+	if (!options.preserveViewportInput) this.resetTranscriptSelection();
 	this.pendingTools.clear();
 	const pendingEchoes = takeDeferredEchoes(this);
 	if (options.updateFooter) {
@@ -1113,6 +1123,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	options: {
 		suppressCompactionBoundary?: VerbatimCompactionResult;
 		resetStartupDisclosure?: boolean;
+		preserveViewportInput?: boolean;
 	} = {},
 ): void {
 	// Generic rebuilds keep the same session: pending fd/rg callbacks still own
@@ -1126,7 +1137,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
-	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
+	this.renderSessionEntries(entries, options);
 	// A caller that suppresses the persisted boundary appends the live one, then the warning (appendProjectTrustWarning).
 	if (!options.suppressCompactionBoundary) renderProjectTrustWarningIfNeeded(this);
 	renderer.newMessages?.replaced(countChatMessages(this.chatContainer));

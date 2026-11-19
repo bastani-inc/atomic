@@ -160,6 +160,13 @@ function byteCount(bytes: number): string {
 	return `${bytes.toLocaleString("en-US")} bytes`;
 }
 
+let responseRefusals: WeakSet<object> | undefined;
+
+/** Recognizes a response refusal without inspecting the adapter's rejection (which can even be a revoked proxy). */
+export function isStorageResponseRefusal(error: unknown): error is StoragePayloadTooLargeError {
+	return responseRefusals?.has(error as object) === true;
+}
+
 /**
  * The backend refused a payload larger than it accepts: a bound or computed value or row (a libSQL server's
  * `SQLITE_TOOBIG`, `ARGS_INVALID "string or blob too big"`, Postgres's `54000`), or a statement's response (a libSQL
@@ -198,6 +205,10 @@ export class StoragePayloadTooLargeError extends StorageError {
 		this.limitBytes = limitBytes;
 		this.actualBytes = actualBytes;
 		this.kind = kind;
+		if (kind === "response") {
+			responseRefusals ??= new WeakSet();
+			responseRefusals.add(this);
+		}
 		if (options.descriptor !== undefined) {
 			this.adapter = options.descriptor.adapter;
 			this.location = options.descriptor.location;

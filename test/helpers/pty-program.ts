@@ -53,7 +53,17 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 	};
 	const session = new PtySession();
 	const terminal = new Terminal({ cols: options.cols, rows: options.rows, allowProposedApi: true });
-	terminal.onData((data) => session.write(data));
+	let replyError: unknown;
+	const replies = terminal.onData((data) => {
+		try {
+			session.write(data);
+		} catch (error) {
+			// The child can exit before xterm parses its last device query and before the exit reaches JS.
+			// Deliver a failed reply to the next interaction that needs the PTY, not to an unrelated test's timer.
+			replyError = error;
+			replies.dispose();
+		}
+	});
 	const [command = "", ...leading] = [...options.args].reverse();
 	const exited = session
 		.start(
@@ -73,7 +83,8 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 				if (error === null && chunk) terminal.write(chunk);
 			},
 		)
-		.then((result) => ({ exitCode: result.exitCode, timedOut: result.timedOut === true }));
+		.then((result) => ({ exitCode: result.exitCode, timedOut: result.timedOut === true }))
+		.finally(() => replies.dispose());
 	const screen = () => {
 		const buffer = terminal.buffer.active;
 		const lines: string[] = [];
@@ -88,17 +99,23 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 	});
 	return {
 		exited,
-		write: (data) => session.write(data),
+		write: (data) => {
+			if (replyError !== undefined) throw replyError;
+			session.write(data);
+		},
 		screen,
 		async waitForScreen(predicate, timeoutMs, what) {
 			const deadline = Date.now() + timeoutMs;
 			while (!predicate(screen())) {
+				if (replyError !== undefined) throw replyError;
 				if (ended) throw new Error(`The program exited while waiting for ${what}. Screen:\n${screen()}`);
 				if (Date.now() >= deadline) throw new Error(`No ${what} within ${timeoutMs} ms. Screen:\n${screen()}`);
 				await sleep(SCREEN_POLL_MS);
 			}
 		},
 		kill: () => {
+			// xterm may still be parsing a device query from the last chunk after the native PTY stops.
+			replies.dispose();
 			if (!ended) session.kill();
 		},
 	};

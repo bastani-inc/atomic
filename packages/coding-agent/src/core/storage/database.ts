@@ -143,6 +143,8 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 * undefined, when this process cannot see the database's disk (a server, memory) or the file system does not say.
 	 */
 	freeBytes?(): Promise<number | undefined>;
+	/** Opens a separate handle on this same database for reads. It has its own call queue; the caller must close it. */
+	openReader?(): Promise<SqliteDatabase>;
 	transaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,

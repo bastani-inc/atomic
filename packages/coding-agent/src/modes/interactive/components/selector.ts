@@ -329,6 +329,19 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
+	restoreSelection(previous: SelectorState<T>): void {
+		const id = previous.getSelected()?.id;
+		const index = this.visible.findIndex((item) => item.id === id && !item.disabled);
+		if (index < 0) return;
+		if (
+			this.visible.length === previous.visible.length &&
+			this.visible.every((item, i) => item.id === previous.visible[i]?.id)
+		) {
+			this.top = previous.getTop();
+		}
+		this.select(index);
+	}
+
 	select(index: number): void {
 		if (!Number.isInteger(index) || index < 0 || index >= this.visible.length || this.visible[index]?.disabled)
 			return;
@@ -630,6 +643,21 @@ export class Selector<T> implements Component, Focusable {
 			}
 		}
 		this.state.setItems(items, preferId);
+		this.notifySelectionChange();
+	}
+
+	/** Carry navigation, not the old rows or their callbacks, into a refreshed picker. */
+	restoreNavigation(previous: Selector<T>, keepHighlight: boolean): void {
+		if (this.input && previous.input) {
+			this.input = previous.input;
+			this.state.setQuery(this.input.getValue());
+		}
+		if (keepHighlight || this.state.getQuery()) this.state.restoreSelection(previous.state);
+		this.showingHelp = previous.showingHelp;
+		this.mousePressed = previous.mousePressed;
+		this.focused = previous.focused;
+		// Reapply a user's preview even if that row is also the new configured default.
+		if (keepHighlight) this.selectedId = undefined;
 		this.notifySelectionChange();
 	}
 

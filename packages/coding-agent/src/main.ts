@@ -68,7 +68,7 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
-import { startupProjectTrust } from "./core/project-trust-state.ts";
+import { pendingProjectResourcesTrusted, startupProjectTrust } from "./core/project-trust-state.ts";
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
@@ -828,6 +828,13 @@ export async function main(argv: string[], options?: MainOptions) {
 			!isolateInteractiveHost &&
 			(trustPromptMode === "interactive" || engineEnv.child === "1") &&
 			(shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0);
+		// Only the CLI that prepared these settings owns startup edits. An unbound engine transport need not have
+		// any local settings to deliver trust-prompt events.
+		if (
+			(isolateInteractiveHost && sessionStartEvent === undefined) ||
+			(deferStartupTrust && shouldResolveProjectTrust)
+		)
+			runtimeSettingsManager.trackEditsWhileProjectTrustPending(true);
 		let completeStartupReload: (() => Promise<void>) | undefined;
 		let startupTrustContext: typeof projectTrustContext;
 		// While a deferred startup decision is still to come, the settings read the project untrusted to load only what
@@ -910,6 +917,7 @@ export async function main(argv: string[], options?: MainOptions) {
 								: undefined,
 							onProjectTrustResolved: async () => {
 								startupTrustPending = false;
+								runtimeSettingsManager.trackEditsWhileProjectTrustPending(false);
 								await finalizeStartupStorage();
 								engineLiveness?.projectTrustResolved();
 							},
@@ -1069,15 +1077,39 @@ export async function main(argv: string[], options?: MainOptions) {
 					customTools: sessionOptions.customTools,
 				},
 				!isolateInteractiveHost && !deferStartupTrust,
+				appMode === "print" &&
+					!offlineMode &&
+					!parsed.model &&
+					!parsed.provider &&
+					!parsed.models &&
+					!parsed.apiKey,
 			);
 			startupSession = created.session;
+			let hasStartupTrustHook: boolean | undefined;
 			services.projectTrust = {
 				get pending() {
 					return startupTrustPending;
 				},
+				get resourcesTrusted() {
+					return pendingProjectResourcesTrusted({
+						decide: startupTrust.decide,
+						startedTrusted: initialProjectTrusted,
+						// Without a session decision when startup began, one in the cache now was made by this startup.
+						decided: startupTrust.decide ? projectTrustByCwd.get(cwd) : undefined,
+						saved: storedProjectTrust,
+						// Check the bound hooks at the first authority report, not on every state poll.
+						get hasTrustHook() {
+							hasStartupTrustHook ??= services.resourceLoader
+								.getExtensions()
+								.extensions.some((extension) => (extension.handlers.get("project_trust")?.length ?? 0) > 0);
+							return hasStartupTrustHook;
+						},
+					});
+				},
 				abandon() {
 					// No decision is coming any more: the session stays as untrusted as its settings read.
 					startupTrustPending = false;
+					runtimeSettingsManager.trackEditsWhileProjectTrustPending(false);
 				},
 				decisions: projectTrustByCwd,
 				extensionSourceDecisions: borrowedExtensionSourceTrustByPath,
