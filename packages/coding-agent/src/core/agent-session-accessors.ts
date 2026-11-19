@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { finalizeProjectedMessages, repairUniquifiedMessages } from "./agent-session-boundaries.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { uniquifyToolCallIds } from "./context-tool-pairing.ts";
+import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
 import type { SessionProjection } from "./session-manager-types.ts";
