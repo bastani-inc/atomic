@@ -618,7 +618,7 @@ describe("agent-decided workflow execution guidance", () => {
 			"Do not choose an ad hoc model merely for diversity",
 			'`model: "auto"`, which the builtin agents declare, runs the user\'s configured default model',
 			"or the current session's model when no default is configured",
-			'workflow({ action: "models" })',
+			'subagent({ action: "models" })',
 			"Pin only a returned fullId",
 			"thinking level listed for that entry",
 			"no catalog model fits",
