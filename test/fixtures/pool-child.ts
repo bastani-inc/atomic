@@ -1,11 +1,22 @@
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
-import { readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
 import { workflow } from "@bastani/atomic/workflows";
 import { poolStageOptions } from "./pool-stage-options.js";
 import { processIdentity, processInstance } from "./process-instance.js";
+
+export const exitChild = workflow({
+	name: "pool-exit-child", description: "Exits after the root sees it running", inputs: { release: Type.String(), length: Type.Number() }, outputs: {},
+	async run(ctx) {
+		await ctx.tool("wait", {}, async () => {
+			while (!existsSync(ctx.inputs.release)) await delay(25);
+			return true;
+		});
+		return ctx.exit({ status: "completed", reason: "x".repeat(ctx.inputs.length), outputs: {} });
+	},
+});
 
 const leaf = workflow({
 	name: "pool-leaf", description: "", inputs: {}, outputs: { pid: Type.Number() },

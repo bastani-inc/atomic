@@ -74,11 +74,7 @@ import {
 	WorkerStartupError,
 	WorkerStartupTimeoutError,
 } from "../shared/workflow-infrastructure-error.js";
-import {
-	authoritativeWorkflowChildRunId,
-	findSnapshotRun,
-	findSnapshotStage,
-} from "../shared/workflow-run-ownership.js";
+import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
 import { workerProcessExited } from "./admission-host.js";
 import { assertRouteOwned } from "./attempt-view.js";
 import { CheckpointShipping } from "./checkpoint-shipping.js";
@@ -319,22 +315,33 @@ function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
 	return failedOnPoolFault(result) || refusedAtChildStart(result);
 }
 
+/** Nested child links in a full publication. False means its parent is present but does not name the child;
+ * undefined means the child does not identify a parent stage in this publication. Only checked on the repair path. */
+function publishedChildLinks(runs: readonly RunSnapshot[], root: string): Map<string, boolean | undefined> {
+	const links = new Map<string, Map<string, string | undefined>>();
+	for (const parent of runs) {
+		const stages = new Map<string, string | undefined>();
+		for (const stage of parent.stages)
+			if (!stages.has(stage.id)) stages.set(stage.id, authoritativeWorkflowChildRunId(stage));
+		if (!links.has(parent.id)) links.set(parent.id, stages);
+	}
+	const children = new Map<string, boolean | undefined>();
+	for (const { id, parentRunId, parentStageId } of runs) {
+		if (parentRunId === root || children.has(id)) continue;
+		const stages = parentRunId === undefined ? undefined : links.get(parentRunId);
+		children.set(
+			id,
+			stages === undefined || parentStageId === undefined ? undefined : stages.get(parentStageId) === id,
+		);
+	}
+	return children;
+}
+
 /**
  * What a view of a stage on another host's worker opens with (#4391): the stage's status and session from its relayed
  * run, and no transcript, since none streams from that host. Its session and turn read as started, so text sent to it
  * goes out at once; the host holds it until the stage can take it.
  */
-/** Whether a published nested run's parent names it; undefined for a missing run or a parent outside the publication. */
-function publishedChildLink(runs: readonly RunSnapshot[], runId: string): boolean | undefined {
-	const child = findSnapshotRun(runs, runId);
-	const parentId = child?.parentRunId;
-	const stageId = child?.parentStageId;
-	if (parentId === undefined || stageId === undefined) return undefined;
-	const parent = findSnapshotRun(runs, parentId);
-	if (parent === undefined) return undefined;
-	return authoritativeWorkflowChildRunId(findSnapshotStage(parent.stages, stageId)) === runId;
-}
-
 function remoteStageSnapshot(stage: StageSnapshot): PooledStageChatSnapshot {
 	return {
 		canPause: false,
@@ -568,6 +575,8 @@ interface WorkerSlot {
 	readonly deliveries: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
 	/** Runs the current attempt published, so a stage watch can find the worker that runs it. */
 	readonly runs: Set<string>;
+	/** Refused link sets for which this lease already offered a correction. */
+	retriedLinks?: Set<string>;
 	/** Stage commands awaiting the worker's result; undefined resolves a worker that exited. */
 	readonly stageCommands: Map<number, (result: StageCommandResult | undefined) => void>;
 	/** Ends the worker's attempt as its exit does; called for a worker that SIGKILL did not end within the bound. */
@@ -704,7 +713,12 @@ export class PoolCoordinator {
 	/** The root's refusal of each work's latest refused publication, bound to the attempt that published it. */
 	private readonly publicationFailures = new Map<
 		string,
-		{ readonly generation: number; readonly error: Error; readonly unlinkedChild?: string }
+		{
+			readonly generation: number;
+			readonly error: Error;
+			readonly missing?: readonly string[];
+			offered?: PoolWorkToken;
+		}
 	>();
 	private readonly requests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	private readonly deliveryRequests = new Map<number, { readonly slot: WorkerSlot; readonly workerRequest: number }>();
@@ -984,15 +998,18 @@ export class PoolCoordinator {
 					continue;
 				}
 				const refused = publications?.get(entry.workId);
-				const unlinkedChild =
+				let missing: string[] | undefined;
+				if (
 					isPublicationRejectedError(error) &&
 					error.reason === "outside-subtree" &&
 					error.runId !== undefined &&
-					refused?.work.generation === entry.generation &&
-					publishedChildLink(refused.runs, error.runId) === false
-						? error.runId
-						: undefined;
-				this.publicationFailures.set(entry.workId, { generation: entry.generation, error, unlinkedChild });
+					refused?.work.generation === entry.generation
+				) {
+					const links = publishedChildLinks(refused.runs, this.root!);
+					if (links.get(error.runId) === false)
+						missing = [...links].flatMap(([id, linked]) => (linked ? [] : [id])).sort();
+				}
+				this.publicationFailures.set(entry.workId, { generation: entry.generation, error, missing });
 			}
 			if (this.routes !== undefined || this.publicationFailures.size > 0) {
 				const entries = batch?.entries ?? [];
@@ -1001,13 +1018,9 @@ export class PoolCoordinator {
 						? entries
 						: entries.filter((entry) => rejected.get(entry.work.id)?.generation !== entry.work.generation);
 				if (this.publicationFailures.size > 0)
-					for (const { work, runs } of accepted) {
+					for (const { work } of accepted) {
 						const failure = this.publicationFailures.get(work.id);
-						if (
-							failure?.generation === work.generation &&
-							failure.unlinkedChild !== undefined &&
-							publishedChildLink(runs, failure.unlinkedChild)
-						)
+						if (failure?.generation === work.generation && failure.offered === work)
 							this.publicationFailures.delete(work.id);
 					}
 				this.routes?.accept(accepted);
@@ -1615,6 +1628,7 @@ export class PoolCoordinator {
 		this.fleetRates?.releaseWorker(slot.worker);
 		if (work !== undefined) this.forgetProgress(work);
 		slot.work = undefined;
+		slot.retriedLinks = undefined;
 		slot.worktree = undefined;
 		this.places.end(slot);
 		this.gateOpened();
@@ -1972,21 +1986,35 @@ export class PoolCoordinator {
 	}
 
 	/** Records the latest activity of one attempt; the root receives it with the next summary. */
-	private publish(work: PoolWork, runs: readonly RunSnapshot[]): void {
+	private publish(slot: WorkerSlot, work: PoolWork, runs: readonly RunSnapshot[]): void | Promise<void> {
+		const entry = { work: token(work), runs };
 		const failure = this.publicationFailures.get(work.id);
 		if (failure?.generation === work.generation) {
-			if (failure.unlinkedChild === undefined || !publishedChildLink(runs, failure.unlinkedChild))
-				throw failure.error;
-			// No delta may use the refused publication as its base. The refusal remains until the root accepts the correction.
+			if (failure.missing === undefined) throw failure.error;
+			const links = publishedChildLinks(runs, this.root!);
+			if (!failure.missing.every((id) => links.get(id)) || ![...links.values()].every(Boolean)) throw failure.error;
+			if (failure.offered !== undefined) {
+				// The worker advanced while its correction was in flight. Its next change needs the accepted base.
+				return this.flush().then(() => {
+					this.assertPublished(work);
+					if (this.attemptIsLive(slot, work)) return this.publish(slot, work, runs);
+				});
+			}
+			const key = JSON.stringify(failure.missing);
+			slot.retriedLinks ??= new Set();
+			if (slot.retriedLinks.has(key)) throw failure.error;
+			slot.retriedLinks.add(key);
+			failure.offered = entry.work;
+			// No delta may use the refused publication as its base.
 			this.sentRuns.forget(work.id);
 		}
 		// A worker host relays its attempts' activity to the root through the shared journal.
 		if (this.satellite !== undefined) {
-			this.relayPending.set(work.id, { work: token(work), runs });
+			this.relayPending.set(work.id, entry);
 			return;
 		}
 		if (!this.publishing) return;
-		this.pendingActivity.set(work.id, { work: token(work), runs });
+		this.pendingActivity.set(work.id, entry);
 		this.scheduleFlush();
 	}
 
@@ -3038,7 +3066,7 @@ export class PoolCoordinator {
 					if (work !== held) await this.holdShipping(slot, work, options.leaseMs);
 					if (message.kind === "activity") {
 						for (const run of message.runs) slot.runs.add(run.id);
-						return this.publish(work, message.runs);
+						return this.publish(slot, work, message.runs);
 					}
 					if (message.kind === "stage-workspace") {
 						const shared = this.sharedPool;

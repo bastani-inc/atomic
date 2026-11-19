@@ -101,9 +101,6 @@ export function _buildStageSnapshots(
 				if ((status === "failed" || status === "skipped") && typeof entry.payload.startedChildRunId === "string")
 					snap.startedChildRunId = entry.payload.startedChildRunId;
 				else delete snap.startedChildRunId;
-				if ((status === "failed" || status === "skipped") && entry.payload.childStartAbsent === true)
-					snap.childStartAbsent = true;
-				else delete snap.childStartAbsent;
 				if (typeof durationMs === "number") snap.durationMs = durationMs;
 				if (typeof entry.payload.endedAt === "number") snap.endedAt = entry.payload.endedAt;
 				if (typeof summary === "string") snap.result = summary;

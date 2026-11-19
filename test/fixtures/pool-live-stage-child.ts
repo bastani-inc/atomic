@@ -5,6 +5,18 @@ import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import { poolStageOptions } from "./pool-stage-options.js";
 
+export const failedChild = workflow({
+	name: "pool-failed-stage-child",
+	description: "Fails after its agent stage has a session",
+	inputs: {},
+	outputs: {},
+	async run(ctx) {
+		const options = await poolStageOptions(ctx.cwd!, false, process.pid);
+		await ctx.stage("agent", options as never).complete("Produce an answer");
+		throw new Error("failed after the agent stage");
+	},
+});
+
 /** Text the stage streams before it holds mid-turn, and after the test releases it. */
 export const LIVE_STAGE_FIRST_DELTA = "streamed-before-hold ";
 export const LIVE_STAGE_SECOND_DELTA = "streamed-after-release";

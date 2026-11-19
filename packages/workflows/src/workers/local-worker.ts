@@ -806,6 +806,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						toolNodes: _tools,
 						result: _output,
 						error: _error,
+						exitReason: _exitReason,
 						pendingStageMessages: _pending,
 						...childRun
 					} = child;

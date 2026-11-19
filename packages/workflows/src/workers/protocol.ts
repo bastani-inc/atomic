@@ -63,7 +63,7 @@ export type PooledRunResult = RunResult & {
 	/** Only a child that started has a run. Inputs come from the work; stages, tools and outputs from the result. */
 	readonly childRun?: Omit<
 		RunSnapshot,
-		"inputs" | "stages" | "toolNodes" | "result" | "error" | "pendingStageMessages"
+		"inputs" | "stages" | "toolNodes" | "result" | "error" | "exitReason" | "pendingStageMessages"
 	>;
 	readonly childExecution?: RunSnapshot["stages"][number]["workerExecution"];
 };

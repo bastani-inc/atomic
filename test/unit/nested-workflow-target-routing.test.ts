@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { Key } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { run as runWorkflow } from "../../packages/workflows/src/engine/run.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
@@ -24,14 +23,11 @@ import {
 import { aggregateWorkflowRootRunId } from "../../packages/workflows/src/runs/background/workflow-lifecycle-aggregate.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import type { NormalizedSessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
-import { restoreTerminalRuns } from "../../packages/workflows/src/shared/persistence-restore-helpers.js";
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
-import { bindChildWorkerDispatcher } from "../../packages/workflows/src/workers/dispatch.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -263,104 +259,6 @@ describe("nested workflow stage target routing", () => {
 		} finally {
 			if (previousGuard === undefined) delete process.env.ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD;
 			else process.env.ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD = previousGuard;
-		}
-	});
-
-	test("a call refused before its child starts cannot reopen a retained pooled stage (#5647)", async () => {
-		const rootId = fixtureRunId("refused-before-start");
-		const previous = fixtureRunId("earlier-attempt");
-		const local = createStore();
-		const backend = await createMemoryTestBackend();
-		const child = workflow({
-			name: "child-before-start",
-			description: "",
-			inputs: {},
-			outputs: {},
-			run: async () => ({}),
-		});
-		const parent = workflow({
-			name: "root-before-start",
-			description: "",
-			inputs: {},
-			outputs: {},
-			run: async (ctx) => {
-				await ctx.workflow(child);
-				return {};
-			},
-		});
-		const entries: NormalizedSessionEntry[] = [];
-		const unbind = bindChildWorkerDispatcher(backend, {
-			validateOptions() {},
-			async run() {
-				throw new Error("refused before start");
-			},
-		});
-		try {
-			const result = await runWorkflow(
-				parent,
-				{},
-				{
-					runId: rootId,
-					store: local,
-					durableBackend: backend,
-					persistence: {
-						appendEntry(type, payload) {
-							const id = String(entries.length);
-							entries.push({ id, type, payload: JSON.parse(JSON.stringify(payload)) });
-							return id;
-						},
-					},
-					onStageStart(owner, boundary) {
-						// The previous invocation left a stage under the same root and boundary in the session's store.
-						local.recordRunStart(
-							run({
-								id: previous,
-								name: "previous",
-								parentRunId: owner,
-								parentStageId: boundary.id,
-								rootRunId: owner,
-								stages: [
-									{
-										...stage("old-id", "old-stage"),
-										workerExecution: { worker: "previous-worker", generation: 1, renewedAt: 1, expiresAt: 2 },
-									},
-								],
-							}),
-						);
-					},
-				},
-			);
-			assert.equal(result.status, "failed");
-			assert.match(result.error ?? "", /refused before start/);
-			const old = local.run(previous)!;
-			assert.equal(old.parentStageId, result.stages[0]?.id);
-			const fromSession = createStore();
-			restoreTerminalRuns(entries, fromSession);
-			const fromJournal = createStore();
-			for (const snapshot of durableWorkflowRunSnapshots(backend, backend.getWorkflow(rootId)!))
-				fromJournal.recordRunStart(snapshot);
-			for (const [label, view] of [
-				["live", local],
-				["session", fromSession],
-				["journal", fromJournal],
-			] as const) {
-				assert.equal(view.run(rootId)?.stages[0]?.status, "failed", label);
-				view.recordRunStart(old);
-				const target = resolveStageTarget(rootId, "old-stage", view);
-				assert.ok(!target.ok, `${label}: a new invocation must not select the previous child's chat`);
-				assert.equal(target.code, "stage_not_found");
-			}
-			// An older saved call recorded just a failed boundary. Its one retained pooled stage is still reachable.
-			const legacy = createStore();
-			legacy.recordRunStart(
-				run({ id: rootId, name: "root", stages: [{ ...stage(old.parentStageId!), status: "failed" }] }),
-			);
-			legacy.recordRunStart(old);
-			const target = resolveStageTarget(rootId, "old-stage", legacy);
-			assert.ok(target.ok, "the older saved call keeps its chat");
-			assert.equal(target.runId, previous);
-		} finally {
-			unbind();
 		}
 	});
 

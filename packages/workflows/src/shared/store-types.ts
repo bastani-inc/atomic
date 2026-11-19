@@ -489,8 +489,6 @@ export interface StageSnapshot {
 	workflowChildRun?: WorkflowChildRunRef;
 	/** The child that actually started under a failed or skipped boundary. Not a replayable result. */
 	startedChildRunId?: string;
-	/** This invocation checked for a started child and found none. Older boundaries did not record this distinction. */
-	childStartAbsent?: true;
 	/** Snapshot-safe child workflow result metadata for continuation replay of import boundaries. */
 	workflowChild?: WorkflowChildReplaySnapshot;
 	readonly toolEvents: ToolEvent[];

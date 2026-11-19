@@ -252,7 +252,6 @@ export type DurableWorkflowBoundaryTopology = DurableWorkflowBoundaryIdentity &
 				readonly event: "terminal";
 				/** A failed or skipped boundary's child actually ran, though there is no replayable child result. */
 				readonly startedChildStatus?: RunStatus;
-				readonly childStartAbsent?: true;
 				readonly status: Extract<DurableStageLifecycleStatus, "completed" | "failed" | "skipped">;
 		  }
 	);
