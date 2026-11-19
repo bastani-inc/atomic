@@ -24,6 +24,7 @@ import type { PendingPrompt, StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt, stageTimingFields } from "../../shared/timing.js";
 import type { StageOptions, WorkflowArtifact } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
+import { runAttachmentOwner } from "../../shared/workflow-run-ownership.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
 import { sleepOrAbort } from "../shared/retry.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
@@ -241,6 +242,8 @@ export function createWorkflowStageFactory(input: {
 		});
 
 		if (shouldReplay) {
+			// The replay has no live UI, but it supersedes the earlier attempt's producer.
+			input.stageUiBroker.claimStage(input.runId, stageId).release();
 			if (options !== undefined && restoresStagePaths(input.mapRestoredOptions, options))
 				void input.mapRestoredOptions(options).then(
 					(mapped) => setStageWorkingDirectory(stageSnapshot, mapped.cwd),
@@ -478,9 +481,19 @@ export function createWorkflowStageFactory(input: {
 				throw error;
 			}
 		});
+		const currentRunOwner = () => {
+			const run = input.activeStore.run(input.runId);
+			return run && runAttachmentOwner(run);
+		};
+		const owningRun = currentRunOwner();
+		const uiOwner = input.stageUiBroker.claimStage(input.runId, stageId, {
+			store: input.activeStore,
+			record: stageSnapshot,
+		});
 		const innerCtx = createInnerStageContext({
 			stageId,
 			stageName: name,
+			stageUiSignal: uiOwner.signal,
 			adapters: input.adapters,
 			runId: input.runId,
 			workflowIntercomGroup: input.workflowIntercomGroup,
@@ -552,7 +565,7 @@ export function createWorkflowStageFactory(input: {
 			activeAskUserQuestionCalls.size > 0 || state.activeAskUserQuestionAnonymousCalls > 0;
 		const unsubscribeAskUserQuestionWatcher = innerCtx.subscribe((event) => {
 			const toolEvent = askUserQuestionToolEvent(event);
-			if (!toolEvent) return;
+			if (!toolEvent || supersededBySuccessor()) return;
 			if (toolEvent.phase === "start") {
 				state.askUserQuestionObservedThisTurn = true;
 				state.latestUserMessage = undefined;
@@ -565,8 +578,9 @@ export function createWorkflowStageFactory(input: {
 					toolEvent.callId ?? `ask-user-question-${stageId}`,
 					"ask_user_question",
 					toolEvent.args as QuestionParams,
+					uiOwner.signal,
 				);
-				input.activeStore.recordStageAwaitingInput(input.runId, stageId, true);
+				if (!supersededBySuccessor()) input.activeStore.recordStageAwaitingInput(input.runId, stageId, true);
 				return;
 			}
 			if (toolEvent.callId !== undefined && activeAskUserQuestionCalls.has(toolEvent.callId)) {
@@ -582,7 +596,7 @@ export function createWorkflowStageFactory(input: {
 				toolResultChatText((event as Record<string, unknown>).result) ?? state.latestUserMessage;
 			if (!hasActiveAskUserQuestion()) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
-				input.stageUiBroker.clearStagePrompt(input.runId, stageId);
+				input.stageUiBroker.clearStagePrompt(input.runId, stageId, uiOwner.signal);
 			}
 		});
 		const unsubscribeQueuedUserMessageWatcher = innerCtx.subscribe(
@@ -610,6 +624,7 @@ export function createWorkflowStageFactory(input: {
 				});
 				return write;
 			},
+			uiOwner.signal,
 		);
 
 		/** This stage's control handle, once created; see {@link supersededBySuccessor}. */
@@ -622,7 +637,11 @@ export function createWorkflowStageFactory(input: {
 		 */
 		const supersededBySuccessor = (): boolean => {
 			const registered = input.stageRegistry.peek(input.runId, stageId);
-			return registered !== undefined && registered !== stageHandle;
+			return (
+				uiOwner.signal.aborted ||
+				currentRunOwner() !== owningRun ||
+				(registered !== undefined && registered !== stageHandle)
+			);
 		};
 		const disposeInnerContext = async (): Promise<void> => {
 			idleReleaser.unwatch(stageId);
@@ -633,8 +652,14 @@ export function createWorkflowStageFactory(input: {
 			state.activeAskUserQuestionAnonymousCalls = 0;
 			if (!supersededBySuccessor()) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
-				input.stageUiBroker.clearStagePrompt(input.runId, stageId);
+				input.stageUiBroker.cancelStagePrompt(
+					input.runId,
+					stageId,
+					new Error(`atomic-workflows: stage ${stageId} was released`),
+					uiOwner.signal,
+				);
 			}
+			uiOwner.release();
 			try {
 				await innerCtx.__dispose();
 			} finally {
@@ -646,7 +671,7 @@ export function createWorkflowStageFactory(input: {
 		const captureStageSessionMeta = async (checkpointOptions?: StageSessionCheckpointOptions): Promise<void> => {
 			const meta = innerCtx.__sessionMeta();
 			const changed = applySessionMetaToStage(stageSnapshot, meta);
-			if (meta.sessionId !== undefined)
+			if (meta.sessionId !== undefined && !supersededBySuccessor())
 				input.activeStore.recordStageSession(input.runId, stageId, { sessionId: meta.sessionId });
 			if (changed) announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
@@ -772,13 +797,14 @@ export function createWorkflowStageFactory(input: {
 			stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 			applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
 			if (artifacts !== undefined && artifacts.length > 0) stageSnapshot.artifacts = artifacts;
-			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
+			if (!supersededBySuccessor()) input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 			input.stageUiBroker.cancelStagePrompt(
 				input.runId,
 				stageId,
 				new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`),
+				uiOwner.signal,
 			);
-			input.stageUiBroker.clearStageStatuses(input.runId, stageId);
+			input.stageUiBroker.clearStageStatuses(input.runId, stageId, uiOwner.signal);
 			await persistStageEnd();
 			if (!isTerminalStage(stageSnapshot))
 				persistStageEndWhenRunEndsIt(input.activeStore, input.runId, stageSnapshot, persistStageEnd);
@@ -897,6 +923,7 @@ export function createWorkflowStageFactory(input: {
 			opts: input.opts,
 			stageRegistry: input.stageRegistry,
 			stageUiBroker: input.stageUiBroker,
+			stageUiSignal: uiOwner.signal,
 			scheduler: input.scheduler,
 			signal: input.signal,
 			exit: input.exit,
@@ -1013,6 +1040,7 @@ export function createWorkflowStageFactory(input: {
 				return { calls: waiting.calls, session };
 			},
 			evict: () => {
+				uiOwner.release();
 				unreachableStageContexts.unregister(state);
 				unregisterStageDialogJournal();
 				runtime.unregisterStageHandle();

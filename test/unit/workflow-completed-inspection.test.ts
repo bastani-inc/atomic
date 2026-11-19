@@ -368,7 +368,7 @@ describe("completed workflow inspection", () => {
 			assert.equal(run.created(), 2, "each reopening built the session once");
 		});
 
-		test("opening the run again while a stage chat is attached does not keep the session after the chat closes", async () => {
+		test("opening the run again keeps an attached stage’s conversation usable until its chat closes (#5577)", async () => {
 			const run = await inspected();
 			const detach = run.handle.subscribe(() => {});
 			await run.handle.sendUserMessage?.("what did you change?");
@@ -383,7 +383,16 @@ describe("completed workflow inspection", () => {
 			});
 			assert.equal(reopened.ok, true);
 			assert.equal(run.registry.get(run.runId, "final-source"), run.handle, "the attached handle is kept as is");
-
+			const resolved = await createPostMortemHandleResolver({
+				store: run.store,
+				stageControlRegistry: run.registry,
+				adapters: run.adapters,
+				resolveDefaultStageSessionDir: () => undefined,
+			})(run.runId, "final-source");
+			assert.ok(resolved?.ok, "the refreshed row still owns this registry entry");
+			assert.equal(resolved.handle, run.handle);
+			await resolved.handle.prompt("still the same conversation");
+			assert.equal(run.prompts.at(-1), "still the same conversation");
 			detach();
 			await untilReleased(run);
 		});

@@ -26,6 +26,7 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { normalizeBuildSystemPromptOptions } from "../system-prompt.ts";
 import { presentQuestionnaire } from "../tools/ask-user-question/ask-user-question.js";
 import type { ProjectHistory } from "../tools/history-protocol.ts";
+import { bindBuiltinChildRecordSession } from "./builtin-subagent-record-writer.js";
 import {
 	assertExtensionAction,
 	bindExtensionWork,
@@ -226,8 +227,9 @@ export class ExtensionRunner {
 	private taskHostBinding: (() => import("../tasks/agent-adapter.js").AgentTaskHost) | undefined;
 	private inheritedHistory: ProjectHistory | undefined;
 	/** @internal Attach dispatch receipts to the owning session before startup. */
-	bindWorkOwner(owner: object): void {
+	bindWorkOwner(owner: { readonly sessionManager: SessionManager; readonly _disposed: boolean }): void {
 		bindExtensionWork(this.runtime, owner);
+		bindBuiltinChildRecordSession(this.runtime, owner);
 	}
 	bindTaskHost(binding: () => import("../tasks/agent-adapter.js").AgentTaskHost): void {
 		this.taskHostBinding = binding;
