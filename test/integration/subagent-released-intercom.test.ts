@@ -18,12 +18,14 @@ import {
 } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import {
+	acknowledgeReleasedChildWake,
 	INTERCOM_CONNECTED_EVENT,
 	type ReleasedChildReservation,
 	releasedChildReservation,
 	reserveReleasedChildren,
 	reserveReleasedChildrenOf,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
+	SUBAGENT_HOLD_RECOVERED_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
@@ -603,11 +605,14 @@ async function reservingOwner(label: string) {
 }
 
 /** Hold back the outcome of the next reservation request on `events` until `release` is called. */
-function holdNextReservationOutcome(events: ReturnType<typeof eventBus>) {
+function holdNextReservationOutcome(
+	events: ReturnType<typeof eventBus>,
+	eventName = SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
+) {
 	const refused = Promise.withResolvers<string | undefined>();
 	const allowed = Promise.withResolvers<void>();
 	let armed = true;
-	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (payload) => {
+	events.on(eventName, (payload) => {
 		if (!armed) return;
 		armed = false;
 		const request = payload as ObservedReservation;
@@ -738,6 +743,38 @@ test(
 		await earlier;
 
 		assert.deepEqual(owner.notices, [], "the broker holds the child: the overtaken refusal is not reported");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a delayed wake confirmation refusal stays quiet after reconnect reserves the same release (#5641)",
+	async () => {
+		const owner = await reservingOwner("confirmation-owner");
+		const name = "subagent-confirmation-1";
+		owner.record(name);
+		owner.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (payload) => {
+			const request = payload as { childName: string; completion?: Promise<void> };
+			request.completion = owner.client.acknowledgeReleasedChildWake(request.childName);
+		});
+		const hold = holdNextReservationOutcome(owner.events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT);
+		const confirm = () => acknowledgeReleasedChildWake(owner.events, name, "task-1");
+		const pending = confirm();
+		try {
+			assert.equal(await hold.refusedWith, "unknown_released_child");
+			const recovered = Promise.withResolvers<void>();
+			owner.events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => recovered.resolve());
+			owner.events.emit(INTERCOM_CONNECTED_EVENT, {});
+			await recovered.promise;
+			await confirm();
+		} finally {
+			hold.release();
+			await pending;
+		}
+		assert.deepEqual(owner.notices, []);
+		await owner.client.dropReleasedChildren([name]);
+		await confirm();
+		assert.deepEqual(owner.notices.map(namedIn), [name], "a genuinely unheld release still reports its refusal");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
