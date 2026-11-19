@@ -10,9 +10,15 @@ import type {
 	SqliteExecutor,
 	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
+import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
+import {
+	ensureForkStagingTable,
+	FORK_STAGING_CLEANUP_ROWS,
+	FORK_STAGING_OPEN_CLEANUPS,
+} from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
 	SESSION_BLOB_CHUNK_BYTES,
@@ -279,14 +285,14 @@ interface Ledger {
 /**
  * `database` as one handle a store opens: with `ledger`, records a statement or transaction that starts while another
  * handle holds a transaction open, which on one queued connection would wait on itself; with `pause`, a statement
- * inside a transaction first waits for what `pause` returns for its SQL.
+ * first waits for what `pause` returns for its SQL and whether it runs inside a transaction.
  */
 function instrumented(
 	database: SqliteDatabase,
 	options: {
 		readonly name?: string;
 		readonly ledger?: Ledger;
-		readonly pause?: (sql: string) => Promise<void> | undefined;
+		readonly pause?: (sql: string, inTransaction: boolean) => Promise<void> | undefined;
 	},
 ): SqliteDatabase {
 	const { name = "", ledger, pause } = options;
@@ -303,7 +309,7 @@ function instrumented(
 				if (key === "get" || key === "all" || key === "run" || key === "exec")
 					return async (...args: unknown[]) => {
 						enter(`${String(key)} ${String(args[0]).slice(0, 60)}`);
-						const wait = inTransaction ? pause?.(String(args[0])) : undefined;
+						const wait = pause?.(String(args[0]), inTransaction);
 						if (wait !== undefined) await wait;
 						return Reflect.apply(value, target, args);
 					};
@@ -526,7 +532,8 @@ for (const backend of storageBackends) {
 					const publication = new RegExp(`^DELETE FROM ${staging} WHERE transfer_id = \\?$`);
 					const dest = await SqlSessionStore.open(
 						instrumented(await scope.connect(), {
-							pause: (sql) => (publication.test(sql) ? publishing.wait() : undefined),
+							pause: (sql, inTransaction) =>
+								inTransaction && publication.test(sql) ? publishing.wait() : undefined,
 						}),
 						{ prefix: destPrefix },
 					);
@@ -669,6 +676,133 @@ for (const backend of storageBackends) {
 					assert.equal(await stagedRows(destDb, destPrefix), 0);
 					assert.equal(await dest.readHeader("child"), undefined);
 					assert.deepEqual(await listedIds(dest), []);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"each open removes a bounded share of a stopped clone's rows and never a live clone's",
+			() =>
+				withScope(async (scope) => {
+					const destPrefix = `${scope.prefix}d_`;
+					const database = await scope.connect();
+					await (await SqlSessionStore.open(database, { prefix: destPrefix })).close();
+					const table = stagingTable(destPrefix);
+					await ensureForkStagingTable(database, dialectOf(database), table);
+					const rows = 3 * FORK_STAGING_OPEN_CLEANUPS * FORK_STAGING_CLEANUP_ROWS;
+					await database.transaction(async (tx) => {
+						for (const [transfer, size] of [
+							["stopped", 0],
+							["live", Number.MAX_SAFE_INTEGER],
+						] as const) {
+							await tx.run(
+								`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, 0, 0, 0, 'child', ?, 'token')`,
+								transfer,
+								size,
+							);
+							for (let seq = 1; seq <= rows; seq++)
+								await tx.run(
+									`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, 1, ?, 0, ?, 0, '{}')`,
+									transfer,
+									seq,
+									`e${seq}`,
+								);
+						}
+					});
+					const left = async (transfer: string) =>
+						Number((await database.get(`SELECT count(*) AS n FROM ${table} WHERE transfer_id = ?`, transfer))!.n);
+					let opens = 0;
+					for (let before = await left("stopped"); before > 0; opens++) {
+						await (await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix })).close();
+						const after = await left("stopped");
+						assert.ok(after < before, "every open makes progress");
+						assert.ok(
+							before - after <= FORK_STAGING_OPEN_CLEANUPS * FORK_STAGING_CLEANUP_ROWS,
+							`one open removed ${before - after} rows`,
+						);
+						before = after;
+					}
+					assert.ok(opens > 1, `the cleanup took ${opens} opens`);
+					assert.equal(await left("live"), rows + 1, "a clone whose lease runs keeps every row");
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"a role that may not create the staging table clones as main did; any other failure to create it fails the clone",
+			() =>
+				withScope(async (scope) => {
+					const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
+					await seedSource(source, "src", "privileges");
+					const mainDb = await scope.connect();
+					const mainDest = await SqlSessionStore.open(mainDb, { prefix: `${scope.prefix}m_` });
+					await mainClone(source, "src", mainDest, header("child", "src"));
+					/** A store on `prefix` whose creation of the staging table is refused with `refusal()`; `meanwhile` runs
+					 * between the refusal and the next look for the table. */
+					const refusing = async (prefix: string, refusal: () => Error, meanwhile?: () => Promise<void>) => {
+						const database = await scope.connect();
+						const create = new RegExp(`^\\s*CREATE TABLE IF NOT EXISTS ${stagingTable(prefix)} `);
+						const look = dialectOf(database).tableExists(stagingTable(prefix)).sql;
+						let refused = false;
+						const pause = (sql: string, inTransaction: boolean) => {
+							if (inTransaction && create.test(sql)) {
+								refused = true;
+								return Promise.reject(refusal());
+							}
+							if (!inTransaction && refused && sql === look) {
+								refused = false;
+								return meanwhile?.();
+							}
+							return undefined;
+						};
+						return { database, store: await SqlSessionStore.open(instrumented(database, { pause }), { prefix }) };
+					};
+					const denied = () =>
+						Object.assign(new Error("permission denied for schema"), { reason: "missing-privilege" });
+
+					// No privilege and no table: main's clone, byte for byte, with one hint.
+					const lowPrefix = `${scope.prefix}p_`;
+					const low = await refusing(lowPrefix, denied);
+					const warnings: string[] = [];
+					const warned = (warning: Error) => warnings.push(warning.message);
+					process.on("warning", warned);
+					try {
+						const fallback = await stagedClone(source, "src", low.store, header("child", "src"));
+						assert.ok(fallback.created.remainingBlobs.length > 1, "main copies the blobs after the child");
+						await new Promise((resolve) => setImmediate(resolve));
+					} finally {
+						process.off("warning", warned);
+					}
+					assert.ok(warnings.length <= 1, warnings.join("\n"));
+					assert.deepEqual(
+						await stored(low.database, lowPrefix, "child"),
+						await stored(mainDb, `${scope.prefix}m_`, "child"),
+					);
+					const probe = dialectOf(low.database).tableExists(stagingTable(lowPrefix));
+					assert.equal(await low.database.get(probe.sql, ...probe.params), undefined);
+
+					// Another failure to create it fails the clone, and nothing is published.
+					const brokenPrefix = `${scope.prefix}b_`;
+					const failure = new Error("disk full");
+					const broken = await refusing(brokenPrefix, () => failure);
+					await assert.rejects(
+						stagedClone(source, "src", broken.store, header("child", "src")),
+						(error) => error === failure,
+					);
+					assert.equal(await broken.store.readHeader("child"), undefined);
+
+					// Refused, but created meanwhile by a role that may: the clone is staged into it.
+					const racedPrefix = `${scope.prefix}c_`;
+					const raced = await refusing(racedPrefix, denied, async () => {
+						const owner = await scope.connect();
+						await ensureForkStagingTable(owner, dialectOf(owner), stagingTable(racedPrefix));
+					});
+					const staged = await stagedClone(source, "src", raced.store, header("child", "src"));
+					assert.equal(staged.created.remainingBlobs.length, 1, "only the blob the source lacks is left over");
+					assert.deepEqual(
+						await stored(raced.database, racedPrefix, "child"),
+						await stored(mainDb, `${scope.prefix}m_`, "child"),
+					);
 				}),
 			SERVER_TIMEOUT_MS,
 		);
