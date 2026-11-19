@@ -57,7 +57,6 @@ export async function collectFiles(
 	skipNodeModules = true,
 	ignoreMatcher?: IgnoreMatcher,
 	rootDir?: string,
-	excludeTopLevel?: ReadonlySet<string>,
 ): Promise<string[]> {
 	const files: string[] = [];
 	if (!(await exists(dir))) return files;
@@ -69,7 +68,6 @@ export async function collectFiles(
 		for (const entry of entries) {
 			await yieldToEventLoopIfSlow(startedAt, RESOURCE_DISCOVERY_YIELD_AFTER_MS);
 			if (entry.name.startsWith(".") || (skipNodeModules && entry.name === "node_modules")) continue;
-			if (dir === root && excludeTopLevel?.has(entry.name)) continue;
 			const info = await getEntryInfo(dir, entry.name, entry.isDirectory(), entry.isFile(), entry.isSymbolicLink());
 			if (!info) continue;
 			const relPath = toPosixPath(relative(root, info.fullPath));
@@ -156,7 +154,7 @@ export async function collectAncestorAgentsSkillDirs(startDir: string): Promise<
 	return skillDirs;
 }
 
-async function collectFlatEntries(dir: string, extension: string): Promise<string[]> {
+async function collectFlatEntries(dir: string, pattern: RegExp): Promise<string[]> {
 	const entries: string[] = [];
 	if (!(await exists(dir))) return entries;
 	const ig = await withIgnoreRules(NestedGitignore.empty(), dir, dir);
@@ -170,18 +168,23 @@ async function collectFlatEntries(dir: string, extension: string): Promise<strin
 			if (!info) continue;
 			const relPath = toPosixPath(relative(dir, info.fullPath));
 			if (ig.ignores(relPath)) continue;
-			if (info.isFile && entry.name.endsWith(extension)) entries.push(info.fullPath);
+			if (info.isFile && pattern.test(entry.name)) entries.push(info.fullPath);
 		}
 	} catch {}
 	return entries;
 }
 
 export async function collectAutoPromptEntries(dir: string): Promise<string[]> {
-	return collectFlatEntries(dir, ".md");
+	return collectFlatEntries(dir, FILE_PATTERNS.prompts);
 }
 
 export async function collectAutoThemeEntries(dir: string): Promise<string[]> {
-	return collectFlatEntries(dir, ".json");
+	return collectFlatEntries(dir, FILE_PATTERNS.themes);
+}
+
+/** Only direct children were automatic workflow entry points. Never walk old journals, pools, or run artifacts. */
+export async function collectAutoLegacyWorkflowFiles(dir: string): Promise<string[]> {
+	return collectFlatEntries(dir, FILE_PATTERNS.legacyWorkflowFiles);
 }
 
 export async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
@@ -233,14 +236,10 @@ export async function collectAutoExtensionEntries(dir: string): Promise<string[]
 	return entries;
 }
 
-export async function collectResourceFiles(
-	dir: string,
-	resourceType: FileKind,
-	excludeTopLevel?: ReadonlySet<string>,
-): Promise<string[]> {
+export async function collectResourceFiles(dir: string, resourceType: FileKind): Promise<string[]> {
 	if (resourceType === "skills") return collectSkillEntries(dir, "pi");
 	if (resourceType === "extensions") return collectAutoExtensionEntries(dir);
-	return collectFiles(dir, FILE_PATTERNS[resourceType], true, undefined, undefined, excludeTopLevel);
+	return collectFiles(dir, FILE_PATTERNS[resourceType]);
 }
 
 export function isPathUnder(target: string, root: string): boolean {

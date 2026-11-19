@@ -571,7 +571,10 @@ Paths in `~/.atomic/agent/settings.json` resolve relative to `~/.atomic/agent`. 
 | `themes` | string[] | `[]` | Local theme file paths or directories |
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands |
 
-Old `workflows` settings no longer configure execution. You can leave them in place: Atomic uses the old path entries only to locate files the agent can read as recipes on request. Worker, journal, admission, and auto-advance options have no effect.
+<a id="workflow-storage" />
+<a id="local-worker-pools" />
+
+Old `workflows` settings no longer configure execution. You can leave them in place: Atomic uses the path entries only to locate files for [conversion to skills](/orchestration/migrating-workflows). Ask to migrate or run a workflow; the agent reads the file as text and uses `skill-creator` to save a skill in the matching project or global skills directory. Startup does not create skills, and the original file stays untouched. Worker, journal, admission, and auto-advance options have no effect.
 
 Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+path` to force-include an exact path and `-path` to force-exclude an exact path.
 

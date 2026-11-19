@@ -464,7 +464,7 @@ export class SettingsManager {
 		const source = path === undefined ? "" : `${path}: `;
 		if ("workflows" in settings) {
 			warn(
-				`${source}Ignored removed setting "workflows": workflows were removed in 0.10.0; run work with codemode and subagents (see docs/orchestration.md). Your workflow files were not changed.`,
+				`${source}Ignored removed setting "workflows": workflows were removed in 0.10.0; ask to convert an old workflow to a skill that uses codemode and subagents (see docs/orchestration/migrating-workflows.md). Your workflow files were not changed.`,
 				{
 					once: about(settings.workflows),
 				},
