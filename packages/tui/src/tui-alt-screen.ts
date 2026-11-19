@@ -2155,15 +2155,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const saved = span;
 			let first = Number.POSITIVE_INFINITY,
 				last = Number.NEGATIVE_INFINITY;
+			const provisional = new Set<number>();
 			rows.visitHistoryRun(inside, saved.from, saved.to, (line, position) => {
 				if (position.source !== saved.source || !this.savedSelects(position, saved)) return;
 				this.captureSavedRow(position, line, selection);
 				first = Math.min(first, position.seq);
 				last = Math.max(last, position.seq);
+				if (position.provisional) provisional.add(position.seq);
 			});
-			// Every mounted saved leaf of these entries is now captured; a copy need not draw them again.
-			if (first <= last && this.savedCoverageBounds?.source === saved.source)
-				this.savedCoverage = addRange(this.savedCoverage, first, last);
+			// Every mounted saved leaf of these entries is now captured, but for provisional ones: a copy draws only the
+			// rest again.
+			if (first <= last && this.savedCoverageBounds?.source === saved.source) {
+				let coverage = addRange(this.savedCoverage, first, last);
+				for (const seq of provisional) coverage = withoutEntry(coverage, seq);
+				this.savedCoverage = coverage;
+			}
 		} else if (start.archive && end.archive && start.archive.source === end.archive.source)
 			rows.visitVolatileRows(start.trackRow?.() ?? top, end.trackRow?.() ?? bottom, visit);
 	}
@@ -2208,6 +2214,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private captureSavedRow(position: HistoryRowPosition, line: string, selection: SelectionRange): void {
+		// What a provisional row shows depends on the pages mounted now; a copy draws its entry instead.
+		if (position.provisional) return;
 		const a = selection.start.archive,
 			b = selection.end.archive;
 		const key = archivedRowKey(position),

@@ -1,6 +1,6 @@
 import { isProxy } from "node:util/types";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import type { HistoryLeaf, TUI } from "@bastani/atomic-tui";
+import { type TUI, WindowedContainer } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
@@ -84,6 +84,7 @@ import {
 	type ParkedViewport,
 	parkViewport,
 	releaseSavedChatHistory,
+	type SavedCopyDraw,
 	type SavedRendererInstances,
 	storedWidget,
 	widgetKey,
@@ -995,12 +996,20 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 /** A cost notice follows every row of its saved entry. */
 const COST_BLOCK = Number.MAX_SAFE_INTEGER;
 
+/** The saved entry and sub-block of a saved row key (`seq:block`, `seq:entry` or `seq:cost`). */
+function savedLeaf(key: string): { seq: number; block: number } {
+	const [seq, block] = key.split(":");
+	return { seq: Number(seq), block: block === "entry" ? 0 : block === "cost" ? COST_BLOCK : Number(block) };
+}
+
 /**
  * Render an archived page on its own. Never register historical tools as pending in the live turn. When a later page
  * follows (`adjacent.newer`), calls the page ends with wait for it: their results start that page.
  *
- * With `record`, the rows are drawn for a copy, not mounted: each row's saved position is noted there instead of
- * keeping its renderer, a kept instance is reused as it is, and the page joins no mounted page.
+ * With `copy`, the rows are drawn for a copy, not mounted: each row's saved position is noted there instead of
+ * keeping its renderer, a kept instance is reused as it is, the page joins no mounted page, and the reads its edge
+ * cards need are left in `copy.settled`. Mounted, a card whose call and result fall on different pages is marked
+ * provisional: what it shows depends on the pages mounted, so a selection draws its entry again for a copy.
  */
 function savedChatComponents(
 	mode: InteractiveModeBase,
@@ -1008,7 +1017,7 @@ function savedChatComponents(
 	seqs: number[],
 	exceptions: SavedRendererInstances,
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
-	record?: Map<Component, HistoryLeaf>,
+	copy?: SavedCopyDraw,
 ): Component[] {
 	const scratch = new Container();
 	// Each page draws after earlier rows, as the whole transcript does: its first message keeps its spacing.
@@ -1023,7 +1032,21 @@ function savedChatComponents(
 				? callsAwaitingLaterResults(steps.flatMap((step) => (step.kind === "entry" ? [step.entry] : [])))
 				: [],
 		);
-		const calls = new SavedPageCallsBuilder(mode, chat, seqs, exceptions);
+		const calls = new SavedPageCallsBuilder(mode, chat, seqs, exceptions, copy !== undefined);
+		const mark = (components: readonly Component[], key: string, provisional: boolean) => {
+			const { seq, block } = savedLeaf(key);
+			for (let part = 0; part < components.length; part++)
+				if (copy) copy.positions.set(components[part]!, { source: exceptions.source, seq, block, part });
+				else
+					WindowedContainer.markHistoryComponent(
+						components[part]!,
+						exceptions.source,
+						seq,
+						block,
+						part,
+						provisional,
+					);
+		};
 		for (const step of steps) {
 			const key =
 				step.kind !== "cost"
@@ -1032,33 +1055,29 @@ function savedChatComponents(
 						? undefined
 						: `${step.seq}:cost`;
 			if (step.kind === "entry" && step.entry.kind === "tool" && held.has(step.entry)) {
-				scratch.addChild(calls.hold(step.entry, key));
+				const slot = calls.hold(step.entry, key);
+				scratch.addChild(slot);
+				if (key) mark([slot], key, true);
 				continue;
 			}
 			const index = scratch.children.length;
-			const kept = key && (record ? exceptions.peek(key) : exceptions.get(key));
+			const kept = key && (copy ? exceptions.peek(key) : exceptions.get(key));
 			if (kept) for (const component of kept) scratch.addChild(component);
 			else addTranscriptStep(mode, step, false, true);
 			const drawn = scratch.children.slice(index);
+			const alone = step.kind === "entry" && step.entry.kind === "tool" && isResultWithoutCall(step.entry);
 			if (key) {
-				const [seq, block] = key.split(":");
-				const position = {
-					seq: Number(seq),
-					block: block === "entry" ? 0 : block === "cost" ? COST_BLOCK : Number(block),
-				};
-				if (record)
-					for (let part = 0; part < drawn.length; part++)
-						record.set(drawn[part]!, { source: exceptions.source, ...position, part });
-				else if (!kept) exceptions.remember(key, drawn, position);
+				if (!copy && !kept) exceptions.remember(key, drawn, savedLeaf(key));
+				if (copy || alone) mark(drawn, key, alone);
+				followChosenExpansion(mode, exceptions, key, drawn);
 			}
-			if (key) followChosenExpansion(mode, exceptions, key, drawn);
 			if (step.kind !== "entry") continue;
-			if (key && step.entry.kind === "tool" && isResultWithoutCall(step.entry))
-				calls.drewResult(step.entry, drawn, key);
+			if (key && alone && step.entry.kind === "tool") calls.drewResult(step.entry, drawn, key);
 			calls.drew(step.entry);
 		}
 		const page = scratch.children.slice(1);
-		if (page.length > 0 && !record) page.unshift(calls.finish(mode.sessionManager, adjacent));
+		if (copy) copy.settled = calls.settle(mode.sessionManager, adjacent, copy.alive);
+		else if (page.length > 0) page.unshift(calls.finish(mode.sessionManager, adjacent));
 		return page;
 	} finally {
 		mode.chatContainer = chat;

@@ -6,6 +6,9 @@ export interface HistoryRowPosition {
 	readonly block: number;
 	readonly part: number;
 	readonly line: number;
+	/** The row stands in for a card whose call and result are drawn on different pages: what it shows depends on which
+	 * pages are mounted, so a selection never captures it and a copy draws its entry as the whole transcript does. */
+	readonly provisional?: true;
 }
 const archivePositions = new WeakMap<Component, Omit<HistoryRowPosition, "line">>();
 
@@ -133,8 +136,15 @@ function yieldThen(run: () => void): void {
 export class WindowedContainer extends Container {
 	/** Identify the leaf of a mutable saved transcript. A selection can then keep just its selected characters
 	 * across eviction or an external rewrite, without keeping the component or its page. */
-	static markHistoryComponent(component: Component, source: symbol, seq: number, block: number, part: number): void {
-		archivePositions.set(component, { source, seq, block, part });
+	static markHistoryComponent(
+		component: Component,
+		source: symbol,
+		seq: number,
+		block: number,
+		part: number,
+		provisional = false,
+	): void {
+		archivePositions.set(component, { source, seq, block, part, ...(provisional ? { provisional: true } : {}) });
 	}
 	/** Mark the row that stands for a source's saved history. Its mounted saved rows follow it; a copy can draw the
 	 * rest of a selection from `history`. Holding the anchor's source does not keep the anchor alive. */

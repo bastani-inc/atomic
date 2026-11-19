@@ -100,6 +100,8 @@ class HeldCallSlot extends Container {
 	private readonly chat: SavedChat;
 	private readonly draw: (entry: ToolChatEntry, key: string, own: boolean) => Component[];
 	private readonly scope: SavedRendererInstances;
+	/** Drawn for a copy: it keeps no instance and releases only what no saved page keeps. */
+	private readonly transient: boolean;
 	readonly entry: ToolChatEntry;
 	readonly key: string | undefined;
 
@@ -109,6 +111,7 @@ class HeldCallSlot extends Container {
 		chat: SavedChat,
 		scope: SavedRendererInstances,
 		draw: (entry: ToolChatEntry, key: string, own: boolean) => Component[],
+		transient = false,
 	) {
 		super();
 		this.entry = entry;
@@ -116,6 +119,7 @@ class HeldCallSlot extends Container {
 		this.chat = chat;
 		this.scope = scope;
 		this.draw = draw;
+		this.transient = transient;
 	}
 
 	get waiting(): boolean {
@@ -151,7 +155,8 @@ class HeldCallSlot extends Container {
 	}
 
 	private release(): void {
-		for (const child of this.children.splice(0)) if (!this.scope.protect(child)) disposeRenderer(child);
+		for (const child of this.children.splice(0))
+			if (this.transient ? !this.scope.keeps(child) : !this.scope.protect(child)) disposeRenderer(child);
 	}
 
 	dispose(): void {
@@ -236,9 +241,18 @@ export class SavedPageCallsBuilder {
 	private readonly calls: SavedPageCalls;
 	private readonly mode: InteractiveModeBase;
 	private readonly chat: SavedChat;
-	constructor(mode: InteractiveModeBase, chat: Container, seqs: readonly number[], scope: SavedRendererInstances) {
+	/** The page is drawn for a copy: it keeps no renderer instance and joins no mounted page. */
+	private readonly transient: boolean;
+	constructor(
+		mode: InteractiveModeBase,
+		chat: Container,
+		seqs: readonly number[],
+		scope: SavedRendererInstances,
+		transient = false,
+	) {
 		this.mode = mode;
 		this.chat = chat;
+		this.transient = transient;
 		this.calls = {
 			first: seqs[0] ?? 0,
 			last: seqs.at(-1) ?? 0,
@@ -251,19 +265,27 @@ export class SavedPageCallsBuilder {
 	/** Holds `entry` back: its slot draws nothing until the entries after the page show what became of it. */
 	hold(entry: ToolChatEntry, key: string | undefined): Component {
 		const { mode } = this;
+		const transient = this.transient;
 		const scope = this.calls.scope;
-		const slot = new HeldCallSlot(entry, key, this.chat, scope, (card, row, own) => {
-			const kept = row ? scope.get(row) : undefined;
-			const components = kept ?? [renderChatMessageEntry(card, mode.chatMessageRenderOptions())];
-			// The finished card stands in for the result's own card, which keeps any renderer state; the call's own card
-			// is this page's row.
-			if (!kept && own && row) {
-				const [seq, block] = row.split(":");
-				scope.remember(row, components, { seq: Number(seq), block: Number(block) });
-			}
-			if (row) followChosenExpansion(mode, scope, row, components);
-			return [...components];
-		});
+		const slot = new HeldCallSlot(
+			entry,
+			key,
+			this.chat,
+			scope,
+			(card, row, own) => {
+				const kept = row ? (transient ? scope.peek(row) : scope.get(row)) : undefined;
+				const components = kept ?? [renderChatMessageEntry(card, mode.chatMessageRenderOptions())];
+				// The finished card stands in for the result's own card, which keeps any renderer state; the call's own
+				// card is this page's row.
+				if (!kept && own && row && !transient) {
+					const [seq, block] = row.split(":");
+					scope.remember(row, components, { seq: Number(seq), block: Number(block) });
+				}
+				if (row) followChosenExpansion(mode, scope, row, components);
+				return [...components];
+			},
+			transient,
+		);
 		this.calls.held.set(entry.toolCallId, slot);
 		return slot;
 	}
@@ -310,6 +332,24 @@ export class SavedPageCallsBuilder {
 			void readBefore(this.mode, manager, needing, adjacent.older, alive);
 		return head;
 	}
+
+	/**
+	 * For a copy: reads what the edge cards of a page drawn alone need, as `finish` does when no neighbouring page is
+	 * drawn, and joins no mounted page. Rejects when a read fails or `alive` turns false first, so a copy never shows a
+	 * held call as still running.
+	 */
+	async settle(
+		manager: SavedHistory,
+		adjacent: { readonly older?: string; readonly newer?: string } | undefined,
+		alive: () => boolean,
+	): Promise<void> {
+		const page = this.calls;
+		if (adjacent?.newer && [...page.held.values()].some((slot) => slot.waiting))
+			await readAfter(this.mode, manager, page, adjacent.newer, alive, true);
+		const needing = [...page.results.values()].filter((result) => !result.filled);
+		if (adjacent?.older && needing.length > 0)
+			await readBefore(this.mode, manager, needing, adjacent.older, alive, true);
+	}
 }
 
 function joinPages(older: SavedPageCalls, newer: SavedPageCalls): void {
@@ -350,6 +390,7 @@ async function readAfter(
 	page: SavedPageCalls,
 	cursor: string,
 	alive: () => boolean,
+	strict = false,
 ): Promise<void> {
 	const waiting = () => [...page.held.values()].filter((slot) => slot.waiting);
 	let next: string | undefined = cursor;
@@ -357,7 +398,10 @@ async function readAfter(
 		// No cap: entries are read one at a time, bounded each, until the result or a real turn boundary decides.
 		while (next !== undefined && waiting().length > 0) {
 			const read = await readOneEntry(manager, next);
-			if (!alive()) return;
+			if (!alive()) {
+				if (strict) throw new Error("The saved history closed while it was read");
+				return;
+			}
 			next = read?.adjacent?.newer;
 			const entry = read?.entry;
 			if (entry?.type !== "message") continue;
@@ -372,8 +416,9 @@ async function readAfter(
 		}
 		// Nothing more is saved: as at the end of a whole transcript, the calls show as they were saved.
 		if (next === undefined && alive()) for (const slot of waiting()) slot.reveal(undefined);
-	} catch {
-		// A failed read leaves the calls held: nothing shown claims they are running.
+	} catch (error) {
+		// A failed read leaves the calls held: nothing shown claims they are running. A copy fails instead.
+		if (strict) throw error;
 	}
 	mode.ui.requestRender();
 }
@@ -385,12 +430,16 @@ async function readBefore(
 	needing: readonly { readonly entry: ToolChatEntry; readonly card: ArgumentsCard | undefined; filled: boolean }[],
 	cursor: string,
 	alive: () => boolean,
+	strict = false,
 ): Promise<void> {
 	let next: string | undefined = cursor;
 	try {
 		while (next !== undefined) {
 			const read = await readOneEntry(manager, next);
-			if (!alive()) return;
+			if (!alive()) {
+				if (strict) throw new Error("The saved history closed while it was read");
+				return;
+			}
 			next = read?.adjacent?.older;
 			const entry = read?.entry;
 			if (entry?.type !== "message") continue;
@@ -407,7 +456,8 @@ async function readBefore(
 			mode.ui.requestRender();
 			return;
 		}
-	} catch {
-		// A failed read leaves the cards as their results alone show them.
+	} catch (error) {
+		// A failed read leaves the cards as their results alone show them. A copy fails instead.
+		if (strict) throw error;
 	}
 }

@@ -1033,3 +1033,59 @@ test("rows a reader keeps through a compaction are saved rows that a selection c
 	assert.equal(await tui.copyActiveSelectionToClipboard(), true);
 	assert.equal(copies.at(-1), copies[0]);
 });
+
+test("a copy draws a selected tool card whose result is saved pages after its call as the whole transcript does (#5593)", async () => {
+	// The call ends the first page read on from the start; records no renderer draws fill the next page; then its result.
+	const steps: Record<number, SavedStep> = {
+		64: { call: { id: "call-far", name: "write", args: { path: "far.txt", content: "x" } } },
+		135: { result: { id: "call-far", name: "write", text: "wrote" } },
+	};
+	for (let seq = 65; seq < 135; seq++) steps[seq] = { custom: "unrendered-record" };
+	const whole = await openResumedSession(0);
+	await appendSavedHistory(whole.mode.sessionManager, 160, steps, false);
+	whole.mode.renderInitialMessages();
+	const mainRows = () => stripVTControlCharacters(whole.mode.chatContainer.render(COLUMNS).join("\n")).split("\n");
+	for (let i = 0; i < 60 && !mainRows().some((row) => row.includes("P-001")); i++) await nextTurn();
+	const rows = mainRows();
+	const from = rows.findIndex((row) => row.includes("P-060"));
+	const through = rows.findIndex((row) => row.includes("P-160"));
+	const main = [rows[from]!.slice(3).trimEnd(), ...rows.slice(from + 1, through + 1).map((row) => row.trimEnd())].join(
+		"\n",
+	);
+	assert.equal(main.match(/Write\(far\.txt\)/g)?.length, 1, "the whole transcript draws the card once, at its call");
+
+	/** Press at P-060, optionally drag over the call's card on its page, jump to the end and drag to the live row. */
+	const copy = async (overCard: boolean) => {
+		const { mode, tui, transcript, terminal } = await openResumedSession(0);
+		const copies = recordCopies(tui);
+		await appendSavedHistory(mode.sessionManager, 160, steps);
+		mode.renderInitialMessages();
+		transcript.scrollToStart();
+		let screen = await settle(tui, (lines) => lines.some((line) => line.includes("P-001")));
+		const shown = (lines: string[]) =>
+			lines.slice(0, ROWS - 2).some((line) => line.includes("P-060")) &&
+			(!overCard || lines.slice(0, ROWS - 2).some((line) => line.includes("Write(far.txt)")));
+		for (let i = 0; i < 400 && !shown(screen); i++) {
+			transcript.scrollBy(1);
+			screen = await settle(tui, () => true);
+		}
+		mouse(terminal, "press", 3, rowOf(screen, "P-060"));
+		// The call's card ends its page: what it shows depends on whether the result's page is mounted.
+		if (overCard) mouse(terminal, "drag", 30, rowOf(screen, "Write(far.txt)") + 1);
+		transcript.scrollToEnd();
+		screen = await settle(tui, (lines) => lines.some((line) => line.includes("at the end")));
+		const tail = rowOf(screen, "at the end");
+		mouse(terminal, "drag", 60, tail);
+		mouse(terminal, "release", 60, tail);
+		for (let i = 0; i < 40 && copies.length === 0; i++) await nextTurn();
+		assert.equal(copies.length, 1, "the release did not copy");
+		tui.resetTextSelection();
+		return copies[0]!;
+	};
+	for (const overCard of [false, true]) {
+		const copied = await copy(overCard);
+		assert.ok(copied.startsWith(`${main}\n`), `the copy differs from main (over the card: ${overCard}):\n${copied}`);
+		assert.equal(copied.match(/Write\(far\.txt\)/g)?.length, 1, "the card is copied once");
+		assert.match(copied, /at the end$/);
+	}
+});

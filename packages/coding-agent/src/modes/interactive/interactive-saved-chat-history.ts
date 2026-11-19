@@ -8,11 +8,10 @@ import {
 	WindowedContainer,
 } from "@bastani/atomic-tui";
 import type { SessionEntry, SessionManager } from "../../core/session-manager.ts";
-import {
-	SESSION_HISTORY_PAGE_ENTRIES,
-	type SessionHistoryItem,
-	type SessionHistoryPage,
-	type SessionHistoryReadOptions,
+import type {
+	SessionHistoryItem,
+	SessionHistoryPage,
+	SessionHistoryReadOptions,
 } from "../../core/storage/session/types.js";
 import { rowSource, savedRowKey, savedSeqOf } from "../../core/tasks/transcript-origin.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
@@ -34,13 +33,16 @@ type Draw = (
 	seqs: number[],
 	exceptions: SavedRendererInstances,
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
-	record?: Map<Component, HistoryLeaf>,
+	copy?: SavedCopyDraw,
 ) => Component[];
 
-/** A copy draws the entries it needs in chunks of this many, each with a page of entries on either side, as a tool
- * call and its result are never further apart than a page edge needs. */
-const COPY_CHUNK_ENTRIES = 4 * SESSION_HISTORY_PAGE_ENTRIES;
-const COPY_CONTEXT_ENTRIES = SESSION_HISTORY_PAGE_ENTRIES;
+/** Saved entries drawn for a copy, not mounted: where each row belongs, and the reads its edge cards still need. */
+export interface SavedCopyDraw {
+	readonly positions: Map<Component, HistoryLeaf>;
+	/** Whether what the copy reads still belongs to the saved history shown. */
+	readonly alive: () => boolean;
+	settled?: Promise<void>;
+}
 
 const exceptionsByHost = new WeakMap<
 	InteractiveModeBase,
@@ -361,40 +363,70 @@ class SavedChatHistory {
 		view.setHistoryNavigation((action) => this.navigate(action));
 	}
 
-	/** Draw the saved rows of entries `from` through `to` at `width` for a copy: without mounting them or keeping new
-	 * renderer instances, a bounded chunk at a time, as the whole transcript draws them. */
+	/**
+	 * Draw the saved rows of entries `from` through `to` at `width` for a copy, as the whole transcript draws them,
+	 * without mounting them or keeping new renderer instances. A tool card is drawn at its call with its result: the
+	 * draw starts at the prompt that opened the turn holding `from`, so a result in range meets its call, and a call in
+	 * range whose result is saved later reads on one entry at a time until the result or the turn's end decides. Each
+	 * read is bounded; together they span the selected entries and the turn they start in.
+	 */
 	async readRows(from: number, to: number, width: number): Promise<HistoryRowsBlock[]> {
-		if (this.mode.sessionManager !== this.manager || !this.chat.children.includes(this.marker))
-			throw new Error("Saved history is no longer shown");
-		const blocks: HistoryRowsBlock[] = [];
+		const alive = () => this.mode.sessionManager === this.manager && this.chat.children.includes(this.marker);
+		const closed = () => new Error("Saved history is no longer shown");
+		if (!alive()) throw closed();
 		const last = Math.min(to, this.through);
-		for (let start = Math.max(1, from); start <= last; start += COPY_CHUNK_ENTRIES) {
-			const end = Math.min(last, start + COPY_CHUNK_ENTRIES - 1);
-			const items: SessionHistoryItem[] = [];
-			const read = this.manager.readHistory({
-				branchLeafSeq: this.leaf,
-				fromSeq: Math.max(1, start - COPY_CONTEXT_ENTRIES),
-				toSeq: Math.min(this.through, end + COPY_CONTEXT_ENTRIES),
-				direction: "forward",
-			});
-			for await (const page of read) items.push(...page.items);
-			const positions = new Map<Component, HistoryLeaf>();
-			const components = this.draw(
-				this.mode,
-				items.map(entryForDisplay),
-				items.map((item) => item.seq),
-				this.exceptions,
-				undefined,
-				positions,
-			);
+		if (from > last) return [];
+		const start = await this.turnStart(from, alive);
+		const items: SessionHistoryItem[] = [];
+		let newer: string | undefined;
+		const read = this.manager.readHistory({
+			branchLeafSeq: this.leaf,
+			fromSeq: start,
+			toSeq: last,
+			direction: "forward",
+			adjacent: true,
+		});
+		for await (const page of read) {
+			if (!alive()) throw closed();
+			items.push(...(await withOversizedToolResults(this.manager, page)).items);
+			newer = page.adjacent?.newer;
+		}
+		const copy: SavedCopyDraw = { positions: new Map(), alive };
+		const components = this.draw(
+			this.mode,
+			items.map(entryForDisplay),
+			items.map((item) => item.seq),
+			this.exceptions,
+			newer === undefined ? undefined : { newer },
+			copy,
+		);
+		try {
+			await copy.settled;
+			if (!alive()) throw closed();
+			const blocks: HistoryRowsBlock[] = [];
 			for (const component of components) {
-				const position = positions.get(component);
-				if (position && position.seq >= start && position.seq <= end)
+				const position = copy.positions.get(component);
+				if (position && position.seq >= from && position.seq <= last)
 					blocks.push({ position, lines: component.render(width) });
-				if (!this.exceptions.keeps(component)) disposeRenderer(component);
+			}
+			return blocks;
+		} finally {
+			for (const component of components) if (!this.exceptions.keeps(component)) disposeRenderer(component);
+		}
+	}
+
+	/** The prompt that opened the turn holding entry `seq`, read back a page at a time; the session's start if none. */
+	private async turnStart(seq: number, alive: () => boolean): Promise<number> {
+		if (seq <= 1) return 1;
+		const read = this.manager.readHistory({ branchLeafSeq: this.leaf, toSeq: seq - 1, direction: "backward" });
+		for await (const page of read) {
+			if (!alive()) throw new Error("Saved history is no longer shown");
+			for (let index = page.items.length - 1; index >= 0; index--) {
+				const item = page.items[index]!;
+				if ("entry" in item && item.entry.type === "message" && item.entry.message.role === "user") return item.seq;
 			}
 		}
-		return blocks;
+		return 1;
 	}
 
 	private navigate(direction: Direction): void {
