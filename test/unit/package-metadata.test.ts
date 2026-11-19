@@ -97,6 +97,20 @@ const PUBLISHABLE_WORKSPACE_PACKAGES = new Set([
 	"@bastani/atomic-tui",
 ]);
 
+const ATOMIC_PACKAGE_DIR = "packages/coding-agent";
+
+/** The export checks read the build output; CI builds before the unit suites, a fresh checkout may not have. */
+const builtAtomicTest = existsSync(join(ATOMIC_PACKAGE_DIR, "dist/index.js")) ? test : test.skip;
+if (!existsSync(join(ATOMIC_PACKAGE_DIR, "dist/index.js"))) {
+	console.warn("[package-metadata] export target checks skipped: packages/coding-agent/dist is not built");
+}
+
+type ExportTarget = string | { [condition: string]: ExportTarget };
+
+function exportTargets(target: ExportTarget): string[] {
+	return typeof target === "string" ? [target] : Object.values(target).flatMap(exportTargets);
+}
+
 function markdownFiles(dir: string): string[] {
 	return readdirSync(dir)
 		.filter((name) => name.endsWith(".md"))
@@ -189,6 +203,19 @@ describe("package metadata", () => {
 		assert.equal(Object.hasOwn(atomicPackageJson.exports, "./client"), false);
 		assert.equal(Object.hasOwn(atomicPackageJson.dependencies, "@earendil-works/pi-client"), false);
 		assert.equal(Object.hasOwn(atomicPackageJson.dependencies, "@earendil-works/pi-protocol"), false);
+	});
+
+	builtAtomicTest("@bastani/atomic exports only subpaths that its build produces", () => {
+		const unresolved: string[] = [];
+		for (const [subpath, target] of Object.entries(atomicPackageJson.exports as Record<string, ExportTarget>)) {
+			for (const file of exportTargets(target)) {
+				const built = file.includes("*")
+					? globSync(file, { cwd: ATOMIC_PACKAGE_DIR, onlyFiles: true }).length > 0
+					: existsSync(join(ATOMIC_PACKAGE_DIR, file));
+				if (!built) unresolved.push(`${subpath} -> ${file}`);
+			}
+		}
+		assert.deepEqual(unresolved, [], "every exported subpath must resolve to a file in the published dist");
 	});
 
 	test("@bastani/atomic publish payload keeps in-product docs and prebundled builtins", async () => {

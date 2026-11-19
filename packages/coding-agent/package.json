@@ -39,10 +39,6 @@
       "import": "./dist/rpc-entry.js",
       "default": "./dist/rpc-entry.js"
     },
-    "./hooks": {
-      "types": "./dist/core/hooks/index.d.ts",
-      "import": "./dist/core/hooks/index.js"
-    },
     "./workflows": {
       "types": "./dist/builtin/workflows/src/authoring.d.ts",
       "import": "./dist/builtin/workflows/src/index.js",
