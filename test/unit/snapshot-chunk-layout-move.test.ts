@@ -4,15 +4,33 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
-import {
+
+/**
+ * The free space the file system of a database file reports to the move, when a test sets it (#5694); otherwise what the
+ * file system says. Only the space it reports changes: the database writes to its real file.
+ */
+const reportedFree = vi.hoisted(() => ({ bytes: undefined as number | undefined }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:fs/promises")>();
+	const statfs = async (...args: Parameters<typeof original.statfs>) => {
+		const real = await original.statfs(...args);
+		const { bytes } = reportedFree;
+		return bytes === undefined ? real : { ...real, bavail: Math.floor(bytes / Number(real.bsize)) };
+	};
+	return { ...original, default: { ...original, statfs }, statfs };
+});
+// The setup files load the storage modules first: load them again, under the mock.
+vi.resetModules();
+const { openNodeSqliteDatabase } = await import("../../packages/coding-agent/src/core/storage/node-sqlite.ts");
+const {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
+	SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES,
 	SNAPSHOT_CHUNK_MOVE_ROWS,
 	SqlSnapshotBlobStore,
-} from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+} = await import("../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts");
+const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
 
 /** The snapshot blob store of Atomic 0.9.89, vendored unmodified (test/fixtures/snapshot-store-0.9.89/README.md). */
 interface Release0989BlobStore {
@@ -72,6 +90,7 @@ beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "snapshot-chunk-layout-move-"));
 });
 afterEach(async () => {
+	reportedFree.bytes = undefined;
 	while (closers.length > 0) await closers.pop()?.();
 	rmSync(directory, { recursive: true, force: true });
 });
@@ -89,6 +108,27 @@ function afterEachTransaction(database: SqliteDatabase, afterCommit: () => void 
 			const result = await database.transaction(callback, options);
 			await afterCommit();
 			return result;
+		},
+	};
+}
+
+/**
+ * `database` with every transaction run under SQLite's `max_page_count` of `limit()` pages: past it SQLite refuses to
+ * grow the file with `SQLITE_FULL`, as on a full disk.
+ */
+function underPageLimit(database: SqliteDatabase, limit: () => number): SqliteDatabase {
+	return {
+		descriptor: database.descriptor,
+		exec: database.exec.bind(database),
+		run: database.run.bind(database),
+		get: database.get.bind(database),
+		all: database.all.bind(database),
+		close: database.close.bind(database),
+		transaction(callback, options) {
+			return database.transaction(async (transaction) => {
+				await transaction.get(`PRAGMA max_page_count = ${limit()}`);
+				return callback(transaction);
+			}, options);
 		},
 	};
 }
@@ -461,6 +501,100 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					await chunkRows(database),
 					before.filter((row) => row.hash !== deleted.hash),
 				);
+			});
+
+			async function pagesOf(database: SqliteDatabase): Promise<{ pages: number; free: number; size: number }> {
+				const row = await database.get<SqliteRow & { pages: number; free: number; size: number }>(
+					"SELECT (SELECT page_count FROM pragma_page_count()) AS pages, (SELECT freelist_count FROM pragma_freelist_count()) AS free, (SELECT page_size FROM pragma_page_size()) AS size",
+				);
+				assert.ok(row !== undefined);
+				return { pages: Number(row.pages), free: Number(row.free), size: Number(row.size) };
+			}
+
+			test("a full disk during the move ends it without failing the collection, frees the partial copy's pages, and a later collection finishes it (#5694)", async () => {
+				const database = await release0989Store();
+				const before = await chunkRows(database);
+				const { pages, size } = await pagesOf(database);
+				// Room for about two chunks of the copy: the move meets SQLITE_FULL part way, as on a disk that fills up.
+				let limit = pages + Math.ceil((2 * SNAPSHOT_BLOB_CHUNK_BYTES) / size) + 64;
+				const capped = underPageLimit(database, () => limit);
+				const store = await SqlSnapshotBlobStore.open(capped, prefix);
+				// An unreferenced blob past its grace window, which the collection deletes before it moves the table.
+				const doomed = blob(30_000, 800);
+				await store.putBlobs([doomed]);
+				await database.run(`UPDATE ${blobs} SET created_at = 1 WHERE hash = ?`, doomed.hash);
+
+				// The collection completes as before the move existed, with its deletions.
+				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), [doomed.hash]);
+				assert.deepEqual(await chunkTables(database), [chunks], "the partial copy is gone");
+				assert.equal(await layoutOf(database), "WITHOUT ROWID");
+				assert.deepEqual(await chunkRows(database), before);
+				await assertEveryBlobReads(store, STORED, "this version");
+				await assertEveryBlobReads(await release0989.SqlSnapshotBlobStore.open(database, prefix), STORED, "0.9.89");
+				// The copy's pages went back to the free list: a write of a chunk fits under the same limit.
+				assert.ok((await pagesOf(database)).free * size >= SNAPSHOT_BLOB_CHUNK_BYTES, "the copy's pages are free");
+				const later = blob(SNAPSHOT_BLOB_CHUNK_BYTES + 9, 801);
+				await store.putBlobs([later]);
+				await assertEveryBlobReads(store, [later], "this version");
+
+				// With room, a later collection moves the table.
+				limit = 1_073_741_823;
+				await store.collectGarbage({ graceSeconds: 3_600 });
+				assert.deepEqual(await chunkTables(database), [chunks]);
+				assert.equal(await layoutOf(database), "rowid");
+				await assertEveryBlobReads(store, [...STORED, later], "this version after the move");
+			});
+
+			test("a collection whose disk has less room than the copy keeps the layout, grows no file and drops a partial copy (#5694)", async () => {
+				const database = await release0989Store();
+				const before = await chunkRows(database);
+				// An earlier collection stopped after its first copy left a partial copy.
+				const controller = new AbortController();
+				const stopped = new Error("stopped");
+				const first = await SqlSnapshotBlobStore.open(
+					afterEachTransaction(database, async () => {
+						if ((await chunkTables(database)).length > 1) controller.abort(stopped);
+					}),
+					prefix,
+				);
+				await assert.rejects(first.collectGarbage({ graceSeconds: 3_600, signal: controller.signal }), stopped);
+				assert.deepEqual(await chunkTables(database), [chunks, `${chunks}_next`]);
+				const grown = await pagesOf(database);
+
+				// The file system now has room for less than what is left to copy.
+				reportedFree.bytes = 3 * SNAPSHOT_BLOB_CHUNK_BYTES;
+				const store = await SqlSnapshotBlobStore.open(database, prefix);
+				assert.deepEqual(await store.collectGarbage({ graceSeconds: 3_600 }), []);
+				assert.deepEqual(await chunkTables(database), [chunks], "the partial copy is gone");
+				assert.equal(await layoutOf(database), "WITHOUT ROWID");
+				assert.deepEqual(await chunkRows(database), before);
+				const after = await pagesOf(database);
+				assert.equal(after.pages, grown.pages, "the file did not grow");
+				assert.ok(after.free > grown.free, "the partial copy's pages are free");
+				await assertEveryBlobReads(store, STORED, "this version");
+
+				// With room again, the move finishes.
+				reportedFree.bytes = undefined;
+				await store.collectGarbage({ graceSeconds: 3_600 });
+				assert.equal(await layoutOf(database), "rowid");
+				assert.deepEqual(await chunkRows(database), before);
+			});
+
+			test("the room a move needs holds its copy, the write-ahead log of the copy and the headroom (#5694)", async () => {
+				const database = await release0989Store();
+				const { free, size } = await pagesOf(database);
+				const rows = await database.get<SqliteRow & { rows: number }>(`SELECT count(*) AS rows FROM ${chunks}`);
+				const copy = Number(rows?.rows) * SNAPSHOT_BLOB_CHUNK_BYTES;
+				// The copy fills the file's free pages first and grows it by the rest; its log may hold all of it.
+				const needed = copy - Math.min(copy, free * size) + copy + SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+				const store = await SqlSnapshotBlobStore.open(database, prefix);
+				reportedFree.bytes = needed - 1;
+				await store.collectGarbage({ graceSeconds: 3_600 });
+				assert.equal(await layoutOf(database), "WITHOUT ROWID", "one byte short: no move");
+				assert.deepEqual(await chunkTables(database), [chunks]);
+				reportedFree.bytes = needed;
+				await store.collectGarbage({ graceSeconds: 3_600 });
+				assert.equal(await layoutOf(database), "rowid", "room enough: the move");
 			});
 		});
 	}
