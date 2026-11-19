@@ -426,6 +426,8 @@ export class InteractiveModeBase {
 		theme,
 	});
 	mermaidMarkdownTransformerMode: MermaidRenderingMode | undefined;
+	mermaidTransformerWithheldProject = false;
+	mermaidUserEdit = 0;
 
 	// Skill commands: command name -> skill file path
 	skillCommands = new Map<string, string>();

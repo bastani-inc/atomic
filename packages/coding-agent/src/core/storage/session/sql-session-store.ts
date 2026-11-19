@@ -383,6 +383,23 @@ export class SqlSessionStore implements SessionStore {
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;
 	}
 
+	/** Bind an existing transcript for the storage search command. No schema setup, markers or search index. */
+	static async openTranscriptReader(database: SqliteDatabase & { readonly readOnly: true }): Promise<SessionStore> {
+		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES);
+		const reader = new SqlSessionStore(
+			database,
+			tables,
+			undefined,
+			undefined,
+			SqlSnapshotBlobStore.forTranscriptReader(database),
+			false,
+			undefined,
+			await entryByteLengthOf(database),
+		);
+		await reader.assertReadableSchema(database);
+		return reader;
+	}
+
 	static async open(
 		database: SqliteDatabase,
 		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher } = {},

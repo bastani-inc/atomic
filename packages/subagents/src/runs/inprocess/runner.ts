@@ -2340,8 +2340,8 @@ export class SubagentControlRuntime {
 						settingsManager,
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 						sessionManager,
+						...promptBehavior,
 						systemPromptTransform,
-						initialContextTransform: promptBehavior.initialContextTransform,
 					}),
 					// The attempt already failed; a session that comes up after its deadline is never used.
 					(late) => late.session.dispose().catch(() => undefined),
