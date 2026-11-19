@@ -138,6 +138,14 @@ export interface MessageCompanionEntry {
 	readonly data?: SessionJsonValue;
 }
 
+/** Private host/builtin bridge, not re-exported by session-manager or the SDK. */
+export let appendOwnedSubagentChildRecord: (
+	manager: SessionManager,
+	ownerId: string,
+	data: { readonly childId?: string; readonly owner?: { readonly sessionId?: string } },
+	live: () => boolean,
+) => Promise<void>;
+
 /** An in-memory session tree whose mutations await the backing store. */
 export class SessionManager {
 	private sessionId = "";
@@ -950,13 +958,26 @@ export class SessionManager {
 		});
 	}
 
+	static {
+		appendOwnedSubagentChildRecord = (manager, ownerId, data, live) =>
+			manager.runMutation(async () => {
+				if (typeof data?.childId !== "string" || data.owner?.sessionId !== ownerId)
+					throw new Error("Cannot save a subagent-child record belonging to another owner.");
+				if (manager.sessionId !== ownerId || !live() || manager.deletedFromStore)
+					throw new Error(`Cannot save subagent-child record: session ${ownerId} no longer owns its writer.`);
+				await manager.appendCustomEntryAtLeaf("subagent-child", data);
+			});
+	}
+
+	private async appendCustomEntryAtLeaf<T>(customType: string, data?: T): Promise<string> {
+		const entry = createCustomEntry(customType, data, this.byId, this.leafId);
+		await this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
 	appendCustomEntry<T = SessionJsonValue>(customType: string, data?: T): Promise<string> {
-		return this.runMutation(async () => {
-			const entry = createCustomEntry(customType, data, this.byId, this.leafId);
-			await this._appendEntry(entry);
-			return entry.id;
-		});
+		return this.runMutation(() => this.appendCustomEntryAtLeaf(customType, data));
 	}
 
 	/**

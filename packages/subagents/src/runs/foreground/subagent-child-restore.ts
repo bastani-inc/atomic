@@ -554,6 +554,7 @@ async function relaunchChild(
 		const supervisorAuthorization = record.intercomTarget ? hold?.authorization : undefined;
 		if (!supervisorAuthorization) await hold?.release();
 		const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+		const intercomGroup = launchIntercomGroup(record, ctx);
 		const launched = queuedOwnerless({
 			recordChild,
 			...(ownerSignal ? { ownerSignal } : {}),
@@ -561,7 +562,16 @@ async function relaunchChild(
 			...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		});
 		return startedFresh(
-			await ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx),
+			await ownerlessRelaunched(
+				deps,
+				record,
+				launched,
+				recordChild,
+				release,
+				hold,
+				supervisorAuthorization,
+				intercomGroup,
+			),
 		);
 	}
 	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
@@ -810,7 +820,7 @@ async function relaunchChild(
 			release,
 			hold,
 			supervisorAuthorization,
-			ctx,
+			intercomGroup,
 		);
 		return fresh ? startedFresh(outcome) : outcome;
 	}
@@ -888,6 +898,7 @@ async function startQueuedChild(
 	if (!supervisorAuthorization) await hold?.release();
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+	const intercomGroup = launchIntercomGroup(record, ctx);
 	const response = await queued.start({
 		host,
 		recordChild,
@@ -898,15 +909,7 @@ async function startQueuedChild(
 			void hold?.release();
 		},
 	});
-	return relaunched(
-		deps,
-		record,
-		response,
-		recordChild,
-		release,
-		supervisorAuthorization,
-		launchIntercomGroup(record, ctx),
-	);
+	return relaunched(deps, record, response, recordChild, release, supervisorAuthorization, intercomGroup);
 }
 
 /**
@@ -921,7 +924,7 @@ async function ownerlessRelaunched(
 	release: () => void,
 	hold: ChildTargetHold | undefined,
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
-	ctx: ExtensionContext,
+	intercomGroup: string | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	void launched.result
 		.then(
@@ -947,7 +950,6 @@ async function ownerlessRelaunched(
 		});
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
-	const intercomGroup = launchIntercomGroup(record, ctx);
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
 			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)

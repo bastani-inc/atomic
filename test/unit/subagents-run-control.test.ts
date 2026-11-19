@@ -12,6 +12,11 @@ import {
 	agentWakeDispatcher,
 } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import {
+	bindBuiltinChildRecordSession,
+	installBuiltinChildRecordWriter,
+} from "../../packages/coding-agent/src/core/extensions/builtin-subagent-record-writer.js";
+import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -5360,6 +5365,61 @@ test("an SDK wake reopening during reload saves through its replacement owner (#
 		opening.gate.resolve();
 		finish.resolve();
 		unbind();
+	}
+});
+
+test("a wake saves an accepted task to the original owner's store if it retires before admission returns (#5609)", async () => {
+	const h = harness();
+	const id = "closed-wake:0";
+	const dispatcher = await releasedWithWakes(h, "closed-wake");
+	const runtime = createExtensionRuntime();
+	const session = { sessionManager: h.sessionManager, _disposed: false };
+	bindBuiltinChildRecordSession(runtime, session);
+	installBuiltinChildRecordWriter(h.deps.pi, () => runtime);
+	const retire = bindSubagentChildOwner(h.deps.pi, h.ctx);
+	const sink = createSubagentChildRecordSink(h.deps.pi, h.ctx);
+	const unbind = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	const start = h.host.startAgentTask.bind(h.host);
+	const finish = Promise.withResolvers<void>();
+	let admitted: string | undefined;
+	h.host.startAgentTask = async (intent, operation, _runner, schedule) => {
+		const receipt = await start(
+			intent,
+			operation,
+			() => ({
+				result: finish.promise.then(() => ({ kind: "cancelled", cause: "user" })),
+				cleanup: finish.promise.then(() => ({ kind: "reaped" })),
+			}),
+			schedule,
+		);
+		assert.ok(receipt.ok);
+		admitted = receipt.value.taskId;
+		retire();
+		return receipt;
+	};
+	const wake = wakeWithResult(h, dispatcher, id, finish);
+	try {
+		await releasedChildWakeDecided(subagentWakeKey(h.sessionManager.getSessionId(), id));
+		finish.resolve();
+		await wake;
+		const saved = (await h.sessionManager.getSessionStore().load(h.sessionManager.getSessionId())).entries
+			.filter(isSubagentChildRecord)
+			.filter(
+				(entry) => entry.data?.childId === id && entry.data.taskId === admitted && entry.data.state === "running",
+			);
+		assert.equal(saved.length, 1);
+		session._disposed = true;
+		const failure = vi.spyOn(console, "error").mockImplementation(() => {});
+		sink.record({ runId: "disposed", index: 0, agent: "worker", cwd: h.cwd, state: "running" });
+		await sink.flushed?.();
+		assert.match(String(failure.mock.calls[0]?.[1]), /no longer owns its writer/);
+		failure.mockRestore();
+		assert.equal(h.latest("disposed:0"), undefined);
+		assert.match(subagentChildrenAwaitingResume(h.ctx, "disposed:0").join(""), /record-append-failed/);
+	} finally {
+		finish.resolve();
+		unbind();
+		retire();
 	}
 });
 

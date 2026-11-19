@@ -170,6 +170,8 @@ export function bindReleasedChildWakes(
 		slot: AgentWakeSlot | undefined,
 	) => {
 		const key = subagentWakeKey(ownerSessionId, record.childId);
+		// Wait through the admitting host even if the owner closes while the accepted record is being saved.
+		const host = ctx.getAgentTaskHost?.();
 		// #4856: while the child waits for its run's concurrency limit, it leaves its wake slot to other runs' children.
 		const outcome = await restoreSubagentChild(
 			deps,
@@ -182,7 +184,6 @@ export function bindReleasedChildWakes(
 			throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 		// Relaunched with its new run's record written, or not relaunched: what the wake carried stays held for resume.
 		settleReleasedChildRelaunch(key);
-		const host = ctx.getAgentTaskHost?.();
 		if (outcome.kind !== "restored" || host === undefined) return;
 		await awaitTaskSettlement(host, outcome.taskId);
 		openReleasedChildRelaunch(key);
