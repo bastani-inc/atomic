@@ -92,6 +92,16 @@ test("a batch that the server answered busy runs again and writes once", async (
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
 });
 
+test("several statements in one exec that the server answered busy run once each (#5652)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.fail(BUSY);
+	await database.exec("INSERT INTO events VALUES (1); INSERT INTO events VALUES (2)");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 1);
+});
+
 test("a server that stays busy past the busy timeout fails the call with its SQLITE_BUSY, having written nothing", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
@@ -229,15 +239,47 @@ test("a statement whose transaction the server ended with a schema-changed answe
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0, "neither insert committed");
 });
 
-test("several statements in one exec that the server answered schema-changed are not run again", async () => {
+test("a statement of several in one exec that the server answered schema-changed runs again on its own, and a statement that ran is never sent again (#5652)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const first = "INSERT INTO events VALUES (1)";
+	const second = "INSERT INTO events VALUES (2)";
+	const sent = (statement: string) =>
+		fake.pipelines.filter((pipeline) => pipeline.sql.some((sql) => sql.includes(statement))).length;
+	// Without a refusal the statements go in one request, as the text did.
+	let before = fake.pipelines.length;
+	await database.exec(`${first}; ${second}`);
+	assert.equal(fake.pipelines.length - before, 1);
+	// The server refuses the first statement; then, in another exec, the second one after the first committed.
+	for (const refused of [first, second]) {
+		fake.database.exec("DELETE FROM events");
+		before = sent(first);
+		fake.fail({ kind: "schema-changed", statement: refused });
+		await database.exec(`${first}; ${second}`);
+		assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 1"), 1, refused);
+		assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 1, refused);
+		if (refused === second) assert.equal(sent(first) - before, 1, "the first statement ran and was not sent again");
+	}
+});
+
+test("several statements in one exec that share a connection's state, such as a temporary table, are sent together and not run again after the server answered schema-changed", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	// Each statement sent on its own may run on another connection, which would not see the temporary table.
+	const sql = "CREATE TEMP TABLE staged(n); INSERT INTO staged VALUES (1); INSERT INTO events SELECT n FROM staged";
 	fake.fail(SCHEMA_CHANGED);
-	const sql = "INSERT INTO events VALUES (1); INSERT INTO events VALUES (2)";
 	await assert.rejects(database.exec(sql));
 	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+	await database.exec(sql);
+	assert.equal(
+		fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length,
+		2,
+		"sent whole again by the caller",
+	);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
 
 test("a write outside a transaction lands once while other connections keep changing the server's schema longer than the adapter waits", async () => {
@@ -265,6 +307,21 @@ test("a schema change in one exec lands once while other connections keep changi
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events'"), 1);
 });
 
+test("several statements in one exec land once each while other connections keep changing the server's schema longer than the adapter waits (#5652)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	fake.churnSchema(true);
+	try {
+		await database.exec(
+			"CREATE TABLE parents (id INTEGER PRIMARY KEY); CREATE TABLE children (id INTEGER PRIMARY KEY, parent INTEGER NOT NULL REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED); INSERT INTO parents VALUES (1); INSERT INTO children VALUES (1, 1);",
+		);
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM parents"), 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM children WHERE parent = 1"), 1);
+});
+
 test("a trigger created in one exec lands once while other connections keep changing the server's schema longer than the adapter waits (#5509)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
@@ -282,31 +339,51 @@ test("a trigger created in one exec lands once while other connections keep chan
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'blobs_delete'"), 1);
 });
 
-test("a trigger followed by another statement in one exec that the server answered schema-changed is not run again (#5509)", async () => {
+test("a trigger followed by another statement in one exec, the server having answered the statement schema-changed, creates the trigger once and writes once (#5509, #5652)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
-	fake.fail(SCHEMA_CHANGED);
-	const sql = "CREATE TRIGGER events_insert AFTER INSERT ON events BEGIN SELECT 1; END; INSERT INTO events VALUES (1)";
-	await assert.rejects(database.exec(sql));
-	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+	await database.exec("CREATE TABLE inserted(n INTEGER NOT NULL)");
+	fake.fail({ kind: "schema-changed", statement: "INSERT INTO events VALUES (1)" });
+	const trigger = "CREATE TRIGGER events_insert AFTER INSERT ON events BEGIN INSERT INTO inserted VALUES (new.n); END";
+	await database.exec(`${trigger}; INSERT INTO events VALUES (1)`);
+	const texts = fake.pipelines.flatMap((pipeline) => pipeline.sql);
+	assert.equal(
+		texts.filter((sql) => sql.includes("events_insert")).length,
+		1,
+		"the trigger ran once and was not sent again",
+	);
+	assert.ok(
+		texts.every((sql) => !(sql.includes("events_insert") && sql.includes("INSERT INTO events VALUES (1)"))),
+		"the trigger is never sent as one statement with the write after it",
+	);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM inserted"), 1, "the trigger fired once");
 });
 
-test("a trigger whose name ends in a combining accent, a write and another trigger in one exec that the server answered schema-changed are not run again (#5509)", async () => {
+test("a trigger whose name ends in a combining accent, a write and another trigger in one exec, the server having answered the write schema-changed, each run once (#5509, #5652)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec('CREATE TABLE events(n INTEGER NOT NULL, "case\u0301" TEXT)');
 	await database.run("INSERT INTO events VALUES (0, 'ok')");
-	fake.fail(SCHEMA_CHANGED);
+	fake.fail({ kind: "schema-changed", statement: "UPDATE events" });
 	// SQLite reads `case` followed by a combining accent (U+0301) as one name, not as the keyword CASE: the first trigger
 	// ends at its own END, and the UPDATE and the second trigger are statements of their own.
 	const sql =
 		"CREATE TRIGGER events_first AFTER INSERT ON events BEGIN SELECT new.case\u0301; END; UPDATE events SET n = n + 1; CREATE TRIGGER events_last AFTER DELETE ON events BEGIN SELECT 1; END;";
-	await assert.rejects(database.exec(sql));
-	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes(sql)).length, 1);
-	assert.equal(countRows(fake, "SELECT n AS count FROM events"), 0);
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'trigger'"), 0);
+	await database.exec(sql);
+	const texts = fake.pipelines.flatMap((pipeline) => pipeline.sql);
+	assert.equal(
+		texts.filter((text) => text.includes("events_first")).length,
+		1,
+		"the first trigger ran once and was not sent again",
+	);
+	assert.ok(
+		texts.every((text) => !(/events_first|events_last/.test(text) && text.includes("UPDATE events"))),
+		"a trigger is never sent as one statement with the write after it",
+	);
+	assert.equal(countRows(fake, "SELECT n AS count FROM events"), 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'trigger'"), 2);
 });
 
 test("a trigger with a byte-order mark inside a literal, a quoted name, a comment or a name lands once after the server answered it schema-changed (#5509)", async () => {
@@ -320,6 +397,24 @@ test("a trigger with a byte-order mark inside a literal, a quoted name, a commen
 		"CREATE TRIGGER events_marked AFTER INSERT ON events BEGIN SELECT 'a\uFEFFb' AS \"a\uFEFFb\", [n\uFEFF], n\uFEFF /* \uFEFF */ FROM events; END;",
 	);
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events_marked'"), 1);
+});
+
+test("one statement followed by a byte-order mark after its semicolon lands once after the server answered it schema-changed, also under churn (#5676)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	// SQLite reads the mark after the `;` as white space, and sqld runs such a text as one statement: nothing else runs.
+	fake.fail(SCHEMA_CHANGED);
+	await database.exec("INSERT INTO events VALUES (1);\uFEFF");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+	fake.churnSchema(true);
+	try {
+		await database.exec("INSERT INTO events VALUES (2);\uFEFF");
+		await database.run("INSERT INTO events VALUES (3);\uFEFF");
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 3);
 });
 
 test("a read that starts with WITH or VALUES the server answered schema-changed is sent again as it was, while a WITH that writes lands once under churn", async () => {

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings, type Terminal } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
@@ -22,6 +21,7 @@ import { presentQuestionnaire } from "../../packages/coding-agent/src/core/tools
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.ts";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 /**
  * Structural cost, not a slow test: each case constructs a real InteractiveMode

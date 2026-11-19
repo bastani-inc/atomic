@@ -35,7 +35,7 @@ import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { claimsOf, hasActiveLiveRun, hasForkClaim, pendingResumes, unsettledResumeClaims } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
-import { availableRunDurableBackend } from "./run-owner-backend.js";
+import { availableRunDurableBackend, bindRunDurableBackend, durableRootRunIdForRun } from "./run-owner-backend.js";
 import { restorePreconditionsChecked, resumeClaim, resumeLaunchCwd } from "./run-restore-preconditions.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectoryAsync, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
@@ -404,7 +404,12 @@ async function resumeDurableWorkflowClaimed(
 		failureDisposition: handle.failureDisposition,
 		failedToolNodeId: handle.failedToolNodeId,
 	};
-	const sourceSnapshot = toolContinuation?.source ?? deps.baseRunOpts.store?.run(resolved.workflowId);
+	const stored = deps.baseRunOpts.store?.run(resolved.workflowId);
+	// A refused claim is not a finish. Older failed handles were ordered by their pre-claim update time.
+	const finishSequence =
+		handle.finishSequence ?? stored?.finishSequence ?? (handle.status === "failed" ? handle.updatedAt : undefined);
+	const sourceSnapshot = toolContinuation === undefined ? stored : { ...toolContinuation.source, finishSequence };
+	if (sourceSnapshot !== undefined && toolContinuation !== undefined) bindRunDurableBackend(sourceSnapshot, backend);
 	/**
 	 * Undo the claim. An adoption is undone only while the adopter still owns the run and nothing else changed it; an
 	 * aborted adoption (`restoreOwner`) also returns the run to its previous owner, and a released run goes back to the
@@ -454,6 +459,8 @@ async function resumeDurableWorkflowClaimed(
 			handle.pendingPrompts,
 			handle.resumable,
 			sourceFailure,
+			undefined,
+			finishSequence,
 		);
 		onRestored?.();
 		return true;
@@ -557,13 +564,17 @@ async function resumeDurableWorkflowClaimed(
 							handle.pendingPrompts,
 							handle.resumable,
 							sourceFailure,
+							undefined,
+							finishSequence,
 						);
 						if (
 							deps.baseRunOpts.store?.run(resolved.workflowId) === current &&
 							current.status === "failed" &&
 							current.error === message
 						) {
-							deps.baseRunOpts.store.recordRunStart({ ...toolContinuation.source, error: message });
+							const restored = { ...toolContinuation.source, error: message, finishSequence };
+							bindRunDurableBackend(restored, backend);
+							deps.baseRunOpts.store.recordRunStart(restored);
 						}
 					}
 				}
@@ -750,12 +761,14 @@ export function purgeSuppressedWorkflowRuns(
 	controls: ToolControlRegistry = currentToolControlRegistry(),
 ): readonly string[] {
 	if (store === undefined) return [];
-	const removed: string[] = [];
-	for (const run of store.runs()) {
-		if (controls.runControl(run.id) !== undefined || backend.isWorkflowLoadable(run.id)) continue;
-		if (store.removeRun(run.id)) removed.push(run.id);
-	}
-	return removed;
+	// Resolve every owner before removing any root: its nested snapshots share its journal and deletion.
+	const deleted = store.runs().filter((run) => {
+		if (controls.runControl(run.id) !== undefined) return false;
+		const rootId = durableRootRunIdForRun(store, run.id) ?? run.id;
+		const owner = availableRunDurableBackend(store, rootId) ?? backend;
+		return !owner.isWorkflowLoadable(rootId);
+	});
+	return deleted.map((run) => run.id).filter((id) => store.removeRun(id));
 }
 
 /** Refresh known workflow ids for resume discovery. */

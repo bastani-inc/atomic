@@ -532,8 +532,7 @@ test.skipIf(process.platform === "win32")(
 				stageControlRegistry: createStageControlRegistry(),
 			})(failedStage.runId, failedStage.stage.id);
 			assert.equal(postMortem?.ok, true, `${failedStage.stage.status}: ${JSON.stringify(postMortem)}`);
-			// The graph collapses the failed child to its boundary; Enter on it, or a
-			// lookup by the child stage's name, still reaches the failed pooled stage.
+			// Both the original boundary id and the child stage's name still reach the failed pooled stage.
 			const childRun = live.store.runs().find((run) => run.id === failedStage.runId)!;
 			const root = live.store.runs().find((run) => run.id === childRun.parentRunId)!;
 			const boundary = root.stages.find((stage) => stage.id === childRun.parentStageId)!;

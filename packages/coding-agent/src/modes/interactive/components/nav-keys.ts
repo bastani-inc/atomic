@@ -3,7 +3,17 @@
  * line a screen shows, the `?` key overlay, and the two-press confirmation that `x` and Ctrl+X Ctrl+K use.
  */
 
-import { type EditorAutocompleteHintEntry, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import {
+	clickableKeysHint,
+	type EditorAutocompleteHintEntry,
+	type HintKeyPart,
+	hintKeyParts,
+	type KeyId,
+	truncateToWidth,
+	visibleWidth,
+} from "@bastani/atomic-tui";
+
+export { clickableHintText, clickableKeyTextHint, hintKeyParts, slashCommandHint } from "@bastani/atomic-tui";
 
 /** What a screen needs of the keybindings manager: matching, and the keys an action resolves to. */
 export interface NavKeybindings {
@@ -65,15 +75,38 @@ export function navActionText(keybindings: NavKeybindings | undefined, action: s
 	return keys.map(navKeyText).join("/");
 }
 
+/** The first bound key as displayed. A slash can be that key, not a separator. */
+export function navFirstKeyText(keybindings: NavKeybindings, action: string): string {
+	return navKeyText(keybindings.getKeys?.(action)?.[0] ?? "");
+}
+
 /**
  * The text one entry shows for its keys; empty when its action is unbound. Keys in `taken` belong to an earlier entry
  * of the same screen, which handles them first, so they are left out; the entry's own keys are added to it.
  */
 export function navEntryKeys(keybindings: NavKeybindings | undefined, entry: NavKey, taken?: Set<string>): string {
-	if (entry.action === undefined) return entry.keys ?? "";
+	return navEntryKeyParts(keybindings, entry, taken)
+		.map((part) => part.text)
+		.join("");
+}
+
+/** {@link navEntryKeys} split by key, each part with the key a click on it presses. */
+export function navEntryKeyParts(
+	keybindings: NavKeybindings | undefined,
+	entry: NavKey,
+	taken?: Set<string>,
+): HintKeyPart[] {
+	if (entry.action === undefined) return hintKeyParts(entry.keys ?? "");
 	const keys = (keybindings?.getKeys?.(entry.action) ?? []).filter((key) => !taken?.has(key));
 	for (const key of keys) taken?.add(key);
-	return keys.map(navKeyText).join("/");
+	return boundKeyParts(keys);
+}
+
+function boundKeyParts(keys: readonly string[]): HintKeyPart[] {
+	return keys.map((key, index) => ({
+		text: `${navKeyText(key)}${index < keys.length - 1 ? "/" : ""}`,
+		key: key as KeyId,
+	}));
 }
 
 const WAY_OUT_KEY_RE = /(?:^|\/)(?:esc|escape|←|left)(?:$|\/)/i;
@@ -102,11 +135,21 @@ export function renderNavHintLine(
 ): string {
 	const taken = new Set<string>();
 	const items = entries.flatMap((entry) => {
-		const keys = navEntryKeys(keybindings, entry, taken);
-		return keys ? [{ text: `${keys} ${entry.label}`, priority: navEntryPriority(entry, keys) }] : [];
+		const parts = navEntryKeyParts(keybindings, entry, taken);
+		const keys = parts.map((part) => part.text).join("");
+		return keys
+			? [
+					{
+						text: `${keys} ${entry.label}`,
+						hint: clickableKeysHint(parts, ` ${entry.label}`),
+						priority: navEntryPriority(entry, keys),
+					},
+				]
+			: [];
 	});
 	const separator = " · ";
 	const joined = () => items.map((item) => item.text).join(separator);
+	const joinedHints = () => items.map((item) => item.hint).join(separator);
 	let padding = indent;
 	if (options.compact && visibleWidth(joined()) > width - padding) {
 		padding = 0;
@@ -126,7 +169,7 @@ export function renderNavHintLine(
 		}
 		items.splice(dropIndex, 1);
 	}
-	const joinedText = joined();
+	const joinedText = joinedHints();
 	const line = visibleWidth(joinedText) <= room ? joinedText : truncateToWidth(joinedText, room);
 	const lead = options.compact && visibleWidth(line) <= width - indent ? indent : padding;
 	return style.dim(" ".repeat(Math.min(lead, Math.max(0, width - visibleWidth(line)))) + line);
@@ -142,24 +185,30 @@ export function renderNavKeyOverlay(
 	width: number,
 	style: NavKeyStyle,
 	keybindings: NavKeybindings | undefined,
+	closeKey: "escape" | "tui.select.cancel" = "escape",
 ): string[] {
 	const taken = new Set<string>();
 	const rows = entries.flatMap((entry) => {
 		if (entry.action === "app.keys.help") return [];
-		const keys = navEntryKeys(keybindings, entry, taken);
-		return keys ? [{ keys, label: entry.label }] : [];
+		const parts = navEntryKeyParts(keybindings, entry, taken);
+		return parts.length > 0 ? [{ parts, label: entry.label }] : [];
 	});
-	rows.push({ keys: `esc/${navActionText(keybindings, "app.keys.help") || "?"}`, label: "close this help" });
-	const keyWidth = Math.min(18, Math.max(...rows.map((row) => visibleWidth(row.keys))));
+	const cancelKeys = closeKey === "escape" ? ["escape"] : (keybindings?.getKeys?.(closeKey) ?? ["escape"]);
+	const helpKeys = keybindings?.getKeys?.("app.keys.help") ?? ["?"];
+	// In selectors Ctrl+C closes the whole dialog, not just its help.
+	const exits = [...new Set([...cancelKeys, ...helpKeys])].filter((key) => closeKey === "escape" || key !== "ctrl+c");
+	if (exits.length > 0) rows.push({ parts: boundKeyParts(exits), label: "close this help" });
+	const hints = rows.map(({ parts, label }) => ({
+		keys: clickableKeysHint(parts.map((part) => ({ ...part, text: style.text(part.text) }))),
+		label: clickableKeysHint([{ ...parts.at(-1)!, text: style.muted(label) }]),
+	}));
+	const keyWidth = Math.min(18, Math.max(...hints.map(({ keys }) => visibleWidth(keys))));
 	const framed = width >= 24;
 	const inner = Math.max(1, width - (framed ? 4 : 0));
-	const body = rows.map((row) => {
-		const keys = truncateToWidth(row.keys, keyWidth);
-		const line =
-			style.text(keys) +
-			" ".repeat(Math.max(1, keyWidth - visibleWidth(keys) + 2)) +
-			style.muted(truncateToWidth(row.label, Math.max(1, inner - keyWidth - 2)));
-		return truncateToWidth(line, inner);
+	const body = hints.map((hint) => {
+		const keys = truncateToWidth(hint.keys, keyWidth);
+		const gap = " ".repeat(Math.max(1, keyWidth - visibleWidth(keys) + 2));
+		return truncateToWidth(keys + gap + truncateToWidth(hint.label, Math.max(1, inner - keyWidth - 2)), inner);
 	});
 	if (!framed) return [style.bold(truncateToWidth(title, width)), ...body];
 	const heading = ` ${truncateToWidth(title, Math.max(1, width - 6))} `;
