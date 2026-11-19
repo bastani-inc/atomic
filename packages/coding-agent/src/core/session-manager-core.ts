@@ -5,6 +5,7 @@ import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-
 import { getAgentDir } from "../config.js";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
+import { forkContextPath } from "./fork-context-path.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
@@ -1313,7 +1314,10 @@ export class SessionManager {
 		options?: { readonly history?: "full" | "tail" },
 	): Promise<string | undefined> {
 		return this.runMutation(async () => {
-			const path = options?.history === "tail" ? await this.contextBranch(leafId) : await this.fullBranch(leafId);
+			const path =
+				options?.history === "tail"
+					? forkContextPath(await this.contextBranch(leafId))
+					: await this.fullBranch(leafId);
 			const result = createBranchedSessionState({
 				leafId,
 				cwd: this.cwd,
@@ -1361,12 +1365,7 @@ export class SessionManager {
 		});
 		const leafId = entryId ?? source.getLeafId();
 		if (leafId === null || source.getEntry(leafId) === undefined) return undefined;
-		let parentId: string | null = null;
-		return (await source.contextBranch(leafId)).map((entry) => {
-			const linked = entry.parentId === parentId ? entry : { ...entry, parentId };
-			parentId = entry.id;
-			return linked;
-		});
+		return forkContextPath(await source.contextBranch(leafId));
 	}
 
 	private async fullBranch(leafId: string): Promise<SessionEntry[]> {

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
@@ -179,6 +180,59 @@ test("a parallel launch does not keep a finished fork's manager alive to support
 	assert.equal(retry, same);
 	assert.equal(retry.getSessionId(), previous.id);
 	assert.equal(retry.getLeafId(), previous.marker);
+});
+
+test("a new child does not inherit the parent's deliveries or child ownership, even when a card contributed to the request (#5594)", async () => {
+	const store = await sqlStore();
+	const parent = await SessionManager.create(store, process.cwd());
+	await parent.appendMessage({ role: "user", content: "original prompt", timestamp: 1 });
+	await parent.appendCustomEntry("subagent-child", { childId: "parent-only" });
+	await parent.appendCustomEntry("task-completion-intent", { completionId: "parent-completion" });
+	await parent.appendCustomEntry("intercom_inbox", { message: { id: "parent-delivery" } });
+	await parent.appendCustomEntry("workflow.stage.start", { runId: "parent-run" });
+	await parent.appendCustomMessageEntry(
+		"intercom_message",
+		"visible reply",
+		true,
+		{ message: { id: "parent-delivery" } },
+		false,
+		{ delivery: "followUp" },
+		"parent-key",
+	);
+	await parent.appendCustomMessageEntry(
+		"task-completion",
+		"history only",
+		true,
+		{ completionId: "parent-completion" },
+		true,
+	);
+	const point = parent.getLeafId()!;
+	const before = await store.load(parent.getSessionId());
+	const expected = JSON.stringify(convertToLlm(parent.buildSessionContext().messages));
+	const fork = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+	const stage = await forkStageSession(store, parent.getSessionId(), process.cwd(), {}, undefined, point);
+	assert.ok(fork);
+	for (const child of [fork, stage]) {
+		assert.equal(JSON.stringify(convertToLlm(child.buildSessionContext().messages)), expected);
+		const entries = (await store.load(child.getSessionId())).entries;
+		assert.deepEqual(
+			entries.filter((entry) => entry.type === "custom"),
+			[],
+			"parent-owned durable protocol records reached the child",
+		);
+		assert.equal(
+			entries.some(
+				(entry) =>
+					entry.type === "custom_message" &&
+					(entry.customType === "intercom_message" ||
+						entry.customType === "task-completion" ||
+						entry.stageAdmissionKey !== undefined ||
+						entry.protectedReconciliation !== undefined),
+			),
+			false,
+		);
+	}
+	assert.deepEqual(await store.load(parent.getSessionId()), before);
 });
 
 test("a workflow stage forked from a long stage session copies only the context it is built from (#5500)", async () => {

@@ -15,6 +15,8 @@
 
 - A parallel fork launch no longer keeps finished children's session managers in memory while its other children run. A retry reopens the same saved child and keeps the work it already did ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
 
+- Forked children inherit the model-visible conversation without copying parent-owned subagent, workflow or Intercom records. The fork does not show or replay the parent's cards and notices ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
+
 ## [0.9.89] - 2026-11-18
 
 ### Breaking Changes
