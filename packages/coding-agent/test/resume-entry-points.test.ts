@@ -170,7 +170,7 @@ const settings = (setupCommand?: string) =>
 		setupCommand === undefined ? {} : { defaultProjectTrust: "always", resume: { setupCommand } },
 	);
 
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 const extensionFilesLoadedBy = (session: AgentSession) =>
 	session.extensionRunner.getExtensionPaths().filter((path) => !isSyntheticPath(path));

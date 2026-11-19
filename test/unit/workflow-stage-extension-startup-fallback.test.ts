@@ -15,7 +15,7 @@ import type { StageSnapshot } from "../../packages/workflows/src/shared/store-ty
 import { readJournalEntries } from "../helpers/journal-internals.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 const MODEL_IDS = ["primary", "secondary", "tertiary", "sibling"] as const;
 type ModelId = (typeof MODEL_IDS)[number];
 const EXTENSION_NAME = "flaky-startup";

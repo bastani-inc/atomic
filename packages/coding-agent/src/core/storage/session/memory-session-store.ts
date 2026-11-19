@@ -546,6 +546,13 @@ export class MemorySessionStore implements SessionStore {
 		};
 	}
 
+	/** @internal Resolve a branched cut once on the canonical private store. Its writable views
+	 * share the resulting immutable index, so a later linear append never re-walks the same archive. */
+	async preparePrivateMirror(id: string): Promise<void> {
+		const record = this.privateMirrorRecord(id);
+		if (record.index.needsBranchRebuild) await this.resumeIndex(id, record);
+	}
+
 	private privateMirrorRecord(id: string) {
 		const r = this.stored(id);
 		if (!r) throw new SessionNotFoundError(id);
@@ -866,8 +873,9 @@ export class MemorySessionStore implements SessionStore {
 			const record = await this.settledRecord(sessionId);
 			if (expectedEpoch !== undefined && expectedEpoch !== record.index.epoch)
 				throw new SessionConflictError(sessionId, endSeq, record.lastSeq);
-			const index = await this.resumeIndex(sessionId, record);
-			if (index === undefined) continue;
+			// These are physical positions. A branch move invalidates its resume projection, not the
+			// append watermark, generation or byte spans of the committed records.
+			const index = record.index;
 			const start = Math.max(1, startSeq);
 			const seqs = seqRange(start, Math.min(endSeq, index.seq));
 			const read = await this.entriesAt(sessionId, record, seqs);

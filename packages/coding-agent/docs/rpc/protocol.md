@@ -7,7 +7,7 @@ description: Every RPC command, event, type, and error contract.
 
 ## Commands
 
-### Stored summaries and workflow history
+### Stored session summaries
 
 These read-only commands do not start a model turn. Stored summaries remain available when `sessionSummary.enabled` is false.
 
@@ -15,12 +15,6 @@ These read-only commands do not start a model turn. Stored summaries remain avai
 | --- | --- | --- |
 | `{"type":"get_session_summary"}` | `{ summary: SessionSummaryEntry \| null }`, including `summary` and `summarizedThroughId`; always `null` for an unsaved (`--no-session`) session | `getSessionSummary()` |
 | `{"type":"list_sessions"}` | `{ sessions: RpcSessionInfo[] }` for the current project/session directory, including `summary` and `summarizedThroughId`; `created` and `modified` are ISO strings | `listSessions()` |
-| `{"type":"list_workflow_runs"}` | `{ runs: WorkflowRunSummary[] }`, including live runs and current-project resumable and completed history | `listWorkflowRuns(status?)` |
-| `{"type":"get_workflow_run_summary","runId":"<uuid>"}` | `WorkflowRunDetail` for that run | `getWorkflowRunSummary(runId)` |
-
-Workflow records include `runId`, `name`, `status`, `label`, `identity`, `summary`, and `summarizedThrough` (Unix milliseconds). Optional summary fields are absent when no summary has been saved. `list_workflow_runs` accepts an optional `status` filter. Run detail requests accept full UUIDs for earlier sessions; a missing run returns the normal error response. Summaries describe progress through their marker and may be stale.
-
-Stored history follows the SDK's run-detail access rules: top-level runs with a recorded session owner launched from the current project directory. Runs from other project directories are not included.
 
 ### Prompting
 

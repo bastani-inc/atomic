@@ -53,7 +53,7 @@ async function newSession(withModel: boolean) {
 		thinkingLevel: "high",
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		sessionManager,
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
 	cleanups.push(() => session.dispose());

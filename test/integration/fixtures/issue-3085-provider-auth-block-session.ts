@@ -165,7 +165,7 @@ export async function createIssue3085StageSession(input: {
 		cwd: sessionDir,
 		agentDir: sessionDir,
 		// #3105: this provider-only stage fixture has no extension resources.
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		modelRuntime,
 		model: modelRuntime.getModel(requestedProvider(input.model), "m")!,
 		fallbackModels: input.fallbackModels,

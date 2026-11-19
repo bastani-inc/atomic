@@ -27,12 +27,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SerializedDebugError } from "../../core/debug-errors.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { HostSessionPickerRow, SessionRecoveryReason } from "../../core/extensions/index.js";
-import type {
-	WorkflowRunDetail,
-	WorkflowRunFilterStatus,
-	WorkflowRunSummary,
-} from "../../core/extensions/workflow-run-control.js";
+import type { SessionRecoveryReason } from "../../core/extensions/index.js";
 import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 import type { CredentialSynchronizationOperation } from "../../core/model-runtime.js";
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
@@ -143,16 +138,6 @@ export type RpcCommand =
 	| { id?: string; type: "get_state" }
 	| { id?: string; type: "get_session_summary" }
 	| { id?: string; type: "list_sessions" }
-	| { id?: string; type: "list_workflow_runs"; status?: WorkflowRunFilterStatus }
-	| { id?: string; type: "get_workflow_run_summary"; runId: string }
-	| { id?: string; type: "get_workflow_resume_entries"; target?: string }
-	| {
-			id?: string;
-			type: "resume_workflow_from_picker";
-			target: string;
-			selection?: HostSessionPickerRow["resumeSelection"];
-	  }
-	| { id?: string; type: "delete_workflow_from_picker"; runId: string }
 	| { id?: string; type: "open_task_inspector"; taskId?: string }
 	| { id?: string; type: "stop_all_background" }
 	| { id?: string; type: "set_stop_all_notice"; text?: string }
@@ -383,29 +368,6 @@ export type RpcResponse =
 			data: { summary: SessionSummaryEntry | null };
 	  }
 	| { id?: string; type: "response"; command: "list_sessions"; success: true; data: { sessions: RpcSessionInfo[] } }
-	| {
-			id?: string;
-			type: "response";
-			command: "list_workflow_runs";
-			success: true;
-			data: { runs: readonly WorkflowRunSummary[] };
-	  }
-	| { id?: string; type: "response"; command: "get_workflow_run_summary"; success: true; data: WorkflowRunDetail }
-	| {
-			id?: string;
-			type: "response";
-			command: "get_workflow_resume_entries";
-			success: true;
-			data: { entries: readonly HostSessionPickerRow[] };
-	  }
-	| {
-			id?: string;
-			type: "response";
-			command: "resume_workflow_from_picker";
-			success: true;
-			data: { handled: boolean };
-	  }
-	| { id?: string; type: "response"; command: "delete_workflow_from_picker"; success: true }
 	| { id?: string; type: "response"; command: "open_task_inspector"; success: true }
 	| { id?: string; type: "response"; command: "open_agent_panel"; success: true }
 	| { id?: string; type: "response"; command: "set_stop_all_notice"; success: true }

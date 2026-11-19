@@ -10,7 +10,6 @@ import { createJiti } from "jiti";
 const [directory, maxWorkers] = process.argv.slice(2);
 const host = process.env.SHARED_POOL_HOST;
 const jiti = createJiti(import.meta.url, { fsCache: true });
-await jiti.import(fileURLToPath(new URL("../setup-packaged-local-worker.ts", import.meta.url)));
 const { startWorkflowWorkerHost } = await jiti.import(
 	fileURLToPath(new URL("../../packages/workflows/src/workers/worker-host.ts", import.meta.url)),
 );
