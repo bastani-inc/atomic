@@ -673,51 +673,21 @@ function causeMessages(cause: unknown): string[] {
 	return messages;
 }
 
-/** A trigger or view, by its exact name, that stops SQLite renaming a table (#5622). */
-export interface RenameBlocker {
-	readonly type: "trigger" | "view";
-	readonly name: string;
-}
-
-/** What SQLite writes after an object's name when the object stops a schema change only once the change is made. */
-const RENAME_BLOCKER_WHEN = [" after rename", " after drop column"];
-
 /**
- * Every trigger or view that `error`, a failed rename, or an error it wraps can name. SQLite names a trigger or view
- * that no longer compiles, such as one that refers to a dropped table, as `error in <type> <name>[ <when>]: <reason>`,
- * and drivers add their own prefix. The name is not quoted, so `error in view sales after rename: …` can name a view
- * `sales after rename` or a view `sales`, and a name can hold `: `. Only the database can tell which object it is.
+ * The key under which a failed rename's storage error carries the trigger or view that stopped it, once the snapshot
+ * store confirmed in the database which object SQLite named (#5622). A `Symbol.for` key, so the store sets it without
+ * importing this module.
  */
-export function renameBlockerCandidates(error: unknown): RenameBlocker[] {
-	const candidates: RenameBlocker[] = [];
-	for (const message of causeMessages(error))
-		for (const match of message.matchAll(/\berror in (trigger|view) /gu)) {
-			const type = match[1] as RenameBlocker["type"];
-			const rest = message.slice(match.index + match[0].length);
-			for (let end = rest.indexOf(": "); end !== -1; end = rest.indexOf(": ", end + 1)) {
-				const name = rest.slice(0, end);
-				candidates.push({ type, name });
-				for (const when of RENAME_BLOCKER_WHEN)
-					if (name.endsWith(when)) candidates.push({ type, name: name.slice(0, -when.length) });
-			}
-		}
-	return candidates;
-}
+const RENAME_BLOCKER = Symbol.for("atomic-snapshots/rename-blocker@1");
 
-const RENAME_BLOCKERS = new WeakMap<object, RenameBlocker>();
-
-/** Records on `error`, a failed rename, the trigger or view the database confirmed SQLite named in it. */
-export function recordRenameBlocker(error: unknown, blocker: RenameBlocker): void {
-	if (typeof error === "object" && error !== null)
-		RENAME_BLOCKERS.set(error, { type: blocker.type, name: blocker.name });
-}
-
-/** The trigger or view recorded on `cause` or an error it wraps, at most eight deep. */
-function recordedRenameBlocker(cause: unknown): RenameBlocker | undefined {
+/** The trigger or view that `cause` or an error it wraps, at most eight deep, carries under {@link RENAME_BLOCKER}. */
+function renameBlockerOf(cause: unknown): { readonly type: "trigger" | "view"; readonly name: string } | undefined {
 	let current = cause;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		const blocker = RENAME_BLOCKERS.get(current);
-		if (blocker !== undefined) return blocker;
+		const blocker = dataProperty(current, RENAME_BLOCKER);
+		const type = dataProperty(blocker, "type");
+		const name = dataProperty(blocker, "name");
+		if ((type === "trigger" || type === "view") && typeof name === "string") return { type, name };
 		current = dataProperty(current, "cause");
 	}
 	return undefined;
@@ -727,8 +697,8 @@ function recordedRenameBlocker(cause: unknown): RenameBlocker | undefined {
  * Collecting unreferenced snapshot blobs failed; the storage failure is the `cause`, and the summary ends with its
  * innermost reason, the database's own words. No blob a retained snapshot references was deleted, and running the
  * collection again is safe, so it is retryable. When a trigger or view stops the move of the chunk table to the row
- * layout at its rename (#5541), and the store confirmed which one it is ({@link recordRenameBlocker}), the hint names
- * it and says to fix or drop it (#5622).
+ * layout at its rename (#5541), and the store confirmed which one it is, the hint names it and says to fix or drop it
+ * (#5622). SQLite's own words never name one alone: they do not quote the name, so they can mean another object.
  */
 export class WorkspaceCollectionError extends WorkspaceError implements WorkspaceCollectionErrorFields {
 	override readonly name = "WorkspaceCollectionError" as const;
@@ -742,7 +712,7 @@ export class WorkspaceCollectionError extends WorkspaceError implements Workspac
 		const messages = causeMessages(cause);
 		const reason = messages.at(-1);
 		// The sweep is the only phase that renames a table: the chunk table's move ends it.
-		const blocker = fields.phase === "sweep" ? recordedRenameBlocker(cause) : undefined;
+		const blocker = fields.phase === "sweep" ? renameBlockerOf(cause) : undefined;
 		super({
 			code: "collection-failed",
 			summary: `Snapshot blob collection failed while ${COLLECTION_PHASES[fields.phase]} ${fields.table}${reason === undefined ? "" : `: ${reason}`}`,
@@ -1097,7 +1067,7 @@ const ALL_CODES = new Set(Object.values(CODES).flat());
  * A data property of `value` or its prototypes. Accessors are never invoked, so guards stay side-effect free and never
  * throw on hostile or half-built values.
  */
-function dataProperty(value: unknown, key: string): unknown {
+function dataProperty(value: unknown, key: string | symbol): unknown {
 	for (let owner: unknown = value; typeof owner === "object" && owner !== null; owner = Object.getPrototypeOf(owner)) {
 		const descriptor = Object.getOwnPropertyDescriptor(owner, key);
 		if (descriptor !== undefined) return descriptor.value;
