@@ -12,6 +12,7 @@ import type {
 	TaskId,
 	TaskOutputView,
 	TaskRecord,
+	TaskTranscriptFragments,
 	TaskTranscriptView,
 	TaskViewResult,
 } from "@bastani/atomic";
@@ -186,7 +187,11 @@ export type PooledTaskReply =
 	| { readonly kind: "input"; readonly result: TaskViewResult<{ readonly acceptedBytes: number }> }
 	| { readonly kind: "output"; readonly result: TaskViewResult<TaskOutputView> }
 	| { readonly kind: "detail"; readonly detail: TaskDetailText }
-	| { readonly kind: "transcript"; readonly result: TaskViewResult<TaskTranscriptView> }
+	| {
+			readonly kind: "transcript";
+			readonly result: TaskViewResult<TaskTranscriptView>;
+			readonly fragments?: TaskTranscriptFragments;
+	  }
 	/** `error` is the serialized `TaskMessageError` when the message did not reach the task. */
 	| { readonly kind: "message"; readonly error?: SerializedTaskMessageError }
 	/** What a chat of the task completes; absent when the worker does not know. */
