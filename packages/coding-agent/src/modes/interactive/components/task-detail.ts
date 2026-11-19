@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { type Component, Text, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { settledTaskResumeId } from "../../../core/tasks/completion.js";
 import type { Attention, Execution, TaskRecord } from "../../../core/tasks/contracts.js";
 import { formatTaskHeartbeatDuration } from "../../../core/tasks/heartbeat-notice.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
@@ -37,6 +38,8 @@ export type TaskDetailContent = {
 	stdinAvailable: boolean;
 	activity?: readonly TaskActivity[];
 	activityOmitted?: boolean;
+	/** The tasks the detail's task is listed with: only a subagent's latest attempt among them names its resume id. */
+	tasks?: readonly TaskRecord[];
 };
 
 export function taskDetailSummary(task: TaskRecord): string {
@@ -156,9 +159,13 @@ export class TaskDetail implements Component {
 			if (this.content.prompt !== undefined) section("Prompt", this.content.prompt, 3);
 			if (this.content.output) section("Latest response", this.content.output, 5);
 		}
+		const resumeId = settledTaskResumeId(task, this.content.tasks);
 		lines.push(
 			"",
-			theme.fg("dim", `Owner ${taskDisplayText(task.ref.ownerId)} · Task ${taskDisplayText(task.ref.taskId)}`),
+			theme.fg(
+				"dim",
+				`Owner ${taskDisplayText(task.ref.ownerId)} · Task ${taskDisplayText(task.ref.taskId)}${resumeId === undefined ? "" : ` · Resume id ${taskDisplayText(resumeId)}`}`,
+			),
 		);
 		return new Text(lines.join("\n"), 0, 0).render(width);
 	}

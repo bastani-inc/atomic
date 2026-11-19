@@ -35,6 +35,7 @@ import {
 	priorityHoldCounts,
 	type UserMessageWithRawText,
 } from "./agent-session-types.js";
+import { noticeOvertookPrompt } from "./chat-admission-order.js";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
@@ -311,6 +312,7 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 		}
 	}
 	confirmCustomMessageWrite(manager, key);
+	if (message.display && customMessageExcludesContext(message)) noticeOvertookPrompt(this, entryId);
 	this._entryIdsByMessage.set(message, entryId);
 	noteMessageSaved(this, message);
 	pendingCustomMessageSaves.get(message)?.resolve();
