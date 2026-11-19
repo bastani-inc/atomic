@@ -1,4 +1,10 @@
-import type { AgentTaskHost, ExtensionContext, TaskId, ToolScriptAccess } from "@bastani/atomic";
+import {
+	type AgentTaskHost,
+	type ExtensionContext,
+	resumableSubagentResult,
+	type TaskId,
+	type ToolScriptAccess,
+} from "@bastani/atomic";
 import type { JsonValue } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { admittedSubagentChild } from "../runs/foreground/released-child-resume.js";
@@ -25,6 +31,7 @@ export const SUBAGENT_SCRIPT_ACTIONS: readonly string[] = [
 ];
 const string = Type.String();
 const optionalString = Type.Optional(string);
+const resumeCall = Type.Optional(Type.Object({ action: Type.Literal("resume"), id: string }));
 const identity = { childId: string, agent: string, taskId: optionalString, intercomTarget: optionalString };
 const summary = {
 	name: string,
@@ -62,6 +69,8 @@ Inspect definitions with list/get and the configured model catalog with models. 
 			action: Type.Literal("wait"),
 			taskId: string,
 			outcome: Type.Union([Type.Literal("running"), Type.Literal("settled"), Type.Literal("stopped-waiting")]),
+			childId: optionalString,
+			resumeCall,
 			worktreeNote: optionalString,
 			result: Type.Optional(
 				Type.Object({ status: string, output: optionalString, outputPath: optionalString, reason: optionalString }),
@@ -75,7 +84,7 @@ Inspect definitions with list/get and the configured model catalog with models. 
 					state: string,
 					resumable: Type.Boolean(),
 					worktreeNote: optionalString,
-					resumeCall: Type.Optional(Type.Object({ action: Type.Literal("resume"), id: string })),
+					resumeCall,
 				}),
 			),
 		}),
@@ -174,6 +183,9 @@ export async function waitForScriptChild(ctx: ExtensionContext, params: Subagent
 		action: "wait",
 		taskId,
 		outcome: "settled",
+		// A settled child that stays resumable names the call that continues it, as `status` does.
+		childId: owned.childId,
+		...(resumableSubagentResult(result) ? { resumeCall: { action: "resume", id: owned.childId } } : {}),
 		...(worktreeNote ? { worktreeNote } : {}),
 		result: {
 			status:

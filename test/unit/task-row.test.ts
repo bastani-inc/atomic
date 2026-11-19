@@ -3,7 +3,10 @@ import { setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { TaskId, TaskRecord, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { taskDetailSummary } from "../../packages/coding-agent/src/modes/interactive/components/task-detail.js";
+import {
+	TaskDetail,
+	taskDetailSummary,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-detail.js";
 import {
 	renderTaskFooter,
 	TaskList,
@@ -89,6 +92,38 @@ test("a quit or paused agent row shows it paused and awaiting resume, not stoppe
 			color: "warning",
 		});
 	}
+});
+
+test("/tasks names the resume id of a settled subagent that stays resumable, in its expanded row and detail", () => {
+	const settled = (result: TaskResult, kind: TaskRecord["kind"] = "agent"): TaskRecord => ({
+		...taskRecord("finished-child", kind),
+		launchOperationId: "a760c0ec:0:resume:uuid" as TaskRecord["launchOperationId"],
+		execution: { kind: "settled", result },
+	});
+	const output = taskRecord("finished-child").output;
+	const shown = (task: TaskRecord) => [
+		plain(new TaskRow(task, { expanded: true }).render(120)),
+		plain(new TaskDetail(task, { stdinAvailable: false }).render(120)),
+	];
+	for (const result of [
+		{ kind: "completed", output },
+		{ kind: "failed", code: "AgentFailed", message: "model refused", output },
+		{ kind: "cancelled", cause: "quit" },
+	] as const) {
+		const [row, detail] = shown(settled(result));
+		assert.match(row!, /^ {2}finished-child · owner owner · resume id a760c0ec:0$/m, result.kind);
+		assert.match(detail!, /Owner owner · Task finished-child · Resume id a760c0ec:0/, result.kind);
+		// Collapsed, the row reads as before.
+		assert.doesNotMatch(plain(new TaskRow(settled(result)).render(120)), /resume id/i);
+	}
+	// A child killed for good, a released one, a running one and a shell show no resume id.
+	for (const task of [
+		settled({ kind: "cancelled", cause: "user" }),
+		settled({ kind: "cancelled", cause: "pause", released: { waitingOn: [] } }),
+		{ ...settled({ kind: "cancelled", cause: "user" }), execution: { kind: "running" as const } },
+		settled({ kind: "completed", output, exitCode: 0 }, "command"),
+	])
+		for (const text of shown(task)) assert.doesNotMatch(text, /resume id/i);
 });
 
 test("an agent released while it waits shows released and what it waits on in /tasks, not paused (#5031)", () => {

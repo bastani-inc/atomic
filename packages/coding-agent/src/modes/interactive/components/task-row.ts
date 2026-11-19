@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { type Component, truncateToWidth } from "@bastani/atomic-tui";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
-import { isResumableStop, releasedWaitingOn, waitingReleasedTools } from "../../../core/tasks/completion.js";
+import {
+	isResumableStop,
+	releasedWaitingOn,
+	settledTaskResumeId,
+	waitingReleasedTools,
+} from "../../../core/tasks/completion.js";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { taskClockRunning, taskElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, type TaskActivity } from "../../../core/tasks/owner-store.js";
@@ -242,7 +247,16 @@ export class TaskRow implements Component {
 		const duration = elapsedMs === undefined ? "" : ` · ${formatPanelElapsed(elapsedMs)}`;
 		lines.push(theme.fg("dim", truncateToWidth(`  ${state}${badge}${tools}${duration}${action}`, width)));
 		if (this.expanded) {
-			lines.push(theme.fg("dim", truncateToWidth(`  ${task.ref.taskId} · owner ${task.ref.ownerId}`, width)));
+			const resumeId = settledTaskResumeId(task);
+			lines.push(
+				theme.fg(
+					"dim",
+					truncateToWidth(
+						`  ${task.ref.taskId} · owner ${task.ref.ownerId}${resumeId === undefined ? "" : ` · resume id ${taskDisplayText(resumeId)}`}`,
+						width,
+					),
+				),
+			);
 			if (task.metrics?.tokenCount !== undefined) lines.push(theme.fg("dim", `  ${task.metrics.tokenCount} tokens`));
 			lines.push("  Activity");
 			if (this.options.activityOmitted) lines.push(theme.fg("dim", "    Earlier activity omitted"));
