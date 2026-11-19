@@ -58,7 +58,7 @@ function positiveSafeInteger(options: { default: number; description: string }) 
 const SnapshotSettingsSchema = Type.Object({
 	enabled: Type.Optional(
 		Type.Boolean({
-			description: "Record worktree snapshots so sessions and workflow runs can resume with their repository state.",
+			description: "Record worktree snapshots so sessions can resume with their repository state.",
 			default: SETTINGS_DEFAULTS.snapshots.enabled,
 		}),
 	),
@@ -89,7 +89,7 @@ const SnapshotSettingsSchema = Type.Object({
 	autoCollect: Type.Optional(
 		Type.Boolean({
 			description:
-				"Delete snapshot blobs that no retained snapshot references, in the background of an interactive session, after a session closes, and when a workflow run finishes.",
+				"Delete snapshot blobs that no retained snapshot references, in the background of an interactive session and after a session closes.",
 			default: SETTINGS_DEFAULTS.snapshots.autoCollect,
 		}),
 	),
@@ -321,16 +321,6 @@ const WarningSettingsSchema = Type.Object({
 	anthropicExtraUsage: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.warnings.anthropicExtraUsage })),
 });
 
-const IntercomSettingsSchema = Type.Object({
-	showUnknownTargetWarnings: Type.Optional(
-		Type.Boolean({
-			description:
-				"Add a note to a queued workflow Intercom send whose target is outside the run's known and predicted stages. Delivery is the same either way.",
-			default: SETTINGS_DEFAULTS.intercom.showUnknownTargetWarnings,
-		}),
-	),
-});
-
 const TaskSettingsSchema = Type.Object({
 	heartbeatMs: Type.Optional(
 		Type.Union([Type.Literal(0), Type.Number({ minimum: 60_000 })], {
@@ -342,7 +332,7 @@ const TaskSettingsSchema = Type.Object({
 	heartbeatWakesIdleSession: Type.Optional(
 		Type.Boolean({
 			description:
-				"Whether a task or workflow heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
+				"Whether a task heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
 			default: SETTINGS_DEFAULTS.tasks.heartbeatWakesIdleSession,
 		}),
 	),
@@ -383,7 +373,6 @@ const PackageSourceSchema = Type.Union(
 			skills: Type.Optional(Type.Array(Type.String())),
 			prompts: Type.Optional(Type.Array(Type.String())),
 			themes: Type.Optional(Type.Array(Type.String())),
-			workflows: Type.Optional(Type.Array(Type.String())),
 			mcpServers: Type.Optional(Type.Array(Type.String())),
 		}),
 	],
@@ -447,142 +436,6 @@ export const SessionStorageSelectionSchema = Type.Union([
 	Type.Object({ dir: Type.String() }, { additionalProperties: false }),
 ]);
 
-const ResourceLimitsSchema = Type.Object(
-	{
-		session: Type.Optional(Type.Integer({ minimum: 1 })),
-		process: Type.Optional(Type.Integer({ minimum: 1 })),
-	},
-	{ additionalProperties: false },
-);
-
-const WorkflowsSettingsSchema = Type.Union(
-	[
-		StringArraySchema,
-		Type.Object({
-			paths: Type.Optional(Type.Array(Type.String(), { description: "Workflow resource paths." })),
-			autoAdvanceAfterSteer: Type.Optional(
-				Type.Boolean({
-					description:
-						'After you steer a stage that asked you a question, let the decision model advance the stage or keep it open without asking "Are you ready to move on to the next stage?". It asks when the decision is uncertain or fails. Default: true.',
-					default: SETTINGS_DEFAULTS.workflows.autoAdvanceAfterSteer,
-				}),
-			),
-			journal: Type.Optional(StorageSelectionSchema),
-			localWorkers: Type.Optional(
-				Type.Object(
-					{
-						count: Type.Integer({ minimum: 1, description: "Number of local worker processes." }),
-						definitions: Type.Array(
-							Type.Object({ path: Type.String(), exportName: Type.String() }, { additionalProperties: false }),
-							{ description: "Importable child workflow definitions workers may run." },
-						),
-						startupTimeoutMs: Type.Optional(
-							Type.Integer({
-								minimum: 1,
-								maximum: 2_147_483_647,
-								description:
-									"Milliseconds each worker process may take to become ready. Default: 30000, scaled up when workers plus load exceed CPU cores (at most 600000).",
-							}),
-						),
-						leaseMs: Type.Optional(
-							Type.Integer({
-								minimum: 2000,
-								maximum: 2_147_483_647,
-								description:
-									"Milliseconds a live worker that has stopped responding keeps its child before the child is replayed elsewhere. Default: 30000.",
-							}),
-						),
-						heartbeatMs: Type.Optional(
-							Type.Integer({
-								minimum: 100,
-								maximum: 1_073_741_823,
-								description:
-									"Milliseconds between a worker's heartbeats, each renewing its child's lease, reporting usage and reading pause or quit, in one request. At most half of leaseMs. Default: leaseMs / 4.",
-							}),
-						),
-						maxLoadPerCpu: Type.Optional(
-							Type.Number({
-								minimum: 0,
-								description:
-									"Load per CPU (1-minute load average / CPU cores) above which pooled stages start one at a time, at most one every 5 seconds. Default: 3. 0 turns it off.",
-							}),
-						),
-						maxWorkerRssBytes: Type.Optional(
-							Type.Integer({
-								minimum: 1,
-								maximum: Number.MAX_SAFE_INTEGER,
-								description:
-									"Resident memory in bytes past which a local worker is replaced by a fresh one once its current child ends. A running child is never interrupted. Default: unset (never).",
-							}),
-						),
-					},
-					{ additionalProperties: false },
-				),
-			),
-			workers: Type.Optional(
-				Type.Object(
-					{
-						placement: Type.Literal("shared", {
-							description:
-								'"shared": the pooled children of roots started with the workflow tool also run on worker hosts (`atomic worker start`) that open the same shared journal. Requires localWorkers and a journal selected through a storage adapter such as libSQL / Turso.',
-						}),
-						claimWindowMs: Type.Optional(
-							Type.Integer({
-								minimum: 1,
-								description:
-									"Milliseconds bound work may wait unclaimed while no live host can restore its workspace, before the child fails. Default: 60000.",
-							}),
-						),
-						checkpointShipping: Type.Optional(
-							Type.Union(
-								[
-									Type.Literal("sync"),
-									Type.Object(
-										{
-											intervalMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 60_000 })),
-											maxBatch: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
-											maxLagMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 600_000 })),
-										},
-										{ additionalProperties: false },
-									),
-								],
-								{
-									description:
-										'How worker hosts record the pooled children\'s checkpoints: "sync" (default) commits each to the shared journal before the step returns; { intervalMs, maxBatch, maxLagMs } records them in a local journal on the host first and ships them to the shared journal.',
-								},
-							),
-						),
-					},
-					{ additionalProperties: false },
-				),
-			),
-			admission: Type.Optional(
-				Type.Object(
-					{
-						limits: Type.Optional(ResourceLimitsSchema),
-						userLimits: Type.Optional(ResourceLimitsSchema),
-						userDatabase: Type.Optional(Type.String()),
-						host: Type.Optional(
-							Type.Object(
-								{
-									maxLoadPerCpu: Type.Optional(Type.Number({ minimum: 0 })),
-									minFreeMemoryBytes: Type.Optional(Type.Number({ minimum: 0 })),
-								},
-								{ additionalProperties: false },
-							),
-						),
-					},
-					{ additionalProperties: false },
-				),
-			),
-		}),
-	],
-	{
-		description:
-			'Local workflow paths, or an object with "paths", "autoAdvanceAfterSteer", "journal" storage, "localWorkers", "workers" and "admission" settings.',
-	},
-);
-
 export const SettingsSchema = Type.Object(
 	{
 		$schema: Type.Optional(Type.String({ description: "JSON Schema reference." })),
@@ -611,7 +464,7 @@ export const SettingsSchema = Type.Object(
 		decisionModel: Type.Optional(
 			Type.String({
 				description:
-					'The model every decision uses: structured_output calls without their own model, workflow stage predictions, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
+					'The model every decision uses: structured_output calls without their own model and decide(). An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
 				default: SETTINGS_DEFAULTS.decisionModel,
 			}),
 		),
@@ -745,7 +598,6 @@ export const SettingsSchema = Type.Object(
 			Type.Array(Type.String(), { description: "Local prompt template file paths or directories." }),
 		),
 		themes: Type.Optional(Type.Array(Type.String(), { description: "Local theme file paths or directories." })),
-		workflows: Type.Optional(WorkflowsSettingsSchema),
 		enableSkillCommands: Type.Optional(
 			Type.Boolean({
 				description: "Register skills as /skill:name commands.",
@@ -841,7 +693,6 @@ export const SettingsSchema = Type.Object(
 		codemode: Type.Optional(CodemodeSettingsSchema),
 		markdown: Type.Optional(MarkdownSettingsSchema),
 		warnings: Type.Optional(WarningSettingsSchema),
-		intercom: Type.Optional(IntercomSettingsSchema),
 		tasks: Type.Optional(TaskSettingsSchema),
 		httpProxy: Type.Optional(
 			Type.String({

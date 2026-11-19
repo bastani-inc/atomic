@@ -16,12 +16,7 @@ import {
 	type JournalShardUnavailableErrorCode,
 	StorageAdapterLoadError,
 } from "./errors.js";
-import {
-	defaultSessionDatabasePath,
-	defaultSharedStoragePath,
-	storagePathBaseDir,
-	takeStorageAdoptionNotice,
-} from "./file-identity.js";
+import { defaultSharedStoragePath, storagePathBaseDir, takeStorageAdoptionNotice } from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { JOURNAL_CATALOG_FILE } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
@@ -45,7 +40,6 @@ import {
 	POSTGRES_ADAPTER_PACKAGE,
 	type StorageSettingsSelection,
 	selectStorage,
-	selectsDefaultJournalStore,
 	TEAM_PROFILE_ENV,
 } from "./selection.js";
 
@@ -463,10 +457,6 @@ function settingLayers(
 	];
 }
 
-function journalSetting(settings: Settings): StorageSettingsSelection | undefined {
-	return Array.isArray(settings.workflows) ? undefined : settings.workflows?.journal;
-}
-
 function sourceOf(layers: readonly Layer[]): { source: string; overridden: string[] } {
 	const present = layers.filter((layer) => layer.present).map((layer) => layer.label);
 	return { source: present[0] ?? "default", overridden: present.slice(1) };
@@ -479,14 +469,10 @@ export const TEAM_PROFILE_SOURCE = `${TEAM_PROFILE_ENV}=ci`;
 export function selectJournal(agentDir: string, settings: Settings): StorageSelection {
 	const processChoice = selectProcessStorage("journal", agentDir, undefined, settings);
 	if (processChoice !== undefined) return processChoice.selection;
-	const journal = journalSetting(settings);
-	const value = journal ?? settings.storage;
-	if (value === undefined || selectsDefaultJournalStore(journal))
+	if (settings.storage === undefined)
 		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir, settings) };
-	const selection = selectStorage(value, "settings", journal !== undefined ? "workflows.journal" : "storage", () =>
-		journal !== undefined
-			? defaultSessionDatabasePath(agentDir, settings)
-			: defaultSharedStoragePath(agentDir, settings),
+	const selection = selectStorage(settings.storage, "settings", "storage", () =>
+		defaultSharedStoragePath(agentDir, settings),
 	);
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
 		? { ...selection, path: join(storagePathBaseDir(selection.path, agentDir, settings), selection.path) }
@@ -564,11 +550,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 	const unappliedProject = projectTrusted
 		? {}
 		: SettingsManager.create(cwd, agentDir, { projectTrusted: true }).getProjectSettings();
-	if (
-		unappliedProject.storage !== undefined ||
-		unappliedProject.sessions?.storage !== undefined ||
-		journalSetting(unappliedProject) !== undefined
-	) {
+	if (unappliedProject.storage !== undefined || unappliedProject.sessions?.storage !== undefined) {
 		notes.push("Project settings select storage, but the project is not trusted, so they are not applied.");
 	}
 	if (projectTrusted && project.storage !== undefined) {
@@ -594,7 +576,6 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 			env(WORKFLOW_JOURNAL_PATH_ENV),
 			env(STORAGE_ENV),
 			teamProfile,
-			...settingLayers(global, project, projectTrusted, journalSetting, "workflows.journal"),
 			...settingLayers(global, project, projectTrusted, storageSetting, "storage"),
 		],
 		intercom: [

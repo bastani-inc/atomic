@@ -641,16 +641,16 @@ describe("the profile in effect (#4320)", () => {
 			[{ storage: team, sessions: { storage: {} } }, "team"],
 			[{ storage: team }, "ci"],
 			[{ storage: team, sessions: { storage: { path: "workflows/journal.sqlite", prefix: "s_" } } }, "custom"],
-			[{ storage: team, workflows: { journal: { path: "workflows/journal.sqlite" } } }, "custom"],
-			[{ storage: team, sessions: { storage: LOCAL_SESSIONS_STORAGE }, workflows: { journal: {} } }, "custom"],
+			[{ storage: team, workflows: { journal: { path: "workflows/journal.sqlite" } } }, "ci"],
+			[{ storage: team, sessions: { storage: LOCAL_SESSIONS_STORAGE }, workflows: { journal: {} } }, "team"],
 			[{ storage: { path: "shared.sqlite" }, sessions: { storage: LOCAL_SESSIONS_STORAGE } }, "custom"],
 			[{ storage: { path: "shared.sqlite" } }, "custom"],
 			[
 				{ storage: { memory: true }, sessions: { storage: LOCAL_SESSIONS_STORAGE }, workflows: { journal: {} } },
-				"individual",
+				"custom",
 			],
 			[{ sessions: { storage: { dir: "sessions" } } }, "custom"],
-			[{ workflows: { journal: { path: "other.sqlite" } } }, "custom"],
+			[{ workflows: { journal: { path: "other.sqlite" } } }, "individual"],
 		];
 		for (const [settings, profile] of cases) {
 			writeSettings(settings);

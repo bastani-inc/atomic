@@ -286,7 +286,7 @@ describe("atomic team output (#4320)", () => {
 				"Stopping the Intercom broker (pid 101)",
 				"Kept the token file <root>/agent/storage-token.<id>: another setting still references it.",
 				"No Intercom broker was running; the next session that uses Intercom starts one with these settings.",
-				"Profile: custom (sessions: SQLite <root>/agent/workflows/journal.sqlite; workflow runs: adapter @bastani/atomic-storage-libsql; Intercom: off)",
+				"Profile: individual (sessions and workflow runs on this machine; Intercom on this machine only)",
 			]);
 
 			writeSettings({

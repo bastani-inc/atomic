@@ -31,6 +31,8 @@ interface InvalidLayerValue extends InvalidSettingValue {
 }
 
 interface SettingsLoad {
+	/** File paths kept only for the read-only migration catalog, never as active settings. */
+	legacyWorkflowPaths?: string[];
 	settings: Settings;
 	invalid: InvalidLayerValue[];
 	error: Error | null;
@@ -40,9 +42,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A nested setting as an object of its keys; list-form `workflows` is its `paths`. */
-function nestedEntries(field: keyof Settings, value: unknown): Record<string, unknown> {
-	if (field === "workflows" && Array.isArray(value)) return { paths: value };
+function nestedEntries(value: unknown): Record<string, unknown> {
 	return isPlainObject(value) ? value : {};
 }
 
@@ -134,6 +134,7 @@ export class SettingsManager {
 	private projectSettings: Settings;
 	private settings: Settings;
 	private projectTrusted: boolean;
+	private legacyWorkflowPaths: Partial<Record<SettingsScope, string[]>> = {};
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -190,7 +191,7 @@ export class SettingsManager {
 				else {
 					const field = key.slice(0, split) as keyof Settings;
 					if (!Object.hasOwn(filtered, field)) continue;
-					const values = nestedEntries(field, filtered[field]);
+					const values = nestedEntries(filtered[field]);
 					const nested = key.slice(split + 1);
 					if (!Object.hasOwn(values, nested)) continue;
 					if (filtered[field] === project[field]) filtered[field] = { ...values };
@@ -269,7 +270,7 @@ export class SettingsManager {
 			initialErrors.push(...SettingsManager.validateLoadedSettings("project", projectLoad));
 		}
 
-		return new SettingsManager(
+		const manager = new SettingsManager(
 			storage,
 			globalLoad.settings,
 			projectLoad.settings,
@@ -278,6 +279,11 @@ export class SettingsManager {
 			initialErrors,
 			projectTrusted,
 		);
+		manager.legacyWorkflowPaths = {
+			global: globalLoad.legacyWorkflowPaths,
+			project: projectLoad.legacyWorkflowPaths,
+		};
+		return manager;
 	}
 
 	/** Create an in-memory SettingsManager (no file I/O) */
@@ -295,7 +301,7 @@ export class SettingsManager {
 		storage: SettingsStorage,
 		scope: SettingsScope,
 		projectTrusted = true,
-	): { settings: Settings; invalid: InvalidLayerValue[] } {
+	): Omit<SettingsLoad, "error"> {
 		if (scope === "project" && !projectTrusted) {
 			return { settings: {}, invalid: [] };
 		}
@@ -307,7 +313,7 @@ export class SettingsManager {
 		asyncStorage: AsyncSettingsStorage,
 		scope: SettingsScope,
 		projectTrusted = true,
-	): Promise<{ settings: Settings; invalid: InvalidLayerValue[] }> {
+	): Promise<Omit<SettingsLoad, "error">> {
 		if (scope === "project" && !projectTrusted) {
 			return { settings: {}, invalid: [] };
 		}
@@ -318,9 +324,10 @@ export class SettingsManager {
 		storage: SettingsStorage,
 		scope: SettingsScope,
 		files: { path?: string; content: string }[],
-	): { settings: Settings; invalid: InvalidLayerValue[] } {
+	): Omit<SettingsLoad, "error"> {
 		// Each file is validated and migrated on its own, highest precedence first, then merged from the lowest up.
 		const invalid: InvalidLayerValue[] = [];
+		let legacyWorkflowPaths: string[] | undefined;
 		const layers = files.map(({ path, content }) => {
 			let settings: Parameters<typeof dropWrongTypedSettings>[0];
 			try {
@@ -329,13 +336,18 @@ export class SettingsManager {
 				if (path !== undefined && error instanceof Error) (error as Error & { path?: string }).path = path;
 				throw error;
 			}
+			const workflows = settings.workflows;
+			const paths = isPlainObject(workflows) ? workflows.paths : workflows;
+			if (legacyWorkflowPaths === undefined && Array.isArray(paths)) {
+				legacyWorkflowPaths = paths.filter((path): path is string => typeof path === "string");
+			}
 			for (const value of dropWrongTypedSettings(settings)) {
 				invalid.push({ ...value, path: path ?? storage.getFieldPath?.(scope, value.setting) });
 			}
 			return SettingsManager.migrateSettings(settings, { path });
 		});
 		const settings = layers.reduceRight<Settings>((merged, layer) => deepMergeSettings(merged, layer), {});
-		return { settings, invalid };
+		return { settings, invalid, legacyWorkflowPaths };
 	}
 
 	private static readLayers(storage: SettingsStorage, scope: SettingsScope): { path?: string; content: string }[] {
@@ -369,7 +381,7 @@ export class SettingsManager {
 		return SettingsManager.tryLoad(() => SettingsManager.loadFromStorage(storage, scope, projectTrusted));
 	}
 
-	private static tryLoad(load: () => { settings: Settings; invalid: InvalidLayerValue[] }): SettingsLoad {
+	private static tryLoad(load: () => Omit<SettingsLoad, "error">): SettingsLoad {
 		try {
 			return { ...load(), error: null };
 		} catch (error) {
@@ -467,6 +479,25 @@ export class SettingsManager {
 				{ hold: file, once: about(settings.modelRouting) },
 			);
 			delete settings.modelRouting;
+		}
+		// Leave legacy definitions and path settings on disk. They can still be located and read as text.
+		const source = path === undefined ? "" : `${path}: `;
+		if ("workflows" in settings) {
+			warn(
+				`${source}Ignored removed setting "workflows": workflows were removed in 0.10.0; ask to convert an old workflow to a skill that uses codemode and subagents (see docs/orchestration/migrating-workflows.md). Your workflow files were not changed.`,
+				{
+					once: about(settings.workflows),
+				},
+			);
+			delete settings.workflows;
+		}
+		if (isPlainObject(settings.intercom) && "showUnknownTargetWarnings" in settings.intercom) {
+			warn(
+				`${source}Ignored removed setting "intercom.showUnknownTargetWarnings": Intercom no longer sends to workflow stages.`,
+				{ once: about(settings.intercom.showUnknownTargetWarnings) },
+			);
+			delete settings.intercom.showUnknownTargetWarnings;
+			if (Object.keys(settings.intercom).length === 0) delete settings.intercom;
 		}
 		settings = normalizeAzureSettings(settings as Settings) as Record<string, unknown>;
 		// Migrate queueMode -> steeringMode
@@ -576,13 +607,14 @@ export class SettingsManager {
 				const present =
 					split < 0
 						? Object.hasOwn(projectLoad.settings, field)
-						: Object.hasOwn(nestedEntries(field, projectLoad.settings[field]), key.slice(split + 1));
+						: Object.hasOwn(nestedEntries(projectLoad.settings[field]), key.slice(split + 1));
 				if (!present) this.pendingProjectEdits.delete(key);
 			}
 			if (this.pendingProjectEdits.size) this.approvedProjectEdits = this.pendingProjectEdits;
 			this.pendingProjectEdits = undefined;
 		}
 		this.projectTrusted = trusted;
+		this.legacyWorkflowPaths.project = projectLoad?.legacyWorkflowPaths;
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
 
@@ -620,6 +652,7 @@ export class SettingsManager {
 		}
 		if (!globalLoad.error) {
 			this.globalSettings = globalLoad.settings;
+			this.legacyWorkflowPaths.global = globalLoad.legacyWorkflowPaths;
 			this.globalSettingsLoadError = null;
 			this.recordValidationErrors("global", globalLoad);
 		} else {
@@ -634,6 +667,7 @@ export class SettingsManager {
 
 		if (!projectLoad.error) {
 			this.projectSettings = projectLoad.settings;
+			this.legacyWorkflowPaths.project = projectLoad.legacyWorkflowPaths;
 			this.projectSettingsLoadError = null;
 			this.recordValidationErrors("project", projectLoad);
 		} else {
@@ -655,6 +689,7 @@ export class SettingsManager {
 			[...this.errors],
 			this.projectTrusted,
 		);
+		candidate.legacyWorkflowPaths = { ...this.legacyWorkflowPaths };
 		candidate.reportedInvalidSettings = new Set(this.reportedInvalidSettings);
 		candidate.overrides = [...this.overrides];
 		candidate.approvedProjectEdits = this.approvedProjectEdits;
@@ -666,6 +701,7 @@ export class SettingsManager {
 	}
 
 	private publishReload(candidate: SettingsManager): void {
+		this.legacyWorkflowPaths = candidate.legacyWorkflowPaths;
 		this.globalSettings = candidate.globalSettings;
 		this.projectSettings = candidate.projectSettings;
 		this.settings = candidate.settings;
@@ -711,7 +747,7 @@ export class SettingsManager {
 			if (nestedKey !== undefined && isPlainObject(value)) {
 				if (Object.hasOwn(value, nestedKey)) delete value[nestedKey];
 			} else {
-				const entries = nestedEntries(field, value);
+				const entries = nestedEntries(value);
 				if (nestedKey === undefined || (Object.hasOwn(entries, nestedKey) && entries[nestedKey] !== undefined))
 					delete overrides[field];
 			}
@@ -920,8 +956,8 @@ export class SettingsManager {
 						);
 						if (nestedModified.length === 0) continue;
 						writtenFields.add(field);
-						const inMemoryNested = nestedEntries(field, value);
-						const mergedNested = { ...nestedEntries(field, currentFileSettings[field]) };
+						const inMemoryNested = nestedEntries(value);
+						const mergedNested = { ...nestedEntries(currentFileSettings[field]) };
 						for (const nestedKey of nestedModified) {
 							if (isPrototypeKey(nestedKey)) continue;
 							mergedNested[nestedKey] = Object.hasOwn(inMemoryNested, nestedKey)
@@ -929,13 +965,9 @@ export class SettingsManager {
 								: undefined;
 						}
 						const keys = Object.keys(mergedNested).filter((key) => mergedNested[key] !== undefined);
-						// Keep list-form workflow paths a list, and drop an object the setter removed once nothing is left in it.
+						// Drop an object the setter removed once nothing is left in it.
 						(mergedSettings as Record<string, unknown>)[field] =
-							Array.isArray(value) && keys.length === 1 && keys[0] === "paths"
-								? mergedNested.paths
-								: value === undefined && keys.length === 0
-									? undefined
-									: mergedNested;
+							value === undefined && keys.length === 0 ? undefined : mergedNested;
 					} else {
 						if (!held.has(field)) continue;
 						writtenFields.add(field);
@@ -945,8 +977,8 @@ export class SettingsManager {
 							continue;
 						}
 						// A newer write saved some keys of this setting: they stay as the file has them.
-						const fromFile = nestedEntries(field, currentFileSettings[field]);
-						const mergedNested = { ...nestedEntries(field, value) };
+						const fromFile = nestedEntries(currentFileSettings[field]);
+						const mergedNested = { ...nestedEntries(value) };
 						for (const key of keptKeys) mergedNested[key] = fromFile[key];
 						const present = Object.keys(mergedNested).filter((key) => mergedNested[key] !== undefined);
 						(mergedSettings as Record<string, unknown>)[field] =
