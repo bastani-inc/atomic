@@ -926,7 +926,7 @@ A child on a local worker can ask for input. A `ctx.ui` prompt (`input`, `confir
 
 Only the stages you have open stream to the root process. A pool with many workers sends nothing extra for stages nobody is watching.
 
-When the stage finishes, close the chat and open the stage again to continue in post-mortem chat. A finished stage that ran on a local worker reopens for post-mortem chat in the same session and after a restart.
+When the stage finishes, close the chat and open the stage again to continue in post-mortem chat. A finished stage that ran on a local worker reopens for post-mortem chat in the same session and after a restart. The graph shows a child that finished on another host even if the root received no progress updates.
 
 ### Worker startup and failures
 

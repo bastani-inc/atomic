@@ -5,11 +5,12 @@ import { beforeAll, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
 const STALLED_WORKER_RECOVERY_TIMEOUT_MS = 30_000;
@@ -21,6 +22,73 @@ beforeAll(async () => {
 	);
 	assert.ok(await fileExists(workerEntry), "packaged worker missing; run npm run build first");
 });
+
+test.each(["exitReason", "error"] as const)(
+	"a pooled child that already published its activity stores a large %s only once (#5662)",
+	async (field) => {
+		const directory = makeTempDirectory("pool-exit-reason-");
+		const path = join(directory, "journal.sqlite");
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const childPath = fileURLToPath(new URL("../fixtures/pool-child.ts", import.meta.url));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "exitChild",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [{ definition: child, path: childPath, exportName: "exitChild" }],
+		});
+		const store = createStore();
+		const length = 1024 * 1024;
+		const release = join(directory, "release");
+		let published = false;
+		const unsubscribe = store.subscribeInvalidation(() => {
+			if (
+				!published &&
+				store.runs().some((r) => r.name === child.name && r.toolNodes.some((t) => t.name === "wait"))
+			) {
+				published = true;
+				writeTextSync(release, "");
+			}
+		});
+		try {
+			const result = await run(
+				workflow({
+					name: "pool-exit-root",
+					description: "",
+					inputs: {},
+					outputs: {},
+					async run(ctx) {
+						const called = ctx.workflow(child, { inputs: { length, release, fail: field === "error" } });
+						if (field === "error") await assert.rejects(called);
+						else await called;
+						return {};
+					},
+				}),
+				{},
+				{ cwd: directory, store, durableBackend: backend, signal: AbortSignal.timeout(60_000) },
+			);
+			assert.equal(result.status, "completed", result.error);
+			assert.ok(published);
+			const queue = await openSqlPoolQueue(journal);
+			const [work] = await queue.inspect(result.runId);
+			assert.ok(work);
+			const stored = await queue.result(result.runId, work.id);
+			const text = "x".repeat(length);
+			assert.ok(stored && stored[field] === text);
+			assert.equal(JSON.stringify(stored).split(text).length - 1, 1);
+		} finally {
+			unsubscribe();
+			await pool.close();
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
 
 test.each([
 	{ crash: false, during: false },
