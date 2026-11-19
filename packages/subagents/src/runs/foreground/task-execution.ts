@@ -164,13 +164,18 @@ function settledOutputSection(
 /** A verified copy already owned by the task's transcript. Neither the task nor any output stays alive for this lookup. */
 const transcriptOutputs = new WeakMap<TaskLease, WeakRef<{ text: string }>>();
 
-function rememberTranscriptOutput(lease: TaskLease, ref: TaskRecord["ref"], reply: AssistantMessage | undefined): void {
+function rememberTranscriptOutput(
+	lease: WeakRef<TaskLease>,
+	ref: TaskRecord["ref"],
+	reply: AssistantMessage | undefined,
+): void {
 	if (!reply) return;
 	const kept = retainedTaskOutput(ref.ownerId, ref.taskId);
 	if (!kept || kept.totalBytes > INLINE_TASK_OUTPUT_MAX_BYTES) return;
 	const part = reply.content.find((block) => block.type === "text" && block.text === kept.head);
 	if (part?.type !== "text") return;
-	transcriptOutputs.set(lease, new WeakRef(part));
+	const task = lease.deref();
+	if (task) transcriptOutputs.set(task, new WeakRef(part));
 }
 
 async function readSettledOutput(
@@ -503,7 +508,7 @@ export async function runAgentTask(input: {
 	/** The dispatcher a released child's results wake it through; by default the process's one dispatcher. */
 	wakeDispatcher?: AgentWakeDispatcher;
 }): Promise<ModelSingleResponse> {
-	const registered = Promise.withResolvers<TaskLease>();
+	const registered = Promise.withResolvers<WeakRef<TaskLease>>();
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<
@@ -1012,7 +1017,8 @@ export async function runAgentTask(input: {
 			intercomTarget: input.options.intercomSessionName,
 		});
 	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
-	const register = () => registered.resolve(started.value.lease);
+	const lease = new WeakRef(started.value.lease);
+	const register = () => registered.resolve(lease);
 	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, register);
 	register();
 	ticket?.onObserved();

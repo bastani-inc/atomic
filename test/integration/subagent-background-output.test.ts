@@ -15,6 +15,7 @@ import {
 	taskToolResultWithOutput,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { fileExists, makeTempDirectory, readText, removePathSync, removeTempDirectory } from "../helpers/runtime.js";
 
 const agent: AgentConfig = {
@@ -158,10 +159,6 @@ test("a retained subagent's answer is readable after another owner finishes 256 
 	const other = new AgentTaskHost({ scope: { kind: "session", sessionId: `${cwd}-other` }, authorizeLaunch() {} });
 	const answer = "Only the first child wrote 鳥.";
 	try {
-		const response = await launch({ host: first, cwd, output: answer, options: {} });
-		const initial = await settledText(first, response);
-		assert.ok(initial.includes(answer));
-		const copy = fullOutputPath(initial);
 		const fileOnly = await launch({
 			host: first,
 			cwd,
@@ -169,7 +166,12 @@ test("a retained subagent's answer is readable after another owner finishes 256 
 			options: { outputPath: join(cwd, "only.md"), outputMode: "file-only" },
 		});
 		assert.match(await settledText(first, fileOnly), /Output saved to:/);
+		const response = await launch({ host: first, cwd, output: answer, options: {} });
+		const initial = await settledText(first, response);
+		assert.ok(initial.includes(answer));
+		const copy = fullOutputPath(initial);
 		for (let index = 0; index < 256; index++) {
+			if (index === 255) assert.equal(await settledText(first, response), initial);
 			const later = await runAgentTask({
 				host: other,
 				cwd,
@@ -190,6 +192,7 @@ test("a retained subagent's answer is readable after another owner finishes 256 
 			await settled(other, later);
 		}
 		assert.equal(await fileExists(copy), false, "the process-wide private copy limit still applies");
+		await collectGarbage(2);
 		const waited = await settledText(first, response);
 		assert.match(waited, /Only the first child wrote 鳥\./);
 		assert.doesNotMatch(waited, /Another owner's answer|Full output:/);
