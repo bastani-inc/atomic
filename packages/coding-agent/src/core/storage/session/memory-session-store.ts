@@ -11,7 +11,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-cut.js";
+import { forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-observer.js";
 import {
 	foldSessionResume,
 	foreignResumeIds,

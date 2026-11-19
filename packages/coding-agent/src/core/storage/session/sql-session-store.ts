@@ -15,7 +15,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { deferForkWrite, forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-cut.js";
+import { deferForkWrite, forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-observer.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
 	branchRanges,

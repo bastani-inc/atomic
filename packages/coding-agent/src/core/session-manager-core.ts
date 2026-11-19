@@ -6,6 +6,7 @@ import { getAgentDir } from "../config.js";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import { sameForkHistory } from "./session-fork-contents.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
@@ -406,6 +407,13 @@ export class SessionManager {
 	getLastSeq(): number {
 		return this.lastSeq;
 	}
+
+	/** @internal An editable transcript can change between append and stat. Only attest to data still resident. */
+	matchesForkSnapshot(store: SessionStore, snapshot: SessionSnapshot, launch: number): boolean {
+		if (this.store !== store || this.forkOpened >= launch || this.deletedFromStore || this.historyStartSeq > 1)
+			return false;
+		return sameForkHistory(this.fileEntries, snapshot);
+	}
 	getSessionRecoveryState(): SessionRecoveryState {
 		return this.recoveryState;
 	}
@@ -719,6 +727,7 @@ export class SessionManager {
 						this.sessionId,
 						options,
 						entries[0].id,
+						this,
 					);
 				this.lastSeq = (await this.store.append(this.sessionId, entries, options)).lastSeq;
 			} catch (error) {

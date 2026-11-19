@@ -35,7 +35,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-cut.js";
+import { forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-observer.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -662,10 +662,14 @@ export class JsonlSessionStore implements SessionStore {
 				rangeIndex.seenStamp = this.stamp(appended);
 				rangeIndex.seenSize = Number(appended.size);
 			}
-			// A second handle can write while this directory's lock is held. Do not vouch for a larger file.
+			// Independent handles can have different directory locks. An in-place edit can even keep the inode and size.
 			const forkWrite = sessionForkWrite(options);
-			if (forkWrite && appended.size === BigInt(offset + payloadBytes))
-				forkWrite(this, state.stamp, this.stamp(appended));
+			if (
+				forkWrite &&
+				state.identity === `${appended.dev}:${appended.ino}` &&
+				appended.size === BigInt(offset + payloadBytes)
+			)
+				forkWrite(this, state.stamp, this.stamp(appended), undefined, true);
 			await this.indexAppended(path, state, entries, lines, offset + (state.terminated ? 0 : 1));
 			return { lastSeq };
 		});

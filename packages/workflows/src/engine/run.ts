@@ -1534,7 +1534,7 @@ async function executeRun(
 			return rejectionScope.watch(
 				(async () => {
 					try {
-						return await whenRunning(() => parallel(steps, options, cut));
+						return await whenRunning(() => parallel(steps, options, cut.admit()));
 					} finally {
 						cut.close();
 					}
