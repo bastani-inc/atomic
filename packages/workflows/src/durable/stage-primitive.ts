@@ -21,7 +21,7 @@ import type {
 import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
-import { launchForkSourceOf, withForkPoint, withLaunchForkPoint } from "./stage-fork-point.js";
+import { type ReadForkPoint, withForkPoint, withLaunchForkPoint } from "./stage-fork-point.js";
 import { activeStageTopology, durableStageCheckpointMetadata, forkPointStageTopology } from "./stage-topology.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableReleasedStageResume, DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
@@ -293,6 +293,7 @@ function pendingStageIdForReplay(
 	return candidates.size === 1 ? candidates.values().next().value : undefined;
 }
 export function createDurableStagePrimitive(input: {
+	readonly readForkPoint?: ReadForkPoint;
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextReplayKey: (stageName: string) => string;
@@ -361,6 +362,7 @@ export function createDurableStagePrimitive(input: {
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
 		const durableIntercomGroup = topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, durableStageId);
 		const launchOptions = withLaunchForkPoint({
+			readForkPoint: input.readForkPoint,
 			backend: input.backend,
 			workflowId: input.workflowId,
 			replayKey,
@@ -500,6 +502,7 @@ export function reserveTaskReplayKey(nextReplayKey: (stageName: string) => strin
 }
 
 export function createDurableTaskPrimitive(input: {
+	readonly readForkPoint?: ReadForkPoint;
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextReplayKey: (stageName: string) => string;
@@ -547,9 +550,8 @@ export function createDurableTaskPrimitive(input: {
 			return replayed.result;
 		}
 		if (stageFailFastScope?.forkPointsBeforeLiveTask !== undefined) {
-			const points = await stageFailFastScope.forkPointsBeforeLiveTask;
-			const source = launchForkSourceOf(options);
-			if (source !== undefined) options = withForkPoint(options, points.get(source));
+			await stageFailFastScope.forkPointsBeforeLiveTask;
+			if (options.durableForkPoint !== undefined) options = withForkPoint(options, await options.durableForkPoint());
 		}
 		const supersedesRecordedResult =
 			restartFromPrompt && input.backend.getStageOutput(input.workflowId, replayKey) !== undefined;
@@ -561,6 +563,7 @@ export function createDurableTaskPrimitive(input: {
 			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);
 		const taskOptions: WorkflowTaskOptions = {
 			...withLaunchForkPoint({
+				readForkPoint: input.readForkPoint,
 				backend: input.backend,
 				workflowId: input.workflowId,
 				replayKey,

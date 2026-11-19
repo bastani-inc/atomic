@@ -238,7 +238,7 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	 * stage's session is copied only then, at that point; a record that cannot be written fails the stage before its
 	 * session opens (#5481).
 	 */
-	durableForkPoint?: () => Promise<string | null>;
+	durableForkPoint?: () => Promise<string | null | undefined>;
 	/**
 	 * Internal durable resume hook: the stage's previous process stopped inside the call its first call replays. A
 	 * transcript that already ends on the model's final answer to that call finishes it without another model call.

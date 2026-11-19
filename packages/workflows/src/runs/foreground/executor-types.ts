@@ -237,7 +237,7 @@ export interface ParallelFailFastScope {
 	firstFailure?: unknown;
 	readonly activeStages: Map<string, ParallelFailFastStage>;
 	/** Older journals claim keys at admission. Only a cache miss needs the parallel's durable fork points. */
-	readonly forkPointsBeforeLiveTask?: Promise<ReadonlyMap<string, ForkPoint>>;
+	readonly forkPointsBeforeLiveTask?: Promise<ReadonlyMap<number, ForkPoint>>;
 	readonly parentIds?: readonly string[];
 	/** Spawned stages never join the graph frontier, so later stages do not depend on them. */
 	readonly detached?: boolean;

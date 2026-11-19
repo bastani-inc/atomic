@@ -32,8 +32,11 @@ import type { EngineRuntime } from "../../packages/workflows/src/engine/runtime.
 import { taskStageOptions } from "../../packages/workflows/src/runs/foreground/executor-task-prompts.js";
 import type { ParallelFailFastScope } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
-import { registerLiveStageSession } from "../../packages/workflows/src/shared/live-stage-sessions.js";
-import { forkStageSession, STAGE_FORK_TOOL_RESULT } from "../../packages/workflows/src/shared/stage-session-store.js";
+import {
+	forkStageSession,
+	STAGE_FORK_TOOL_RESULT,
+	storedForkPoint,
+} from "../../packages/workflows/src/shared/stage-session-store.js";
 import type {
 	StageOptions,
 	WorkflowTaskOptions,
@@ -159,8 +162,11 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 			status: "running",
 		});
 		const source = await sourceWithOpenCall();
-		registerLiveStageSession(source);
-		const options: StageOptions = { context: "fork", forkFromSessionId: source.getSessionId() };
+		const options: StageOptions = {
+			context: "fork",
+			forkFromSessionId: source.getSessionId(),
+			sessionStore: source.getSessionStore(),
+		};
 		const launch = (replayKey: string) =>
 			withLaunchForkPoint({
 				backend,
@@ -176,7 +182,13 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 		await source.appendMessage(toolResult("toolu_log", "the source's own result"));
 		await source.appendMessage(sourceTurn([{ type: "text", text: "LATER_SOURCE_TURN" }]));
 
-		const stages = await Promise.all(launched.map((options) => fork(source, options?.forkFromEntryId)));
+		const points = await Promise.all(launched.map((point) => point?.durableForkPoint?.() ?? point?.forkFromEntryId));
+		const stages = await Promise.all(
+			points.map((point) => {
+				assert.equal(typeof point, "string");
+				return fork(source, point!);
+			}),
+		);
 		for (const stage of stages) {
 			const messages = stage.buildSessionContext().messages;
 			// Each stage holds the source as it was at launch, then answers the call that was open then.
@@ -192,8 +204,8 @@ describe("forked workflow stages copy their source append-only (#5481)", () => {
 		}
 
 		// A resumed run launches the stage again; it forks where the first launch did, not where the source is now.
-		assert.equal(launch("stage:a")?.forkFromEntryId, launched[0]?.forkFromEntryId);
-		assert.notEqual(launched[0]?.forkFromEntryId, source.getLeafId());
+		assert.equal(launch("stage:a")?.forkFromEntryId, points[0]);
+		assert.notEqual(points[0], source.getLeafId());
 	});
 
 	test("parallel steps that wait for a concurrency slot fork where their source was when the parallel was launched (#5481)", async () => {
@@ -391,7 +403,7 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 				return { stageName: name, text: name };
 			},
 			{ runId: fork.runId },
-		)(STEP_PAIR, { ...forking, forkFromSessionId: copiedSource });
+		)(STEP_PAIR, { ...forking, forkFromSessionId: copiedSource, sessionStore: copies });
 		assert.deepEqual(inherited, [["before launch"], ["before launch"]]);
 	});
 
@@ -562,7 +574,6 @@ async function launchRun(options: { readonly empty?: boolean } = {}) {
 	const store = new MemorySessionStore();
 	const source = await SessionManager.create(store, process.cwd());
 	if (options.empty !== true) await source.appendMessage(userMessage("before launch"));
-	registerLiveStageSession(source);
 	const definition = workflow({
 		name: "fork-point-launch",
 		description: "",
@@ -619,7 +630,12 @@ async function launchRun(options: { readonly empty?: boolean } = {}) {
 		const task = createDurableTaskPrimitive({ workflowId: run, backend, nextReplayKey, task: step });
 		return createChainPrimitive({ runtime, task, nextReplayKey });
 	};
-	const forking = { concurrency: 1, context: "fork" as const, forkFromSessionId: source.getSessionId() };
+	const forking = {
+		concurrency: 1,
+		context: "fork" as const,
+		forkFromSessionId: source.getSessionId(),
+		sessionStore: store,
+	};
 	return { backend, run, store, source, definition, parallel, chain, forking };
 }
 
@@ -647,7 +663,11 @@ function launchStage(
 		backend,
 		workflowId: run,
 		replayKey,
-		options: { context: "fork" as const, forkFromSessionId: source.getSessionId() },
+		options: {
+			context: "fork" as const,
+			forkFromSessionId: source.getSessionId(),
+			sessionStore: source.getSessionStore(),
+		},
 		resuming: false,
 	});
 	assert.ok(launched);
@@ -719,7 +739,6 @@ async function durableParallelRun(run: string) {
 		status: "running",
 	});
 	const source = await sourceWithOpenCall();
-	registerLiveStageSession(source);
 	const runtime = {
 		runId: run,
 		exit: { throwIfWorkflowExitSelected: () => undefined, exitScope: undefined },
@@ -743,7 +762,17 @@ async function durableParallelRun(run: string) {
 		});
 		return {
 			forkedAt,
-			parallel: createParallelPrimitive({ runtime, task, durable: { backend, workflowId: run, nextReplayKey } }),
+			parallel: createParallelPrimitive({
+				runtime,
+				task,
+				durable: {
+					backend,
+					workflowId: run,
+					nextReplayKey,
+					readForkPoint: (options, id) =>
+						storedForkPoint({ sessionStore: source.getSessionStore(), ...options }, id),
+				},
+			}),
 		};
 	};
 	return { backend, run, source, runner };

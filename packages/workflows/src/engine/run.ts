@@ -122,7 +122,7 @@ import {
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
-import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
+import { readReplayedStageMessages, stageStoreOptions } from "../runs/foreground/stage-runner-options.js";
 import type { StageWaitHandoff } from "../runs/foreground/stage-wake-dispatcher.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { prepareRunGit } from "../runs/shared/worktree-git-runner.js";
@@ -135,6 +135,7 @@ import { assertRecordedParentsMaterialised } from "../shared/replay-topology-fai
 import { parseEvictWhenWaiting, type RunEvictionPolicy } from "../shared/run-eviction.js";
 import { RunEvictedError, RunEvictionConfigError, RunReplayError } from "../shared/run-eviction-errors.js";
 import { generationAtPause } from "../shared/run-generation.js";
+import { storedForkPoint } from "../shared/stage-session-store.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
 import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
@@ -795,12 +796,16 @@ async function executeRun(
 		await scheduler.waitForRunRelease();
 		ownController.signal.throwIfAborted();
 	};
-	const whenRunning = <T>(call: () => Promise<T>): Promise<T> => {
-		if (scheduler.isRunPaused()) return waitForRunRelease().then(() => whenRunning(call));
+	const whenReleased = <T>(call: () => Promise<T>): Promise<T> => {
+		if (scheduler.isRunPaused()) return waitForRunRelease().then(() => whenReleased(call));
 		if (ownController.signal.aborted) return Promise.reject(ownController.signal.reason);
-		const persistence = drainCachedStagePersistence();
-		return persistence === undefined ? call() : persistence.then(() => whenRunning(call));
+		return call();
 	};
+	const whenRunning = <T>(call: () => Promise<T>): Promise<T> =>
+		whenReleased(() => {
+			const persistence = drainCachedStagePersistence();
+			return persistence === undefined ? call() : persistence.then(() => whenRunning(call));
+		});
 	ownController.signal.addEventListener(
 		"abort",
 		() => scheduler.rejectReleaseBarriers(ownController.signal.reason ?? new Error("atomic-workflows: run aborted")),
@@ -1294,25 +1299,23 @@ async function executeRun(
 			?.intercomGroup;
 	};
 	let observedTaskTailQuit: WorkflowGracefulQuitSignal | undefined;
-	let forkReplayTurn: Promise<void> | undefined;
+	const readForkPoint = async (options: StageOptions, sessionId: string) =>
+		storedForkPoint(
+			stageStoreOptions(mapRestoredOptions === undefined ? options : await mapRestoredOptions(options), {
+				adapters: opts.adapters,
+				defaultCwd: workflowInvocationCwd,
+			}),
+			sessionId,
+			opts.defaultSessionDir,
+		);
 	const durableTask = createDurableTaskPrimitive({
+		readForkPoint,
 		workflowId: runId,
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		durableIntercomGroup,
 		task: taskRunners.task,
-		recordCachedTask: (name, key, checkpoint, scope) => {
-			// An older fork launch claims its ready slots synchronously. Let other calls in this turn claim
-			// theirs before a cached worker's metadata write blocks whenRunning. Concurrent groups publish
-			// their cached workers in admission order, independently of any fork-point write.
-			if (scope?.forkPointsBeforeLiveTask !== undefined) {
-				forkReplayTurn ??= Promise.resolve().then(() => {
-					forkReplayTurn = undefined;
-				});
-			}
-			const record = () => recordCachedStage(name, key, checkpoint, scope);
-			return scope !== undefined && forkReplayTurn !== undefined ? forkReplayTurn.then(record) : record();
-		},
+		recordCachedTask: recordCachedStage,
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordLiveCheckpoint:
 			mapRestoredOptions === undefined
@@ -1362,6 +1365,7 @@ async function executeRun(
 	});
 	const pendingChildWorkflows = new Set<Promise<unknown>>();
 	const durableStage = createDurableStagePrimitive({
+		readForkPoint,
 		workflowId: runId,
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
@@ -1411,11 +1415,15 @@ async function executeRun(
 	// A task's key can follow keys a launch took: no task starts before the run's record of that is durable, and none
 	// starts once the record failed, which fails the run.
 	const gatedTask: typeof durableTask = (name, options, scope, reserved) =>
-		whenRunning(() => {
-			if (launchKeysRecord === undefined) return durableTask(name, options, scope, reserved);
-			// Waiting for the launch record must not let a later parallel take this task's key first.
+		whenReleased(() => {
+			// Claim at admission, not when a previous cached task finishes publishing its metadata. Every
+			// caller uses this path; queued workers don't reach it until they actually have a slot.
 			const key = reserved ?? reserveTaskReplayKey(stageReplayKeyGenerator, name);
-			return launchKeysRecord.then(() => gatedTask(name, options, scope, key));
+			return whenRunning(() =>
+				launchKeysRecord === undefined
+					? durableTask(name, options, scope, key)
+					: launchKeysRecord.then(() => gatedTask(name, options, scope, key)),
+			);
 		});
 	const chain = createChainPrimitive({
 		runtime,
@@ -1426,6 +1434,7 @@ async function executeRun(
 		runtime,
 		task: gatedTask,
 		durable: {
+			readForkPoint,
 			backend: durableBackend,
 			workflowId: runId,
 			nextReplayKey: launchKeys ?? ((name) => stageReplayKeyGenerator(name)),
@@ -1576,8 +1585,10 @@ async function executeRun(
 			return context;
 		},
 		task: (...args) => rejectionScope.watch(gatedTask(...args)),
-		chain: (...args) => rejectionScope.watch(whenRunning(() => chain(...args))),
-		parallel: (...args) => rejectionScope.watch(whenRunning(() => parallel(...args))),
+		// Admit the group's first workers in call order. Each worker still waits for earlier cached metadata
+		// in gatedTask; waiting here as well would let a later standalone task claim the worker's key.
+		chain: (...args) => rejectionScope.watch(whenReleased(() => chain(...args))),
+		parallel: (...args) => rejectionScope.watch(whenReleased(() => parallel(...args))),
 		workflow: (...args) =>
 			rejectionScope.watch(
 				whenRunning(() => {

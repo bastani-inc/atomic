@@ -12,7 +12,6 @@ import {
 	workspaceSessionCwdAsync,
 } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
-import { registerLiveStageSession } from "../../shared/live-stage-sessions.js";
 import { warnRemovedRoutingOption } from "../../shared/removed-routing-warning.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
@@ -170,7 +169,6 @@ export async function stripWorkflowOnlyOptions(
 	}
 	const manager = sessionOptions.sessionManager;
 	if (manager !== undefined) {
-		registerLiveStageSession(manager);
 		const mappings = [...manager.getWorktreeRootMappings(), ...currentWorktreeRootMappings()];
 		const notKept = await recordRestoredWorktreeContext(
 			manager,
@@ -224,21 +222,28 @@ export function readReplayedStageMessages(
 	},
 	sessionId: string,
 ): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
+	return readStoredStageMessages(stageStoreOptions(options, run), run.defaultSessionDir, sessionId);
+}
+
+/** Resolve the same source store for a launch snapshot and the session that will open it. */
+export function stageStoreOptions(
+	options: StageOptions,
+	run: {
+		readonly adapters?: Partial<Pick<StageAdapters, "sessionStore" | "agentSession">>;
+		readonly defaultCwd: string;
+	},
+): StageOptions {
 	const ownStore =
 		options.sessionStore !== undefined || options.sessionDir !== undefined || options.sessionManager !== undefined;
-	const runStore = run.adapters?.sessionStore;
-	return readStoredStageMessages(
-		{
-			...(ownStore || runStore === undefined ? options : { ...options, sessionStore: runStore }),
-			cwd:
-				options.cwd ??
-				options.sessionManager?.getCwd() ??
-				agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
-				run.defaultCwd,
-		},
-		run.defaultSessionDir,
-		sessionId,
-	);
+	return {
+		...options,
+		...(!ownStore && run.adapters?.sessionStore !== undefined ? { sessionStore: run.adapters.sessionStore } : {}),
+		cwd:
+			options.cwd ??
+			options.sessionManager?.getCwd() ??
+			agentSessionAdapterDefaultCwd(run.adapters?.agentSession) ??
+			run.defaultCwd,
+	};
 }
 
 /** Close `store` after `primary` failed: a failure to close is attached to `primary` as `cleanupCause`, never thrown. */

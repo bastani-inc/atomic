@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { isProxy } from "node:util/types";
 import { durableHash } from "../../durable/durable-hash.js";
 import {
 	type DurableLaunchRun,
-	type ForkPoint,
+	type LaunchForkSource,
 	launchForkSourceOf,
 	recordFanOutForkPoints,
 	withForkPoint,
@@ -20,9 +21,13 @@ import {
 } from "../../runs/foreground/executor-task-prompts.js";
 import type { ParallelFailFastScope, ParallelFailFastStage } from "../../runs/foreground/executor-types.js";
 import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
-import { liveStageSessionLeaf } from "../../shared/live-stage-sessions.js";
 import { validateStepsReleaseWhenWaiting } from "../../shared/stage-wait.js";
-import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
+import type {
+	StageOptions,
+	WorkflowParallelOptions,
+	WorkflowTaskResult,
+	WorkflowTaskStep,
+} from "../../shared/types.js";
 import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
@@ -49,36 +54,25 @@ export function createParallelPrimitive(input: {
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
 		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
-		// Normalize both authored and agent-serialized sentinels before deciding
-		// whether this invocation needs one shared auto-group UUID.
-		const normalizeGroup = <T extends { group?: string | true }>(value: T): T =>
-			value.group === undefined ? value : { ...value, group: normalizeAutoGroupSentinel(value.group) };
-		const normalizedOptions = normalizeGroup(options);
-		const normalizedSteps = steps.map(normalizeGroup);
-		const needsAutoGroup = normalizedOptions.group === true || normalizedSteps.some((step) => step.group === true);
-		const autoGroup = needsAutoGroup ? randomUUID() : undefined;
-		const resolveAutoGroup = <T extends { group?: string | true }>(value: T): T =>
-			value.group === true && autoGroup ? { ...value, group: autoGroup } : value;
-		const resolvedOptions = resolveAutoGroup(normalizedOptions);
-		const forkSources = new Map<WorkflowTaskStep, string>();
-		const resolvedSteps = normalizedSteps.map((step) => {
-			const resolved = resolveAutoGroup(step);
-			if ((resolved.context ?? resolvedOptions.context) !== "fork") return resolved;
-			const launched = { ...resolved };
-			const source = launchForkSourceOf(launched, resolvedOptions);
-			if (source !== undefined) forkSources.set(launched, source);
-			return launched;
-		});
-		const fallback = parallelFallbackTask(resolvedSteps, resolvedOptions);
-		const stepOptions = (step: WorkflowTaskStep): WorkflowTaskExecutionOptions =>
-			taskWithSharedDefaults(
+		let autoGroup: string | undefined;
+		const sources = parallelForkSources(steps, options);
+		const fallback = parallelFallbackTask(steps, options);
+		const stepOptions = (step: WorkflowTaskStep): WorkflowTaskExecutionOptions => {
+			const task = taskWithSharedDefaults(
 				taskOptionsFromStep(
 					step,
-					replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, resolvedOptions.task ?? fallback),
+					replaceTaskPlaceholder(step.prompt ?? step.task ?? fallback, options.task ?? fallback),
 					taskPrevious(step),
 				),
-				resolvedOptions,
+				options,
 			);
+			const authoredGroup = step.group ?? task.group;
+			if (authoredGroup === undefined) return task;
+			const group = normalizeAutoGroupSentinel(authoredGroup);
+			if (group !== true) return { ...task, group };
+			autoGroup ??= randomUUID();
+			return { ...task, group: autoGroup };
+		};
 		// What names this launch is fixed now, before its fork points are recorded: its graph parents and the stages
 		// before it, each step's replay key and the key of its fork point record. A stage that settles while the record
 		// is written, a step that waits for a slot, and another parallel launched meanwhile cannot change them, so each
@@ -88,38 +82,30 @@ export function createParallelPrimitive(input: {
 			input.runtime.activeStore.run(input.runtime.runId)?.stages.map((stage) => stage.id) ?? [],
 		);
 		const durable = input.durable;
-		const sourceIds = [...new Set(forkSources.values())];
+		const hasForks = sources.all.length > 0;
 		const reservesKeys = input.reservesStepKeys !== false;
 		// In an older fork launch only the slots filled now may claim before the write; queued steps still
 		// take their keys at dequeue. A marked launch reserves one key per occurrence, even for repeated step objects.
 		const reserveCount = reservesKeys
-			? resolvedSteps.length
-			: sourceIds.length === 0
-				? 0
-				: (positiveConcurrency(resolvedOptions.concurrency) ?? resolvedSteps.length);
+			? steps.length
+			: hasForks
+				? (positiveConcurrency(options.concurrency) ?? steps.length)
+				: 0;
 		const replayKeys =
 			durable === undefined || reserveCount === 0
 				? undefined
-				: resolvedSteps
-						.slice(0, reserveCount)
-						.map((step) => reserveTaskReplayKey(durable.nextReplayKey, step.name));
-		const forkRecord =
-			durable !== undefined && sourceIds.length > 0
-				? recordFanOutForkPoints(
-						durable,
-						nextFanOutKey(`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`),
-						sourceIds,
-					)
-				: undefined;
+				: steps.slice(0, reserveCount).map((step) => reserveTaskReplayKey(durable.nextReplayKey, step.name));
+		const forkRecord = hasForks
+			? recordFanOutForkPoints(
+					durable,
+					nextFanOutKey(`parallel:${durableHash(steps.map((step) => step.name))}`),
+					sources.all,
+				)
+			: undefined;
 		// In an older run a cached worker must settle and admit its successor just as it did before fork records.
 		// Start its normal task path synchronously; only a worker that needs to run live waits for the record.
-		const forkPoints =
-			forkRecord !== undefined && reservesKeys
-				? await forkRecord
-				: durable === undefined
-					? liveForkPoints(sourceIds)
-					: undefined;
-		const failFastEnabled = resolvedOptions.failFast !== false;
+		const forkPoints = forkRecord !== undefined && reservesKeys ? await forkRecord : undefined;
+		const failFastEnabled = options.failFast !== false;
 		const legacyForkRecord = reservesKeys ? undefined : forkRecord;
 		let recordFailure: unknown;
 		legacyForkRecord?.catch((error: unknown) => {
@@ -141,7 +127,7 @@ export function createParallelPrimitive(input: {
 					stage.parentIds.length === parallelParentIds.length &&
 					stage.parentIds.every((parentId, index) => parentId === parallelParentIds[index]),
 			);
-			return resolvedSteps.every((step) => {
+			return steps.every((step) => {
 				const index = completed.findIndex((stage) => stage.name === step.name);
 				if (index < 0) return false;
 				completed.splice(index, 1);
@@ -150,18 +136,20 @@ export function createParallelPrimitive(input: {
 		};
 
 		const tasks = mapParallelSteps(
-			resolvedSteps,
-			resolvedOptions.concurrency,
-			resolvedOptions.failFast,
+			steps,
+			options.concurrency,
+			options.failFast,
 			async (step, index) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
-				const source = forkSources.get(step);
-				return await input.task(
-					step.name,
-					withForkPoint(stepOptions(step), source === undefined ? undefined : forkPoints?.get(source)),
-					parallelScope,
-					replayKeys?.[index],
-				);
+				const task = stepOptions(step);
+				const source = sources.find(task);
+				const launched =
+					source === undefined
+						? task
+						: legacyForkRecord === undefined
+							? withForkPoint(task, forkPoints?.get(source.slot))
+							: { ...task, durableForkPoint: async () => (await legacyForkRecord).get(source.slot) };
+				return await input.task(step.name, launched, parallelScope, replayKeys?.[index]);
 			},
 			async (error) => {
 				if (!failFastEnabled) return;
@@ -195,12 +183,59 @@ export function createParallelPrimitive(input: {
 	};
 }
 
-/** Fork points read from the sources open in this process, for a parallel outside a durable run. */
-function liveForkPoints(sessionIds: readonly string[]): ReadonlyMap<string, ForkPoint> {
-	return new Map(
-		sessionIds.flatMap((sessionId) => {
-			const entryId = liveStageSessionLeaf(sessionId);
-			return entryId === undefined ? [] : [[sessionId, entryId] as const];
-		}),
-	);
+const sourceFields = [
+	"context",
+	"forkFromSessionId",
+	"forkFromEntryId",
+	"forkFromEmptySource",
+	"sessionStore",
+	"sessionManager",
+	"sessionDir",
+	"cwd",
+	"agentDir",
+	"settingsManager",
+] as const;
+
+/** Inspect only declarative source coordinates. A computed option is evaluated by the worker, never by the queue. */
+function parallelForkSources(steps: readonly WorkflowTaskStep[], defaults: WorkflowParallelOptions) {
+	const all: LaunchForkSource[] = [];
+	const bySession = new Map<string, LaunchForkSource[]>();
+	const find = (options: StageOptions) => {
+		const id = launchForkSourceOf(options);
+		return id === undefined ? undefined : bySession.get(id)?.find((s) => sameSourceStore(s.options, options));
+	};
+	for (const [slot, step] of steps.entries()) {
+		if (isProxy(step) || isProxy(defaults)) continue;
+		const data: Partial<Record<(typeof sourceFields)[number], unknown>> = {};
+		let computed = false;
+		for (const key of sourceFields) {
+			let field = Object.getOwnPropertyDescriptor(step, key);
+			if (!field?.enumerable || ("value" in field && field.value === undefined))
+				field = Object.getOwnPropertyDescriptor(defaults, key);
+			if (key === "context" && (!field?.enumerable || !("value" in field) || field.value !== "fork")) break;
+			if (!field?.enumerable) continue;
+			if (!("value" in field)) {
+				computed = true;
+				break;
+			}
+			data[key] = field.value;
+		}
+		if (computed) continue;
+		const options: StageOptions = data as StageOptions;
+		const sessionId = launchForkSourceOf(options);
+		if (sessionId === undefined || find(options) !== undefined) continue;
+		const source = { slot, sessionId, options };
+		all.push(source);
+		const group = bySession.get(sessionId);
+		if (group) group.push(source);
+		else bySession.set(sessionId, [source]);
+	}
+	return { all, find };
+}
+
+function sameSourceStore(a: StageOptions, b: StageOptions): boolean {
+	if (a.sessionStore || b.sessionStore) return a.sessionStore === b.sessionStore;
+	if (a.sessionManager || b.sessionManager) return a.sessionManager === b.sessionManager;
+	if (a.sessionDir !== undefined || b.sessionDir !== undefined) return a.sessionDir === b.sessionDir;
+	return a.cwd === b.cwd && a.agentDir === b.agentDir && a.settingsManager === b.settingsManager;
 }
