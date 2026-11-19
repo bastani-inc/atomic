@@ -940,8 +940,8 @@ export async function reconnectPooledStageHandle(
 		else early.push(message);
 	});
 	if (!result.ok) return false;
-	// A view that gave up on this attempt, or closed, does not bind a watch that opened late.
-	if (handle.isDisposed || !wanted()) {
+	// A stage can finish while the replacement watch is opening; a late snapshot cannot revive its turn.
+	if (!handle.isReconnecting || handle.isDisposed || !wanted()) {
 		await transport.unwatch(result.watch.id);
 		return false;
 	}
@@ -949,5 +949,5 @@ export async function reconnectPooledStageHandle(
 	bound = true;
 	for (const message of early.splice(0)) handle.receive(message);
 	await rebinding;
-	return !handle.isReconnecting;
+	return !handle.isDisposed && handle.endReason === undefined && !handle.isReconnecting;
 }
