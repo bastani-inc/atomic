@@ -960,7 +960,7 @@ test("flattens mixed SINGLE and tasks input in source order without deduplicatin
 	}
 });
 
-test("routes later-first aggregate live data to each sibling without leakage", async () => {
+test("routes later-first aggregate live data and elapsed time to each sibling without leakage (#5570)", async () => {
 	const allowFirstUpdate = Promise.withResolvers<void>();
 	const firstUpdated = Promise.withResolvers<void>();
 	const secondUpdated = Promise.withResolvers<void>();
@@ -980,7 +980,7 @@ test("routes later-first aggregate live data to each sibling without leakage", a
 				recentOutput: [`progress:${task}`],
 				toolCount: 0,
 				tokens: 0,
-				durationMs: 1,
+				durationMs: 7400,
 			};
 			const controlEvent = {
 				type: "needs_attention" as const,
@@ -1023,6 +1023,17 @@ test("routes later-first aggregate live data to each sibling without leakage", a
 		);
 
 		await secondUpdated.promise;
+		const partialContext = { toolCallId: "first", state: {}, invalidate() {} };
+		const partial = renderSubagentToolResult(
+			firstUpdates[0]!,
+			{ expanded: false, isPartial: true },
+			theme,
+			partialContext,
+		)
+			.render(120)
+			.join("\n");
+		assert.equal(partial.match(/7s/g)?.length, 1, "only the second child has reported its elapsed time");
+		assert.match(partial, /fast-second[^\n]*\n[^\n]*7s/);
 		assert.equal(firstUpdates.length, 1, "every aggregate update must reach the first callback");
 		assert.deepEqual(firstUpdates[0]?.details?.results, []);
 		assert.equal(firstUpdates[0]?.details?.progress, undefined);
@@ -1293,6 +1304,206 @@ test("rejects differing call-level cwd values for one coalesced worktree before 
 			assert.equal(output.isError, true);
 			assert.equal(output.content[0]?.type === "text" ? output.content[0].text : "", expected);
 			assert.deepEqual(output.details, { mode: "parallel", results: [] });
+		}
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test.each([
+	{ name: "foreground", wait: { kind: "foreground", budgetMs: 600_000 } },
+	{ name: "background", wait: { kind: "background" } },
+])(
+	"a call that passes a $name wait and a sibling that passes none launch apart, so a field they do not share fails neither (#5686)",
+	async ({ wait }) => {
+		const launches: string[] = [];
+		const harness = makeHarness({
+			runSync: async (_parentCwd, _agents, agentName, task) => {
+				launches.push(task);
+				return result(agentName, task);
+			},
+		});
+		try {
+			const outputs = await Promise.all([
+				execute(harness, "with-wait", { agent: "echo", task: "A", concurrency: 1, wait } as SubagentParamsLike),
+				execute(harness, "without-wait", { agent: "echo", task: "B" }),
+			]);
+			const texts = outputs.map((output) => (output.content[0]?.type === "text" ? output.content[0].text : ""));
+			assert.deepEqual(
+				outputs.map((output) => output.isError === true),
+				[false, false],
+				texts.join(" | "),
+			);
+			assert.deepEqual(launches.sort(), ["A", "B"]);
+			assert.match(texts[0]!, /output:A/);
+			assert.match(texts[1]!, /output:B/);
+		} finally {
+			harness.cleanup();
+		}
+	},
+);
+
+test("sibling calls that can merge run together when only one passes a wait, so a child can wait for its sibling (#5686)", async () => {
+	const bStarted = Promise.withResolvers<void>();
+	const events: string[] = [];
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			events.push(`start:${task}`);
+			if (task === "B") bStarted.resolve();
+			if (task === "A") {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					const cause = await Promise.race([
+						bStarted.promise.then(() => "B"),
+						new Promise<string>((resolve) => {
+							timer = setTimeout(() => resolve("timeout"), 3_000);
+						}),
+					]);
+					events.push(`A-unblocked:${cause}`);
+				} finally {
+					clearTimeout(timer);
+				}
+			}
+			return result(agentName, task);
+		},
+	});
+	try {
+		const outputs = await Promise.all([
+			execute(harness, "A", {
+				agent: "echo",
+				task: "A",
+				concurrency: 2,
+				wait: { kind: "background" },
+			} as SubagentParamsLike),
+			execute(harness, "B", { agent: "echo", task: "B", concurrency: 2 }),
+		]);
+		assert.deepEqual(
+			outputs.map((output) => output.isError === true),
+			[false, false],
+		);
+		assert.ok(events.includes("A-unblocked:B"), JSON.stringify(events));
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("cancelling a later sibling call ends it at once while a call that passed a wait still runs (#5686)", async () => {
+	const started = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	const later = new AbortController();
+	const reason = new Error("caller cancelled");
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			if (task === "A") started.resolve();
+			await finish.promise;
+			return result(agentName, task);
+		},
+	});
+	const first = execute(harness, "first", {
+		agent: "echo",
+		task: "A",
+		wait: { kind: "background" },
+	} as SubagentParamsLike);
+	const second = harness.executor
+		.execute("later", { agent: "echo", task: "B" }, later.signal, undefined, harness.ctx)
+		.then(
+			() => "returned",
+			(error) => (error === reason ? "cancelled" : "error"),
+		);
+	try {
+		await started.promise;
+		later.abort(reason);
+		const observed = await Promise.race([second, waitForImmediate().then(() => "still-pending")]);
+		assert.equal(observed, "cancelled");
+	} finally {
+		finish.resolve();
+		await Promise.all([first, second]);
+		harness.cleanup();
+	}
+});
+
+test.each([
+	{ name: "can merge", concurrency: undefined },
+	{ name: "cannot merge", concurrency: 1 },
+])(
+	"a call with both agent and tasks that passes a wait starts all its children next to a sibling it $name with (#5686)",
+	async ({ concurrency }) => {
+		const launches: string[] = [];
+		const harness = makeHarness({
+			runSync: async (_parentCwd, _agents, agentName, task) => {
+				launches.push(task);
+				return result(agentName, task);
+			},
+		});
+		try {
+			// A caller that still passes the removed launch `wait`.
+			const mixed = {
+				agent: "echo",
+				task: "top",
+				tasks: [{ agent: "echo", task: "listed" }],
+				...(concurrency === undefined ? {} : { concurrency }),
+				wait: { kind: "background" },
+			};
+			const outputs = await Promise.all([
+				execute(harness, "mixed", mixed as SubagentParamsLike),
+				execute(harness, "other", { agent: "echo", task: "other" }),
+			]);
+			assert.deepEqual(
+				outputs.map((output) => output.isError === true),
+				[false, false],
+			);
+			assert.deepEqual(launches.slice().sort(), ["listed", "other", "top"]);
+		} finally {
+			harness.cleanup();
+		}
+	},
+);
+
+test("a call made as soon as the last of a split burst's calls returns is not refused as a duplicate (#5686)", async () => {
+	const release = Promise.withResolvers<void>();
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			if (task === "B") await release.promise;
+			return result(agentName, task);
+		},
+	});
+	try {
+		// A caller that still passes the removed launch `wait`, and differs from its sibling in `concurrency`.
+		const withWait = { agent: "echo", task: "A", concurrency: 1, wait: { kind: "background" } };
+		const first = execute(harness, "a", withWait as SubagentParamsLike);
+		const second = execute(harness, "b", { agent: "echo", task: "B" });
+		assert.equal((await first).isError, undefined);
+		release.resolve();
+		assert.equal((await second).isError, undefined);
+		const third = await execute(harness, "c", { agent: "echo", task: "C" });
+		assert.equal(third.isError, undefined, JSON.stringify(third.content));
+	} finally {
+		release.resolve();
+		harness.cleanup();
+	}
+});
+
+test("calls that pass the same wait still merge, and still fail together on a field they do not share (#5686)", async () => {
+	let launches = 0;
+	const harness = makeHarness({
+		runSync: async (_parentCwd, _agents, agentName, task) => {
+			launches += 1;
+			return result(agentName, task);
+		},
+	});
+	try {
+		const wait = { kind: "background" };
+		const outputs = await Promise.all([
+			execute(harness, "first", { agent: "echo", task: "A", concurrency: 1, wait } as SubagentParamsLike),
+			execute(harness, "second", { agent: "echo", task: "B", concurrency: 2, wait } as SubagentParamsLike),
+		]);
+		assert.equal(launches, 0);
+		for (const output of outputs) {
+			assert.equal(output.isError, true);
+			assert.equal(
+				output.content[0]?.type === "text" ? output.content[0].text : "",
+				"Cannot coalesce sibling subagent calls: incompatible top-level field 'concurrency'.",
+			);
 		}
 	} finally {
 		harness.cleanup();

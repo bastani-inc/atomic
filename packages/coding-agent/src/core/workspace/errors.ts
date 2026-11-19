@@ -658,9 +658,47 @@ const COLLECTION_PHASES: Record<SnapshotCollectionPhase, string> = {
 	record: "recording its outcome for",
 };
 
+const COLLECTION_RETRY =
+	"collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.";
+
+/** The non-empty messages of `cause` and of the errors it wraps, outermost first: at most eight. */
+function causeMessages(cause: unknown): string[] {
+	const messages: string[] = [];
+	let current = cause;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const message = dataProperty(current, "message");
+		if (typeof message === "string" && message.trim() !== "") messages.push(message.trim());
+		current = dataProperty(current, "cause");
+	}
+	return messages;
+}
+
 /**
- * Collecting unreferenced snapshot blobs failed; the storage failure is the `cause`. No blob a retained snapshot
- * references was deleted, and running the collection again is safe, so it is retryable.
+ * The key under which a failed rename's storage error carries the trigger or view that stopped it, once the snapshot
+ * store confirmed in the database which object SQLite named (#5622). A `Symbol.for` key, so the store sets it without
+ * importing this module.
+ */
+const RENAME_BLOCKER = Symbol.for("atomic-snapshots/rename-blocker@1");
+
+/** The trigger or view that `cause` or an error it wraps, at most eight deep, carries under {@link RENAME_BLOCKER}. */
+function renameBlockerOf(cause: unknown): { readonly type: "trigger" | "view"; readonly name: string } | undefined {
+	let current = cause;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const blocker = dataProperty(current, RENAME_BLOCKER);
+		const type = dataProperty(blocker, "type");
+		const name = dataProperty(blocker, "name");
+		if ((type === "trigger" || type === "view") && typeof name === "string") return { type, name };
+		current = dataProperty(current, "cause");
+	}
+	return undefined;
+}
+
+/**
+ * Collecting unreferenced snapshot blobs failed; the storage failure is the `cause`, and the summary ends with its
+ * innermost reason, the database's own words. No blob a retained snapshot references was deleted, and running the
+ * collection again is safe, so it is retryable. When a trigger or view stops the move of the chunk table to the row
+ * layout at its rename (#5541), and the store confirmed which one it is, the hint names it and says to fix or drop it
+ * (#5622). SQLite's own words never name one alone: they do not quote the name, so they can mean another object.
  */
 export class WorkspaceCollectionError extends WorkspaceError implements WorkspaceCollectionErrorFields {
 	override readonly name = "WorkspaceCollectionError" as const;
@@ -671,10 +709,16 @@ export class WorkspaceCollectionError extends WorkspaceError implements Workspac
 	declare readonly deleted: number;
 
 	constructor(fields: WorkspaceCollectionErrorFields, cause?: Error) {
+		const messages = causeMessages(cause);
+		const reason = messages.at(-1);
+		// The sweep is the only phase that renames a table: the chunk table's move ends it.
+		const blocker = fields.phase === "sweep" ? renameBlockerOf(cause) : undefined;
 		super({
 			code: "collection-failed",
-			summary: `Snapshot blob collection failed while ${COLLECTION_PHASES[fields.phase]} ${fields.table}`,
-			hint: "No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
+			summary: `Snapshot blob collection failed while ${COLLECTION_PHASES[fields.phase]} ${fields.table}${reason === undefined ? "" : `: ${reason}`}`,
+			hint: blocker
+				? `A trigger or view that refers to a missing table blocks moving the snapshot chunk table to its new layout until it is fixed or dropped: SQLite renames no table while one exists. Fix the ${blocker.type} ${blocker.name}, or drop it with DROP ${blocker.type.toUpperCase()} "${blocker.name.replaceAll('"', '""')}", and the next collection finishes the move. No blob a retained snapshot needs was deleted, and snapshots keep working meanwhile; ${COLLECTION_RETRY}`
+				: `No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; ${COLLECTION_RETRY}`,
 			fields: { table: fields.table, phase: fields.phase, deleted: fields.deleted },
 			retryable: true,
 			cause,
@@ -1023,7 +1067,7 @@ const ALL_CODES = new Set(Object.values(CODES).flat());
  * A data property of `value` or its prototypes. Accessors are never invoked, so guards stay side-effect free and never
  * throw on hostile or half-built values.
  */
-function dataProperty(value: unknown, key: string): unknown {
+function dataProperty(value: unknown, key: string | symbol): unknown {
 	for (let owner: unknown = value; typeof owner === "object" && owner !== null; owner = Object.getPrototypeOf(owner)) {
 		const descriptor = Object.getOwnPropertyDescriptor(owner, key);
 		if (descriptor !== undefined) return descriptor.value;
@@ -1182,8 +1226,8 @@ const REHYDRATORS: Partial<Record<WorkspaceErrorName | "GitUnavailableError", Re
 				),
 	WorkspaceDriftError: (_value, fields, cause) =>
 		new WorkspaceDriftError(fields as unknown as WorkspaceDriftErrorFields, cause),
-	WorkspaceCollectionError: (_value, fields, cause) =>
-		new WorkspaceCollectionError(fields as unknown as WorkspaceCollectionErrorFields, cause),
+	WorkspaceCollectionError: (value, fields, cause) =>
+		withSenderText(new WorkspaceCollectionError(fields as unknown as WorkspaceCollectionErrorFields, cause), value),
 	WorkspaceBindingError: (value, fields, cause) =>
 		new WorkspaceBindingError({
 			code: value.code as WorkspaceBindingErrorCode,
@@ -1205,6 +1249,19 @@ const REHYDRATORS: Partial<Record<WorkspaceErrorName | "GitUnavailableError", Re
 	WorkspaceSandboxError: (_value, fields) =>
 		new WorkspaceSandboxError({ tool: String(fields.tool), worktree: String(fields.worktree) }),
 };
+
+/**
+ * `error` with the hint `value` was sent with, and the summary its message starts with: a collection error's hint and
+ * summary come from causes the wire form may cut short, and from what the sender's database confirmed (#5622).
+ */
+function withSenderText(error: WorkspaceError, value: SerializedWorkspaceError): WorkspaceError {
+	if (typeof value.hint !== "string") return error;
+	Object.defineProperty(error, "hint", { value: value.hint });
+	const tail = ` (${error.code}). ${value.hint}`;
+	if (typeof value.message === "string" && value.message.endsWith(tail))
+		Object.defineProperty(error, "summary", { value: value.message.slice(0, -tail.length) });
+	return error;
+}
 
 function rebuild(value: SerializedWorkspaceError, cause: Error | undefined): Error {
 	const rehydrate = Object.hasOwn(REHYDRATORS, value.name)

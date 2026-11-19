@@ -757,6 +757,36 @@ test("stats that land after agent_end ask the host to repaint (#3328)", async ()
 	}
 });
 
+test("the isolated chat adopts the retry snapshot unless a newer event already ended the wait (#5572)", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createStatsEngineClient();
+		const runtime = createRuntime(harness, probe);
+		const retryStatus = {
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 2000,
+			retryAt: Date.now() + 2000,
+			errorMessage: "busy",
+		} as const;
+		probe.client.getState = async () => ({ ...createState(), retryStatus, turnStartedAt: 1000 });
+		await runtime.initializeFromEngine();
+		assert.deepEqual(runtime.session.retryStatus, retryStatus);
+		assert.equal(runtime.session.turnStartedAt, 1000);
+		const read = Promise.withResolvers<RpcSessionState>();
+		probe.client.getState = () => read.promise;
+		const refreshing = runtime.initializeFromEngine();
+		probe.emit({ type: "agent_start", turnStartedAt: 2000 });
+		read.resolve({ ...createState(), retryStatus, turnStartedAt: 1000 });
+		await refreshing;
+		assert.equal(runtime.session.retryStatus, undefined, "a stale snapshot cannot restart a finished wait");
+		assert.equal(runtime.session.turnStartedAt, 2000, "the next turn's origin wins over the stale snapshot");
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("the isolated engine's main footer hides the model line during a retry's backoff (#4690)", async () => {
 	const harness = await createHarness();
 	try {

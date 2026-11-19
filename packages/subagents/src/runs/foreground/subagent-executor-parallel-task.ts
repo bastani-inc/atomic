@@ -30,7 +30,6 @@ import { runOwnerlessChild } from "./ownerless-children.js";
 import { boundedWorktreeReply, type registerRunWorktrees } from "./run-worktrees.js";
 import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
-import { markLiveResultIndices } from "./subagent-executor-live-update.js";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
 import { resolveParallelTaskCwd } from "./subagent-executor-worktree.js";
 import { runAgentTask } from "./task-execution.js";
@@ -317,7 +316,9 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 							content: progressUpdate.content,
 							details: {
 								mode: "parallel",
+								runId: input.runId,
 								results: mergedResults,
+								resultIndices: indexedResults.map(({ index }) => index),
 								progress: mergedProgress,
 								...(controlEvents?.length ? { controlEvents } : {}),
 								totalSteps: input.tasks.length,
@@ -326,10 +327,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 									: {}),
 							},
 						};
-						markLiveResultIndices(
-							aggregateUpdate,
-							indexedResults.map(({ index: resultIndex }) => resultIndex),
-						);
 						input.onUpdate?.(aggregateUpdate);
 					}
 				: undefined,
