@@ -1,4 +1,4 @@
-import type { TaskId } from "./contracts.js";
+import type { NativeTaskRef, TaskId } from "./contracts.js";
 
 /**
  * How a finished agent task continues when its chat sends it a message: the extension that launched it resumes it in
@@ -22,27 +22,56 @@ export interface TaskResumer {
 	isStopped?(taskId: TaskId): boolean;
 }
 
-const resumers = new WeakMap<object, TaskResumer>();
-/** Every bound resumer, so a task can be asked about without its owner. */
-const boundResumers = new Set<TaskResumer>();
+// An extension and its host can load separate SDK modules. Both must see the same owner binding, or a panel stop
+// misses the extension's resumable quit and falls back to permanent cancellation.
+type OwnerResumers = { current?: TaskResumer; readonly handlers: Map<TaskResumer, number> };
+const TASK_RESUMERS = Symbol.for("atomic-coding-agent/task-resumers@2");
+const registry = globalThis as {
+	[TASK_RESUMERS]?: {
+		owners: WeakMap<object, OwnerResumers>;
+		releasedOwners: WeakMap<NativeTaskRef, WeakRef<object>>;
+	};
+};
+registry[TASK_RESUMERS] ??= { owners: new WeakMap(), releasedOwners: new WeakMap() };
+const { owners, releasedOwners } = registry[TASK_RESUMERS];
 
 /** Registers how the tasks of `owner` (a task supervisor) resume; returns the unregister. */
 export function bindTaskResumer(owner: object, resumer: TaskResumer): () => void {
-	resumers.set(owner, resumer);
-	boundResumers.add(resumer);
+	const bindings: OwnerResumers = owners.get(owner) ?? { handlers: new Map() };
+	owners.set(owner, bindings);
+	bindings.current = resumer;
+	bindings.handlers.set(resumer, (bindings.handlers.get(resumer) ?? 0) + 1);
+	let registration: { owner: object; resumer: TaskResumer } | undefined = { owner, resumer };
 	return () => {
-		if (resumers.get(owner) === resumer) resumers.delete(owner);
-		boundResumers.delete(resumer);
+		if (!registration) return;
+		const { owner, resumer } = registration;
+		registration = undefined;
+		const bindings = owners.get(owner)!;
+		const remaining = bindings.handlers.get(resumer)! - 1;
+		if (remaining > 0) bindings.handlers.set(resumer, remaining);
+		else {
+			bindings.handlers.delete(resumer);
+			if (bindings.current === resumer) delete bindings.current;
+			if (bindings.handlers.size === 0) owners.delete(owner);
+		}
 	};
 }
 
-/** Whether a bound resumer says the task was stopped and waits for a resume, as a released subagent you quit does. */
-export function taskStoppedForResume(taskId: TaskId): boolean {
-	for (const resumer of boundResumers) if (resumer.isStopped?.(taskId) === true) return true;
+/** Remember the supervisor of a released row without making the row keep its owner alive. */
+export function bindReleasedTaskOwner(ref: NativeTaskRef, owner: object): void {
+	releasedOwners.set(ref, new WeakRef(owner));
+}
+
+/** Only the row's owner can say whether its released child was stopped and awaits a resume. */
+export function taskStoppedForResume(ref: NativeTaskRef): boolean {
+	const owner = releasedOwners.get(ref)?.deref();
+	const bindings = owner === undefined ? undefined : owners.get(owner);
+	if (bindings === undefined) return false;
+	for (const resumer of bindings.handlers.keys()) if (resumer.isStopped?.(ref.taskId) === true) return true;
 	return false;
 }
 
 /** The resumer registered for `owner`, if any. */
 export function taskResumer(owner: object): TaskResumer | undefined {
-	return resumers.get(owner);
+	return owners.get(owner)?.current;
 }

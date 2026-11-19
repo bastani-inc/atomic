@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { SessionManager } from "@bastani/atomic";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { pendingStageMessagesForDurableRun } from "../../packages/workflows/src/durable/backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -21,6 +23,8 @@ import {
 	PENDING_STAGE_READY_STALL_MS,
 	WorkflowPendingStageDeliveryFailedError,
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
+import { ensurePostMortemStageHandle } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { PENDING_STAGE_SETTLED_MESSAGE_LIMIT } from "../../packages/workflows/src/shared/pending-stage-retention.js";
@@ -197,6 +201,87 @@ async function fixture() {
 	};
 }
 
+test("a nested run's chat cannot displace the parent run's stage with the same local ID on one worker (#5577)", async () => {
+	const f = await fixture();
+	const registry = createStageControlRegistry();
+	const sessions = new MemorySessionStore();
+	let closeChat: (() => void) | undefined;
+	try {
+		const saved = async (text: string) => {
+			const session = await SessionManager.create(sessions, process.cwd());
+			await session.appendMessage({ role: "user", content: text, timestamp: 1 });
+			return stage("local-stage", { status: "completed", sessionId: session.getSessionId() });
+		};
+		const nestedId = "grandchild";
+		const parent = childRun([
+			await saved("parent chat"),
+			stage("nested", { workflowChildRun: { alias: "n", workflow: "n", runId: nestedId } }),
+		]);
+		const nested = snapshot(nestedId, {
+			parentRunId: parent.id,
+			parentStageId: "nested",
+			rootRunId: ROOT,
+			stages: [await saved("nested chat")],
+		});
+		await f.handoff.publish(f.first, [parent, nested]);
+		const parentRow = f.store.run(parent.id)!.stages[0]!,
+			nestedRow = f.store.run(nested.id)!.stages[0]!;
+		assert.equal(parentRow.workerExecution, nestedRow.workerExecution);
+		const deps = {
+			store: f.store,
+			registry,
+			adapters: { sessionStore: sessions, agentSession: { create: async () => assert.fail("lazy session") } },
+		};
+		const first = await ensurePostMortemStageHandle(parent.id, parentRow, deps);
+		assert.ok(first.ok);
+		closeChat = first.handle.subscribe(() => {});
+		assert.ok((await ensurePostMortemStageHandle(nested.id, nestedRow, deps)).ok);
+		const again = await ensurePostMortemStageHandle(parent.id, parentRow, deps);
+		assert.ok(again.ok && again.handle === first.handle, "the parent stage's held chat remains available");
+	} finally {
+		closeChat?.();
+		await registry.clear();
+		await sessions.close();
+		await f.close();
+	}
+});
+
+test("a full publication from the same worker does not invalidate a finished stage's transcript read (#5577)", async () => {
+	const f = await fixture();
+	const registry = createStageControlRegistry();
+	const sessions = new MemorySessionStore();
+	const finish = Promise.withResolvers<void>();
+	try {
+		const session = await SessionManager.create(sessions, process.cwd());
+		await session.appendMessage({ role: "user", content: "original", timestamp: 1 });
+		const finished = stage("finished", { status: "completed", sessionId: session.getSessionId() });
+		await f.handoff.publish(f.first, [childRun([finished])]);
+		const record = f.store.run(descriptor.childRunId)!.stages[0]!;
+		const started = Promise.withResolvers<void>();
+		const load = sessions.load.bind(sessions);
+		vi.spyOn(sessions, "load").mockImplementationOnce(async (id) => {
+			started.resolve();
+			await finish.promise;
+			return load(id);
+		});
+		const opening = ensurePostMortemStageHandle(descriptor.childRunId, record, {
+			store: f.store,
+			registry,
+			adapters: { sessionStore: sessions, agentSession: { create: async () => assert.fail("lazy session") } },
+		});
+		await started.promise;
+		await f.handoff.publish(f.first, [childRun([finished])]);
+		assert.notEqual(f.store.run(descriptor.childRunId)!.stages[0], record);
+		finish.resolve();
+		assert.equal((await opening).ok, true);
+	} finally {
+		finish.resolve();
+		await registry.clear();
+		await sessions.close();
+		await f.close();
+	}
+});
+
 test.each([true, false])(
 	"a pane can change visibility after the same worker republishes its run (was visible: %s) (#5559)",
 	async (wasVisible) => {
@@ -230,6 +315,34 @@ test.each([true, false])(
 		}
 	},
 );
+
+test("an open stage pane can still mark itself attached after its worker is fenced", async () => {
+	const { WorkflowAttachPane } = await import("../../packages/workflows/src/tui/workflow-attach-pane.js");
+	const { deriveGraphTheme } = await import("../../packages/workflows/src/tui/graph-theme.js");
+	const f = await fixture();
+	let pane: InstanceType<typeof WorkflowAttachPane> | undefined;
+	const runId = descriptor.childRunId;
+	const review = () => f.store.run(runId)?.stages.find((s) => s.id === "review");
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("review", { sessionId: "review-session" })])]);
+		pane = new WorkflowAttachPane({
+			store: f.store,
+			graphTheme: deriveGraphTheme({}),
+			runId,
+			initialAttachStageId: "review",
+			onClose() {},
+		});
+		await vi.waitFor(() => assert.equal(review()?.attached, true));
+		f.handoff.fence(f.first);
+		assert.equal(review()?.sessionId, undefined);
+		pane.setVisible(false);
+		pane.setVisible(true);
+		assert.equal(review()?.attached, true);
+	} finally {
+		pane?.dispose();
+		await f.close();
+	}
+});
 
 test("a published child subtree appears once under the root and keeps root-owned queued messages (#3869)", async () => {
 	const f = await fixture();
@@ -456,12 +569,13 @@ test("a replaced worker cannot publish and the successor's capability replaces t
 	}
 });
 
-test("fencing a lost worker clears its live sessions so steering queues for the successor (#3869)", async () => {
+test("fencing a lost worker clears its stage activity and live sessions so steering queues for the successor (#3869, #5572)", async () => {
 	const f = await fixture();
 	try {
 		await f.handoff.publish(f.first, [
 			childRun([
-				stage("stage", { sessionId: "session-a", sessionFile: "/gone/a.jsonl" }),
+				stage("stage", { sessionId: "session-a", sessionFile: "/gone/a.jsonl", chatActivity: "retrying" }),
+				stage("starting", { chatActivity: "switching" }),
 				stage("done", { status: "completed", sessionId: "session-done" }),
 			]),
 		]);
@@ -470,6 +584,10 @@ test("fencing a lost worker clears its live sessions so steering queues for the 
 		const stages = f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages;
 		assert.equal(stages?.find((entry) => entry.id === "stage")?.sessionId, undefined);
 		assert.equal(stages?.find((entry) => entry.id === "stage")?.sessionFile, undefined);
+		assert.deepEqual(
+			stages?.map((entry) => entry.chatActivity),
+			[undefined, undefined, undefined],
+		);
 		assert.equal(stages?.find((entry) => entry.id === "done")?.sessionId, "session-done");
 		assert.notEqual(workflowPendingStageRouteCapability(f.store, descriptor.childRunId), stale);
 		await f.queueDirect("stage", "while-replacing");

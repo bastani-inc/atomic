@@ -30,9 +30,11 @@ export const JOURNAL_READ_PAGE_SIZE = 256;
 /**
  * The most characters of event payload one journal read returns, by the payload's `length()`, so a page of large
  * checkpoints stays under a libSQL server's 10 MB response limit: a character is at most four bytes of UTF-8 (#4954).
- * A page ends with the event that takes it past this, so one event larger than this is a page of its own.
+ * A page ends with the event that takes it past this, so one event larger than this is a page of its own. Reading and
+ * decoding a page holds the event loop with the local SQLite store, so a page is kept to a quarter of a megabyte:
+ * a page of a megabyte took up to 100 ms when its pages were not cached (#5480).
  */
-export const JOURNAL_READ_PAGE_CHARS = 1024 * 1024;
+export const JOURNAL_READ_PAGE_CHARS = 256 * 1024;
 
 /**
  * The rows the next statement of a paged read fetches, after one that fetched `fetched` rows of a batch of `limit`
@@ -73,23 +75,26 @@ export const NON_SNAPSHOT_EVENT_TYPES = [
 	RUN_EVENT_TYPES.messageDelivered,
 ] as const;
 
-/** Lets a durable backend re-read only the runs that changed. */
+/**
+ * Lets a durable backend re-read only the runs that changed. A read this package's journals make in several statements
+ * ends at the next one once `stop` aborts, rejecting with its reason (#5480); any other journal reads to the end.
+ */
 export interface RunJournalVersions {
 	/** Undefined when the journal cannot tell that nothing changed; every run's version is then compared. */
-	changeToken(): Promise<string | undefined>;
-	runVersions(): Promise<ReadonlyMap<string, RunVersion>>;
-	snapshotTail(runId: string): Promise<RunSnapshotTail | undefined>;
+	changeToken(stop?: AbortSignal): Promise<string | undefined>;
+	runVersions(stop?: AbortSignal): Promise<ReadonlyMap<string, RunVersion>>;
+	snapshotTail(runId: string, stop?: AbortSignal): Promise<RunSnapshotTail | undefined>;
 }
 
 /** Change tracking for a journal that implements all three members; other journals are re-read in full. */
 export function runJournalVersions(journal: RunJournal): RunJournalVersions | undefined {
-	const { changeToken, runVersions, snapshotTail } = journal;
+	const { changeToken, runVersions, snapshotTail }: Partial<RunJournalVersions> = journal;
 	if (typeof changeToken !== "function" || typeof runVersions !== "function" || typeof snapshotTail !== "function")
 		return undefined;
 	return {
-		changeToken: () => changeToken.call(journal),
-		runVersions: () => runVersions.call(journal),
-		snapshotTail: (runId) => snapshotTail.call(journal, runId),
+		changeToken: (stop) => changeToken.call(journal, stop),
+		runVersions: (stop) => runVersions.call(journal, stop),
+		snapshotTail: (runId, stop) => snapshotTail.call(journal, runId, stop),
 	};
 }
 

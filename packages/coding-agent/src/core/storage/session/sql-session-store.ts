@@ -1,7 +1,7 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
-import { dialectOf, type StorageDialect } from "../dialect.js";
+import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
@@ -96,6 +96,8 @@ export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
  * sqld's 10 MB response limit; a single row longer than this is a page of its own (#4954).
  */
 export const SESSION_READ_PAGE_CHARS = 1024 * 1024;
+/** Rows per metadata query and minimum elapsed time between durable resume checkpoints. */
+export const SESSION_RESUME_REBUILD = { pageEntries: 512, checkpointIntervalMs: 60_000 } as const;
 /** Bound each write transaction while reusing the bytes already supplied to putBlob. */
 const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
@@ -275,7 +277,17 @@ const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
+/** Sessions one statement of a paced listing's project scan reads over a database server. */
 const LISTING_CWD_PAGE = 2_000;
+/**
+ * Sessions one statement of a paced listing scans over this process's own SQLite connection, with a turn of the event
+ * loop after each (#5480). Such a statement runs on the event loop and reads every row it scans; on a large store whose
+ * pages are not cached a row can cost a disk read, so a few thousand rows per statement held the event loop for
+ * seconds. A database server's statements do not hold the event loop, so listings over one keep larger statements.
+ */
+const LISTING_SCAN_ROWS = 256;
+/** Stored project spellings a paced listing resolves at once; each is a chain of file system calls. */
+const LISTING_CWD_MATCHES = 64;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -1037,14 +1049,18 @@ export class SqlSessionStore implements SessionStore {
 		);
 		const upper = Number(bound?.upper ?? 0);
 		const seen = new Set<string>();
-		for (let after = 0, limit: number = SESSION_READ_FETCH.first; after < upper; ) {
+		const scanRows = this.listingScanRows(SESSION_READ_FETCH.max);
+		for (let after = 0, limit: number = Math.min(scanRows, SESSION_READ_FETCH.first); after < upper; ) {
 			this.assertListing(query);
 			const rows = await this.database.all<ListingWindowRow>(
-				`WITH keyed AS MATERIALIZED (
-					SELECT ${order} AS ord, row_number() OVER (ORDER BY ${order}) AS key_row,
-						CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
+				// The scan sizes each session in scope and nothing else. Numbering its rows in the same SELECT would make
+				// SQLite copy every column the size reads, of every scanned session, before the scope is checked (#5480).
+				`WITH scanned AS MATERIALIZED (
+					SELECT ${order} AS ord, CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
 					FROM ${this.tables.sessions} WHERE ${order} > ? AND ${order} <= ?
 					ORDER BY ${order} LIMIT ?
+				), keyed AS MATERIALIZED (
+					SELECT ord, row_number() OVER (ORDER BY ord) AS key_row, size FROM scanned
 				), bound AS (SELECT max(ord) AS upto FROM keyed),
 				page AS (
 					SELECT ord, key_row, count(*) OVER () AS fetched,
@@ -1087,7 +1103,7 @@ export class SqlSessionStore implements SessionStore {
 				: batchChars - pageChars <= SESSION_READ_PAGE_CHARS * 4
 					? limit
 					: Math.max(SESSION_READ_FETCH.min, Number(last.key_row) * 2);
-			limit = Math.min(SESSION_READ_FETCH.max, next);
+			limit = Math.min(scanRows, next);
 			await yieldTurn();
 		}
 		this.assertListing(query);
@@ -1099,19 +1115,25 @@ export class SqlSessionStore implements SessionStore {
 				await this.database.all<SqliteRow & { cwd: string }>(`SELECT DISTINCT cwd FROM ${this.tables.sessions}`)
 			).map((project) => project.cwd);
 		const order = this.dialect.rowOrder();
+		const page = this.listingScanRows(LISTING_CWD_PAGE);
 		const cwds = new Set<string>();
 		for (let after = 0; ; ) {
 			this.assertListing(query);
 			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
 				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
 				after,
-				LISTING_CWD_PAGE,
+				page,
 			);
 			for (const row of rows) cwds.add(row.cwd);
-			if (rows.length < LISTING_CWD_PAGE) return [...cwds];
-			after = Number(rows.at(-1)!.ord);
 			await yieldTurn();
+			if (rows.length < page) return [...cwds];
+			after = Number(rows.at(-1)!.ord);
 		}
+	}
+
+	/** The most sessions one statement of a paced listing scans: fewer when the statement holds the event loop. */
+	private listingScanRows(overServer: number): number {
+		return this.database.descriptor.adapter === "node-sqlite" ? LISTING_SCAN_ROWS : overServer;
 	}
 
 	private async scopeOf(
@@ -1132,8 +1154,20 @@ export class SqlSessionStore implements SessionStore {
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
 			const distinct = await this.distinctCwds(paced, query);
-			const matched = await Promise.all(distinct.map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)));
-			projectCwds = matched.filter((cwd): cwd is string => cwd !== undefined);
+			// A paced listing resolves a few spellings at a time, with a turn of the event loop between them: resolving
+			// each of a store's thousands of projects at once filled turns with their file system callbacks (#5480).
+			const slice = paced ? LISTING_CWD_MATCHES : Math.max(1, distinct.length);
+			projectCwds = [];
+			for (let start = 0; start < distinct.length; start += slice) {
+				const matched = await Promise.all(
+					distinct.slice(start, start + slice).map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)),
+				);
+				for (const cwd of matched) if (cwd !== undefined) projectCwds.push(cwd);
+				if (paced && start + slice < distinct.length) {
+					this.assertListing(query);
+					await yieldTurn();
+				}
+			}
 			this.assertListing(query);
 			if (projectCwds.length === 0) return undefined;
 		}
@@ -1432,7 +1466,16 @@ export class SqlSessionStore implements SessionStore {
 			)
 				return { index: currentIndex, revision: row.revision };
 			let index: SessionResumeIndex | undefined;
-			const j = (...path: string[]) => this.dialect.jsonText("entry_json", ...path);
+			const sqlite = this.dialect.name === "sqlite";
+			// Parse once per entry on Postgres, not once for every selected path. All paths are fixed store keys.
+			const j = (...path: string[]) =>
+				sqlite
+					? this.dialect.jsonText("entry_json", ...path)
+					: this.dialect.jsonAt({ column: "entry_json", element: "parsed" }, ...path);
+			const jsonType = (...path: string[]) =>
+				sqlite
+					? this.dialect.jsonType("entry_json", ...path)
+					: `jsonb_typeof(parsed.value #> '{${path.join(",")}}')`;
 			const projected = [
 				"type",
 				"parentId",
@@ -1485,34 +1528,27 @@ export class SqlSessionStore implements SessionStore {
 						[
 							key,
 							["version", "index", "timestamp"].includes(key)
-								? `CASE WHEN ${this.dialect.jsonType("entry_json", "data", key)} IN ('integer','real') THEN CAST(${j("data", key)} AS ${this.dialect.types.real}) END`
+								? `CASE WHEN ${jsonType("data", key)} IN ('integer','real','number') THEN CAST(${j("data", key)} AS ${this.dialect.types.real}) END`
 								: key === "runId"
-									? `CASE WHEN ${j("customType")} NOT IN ('workflow.run.start','workflow.run.end') OR ${this.dialect.jsonHasType("text", "entry_json", "data", key)} THEN ${j("data", key)} END`
+									? `CASE WHEN ${j("customType")} NOT IN ('workflow.run.start','workflow.run.end') OR ${jsonType("data", key)} = '${sqlite ? "text" : "string"}' THEN ${j("data", key)} END`
 									: j("data", key),
 						] as const,
 				),
 				// Run recovery needs the types of name and timestamp, not their values or the start's inputs.
-				["name", `CASE WHEN ${this.dialect.jsonHasType("text", "entry_json", "data", "name")} THEN '' END`],
-				["ts", `CASE WHEN ${this.dialect.jsonType("entry_json", "data", "ts")} IN ('integer','real') THEN 0 END`],
+				["name", `CASE WHEN ${jsonType("data", "name")} = '${sqlite ? "text" : "string"}' THEN '' END`],
+				["ts", `CASE WHEN ${jsonType("data", "ts")} IN ('integer','real','number') THEN 0 END`],
 				[
 					"message",
 					this.dialect.jsonObject(
 						["id", "replyTo", "expectsReply"].map((key) => [key, j("data", "message", key)] as const),
 					),
 				],
-				[
-					"op",
-					`CASE WHEN ${this.dialect.jsonHasType("text", "entry_json", "data", "op")} THEN ${j("data", "op")} END`,
-				],
+				["op", `CASE WHEN ${jsonType("data", "op")} = '${sqlite ? "text" : "string"}' THEN ${j("data", "op")} END`],
 				["owner", j("data", "owner")],
 				["tasks", j("data", "tasks")],
 				["groups", j("data", "groups")],
 				...["queries", "urls"].map(
-					(key) =>
-						[
-							key,
-							`CASE WHEN ${this.dialect.jsonHasType("array", "entry_json", "data", key)} THEN '[]' ELSE NULL END`,
-						] as const,
+					(key) => [key, `CASE WHEN ${jsonType("data", key)} = 'array' THEN '[]' ELSE NULL END`] as const,
 				),
 			]);
 			const detailsExpr = this.dialect.jsonObject([
@@ -1527,7 +1563,14 @@ export class SqlSessionStore implements SessionStore {
 			const dataFieldNames =
 				this.dialect.name === "sqlite"
 					? `(SELECT COALESCE(json_group_array(key),'[]') FROM json_each(entry_json,'$.data'))`
-					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(entry_json::jsonb->'data')='object' THEN entry_json::jsonb->'data' ELSE '{}'::jsonb END) AS key)`;
+					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(parsed.value->'data')='object' THEN parsed.value->'data' ELSE '{}'::jsonb END) AS key)`;
+			const embedded = this.database.descriptor.adapter === "node-sqlite";
+			// Walk only the content array. node:sqlite can pass it as JSONB without rendering large blocks back to text.
+			const toolBlocks = sqlite
+				? this.dialect.jsonValues(
+						embedded ? "jsonb_extract(entry_json, '$.message.content')" : j("message", "content"),
+					)
+				: "jsonb_array_elements_text(parsed.value #> '{message,content}') AS blocks(value)";
 			const columns = [
 				["dataFields", `CASE WHEN ${j("type")} = 'custom' THEN ${dataFieldNames} ELSE '[]' END`],
 				...projected,
@@ -1536,21 +1579,49 @@ export class SqlSessionStore implements SessionStore {
 				["details", detailsExpr],
 				["usage", j("usage")],
 				["protectedReconciliation", j("protectedReconciliation")],
-				[
-					"snapshot",
-					`CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "snapshot")} THEN '{}' ELSE NULL END`,
-				],
-				["restore", `CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "restore")} THEN 1 END`],
-				["unrestored", `CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "unrestored")} THEN 1 END`],
+				["snapshot", `CASE WHEN ${jsonType("snapshot")} = 'object' THEN '{}' ELSE NULL END`],
+				["restore", `CASE WHEN ${jsonType("restore")} = 'object' THEN 1 END`],
+				["unrestored", `CASE WHEN ${jsonType("unrestored")} = 'object' THEN 1 END`],
 				["compactionDetails", j("details", "strategy")],
 				[
 					"toolCalls",
-					`(SELECT count(*) FROM ${this.dialect.jsonValues(`CASE WHEN ${this.dialect.jsonHasType("array", "entry_json", "message", "content")} THEN ${j("message", "content")} ELSE '[]' END`)} WHERE ${this.dialect.jsonText("value", "type")} = 'toolCall')`,
+					`CASE WHEN ${j("message", "role")} = 'assistant' AND ${jsonType("message", "content")} = 'array' THEN
+						(SELECT count(*) FROM ${toolBlocks}
+						WHERE ${this.dialect.jsonText("value", "type")} = 'toolCall') ELSE 0 END`,
 				],
 			];
 			const select = columns
 				.map(([key, expr]) => `${expr} AS ${this.dialect.identifier(`resume_${key.toLowerCase()}`)}`)
 				.join(", ");
+			const page = `WITH page AS (
+				SELECT session_id,seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
+				WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ${SESSION_RESUME_REBUILD.pageEntries}
+			)`;
+			const parts = (source: string) => `FROM ${this.tables.entryChunks} WHERE session_id = ${source}.session_id
+				AND seq = ${source}.seq AND idx >= 0 AND idx < ${source}.chunks`;
+			const projection = sqlite
+				? `SELECT seq,entry_id,chunks,${select} FROM payloads ORDER BY seq`
+				: `, parsed AS MATERIALIZED (SELECT seq,entry_id,chunks,${postgresJsonb("entry_json")} AS value FROM payloads)
+					SELECT seq,entry_id,chunks,${select} FROM parsed ORDER BY seq`;
+			// SQLite checks zeroblob against this connection's actual value limit without allocating the bytes.
+			// PostgreSQL fields must be smaller than 1 GiB. Ask for byte lengths, not a trial concatenation.
+			const fits = sqlite
+				? "length(zeroblob(sum(length(data)))) IS NOT NULL"
+				: "sum(octet_length(data)) < 1073741824";
+			const joined = sqlite
+				? `(SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text ${parts("sized")} ORDER BY idx))`
+				: `(SELECT convert_from(string_agg(data, ''::bytea ORDER BY idx), 'UTF8') ${parts("sized")})`;
+			// On file SQLite, check each entry just before joining its chunks, not a whole page ahead of the reads.
+			// OFFSET 0 prevents SQLite from flattening the size check and evaluating it twice for the same entry.
+			// Materialize the joined payloads once so all projected fields share them. Only metadata leaves SQL.
+			const nativePage = `${page}, sized AS ${embedded ? "NOT MATERIALIZED" : "MATERIALIZED"} (
+				SELECT page.*, CASE WHEN chunks = 0 OR EXISTS (SELECT 1 ${parts("page")} GROUP BY seq
+					HAVING count(*) = page.chunks AND ${fits}) THEN 0 ELSE chunks END AS remaining FROM page${embedded ? " LIMIT -1 OFFSET 0" : ""}
+			), payloads AS MATERIALIZED (
+				SELECT seq,entry_id,remaining AS chunks,CASE WHEN chunks > 0 AND remaining = 0 THEN ${joined} ELSE entry_json END AS entry_json
+				FROM sized
+			) ${projection}`;
+			const stubPage = `${page}, payloads AS (SELECT * FROM page) ${projection}`;
 			// Checkpoints are not published indexes. A revision or index-format change invalidates both passes.
 			const checkpoint =
 				requested === undefined &&
@@ -1565,99 +1636,112 @@ export class SqlSessionStore implements SessionStore {
 				currentIndex && requested !== undefined ? branchRanges(currentIndex, requested) : checkpoint?.topology;
 			let expectedSummary = this.database.readOnly || requested !== undefined ? undefined : row.summary_state;
 			index = checkpoint?.index;
+			let nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
 			for (let pass = topology === undefined ? 0 : 1; pass < 2; pass++) {
 				for (let after = index?.seq ?? 0; after < limit; ) {
-					const rows = await this.database.all<SqliteRow & { seq: number; entry_id: string; chunks: number }>(
-						`WITH page AS MATERIALIZED (
-							SELECT seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
-							WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT 512
-						) SELECT seq,entry_id,chunks,${select} FROM page ORDER BY seq`,
-						sessionId,
-						after,
-						limit,
-					);
-					if (rows.length === 0) break;
+					type ProjectedRow = SqliteRow & { seq: number; entry_id: string; chunks: number };
+					const args = [sessionId, after, limit] as const;
+					let rows: ProjectedRow[] = [];
 					const batch: SessionEntry[] = [];
 					let toolCalls = 0;
-					for (const entry of rows) {
-						let projected: SqliteRow = entry;
-						if (Number(entry.chunks) > 0) {
-							try {
-								const { chunkedResumeProjection } = await import("./chunked-resume-projection.js");
-								projected = await chunkedResumeProjection(entry, this.dialect.name === "postgres", () =>
-									this.entryChunks(this.database, sessionId, Number(entry.seq), Number(entry.chunks), {
-										revision: row.revision,
-									}),
-								);
-							} catch (error) {
-								// A replacement between chunk reads can remove a chunk or change its JSON mid-token.
-								const current = await this.database.get(
-									`SELECT revision FROM ${this.tables.sessions} WHERE id = ?`,
-									sessionId,
-								);
-								if (current?.revision !== row.revision) continue attempts;
-								throw error;
-							}
-						}
-						const parsed: Record<string, unknown> = { id: entry.entry_id };
-						const decode = (value: SqliteValue | undefined) =>
-							typeof value === "string" && (value.startsWith("{") || value.startsWith("["))
-								? JSON.parse(value)
-								: value;
-						for (const [key] of columns) {
-							const value = projected[`resume_${key.toLowerCase()}`];
-							parsed[key] = [
-								"dataFields",
-								"message",
-								"data",
-								"details",
-								"usage",
-								"snapshot",
-								"protectedReconciliation",
-							].includes(key)
-								? decode(value)
-								: value;
-						}
-						const message = parsed.message as Record<string, unknown>;
-						if (message && typeof message === "object") {
-							message.usage = decode(message.usage as SqliteValue);
-							if (parsed.type === "message" && message.role === "assistant")
-								toolCalls += Number(parsed.toolCalls ?? 0);
-						}
-						if (parsed.snapshot === null) delete parsed.snapshot;
-						if (parsed.type === "compaction") parsed.details = { strategy: parsed.compactionDetails };
-						if (parsed.type === "custom") {
-							const data = parsed.data as Record<string, unknown>;
-							const keys = (parsed.dataFields as string[]) ?? [];
-							for (const key of Object.keys(data)) if (!keys.includes(key)) delete data[key];
-							for (const key of keys) if (!(key in data)) data[key] = null;
-						}
-						for (const key of ["data", "details"]) {
-							const data = parsed[key] as Record<string, unknown>;
-							if (data && typeof data === "object") {
-								data.message = decode(data.message as SqliteValue);
-								data.owner = decode(data.owner as SqliteValue);
-								data.tasks = decode(data.tasks as SqliteValue);
-								for (const field of ["groups", "queries", "urls"])
-									if (field in data) data[field] = decode(data[field] as SqliteValue);
-								if (
-									data.timestamp !== null &&
-									data.timestamp !== undefined &&
-									typeof data.timestamp === "string"
-								)
-									data.timestamp = Number(data.timestamp);
-								if (parsed.type === "custom" && parsed.customType === "subagent-child") {
-									if (data.version !== null && data.version !== undefined) data.version = Number(data.version);
-									if (data.index !== null && data.index !== undefined) data.index = Number(data.index);
+					for (const sql of [nativePage, stubPage]) {
+						try {
+							rows = await this.database.all<ProjectedRow>(sql, ...args);
+							for (const entry of rows) {
+								let projected: SqliteRow = entry;
+								if (Number(entry.chunks) > 0) {
+									try {
+										const { chunkedResumeProjection } = await import("./chunked-resume-projection.js");
+										projected = await chunkedResumeProjection(entry, this.dialect.name === "postgres", () =>
+											this.entryChunks(this.database, sessionId, Number(entry.seq), Number(entry.chunks), {
+												revision: row.revision,
+											}),
+										);
+									} catch (error) {
+										// A replacement between chunk reads can remove a chunk or change its JSON mid-token.
+										const current = await this.database.get(
+											`SELECT revision FROM ${this.tables.sessions} WHERE id = ?`,
+											sessionId,
+										);
+										if (current?.revision !== row.revision) continue attempts;
+										throw error;
+									}
 								}
-								const message = data.message as Record<string, unknown>;
-								if (message?.expectsReply === 1 || message?.expectsReply === "true")
-									message.expectsReply = true;
-								if (data.historyOnly === 1 || data.historyOnly === "true") data.historyOnly = true;
+								const parsed: Record<string, unknown> = { id: entry.entry_id };
+								const decode = (value: SqliteValue | undefined) =>
+									typeof value === "string" && (value.startsWith("{") || value.startsWith("["))
+										? JSON.parse(value)
+										: value;
+								for (const [key] of columns) {
+									const value = projected[`resume_${key.toLowerCase()}`];
+									parsed[key] = [
+										"dataFields",
+										"message",
+										"data",
+										"details",
+										"usage",
+										"snapshot",
+										"protectedReconciliation",
+									].includes(key)
+										? decode(value)
+										: value;
+								}
+								const message = parsed.message as Record<string, unknown>;
+								if (message && typeof message === "object") {
+									message.usage = decode(message.usage as SqliteValue);
+									if (parsed.type === "message" && message.role === "assistant")
+										toolCalls += Number(parsed.toolCalls ?? 0);
+								}
+								if (parsed.snapshot === null) delete parsed.snapshot;
+								if (parsed.type === "compaction") parsed.details = { strategy: parsed.compactionDetails };
+								if (parsed.type === "custom") {
+									const data = parsed.data as Record<string, unknown>;
+									const keys = (parsed.dataFields as string[]) ?? [];
+									for (const key of Object.keys(data)) if (!keys.includes(key)) delete data[key];
+									for (const key of keys) if (!(key in data)) data[key] = null;
+								}
+								for (const key of ["data", "details"]) {
+									const data = parsed[key] as Record<string, unknown>;
+									if (data && typeof data === "object") {
+										data.message = decode(data.message as SqliteValue);
+										data.owner = decode(data.owner as SqliteValue);
+										data.tasks = decode(data.tasks as SqliteValue);
+										for (const field of ["groups", "queries", "urls"])
+											if (field in data) data[field] = decode(data[field] as SqliteValue);
+										if (
+											data.timestamp !== null &&
+											data.timestamp !== undefined &&
+											typeof data.timestamp === "string"
+										)
+											data.timestamp = Number(data.timestamp);
+										if (parsed.type === "custom" && parsed.customType === "subagent-child") {
+											if (data.version !== null && data.version !== undefined)
+												data.version = Number(data.version);
+											if (data.index !== null && data.index !== undefined) data.index = Number(data.index);
+										}
+										const message = data.message as Record<string, unknown>;
+										if (message?.expectsReply === 1 || message?.expectsReply === "true")
+											message.expectsReply = true;
+										if (data.historyOnly === 1 || data.historyOnly === "true") data.historyOnly = true;
+									}
+								}
+								batch.push(parsed as unknown as SessionEntry);
 							}
+							break;
+						} catch (error) {
+							// A native value or result page exceeded a limit, or legacy projected text wasn't JSON.
+							// Read stubs and select the needed fields from chunks instead. No part of this page was folded.
+							if (
+								sql === stubPage ||
+								!(error instanceof Error) ||
+								!["SyntaxError", "StoragePayloadTooLargeError", "StorageUnavailableError"].includes(error.name)
+							)
+								throw error;
+							batch.length = 0;
+							toolCalls = 0;
 						}
-						batch.push(parsed as unknown as SessionEntry);
 					}
+					if (rows.length === 0) break;
 					const old = index ?? foldSessionResume(undefined, []);
 					const seqs = new Map<string, number>();
 					for (const id of foreignResumeIds(old, batch)) {
@@ -1673,7 +1757,13 @@ export class SqlSessionStore implements SessionStore {
 					if (toolCalls > 0)
 						index = { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + toolCalls } };
 					after = Number(rows.at(-1)!.seq);
-					if (expectedSummary !== undefined && after < Number(row.last_seq) && index.seq === after) {
+					// Checkpoints share SQLite's write lock with other sessions. Fast rebuilds need only the final publication.
+					if (
+						expectedSummary !== undefined &&
+						after < Number(row.last_seq) &&
+						index.seq === after &&
+						performance.now() >= nextCheckpointAt
+					) {
 						// Checkpoints feed another fold, unlike the final index. JSON null would silently turn an
 						// overflowing sum back into zero on the next addition. JSON.parse("1e999") preserves Infinity.
 						const next = JSON.stringify(
@@ -1695,6 +1785,7 @@ export class SqlSessionStore implements SessionStore {
 							)
 							.catch(() => ({ changes: 0 }));
 						expectedSummary = saved.changes === 1 ? next : undefined;
+						nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
 					}
 					if (after < Number(row.last_seq)) await yieldTurn();
 				}

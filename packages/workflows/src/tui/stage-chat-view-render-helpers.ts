@@ -1,10 +1,12 @@
 import { renderAutocompleteHintLine } from "@bastani/atomic";
 import {
 	type Component,
+	clickableKeysHint,
 	type EditorComponent,
 	type EditorTheme,
 	type Focusable,
 	getKeybindings,
+	type KeyId,
 } from "@bastani/atomic-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
 import { boldOn, hexBg, hexToAnsi, lerpColor, RESET, textStyle } from "./color-utils.js";
@@ -128,8 +130,14 @@ export function paintOnFill(text: string, fg: string, opts: PaintOpts = {}): str
 	return out + text + close;
 }
 
-export function stripAnsi(s: string): string {
+/** `s` without its CSI styling; APC markers, such as a clickable key hint's, stay. */
+export function stripStyles(s: string): string {
 	return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+/** `s` without CSI sequences and APC markers, such as a clickable key hint's. */
+export function stripAnsi(s: string): string {
+	return s.replace(/\x1B\[[0-?]*[ -/]*[@-~]|\x1B_[^\x07\x1B]*(?:\x07|\x1B\\)/g, "");
 }
 
 /**
@@ -154,11 +162,13 @@ export function workingIndicatorPalette(theme: GraphTheme) {
 }
 
 export function renderHintsForPrompt(kind: PendingPrompt["kind"], theme: GraphTheme): string {
+	const hint = (keyText: string, key: KeyId, label: string) =>
+		clickableKeysHint([{ text: paint(keyText, theme.textMuted, { bold: true }), key }], ` ${label}`);
 	if (kind === "input" || kind === "editor") {
-		return `${paint("enter", theme.textMuted, { bold: true })} Submit · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
+		return `${hint("enter", "enter", "Submit")} · ${hint("ctrl+c", "ctrl+c", "Skip")}`;
 	}
 	if (kind === "custom") {
-		return `${paint("ctrl+c", theme.textMuted, { bold: true })} Close`;
+		return hint("ctrl+c", "ctrl+c", "Close");
 	}
-	return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("esc", theme.textMuted, { bold: true })} Close · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
+	return `${hint("enter", "enter", "Select")} · ${hint("esc", "escape", "Close")} · ${hint("ctrl+c", "ctrl+c", "Skip")}`;
 }

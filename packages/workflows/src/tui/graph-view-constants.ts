@@ -8,8 +8,7 @@ export const MODE_PILL_LABEL = "GRAPH";
 /**
  * Animation tick period. Overlay re-renders fire on this cadence so
  * duration counters tick from active elapsed time (freezing while paused)
- * and the running-stage border lerps between `borderDim` and
- * `warning` without a key press. The host-supplied `requestRender`
+ * and live stage borders pulse in their status colour without a key press. The host-supplied `requestRender`
  * gate prevents work while the overlay is hidden or unfocused.
  * GraphView also skips ticks when nothing is animating — no running or
  * awaiting_input stage and no prompt caret — so large idle graphs do not

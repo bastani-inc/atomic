@@ -25,6 +25,7 @@ import {
 	type TaskSupervisor,
 	taskTranscriptSource,
 } from "./supervisor.js";
+import { bindReleasedTaskOwner } from "./task-resumer.ts";
 
 const interruptedByClock = new WeakMap<TaskElapsedClocks, Set<TaskId>>();
 const resumedTurnsByClock = new WeakMap<TaskElapsedClocks, ReadonlyMap<TaskId, number>>();
@@ -208,6 +209,7 @@ export class OwnerTaskStore {
 				this.turnInterruptedIds.delete(task.ref.taskId);
 			}
 			if (
+				task.elapsedSpan === undefined &&
 				previous?.execution.kind !== "settled" &&
 				task.execution.kind !== "queued" &&
 				(previous?.execution.kind !== task.execution.kind ||
@@ -232,7 +234,16 @@ export class OwnerTaskStore {
 				previous?.execution.kind === "settled" && task.execution !== previous.execution
 					? { ...task, execution: previous.execution }
 					: task;
-			if (record !== previous) bindTaskClock(record, this.elapsedClocks);
+			if (record !== previous) {
+				bindTaskClock(record, this.elapsedClocks);
+				if (
+					record.execution.kind === "settled" &&
+					record.execution.result.kind === "cancelled" &&
+					record.execution.result.released !== undefined
+				) {
+					bindReleasedTaskOwner(record.ref, this.supervisor);
+				}
+			}
 			this.records.set(task.ref.taskId, record);
 			if (
 				record.kind === "agent" &&

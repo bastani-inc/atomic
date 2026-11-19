@@ -543,7 +543,7 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
-	test("ships openclaw/openclaw main 6d815d78's tmux helper scripts with only the socket-directory rename", () => {
+	test("ships the pinned tmux helpers with the socket directory rename and the strict wait deadline", () => {
 		// main, not the latest calendar release: v2026.11.5's skills/tmux tree (dd5ddfca) lacks seven of the nine script fixes.
 		const skillRoot = join(subagentSkills, "tmux");
 		const skill = canonicalText(readFileSync(join(skillRoot, "SKILL.md")));
@@ -572,16 +572,17 @@ describe("synced upstream skill trees", () => {
 			"100755 packages/subagents/skills/tmux/scripts/find-sessions.sh",
 			"100755 packages/subagents/skills/tmux/scripts/wait-for-text.sh",
 		]);
-		// Upstream blob SHA-256 once Atomic's ATOMIC_/atomic- socket-directory names are turned back into OpenClaw's.
-		const upstreamScripts: ReadonlyArray<readonly [path: string, sha256: string]> = [
+		// The session helper matches its upstream once the socket rename is reversed.
+		// The wait helper is pinned with Atomic's deadline handling applied.
+		const expectedScripts: ReadonlyArray<readonly [path: string, sha256: string]> = [
 			["scripts/find-sessions.sh", "5cd5f80305c7a08871d62988e908cd366a22d1c6e4b4857b77a64f52955b59e3"],
-			["scripts/wait-for-text.sh", "6eee6443ee1e22c211cefde2f8bd4c835fef5d71b7326a858e109fc2e29d972c"],
+			["scripts/wait-for-text.sh", "0310756cc889f1c2f33375e9553566b3c4cb3853e2e7018788d7eda9d0fba37d"],
 		];
-		for (const [path, expected] of upstreamScripts) {
-			const upstream = canonicalText(readFileSync(join(skillRoot, path)))
+		for (const [path, expected] of expectedScripts) {
+			const normalized = canonicalText(readFileSync(join(skillRoot, path)))
 				.replaceAll("ATOMIC_TMUX_SOCKET_DIR", "OPENCLAW_TMUX_SOCKET_DIR")
 				.replaceAll("atomic-tmux-sockets", "openclaw-tmux-sockets");
-			assert.equal(sha256(upstream), expected, `${path} diverges from upstream beyond the rename`);
+			assert.equal(sha256(normalized), expected, `${path} differs from its pinned revision and adaptations`);
 		}
 		// Upstream's completion-marker example, with Atomic's marker name.
 		assert.ok(skill.includes(`marker="ATOMIC_DONE_\${nonce}"`));

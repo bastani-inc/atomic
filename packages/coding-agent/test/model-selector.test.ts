@@ -7,7 +7,7 @@ import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { resolveCliModel } from "../src/core/model-resolver-cli.js";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { stripAnsi } from "./helpers/visible-text.js";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 function createFakeTui(): TUI {

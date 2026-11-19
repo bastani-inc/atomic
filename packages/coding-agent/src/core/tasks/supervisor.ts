@@ -12,7 +12,7 @@ import type { SkillCatalog } from "../skill-catalog.ts";
 import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cleanup-error.js";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
-import type * as C from "./contracts.js";
+import * as C from "./contracts.js";
 import { FINISHED_TASK_RETENTION, TaskEvictedError } from "./eviction-error.js";
 
 /** What a task's message channel reported for one message. */
@@ -45,6 +45,7 @@ export type ChatBoxSession = Pick<
 	| "isRetrying"
 	| "isWaitingToRetry"
 	| "retryAttempt"
+	| "retryStatus"
 	| "isBashRunning"
 > & {
 	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
@@ -176,7 +177,11 @@ export type FakeRunnerContext = {
 	clearExtensionStatuses(): void;
 };
 /** Independent cleanup evidence: an outcome alone never proves resource release. */
-export type FakeExecution = { result: Promise<C.TaskResult>; cleanup: Promise<C.Cleanup> };
+export type FakeExecution = {
+	result: Promise<C.TaskResult>;
+	cleanup: Promise<C.Cleanup>;
+	elapsedSpan?: C.TaskElapsedSpan;
+};
 /**
  * Who asks an owner to run a command: the session that owns it, or a subagent child that runs its shells in its
  * parent's owner. A released workflow stage still lets its live workers launch (#4639).
@@ -225,7 +230,7 @@ type OwnerState = {
 	tasks: Map<C.TaskId, TaskLease>;
 	watches: Set<TaskSubscription>;
 	/** The owner's records as {@link TaskSupervisor.taskRecords} last drained them; created on first use. */
-	recordIndex?: { readonly lease: native.SubscriptionLease; snapshot: C.OwnerSnapshot };
+	recordIndex?: { readonly lease: native.SubscriptionLease; snapshot: C.OwnerSnapshot; timed?: TimedRecords };
 	settledTasks: Set<C.TaskId>;
 	quarantinedTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
@@ -515,6 +520,10 @@ export type LaunchMetadata = {
 	readonly launchers: Map<string, string>;
 	/** When each command was launched, by launch operation: its completion notice says how long it ran. */
 	readonly launchedAt: Map<string, number>;
+	/** The active span each dispatched subagent owns, including its endpoint once it stops. */
+	readonly agentSpans: Map<string, C.TaskElapsedSpan>;
+	/** Counts registered spans, so that a read looks again at records that had none. */
+	spanRevision: number;
 	/** The close that ended the owner, which every task that close cancelled names (#4639). Kept past the close. */
 	ownerClose?: C.OwnerCloseCause;
 };
@@ -535,12 +544,86 @@ function claimLaunchHeartbeat(
 	if (heartbeatMs === undefined) launches.launchHeartbeats.delete(operation);
 	else launches.launchHeartbeats.set(operation, { heartbeatMs, taskId });
 }
+function timedRecord(task: C.TaskRecord, launches: LaunchMetadata, sample = false): C.TaskRecord {
+	const span =
+		task.kind === "agent" && task.execution.kind !== "queued" ? launches.agentSpans.get(task.ref.taskId) : undefined;
+	return span === undefined
+		? task
+		: {
+				...task,
+				elapsedSpan: { ...span },
+				metrics: {
+					...task.metrics,
+					elapsedMs: sample || span.endedAt !== undefined ? C.spanElapsedMs(span) : (task.metrics?.elapsedMs ?? 0),
+				},
+			};
+}
+/** An owner's records as its last read returned them: a record whose span may still run is read again at each read. */
+type TimedRecords = {
+	readonly snapshot: C.OwnerSnapshot;
+	readonly revision: number;
+	/** The positions of the records whose span may still be running. */
+	readonly live: readonly number[];
+	tasks: readonly C.TaskRecord[];
+	at: number;
+	/** Each live record's span as that read saw it: the span, its dispatch and its end. */
+	spans: readonly (C.TaskElapsedSpan | number | undefined)[];
+};
+/** Whether a read reads this record's span again: it may still run, and the record or its task has one. */
+function readsSpan(task: C.TaskRecord, launches: LaunchMetadata): boolean {
+	return (
+		task.kind === "agent" &&
+		task.execution.kind !== "queued" &&
+		task.elapsedSpan?.endedAt === undefined &&
+		(task.elapsedSpan !== undefined || launches.agentSpans.has(task.ref.taskId))
+	);
+}
+/**
+ * The records with every running span read now. While no span runs and nothing changed, a read returns the same array
+ * as the last one, and the same records.
+ */
+function timedRecords(
+	snapshot: C.OwnerSnapshot,
+	launches: LaunchMetadata,
+	last: TimedRecords | undefined,
+): TimedRecords {
+	if (last?.snapshot !== snapshot || last.revision !== launches.spanRevision) {
+		const live: number[] = [];
+		snapshot.tasks.forEach((task, at) => {
+			if (readsSpan(task, launches)) live.push(at);
+		});
+		last = { snapshot, revision: launches.spanRevision, live, tasks: snapshot.tasks, at: Number.NaN, spans: [] };
+	}
+	if (last.live.length === 0) return last;
+	const now = Date.now();
+	let changed = false;
+	let running = false;
+	for (let k = 0; k < last.live.length; k++) {
+		const span = launches.agentSpans.get(snapshot.tasks[last.live[k]!]!.ref.taskId);
+		if (span !== undefined && span.endedAt === undefined) running = true;
+		if (
+			last.spans[3 * k] !== span ||
+			last.spans[3 * k + 1] !== span?.dispatchedAt ||
+			last.spans[3 * k + 2] !== span?.endedAt
+		)
+			changed = true;
+	}
+	if (!changed && (!running || last.at === now)) return last;
+	const tasks = [...snapshot.tasks];
+	const spans: (C.TaskElapsedSpan | number | undefined)[] = [];
+	for (const at of last.live) {
+		const span = launches.agentSpans.get(snapshot.tasks[at]!.ref.taskId);
+		spans.push(span, span?.dispatchedAt, span?.endedAt);
+		tasks[at] = timedRecord(snapshot.tasks[at]!, launches, true);
+	}
+	return { snapshot, revision: last.revision, live: last.live, tasks, at: now, spans };
+}
 function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
 	const requestedModel = launches.requestedModels.get(value.ref.taskId);
 	const heartbeatMs = launches.launchHeartbeats.get(value.launchOperationId)?.heartbeatMs;
 	const launchedBy = launches.launchers.get(value.launchOperationId);
-	return {
+	const task: C.TaskRecord = {
 		ref: reference(value.ref),
 		launchOperationId: value.launchOperationId as C.OperationId,
 		...(value.parentTaskId === undefined ? {} : { parentTaskId: value.parentTaskId as C.TaskId }),
@@ -573,6 +656,7 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 				}),
 		output: output(value.output),
 	};
+	return timedRecord(task, launches);
 }
 function snapshot(value: native.OwnerSnapshot, launches: LaunchMetadata): C.OwnerSnapshot {
 	if (value.state !== "open" && value.state !== "closing" && value.state !== "closed")
@@ -663,7 +747,7 @@ function reportReceipt(value: native.ReportReceipt): C.ReportReceipt {
 	return { reportId: value.reportId, cursor: cursor(value.cursor), disposition: value.disposition };
 }
 /** Projection only: native ordering remains the sole lifecycle authority. */
-function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent): C.OwnerSnapshot {
+function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent, launches: LaunchMetadata): C.OwnerSnapshot {
 	const next: C.OwnerSnapshot = { ...current, tasks: [...current.tasks], cursor: value.cursor };
 	const change = value.payload;
 	if (change.kind === "owner-closing") {
@@ -688,7 +772,6 @@ function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent): C.OwnerSnap
 		return next;
 	}
 	const task: C.TaskRecord = { ...next.tasks[index] };
-	next.tasks[index] = task;
 	switch (change.kind) {
 		case "task-started":
 			task.execution = { kind: "running" };
@@ -744,6 +827,7 @@ function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent): C.OwnerSnap
 		case "wait-yielded":
 			break;
 	}
+	next.tasks[index] = timedRecord(task, launches);
 	return next;
 }
 /**
@@ -857,7 +941,7 @@ export class TaskSubscription {
 		if (drained.value.snapshot) this.#snapshot = snapshot(drained.value.snapshot, this.#launches);
 		for (const value of events) {
 			if (BigInt(value.cursor.sequence) > BigInt(this.#snapshot.cursor.sequence))
-				this.#snapshot = applyEvent(this.#snapshot, value);
+				this.#snapshot = applyEvent(this.#snapshot, value, this.#launches);
 		}
 		this.#cursor = cursor(drained.value.cursor);
 		this.#snapshot = { ...this.#snapshot, cursor: this.#cursor };
@@ -1005,6 +1089,8 @@ export class TaskSupervisor {
 						releases: new Map(),
 						launchers: new Map(),
 						launchedAt: new Map(),
+						agentSpans: new Map(),
+						spanRevision: 0,
 					},
 				};
 				this.#owners.set(owner, ownerState);
@@ -1095,6 +1181,7 @@ export class TaskSupervisor {
 		state.launches.releases.delete(taskId);
 		state.launches.launchers.delete(operation);
 		state.launches.launchedAt.delete(operation);
+		state.launches.agentSpans.delete(taskId);
 		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
 	}
 	#evicted(task: TaskLease): boolean {
@@ -1179,6 +1266,7 @@ export class TaskSupervisor {
 		state.settledTasks.add(ref.taskId);
 		const launchedBy = state.launches.launchers.get(operation);
 		const launchedAt = state.launches.launchedAt.get(operation);
+		const span = state.launches.agentSpans.get(ref.taskId);
 		state.host.binding.onTaskSettled(
 			ref,
 			{
@@ -1188,7 +1276,11 @@ export class TaskSupervisor {
 				completionId: receipt.completionId,
 				...(launchedBy === undefined ? {} : { launchedBy }),
 			},
-			launchedAt === undefined ? undefined : { elapsedMs: Math.max(0, Date.now() - launchedAt) },
+			span
+				? { elapsedMs: C.spanElapsedMs(span) }
+				: launchedAt === undefined
+					? undefined
+					: { elapsedMs: Math.max(0, Date.now() - launchedAt) },
 		);
 	}
 	async startCommandTask(
@@ -1489,6 +1581,10 @@ export class TaskSupervisor {
 					}),
 				};
 			}
+			if (execution.elapsedSpan !== undefined) {
+				state.launches.agentSpans.set(id, execution.elapsedSpan);
+				state.launches.spanRevision++;
+			}
 			const outcome = execution.result
 				.catch((error) => ({ kind: "failed" as const, code: "RunnerFailed", message: rejectionMessage(error) }))
 				.then((result) => {
@@ -1724,6 +1820,7 @@ export class TaskSupervisor {
 				state.launches.releases.clear();
 				state.launches.launchers.clear();
 				state.launches.launchedAt.clear();
+				state.launches.agentSpans.clear();
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);
@@ -1739,9 +1836,19 @@ export class TaskSupervisor {
 	 * record at each launch, settlement and completion, and keeps up to its finished-task retention of them (#5186).
 	 */
 	taskRecords(owner: OwnerLease, ids?: ReadonlySet<C.TaskId>): readonly C.TaskRecord[] {
-		const current = this.#recordIndex(this.#owner(owner));
-		if (!current) return [];
-		return ids === undefined ? current.tasks : current.tasks.filter((task) => ids.has(task.ref.taskId));
+		const state = this.#owner(owner);
+		const current = this.#recordIndex(state);
+		if (!current || !state.recordIndex) return [];
+		if (ids !== undefined) {
+			// Only the spans of the tasks asked for are read.
+			const tasks = current.tasks.filter((task) => ids.has(task.ref.taskId));
+			return tasks.some((task) => readsSpan(task, state.launches))
+				? tasks.map((task) => (readsSpan(task, state.launches) ? timedRecord(task, state.launches, true) : task))
+				: tasks;
+		}
+		const timed = timedRecords(current, state.launches, state.recordIndex.timed);
+		state.recordIndex.timed = timed;
+		return timed.tasks;
 	}
 	#recordIndex(state: OwnerState): C.OwnerSnapshot | undefined {
 		if (!state.recordIndex) {
@@ -1759,7 +1866,7 @@ export class TaskSupervisor {
 		for (const value of drained.value.events) {
 			const applied = event(value, state.launches);
 			if (BigInt(applied.cursor.sequence) > BigInt(index.snapshot.cursor.sequence))
-				index.snapshot = applyEvent(index.snapshot, applied);
+				index.snapshot = applyEvent(index.snapshot, applied, state.launches);
 		}
 		return index.snapshot;
 	}

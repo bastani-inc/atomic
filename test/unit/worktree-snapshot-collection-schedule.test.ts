@@ -317,7 +317,10 @@ describe("an automatic collection that fails is an outcome, reported once and re
 		assert.equal(outcome.status, "failed");
 		const { error } = outcome as { error: WorkspaceCollectionError };
 		assert.deepEqual(error.fields, { table: "snapshot_blobs", phase: "index", deleted: 0 });
-		assert.ok(error.summary.endsWith("while indexing existing snapshot references of snapshot_blobs"));
+		assert.equal(
+			error.summary,
+			"Snapshot blob collection failed while indexing existing snapshot references of snapshot_blobs: schema read failed",
+		);
 		fault.current = undefined;
 		assert.equal((await store.listBlobHashes()).length, 2);
 		assert.equal((await claimRow(database))?.error_code, "collection-failed");

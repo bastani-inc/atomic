@@ -1555,6 +1555,26 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,
 	): Promise<T> {
+		if (options?.readOnly === true) {
+			return this.enqueueStatement(async () => {
+				await this.executor.exec("BEGIN");
+				let active = true;
+				try {
+					const value = await callback(this.createExecutor(() => active));
+					active = false;
+					await this.executor.exec("COMMIT");
+					return value;
+				} catch (cause) {
+					active = false;
+					try {
+						await this.executor.exec("ROLLBACK");
+					} catch (rollbackCause) {
+						throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
+					}
+					throw cause;
+				}
+			});
+		}
 		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
 		return new Promise<T>((resolve, reject) => {
 			const queued: QueuedTransaction = {

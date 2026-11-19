@@ -386,8 +386,8 @@ export function openProxyTunnel(proxy, target, options = {}) {
 				`the proxy ${proxy.label} answered the tunnel request to ${authority} with something other than HTTP`,
 				true,
 			);
+		// A connection that ends after a CR was cut, as one that ends anywhere else in the answer is (#5670).
 		socket.on("close", () => {
-			if (afterCR) return invalidAnswer();
 			fail(
 				"proxy-closed",
 				`the proxy ${proxy.label} closed the connection before answering the tunnel request to ${authority}`,
@@ -437,9 +437,17 @@ export function openProxyTunnel(proxy, target, options = {}) {
 			for (let i = 0; i < chunk.length && answerBytes < MAX_PROXY_ANSWER_BYTES; i++) {
 				answerBytes++;
 				const byte = /** @type {number} */ (chunk[i]);
-				if (afterCR && byte !== 0x0a) return invalidAnswer();
+				if (afterCR && byte !== 0x0a) {
+					// A CR that no LF follows: a space inside a header field (RFC 9112 2.2), but no status line holds one (#5670).
+					if (status === null) return invalidAnswer();
+					line += " ";
+				}
 				afterCR = byte === 0x0d;
-				if (afterCR) continue;
+				if (afterCR) {
+					// Nor does `HTTP/`.
+					if (status === null && line.length < 5) return invalidAnswer();
+					continue;
+				}
 				if (byte !== 0x0a) {
 					line += String.fromCharCode(byte);
 					if (status === null && line.length <= 5 && !"HTTP/".startsWith(line)) return invalidAnswer();

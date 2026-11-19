@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { type Component, resetCapabilitiesCache, setCapabilities, type TUI } from "@bastani/atomic-tui";
-import { afterEach, beforeEach, test } from "vitest";
+import { WriteStream } from "node:tty";
+import {
+	type Component,
+	ProcessTerminal,
+	resetCapabilitiesCache,
+	setCapabilities,
+	type TUI,
+} from "@bastani/atomic-tui";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { initTheme, refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import {
 	type InteractiveEngineMessage,
@@ -15,6 +23,8 @@ import {
 	type RemoteComponentRuntime,
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
+import { createStore } from "../../packages/workflows/src/shared/store.ts";
+import { buildGraphOverlayAdapter, type OverlayUISurface } from "../../packages/workflows/src/tui/overlay-adapter.ts";
 
 const WIDTH = 60;
 
@@ -26,6 +36,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	refreshColorEnvironment();
 	resetCapabilitiesCache();
 });
 
@@ -43,7 +54,7 @@ const modeProbe = (tui: TUI, label: string) => ({
  * An isolated host and its engine joined as the CLI joins them: the extension runs in the engine and opens its UI
  * through the engine's extension UI context, and the host proxies it with its own renderer.
  */
-function connectHostAndEngine(host: { fullscreen: boolean }) {
+function connectHostAndEngine(host: { fullscreen: boolean; colorDepth?: number }) {
 	const engineListeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const rendererReplaced = new Set<() => void>();
 	const service = new EngineCustomUiService((line) => {
@@ -64,7 +75,10 @@ function connectHostAndEngine(host: { fullscreen: boolean }) {
 		sendEngineCommand: (command) => service.handleLine(serializeInteractiveEngineFrame(command)),
 	};
 	const proxies: Component[] = [];
-	const hostTui = { terminal: { rows: 20, columns: WIDTH }, requestRender: () => {} } as unknown as TUI;
+	const hostTui = {
+		terminal: { rows: 20, columns: WIDTH, colorDepth: host.colorDepth },
+		requestRender: () => {},
+	} as unknown as TUI;
 	const hostUi = {
 		custom: ((factory: Parameters<ExtensionUIContext["custom"]>[0]) => {
 			proxies.push(factory(hostTui, {} as never, new KeybindingsManager(), () => {}) as Component);
@@ -100,6 +114,74 @@ function connectHostAndEngine(host: { fullscreen: boolean }) {
 	};
 	return { engineUi, proxies, paint, switchRenderer, dispose };
 }
+
+test("the terminal advertises the stage palette supported by its display (#5596)", () => {
+	const saved = Object.getOwnPropertyDescriptor(process.stdout, "getColorDepth");
+	try {
+		Object.defineProperty(process.stdout, "getColorDepth", {
+			value: WriteStream.prototype.getColorDepth,
+			configurable: true,
+		});
+		vi.stubEnv("TMUX", "pane");
+		vi.stubEnv("FORCE_COLOR", undefined);
+		vi.stubEnv("NO_COLOR", undefined);
+		vi.stubEnv("COLORTERM", undefined);
+		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+		for (const [term, expected] of [
+			["tmux-256color", 8],
+			["linux", 4],
+		] as const) {
+			vi.stubEnv("TERM", term);
+			assert.equal(new ProcessTerminal().colorDepth, expected, term);
+		}
+		vi.stubEnv("TMUX", undefined);
+		vi.stubEnv("TERM", "xterm-direct");
+		vi.stubEnv("TERM_PROGRAM", undefined);
+		vi.stubEnv("CI", undefined);
+		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+		assert.equal(new ProcessTerminal().colorDepth, 24, "direct colour without a separate colour hint");
+	} finally {
+		if (saved) Object.defineProperty(process.stdout, "getColorDepth", saved);
+		else Reflect.deleteProperty(process.stdout, "getColorDepth");
+		vi.unstubAllEnvs();
+	}
+});
+
+test("an isolated workflow stage pulses in the display terminal's palette, not the engine pipe's (#5596)", async () => {
+	initTheme("catppuccin-mocha", false);
+	refreshColorEnvironment({});
+	for (const [colorDepth, foreground] of [
+		[4, "\x1b[93m"],
+		[8, "\x1b[38;5;223m"],
+	] as const) {
+		const bridge = connectHostAndEngine({ fullscreen: true, colorDepth });
+		const store = createStore();
+		store.recordRunStart({
+			id: "live",
+			name: "review",
+			inputs: {},
+			status: "running",
+			startedAt: 0,
+			toolNodes: [],
+			stages: [{ id: "build", name: "Build", status: "running", parentIds: [], toolEvents: [] }],
+		});
+		const adapter = buildGraphOverlayAdapter(
+			{ ui: { custom: bridge.engineUi.custom as unknown as OverlayUISurface["custom"] } },
+			store,
+		);
+		try {
+			adapter.open("live");
+			await flush();
+			const proxy = bridge.proxies[0];
+			await bridge.paint(proxy);
+			const card = proxy!.render(WIDTH).find((line) => line.includes("Build") && line.includes("╭"));
+			assert.ok(card?.includes(`${foreground}╭`), `depth ${colorDepth}: ${JSON.stringify(card)}`);
+		} finally {
+			adapter.close();
+			bridge.dispose();
+		}
+	}
+});
 
 for (const fullscreen of [true, false]) {
 	const hostMode = fullscreen ? "fullscreen" : "regular";

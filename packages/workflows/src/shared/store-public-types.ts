@@ -34,6 +34,8 @@ import type { WorkflowOutputValues } from "./types.js";
 export interface RunEndMetadata {
 	/** The recorded occurrence when restoring an ending rather than observing it live. */
 	readonly runGeneration?: number;
+	/** Set when replaying a recorded end rather than finishing a new attempt. */
+	readonly finishSequence?: number;
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
 	readonly failureRecoverability?: WorkflowFailureRecoverability;
@@ -309,7 +311,7 @@ export interface Store {
 		options?: ResolveStagePendingPromptOptions,
 	): boolean;
 	/** Wait for a stage/node-scoped HIL prompt to resolve. */
-	awaitStagePendingPrompt(runId: string, stageId: string, promptId: string): Promise<unknown>;
+	awaitStagePendingPrompt(runId: string, stageId: string, promptId: string, signal?: AbortSignal): Promise<unknown>;
 	/**
 	 * Record a live-only prompt answer for prompt-node UIs that do not use
 	 * `stage.pendingPrompt` (notably arbitrary `ctx.ui.custom<T>` widgets).

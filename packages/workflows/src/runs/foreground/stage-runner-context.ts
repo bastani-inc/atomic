@@ -65,6 +65,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		);
 	let effectiveStageOptions = effectiveOptionsOf(stageOptions);
 	const meta: StageExecutionMeta = {
+		...(opts.stageUiSignal === undefined ? {} : { stageUiSignal: opts.stageUiSignal }),
 		runId,
 		stageId,
 		stageName,

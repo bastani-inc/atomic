@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { stripTerminalSequences, type Terminal, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
+import {
+	clickableKeyTextHint,
+	readHintSpans,
+	stripTerminalSequences,
+	type Terminal,
+	TuiMainScreen,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";
@@ -64,6 +71,22 @@ test("an opted-in editor renders Atomic's working indicator in its top border", 
 	const topBorder = editor.render(24)[0] ?? "";
 	assert.match(topBorder.replaceAll(/\x1b\[[0-9;]*m/g, ""), /^── ∀ Working /);
 	assert.equal(visibleWidth(topBorder), 24);
+});
+
+test("a key hint in the embedded working status keeps its text and its click", () => {
+	const tui = new TuiMainScreen(new FakeTerminal());
+	const editor = new CustomEditor(tui, getEditorTheme(), new KeybindingsManager(), { embedWorkingStatus: true });
+	editor.setWorkingStatusIndicator(createLoader(tui, `Working (${clickableKeyTextHint("esc", " Interrupt")})`));
+
+	const topBorder = editor.render(60)[0] ?? "";
+	const { line, spans } = readHintSpans(topBorder);
+	const text = stripTerminalSequences(line);
+	assert.match(text, /^── ∀ Working \(esc Interrupt\) ─+$/);
+	assert.equal(visibleWidth(line), 60);
+	assert.deepEqual(
+		spans.map((span) => [text.slice(span.start, span.end), span.action]),
+		[["esc Interrupt", { kind: "key", key: "escape" }]],
+	);
 });
 
 test("the embedded indicator collapses to Atomic's one-cell spinner at narrow widths", () => {

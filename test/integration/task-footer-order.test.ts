@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { stripVTControlCharacters } from "node:util";
 import { bindOwnerTaskStore } from "@bastani/atomic";
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
@@ -64,10 +64,10 @@ test.each(["stage", "engine"] as const)(
 			} as ExtensionUIContext);
 		}
 		const render = () => {
-			if (stage) return stripVTControlCharacters(stage.render(100).join("\n"));
+			if (stage) return stripTerminalSequences(stage.render(100).join("\n"));
 			assert.ok(main);
 			main.tui.renderNow();
-			return stripVTControlCharacters(getLayoutFrame(main.tui).lines.join("\n"));
+			return stripTerminalSequences(getLayoutFrame(main.tui).lines.join("\n"));
 		};
 		const taskRows = (screen: string) => screen.split("\n").filter((row) => /^ {2}[∀✓✗] worker /.test(row));
 		const assertOrder = (expected: readonly RegExp[]) => {
@@ -95,7 +95,7 @@ test.each(["stage", "engine"] as const)(
 			// A finished subagent leaves the main panel and a stage chat's task list at once.
 			assertOrder([/keeps running/]);
 			if (stage) {
-				const narrow = stripVTControlCharacters(stage.render(40).join("\n"));
+				const narrow = stripTerminalSequences(stage.render(40).join("\n"));
 				assert.match(narrow, /∀ worker/);
 				assert.match(narrow, /← (?:return to )?graph/);
 			}

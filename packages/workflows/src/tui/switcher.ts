@@ -13,6 +13,7 @@
  *    expressed by the filled row, not a leading caret glyph.
  *  - Empty state: `(no matches)` in dim.
  */
+import { clickableHintText } from "@bastani/atomic";
 import { type StageDisplayStatus, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { boldOn, hexBg, hexToAnsi, RESET } from "./color-utils.js";
@@ -132,7 +133,7 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 		`${panelBg}${muted}${boldOn()}${leftLabelText}${RESET}${panelBg}` +
 		(queryDisplay ? `${text}${queryDisplay}${RESET}${panelBg}` : "") +
 		" ".repeat(gap) +
-		`${dim}${hint}${RESET}${panelBg}`;
+		`${dim}${clickableHintText(hint)}${RESET}${panelBg}`;
 	lines.push(`${border}│${RESET}${padVisible(header, innerWidth)}${border}│${RESET}`);
 
 	// Quiet rule under header. Keep it inside the rounded panel instead of

@@ -422,7 +422,7 @@ export function buildGraphOverlayAdapter(
 			};
 			const view = new WorkflowAttachPane({
 				store,
-				graphTheme: deriveGraphThemeFromPiTheme(theme),
+				graphTheme: deriveGraphThemeFromPiTheme(theme, tui.terminal),
 				runId,
 				stageControlRegistry: registry,
 				sessionStore: buildOpts.resolveSessionStore?.(),

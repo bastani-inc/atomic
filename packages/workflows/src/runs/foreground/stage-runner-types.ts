@@ -238,6 +238,7 @@ export interface StageAdapters {
 }
 
 export interface StageRunnerOpts {
+	stageUiSignal?: AbortSignal;
 	stageId: string;
 	stageName: string;
 	adapters: StageAdapters;

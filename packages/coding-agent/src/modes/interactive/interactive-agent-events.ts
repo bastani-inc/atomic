@@ -21,6 +21,7 @@ import {
 	AssistantMessageComponent,
 	CountdownTimer,
 	keyText,
+	keyTextHint,
 	Loader,
 	type Message,
 	pickWhimsicalWorkingMessage,
@@ -142,6 +143,9 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	const unsubscribe = session.subscribe(async (event) => {
 		await this.handleEvent(event);
 	});
+	// A rebind can miss the start of a wait. Subscribe and read it in one turn; don't restart its countdown.
+	const wait = session.retryStatus;
+	if (wait) void this.handleEvent(wait);
 	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
@@ -160,6 +164,22 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 				});
 	this.unsubscribe = () => {
 		unsubscribe();
+		if (this.retryLoader && this.retryEscapeHandler) {
+			this.statusContainer.removeChild(this.retryLoader);
+			this.retryLoader.stop();
+			this.retryLoader = undefined;
+			this.retryCountdown?.dispose();
+			this.retryCountdown = undefined;
+		}
+		if (this.retryEscapeHandler) {
+			this.defaultEditor.onEscape = this.retryEscapeHandler;
+			this.retryEscapeHandler = undefined;
+		}
+		if (this.fallbackLoader) {
+			this.statusContainer.removeChild(this.fallbackLoader);
+			this.fallbackLoader.stop();
+			this.fallbackLoader = undefined;
+		}
 		disposeWorkflowActivity();
 		disposeAgentPanel();
 		disposeInteractiveTasks(this);
@@ -623,24 +643,30 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// Show retry indicator
 			this.statusContainer.clear();
 			this.retryCountdown?.dispose();
+			const pending = this.session.retryStatus;
+			const now = Date.now();
+			const until = pending?.type === "auto_retry_start" ? pending.retryAt : now + event.delayMs;
 			const retryMessage = (seconds: number) =>
-				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} Cancel)`;
+				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyTextHint("app.interrupt", "Cancel")})`;
 			this.retryLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,
 				(text) => theme.fg("muted", text),
-				retryMessage(Math.ceil(event.delayMs / 1000)),
+				retryMessage(Math.max(0, Math.ceil((until - now) / 1000))),
 			);
-			this.retryCountdown = new CountdownTimer(
-				event.delayMs,
-				this.ui,
-				(seconds) => {
-					this.retryLoader?.setMessage(retryMessage(seconds));
-				},
-				() => {
-					this.retryCountdown = undefined;
-				},
-			);
+			this.retryCountdown =
+				until <= now
+					? undefined
+					: new CountdownTimer(
+							{ until },
+							this.ui,
+							(seconds) => {
+								this.retryLoader?.setMessage(retryMessage(seconds));
+							},
+							() => {
+								this.retryCountdown = undefined;
+							},
+						);
 			this.statusContainer.addChild(this.retryLoader);
 			this.ui.requestRender();
 			break;

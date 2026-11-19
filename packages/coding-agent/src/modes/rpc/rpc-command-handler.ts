@@ -339,6 +339,7 @@ export function createRpcCommandHandler({
 					modelFallbackReason: runtimeHost.modelFallbackReason,
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
+					retryStatus: session.retryStatus,
 					isCompacting: session.isCompacting,
 					compactionReason: session.compactionReason,
 					...(session.compactionStartedAt === undefined

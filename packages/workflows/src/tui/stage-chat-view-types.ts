@@ -155,6 +155,7 @@ export interface StageChatViewContext {
 	helpOpen: boolean;
 	interruptedByEscape: boolean;
 	localPaused: boolean;
+	lastPublishedActivity?: import("@bastani/atomic").PublishedChatActivity;
 	lastObservedStageStatus: StageStatus | undefined;
 	lastObservedRunStatus: RunStatus | undefined;
 	seenNoticeIds: Set<string>;

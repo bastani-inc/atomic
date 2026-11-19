@@ -133,6 +133,7 @@ export interface PiCustomOverlayFactoryTui {
 	terminal?: {
 		rows?: number;
 		columns?: number;
+		readonly colorDepth?: number;
 		setAutowrap?: (enabled: boolean) => void;
 	};
 	setFocus?: (target: unknown) => void;

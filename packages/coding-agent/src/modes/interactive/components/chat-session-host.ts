@@ -2,6 +2,7 @@ import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
+import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
@@ -244,7 +245,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.seenFirstRawUser = false;
 		this.state.firstUserEntryExactText = undefined;
 		this.state.firstUserEntry = undefined;
-		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
+		this.state.statusMessage = "";
+		if (this.state.noticeMessage !== this.state.lastWarningMessage) this.state.noticeMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
 		this.state.unconfirmedQueuedMessages = [];
@@ -474,8 +476,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionPendingMessages(this.state, width);
 	}
 
-	renderWorkingStatus(width: number): string[] {
-		return renderChatSessionWorkingStatus(this.state, width);
+	renderWorkingStatus(width: number, published?: PublishedChatActivity): string[] {
+		return renderChatSessionWorkingStatus(this.state, width, published);
 	}
 
 	renderUsage(width: number): string[] {
@@ -668,11 +670,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	statusText(): string {
-		return this.state.statusMessage;
+		return this.state.noticeMessage || this.state.statusMessage;
 	}
 
 	showWarning(message: string): void {
-		this.state.statusMessage = message;
+		this.state.noticeMessage = message;
 		this.state.lastWarningMessage = message;
 		this.state.requestRender?.();
 	}
