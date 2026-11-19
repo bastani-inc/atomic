@@ -81,7 +81,7 @@ export const BUILTIN_SLASH_COMMANDS = commandList(CORE_COMMAND_NAMES, [
 		description: "Clear or compact the context window; the agent recovers what it needs from session history",
 		argumentHint: "[instructions]",
 	},
-	{ name: "resume", description: "Resume a session or workflow run" },
+	{ name: "resume", description: "Resume a session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{ name: "exit", description: `Exit ${APP_NAME}` },
 	{ name: "quit", description: `Quit ${APP_NAME}` },
@@ -89,8 +89,6 @@ export const BUILTIN_SLASH_COMMANDS = commandList(CORE_COMMAND_NAMES, [
 
 export const BUNDLED_EXTENSION_SLASH_COMMANDS = commandList(BUNDLED_COMMAND_NAMES, [
 	{ name: "agents", description: "Browse available subagents and inspect their configuration" },
-	{ name: "workflows", description: "Browse running and completed workflows" },
-	{ name: "workflow-authoring", description: "Load the reference for writing workflow definitions" },
 	{ name: "mcp", description: "Show MCP server status" },
 	{ name: "mcp-auth", description: "Authenticate with an MCP server (OAuth)" },
 	{ name: "curator", description: "Toggle or configure the search curator workflow" },

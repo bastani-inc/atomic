@@ -504,7 +504,7 @@ test(
 			thinkingLevel: "low",
 			settingsManager,
 			sessionManager: SessionManager.inMemory(cwd),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			tools: ["read"],
 		});
 		cleanups.push(() => {
@@ -940,7 +940,7 @@ test(
 				retry: { enabled: false },
 				compaction: { enabled: false },
 			}),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		});
 		const attempts: string[] = [];
 		const def = workflow({
@@ -1010,7 +1010,7 @@ test(
 				retry: { enabled: false },
 				compaction: { enabled: false },
 			}),
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		});
 		const def = workflow({
 			name: "sdk-auto-image-fallback-ok",
@@ -1084,7 +1084,7 @@ for (const fallbackSeesImages of [true, false]) {
 					retry: { enabled: false },
 					compaction: { enabled: false },
 				}),
-				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			});
 			const def = workflow({
 				name: "sdk-auto-image-prompt-fallback",
@@ -1186,7 +1186,7 @@ test(
 			cwd,
 			modelRuntime,
 			settingsManager: settings,
-			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 			tools: ["read"],
 		});
 		const def = workflow({
@@ -1459,7 +1459,7 @@ test(
 							retry: { enabled: false },
 							compaction: { enabled: false },
 						}),
-						builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+						builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 					}),
 				},
 			},
@@ -1496,7 +1496,7 @@ async function sdkAutoStage(input: {
 			retry: { enabled: false },
 			compaction: { enabled: false },
 		}),
-		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		...(input.adapterSessionModel ? { model: m.sessionModel, thinkingLevel: "low" as const } : {}),
 	});
 	const def = workflow({

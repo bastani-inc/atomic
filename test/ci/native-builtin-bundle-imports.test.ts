@@ -12,16 +12,11 @@ import {
 	symlinkSync,
 } from "node:fs";
 import { isBuiltin } from "node:module";
-import { basename, extname, join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 import { parse } from "acorn";
 import { simple } from "acorn-walk";
 import { test } from "vitest";
-import { WORKER_HOST_MODULE_SPECIFIERS } from "../../packages/coding-agent/src/bun/internal-workflow-worker.js";
-import {
-	INSTALLED_EXTENSION_ENTRIES,
-	WORKFLOWS_LOCAL_WORKER_ENTRIES,
-	WORKFLOWS_SDK_BUNDLE_ENTRY,
-} from "../../packages/coding-agent/src/core/builtin-install-layout.js";
+import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { getVirtualModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
 import { moduleDir, npmSpawnPrefix, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -43,16 +38,7 @@ function stageBuiltinBuild(fixture: string): string {
 	const packageDependencies = join(root, "packages/coding-agent/node_modules");
 	if (existsSync(packageDependencies)) symlinkSync(packageDependencies, join(packageRoot, "node_modules"), "junction");
 	for (const name of readdirSync(join(root, "packages"))) {
-		if (name === "workflows") {
-			const workflows = join(fixture, "packages", name);
-			cpSync(join(root, "packages", name), workflows, {
-				recursive: true,
-				filter: (path) => basename(path) !== "node_modules",
-			});
-			const scope = join(workflows, "node_modules/@bastani");
-			mkdirSync(scope, { recursive: true });
-			symlinkSync(packageRoot, join(scope, "atomic"), "junction");
-		} else if (name !== "coding-agent") {
+		if (name !== "coding-agent") {
 			symlinkSync(join(root, "packages", name), join(fixture, "packages", name), "junction");
 		}
 	}
@@ -87,14 +73,6 @@ function collectImportSpecifiers(source: string): Set<string> {
 	return specifiers;
 }
 
-function listJavaScriptArtifacts(rootDir: string): string[] {
-	return readdirSync(rootDir, { withFileTypes: true }).flatMap((entry) => {
-		const path = join(rootDir, entry.name);
-		if (entry.isDirectory()) return listJavaScriptArtifacts(path);
-		return [".js", ".mjs"].includes(extname(entry.name)) ? [path] : [];
-	});
-}
-
 test("specifier permits Node builtins, registered host imports, and relative imports only", () => {
 	const emptyHostSpecifiers = new Set<string>();
 
@@ -127,27 +105,16 @@ test(
 			const hostSpecifiers = new Set(Object.keys(await getVirtualModules()));
 			const unexpected: string[] = [];
 			const builtinRoot = join(packageRoot, "dist/builtin");
-			const emittedArtifacts = [
-				...Object.entries(INSTALLED_EXTENSION_ENTRIES).map(([dirName, entry]) => join(builtinRoot, dirName, entry)),
-				join(builtinRoot, "workflows", WORKFLOWS_SDK_BUNDLE_ENTRY),
-				...listJavaScriptArtifacts(join(builtinRoot, "workflows", "builtin")),
-			];
+			assert.equal(existsSync(join(builtinRoot, "workflows")), false);
+			const emittedArtifacts = Object.entries(INSTALLED_EXTENSION_ENTRIES).map(([dirName, entry]) =>
+				join(builtinRoot, dirName, entry),
+			);
 
 			for (const artifactPath of emittedArtifacts) {
 				const source = readFileSync(artifactPath, "utf8");
 				for (const specifier of collectImportSpecifiers(source)) {
 					if (!isPermittedSpecifier(specifier, hostSpecifiers)) {
 						unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
-					}
-				}
-			}
-
-			const workerSpecifiers = new Set<string>(WORKER_HOST_MODULE_SPECIFIERS);
-			for (const entry of WORKFLOWS_LOCAL_WORKER_ENTRIES) {
-				const source = readFileSync(join(builtinRoot, "workflows", entry), "utf8");
-				for (const specifier of collectImportSpecifiers(source)) {
-					if (!isPermittedSpecifier(specifier, workerSpecifiers)) {
-						unexpected.push(`${entry}: ${specifier}`);
 					}
 				}
 			}

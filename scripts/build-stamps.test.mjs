@@ -179,9 +179,7 @@ test("every step hashes the tsconfig and bunfig files its compilers and bundlers
 		assert.ok(ai && inputPaths(ai).includes(`packages/ai/${file}`), `ai hashes packages/ai/${file}`);
 	}
 	const atomic = BUILD_STEPS.find((step) => step.name === "atomic");
-	for (const file of ["tsconfig.build.json", "tsconfig.workflows-types.json"]) {
-		assert.ok(atomic && inputPaths(atomic).includes(`packages/coding-agent/${file}`));
-	}
+	assert.ok(atomic && inputPaths(atomic).includes("packages/coding-agent/tsconfig.build.json"));
 });
 
 test("each package builds after the forked packages and native step whose outputs it consumes", () => {

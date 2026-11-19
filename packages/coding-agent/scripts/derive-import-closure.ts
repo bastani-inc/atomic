@@ -9,8 +9,7 @@ import type { BuiltinPackageDirName } from "../src/core/builtin-install-layout.j
 // direct import or require specifier cannot be determined statically.
 
 // Only packages whose kept raw TypeScript runs directly from the filesystem participate. The intercom broker is
-// spawned as its own jiti process, so it has no host aliases or virtualModules fallback. Workflows is deliberately
-// excluded: its installed authoring surface prunes raw sources for issue #1208, and tracing it would resurrect them.
+// spawned as its own jiti process, so it has no host aliases or virtualModules fallback.
 export const INSTALLED_IMPORT_CLOSURE_ROOTS: Partial<Record<BuiltinPackageDirName, readonly string[]>> = {
 	intercom: ["broker/"],
 };

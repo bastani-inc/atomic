@@ -8,14 +8,13 @@ import { describe, test } from "vitest";
 import { INSTALLED_EXTENSION_ENTRIES } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
-import { type PackageSource, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 
 function tempDir(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
 }
 
 const expectedBuiltinPackages = [
-	resolve("packages/workflows"),
 	resolve("packages/subagents"),
 	resolve("packages/mcp"),
 	resolve("packages/web-access"),
@@ -23,7 +22,6 @@ const expectedBuiltinPackages = [
 ];
 
 const builtinPackageFixtures = [
-	{ packageName: "@bastani/workflows", dirname: "workflows", requiredEntry: join("src", "extension", "index.ts") },
 	{ packageName: "@bastani/subagents", dirname: "subagents", requiredEntry: join("src", "extension", "index.ts") },
 	{ packageName: "@bastani/mcp", dirname: "mcp", requiredEntry: "index.ts" },
 	{ packageName: "@bastani/web-access", dirname: "web-access", requiredEntry: "index.ts" },
@@ -234,7 +232,6 @@ describe("coding-agent builtin resources", () => {
 
 			const extensionPaths = extensions.extensions.map((extension) => extension.path.replace(/\\/g, "/"));
 			for (const suffix of [
-				"packages/workflows/src/extension/index.ts",
 				"packages/subagents/src/extension/index.ts",
 				"packages/mcp/index.ts",
 				"packages/web-access/index.ts",
@@ -259,20 +256,15 @@ describe("coding-agent builtin resources", () => {
 	);
 
 	test(
-		"can disable the workflows extension while keeping bundled package skills",
+		"ships the bundled skills without loading workflow tooling",
 		async () => {
 			const cwd = tempDir("atomic-stage-builtin-skills-cwd-");
 			const agentDir = tempDir("atomic-stage-builtin-skills-agent-");
-			const stageBuiltinPackages: PackageSource[] = expectedBuiltinPackages.map((packagePath) =>
-				packagePath.replace(/\\/g, "/").endsWith("/workflows")
-					? { source: packagePath, extensions: [] }
-					: packagePath,
-			);
 			const loader = new DefaultResourceLoader({
 				cwd,
 				agentDir,
 				settingsManager: SettingsManager.inMemory(),
-				builtinPackagePaths: stageBuiltinPackages,
+				builtinPackagePaths: expectedBuiltinPackages,
 			});
 
 			await loader.reload();

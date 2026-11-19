@@ -120,7 +120,7 @@ async function createProject(
 	);
 	const stageOptions = toJsLiteral({
 		sessionDir: join(cwd, "stage-sessions"),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		model: HOLDING_MODEL,
 		cwd,
 		agentDir: join(cwd, "agent"),

@@ -134,7 +134,7 @@ describe("stage scopedModels", () => {
 					modelRuntime: runtime,
 					settingsManager: SettingsManager.inMemory(),
 					sessionManager: SessionManager.inMemory(cwd),
-					builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+					builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 					tools: [],
 					model: catalogModel,
 					...options,

@@ -76,7 +76,7 @@ async function openOwner(waitingOn: { toolCallId: string; toolName: string }[] =
 		settingsManager,
 		sessionManager: manager,
 		resourceLoader: loader,
-		builtins: { subagents: true, intercom: false, mcp: false, workflows: false, "web-access": false },
+		builtins: { subagents: true, intercom: false, mcp: false, "web-access": false },
 	});
 	assert.ok(session.extensionRunner.getToolDefinition("subagent"), JSON.stringify(loader.getExtensions().errors));
 	return {

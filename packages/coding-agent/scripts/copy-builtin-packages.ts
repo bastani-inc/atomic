@@ -1,6 +1,4 @@
-import { spawnSync } from "node:child_process";
 import {
-	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -14,8 +12,6 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
 	INSTALLED_EXTENSION_ENTRIES,
-	WORKFLOWS_LOCAL_WORKER_ENTRIES,
-	WORKFLOWS_SDK_BUNDLE_ENTRY,
 	type BuiltinPackageDirName,
 } from "../src/core/builtin-install-layout.ts";
 import {
@@ -36,36 +32,10 @@ interface ManifestExtensionBlock {
 	extensions?: string[];
 }
 
-interface ManifestExportTarget {
-	types?: string;
-	import?: string;
-	default?: string;
-}
-
-interface WorkflowsManifestExports {
-	"."?: ManifestExportTarget;
-	"./builtin"?: ManifestExportTarget;
-	"./builtin/*"?: ManifestExportTarget;
-}
-
 const packageRoot = resolve(import.meta.dir, "..");
 const distDir = join(packageRoot, "dist");
 const distBuiltinDir = join(distDir, "builtin");
 const packagesRoot = resolve(packageRoot, "..");
-
-// Emit the @bastani/atomic/workflows declarations into the installed package.
-// Raw source must not remain beside declarations because NodeNext prefers `.ts`
-// over `.d.ts` when resolving the declarations' `.js` specifiers.
-const workflowsDistDir = join(distBuiltinDir, "workflows");
-const workflowsAuthoringTsconfig = join(packageRoot, "tsconfig.workflows-types.json");
-const workflowsAuthoringDeclaration = "src/authoring.d.ts";
-// Raw authoring-surface sources that are type-only at runtime (all importers use
-// `import type`), so deleting their `.ts` copies is behaviorally inert; only the
-// emitted `.d.ts` siblings remain for `tsc` resolution.
-const rawAuthoringSourcesToPrune = [
-	join(workflowsDistDir, "src", "authoring.ts"),
-	join(workflowsDistDir, "src", "shared", "authoring-contract.ts"),
-];
 
 // Host-provided module specifiers that the extension loader resolves to live
 // in-process instances (jiti alias / virtualModules); they must stay external
@@ -90,8 +60,8 @@ const HOST_PROVIDED_EXTERNALS = [
 
 // Bun.build folds `process.env.NODE_ENV` into a constant taken from the build
 // environment. Builtins read it at runtime to pick test-host stubs over real
-// stage and subagent sessions, so a build run with NODE_ENV=test (vitest sets
-// it) would ship a bundle whose workflow stages never create a real session.
+// subagent sessions. A build run with NODE_ENV=test (vitest sets it) must
+// not select those stubs in production.
 // Keep the read literal so the shipped bundle decides at runtime.
 const RUNTIME_ENV_DEFINES = { "process.env.NODE_ENV": "process.env.NODE_ENV" };
 
@@ -111,7 +81,6 @@ const SELF_CONTAINED_BUILTIN_PLUGINS: Bun.BunPlugin[] = [
 ];
 
 const WORKSPACE_BUILTINS = [
-	{ packageName: "@bastani/workflows", workspaceDirName: "workflows" },
 	{ packageName: "@bastani/subagents", workspaceDirName: "subagents" },
 	{ packageName: "@bastani/mcp", workspaceDirName: "mcp" },
 	{ packageName: "@bastani/web-access", workspaceDirName: "web-access" },
@@ -119,18 +88,6 @@ const WORKSPACE_BUILTINS = [
 ] as const;
 
 const INSTALLED_KEEP_PREFIXES: Record<BuiltinPackageDirName, readonly string[]> = {
-	workflows: [
-		"package.json",
-		"README.md",
-		"CHANGELOG.md",
-		"LICENSE",
-		INSTALLED_EXTENSION_ENTRIES.workflows,
-		WORKFLOWS_SDK_BUNDLE_ENTRY,
-		...WORKFLOWS_LOCAL_WORKER_ENTRIES,
-		workflowsAuthoringDeclaration,
-		"src/shared/authoring-contract.d.ts",
-		"skills/",
-	],
 	subagents: [
 		"package.json",
 		"README.md",
@@ -222,60 +179,6 @@ function getCopyPlan(): BuiltinCopy[] {
 	});
 }
 
-// Public workflow builtin subpaths are declared here rather than inferred from documentation prose. Packaging is the
-// authority for this artifact boundary, and every declared entry is validated fail-closed below.
-const PUBLISHED_WORKFLOW_BUILTIN_NAMES = [
-	"adversarial-verification",
-	"classify-and-act",
-	"fan-out-and-synthesize",
-	"generate-and-filter",
-	"goal",
-	"loop-until-done",
-	"open-claude-design",
-	"ralph",
-	"steering-context",
-	"tournament",
-] as const;
-
-function listWorkflowBuiltinNames(): string[] {
-	const builtinDir = join(workflowsDistDir, "builtin");
-	for (const name of PUBLISHED_WORKFLOW_BUILTIN_NAMES) {
-		for (const extension of [".ts", ".d.ts"] as const) {
-			const entry = join(builtinDir, `${name}${extension}`);
-			if (!existsSync(entry)) {
-				throw new Error(`Published workflow builtin ${name} is missing ${relative(workflowsDistDir, entry)}`);
-			}
-		}
-	}
-	return [...PUBLISHED_WORKFLOW_BUILTIN_NAMES];
-}
-
-// Emit the lean @bastani/workflows authoring surface (authoring.ts +
-// shared/authoring-contract.ts) as declarations into the copied workflows tree so
-// the @bastani/atomic/workflows exports `types` condition resolves to `.d.ts`.
-function emitWorkflowAuthoringTypes(): void {
-	const result = spawnSync("bunx", ["--no-install", "tsc", "-p", workflowsAuthoringTsconfig], {
-		cwd: packageRoot,
-		stdio: "inherit",
-	});
-	if (result.status !== 0) {
-		throw new Error(`Failed to emit @bastani/workflows authoring declarations (tsc exited ${result.status ?? "null"})`);
-	}
-	const emitted = join(workflowsDistDir, "src", "authoring.d.ts");
-	if (!existsSync(emitted)) {
-		throw new Error(`Expected emitted authoring declaration at ${emitted}`);
-	}
-	console.log(`Emitted @bastani/workflows authoring types -> ${join("dist", "builtin", "workflows", "src", "authoring.d.ts")}`);
-}
-
-// Remove the raw `.ts` copies of the emitted authoring surface so `tsc` cannot
-// resolve a consumer's `.js` import to the leaky raw source instead of the `.d.ts`.
-function pruneRawWorkflowAuthoringSources(): void {
-	for (const file of rawAuthoringSourcesToPrune) {
-		rmSync(file, { force: true });
-	}
-}
-
 async function bundleEntrypoint(entry: string, outfile: string, label: string): Promise<void> {
 	if (!existsSync(entry)) {
 		throw new Error(`Missing ${label} bundle entry: ${entry}`);
@@ -297,53 +200,6 @@ async function bundleEntrypoint(entry: string, outfile: string, label: string): 
 	console.log(`Bundled ${label} -> ${relative(distDir, outfile)}`);
 }
 
-async function bundleLocalWorkerEntries(): Promise<void> {
-	const workersDir = join(workflowsDistDir, "src", "workers");
-	const generatedEntry = join(workersDir, "local-worker-bundle-entry.ts");
-	writeFileSync(
-		generatedEntry,
-		'import { runLocalWorker } from "./local-worker.js";\nawait runLocalWorker(JSON.parse(process.argv[2] as string));\n',
-		"utf-8",
-	);
-	try {
-		const [first, ...rest] = WORKFLOWS_LOCAL_WORKER_ENTRIES.map((entry) => join(workflowsDistDir, entry));
-		await bundleEntrypoint(generatedEntry, first as string, "@bastani/workflows local worker");
-		for (const outfile of rest) {
-			mkdirSync(dirname(outfile), { recursive: true });
-			cpSync(first as string, outfile);
-		}
-	} finally {
-		rmSync(generatedEntry, { force: true });
-	}
-}
-
-async function bundleWorkflowBuiltins(): Promise<void> {
-	const builtinDir = join(workflowsDistDir, "builtin");
-	const names = ["index", ...listWorkflowBuiltinNames()];
-	const result = await Bun.build({
-		entrypoints: names.map((name) => join(builtinDir, `${name}.ts`)),
-		root: builtinDir,
-		target: "node",
-		format: "esm",
-		external: HOST_PROVIDED_EXTERNALS,
-		define: RUNTIME_ENV_DEFINES,
-		plugins: SELF_CONTAINED_BUILTIN_PLUGINS,
-		splitting: true,
-	});
-	if (!result.success) {
-		throw new Error(`Failed to bundle @bastani/workflows builtins: ${result.logs.map((log) => log.message).join("\n")}`);
-	}
-	for (const output of result.outputs) {
-		const outfile = join(builtinDir, basename(output.path));
-		writeFileSync(outfile, await output.text(), "utf-8");
-	}
-	for (const name of names) {
-		const output = join(builtinDir, `${name}.js`);
-		if (!existsSync(output)) throw new Error(`Bundled workflow builtin ${name} did not emit ${relative(distDir, output)}`);
-	}
-	console.log(`Bundled ${names.length} @bastani/workflows builtin entries -> ${relative(distDir, builtinDir)}`);
-}
-
 function readManifest(packageJsonPath: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
 }
@@ -361,43 +217,13 @@ function setManifestExtensions(pkg: Record<string, unknown>, extensionPath: stri
 	}
 }
 
-function pointWorkflowsSdkAtBundle(pkg: Record<string, unknown>): void {
-	pkg.main = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
-	pkg.types = `./${workflowsAuthoringDeclaration}`;
-	const exportsField = pkg.exports as WorkflowsManifestExports | undefined;
-	const root = exportsField?.["."];
-	if (root) {
-		root.default = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
-		root.import = `./${WORKFLOWS_SDK_BUNDLE_ENTRY}`;
-		root.types = `./${workflowsAuthoringDeclaration}`;
-	}
-	const builtin = exportsField?.["./builtin"];
-	if (builtin) {
-		builtin.default = "./builtin/index.js";
-		builtin.import = "./builtin/index.js";
-	}
-	const builtinWildcard = exportsField?.["./builtin/*"];
-	if (builtinWildcard) {
-		builtinWildcard.default = "./builtin/*.js";
-		builtinWildcard.import = "./builtin/*.js";
-	}
-}
-
 function shouldKeepInstalledPath(
 	dirName: BuiltinPackageDirName,
 	relativePath: string,
 	importClosure: ReadonlySet<string>,
 ): boolean {
 	const normalized = relativePath.split("\\").join("/");
-	const isEmittedWorkflowDeclaration =
-		dirName === "workflows" && normalized.startsWith("src/") && normalized.endsWith(".d.ts");
-	const isCompiledWorkflowBuiltin =
-		dirName === "workflows" &&
-		normalized.startsWith("builtin/") &&
-		(normalized.endsWith(".js") || normalized.endsWith(".d.ts"));
 	return (
-		isEmittedWorkflowDeclaration ||
-		isCompiledWorkflowBuiltin ||
 		importClosure.has(normalized) ||
 		INSTALLED_KEEP_PREFIXES[dirName].some((keep) => {
 			if (keep.endsWith("/")) {
@@ -451,23 +277,6 @@ mkdirSync(nativeMcpNoticeDir, { recursive: true });
 cpSync(join(nativeMcpClientDir, "NOTICE"), join(nativeMcpNoticeDir, "NOTICE"));
 cpSync(join(nativeMcpClientDir, "LICENSES"), join(nativeMcpNoticeDir, "LICENSES"), { recursive: true });
 
-// Issue #2716: derive the published @bastani/atomic/workflows types from source.
-emitWorkflowAuthoringTypes();
-pruneRawWorkflowAuthoringSources();
-
-await bundleEntrypoint(
-	join(workflowsDistDir, "src", "extension", "index.ts"),
-	join(workflowsDistDir, INSTALLED_EXTENSION_ENTRIES.workflows),
-	"@bastani/workflows extension",
-);
-await bundleEntrypoint(
-	join(workflowsDistDir, "src", "index.ts"),
-	join(workflowsDistDir, WORKFLOWS_SDK_BUNDLE_ENTRY),
-	"@bastani/workflows SDK",
-);
-await bundleLocalWorkerEntries();
-
-await bundleWorkflowBuiltins();
 await bundleEntrypoint(
 	join(distBuiltinDir, "subagents", "src", "extension", "index.ts"),
 	join(distBuiltinDir, "subagents", INSTALLED_EXTENSION_ENTRIES.subagents),
@@ -489,13 +298,7 @@ await bundleEntrypoint(
 	"@bastani/intercom extension",
 );
 
-const workflowsManifestPath = join(workflowsDistDir, "package.json");
-const workflowsManifest = readManifest(workflowsManifestPath);
-setManifestExtensions(workflowsManifest, `./${INSTALLED_EXTENSION_ENTRIES.workflows}`);
-pointWorkflowsSdkAtBundle(workflowsManifest);
-writeManifest(workflowsManifestPath, workflowsManifest);
-
-for (const dirName of ["subagents", "mcp", "web-access", "intercom"] as const) {
+for (const { workspaceDirName: dirName } of WORKSPACE_BUILTINS) {
 	const manifestPath = join(distBuiltinDir, dirName, "package.json");
 	const manifest = readManifest(manifestPath);
 	setManifestExtensions(manifest, `./${INSTALLED_EXTENSION_ENTRIES[dirName]}`);

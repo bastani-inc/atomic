@@ -226,7 +226,6 @@ async function migrateAs(roles: Roles, role: "owner" | "runtime", prefix = PREFI
 				agentDir,
 				log: (line) => out.push(line),
 				error: (line) => err.push(line),
-				loadWorkerModule: async () => workerHost,
 				loadBrokerState: () => import("../../packages/intercom/broker/open-broker-state.js"),
 			},
 		);

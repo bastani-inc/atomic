@@ -63,7 +63,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			cwd: tempDir,
 			agentDir,
 			// #3105: isolate coding defaults from optional shipped extension tools.
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,

@@ -49,7 +49,7 @@ describe("tool renderer examples", () => {
 			settingsManager,
 			sessionManager: SessionManager.inMemory(tempDir),
 			resourceLoader,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			tools,
 		});
 		try {
