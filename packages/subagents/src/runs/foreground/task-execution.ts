@@ -141,19 +141,16 @@ export function settledOutputsFromRecords(records: readonly TaskRecord[]): Settl
 	);
 }
 
-function settledOutputSection(
-	taskId: TaskId,
-	label: string,
-	output: {
-		head: string;
-		shown: number;
-		total: number;
-		path?: string;
-		requestedPath?: string;
-		saveError?: string;
-	},
-	ranOn: string | undefined,
-): string {
+interface OutputExcerpt {
+	head: string;
+	shown: number;
+	total: number;
+	path?: string;
+	requestedPath?: string;
+	saveError?: string;
+}
+
+function settledOutputSection(taskId: TaskId, label: string, output: OutputExcerpt, ranOn: string | undefined): string {
 	const truncated =
 		output.shown < output.total
 			? `, first ${output.shown} shown${output.path ? "; read the full output file for the rest" : ""}`
@@ -184,30 +181,16 @@ function rememberTranscriptOutput(
 	if (task) transcriptOutputs.set(task, new WeakRef(part));
 }
 
-async function readSettledOutput(
+export async function readSettledOutput(
 	host: AgentTaskHost,
 	settled: SettledTaskOutput,
 	record: TaskRecord | undefined,
-): Promise<string | undefined> {
+): Promise<OutputExcerpt | { unavailable: string } | undefined> {
 	const output = settled.result.output;
 	if (!output) return undefined;
-	const label = subagentTaskResultLabel(settled.result);
-	// A child that ran on another model than its launch asked for says so beside its output (#4188).
-	const ranOn = ranOnModelLine(record);
 	const kept = retainedTaskOutput(output.ownerId, output.taskId);
-	if (kept) {
-		return settledOutputSection(
-			settled.taskId,
-			label,
-			{
-				...kept,
-				shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
-				total: kept.totalBytes,
-			},
-			ranOn,
-		);
-	}
-	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
+	if (kept) return { ...kept, shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES), total: kept.totalBytes };
+	const unavailable = (reason: string) => ({ unavailable: reason });
 	const lease = host.resolveTask(settled.taskId);
 	if (!lease.ok) return unavailable(lease.error.message);
 	const head = transcriptOutputs.get(lease.value)?.deref()?.text;
@@ -218,7 +201,7 @@ async function readSettledOutput(
 		total <= INLINE_TASK_OUTPUT_MAX_BYTES &&
 		Buffer.byteLength(head) === total
 	)
-		return settledOutputSection(settled.taskId, label, { head, shown: total, total }, ranOn);
+		return { head, shown: total, total };
 	try {
 		const page = await host.ownerBinding.supervisor.readTaskOutput(lease.value, {
 			start: "0",
@@ -241,7 +224,7 @@ async function readSettledOutput(
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
 		const shown = page.value.chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
-		return settledOutputSection(settled.taskId, label, { head, shown, total: Number(output.byteCount) }, ranOn);
+		return { head, shown, total: Number(output.byteCount) };
 	} catch (error) {
 		return unavailable(error instanceof Error ? error.message : String(error));
 	}
@@ -255,13 +238,15 @@ export async function settledTaskOutputText(
 	if (!host || settled.length === 0) return "";
 	const records = ownerTaskRecords(new Set(settled.map((entry) => entry.taskId)), host);
 	const sections = await Promise.all(
-		settled.map((entry) =>
-			readSettledOutput(
-				host,
-				entry,
-				records.find((record) => record.ref.taskId === entry.taskId),
-			),
-		),
+		settled.map(async (entry) => {
+			const record = records.find((item) => item.ref.taskId === entry.taskId);
+			const output = await readSettledOutput(host, entry, record);
+			if (!output) return undefined;
+			const label = subagentTaskResultLabel(entry.result);
+			return "unavailable" in output
+				? `Output of ${entry.taskId} (${label}) is unavailable: ${output.unavailable}`
+				: settledOutputSection(entry.taskId, label, output, ranOnModelLine(record));
+		}),
 	);
 	const present = sections.filter((section): section is string => section !== undefined);
 	return present.length ? `\n\n${present.join("\n\n")}` : "";
