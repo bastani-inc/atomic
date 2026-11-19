@@ -1,7 +1,7 @@
 import type { SessionManager } from "../session-manager.ts";
 import { SessionConflictError, SessionNotFoundError } from "../storage/session/errors.js";
 import { historyChunks, historyPages } from "../storage/session/history-pages.js";
-import type { OversizedSessionEntry } from "../storage/session/types.js";
+import { type OversizedSessionEntry, SESSION_HISTORY_SCAN_ENTRIES } from "../storage/session/types.js";
 import type { renderHtmlInputs } from "./render-inputs.js";
 
 /** A manager can move to another session while the file is being written. Capture the physical store,
@@ -27,7 +27,9 @@ export async function captureHtmlHistory(sm: SessionManager) {
 	return {
 		header: { type: "session" as const, ...header },
 		leafId,
-		readHistory: () => historyPages(store, id, cut.epoch, cut.lastSeq, {}),
+		// Every pass reads the whole cut at once, so it reads as a scan: more entries a page, never more bytes. One
+		// store read every 64 entries made a long session's export several times slower than main's full load (#5571).
+		readHistory: () => historyPages(store, id, cut.epoch, cut.lastSeq, { pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
 		readHistoryChunks: (item: OversizedSessionEntry, offset = 0) =>
 			historyChunks(store, id, cut.epoch, item, { offset }),
 	};

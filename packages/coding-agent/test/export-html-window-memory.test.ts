@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Text } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
-import { exportSessionToHtml } from "../src/core/export-html/index.js";
+import { exportFromFile, exportSessionToHtml } from "../src/core/export-html/index.js";
 import { createToolHtmlRenderer } from "../src/core/export-html/tool-renderer.js";
-import { type SessionEntry, SessionManager } from "../src/core/session-manager.js";
+import { CURRENT_SESSION_VERSION, type SessionEntry, SessionManager } from "../src/core/session-manager.js";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_HISTORY_PAGE_BYTES, type SessionStore } from "../src/core/storage/session/types.js";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
@@ -23,6 +24,64 @@ async function exportedData(path: string): Promise<{
 	assert.ok(encoded);
 	return JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
 }
+
+test("an HTML export reads a long saved session in a few large pages a pass, from the live session and from a file (#5571)", async () => {
+	initTheme("dark");
+	const dir = await mkdtemp(join(tmpdir(), "export-html-scan-pages-"));
+	const store = new MemorySessionStore();
+	// 3000 short turns: fewer entries and bytes than one scan page holds, 47 pages of the default 64 entries.
+	const entries = Array.from(
+		{ length: 3000 },
+		(_, i): SessionEntry => ({
+			type: "message",
+			id: `turn-${i}`,
+			parentId: i === 0 ? null : `turn-${i - 1}`,
+			timestamp: new Date(i * 1000).toISOString(),
+			message: { role: "user", content: `turn ${i}`, timestamp: i },
+		}),
+	);
+	const ranges = [
+		vi.spyOn(MemorySessionStore.prototype, "readRange"),
+		vi.spyOn(JsonlSessionStore.prototype, "readRange"),
+	];
+	try {
+		await store.create({ id: "live", cwd: dir, version: 4, createdAt: new Date(0).toISOString() }, entries);
+		const manager = await SessionManager.open(store, "live");
+		const file = join(dir, "saved.jsonl");
+		const header = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: "saved",
+			timestamp: new Date(0).toISOString(),
+			cwd: dir,
+		};
+		await writeFile(file, `${[header, ...entries].map((line) => JSON.stringify(line)).join("\n")}\n`);
+		for (const range of ranges) range.mockClear();
+
+		// The live session's export (/export, RPC export_html) reads the renderer inputs, then the data.
+		const live = await exportSessionToHtml(manager, undefined, {
+			outputPath: join(dir, "live.html"),
+			toolRenderer: { renderCall: () => undefined, renderResult: () => undefined },
+		});
+		// The file's export (--export) reads the saved-agent cards, then the data.
+		const saved = await exportFromFile(file, join(dir, "saved.html"));
+
+		assert.deepEqual(
+			ranges.map((range) => range.mock.calls.length),
+			[2, 2],
+			"one range read a pass, not one every 64 entries",
+		);
+		for (const path of [live, saved])
+			assert.deepEqual(
+				(await exportedData(path)).entries.map((row) => row.id),
+				entries.map((row) => row.id),
+			);
+	} finally {
+		for (const range of ranges) range.mockRestore();
+		await store.close();
+		await rm(dir, { recursive: true, force: true });
+	}
+});
 
 test("HTML exports the durable session through the start of the export, while retaining the caller's selected leaf (#5554)", async () => {
 	initTheme("dark");
