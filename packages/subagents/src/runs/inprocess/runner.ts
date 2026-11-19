@@ -2268,6 +2268,7 @@ export class SubagentControlRuntime {
 						sessionManager,
 						systemPromptTransform,
 						initialContextTransform: promptBehavior.initialContextTransform,
+						forkRequestContextTransform: promptBehavior.forkRequestContextTransform,
 					}),
 					// The attempt already failed; a session that comes up after its deadline is never used.
 					(late) => late.session.dispose().catch(() => undefined),

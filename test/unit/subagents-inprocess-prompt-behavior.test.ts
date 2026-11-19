@@ -85,7 +85,7 @@ async function createChildSession(
 	sessionManager = SessionManager.inMemory(),
 	options: Pick<
 		CreateAgentSessionOptions,
-		"model" | "modelRuntime" | "settingsManager" | "resourceLoader" | "builtins"
+		"model" | "modelRuntime" | "settingsManager" | "resourceLoader" | "builtins" | "initialContextTransform"
 	> = {},
 ): Promise<Awaited<ReturnType<typeof createAgentSession>>["session"]> {
 	const cwd = sessionManager.getCwd();
@@ -100,8 +100,7 @@ async function createChildSession(
 		sessionManager,
 		resourceLoader: resourceLoader(),
 		subagentPolicy: childPolicy,
-		systemPromptTransform: behavior.systemPromptTransform,
-		initialContextTransform: behavior.initialContextTransform,
+		...behavior,
 		...options,
 	});
 	return session;
@@ -311,6 +310,23 @@ function replyStream(message: AssistantMessage) {
 }
 
 describe("child context refresh (#5481)", () => {
+	test("a fork does not enable a custom history filter's optional fanout argument (#5481)", async () => {
+		const parent = forkParent();
+		await parent.appendMessage(
+			parentTurn([{ type: "toolCall", id: "parent_call", name: "subagent", arguments: {} }]),
+		);
+		await parent.appendMessage(parentToolResult("parent_call", "subagent", "Parent-only result."));
+		const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+		const session = await createChildSession({}, child, { initialContextTransform: stripParentOnlySubagentMessages });
+		try {
+			assert.ok(
+				!session.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent"),
+			);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("a fresh child's retry keeps the user's task, including after reopening (#5481)", async () => {
 		const root = forkParent().getCwd();
 		const manager = await SessionManager.create(root, join(root, "sessions"));

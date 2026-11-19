@@ -47,7 +47,7 @@ import {
 	isolateMandatoryResourceLoader,
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
-import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
+import { convertToLlmWithForkBoundaries, repairOrphanToolResults } from "./messages.ts";
 import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
@@ -434,13 +434,15 @@ async function constructAgentSession(
 	// and cache warming both rely on the original objects. Each projection has its own gaps.
 	let forkBoundaries: WeakSet<AgentMessage> | undefined;
 	const transform = options.initialContextTransform;
+	const forkTransform = options.forkRequestContextTransform;
+	// Never pass a second argument to a caller's ordinary projection, even if it replaced the child filter.
 	const requestContextProjectionTransform =
-		transform && options.subagentPolicy
+		forkTransform && forkTransform === transform && options.subagentPolicy
 			? (messages: AgentMessage[]) => {
 					forkBoundaries = undefined;
 					if (sessionManager.getHeader()?.parentSessionId === undefined) return transform(messages);
 					const boundaries = new WeakSet<AgentMessage>();
-					const projected = transform(messages, (previous) => boundaries.add(previous));
+					const projected = forkTransform(messages, (previous) => boundaries.add(previous));
 					forkBoundaries = boundaries;
 					return projected;
 				}
@@ -577,7 +579,7 @@ async function constructAgentSession(
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
 		requestForkBoundaries = forkBoundaries;
-		const converted = convertToLlm(messages, requestForkBoundaries);
+		const converted = convertToLlmWithForkBoundaries(messages, requestForkBoundaries);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			lastConvertedLlmMessages = converted;

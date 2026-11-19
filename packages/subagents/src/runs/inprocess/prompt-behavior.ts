@@ -186,9 +186,10 @@ export function stripParentOnlySubagentMessages<T>(
 
 export interface InProcessChildPromptBehavior {
 	readonly systemPromptTransform: (prompt: string) => string;
-	readonly initialContextTransform: (
+	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
+	readonly forkRequestContextTransform: (
 		messages: AgentMessage[],
-		onRemovedBoundary?: (previous: AgentMessage) => void,
+		onRemovedBoundary: (previous: AgentMessage) => void,
 	) => AgentMessage[];
 }
 
@@ -208,9 +209,11 @@ export function createInProcessChildSystemPromptTransform(
 
 /** Build the construction-time transforms for one admitted in-process child. */
 export function createInProcessChildPromptBehavior(policy: ChildPromptPolicy): InProcessChildPromptBehavior {
+	const project = (messages: AgentMessage[], onRemovedBoundary?: (previous: AgentMessage) => void) =>
+		stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized, onRemovedBoundary);
 	return {
 		systemPromptTransform: createInProcessChildSystemPromptTransform(policy),
-		initialContextTransform: (messages, onRemovedBoundary) =>
-			stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized, onRemovedBoundary),
+		initialContextTransform: project,
+		forkRequestContextTransform: project,
 	};
 }
