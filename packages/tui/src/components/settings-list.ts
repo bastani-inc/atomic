@@ -1,3 +1,4 @@
+import { clickableHintText } from "../clickable-hints.ts";
 import { ClickableRows } from "../clickable-rows.ts";
 import { fuzzyFilter } from "../fuzzy.ts";
 import { getKeybindings, getSelectPageIndex } from "../keybindings.ts";
@@ -320,9 +321,11 @@ export class SettingsList implements Component {
 		lines.push(
 			truncateToWidth(
 				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
+					clickableHintText(
+						this.searchEnabled
+							? "  Type to search · Enter/Space to change · Esc to cancel"
+							: "  Enter/Space to change · Esc to cancel",
+					),
 				),
 				width,
 			),

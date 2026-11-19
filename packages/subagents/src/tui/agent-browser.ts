@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@bastani/atomic";
+import { clickableHintText, type ExtensionContext } from "@bastani/atomic";
 import {
 	ClickableRows,
 	type Component,
@@ -179,7 +179,7 @@ export class AgentBrowser implements Component, Focusable {
 			framed ? top : heading,
 			...rows,
 			...(framed ? [theme.fg("borderMuted", `╰${"─".repeat(Math.max(0, width - 2))}╯`)] : []),
-			theme.fg("dim", hint),
+			theme.fg("dim", clickableHintText(hint)),
 		].map((line) => truncateToWidth(line, width));
 	}
 }

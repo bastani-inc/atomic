@@ -9,6 +9,28 @@ export {
 	CombinedAutocompleteProvider,
 	type SlashCommand,
 } from "./autocomplete.ts";
+// Clickable key hints
+export {
+	bindBundledHintCommands,
+	clickableHint,
+	clickableHintText,
+	clickableKeysHint,
+	clickableKeyTextHint,
+	commandHintAction,
+	type HintAction,
+	type HintKeyPart,
+	type HintSpan,
+	hasHintMarkers,
+	hintActionAt,
+	hintKeyId,
+	hintKeyParts,
+	isHintActivation,
+	keyHintAction,
+	readHintSpans,
+	runAsHintActivation,
+	slashCommandHint,
+	stripHintMarkers,
+} from "./clickable-hints.ts";
 export {
 	type ClickableColumns,
 	ClickableRow,
@@ -124,6 +146,7 @@ export {
 	type KeyEventType,
 	type KeyId,
 	keyInput,
+	keyInputData,
 	matchesKey,
 	parseKey,
 	setKittyProtocolActive,

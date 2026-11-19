@@ -11,15 +11,17 @@ import type { StageQuestionnaireInput } from "../extension/workflow-human-input.
 import { type PrimitivePromptAnswer, type PrimitivePromptKind, requirePrimitivePromptAnswer } from "./prompt-answer.js";
 import { createSessionScopedSingleton } from "./session-scoped-singleton.js";
 import type { StageInputAnswer, StagePromptAdapter } from "./stage-prompt.js";
+import { ownsStageRecord, type StageRecordOwner, stageRecordOwner } from "./stage-record-owner.js";
 import type { StagePromptAnswerSource, Store } from "./store.js";
 import { currentWorkflowStore } from "./store-factory.js";
-import type { PendingPrompt, StageInputRequest } from "./store-types.js";
+import type { PendingPrompt, StageInputRequest, StageSnapshot } from "./store-types.js";
 
 export interface StageCustomUiRequest<T = unknown> {
 	readonly id: string;
 	readonly runId: string;
 	readonly stageId: string;
 	readonly factory: PiCustomOverlayFactory<T>;
+	readonly owner?: AbortSignal;
 	readonly options?: PiCustomOverlayOptions;
 	readonly createdAt: number;
 	readonly sessionId?: string;
@@ -91,34 +93,193 @@ function untilSettledOrAborted<T>(promise: Promise<T>, signal: AbortSignal | und
 	});
 }
 
+/** One registration of a live stage. Its signal is unique even when the same registry reuses the stage ID. */
+export interface StageUiOwner {
+	readonly signal: AbortSignal;
+	release(): void;
+}
+
+type StageUiKey = AbortSignal | string;
+interface StageRegistration {
+	readonly signal: AbortSignal;
+	retire(message: string): void;
+}
+
+// A store can be shared by separately constructed brokers, including copies of the extension after a reload.
+const ownershipKey = Symbol.for("atomic-workflows/stage-ui-owners@1");
+interface RouteOrigin {
+	current: boolean;
+	readonly source?: { readonly store: WeakRef<Store>; readonly runId: string; readonly record: StageRecordOwner };
+}
+type Origins = Map<string, WeakRef<RouteOrigin>>;
+interface StageDirectory {
+	readonly owners: Map<string, StageRegistration>;
+	readonly origins: Origins;
+}
+interface StageOwnership {
+	readonly stores: WeakMap<Store, StageDirectory>;
+	readonly producers: WeakMap<AbortSignal, RouteOrigin>;
+}
+const processState = globalThis as typeof globalThis & Record<symbol, StageOwnership | undefined>;
+const ownership: StageOwnership = processState[ownershipKey] ?? { stores: new WeakMap(), producers: new WeakMap() };
+processState[ownershipKey] = ownership;
+// A released session can still receive a late ask. Retain the address watermark only as long as a route can use it.
+const retiredOrigins = new FinalizationRegistry<{
+	directory: WeakRef<Origins>;
+	key: string;
+	ref: WeakRef<RouteOrigin>;
+}>(({ directory, key, ref }) => {
+	const origins = directory.deref();
+	if (origins?.get(key) === ref) origins.delete(key);
+});
+export function stageRouteIsCurrent(producer: AbortSignal): boolean {
+	const origin = ownership.producers.get(producer);
+	if (!origin) return !producer.aborted;
+	const source = origin.source;
+	if (!origin.current || !source) return origin.current;
+	const record = source.store
+		.deref()
+		?.run(source.runId)
+		?.stages.find((stage) => stage.id === source.record.stageId);
+	return ownsStageRecord(source.record, record);
+}
+
 export class StageUiBroker {
 	private readonly store: Store;
-	private readonly pending = new Map<string, StageCustomUiRequest>();
-	private readonly dialogs = new Map<string, string>();
-	private readonly turns = new Map<string, PromiseWithResolvers<void>[]>();
-	private readonly customTurns = new Set<string>();
-	private readonly dialogJournals = new Map<string, StageDialogJournal>();
-	private readonly hosts = new Map<string, StageCustomUiHost>();
+	private readonly owners: Map<string, StageRegistration>;
+	private readonly origins: Origins;
+	private readonly pending = new Map<StageUiKey, StageCustomUiRequest>();
+	private readonly dialogs = new Map<StageUiKey, string>();
+	private readonly turns = new Map<
+		StageUiKey,
+		{ readonly queue: PromiseWithResolvers<void>[]; readonly lifetime?: AbortController }
+	>();
+	private readonly customTurns = new Map<StageUiKey, object>();
+	private readonly dialogJournals = new Map<StageUiKey, { readonly journal: StageDialogJournal }>();
+	private readonly hosts = new Map<StageUiKey, { readonly host: StageCustomUiHost; readonly owner?: AbortSignal }>();
+	private readonly presenters = new WeakMap<StageCustomUiRequest, StageCustomUiHost>();
 	// Headless-answer adapters keyed by (runId, stageId). Populated by the
 	// executor's ask_user_question watcher and the readiness gate so a brokered
 	// custom-UI prompt can be answered programmatically (e.g. via `workflow
 	// send`) without a TUI host rendering the interactive component.
-	private readonly adapters = new Map<string, StagePromptAdapter>();
-	private readonly resolvedPromptIds = new Map<string, string>();
+	private readonly adapters = new Map<StageUiKey, StagePromptAdapter>();
+	private readonly resolvedPromptIds = new Map<StageUiKey, string>();
 	private readonly resolvedListeners = new Set<StagePromptResolvedListener>();
 	private readonly registeredListeners = new Set<StageRequestRegisteredListener>();
 	// Extension `ctx.ui.setStatus` writes per stage session, keyed by (runId, stageId).
 	// Stage sessions have no footer of their own; the attached stage chat renders these.
-	private readonly statuses = new Map<string, Map<string, string>>();
+	private readonly statuses = new Map<StageUiKey, Map<string, string>>();
 	private readonly statusListeners = new Set<StageStatusesChangedListener>();
 
 	constructor(store: Store = currentWorkflowStore()) {
 		this.store = store;
+		const directory = ownership.stores.get(store) ?? { owners: new Map(), origins: new Map() };
+		ownership.stores.set(store, directory);
+		this.owners = directory.owners;
+		this.origins = directory.origins;
+	}
+
+	private stageKey(runId: string, stageId: string): StageUiKey {
+		const stageKey = key(runId, stageId);
+		return this.owners.get(stageKey)?.signal ?? stageKey;
+	}
+
+	currentStageOwner(runId: string, stageId: string): AbortSignal | undefined {
+		return this.owners.get(key(runId, stageId))?.signal;
+	}
+
+	private hostFor(stageKey: StageUiKey, runId: string, stageId: string): StageCustomUiHost | undefined {
+		const registration = this.hosts.get(stageKey) ?? this.hosts.get(key(runId, stageId));
+		const owner = registration?.owner;
+		if (owner && (owner.aborted || (typeof stageKey !== "string" && stageKey !== owner))) return undefined;
+		return registration?.host;
+	}
+
+	private retire(stageKey: StageUiKey, controller: AbortController | undefined, message: string): void {
+		const pending = this.pending.get(stageKey);
+		this.adapters.delete(stageKey);
+		this.resolvedPromptIds.delete(stageKey);
+		this.dialogJournals.delete(stageKey);
+		const statusesChanged = this.statuses.delete(stageKey);
+		const turns = this.turns.get(stageKey);
+		this.turns.delete(stageKey);
+		this.customTurns.delete(stageKey);
+		if (turns?.lifetime || controller || pending) {
+			const reason = new Error(message);
+			turns?.lifetime?.abort(reason);
+			controller?.abort(reason);
+			if (pending) this.reject(pending, reason);
+		}
+		if (controller) this.hosts.delete(stageKey);
+		if (statusesChanged) this.notifyStatusesChanged();
+	}
+
+	claimStage(
+		runId: string,
+		stageId: string,
+		{
+			store = this.store,
+			record = store.run(runId)?.stages.find((stage) => stage.id === stageId),
+			reopen = false,
+		}: { store?: Store; record?: StageSnapshot; reopen?: boolean } = {},
+	): StageUiOwner {
+		const stageKey = key(runId, stageId);
+		const previous = this.owners.get(stageKey);
+		const controller = new AbortController();
+		const prior = this.origins.get(stageKey);
+		let origin = prior?.deref();
+		if (!reopen || origin === undefined || !ownsStageRecord(origin.source?.record, record)) {
+			if (origin) origin.current = false;
+			if (prior) retiredOrigins.unregister(prior);
+			origin = {
+				current: true,
+				...(record === undefined
+					? {}
+					: { source: { store: new WeakRef(store), runId, record: stageRecordOwner(record) } }),
+			};
+			const ref = new WeakRef(origin);
+			this.origins.set(stageKey, ref);
+			retiredOrigins.register(origin, { directory: new WeakRef(this.origins), key: stageKey, ref }, ref);
+		}
+		ownership.producers.set(controller.signal, origin);
+		const run = this.store.run(runId);
+		const runRecord = run && new WeakRef(run);
+		const registration: StageRegistration = {
+			signal: controller.signal,
+			retire: (message) =>
+				this.store.batch(() => {
+					const hadInput = this.adapters.has(controller.signal) || this.pending.has(controller.signal);
+					if (hadInput && runRecord?.deref() === this.store.run(runId)) {
+						this.store.clearStageInputRequest(runId, stageId);
+						this.store.recordStageAwaitingInput(runId, stageId, false);
+					}
+					this.retire(controller.signal, controller, message);
+				}),
+		};
+		this.owners.set(stageKey, registration);
+		const replaced = `atomic-workflows: stage ${stageId} was replaced`;
+		if (previous) previous.retire(replaced);
+		else this.retire(stageKey, undefined, replaced);
+		return {
+			signal: controller.signal,
+			release: () => {
+				if (this.owners.get(stageKey) !== registration) return;
+				this.owners.delete(stageKey);
+				registration.retire(`atomic-workflows: stage ${stageId} was released`);
+			},
+		};
 	}
 
 	/** Record (or, with `undefined`, remove) one extension status written by a stage's session. */
-	setStageStatus(runId: string, stageId: string, statusKey: string, text: string | undefined): void {
-		const stageKey = key(runId, stageId);
+	setStageStatus(
+		runId: string,
+		stageId: string,
+		statusKey: string,
+		text: string | undefined,
+		owner?: AbortSignal,
+	): void {
+		const stageKey = this.stageKey(runId, stageId);
+		if (owner !== undefined && owner !== stageKey) return;
 		const current = this.statuses.get(stageKey);
 		if (text === undefined) {
 			if (!current?.delete(statusKey)) return;
@@ -133,12 +294,12 @@ export class StageUiBroker {
 
 	/** Extension statuses written by this stage's own session; never the main session's. */
 	getStageStatuses(runId: string, stageId: string): ReadonlyMap<string, string> {
-		return this.statuses.get(key(runId, stageId)) ?? EMPTY_STATUSES;
+		return this.statuses.get(this.stageKey(runId, stageId)) ?? EMPTY_STATUSES;
 	}
 
 	/** Drop a stage's statuses, e.g. when a new session replaces it or the stage ends. */
-	clearStageStatuses(runId: string, stageId: string): void {
-		if (this.statuses.delete(key(runId, stageId))) this.notifyStatusesChanged();
+	clearStageStatuses(runId: string, stageId: string, owner?: AbortSignal): void {
+		if (this.statuses.delete(owner ?? this.stageKey(runId, stageId))) this.notifyStatusesChanged();
 	}
 
 	onStageStatusesChanged(listener: StageStatusesChangedListener): () => void {
@@ -165,8 +326,9 @@ export class StageUiBroker {
 	 * `workflow answer` / status can see and answer it. Safe to call before or
 	 * after the matching `requestCustomUi`; the (runId, stageId) key joins them.
 	 */
-	provideStagePrompt(runId: string, stageId: string, adapter: StagePromptAdapter): void {
-		const hostKey = key(runId, stageId);
+	provideStagePrompt(runId: string, stageId: string, adapter: StagePromptAdapter, owner?: AbortSignal): void {
+		const hostKey = this.stageKey(runId, stageId);
+		if (owner !== undefined && owner !== hostKey) return;
 		this.adapters.set(hostKey, adapter);
 		// A newly provided adapter represents a fresh prompt instance, even when
 		// the caller reuses the same prompt id (readiness gates historically did).
@@ -177,8 +339,9 @@ export class StageUiBroker {
 	}
 
 	/** Drop a stage's headless-answer adapter and clear its snapshot descriptor. */
-	clearStagePrompt(runId: string, stageId: string): void {
-		if (this.adapters.delete(key(runId, stageId))) {
+	clearStagePrompt(runId: string, stageId: string, owner?: AbortSignal): void {
+		const current = this.stageKey(runId, stageId);
+		if (this.adapters.delete(owner ?? current) && (owner === undefined || current === owner)) {
 			this.store.clearStageInputRequest(runId, stageId);
 		}
 	}
@@ -188,16 +351,14 @@ export class StageUiBroker {
 	 * lifecycle has ended. Detaching a host intentionally does not cancel human
 	 * input, but terminal stage/run cleanup must not leave stale HIL UI mounted.
 	 */
-	cancelStagePrompt(runId: string, stageId: string, reason: unknown): void {
-		const hostKey = key(runId, stageId);
+	cancelStagePrompt(runId: string, stageId: string, reason: unknown, owner?: AbortSignal): void {
+		const hostKey = owner ?? this.stageKey(runId, stageId);
 		const request = this.pending.get(hostKey);
 		if (request) {
 			this.reject(request, reason);
 			return;
 		}
-		if (this.adapters.delete(hostKey)) {
-			this.store.clearStageInputRequest(runId, stageId);
-		}
+		this.clearStagePrompt(runId, stageId, owner);
 	}
 
 	/**
@@ -206,7 +367,7 @@ export class StageUiBroker {
 	 * `answerStagePrompt` can actually resolve something right now.
 	 */
 	peekStagePrompt(runId: string, stageId: string): StageInputRequest | undefined {
-		const hostKey = key(runId, stageId);
+		const hostKey = this.stageKey(runId, stageId);
 		const adapter = this.adapters.get(hostKey);
 		if (adapter && this.pending.has(hostKey)) return adapter.prompt;
 		return undefined;
@@ -214,7 +375,7 @@ export class StageUiBroker {
 
 	/** Runner-owned human hosts need the original questionnaire and live identity. */
 	peekStageQuestionnaire(runId: string, stageId: string) {
-		const hostKey = key(runId, stageId);
+		const hostKey = this.stageKey(runId, stageId);
 		const adapter = this.adapters.get(hostKey);
 		const request = this.pending.get(hostKey);
 		if (!adapter?.questionnaireParams || !request) return undefined;
@@ -238,7 +399,7 @@ export class StageUiBroker {
 		answer: StageInputAnswer,
 		options: AnswerStagePromptOptions = {},
 	): boolean {
-		const hostKey = key(runId, stageId);
+		const hostKey = this.stageKey(runId, stageId);
 		const adapter = this.adapters.get(hostKey);
 		const request = this.pending.get(hostKey);
 		if (!adapter || !request) return false;
@@ -247,7 +408,7 @@ export class StageUiBroker {
 	}
 
 	wasStagePromptResolved(runId: string, stageId: string, promptId: string): boolean {
-		return this.resolvedPromptIds.get(key(runId, stageId)) === promptId;
+		return this.resolvedPromptIds.get(this.stageKey(runId, stageId)) === promptId;
 	}
 
 	onStagePromptResolved(listener: StagePromptResolvedListener): () => void {
@@ -289,6 +450,8 @@ export class StageUiBroker {
 	}
 
 	private hideHost(host: StageCustomUiHost | undefined, request: StageCustomUiRequest, reason: unknown): void {
+		if (this.presenters.get(request) !== host) return;
+		this.presenters.delete(request);
 		try {
 			host?.hideCustomUi?.(request, reason);
 		} catch {
@@ -298,6 +461,7 @@ export class StageUiBroker {
 
 	private showHostOrReject(host: StageCustomUiHost, request: StageCustomUiRequest): void {
 		if (request.humanInput?.usesOwnBinding()) return;
+		this.presenters.set(request, host);
 		try {
 			host.showCustomUi(request);
 		} catch (error) {
@@ -305,19 +469,30 @@ export class StageUiBroker {
 		}
 	}
 
-	registerHost(runId: string, stageId: string, host: StageCustomUiHost): () => void {
-		const hostKey = key(runId, stageId);
-		const previousHost = this.hosts.get(hostKey);
-		const request = this.pending.get(hostKey);
+	registerHost(runId: string, stageId: string, host: StageCustomUiHost, owner?: AbortSignal): () => void {
+		const current = this.currentStageOwner(runId, stageId);
+		if (owner?.aborted || (owner !== undefined && current !== undefined && current !== owner)) return () => {};
+		// A caller can mount the live handle in another broker with no producer of its own.
+		const hostKey = owner !== undefined && current === owner ? owner : key(runId, stageId);
+		const previousHost = this.hostFor(this.stageKey(runId, stageId), runId, stageId);
+		const registration = { host, owner };
+		this.hosts.set(hostKey, registration);
+		const request = this.pending.get(this.stageKey(runId, stageId));
 		if (previousHost && previousHost !== host && request) {
 			this.hideHost(previousHost, request, new Error(`atomic-workflows: stage ${stageId} custom UI host replaced`));
 		}
-		this.hosts.set(hostKey, host);
-		const activeRequest = this.pending.get(hostKey);
-		if (activeRequest) this.showHostOrReject(host, activeRequest);
+		const activeRequest = this.pending.get(this.stageKey(runId, stageId));
+		if (
+			activeRequest &&
+			this.hosts.get(hostKey) === registration &&
+			this.hostFor(this.stageKey(runId, stageId), runId, stageId) === host
+		)
+			this.showHostOrReject(host, activeRequest);
 		return () => {
-			if (this.hosts.get(hostKey) !== host) return;
+			if (this.hosts.get(hostKey) !== registration) return;
 			this.hosts.delete(hostKey);
+			const displayed = this.pending.get(owner ?? this.stageKey(runId, stageId));
+			if (displayed && this.presenters.get(displayed) === host) this.presenters.delete(displayed);
 			// Unregistering a host means it stops *displaying* the request — not that
 			// the request is cancelled. A stage-scoped human-input request (e.g.
 			// ask_user_question / readiness gate) outlives any one attached chat:
@@ -328,14 +503,16 @@ export class StageUiBroker {
 	}
 
 	hasStageDialog(runId: string, stageId: string): boolean {
-		return this.dialogs.has(key(runId, stageId));
+		return this.dialogs.has(this.stageKey(runId, stageId));
 	}
 
-	registerDialogJournal(runId: string, stageId: string, journal: StageDialogJournal): () => void {
-		const hostKey = key(runId, stageId);
-		this.dialogJournals.set(hostKey, journal);
+	registerDialogJournal(runId: string, stageId: string, journal: StageDialogJournal, owner?: AbortSignal): () => void {
+		const hostKey = this.stageKey(runId, stageId);
+		if (owner !== undefined && owner !== hostKey) return () => {};
+		const registration = { journal };
+		this.dialogJournals.set(hostKey, registration);
 		return () => {
-			if (this.dialogJournals.get(hostKey) === journal) this.dialogJournals.delete(hostKey);
+			if (this.dialogJournals.get(hostKey) === registration) this.dialogJournals.delete(hostKey);
 		};
 	}
 
@@ -345,15 +522,18 @@ export class StageUiBroker {
 		descriptor: Omit<PendingPrompt, "id" | "createdAt" | "kind"> & { readonly kind: PrimitivePromptKind },
 		request: StageDialogRequest = {},
 	): Promise<PrimitivePromptAnswer | undefined> {
+		const hostKey = this.stageKey(runId, stageId);
 		request.signal?.throwIfAborted();
 		if (this.store.run(runId)?.stages.some((stage) => stage.id === stageId) !== true) {
 			const unrecorded = request.answerWithHost ?? request.unrecorded;
 			return unrecorded === undefined ? undefined : unrecorded();
 		}
 		const requestedAt = Date.now();
-		const turn = this.takeTurn(key(runId, stageId));
+		const turn = this.takeTurn(hostKey);
+		request = { ...request, signal: request.signal ? AbortSignal.any([request.signal, turn.signal]) : turn.signal };
 		try {
 			if (turn.ready !== undefined) await untilSettledOrAborted(turn.ready, request.signal);
+			request.signal?.throwIfAborted();
 			return await this.askDialog(
 				runId,
 				stageId,
@@ -365,25 +545,31 @@ export class StageUiBroker {
 					...(request.timeout === undefined ? {} : { expiresAt: requestedAt + request.timeout }),
 				},
 				request,
+				hostKey,
 			);
 		} finally {
 			turn.release();
 		}
 	}
 
-	private takeTurn(hostKey: string): { readonly ready: Promise<void> | undefined; readonly release: () => void } {
-		const line = this.turns.get(hostKey) ?? [];
+	private takeTurn(hostKey: StageUiKey) {
+		const group = this.turns.get(hostKey) ?? {
+			queue: [],
+			lifetime: typeof hostKey === "string" ? new AbortController() : undefined,
+		};
+		const line = group.queue;
 		const turn = Promise.withResolvers<void>();
 		line.push(turn);
-		this.turns.set(hostKey, line);
+		this.turns.set(hostKey, group);
 		return {
+			signal: typeof hostKey === "string" ? group.lifetime!.signal : hostKey,
 			ready: line.length === 1 ? undefined : turn.promise,
 			release: () => {
 				const index = line.indexOf(turn);
 				if (index < 0) return;
 				line.splice(index, 1);
 				if (line.length === 0) {
-					if (this.turns.get(hostKey) === line) this.turns.delete(hostKey);
+					if (this.turns.get(hostKey) === group) this.turns.delete(hostKey);
 				} else if (index === 0) line[0]!.resolve();
 			},
 		};
@@ -394,15 +580,16 @@ export class StageUiBroker {
 		stageId: string,
 		prompt: PendingPrompt & { readonly kind: PrimitivePromptKind },
 		{ signal, answerWithHost }: StageDialogRequest,
+		hostKey: StageUiKey,
 	): Promise<PrimitivePromptAnswer | undefined> {
-		const hostKey = key(runId, stageId);
 		const journal = this.dialogJournals.get(hostKey);
 		const cancel = () => {
 			this.store.resolveStagePendingPrompt(runId, stageId, prompt.id, undefined, { recordAnswer: false });
 		};
 		this.dialogs.set(hostKey, prompt.id);
 		try {
-			if (journal !== undefined) await untilSettledOrAborted(writeDialogJournal(journal, prompt), signal);
+			signal?.throwIfAborted();
+			if (journal !== undefined) await untilSettledOrAborted(writeDialogJournal(journal.journal, prompt), signal);
 			signal?.throwIfAborted();
 			signal?.addEventListener("abort", cancel, { once: true });
 			if (!this.store.recordStagePendingPrompt(runId, stageId, prompt)) {
@@ -413,10 +600,13 @@ export class StageUiBroker {
 				answered?.promptId === prompt.id
 					? answered.value
 					: await new Promise<unknown>((resolve, reject) => {
-							this.store.awaitStagePendingPrompt(runId, stageId, prompt.id).then(resolve, reject);
+							this.store.awaitStagePendingPrompt(runId, stageId, prompt.id, signal).then(resolve, reject);
 							if (!answerWithHost) return;
 							Promise.resolve()
-								.then(answerWithHost)
+								.then(() => {
+									signal?.throwIfAborted();
+									return answerWithHost();
+								})
 								.then((value) => {
 									if (signal?.aborted) return;
 									this.store.resolveStagePendingPrompt(runId, stageId, prompt.id, value, {
@@ -431,9 +621,10 @@ export class StageUiBroker {
 			cancel();
 			if (this.dialogs.get(hostKey) === prompt.id) this.dialogs.delete(hostKey);
 			const custom = this.pending.get(hostKey);
-			if (custom) this.store.recordStageAwaitingInput(runId, stageId, true, custom.createdAt);
+			if (custom && this.stageKey(runId, stageId) === hostKey)
+				this.store.recordStageAwaitingInput(runId, stageId, true, custom.createdAt);
 			if (journal !== undefined && this.dialogJournals.get(hostKey) === journal)
-				void writeDialogJournal(journal).catch(() => {});
+				void writeDialogJournal(journal.journal).catch(() => {});
 		}
 	}
 
@@ -445,25 +636,43 @@ export class StageUiBroker {
 		signal?: AbortSignal,
 		sessionId?: string,
 		humanInput?: StageQuestionnaireInput,
+		owner?: AbortSignal,
 	): Promise<T> {
+		const hostKey = this.stageKey(runId, stageId);
+		if (owner !== undefined && owner !== hostKey)
+			return Promise.reject(owner.reason ?? new Error(`atomic-workflows: stage ${stageId} was replaced`));
 		// Session pause aborts the tool, not the stage (which remains resumable).
 		// Either owner must be able to dismiss its outstanding custom UI request.
 		signal = options?.signal ? (signal ? AbortSignal.any([signal, options.signal]) : options.signal) : signal;
 		if (signal?.aborted) {
 			return Promise.reject(signal.reason ?? new Error("atomic-workflows: stage UI request aborted"));
 		}
-		const hostKey = key(runId, stageId);
 		if (this.pending.has(hostKey) || this.customTurns.has(hostKey)) {
 			return Promise.reject(new Error(`atomic-workflows: stage ${stageId} already has a pending custom UI request`));
 		}
 		const turn = this.takeTurn(hostKey);
-		this.customTurns.add(hostKey);
+		signal = signal ? AbortSignal.any([signal, turn.signal]) : turn.signal;
+		this.customTurns.set(hostKey, turn);
 		const release = () => {
-			this.customTurns.delete(hostKey);
+			if (this.customTurns.get(hostKey) === turn) this.customTurns.delete(hostKey);
 			turn.release();
 		};
 		const open = () => {
-			const result = this.openCustomUi(runId, stageId, factory, options, signal, sessionId, humanInput, release);
+			if (signal?.aborted) {
+				release();
+				return Promise.reject(signal.reason);
+			}
+			const result = this.openCustomUi(
+				runId,
+				stageId,
+				factory,
+				options,
+				signal,
+				sessionId,
+				humanInput,
+				release,
+				hostKey,
+			);
 			turn.release();
 			return result;
 		};
@@ -483,12 +692,13 @@ export class StageUiBroker {
 		sessionId: string | undefined,
 		humanInput: StageQuestionnaireInput | undefined,
 		release: () => void,
+		hostKey: StageUiKey,
 	): Promise<T> {
-		const hostKey = key(runId, stageId);
 		let request!: StageCustomUiRequest<T>;
 		const promise = new Promise<T>((resolve, reject) => {
 			request = {
 				id: nextRequestId(),
+				...(typeof hostKey === "string" ? {} : { owner: hostKey }),
 				runId,
 				stageId,
 				factory,
@@ -508,8 +718,8 @@ export class StageUiBroker {
 
 		this.pending.set(hostKey, request);
 		this.store.recordStageAwaitingInput(runId, stageId, true, request.createdAt);
-		const host = this.hosts.get(hostKey);
-		if (host) this.showHostOrReject(host, request);
+		const host = this.hostFor(hostKey, runId, stageId);
+		if (host && this.pending.get(hostKey) === request) this.showHostOrReject(host, request);
 		this.notifyStageRequestRegistered();
 		// Re-check after listener registration and host display; AbortSignal does
 		// not replay an already-fired abort event for listeners added later.
@@ -522,15 +732,19 @@ export class StageUiBroker {
 	}
 
 	resolve<T>(request: StageCustomUiRequest<T>, value: T, options: AnswerStagePromptOptions = {}): void {
-		const hostKey = key(request.runId, request.stageId);
-		if (this.pending.get(hostKey)?.id !== request.id) return;
+		const hostKey = request.owner ?? key(request.runId, request.stageId);
+		if (this.pending.get(hostKey)?.id !== request.id || this.stageKey(request.runId, request.stageId) !== hostKey)
+			return;
 		const prompt = this.adapters.get(hostKey)?.prompt;
 		this.pending.delete(hostKey);
 		this.adapters.delete(hostKey);
 		if (prompt !== undefined) this.resolvedPromptIds.set(hostKey, prompt.id);
-		this.store.clearStageInputRequest(request.runId, request.stageId);
-		this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
-		this.hideHost(this.hosts.get(hostKey), request, undefined);
+		const host = this.presenters.get(request);
+		this.store.batch(() => {
+			this.store.clearStageInputRequest(request.runId, request.stageId);
+			this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
+		});
+		this.hideHost(host, request, undefined);
 		if (prompt !== undefined) {
 			this.notifyStagePromptAnswered({
 				runId: request.runId,
@@ -545,14 +759,18 @@ export class StageUiBroker {
 	}
 
 	reject(request: StageCustomUiRequest, reason: unknown): void {
-		const hostKey = key(request.runId, request.stageId);
+		const hostKey = request.owner ?? key(request.runId, request.stageId);
 		if (this.pending.get(hostKey)?.id !== request.id) return;
 		this.pending.delete(hostKey);
 		this.adapters.delete(hostKey);
 		this.resolvedPromptIds.delete(hostKey);
-		this.store.clearStageInputRequest(request.runId, request.stageId);
-		this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
-		this.hideHost(this.hosts.get(hostKey), request, reason);
+		const host = this.presenters.get(request);
+		if (this.stageKey(request.runId, request.stageId) === hostKey)
+			this.store.batch(() => {
+				this.store.clearStageInputRequest(request.runId, request.stageId);
+				this.store.recordStageAwaitingInput(request.runId, request.stageId, false);
+			});
+		this.hideHost(host, request, reason);
 		request.reject(reason);
 	}
 }

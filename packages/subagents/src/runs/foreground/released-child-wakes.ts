@@ -51,6 +51,7 @@ import {
 	subagentChildRecordOf,
 	subagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
+import { subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	currentWakeFailure,
 	observeChildRecordFailure,
@@ -106,7 +107,13 @@ export function bindReleasedChildWakes(
 	ctx: ExtensionContext,
 	events: IntercomEventBus,
 	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
+	start: (work: () => void) => void = (work) => work(),
 ): () => void {
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	// A bound owner's notices follow its live generation; without a binding they go to `events`, as the caller passed.
+	const ownerEvents = owner.pi === deps.pi ? events : owner.pi.events;
+	ctx = owner.ctx;
+	deps = { ...deps, pi: owner.pi };
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const namespace = subagentWakeNamespace(ownerSessionId);
 	const unbindReservationOwner = bindReleasedChildReservationOwner(events, ownerSessionId);
@@ -194,7 +201,6 @@ export function bindReleasedChildWakes(
 		void reserveReleasedChildrenOf(events, ownerSessionId);
 		void markEndedChildrenOf(events, ownerSessionId);
 	};
-	reserveAll();
 	/**
 	 * The child's latest record when a wake must not relaunch it after all: a pause or quit of it is in flight, or its
 	 * latest record is no longer released or ended on its own (#4845). Undefined when it may run.
@@ -211,6 +217,8 @@ export function bindReleasedChildWakes(
 		slot: AgentWakeSlot | undefined,
 	) => {
 		const key = subagentWakeKey(ownerSessionId, record.childId);
+		// Wait through the admitting host even if the owner closes while the accepted record is being saved.
+		const host = ctx.getAgentTaskHost?.();
 		// #4856: while the child waits for its run's concurrency limit, it leaves its wake slot to other runs' children.
 		const outcome = await restoreSubagentChild(
 			deps,
@@ -223,7 +231,6 @@ export function bindReleasedChildWakes(
 			throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 		// Relaunched with its new run's record written, or not relaunched: what the wake carried stays held for resume.
 		settleReleasedChildRelaunch(key);
-		const host = ctx.getAgentTaskHost?.();
 		if (outcome.kind !== "restored" || host === undefined) return;
 		await awaitTaskSettlement(host, outcome.taskId);
 		openReleasedChildRelaunch(key);
@@ -241,7 +248,7 @@ export function bindReleasedChildWakes(
 				// #5551: only a released child is reserved; one that ended on its own and is woken for a late result is not.
 				const reservation = releasedChildReservation(record);
 				if (reservation?.wake === true)
-					void acknowledgeReleasedChildWake(events, reservation.childName, reservation.taskId);
+					void acknowledgeReleasedChildWake(ownerEvents, reservation.childName, reservation.taskId);
 				await restore(
 					record,
 					{
@@ -282,7 +289,7 @@ export function bindReleasedChildWakes(
 				const notice = record === undefined ? undefined : noticeOf(record);
 				if (notice === undefined) return;
 				await deliverLocalCompletionNotification(
-					events,
+					ownerEvents,
 					notice,
 					`released-wake-failure-${childId}-${record?.taskId ?? "none"}`,
 				);
@@ -299,8 +306,12 @@ export function bindReleasedChildWakes(
 			});
 	};
 	const stopReporting = dispatcher.onUnobservedFailure(report);
-	wakeReleasedChildrenOfEarlierProcess(dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
-	reportInterruptedStillRunningCalls(deps.pi, dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+	// Route replacement is synchronous at commit. Only start background work after the previous generation retires.
+	start(() => {
+		reserveAll();
+		wakeReleasedChildrenOfEarlierProcess(dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+		reportInterruptedStillRunningCalls(deps.pi, dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+	});
 	const unsubscribe = events.on(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, (payload) => {
 		const childName = (payload as { readonly childName?: string } | null)?.childName;
 		if (typeof childName !== "string") return;
