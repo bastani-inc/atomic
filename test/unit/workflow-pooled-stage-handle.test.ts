@@ -744,6 +744,24 @@ test("the root handle says when its stage's session waits to retry, from its sna
 	handle.dispose();
 });
 
+test("the worker exposes a cancellable retry before backoff or fallback is announced, including on reopen (#5564)", async () => {
+	const fake = singleWatch({ ...snapshot(), isStreaming: false, retryPending: true });
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	try {
+		assert.equal(handle.isRetrying, true);
+		fake.event(1, { type: "agent_settled", aborted: true });
+		assert.equal(handle.isRetrying, false);
+		fake.event(2, { type: "agent_end", messages: [], retryPending: true });
+		assert.equal(handle.isRetrying, true);
+		await handle.pause();
+		assert.equal(handle.isRetrying, false);
+	} finally {
+		handle.dispose();
+	}
+});
+
 test("a message sent while the stage's session is still starting waits for it instead of being reported lost (#3996)", async () => {
 	const admitted = Promise.withResolvers<void>();
 	const fake = singleWatch({ ...snapshot(), isStreaming: false, sessionStarted: false }, async () => {

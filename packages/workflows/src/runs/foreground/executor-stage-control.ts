@@ -125,7 +125,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			return retryWait === "backoff" ? undefined : retryWait;
 		},
 		get isWaitingToRetry() {
-			return retryWait === "backoff";
+			return retryWait === "backoff" || runtime.innerCtx.__waitsToRetry?.() === true;
 		},
 		get isTurnLoopBusy() {
 			return runtime.innerCtx.__turnLoopBusy?.() === true;

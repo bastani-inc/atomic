@@ -512,6 +512,9 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 			return controller.isIdleForRelease();
 		},
 
+		__waitsToRetry() {
+			return controller.waitsToRetry();
+		},
 		__turnLoopBusy() {
 			return controller.isTurnLoopBusy();
 		},

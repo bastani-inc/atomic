@@ -157,7 +157,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private retryStatusEpoch = 0;
 	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
 	private compacting = false;
-	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
+	/** Whether the engine has a retry or fallback in progress. */
 	private retrying = false;
 	private compactionReason: CompactionReason | undefined;
 	private compactionStartedAt: number | undefined;
@@ -1478,10 +1478,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			case "agent_end":
 				this.streamingEpoch++;
 				this.streaming = false;
+				this.retrying = event.retryPending === true;
 				this.dispatchBestEffort("refresh session view", this.refreshSessionView());
 				break;
 			case "agent_settled":
 				this.streamingEpoch++;
+				this.retrying = false;
 				this.turnStartedAt = undefined;
 				break;
 			case "compaction_start":
@@ -1496,9 +1498,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				if (!event.aborted && event.errorMessage === undefined) this.sessionStats.refresh();
 				break;
 			case "auto_retry_start":
+			case "model_fallback_start":
 				this.retrying = true;
 				break;
 			case "auto_retry_end":
+			case "model_fallback_end":
 				this.retrying = false;
 				break;
 			case "message_end":
