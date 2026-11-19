@@ -10,11 +10,7 @@ import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
-import {
-	completionNoticeFromDetails,
-	TaskCompletionMessage,
-	type TaskCompletionMessageOptions,
-} from "./task-completion-message.js";
+import { TaskCompletionMessage, type TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
@@ -141,23 +137,28 @@ export class CustomMessageComponent extends Container {
 		this.customComponent = undefined;
 		if (previous) this.removeChild(previous);
 		try {
-			this.buildDisplay();
+			this.buildDisplay(previous);
 		} finally {
 			if (previous !== this.customComponent) disposeRenderer(previous);
 		}
 	}
 
-	private buildDisplay(): void {
+	private buildDisplay(previous?: Component): void {
 		if (this.spacer) {
 			this.removeChild(this.spacer);
 			this.spacer = undefined;
 		}
 		this.removeChild(this.box);
 		if (this.message.customType === TASK_COMPLETION_MESSAGE_TYPE) {
-			const notice = completionNoticeFromDetails(this.message.details);
-			if (notice) {
+			const card = TaskCompletionMessage.fromMessage(
+				this.message,
+				this._expanded,
+				this.completionOptions,
+				TaskCompletionMessage.isCard(previous) ? previous : undefined,
+			);
+			if (card) {
 				this.spacer = new Spacer(1);
-				this.customComponent = new TaskCompletionMessage(notice, this._expanded, this.completionOptions);
+				this.customComponent = card;
 				this.addChild(this.spacer);
 				this.addChild(this.customComponent);
 				return;

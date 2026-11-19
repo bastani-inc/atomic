@@ -133,6 +133,8 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 */
 	readonly readOnly?: boolean;
 	readonly descriptor: StorageDescriptor;
+	/** @internal Checks whether this embedded connection can prepare a JSONB extraction without issuing a read. */
+	supportsJsonbExtract?(): Promise<boolean>;
 	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */
 	readonly dialect?: StorageDialect;
 	/** Wake-ups through the database; present only on a database that delivers them (Postgres). */
@@ -143,6 +145,8 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 * undefined, when this process cannot see the database's disk (a server, memory) or the file system does not say.
 	 */
 	freeBytes?(): Promise<number | undefined>;
+	/** Opens a separate handle on this same database for reads. It has its own call queue; the caller must close it. */
+	openReader?(): Promise<SqliteDatabase>;
 	transaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,

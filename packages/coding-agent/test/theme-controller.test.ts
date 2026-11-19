@@ -107,6 +107,19 @@ describe("InteractiveThemeController", () => {
 		expect(theme.name).toBe("dark");
 	});
 
+	it("keeps an explicit preview through approval and returns to the approved theme on cancel (#5693)", async () => {
+		const { ui } = createUi();
+		const manager = SettingsManager.inMemory({ theme: "dark" });
+		const controller = createController(ui, () => manager);
+		controller.preview("catppuccin-mocha");
+		expect(theme.name).toBe("catppuccin-mocha");
+		manager.applyOverrides({ theme: "light" });
+		await controller.applyFromSettings({ keepPreview: true });
+		expect(theme.name).toBe("catppuccin-mocha");
+		controller.cancelPreview("dark");
+		expect(theme.name).toBe("light");
+	});
+
 	it("reloads theme settings when no initial theme was supplied", async () => {
 		const { ui } = createUi();
 		const firstManager = SettingsManager.inMemory({ theme: "dark" });

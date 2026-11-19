@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { validateToolArguments } from "@bastani/atomic-ai";
-import { afterEach, beforeEach, test } from "vitest";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { completionNoticeFromDetails } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { prepareSubagentArguments, SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -341,6 +344,87 @@ test("management status and wait resolve the launch task ID and report an owner 
 		assert.equal(stopped.details?.taskRecords?.length, 1);
 		assert.match(text(stopped), /Killed.*cannot be resumed/);
 		assert.match(text(await call("wait")), /Killed.*cannot be resumed/);
+	} finally {
+		await host.close("session-close");
+	}
+});
+
+test("a background subagent's saved notice omits an emoji that fits only in its full wait result (#5671)", async () => {
+	const cwd = makeRoot();
+	const parent = await createHarness({ cwd });
+	const prefix = "x".repeat(7999);
+	const full = `${prefix}😀${"y".repeat(300)}`;
+	const { execute } = executor(cwd, new TestEvents(), {
+		runSync: (dir, agents, name, task, options) =>
+			runSync(dir, agents, name, task, { ...options, testSession: { output: full } }),
+	});
+	const ctx = {
+		...context(cwd),
+		sessionManager: parent.sessionManager,
+		getAgentTaskHost: () => parent.session.getAgentTaskHost(),
+	};
+	const call = (id: string, params: Parameters<typeof execute.execute>[1]) =>
+		execute.execute(id, params, new AbortController().signal, undefined, ctx);
+	try {
+		parent.setResponses([fauxAssistantMessage("Noted.")]);
+		const launched = await call("launch", { agent: "qa-echo", task: "Return the result", artifacts: false });
+		const response = launched.details.taskResponse;
+		assert.ok(response?.kind === "admitted" && response.observation.kind === "yielded");
+		const id = response.observation.taskId;
+		assert.ok(text(await call("wait", { action: "wait", id })).endsWith(full), "waiting returns the full result");
+		const saved = await vi.waitUntil(
+			() =>
+				parent.sessionManager
+					.getEntries()
+					.find((entry) => entry.type === "custom_message" && entry.customType === "task-completion"),
+			{ timeout: 10_000 },
+		);
+		assert.ok(saved?.type === "custom_message" && typeof saved.content === "string");
+		const notice = completionNoticeFromDetails(saved.details);
+		assert.ok(notice && notice.taskId === id);
+		assert.deepEqual([notice.preview.isWellFormed(), saved.content.isWellFormed()], [true, true]);
+		assert.equal(notice.preview, prefix);
+		assert.ok(saved.content.includes(`\n${prefix}\n[Result excerpt truncated]`));
+	} finally {
+		await parent.cleanup();
+	}
+});
+
+test("wait and status report OutputUnavailable for SDK output that never had a private copy (#5703)", async () => {
+	const cwd = makeRoot();
+	const { execute } = executor(cwd, new TestEvents());
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: cwd }, authorizeLaunch() {} });
+	const ctx = { ...context(cwd), getAgentTaskHost: () => host };
+	try {
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "SDK job" },
+			"sdk-output" as OperationId,
+			({ ref, reportActivity }) => {
+				const bytes = Buffer.from("SDK result");
+				assert.ok(
+					reportActivity({
+						reportId: "out",
+						change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
+					}).ok,
+				);
+				const [record] = host.taskRecords(new Set([ref.taskId]));
+				assert.ok(record);
+				return {
+					result: Promise.resolve({
+						kind: "completed",
+						output: { ...record.output, byteCount: String(bytes.length) },
+					}),
+					cleanup: Promise.resolve({ kind: "reaped" }),
+				};
+			},
+		);
+		assert.ok(started.ok);
+		const id = started.value.taskId;
+		const expected = `Output of ${id} (completed) is unavailable: OutputUnavailable`;
+		for (const action of ["wait", "status"] as const) {
+			const result = await execute.execute(action, { action, id }, new AbortController().signal, undefined, ctx);
+			assert.equal(text(result).split("\n\n").at(-1), expected, action);
+		}
 	} finally {
 		await host.close("session-close");
 	}

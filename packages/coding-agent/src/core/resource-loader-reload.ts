@@ -221,6 +221,7 @@ export async function reloadDefaultResourceLoader(
 export async function prepareDefaultResourceLoaderReload(
 	loader: DefaultResourceLoader,
 	options?: ResourceLoaderReloadOptions,
+	startupSessionQuit?: () => boolean,
 ): Promise<() => Promise<void>> {
 	const state = resourceInternals(loader);
 	resetTimings("extensions");
@@ -310,6 +311,7 @@ export async function prepareDefaultResourceLoaderReload(
 		const resolveSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePackageResourcePaths");
 		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(loader, {
 			trustedBorrowedProjectLocalSources: state.trustedBorrowedProjectLocalSources,
+			useLoadedSettings: options?.useLoadedSettings,
 		});
 		endTimingSpan(resolveSpan);
 		// Kept on the loader so post-reload passes (extendResources) can still resolve
@@ -388,6 +390,7 @@ export async function prepareDefaultResourceLoaderReload(
 					preTrustExtensions,
 					workflowResourceProvider,
 					inheritanceSnapshotProvider,
+					startupSessionQuit,
 				);
 		if (!options?.deferExtensions) mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 		const mandatoryExtensionPaths = new Set(

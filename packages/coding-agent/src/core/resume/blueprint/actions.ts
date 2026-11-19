@@ -22,7 +22,14 @@ import {
 	BlueprintUsesUnsupportedError,
 	type BlueprintUsesUnsupportedReason,
 } from "./errors.ts";
-import { appendToLog, buildProcessStarting, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
+import {
+	appendToLog,
+	buildProcessStarting,
+	type ProcessExit,
+	runLoggedProcess,
+	type StepLog,
+	startElapsedMs,
+} from "./process.ts";
 
 /** The environment variable that replaces `https://github.com` as the place actions are fetched from. */
 export const ACTIONS_GITHUB_BASE_URL_ENV = "ATOMIC_BLUEPRINT_GITHUB_BASE_URL";
@@ -316,8 +323,8 @@ const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 interface RunContext {
 	readonly options: RunActionOptions;
-	readonly startedAt: number;
-	readonly deadline: number;
+	readonly elapsedMs: () => number;
+	readonly remainingMs: () => number;
 	/** What every process of the run sees; grows as actions write GITHUB_ENV and GITHUB_PATH. */
 	readonly env: Record<string, string>;
 	readonly runnerTemp: string;
@@ -391,16 +398,12 @@ function succeeded(exit: ProcessExit): boolean {
 	return exit.exitStatus === 0 && exit.signal === null && !exit.timedOut && exit.spawnError === undefined;
 }
 
-function elapsed(context: RunContext): number {
-	return Date.now() - context.startedAt;
-}
-
 function timedOut(context: RunContext): ProcessExit {
-	return { exitStatus: null, signal: null, timedOut: true, elapsedMs: elapsed(context) };
+	return { exitStatus: null, signal: null, timedOut: true, elapsedMs: context.elapsedMs() };
 }
 
 function unstartable(context: RunContext, spawnError: Error): ProcessExit {
-	return { exitStatus: null, signal: null, timedOut: false, elapsedMs: elapsed(context), spawnError };
+	return { exitStatus: null, signal: null, timedOut: false, elapsedMs: context.elapsedMs(), spawnError };
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -798,7 +801,7 @@ async function runProcess(
 	request: ProcessRequest,
 ): Promise<{ exit: ProcessExit; outputs: Record<string, string>; state: Record<string, string> }> {
 	context.options.signal?.throwIfAborted();
-	const remaining = context.deadline - Date.now();
+	const remaining = context.remainingMs();
 	if (remaining <= 0) return { exit: timedOut(context), outputs: {}, state: {} };
 	const files = await createFileCommands(context.runnerTemp);
 	try {
@@ -874,7 +877,7 @@ async function runNodeAction(
 		if (!succeeded(result.exit)) return { exit: result.exit, outputs };
 		state = { ...state, ...result.state };
 	}
-	return { exit: { exitStatus: 0, signal: null, timedOut: false, elapsedMs: elapsed(context) }, outputs };
+	return { exit: { exitStatus: 0, signal: null, timedOut: false, elapsedMs: context.elapsedMs() }, outputs };
 }
 
 export interface ShellInvocation {
@@ -1016,7 +1019,7 @@ async function runCompositeAction(
 	if (failed !== undefined) return { exit: failed, outputs: {} };
 	const finished = expressionContext(context, frame, inputs, steps, false);
 	return {
-		exit: { exitStatus: 0, signal: null, timedOut: false, elapsedMs: elapsed(context) },
+		exit: { exitStatus: 0, signal: null, timedOut: false, elapsedMs: context.elapsedMs() },
 		outputs: mapValues(runs.outputs, (value) => interpolate(value, finished)),
 	};
 }
@@ -1053,15 +1056,19 @@ async function executeAction(context: RunContext, request: ActionRequest): Promi
 	}
 }
 
-async function createContext(options: RunActionOptions, startedAt: number): Promise<RunContext> {
+async function createContext(options: RunActionOptions): Promise<RunContext> {
+	const wallStart = Date.now();
+	const elapsedMs = startElapsedMs(wallStart);
+	// Add the budget at epoch precision before comparing it with the current whole millisecond.
+	const deadline = wallStart + options.timeoutMs;
 	const runnerTemp = join(options.cacheDir, "_runner", "temp");
 	const toolCache = join(options.cacheDir, "_runner", "tool");
 	await mkdir(runnerTemp, { recursive: true });
 	await mkdir(toolCache, { recursive: true });
 	return {
 		options,
-		startedAt,
-		deadline: startedAt + options.timeoutMs,
+		elapsedMs,
+		remainingMs: () => deadline - (wallStart + elapsedMs()),
 		runnerTemp,
 		toolCache,
 		fetchAction: options.fetchAction ?? fetchFromGitHub,
@@ -1092,8 +1099,7 @@ async function createContext(options: RunActionOptions, startedAt: number): Prom
  */
 export async function runAction(options: RunActionOptions): Promise<ProcessExit> {
 	options.signal?.throwIfAborted();
-	const startedAt = Date.now();
-	const context = await createContext(options, startedAt);
+	const context = await createContext(options);
 	let reference: ActionReference;
 	try {
 		reference = parseActionReference(options.step.uses);
@@ -1104,5 +1110,5 @@ export async function runAction(options: RunActionOptions): Promise<ProcessExit>
 		throw error;
 	}
 	const { exit } = await executeAction(context, { reference, inputs: options.step.inputs, env: {}, depth: 0 });
-	return { ...exit, elapsedMs: Date.now() - startedAt };
+	return { ...exit, elapsedMs: context.elapsedMs() };
 }

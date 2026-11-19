@@ -1,5 +1,7 @@
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@bastani/atomic-ai";
+import { AuthStorage, accountSnapshotVersion, ReadOnlyAuthStorage } from "./auth-storage.ts";
 import { containsCredential, containsCredentialValue } from "./credential-screening.ts";
+import { resolveConfigValue } from "./resolve-config-value.ts";
 
 interface ReloadableCredentialStore {
 	reload(): void | Promise<void>;
@@ -58,6 +60,34 @@ export class RuntimeCredentials implements CredentialStore {
 	peek(providerId: string): Credential | undefined {
 		const override = this.overrides.get(providerId);
 		return override ? { type: "api_key", key: override } : getSnapshotStore(this.store)?.peek(providerId);
+	}
+
+	/** A current credential for optional discovery, without entering the store's read queue or executing a key command. */
+	accountSnapshot(providerId: string): { credential?: Credential; version?: string } | undefined {
+		const override = this.overrides.get(providerId);
+		if (override) return override.startsWith("!") ? undefined : { credential: { type: "api_key", key: override } };
+		const snapshot = getSnapshotStore(this.store);
+		if (!snapshot) return undefined;
+		const native = this.store instanceof AuthStorage;
+		const version = native ? this.store[accountSnapshotVersion]() : undefined;
+		if (version === null) return undefined;
+		const raw = snapshot.peek(providerId);
+		if (!raw) return { version };
+		if (raw.type === "oauth") {
+			// The list uses only the access grant and its endpoint. Never copy a refresh token into discovery.
+			const { type, access, expires, enterpriseUrl } = raw;
+			return { credential: { type, access, refresh: "", expires, enterpriseUrl }, version };
+		}
+		const { key, env } = raw;
+		if (key?.startsWith("!")) return undefined;
+		return {
+			credential: {
+				type: "api_key",
+				key: (native || this.store instanceof ReadOnlyAuthStorage) && key ? resolveConfigValue(key, env) : key,
+				env,
+			},
+			version,
+		};
 	}
 
 	/** Keep credential values internal, including stored values shadowed by runtime overrides. */

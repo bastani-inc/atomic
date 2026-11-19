@@ -14,6 +14,7 @@ export type TaskTranscriptItem = {
 		| "response"
 		| "compaction"
 		| "branch-summary"
+		| "shell"
 		| "custom-message";
 	source: { sessionId: string; entryId: string; contentIndex?: number };
 	toolCallId?: string;
@@ -65,6 +66,17 @@ export function taskTranscriptPage(
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor?: string,
 ): Result<TaskTranscriptPage, Failure<TranscriptError>> {
+	return taskTranscriptPageWithCuts(taskId, sessionId, entries, cursor);
+}
+
+/** A task view also needs the source rows crossing the two boundaries of the same indexed page. */
+export function taskTranscriptPageWithCuts(
+	taskId: string,
+	sessionId: string,
+	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
+	cursor: string | undefined,
+	onSplitEntries?: (fromEarlier: string | undefined, intoLater: string | undefined) => void,
+): Result<TaskTranscriptPage, Failure<TranscriptError>> {
 	const scope = `${taskId}\n${sessionId}\n`;
 	let before: string | undefined;
 	if (cursor !== undefined) {
@@ -101,13 +113,14 @@ export function taskTranscriptPage(
 			add({ id: entry.id, kind: "prompt", source });
 		} else if (message.role === "toolResult") {
 			add({ id: entry.id, kind: "tool-result", source, toolCallId: message.toolCallId });
+		} else if (message.role === "bashExecution") {
+			add({ id: entry.id, kind: "shell", source });
+		} else if (message.role === "custom" && message.display) {
+			add({ id: entry.id, kind: "custom-message", source });
+		} else if (message.role === "branchSummary") {
+			add({ id: entry.id, kind: "branch-summary", source });
 		} else if (message.role === "assistant") {
-			// A request that failed, was interrupted or was cut before any content still shows, as its notice.
-			if (
-				message.content.length === 0 &&
-				(message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length")
-			)
-				add({ id: entry.id, kind: "assistant", source });
+			let hasContent = false;
 			for (const [contentIndex, block] of message.content.entries()) {
 				const identity = { id: `${entry.id}:${contentIndex}`, source: { ...source, contentIndex } };
 				if (block.type === "toolCall") {
@@ -116,8 +129,15 @@ export function taskTranscriptPage(
 					add({ ...identity, kind: message.stopReason === "stop" ? "response" : "assistant" });
 				} else if (block.type === "thinking") {
 					add({ ...identity, kind: "thinking" });
-				}
+				} else continue;
+				hasContent = true;
 			}
+			// The terminal notice is visible even if no content block could be displayed.
+			if (
+				!hasContent &&
+				(message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length")
+			)
+				add({ id: entry.id, kind: "assistant", source });
 		}
 	}
 	if (items.length === 0) {
@@ -127,6 +147,15 @@ export function taskTranscriptPage(
 	const end = found < 0 ? items.length : found;
 	const start = Math.max(0, end - PAGE_ITEMS);
 	const page = items.slice(start, end);
+	// Use the existing index: ignored content blocks are not page boundaries.
+	if (onSplitEntries && (start > 0 || end < items.length) && page.length > 0) {
+		const first = page[0]!.source.entryId;
+		const last = page[page.length - 1]!.source.entryId;
+		onSplitEntries(
+			items[start - 1]?.source.entryId === first ? first : undefined,
+			items[end]?.source.entryId === last ? last : undefined,
+		);
+	}
 	return {
 		ok: true,
 		value: {

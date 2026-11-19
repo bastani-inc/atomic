@@ -54,6 +54,15 @@ type PersistSettings = (currentPrimary: string | undefined) => string | undefine
  */
 type SettingsKey = string;
 
+// Startup itself writes these markers. Reporting an update or generating an ID is not a user's settings choice.
+const startupMarkers = new Set<keyof Settings>([
+	"lastChangelogVersion",
+	"onboardedVersion",
+	"firstRunOnboardingStartedVersion",
+	"trackingId",
+	"deviceId",
+]);
+
 function nestedKey(field: string, key: string): SettingsKey {
 	return `${field}\0${key}`;
 }
@@ -112,6 +121,14 @@ export class SettingsManager {
 	private reportedInvalidSettings = new Set<string>();
 	/** `applyOverrides` calls, in order; they apply over the loaded settings for the rest of the run. */
 	private overrides: Settings[] = [];
+	/** Global settings edited while the startup UI is waiting for the folder's settings. */
+	private pendingProjectEdits?: Set<SettingsKey>;
+	private approvedProjectEdits?: Set<SettingsKey>;
+
+	trackEditsWhileProjectTrustPending(pending: boolean): void {
+		if (pending) this.pendingProjectEdits ??= new Set();
+		else this.pendingProjectEdits = undefined;
+	}
 
 	private constructor(
 		storage: SettingsStorage,
@@ -137,9 +154,29 @@ export class SettingsManager {
 	}
 
 	private mergeEffectiveSettings(): Settings {
+		let project = this.projectSettings;
+		if (this.approvedProjectEdits?.size) {
+			// Ignore just the approved folder's fields that the user already changed. Neither file changes scope;
+			// deleting a global setting still means selecting its default, not adopting the project value.
+			const filtered: Record<string, unknown> = { ...project };
+			for (const key of this.approvedProjectEdits) {
+				const split = key.indexOf("\0");
+				if (split < 0) delete filtered[key];
+				else {
+					const field = key.slice(0, split) as keyof Settings;
+					if (!Object.hasOwn(filtered, field)) continue;
+					const values = nestedEntries(field, filtered[field]);
+					const nested = key.slice(split + 1);
+					if (!Object.hasOwn(values, nested)) continue;
+					if (filtered[field] === project[field]) filtered[field] = { ...values };
+					delete (filtered[field] as Record<string, unknown>)[nested];
+				}
+			}
+			project = filtered;
+		}
 		return this.overrides.reduce(
 			(settings, overrides) => deepMergeSettings(settings, overrides),
-			deepMergeSettings(this.globalSettings, this.projectSettings),
+			deepMergeSettings(this.globalSettings, project),
 		);
 	}
 
@@ -507,6 +544,19 @@ export class SettingsManager {
 	}
 
 	private applyProjectTrust(trusted: boolean, projectLoad: SettingsLoad | undefined): void {
+		if (projectLoad && this.pendingProjectEdits) {
+			for (const key of this.pendingProjectEdits) {
+				const split = key.indexOf("\0");
+				const field = (split < 0 ? key : key.slice(0, split)) as keyof Settings;
+				const present =
+					split < 0
+						? Object.hasOwn(projectLoad.settings, field)
+						: Object.hasOwn(nestedEntries(field, projectLoad.settings[field]), key.slice(split + 1));
+				if (!present) this.pendingProjectEdits.delete(key);
+			}
+			if (this.pendingProjectEdits.size) this.approvedProjectEdits = this.pendingProjectEdits;
+			this.pendingProjectEdits = undefined;
+		}
 		this.projectTrusted = trusted;
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
@@ -582,6 +632,7 @@ export class SettingsManager {
 		);
 		candidate.reportedInvalidSettings = new Set(this.reportedInvalidSettings);
 		candidate.overrides = [...this.overrides];
+		candidate.approvedProjectEdits = this.approvedProjectEdits;
 		await candidate.reload();
 		return {
 			settingsManager: candidate,
@@ -618,6 +669,17 @@ export class SettingsManager {
 	/** An explicit change to a setting replaces its override; overrides of other settings and keys stay. */
 	private dropOverride(field: keyof Settings, nestedKey?: string): void {
 		if (isPrototypeKey(field) || (nestedKey !== undefined && isPrototypeKey(nestedKey))) return;
+		if (this.approvedProjectEdits) {
+			// A later explicit save uses its offered scope and the ordinary layer order, even for the same value.
+			for (const key of this.approvedProjectEdits) {
+				if (
+					key === field ||
+					(nestedKey === undefined ? key.startsWith(`${field}\0`) : key === `${field}\0${nestedKey}`)
+				)
+					this.approvedProjectEdits.delete(key);
+			}
+			if (!this.approvedProjectEdits.size) this.approvedProjectEdits = undefined;
+		}
 		for (const overrides of this.overrides) {
 			if (!Object.hasOwn(overrides, field)) continue;
 			const value: unknown = overrides[field];
@@ -634,6 +696,14 @@ export class SettingsManager {
 	/** Mark a global field as modified during this session */
 	private markModified(field: keyof Settings, nestedKey?: string): void {
 		this.dropOverride(field, nestedKey);
+		if (
+			this.pendingProjectEdits &&
+			!startupMarkers.has(field) &&
+			!isPrototypeKey(field) &&
+			(nestedKey === undefined || !isPrototypeKey(nestedKey))
+		) {
+			this.pendingProjectEdits.add(nestedKey === undefined ? field : `${field}\0${nestedKey}`);
+		}
 		this.modifiedFields.add(field);
 		if (nestedKey) {
 			if (!this.modifiedNestedFields.has(field)) {

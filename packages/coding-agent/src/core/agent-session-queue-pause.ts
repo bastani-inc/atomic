@@ -2,6 +2,7 @@ import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-for
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
 import type { SessionAbortOptions } from "./agent-session-types.js";
+import { cancelFirstPromptModel } from "./first-prompt-model.ts";
 
 async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]): Promise<void> {
 	let throwFirstFailure: (() => never) | undefined;
@@ -104,6 +105,7 @@ export async function interruptTurn(this: AgentSession): Promise<void> {
 
 /** Internal teardown never redirects cancellation into a replacement generation. */
 export function abortCurrentGeneration(this: AgentSession): Promise<void> {
+	cancelFirstPromptModel(this);
 	this._extensionRunner.cancelHostInput();
 	this._agentRunAbortRequested = true;
 	this._cacheWarmer?.cancel();

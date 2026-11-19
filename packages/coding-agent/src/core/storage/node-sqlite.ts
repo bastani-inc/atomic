@@ -1181,6 +1181,7 @@ function normalizeRow(row: Record<string, SqliteValue>): SqliteRow {
 class NodeSqliteDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
 	private readonly connection: DatabaseSync;
+	private jsonbExtract?: Promise<boolean>;
 	private tail: Promise<void> = Promise.resolve();
 	/** Operations queued on this connection so far; a batch's `position` is the one that commits it. */
 	private enqueued = 0;
@@ -1188,7 +1189,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly waitingBatches: PendingBatch[] = [];
 	private closing = false;
 	private closePromise?: Promise<void>;
-	private readonly executor: SqliteExecutor;
+	private readonly executor: ReturnType<NodeSqliteDatabase["createExecutor"]>;
 
 	private readonly ownsConnection: boolean;
 	private readonly transactionIdentity: string | DatabaseSync;
@@ -1232,6 +1233,16 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				this.degraded("holder-record-unavailable", cause),
 			);
 		}
+	}
+
+	supportsJsonbExtract(): Promise<boolean> {
+		// Bun on macOS loads the system SQLite. Its functions need not match the build-time version.
+		this.jsonbExtract ??= this.enqueueStatement(() => this.executor.checkJsonbExtract()).catch(() => {
+			// A schema lock can also prevent preparation. Don't remember it as a missing function.
+			this.jsonbExtract = undefined;
+			return false;
+		});
+		return this.jsonbExtract;
 	}
 
 	/**
@@ -1503,7 +1514,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
-	private createExecutor(active: () => boolean): SqliteExecutor {
+	private createExecutor(active: () => boolean): SqliteExecutor & { checkJsonbExtract(): Promise<boolean> } {
 		const execute = async <T>(operation: () => T, params: readonly SqliteValue[] = []): Promise<T> => {
 			if (!active()) throw new StorageTransactionClosedError();
 			const invalidIndex = params.findIndex((value) => typeof value === "string" && value.includes("\0"));
@@ -1516,6 +1527,16 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			return prepared;
 		};
 		return {
+			checkJsonbExtract: () =>
+				execute(() => {
+					try {
+						statement("SELECT jsonb_extract('[]', '$')");
+						return true;
+					} catch (error) {
+						if (error instanceof Error && error.message === "no such function: jsonb_extract") return false;
+						throw error;
+					}
+				}),
 			exec: (sql) => execute(() => this.connection.exec(sql)),
 			run: (sql, ...params) => execute(() => ({ changes: Number(statement(sql).run(...params).changes) }), params),
 			get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>

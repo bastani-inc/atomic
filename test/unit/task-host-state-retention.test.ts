@@ -14,6 +14,7 @@ import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner
 import {
 	type FakeExecution,
 	type OwnerLease,
+	type TaskSubscription,
 	TaskSupervisor,
 	taskHostStateSizesForTesting,
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
@@ -69,6 +70,21 @@ function finishingOwner(supervisor: TaskSupervisor): OwnerLease {
 	const scope: C.OwnerScope = { kind: "session", sessionId: randomUUID() };
 	const host = supervisor.bindHostSession({ scope, authorizeLaunch() {}, createRunner: finishedExecution });
 	return value(supervisor.openTaskOwner(host, scope));
+}
+
+/**
+ * A task finishes once it settled and its cleanup was reaped, and its owner evicts finished tasks in the order they
+ * finished. A command reports its reap just after it settles, so waiting for the settle alone can let a later task
+ * finish first and be evicted in its place.
+ */
+async function waitForReap(records: TaskSubscription, taskId: C.TaskId): Promise<void> {
+	const deadline = Date.now() + CONVERGE_TIMEOUT_MS;
+	for (;;) {
+		records.drain();
+		if (records.snapshot.tasks.some((task) => task.ref.taskId === taskId && task.cleanup.kind === "reaped")) return;
+		assert.ok(Date.now() < deadline, `${taskId} settled but its cleanup was never reaped`);
+		await sleep(5);
+	}
 }
 
 async function finishAgentTasks(
@@ -327,20 +343,28 @@ test("finished commands keep their launching session and launch time only until 
 		return { launchers, launchedAt };
 	};
 	try {
-		for (let index = 0; index < COMMAND_LAUNCHES; index++) {
-			const command = value(
-				await supervisor.startCommandTask(
-					owner,
-					{
-						kind: "command",
-						command: "echo launched",
-						terminal: { kind: "pipe" },
-						launchedBy: `session-${index}`,
-					},
-					`command-${index}` as C.OperationId,
-				),
-			);
-			assert.equal(value(await supervisor.waitForTask(command, CONVERGE_TIMEOUT_MS)).kind, "settled");
+		// Every command finishes before the agent tasks that evict it, so those evict all of them.
+		const records = value(supervisor.watchOwnerTasks(owner));
+		try {
+			for (let index = 0; index < COMMAND_LAUNCHES; index++) {
+				const command = value(
+					await supervisor.startCommandTask(
+						owner,
+						{
+							kind: "command",
+							command: "echo launched",
+							terminal: { kind: "pipe" },
+							launchedBy: `session-${index}`,
+						},
+						`command-${index}` as C.OperationId,
+					),
+				);
+				assert.equal(value(await supervisor.waitForTask(command, CONVERGE_TIMEOUT_MS)).kind, "settled");
+				await waitForReap(records, supervisor.taskReference(command).taskId);
+			}
+		} finally {
+			// A watcher holds back eviction until it acknowledges each finish: this one stops before the evicting tasks.
+			records.dispose();
 		}
 		const finished = launchRecords();
 		await finishAgentTasks(supervisor, owner, FINISHED_TASK_RETENTION, {}, { prefix: "evicting-operation" });

@@ -31,6 +31,7 @@ import {
 	type SessionSummaryState,
 	summarizeSession,
 } from "./session-summary.js";
+import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
 	SessionBlob,
 	SessionCompactionPoint,
@@ -353,7 +354,10 @@ export class MemorySessionStore implements SessionStore {
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
-		return (await this.decode(sessionId, record)) ?? this.load(sessionId);
+		const snapshot = await this.decode(sessionId, record);
+		return snapshot
+			? noteSnapshotGeneration(this, snapshot, nativeLoad, record.index, "epoch")
+			: this.load(sessionId);
 	}
 
 	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
@@ -1227,6 +1231,8 @@ function verifyBlock(held: HeldBytes, sessionId: string, bytes: Uint8Array, bloc
 			bytes: held.spilledBytes,
 		});
 }
+
+const nativeLoad = registerArchiveLoad(MemorySessionStore.prototype.load);
 
 function heldSeqOf(record: StoredSession, entryId: string): number | undefined {
 	if (record.index.lastId === entryId) return record.index.seq;
