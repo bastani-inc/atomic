@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { clickableHintText } from "@bastani/atomic";
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
@@ -200,8 +201,8 @@ function renderWorkflowDefinitionChangedPrompt(width: number, theme: object): st
 	const inner = Math.max(1, width - pad.length);
 	const hint = ` · enter ${WORKFLOW_DEFINITION_CHANGED_CONFIRM_LABEL} · esc ${WORKFLOW_DEFINITION_CHANGED_CANCEL_LABEL}`;
 	const styled = fg
-		? `${fg("warning", WORKFLOW_DEFINITION_CHANGED_TITLE)}${fg("dim", hint)}`
-		: WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT;
+		? `${fg("warning", WORKFLOW_DEFINITION_CHANGED_TITLE)}${fg("dim", clickableHintText(hint))}`
+		: clickableHintText(WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT);
 	return wrapTextWithAnsi(styled, inner).map((line) => truncateToWidth(`${pad}${line}`, Math.max(1, width), ""));
 }
 

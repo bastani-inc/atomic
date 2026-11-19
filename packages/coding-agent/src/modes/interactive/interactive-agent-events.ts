@@ -13,7 +13,7 @@ import { hasAssistantVisibleContent, interruptedNotice } from "./components/assi
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { toolResultGroupState } from "./components/tool-group-tracker.ts";
-import { compactionMeta } from "./components/working-run-meter.ts";
+import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -21,6 +21,7 @@ import {
 	AssistantMessageComponent,
 	CountdownTimer,
 	keyText,
+	keyTextHint,
 	Loader,
 	type Message,
 	pickWhimsicalWorkingMessage,
@@ -51,6 +52,18 @@ interface MainTurnToolBatch {
 	aborted: string[];
 }
 const mainTurnToolBatches = new WeakMap<InteractiveModeBase, MainTurnToolBatch>();
+
+/**
+ * The status row after the turn's retry or model switch ended while the chat waited on it: the turn's worked row when
+ * the turn ends there (`turn`, counted from its start to now), as after any other turn, or nothing.
+ */
+function mountEndedTurn(mode: InteractiveModeBase, turn: WorkingRunSnapshot | undefined): void {
+	if (turn === undefined || !mode.workingVisible) {
+		mountIdleStatus(mode.statusContainer, mode.settingsManager.getClearOnShrink());
+		return;
+	}
+	mode.statusContainer.addChild(new AtomicWorkedStatusComponent({ message: mode.lastWorkingMessage, snapshot: turn }));
+}
 
 function getMainTurnToolBatch(mode: InteractiveModeBase): MainTurnToolBatch {
 	let batch = mainTurnToolBatches.get(mode);
@@ -142,6 +155,13 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	const unsubscribe = session.subscribe(async (event) => {
 		await this.handleEvent(event);
 	});
+	// A rebind can miss the start of a wait. Subscribe and read it in one turn; don't restart its countdown.
+	const wait = session.retryStatus;
+	if (wait) {
+		if (session.turnStartedAt !== undefined)
+			this.workingRunMeter.awaitRetry(session.turnStartedAt, runInProgress(session.messages).settledTokens);
+		void this.handleEvent(wait);
+	}
 	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
 		if (this.session === session) this.programStatus.handleWorkflowActivity(frame);
@@ -160,6 +180,22 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 				});
 	this.unsubscribe = () => {
 		unsubscribe();
+		if (this.retryLoader && this.retryEscapeHandler) {
+			this.statusContainer.removeChild(this.retryLoader);
+			this.retryLoader.stop();
+			this.retryLoader = undefined;
+			this.retryCountdown?.dispose();
+			this.retryCountdown = undefined;
+		}
+		if (this.retryEscapeHandler) {
+			this.defaultEditor.onEscape = this.retryEscapeHandler;
+			this.retryEscapeHandler = undefined;
+		}
+		if (this.fallbackLoader) {
+			this.statusContainer.removeChild(this.fallbackLoader);
+			this.fallbackLoader.stop();
+			this.fallbackLoader = undefined;
+		}
 		disposeWorkflowActivity();
 		disposeAgentPanel();
 		disposeInteractiveTasks(this);
@@ -181,7 +217,14 @@ InteractiveModeBase.prototype.handleEvent = async function (
 	switch (event.type) {
 		case "agent_start":
 			this.lastWorkingMessage = this.workingMessage;
-			this.workingRunMeter.start();
+			// The attempt after a retry's wait or a model fallback continues its turn, and its time and tokens with it. A
+			// fallback before a turn's first request (no key for the model) starts the turn's own count.
+			if (
+				this.retryLoader !== undefined ||
+				(this.fallbackLoader !== undefined && this.workingRunMeter.endedOnFailedAttempt())
+			)
+				this.workingRunMeter.continueRun(event.turnStartedAt);
+			else this.workingRunMeter.start(event.turnStartedAt);
 			this.pendingTools.clear();
 			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);
@@ -623,24 +666,30 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// Show retry indicator
 			this.statusContainer.clear();
 			this.retryCountdown?.dispose();
+			const pending = this.session.retryStatus;
+			const now = Date.now();
+			const until = pending?.type === "auto_retry_start" ? pending.retryAt : now + event.delayMs;
 			const retryMessage = (seconds: number) =>
-				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyText("app.interrupt")} Cancel)`;
+				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyTextHint("app.interrupt", "Cancel")})`;
 			this.retryLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,
 				(text) => theme.fg("muted", text),
-				retryMessage(Math.ceil(event.delayMs / 1000)),
+				retryMessage(Math.max(0, Math.ceil((until - now) / 1000))),
 			);
-			this.retryCountdown = new CountdownTimer(
-				event.delayMs,
-				this.ui,
-				(seconds) => {
-					this.retryLoader?.setMessage(retryMessage(seconds));
-				},
-				() => {
-					this.retryCountdown = undefined;
-				},
-			);
+			this.retryCountdown =
+				until <= now
+					? undefined
+					: new CountdownTimer(
+							{ until },
+							this.ui,
+							(seconds) => {
+								this.retryLoader?.setMessage(retryMessage(seconds));
+							},
+							() => {
+								this.retryCountdown = undefined;
+							},
+						);
 			this.statusContainer.addChild(this.retryLoader);
 			this.ui.requestRender();
 			break;
@@ -669,12 +718,16 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 		case "model_fallback_end": {
 			if (!event.success) this.workingRunMeter.stop();
+			// A fallback settles after the fallback model's turn ended, whose worked row stays. Only the switch's own
+			// indicator goes; a switch that failed before the next request ends the turn's count now.
 			if (this.fallbackLoader) {
 				this.fallbackLoader.stop();
 				this.fallbackLoader = undefined;
+				this.statusContainer.clear();
+				const failedTurn = this.workingRunMeter.endedOnFailedAttempt();
+				mountEndedTurn(this, event.success || !failedTurn ? undefined : this.workingRunMeter.endedRunSnapshot());
 			}
-			this.statusContainer.clear();
-			mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+			if (!event.success) this.workingRunMeter.endTurn();
 			this.ui.requestRender();
 			break;
 		}
@@ -688,16 +741,17 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.retryCountdown.dispose();
 				this.retryCountdown = undefined;
 			}
-			// Stop loader
+			// Stop loader. A retry that ends during its wait (cancelled, or out of attempts) ends the turn's count now.
 			if (this.retryLoader) {
 				this.retryLoader.stop();
 				this.retryLoader = undefined;
 				this.statusContainer.clear();
-				mountIdleStatus(this.statusContainer, this.settingsManager.getClearOnShrink());
+				mountEndedTurn(this, event.success ? undefined : this.workingRunMeter.endedRunSnapshot());
 			}
 			// Show error only on final failure (success shows normal response)
 			if (!event.success) {
 				this.workingRunMeter.stop();
+				this.workingRunMeter.endTurn();
 				this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 			}
 			this.ui.requestRender();

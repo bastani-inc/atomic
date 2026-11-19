@@ -3,6 +3,7 @@
  */
 
 import { performance } from "node:perf_hooks";
+import { type HintAction, hintKeyInput, runAsHintActivation, stripHintMarkers } from "./clickable-hints.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { Terminal } from "./terminal.ts";
 import {
@@ -13,7 +14,15 @@ import {
 	type TerminalColors,
 } from "./terminal-colors.ts";
 import { getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
-import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
+import {
+	extractSegments,
+	HINT_CLOSE,
+	HINT_OPEN,
+	normalizeTerminalOutput,
+	sliceByColumn,
+	sliceWithWidth,
+	visibleWidth,
+} from "./utils.ts";
 
 /**
  * Component interface - all components must implement this
@@ -447,6 +456,12 @@ export class Container implements Component {
  * TUI - Main class for managing terminal UI with differential rendering
  */
 const SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
+/**
+ * Between the segments of a composited line that holds key hints: styles end there, and so does a hint, whose part
+ * beyond a box drawn over it is re-opened with the rest of its styles. The renderer removes the hint marker before
+ * writing the line.
+ */
+const HINT_SEGMENT_RESET = SEGMENT_RESET + HINT_CLOSE;
 
 /** Composite overlay content into a terminal line at a fixed column. */
 export function compositeTuiLine(
@@ -460,6 +475,8 @@ export function compositeTuiLine(
 
 	const afterStart = startCol + overlayWidth;
 	const base = extractSegments(baseLine, startCol, afterStart, totalWidth - afterStart, true);
+	const boundary =
+		baseLine.includes(HINT_OPEN) || overlayLine.includes(HINT_OPEN) ? HINT_SEGMENT_RESET : SEGMENT_RESET;
 	const overlay = sliceWithWidth(overlayLine, 0, overlayWidth, true);
 	const beforePad = Math.max(0, startCol - base.beforeWidth);
 	const overlayPad = Math.max(0, overlayWidth - overlay.width);
@@ -470,10 +487,10 @@ export function compositeTuiLine(
 	const result =
 		base.before +
 		" ".repeat(beforePad) +
-		SEGMENT_RESET +
+		boundary +
 		overlay.text +
 		" ".repeat(overlayPad) +
-		SEGMENT_RESET +
+		boundary +
 		base.after +
 		" ".repeat(afterPad);
 
@@ -517,6 +534,8 @@ export interface TUI extends Component {
 	requestImmediateRender(): void;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
+	/** Run the slash command a clicked hint names, such as `/tasks` in `/tasks to manage`. */
+	setHintCommandHandler?(handler: ((command: string) => void) | undefined): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
 	setTerminalColorSchemeNotifications(enabled: boolean): void;
 	queryTerminalColors(options: {
@@ -541,6 +560,7 @@ export abstract class TuiBase extends Container implements TUI {
 	public terminal: Terminal;
 	private focusedComponent: Component | null = null;
 	private inputListeners = new Set<TuiInputListener>();
+	private hintCommandHandler: ((command: string) => void) | undefined;
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
@@ -1023,6 +1043,41 @@ export abstract class TuiBase extends Container implements TUI {
 
 	removeInputListener(listener: TuiInputListener): void {
 		this.inputListeners.delete(listener);
+	}
+
+	setHintCommandHandler(handler: ((command: string) => void) | undefined): void {
+		this.hintCommandHandler = handler;
+	}
+
+	/**
+	 * Run what a clicked key hint names: its key goes through the input path as if it were pressed, so it acts exactly
+	 * as the key does, confirmations included; a slash command goes to the command handler.
+	 */
+	protected runHintAction(action: HintAction): void {
+		if (action.kind === "command") {
+			this.hintCommandHandler?.(action.command);
+			this.requestRender();
+			return;
+		}
+		const data = hintKeyInput(action);
+		if (data !== undefined) runAsHintActivation(() => this.handleTerminalInput(data));
+	}
+
+	/**
+	 * Whether keys reach what is drawn at screen cell `x`, `y`: the overlay that holds the keyboard when one does, and
+	 * otherwise what is drawn outside the overlays.
+	 */
+	protected takesKeysAt(x: number, y: number): boolean {
+		const focused = this.focusedComponent;
+		let keyOverlay = focused
+			? this.overlayStack.find((entry) => entry.component === focused && this.isOverlayVisible(entry))?.component
+			: undefined;
+		if (keyOverlay === undefined) {
+			const restore = this.getVisibleOverlayFocusRestore();
+			if (restore.status === "eligible") keyOverlay = restore.overlay.component;
+		}
+		const drawn = this.overlayAt(x, y);
+		return drawn === undefined ? keyOverlay === undefined : drawn.component === keyOverlay;
 	}
 
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void {
@@ -1528,8 +1583,8 @@ export abstract class TuiBase extends Container implements TUI {
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 			if (!isImageLine(line)) {
-				// Cursor markers are internal render metadata and must never reach terminal output.
-				lines[i] = normalizeTerminalOutput(line.replaceAll(CURSOR_MARKER, "")) + reset;
+				// Cursor and hint markers are internal render metadata and must never reach terminal output.
+				lines[i] = normalizeTerminalOutput(stripHintMarkers(line.replaceAll(CURSOR_MARKER, ""))) + reset;
 			}
 		}
 		return lines;

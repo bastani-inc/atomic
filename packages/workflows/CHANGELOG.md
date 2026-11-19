@@ -6,12 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on a key in a stage chat's hint row, the workflow graph's hint line, the stage switcher, a question card or a blocker's action line presses that key
+
 ### Changed
 
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.
 - The bundled `show-me` skill now runs only when you type `/skill:show-me`, as its upstream HumanLayer skill does; the model no longer loads it on its own.
 - The `prompt-engineer` GPT-6.2 guide now says where reusable instructions belong: GPT-6.2 appends the Responses API's top-level `instructions` after `input`, so a `developer` message at the start of `input` keeps them in the cached prefix. The Claude Opus 5.5 guide adds that its progress notes arrive as thinking blocks a client must request to show, and the `max_tokens` Anthropic used for long agentic coding turns. The Claude Fable 5.2 page follows Anthropic's revised guide: a new code-ownership sentence and its measurements, new subagent and caution advice, and the `null` refusal category. The Claude Haiku 5.5 page notes that `budget_tokens` now returns an error, and the GPT-6 and GPT-6.1 pages link to OpenAI's GPT-6 guide again and follow its current text, which moved the per-model descriptions into the model pages.
 - In a stage chat, a click anywhere on a stage notice with detail, such as a task whose process cleanup is still being confirmed, shows or hides that detail, as Ctrl+O does for every notice.
+- A stage's `subscribe` listeners now see `model_fallback_start` when the stage moves a failed request to the next model in its `fallbackModels`, and `model_fallback_end` (`success: false`) when the turn ends, or the stage is paused, before that model's request starts, as a session's own model fallback reports them ([#5535](https://github.com/bastani-inc/atomic/issues/5535)).
 
 ### Fixed
 
@@ -31,6 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Running and awaiting-input stage borders now pulse in their own status colour instead of fading through the graph connector colour ([#5596](https://github.com/bastani-inc/atomic/issues/5596)).
 - A paged workflow listing no longer shows a deleted run alongside a replacement that never coexisted with it. Reloading a long run keeps the same catalog order as reloading a short one. Folding an earlier checkpoint shipment no longer makes a worker's newer acknowledged result look stale ([#5480](https://github.com/bastani-inc/atomic/issues/5480)).
 - Nested workflows that finish or fail on a worker now appear with their final state in the parent graph, even if they finish before the first progress update. A failed or skipped workflow call keeps the stages and tools of the child it actually started inspectable ([#5616](https://github.com/bastani-inc/atomic/issues/5616)).
+- After resuming a workflow with a different stage registry, clearing the old registry no longer removes the resumed stage’s question or redirects its chat to an earlier attempt. Inspecting the completed run also keeps questions in its open stage chat answerable ([#5577](https://github.com/bastani-inc/atomic/issues/5577)).
+- The bundled skill trigger evaluator counts producer startup as part of its timeout. It reads events buffered before its deadline even if the producer has exited, and reports a timeout instead of counting a late trigger. Large `--timeout` values no longer discard a timely result because the system timer cannot represent the full wait ([#5566](https://github.com/bastani-inc/atomic/issues/5566)).
+- A stage chat opened during a provider backoff or model switch shows `retrying…` or `switching model…` even when the session still reads as streaming, including on a worker. When the worker exits or is replaced, the stage and its subagent chats clear the old wait; a remote stage reopens on the replacement’s own session ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
+- A stage chat keeps counting a turn when the stage moves a failed request to the next model in its `fallbackModels`, instead of reading `for 0s` for the fallback model's answer. A chat opened during or after the move, also for a stage on a local worker, counts from the turn's first request, and shows `switching model…` while the move is under way ([#5535](https://github.com/bastani-inc/atomic/issues/5535)).
 - Resuming a failed workflow by ID or with `r` in its graph waits for the previous attempt to finish saving, keeps the original run ID and reuses completed checkpoints. `/resume <prefix>` lists all matching top-level IDs instead of starting the only resumable match ([#5569](https://github.com/bastani-inc/atomic/issues/5569)).
 
 ## [0.9.89] - 2026-11-18

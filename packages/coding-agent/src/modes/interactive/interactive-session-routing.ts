@@ -19,7 +19,7 @@ import {
 	type ExtensionCommandContext,
 	getProjectTrustPathAsync,
 	hasTrustRequiringProjectResourcesAsync,
-	keyText,
+	keyTextHint,
 	Loader,
 	MissingSessionCwdError,
 	ProjectTrustStore,
@@ -266,7 +266,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 						this.ui,
 						(spinner) => theme.fg("accent", spinner),
 						(text) => theme.fg("muted", text),
-						`Summarizing branch... (${keyText("app.interrupt")} Cancel)`,
+						`Summarizing branch... (${keyTextHint("app.interrupt", "Cancel")})`,
 					);
 					this.statusContainer.addChild(summaryLoader);
 					this.ui.requestRender();

@@ -63,6 +63,32 @@ test("ChatSessionHost disposal is final for public agent-event application", () 
 	}
 });
 
+test.each([
+	[{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1000, errorMessage: "busy" }, /retrying…/],
+	[
+		{ type: "model_fallback_start", from: "primary", to: "fallback", reason: "not found", attempt: 1 },
+		/switching model…/,
+	],
+	[{ type: "agent_start" }, /Working…/],
+] as const)(
+	"a failed follow-up during $type leaves the working line beside the delivery warning (#5572)",
+	async (event, status) => {
+		const delivery = Promise.withResolvers<void>();
+		const host = makeLifecycleHost({ commands: { send: () => delivery.promise } });
+		try {
+			host.applyAgentEvent(event);
+			const sending = host.submit("followUp", "check the latest result");
+			assert.match(workingLine(host), status);
+			delivery.reject(new Error("message delivery not confirmed"));
+			await sending;
+			assert.match(host.renderBody(80, 8).map(stripAnsi).join("\n"), /message delivery not confirmed/);
+			assert.match(workingLine(host), status);
+		} finally {
+			host.dispose();
+		}
+	},
+);
+
 test("successful retry and fallback stay ordinary-inactive until a genuine lifecycle start", () => {
 	const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
 	const previousRandom = Math.random;

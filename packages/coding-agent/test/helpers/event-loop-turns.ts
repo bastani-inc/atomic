@@ -61,11 +61,9 @@ function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
 }
 
 /**
- * How long a turn held the event loop: its wall time less its collections' pauses, and at most its CPU time plus the
- * one clock step a coarse CPU clock may not have charged yet. A collection's pause includes any time the thread waited
- * off the CPU, which CPU time never counted, so pauses come off wall time only. On Windows the CPU clock moves in
- * 15.6 ms steps, so a turn that held the event loop for 12 to 25 ms is often charged one step or none; only CPU time
- * more than a step short of the wall time shows that the thread waited off the CPU.
+ * If the CPU clock didn't advance, work shorter than a clock step is indistinguishable from time spent off the CPU.
+ * Otherwise count wall time up to the CPU time plus one step the clock may not have charged yet. Collection pauses
+ * come off wall time only: a pause can include time spent off the CPU, which CPU time never counted.
  */
 export function turnBlockedMs(turn: WatchedTurn, collections: readonly Interval[], cpuClockStepMs: number): number {
 	return blockedMs(turn.end - turn.start - overlapMs(turn, collections), turn.cpu, cpuClockStepMs);
@@ -73,6 +71,7 @@ export function turnBlockedMs(turn: WatchedTurn, collections: readonly Interval[
 
 /** The rule of turnBlockedMs, which the watcher also keeps turns by before it knows their collections. */
 function blockedMs(wallMs: number, usedCpuMs: number, cpuClockStepMs: number): number {
+	if (usedCpuMs === 0) return 0;
 	return Math.max(0, Math.min(wallMs, usedCpuMs + cpuClockStepMs));
 }
 
