@@ -4,9 +4,6 @@ import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/sto
 import { afterEach, test, vi } from "vitest";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -69,14 +66,6 @@ async function database(): Promise<SqliteDatabase> {
 	cleanups.push(() => opened.close());
 	return opened;
 }
-
-async function journal(): Promise<SqlRunJournal> {
-	const opened = await SqlRunJournal.open(await database());
-	cleanups.push(() => opened.close());
-	return opened;
-}
-
-/** A running root of a shared pool, its lease renewed at `T`, holding one child leased at `T` for `leaseMs`. */
 
 test("a broker lists a lease as live only while its age is within the stale bound (#4768)", async () => {
 	const store = await openSqlBrokerLeaseStore({ database: await database(), prefix: "" });

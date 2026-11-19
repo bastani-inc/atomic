@@ -5,7 +5,6 @@
  */
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { AgentSessionEvent } from "@bastani/atomic";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import {
 	type Component,
@@ -33,13 +32,7 @@ import {
 import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-
-import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { taskFixture } from "../helpers/task-projection.js";
-import { makeHandle, setupRun } from "./stage-chat-view-helpers.ts";
 
 const WIDTH = 100;
 /** How long the host waits for an engine frame: a few render intervals, with room for a loaded machine. */
@@ -122,17 +115,6 @@ function makeScreen() {
 	const mount = (component: Component) =>
 		tui.showOverlay(component, { anchor: "top-left", row: 0, col: 0, width: "100%", maxHeight: "100%" });
 	return { terminal, tui, screen, click, pressAndRelease, settle, fastClicks, mount };
-}
-
-function emitBash(emit: (event: AgentSessionEvent) => void, command: string, label: string) {
-	emit({ type: "tool_execution_start", toolCallId: label, toolName: "bash", args: { command } } as AgentSessionEvent);
-	emit({
-		type: "tool_execution_end",
-		toolCallId: label,
-		toolName: "bash",
-		result: { content: [{ type: "text", text: lines(20, label) }] },
-		isError: false,
-	} as AgentSessionEvent);
 }
 
 /** A session holding one finished bash call with 20 lines of output. */
@@ -261,11 +243,11 @@ test("a /tasks transcript expands a block when a terminal press and release land
 });
 
 /**
- * A stage chat the isolated engine draws, the way the workflow overlay shows it, mirrored on the host's screen. With
+ * A subagent's chat the isolated engine draws, the way `/tasks` shows it there, mirrored on the host's screen. With
  * `olderHost`, the host talks to the engine as one from before clicks were settled does: its clicks carry no number
  * and it never settles them.
  */
-async function engineStageChat(
+async function engineTaskChat(
 	ui: ReturnType<typeof makeScreen>,
 	options: { readonly olderHost?: boolean; readonly noCancel?: boolean } = {},
 ) {
@@ -310,28 +292,28 @@ async function engineStageChat(
 			}),
 	} as unknown as ExtensionUIContext;
 	new RemoteComponentController(runtime, hostUi, { isFullscreen: () => true, onRendererReplaced: () => () => {} });
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const { handle, emit } = makeHandle();
-	const registry = createStageControlRegistry();
-	const unregister = registry.register(handle);
-	let pane: WorkflowAttachPane | undefined;
-	// The engine shows the stage the way the workflow overlay does: an attach pane open on the stage's chat.
-	void child.custom((tui) => {
-		pane = new WorkflowAttachPane({
-			store,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageControlRegistry: registry,
-			initialAttachStageId: "stage-a",
-			onClose: () => {},
-			requestRender: () => tui.requestRender(),
-		});
-		return pane;
-	});
+	const fixture = taskFixture();
+	await fixture.start("Engine task");
+	const session = await sessionWithBash("engine-cmd", "engine");
+	fixture.runners[0]!.context.bindTranscript(Object.assign(session, { subscribe: () => () => {} }));
+	let view: Component | undefined;
+	// The engine shows the subagent's chat the way `/tasks` does there: the task inspector open on the task's chat.
+	void showTaskInspector(
+		{
+			getToolsExpanded: () => false,
+			setToolsExpanded: () => {},
+			custom: (factory, customOptions) =>
+				child.custom(async (tui, theme, keys, done) => {
+					view = await factory(tui, theme, keys, done);
+					return view;
+				}, customOptions),
+		},
+		fixture.store,
+		fixture.store.tasks[0]!.ref.taskId,
+		{ chat: true, backLabel: "main chat" },
+	);
 	await flush();
-	assert.ok(host && pane, "the engine's stage chat is mirrored on the host");
-	emitBash(emit, "engine-cmd", "engine");
+	assert.ok(host && view, "the engine's subagent chat is mirrored on the host");
 	ui.mount(host);
 	ui.tui.setFocus(host);
 	const shows = (pattern: RegExp) => {
@@ -344,26 +326,59 @@ async function engineStageChat(
 		sent,
 		shows,
 		engineShows: (pattern: RegExp) =>
-			pane!.render(ui.terminal.columns).some((line) => pattern.test(stripVTControlCharacters(line))),
+			view!.render(ui.terminal.columns).some((line) => pattern.test(stripVTControlCharacters(line))),
 		deliver: (command: InteractiveEngineCommand) => child.handleLine(serializeInteractiveEngineFrame(command)),
 		/** How many frames the engine has sent the host. */
 		frames: () => frames,
-		dispose: () => {
-			pane?.dispose();
-			unregister();
+		dispose: async () => {
 			child.dispose();
+			await fixture.dispose();
 		},
 	};
 }
+
+test("a subagent chat in the isolated engine expands a block when a terminal press and release land on its output", async () => {
+	const ui = makeScreen();
+	const engine = await engineTaskChat(ui);
+	try {
+		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
+		await ui.pressAndRelease(/engine line 18\s*$/, "engine");
+		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 0);
+		await ui.settle();
+		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 1);
+		await vi.waitFor(() => assert.ok(engine.shows(/engine line 1\s*$/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
+	} finally {
+		await engine.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("fast single clicks on different rows of a block in the isolated engine's subagent chat each toggle it once they settle", async () => {
+	const ui = makeScreen();
+	const engine = await engineTaskChat(ui);
+	try {
+		const before = engine.frames();
+		await ui.fastClicks([/Bash\(engine-cmd\)/, "engine-cmd"], [/engine line 18\s*$/, "engine"]);
+		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 2);
+		// The frames the engine drew once the clicks settled show the block folded again.
+		await vi.waitFor(() => {
+			assert.ok(engine.frames() > before);
+			assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
+		}, ENGINE_FRAME_WAIT);
+	} finally {
+		await engine.dispose();
+		ui.tui.stop();
+	}
+});
 
 for (const noCancel of [false, true]) {
 	test(
 		noCancel
 			? "a numbered host without click cancellation keeps its bounded fallback (#5562)"
-			: "an isolated stage chat applies all 17 single clicks in one burst (#5562)",
+			: "an isolated subagent chat applies all 17 single clicks in one burst (#5562)",
 		async () => {
 			const ui = makeScreen();
-			const engine = await engineStageChat(ui, { noCancel });
+			const engine = await engineTaskChat(ui, { noCancel });
 			try {
 				const targets = [/engine line 18\s*$/, /engine line 19\s*$/].map((pattern) => {
 					const row = ui.screen().findIndex((line) => pattern.test(line));
@@ -380,9 +395,50 @@ for (const noCancel of [false, true]) {
 				assert.equal(engine.engineShows(/engine line 1\s*$/), !noCancel);
 				await vi.waitFor(() => assert.equal(engine.shows(/engine line 1\s*$/), !noCancel), ENGINE_FRAME_WAIT);
 			} finally {
-				engine.dispose();
+				await engine.dispose();
 				ui.tui.stop();
 			}
 		},
 	);
 }
+
+test("a subagent chat in an isolated engine paired with an older host expands a block on a click, as that host expects", async () => {
+	const ui = makeScreen();
+	const engine = await engineTaskChat(ui, { olderHost: true });
+	try {
+		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
+		await ui.click(/engine line 18\s*$/, "engine");
+		await vi.waitFor(() => assert.ok(engine.shows(/engine line 1\s*$/), ui.screen().join("\n")), ENGINE_FRAME_WAIT);
+	} finally {
+		await engine.dispose();
+		ui.tui.stop();
+	}
+});
+
+test("a double-click in an isolated subagent chat cancels the forwarded action, selects a word and toggles nothing (#5562)", async () => {
+	const ui = makeScreen();
+	const engine = await engineTaskChat(ui);
+	try {
+		await ui.pressAndRelease(/engine line 18\s*$/, "engine");
+		await ui.pressAndRelease(/engine line 18\s*$/, "engine");
+		await ui.settle();
+		assert.equal(
+			engine.sent.filter((command) => command.type === "engine_custom_click").length,
+			1,
+			"only the first click of the double-click reaches the engine",
+		);
+		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 0);
+		const cancellations = engine.sent.filter((command) => command.type === "engine_custom_click_cancel");
+		assert.equal(cancellations.length, 1);
+		// The engine released this callback: even a stale settlement cannot run it now.
+		const canceled = cancellations[0]!;
+		if (canceled.type !== "engine_custom_click_cancel") assert.fail("missing cancellation");
+		engine.deliver({ ...canceled, type: "engine_custom_click_settle" });
+		assert.ok(!engine.engineShows(/engine line 1\s*$/));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
+	} finally {
+		await engine.dispose();
+		ui.tui.stop();
+	}
+});

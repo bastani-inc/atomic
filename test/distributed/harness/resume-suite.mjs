@@ -43,10 +43,10 @@ const RESUME_PROFILE_SPECS = {
  * @typedef {import("./resume-invariants.mjs").ResumeEvidence} ResumeEvidence
  * @typedef {import("./resume-invariants.mjs").FailureObservation} FailureObservation
  * @typedef {{ durations: Record<string, number>, chaosByScenario: Record<string, string[]>,
- *   executionError?: import("./errors.mjs").SerializedError,
+ *   unavailableScenarios?: readonly string[], executionError?: import("./errors.mjs").SerializedError,
  *   scenarioErrors?: { scenario: string, error: import("./errors.mjs").SerializedError }[] }} ResumeMetrics
  * @typedef {{ runId: string, attempt: string, nodes: NodeHost[], primary: import("./remote.mjs").Host,
- *   profiles: readonly string[], gatewayPort: number, namespace: string, signal?: AbortSignal,
+ *   profiles: readonly string[], gatewayPort: number, namespace: string, signal?: AbortSignal, legacyWorkflows?: boolean,
  *   log: (line: string) => void, started: number, faults: FaultRecord[] }} ResumeContext
  * @typedef {{ id: string, source: NonNullable<ResumeEvidence["source"]> }} RecordedSession
  * @typedef {{ sessionId?: string, snapshots?: number, cwd?: string, userMessages?: number, status?: string,
@@ -183,8 +183,15 @@ export async function runMultiNodeResume(ctx, remote = resumeRemote(ctx)) {
 	};
 	/** @type {{ scenario: string, error: unknown }[]} */
 	const scenarioErrors = [];
+	const unavailable = ctx.legacyWorkflows === false ? ["2", "3", "4"] : [];
+	const expectedFaults = Object.fromEntries(
+		Object.entries(RESUME_SCENARIO_FAULTS).filter(([id]) => !unavailable.includes(id)),
+	);
+	for (const id of unavailable)
+		ctx.log(`multi-node-resume: scenario ${id} unavailable: this ref does not export the workflow runtime`);
 	/** @template T @param {string} name @param {() => Promise<T>} action @returns {Promise<T | undefined>} */
 	const scenario = async (name, action) => {
+		if (unavailable.includes(name)) return undefined;
 		try {
 			return await action();
 		} catch (error) {
@@ -369,13 +376,13 @@ export async function runMultiNodeResume(ctx, remote = resumeRemote(ctx)) {
 	return {
 		faults: ctx.faults,
 		invariants: [
-			...checkResumeInvariants(evidence),
+			...checkResumeInvariants(evidence, ctx.legacyWorkflows !== false),
 			{
 				name: "chaos-hit-every-scenario",
-				passed: Object.entries(RESUME_SCENARIO_FAULTS).every(([name, profiles]) =>
+				passed: Object.entries(expectedFaults).every(([name, profiles]) =>
 					profiles.every((profile) => hit[name]?.includes(profile) === true),
 				),
-				expected: RESUME_SCENARIO_FAULTS,
+				expected: expectedFaults,
 				actual: hit,
 			},
 			{
@@ -395,6 +402,7 @@ export async function runMultiNodeResume(ctx, remote = resumeRemote(ctx)) {
 		metrics: {
 			durations,
 			chaosByScenario: hit,
+			...(unavailable.length ? { unavailableScenarios: unavailable } : {}),
 			...(executionError === undefined ? {} : { executionError }),
 			...(failedScenarios.length === 0 ? {} : { scenarioErrors: failedScenarios }),
 		},
