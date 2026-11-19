@@ -3455,6 +3455,50 @@ describe("openai-codex streaming", () => {
 });
 
 describe("openai-codex SSE retry backoff", () => {
+	const model: Model<"openai-codex-responses"> = {
+		id: "gpt-5.1-codex",
+		name: "GPT-5.1 Codex",
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		baseUrl: "https://chatgpt.com/backend-api",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 400000,
+		maxTokens: 128000,
+	};
+
+	it.each(["HTTP", "network"])(
+		"does not send an SSE %s retry when cancellation is due with the backoff (#5627)",
+		async (failure) => {
+			vi.useFakeTimers();
+			const controller = new AbortController();
+			const fetch = vi
+				.fn()
+				.mockImplementationOnce(async () => {
+					if (failure === "network") throw new Error("connection reset");
+					return new Response("rate limited", { status: 429, headers: { "retry-after": "1" } });
+				})
+				.mockResolvedValue(new Response(buildSSEPayload({ status: "completed" })));
+			vi.stubGlobal("fetch", fetch);
+			const result = streamOpenAICodexResponses(model, normalizeContext({ messages: [] }), {
+				apiKey: mockToken(),
+				transport: "sse",
+				maxRetries: 1,
+				signal: controller.signal,
+				retryDeadline: performance.now() + 1000,
+			}).result();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(fetch).toHaveBeenCalledTimes(1);
+			setTimeout(() => controller.abort(), 1000); // Same millisecond, registered after the backoff.
+			await vi.advanceTimersByTimeAsync(1000);
+			const message = await result;
+			expect(fetch).toHaveBeenCalledTimes(1);
+			expect(message.stopReason).toBe("aborted");
+			expect(message.errorMessage).toBe("Request was aborted");
+		},
+	);
+
 	it("removes SSE retry backoff abort listeners after the retry succeeds (upstream #11708)", async () => {
 		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 		let calls = 0;
@@ -3477,18 +3521,6 @@ describe("openai-codex SSE retry backoff", () => {
 				});
 			}),
 		);
-		const model: Model<"openai-codex-responses"> = {
-			id: "gpt-5.1-codex",
-			name: "GPT-5.1 Codex",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 400000,
-			maxTokens: 128000,
-		};
 		const controller = new AbortController();
 		const result = await streamOpenAICodexResponses(
 			model,

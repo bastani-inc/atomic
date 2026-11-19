@@ -16,6 +16,7 @@ test("companion package names stay aligned with shipped builtin directories", ()
 		BUILTIN_PACKAGE_DIR_NAMES.map((dirName) => `@bastani/${dirName}`),
 	);
 	assert.equal(isCompanionBuiltinPackageName("@bastani/subagents"), true);
+	assert.equal(isCompanionBuiltinPackageName("@bastani/workflows"), false);
 	assert.equal(isCompanionBuiltinPackageName("@bastani/atomic"), false);
 });
 
@@ -39,7 +40,7 @@ test("atomicConfig or the Atomic package name marks app identity", () => {
 	assert.equal(packageJsonDefinesAppIdentity({ name: "@bastani/subagents" }), false);
 });
 
-test("prebundled subagents package.json does not become the Atomic app root", async () => {
+test("the prebundled subagents package.json does not become the Atomic app root", async () => {
 	const root = makeTempDirectory("atomic-package-identity-");
 	try {
 		const atomicRoot = join(root, "node_modules", "@bastani", "atomic");

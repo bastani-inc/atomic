@@ -15,6 +15,32 @@ afterEach(() => {
 
 // Regression tests for upstream https://github.com/earendil-works/pi/issues/10947
 describe("saved project trust for projects without trust inputs", () => {
+	it("closes voting before consulting saved trust for a now-empty folder (#5693)", async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "atomic-project-trust-empty-")));
+		tempDirs.push(root);
+		const cwd = join(root, "project");
+		mkdirSync(cwd);
+		const observed: string[] = [];
+		class ObservedTrustStore extends ProjectTrustStore {
+			override async getAsync(path: string) {
+				observed.push("read saved trust");
+				return super.getAsync(path);
+			}
+		}
+		await resolveProjectTrusted({
+			cwd,
+			trustStore: new ObservedTrustStore(root),
+			projectTrustContext: createProjectTrustContext({
+				cwd,
+				mode: "interactive",
+				settingsManager: SettingsManager.inMemory(),
+				hasUI: false,
+			}),
+			onHandlerSnapshot: (hasHandlers) => observed.push(hasHandlers ? "handler can vote" : "no handler can vote"),
+		});
+		expect(observed).toEqual(["no handler can vote", "read saved trust"]);
+	});
+
 	it("resolveProjectTrusted honors the saved decision before auto-trust", async () => {
 		const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "atomic-project-trust-saved-")));
 		tempDirs.push(tempRoot);

@@ -5,7 +5,7 @@
 ### Breaking Changes
 
 - The `subagents` builtin now ships the 11 general-purpose skills previously bundled with `workflows`. Default `/skill:` names and contents are unchanged. SDK hosts that disable `subagents` also disable those skills; to keep the skills without allowing delegation, leave `subagents` enabled and set `excludedTools: ["subagent"]`.
-- Atomic no longer ships the `workflow` tool, `/workflows`, `/workflow-authoring`, or the F2 workflow shortcut. Workflows are now skills: ask Atomic to convert an old definition into a skill that uses codemode and subagents. The original file stays untouched. Use `/tasks` to inspect background work and `/resume` to reopen a saved session, not a workflow run.
+- Atomic no longer ships the `workflow` tool, `/workflows`, `/workflow-authoring`, or the F2 workflow shortcut. Typing either removed command shows a migration notice instead of sending a prompt to the model. Ask Atomic to convert an old workflow into a skill that uses codemode and subagents. The original file stays untouched. Use `/tasks` to inspect background work and `/resume` to reopen a saved session, not a workflow run.
 - The SDK no longer accepts `workflows` in the `builtins` option. Remove that key from session options. The `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin` and `@bastani/atomic/workflows/builtin/*` imports are no longer published; keep a pre-0.10 installation if you still need to execute a definition with the old SDK.
 - RPC no longer accepts `list_workflow_runs`, `get_workflow_run_summary`, `get_workflow_resume_entries`, `resume_workflow_from_picker` or `delete_workflow_from_picker`. `RpcClient.listWorkflowRuns()` and `getWorkflowRunSummary()` are removed. For saved conversations, use `list_sessions`, `get_session_summary` and `switch_session`.
 - `atomic storage migrate` still sets up sessions and Intercom, but no longer creates workflow or worker-pool tables. Existing workflow data is not deleted.
@@ -18,6 +18,15 @@
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
+
+### Fixed
+
+- `generateStructuredOutput()` and the `structured_output` tool no longer send a provider backoff retry after their timeout when the process is busy ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
+- Snapshot collection reports when there is too little space to move an old chunk table. On a closed local SQLite file, `atomic storage move-snapshot-chunks <sqlite-file>` can finish the move with room for one copy and a batch of log records instead of two copies ([#5700](https://github.com/bastani-inc/atomic/issues/5700)).
+- On Linux and macOS, worktree pool leases and session-open markers are aged by the shared filesystem's time when the clock reading finishes, as on Windows, so the cleanup of the reading's probe file no longer makes them look younger than they are. A change to this machine's wall clock during the reading is not counted as elapsed time ([#5674](https://github.com/bastani-inc/atomic/issues/5674)).
+- A worktree pool admission whose temporary record name is already taken leaves that file untouched and writes under a fresh name. On Linux and macOS it used to overwrite the other file and remove its name; on Windows the admission failed ([#5824](https://github.com/bastani-inc/atomic/issues/5824)).
+- The interactive interface now withdraws a folder's resources when an extension registers a `project_trust` handler after the first trust report but before the engine calls the handlers. It waits for the decision before warning that the folder is untrusted ([#5693](https://github.com/bastani-inc/atomic/issues/5693)).
+- Buttons in extension messages, saved entries and custom tool output receive clicks again when the fullscreen chat runs in the terminal UI process. A click the renderer leaves unhandled still opens or folds the block, and tool titles still toggle first. Separate-engine sessions are unchanged ([#5696](https://github.com/bastani-inc/atomic/issues/5696)).
 
 ## [0.9.90] - 2026-11-19
 

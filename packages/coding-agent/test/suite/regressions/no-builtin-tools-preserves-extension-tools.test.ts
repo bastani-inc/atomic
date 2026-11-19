@@ -135,7 +135,7 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			noTools: "builtin",
 		});
 
-		// #3105: service composition includes all five shipped packages.
+		// #3105: suppressing the core tools does not remove tools from the shipped extensions.
 		expect(session.getActiveToolNames().sort()).toEqual([
 			"code_search",
 			"fetch_content",
@@ -143,7 +143,6 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			"intercom",
 			"subagent",
 			"web_search",
-			"workflow",
 		]);
 		// Native MCP contributes a manager command; tools appear only for configured servers.
 		expect(session.extensionRunner?.getCommand("mcp")).toBeDefined();

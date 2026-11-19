@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Api, AssistantMessage, Model, StreamOptions } from "@bastani/atomic-ai";
+import type { Api, AssistantMessage, Model, RetryDeadline, StreamOptions } from "@bastani/atomic-ai";
+import { ProviderRetryTransport } from "@bastani/atomic-ai/utils/provider-retry";
 import { createFetchWithAdmission } from "@bastani/atomic-ai/utils/request-admission";
+import { RetryDeadlineError, retryDeadlineReached } from "@bastani/atomic-ai/utils/retry-sleep";
 import {
 	isProviderLimitFailure,
 	isProviderRateLimit,
@@ -24,7 +26,11 @@ const FETCH_APIS = new Set([
 	"pi-messages",
 ]);
 
+/** The stream being admitted is itself a retry of an assistant call, even if SDK retries are disabled. */
+export const assistantRetryAttempt = Symbol("assistantRetryAttempt");
+
 interface StreamAdmissionState {
+	outerRetryDeadline?: RetryDeadline;
 	observedRateLimit: boolean;
 	observedQuotaExhaustion: boolean;
 	/** The limit the observed 429/402 response was recorded against. */
@@ -54,6 +60,7 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 	const observedFetch: typeof fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
 		const state = streamAdmission.getStore();
 		if (state) {
+			if (retryDeadlineReached(state.outerRetryDeadline)) throw new RetryDeadlineError();
 			state.observedRateLimit = false;
 			state.observedQuotaExhaustion = false;
 			state.observedScope = undefined;
@@ -115,10 +122,11 @@ async function waitForAdmission(provider: string, model: string, signal?: AbortS
 
 export async function admitProviderStream(
 	model: Model<Api>,
-	options: StreamOptions,
+	options: StreamOptions & { [assistantRetryAttempt]?: boolean },
 	ownsTransport: boolean,
 ): Promise<{ options: StreamOptions; run<T>(invoke: () => T): T; observeFailure(error: AssistantMessage): void }> {
 	const state: StreamAdmissionState = { observedRateLimit: false, observedQuotaExhaustion: false };
+	if (options[assistantRetryAttempt]) state.outerRetryDeadline = options.retryDeadline;
 	const usesFetch =
 		!ownsTransport &&
 		(FETCH_APIS.has(model.api) || (model.api === "openai-codex-responses" && options.transport === "sse"));
@@ -126,10 +134,24 @@ export async function admitProviderStream(
 		options = { ...options, fetch: providerFetch(model.provider, model.id, options.fetch ?? globalThis.fetch) };
 	} else {
 		await waitForAdmission(model.provider, model.id, options.signal);
+		// Google's SDK accepts fetch but, unlike the OpenAI adapters, is admitted before the stream is opened.
+		if (
+			state.outerRetryDeadline !== undefined &&
+			!ownsTransport &&
+			(model.api === "google-generative-ai" || model.api === "google-vertex")
+		) {
+			options = {
+				...options,
+				fetch: ProviderRetryTransport.forRetriedCall(state.outerRetryDeadline, options.fetch),
+			};
+		}
 	}
 	return {
 		options,
-		run: (invoke) => streamAdmission.run(state, invoke),
+		run: (invoke) => {
+			if (retryDeadlineReached(state.outerRetryDeadline)) throw new RetryDeadlineError();
+			return streamAdmission.run(state, invoke);
+		},
 		observeFailure(error) {
 			if (state.observedRateLimit && error.stopReason === "error" && !isProviderRateLimit(error)) {
 				error.errorMessage = `429 Too Many Requests: ${error.errorMessage ?? "provider rate limited the request"}`;
