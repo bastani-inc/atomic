@@ -7,6 +7,7 @@ import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
+import { bindChatEpoch, type SessionChatRecords } from "./chat-records.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -38,6 +39,7 @@ import {
 	type SessionSummaryText,
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
+import { sqlChatRecords } from "./sql-chat-records.js";
 import type {
 	SessionBlob,
 	SessionCompactionPoint,
@@ -295,6 +297,11 @@ const LISTING_SCOPES = 8;
  * ended before it committed runs again (#4383); `append` and `replace` check `expectSeq` again on each run.
  */
 const SESSION_TRANSACTION: SqliteTransactionOptions = { retryTransientFailures: true };
+/**
+ * Set to `true` on a first-party database view whose writes wait for another process's write lock on the calling
+ * thread (#5682). A global symbol, so every loaded copy of the package reads the same mark.
+ */
+const LOCKS_ON_THREAD = Symbol.for("atomic.storage.locks-on-thread.v1");
 
 /** A write revision: 32 random hex digits, the form SQLite's `lower(hex(randomblob(16)))` gave earlier builds. */
 function newRevision(): string {
@@ -351,6 +358,27 @@ export class SqlSessionStore implements SessionStore {
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
 	readonly searchIndex?: SqlSessionSearchIndex;
+	private chatStore?: SessionChatRecords;
+	/**
+	 * Absent on a local libSQL file, which then behaves as before: @libsql/client waits for another process's write
+	 * lock on the calling thread, even to begin a transaction, so a side write would stop the event loop where an
+	 * ordinary turn-ending notice writes nothing (#5682). The same holds for a first-party view over such a file that
+	 * marks itself with `LOCKS_ON_THREAD`, such as a workflow pool's sessions in a local libSQL journal.
+	 */
+	get chatRecords(): SessionChatRecords | undefined {
+		const { adapter, location } = this.database.descriptor;
+		if (adapter === "libsql" && /^file:/i.test(location)) return undefined;
+		if ((this.database as { readonly [LOCKS_ON_THREAD]?: unknown })[LOCKS_ON_THREAD] === true) return undefined;
+		if (!this.chatStore) {
+			const names = renderStorageIdentifiers(
+				"sessions",
+				{ rows: "chat_v1", byAnchor: "chat_v1_anchor" },
+				this.prefix,
+			);
+			this.chatStore = sqlChatRecords(this.database, this.tables.sessions, names.rows, names.byAnchor);
+		}
+		return this.chatStore;
+	}
 	private readonly entryByteLength: (expression: string) => string;
 	private chunkRowids?: boolean;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
@@ -1332,8 +1360,8 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
-		const row = await tx.get<HeaderRow>(
-			`SELECT header_json, last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+		const row = await tx.get<HeaderRow & { chat_epoch: string | null }>(
+			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
@@ -1342,6 +1370,7 @@ export class SqlSessionStore implements SessionStore {
 			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
 			lastSeq: row.last_seq,
 		};
+		if (typeof row.chat_epoch === "string") bindChatEpoch(snapshot.header, row.chat_epoch);
 		// The revision comes from the same transaction. An intervening write conservatively starts a new view.
 		return noteSnapshotGeneration(this, snapshot, nativeLoad, row, "revision");
 	}

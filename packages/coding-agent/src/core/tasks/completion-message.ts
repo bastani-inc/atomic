@@ -46,12 +46,14 @@ export function taskCompletionMessage(
 	envelope: TaskCompletionEnvelope,
 	task: TaskRecord | undefined,
 	output: string | CommandOutputExcerpt | undefined,
+	/** The subagent's Intercom name, when its session names one. */
+	intercomTarget?: string,
 ): TaskCompletionMessage {
 	const text = typeof output === "object" ? output.text : output;
 	const omissions = typeof output === "object" ? output.omissions : undefined;
 	return {
 		customType: TASK_COMPLETION_MESSAGE_TYPE,
-		content: formatTaskCompletion(envelope, task, text, omissions),
+		content: formatTaskCompletion(envelope, task, text, omissions, intercomTarget),
 		details: { ...envelope, notification: taskCompletionNotice(envelope, task, text, omissions) },
 		display: true,
 	};
