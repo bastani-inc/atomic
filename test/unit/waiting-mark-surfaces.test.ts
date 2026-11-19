@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { TUI } from "@bastani/atomic-tui";
 import { beforeAll, test, vi } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
+import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
@@ -201,7 +202,7 @@ test.each([
 });
 
 test("a stopped subagent's title-only notice does not take its outcome from the task description (#5690)", () => {
-	for (const stop of ["killed (non-resumable)", "timed out", "timed out after 0.1 seconds", "stopped"]) {
+	for (const stop of ["killed (non-resumable)", "timed out", "stopped (session closed)", "stopped"]) {
 		for (const description of [
 			"paused · awaiting resume: check the queue",
 			"quit · paused, awaiting resume: check the queue",
@@ -231,6 +232,10 @@ test("a stopped subagent's title-only notice does not take its outcome from the 
 
 test.each([
 	{
+		title: "Subagent triage timed out after 1 second: released while waiting on bash (ci): Review docs",
+		expected: "◌ triage timed out after 1 second: is waiting on bash (ci)",
+	},
+	{
 		notification: savedNotices.quit087,
 		title: "Subagent triage interrupted by a restart: paused · awaiting resume: Review docs",
 		expected: "⏸ triage interrupted by a restart: paused · awaiting resume",
@@ -258,14 +263,58 @@ test.each([
 		expectReopenedNotice(title, { notification: { ...fields, ...identity, title } }, expected),
 );
 
+const { detailsWithoutResult, releasedBody, stoppedBody } = savedNotices.releaseOrStop088;
+const waitTitle = detailsWithoutResult.notification.title;
+const waitRow = "◌ triage stopped: is waiting on bash (ci)";
+
 test.each([
-	["◌ triage stopped: is waiting on bash (ci)", savedNotices.releaseOrStop088.releasedBody],
-	["◼ triage stopped", savedNotices.releaseOrStop088.stoppedBody],
-])("main and detached stage chats use the original stop reason to reopen '%s' (#5690)", (expected, body) =>
-	expectReopenedNotice(body, savedNotices.releaseOrStop088.detailsWithoutResult, expected),
+	{ form: "release body", body: releasedBody },
+	{ form: "shutdown body with the same title", body: stoppedBody },
+	{ form: "release body in a text block", body: [{ type: "text", text: releasedBody }] },
+	{
+		form: "release body with a multiline model ID",
+		body: releasedBody.replace(
+			"\nStop reason:",
+			"\nModel: ran on custom/review\nmodel, not the requested remote/review.\nStop reason:",
+		),
+		fields: { model: "custom/review\nmodel", requestedModel: "remote/review" },
+	},
+	{
+		form: "release body with a multiline call ID",
+		body: releasedBody.replaceAll("bash (ci)", "bash (ci).\nstep)"),
+		fields: { title: "Subagent triage stopped: released while waiting on bash (ci)." },
+	},
+	{ form: "whitespace after the title", body: `${waitTitle} ` },
+	{
+		form: "image after the title",
+		body: [
+			{ type: "text", text: waitTitle },
+			{ type: "image", mimeType: "image/png", data: "AA==" },
+		],
+	},
+] satisfies {
+	form: string;
+	body: CustomMessage["content"];
+	fields?: { title?: string; model?: string; requestedModel?: string };
+}[])("main and detached stage chats keep the legacy row without its result: $form (#5690)", ({ body, fields }) =>
+	expectReopenedNotice(
+		body,
+		{ ...detailsWithoutResult, notification: { ...detailsWithoutResult.notification, ...fields } },
+		waitRow,
+	),
 );
 
-async function expectReopenedNotice(body: string, details: unknown, expected: string): Promise<void> {
+test("a saved title split across text blocks is still title-only in both reopened chats (#5690)", () =>
+	expectReopenedNotice(
+		[
+			{ type: "text", text: waitTitle.slice(0, 9) },
+			{ type: "text", text: waitTitle.slice(9) },
+		],
+		detailsWithoutResult,
+		"◼ triage stopped",
+	));
+
+async function expectReopenedNotice(body: CustomMessage["content"], details: unknown, expected: string): Promise<void> {
 	await withNodeSqliteDatabase(async (db) => {
 		const writer = await SqlSessionStore.open(db.database);
 		const session = await SessionManager.create(writer, process.cwd());
