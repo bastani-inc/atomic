@@ -52,7 +52,7 @@ Stage progress includes nested child workflows and updates as stages appear:
 - The numerator counts completed, failed, and skipped stages.
 - The denominator counts currently materialized stages, not future work.
 - Expanded children replace their workflow boundary; neither the boundary nor durable tool nodes add to the stage count.
-- If a child started, its stages and tools remain inspectable in the parent graph even when its boundary fails or is skipped. This includes nested work on local workers and separate worker hosts. If the child never started, has no nodes, or an older record cannot identify it, the graph shows the boundary summary instead.
+- If a child started, its stages and tools remain inspectable in the parent graph even when its boundary fails or is skipped. This includes nested work on local workers and separate worker hosts. A stage ID listed for the boundary itself still selects the boundary for inspection and control. If the child never started, has no nodes, or an older record cannot identify it, the graph shows the boundary summary instead.
 
 `single`/`chain` uses the same count.
 

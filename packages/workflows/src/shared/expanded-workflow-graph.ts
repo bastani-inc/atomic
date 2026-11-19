@@ -137,6 +137,17 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
 }
 
 /**
+ * The graph with each failed or skipped boundary as its own node instead of the child it started. Nothing renders
+ * it; stage lookups fall back to it so an id listed for such a boundary still names the boundary (#5616).
+ */
+export function expandWorkflowGraphWithTerminalBoundaries(
+	snapshot: StoreSnapshot,
+	rootRunId: string,
+): ExpandedWorkflowGraph {
+	return expandIndexedWorkflowGraph(new Map(snapshot.runs.map((run) => [run.id, run])), rootRunId, true);
+}
+
+/**
  * Expansions of frozen graph snapshots by root run id. The graph view, the attach pane and the
  * activity bridge all expand the same snapshot on each store change (#4009); they share one
  * expansion, which none of them mutates.
@@ -325,6 +336,7 @@ export function createWorkflowGraphExpander(snapshot: StoreSnapshot): (rootRunId
 function expandIndexedWorkflowGraph(
 	runById: ReadonlyMap<string, RunSnapshot>,
 	rootRunId: string,
+	keepTerminalBoundaries = false,
 ): ExpandedWorkflowGraph {
 	const root = runById.get(rootRunId);
 	if (!root) return { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
@@ -360,6 +372,7 @@ function expandIndexedWorkflowGraph(
 		const boundaryExpansions = new Map<string, ExpandedRunResult | null>();
 
 		const validChildRunFor = (stage: StageSnapshot): RunSnapshot | undefined => {
+			if (keepTerminalBoundaries && isTerminalNonCompletedBoundary(stage)) return undefined;
 			const childRunId = authoritativeWorkflowChildRunId(stage);
 			if (childRunId === undefined) return undefined;
 			const childRun = runById.get(childRunId);
