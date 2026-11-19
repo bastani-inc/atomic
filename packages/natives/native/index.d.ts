@@ -171,6 +171,11 @@ export declare class WaitLease {
   get waitId(): string
 }
 
+export declare class WindowsTemporaryFile {
+  /** Dispose the reserved name, not a file which may since have appeared at the same path. */
+  close(): Promise<undefined>
+}
+
 export type ActivityChange =
   | { kind: 'action'; tool: string; text: string }
   | { kind: 'model'; model?: string; thinking?: string }
@@ -760,6 +765,18 @@ export interface PtyStartOptions {
 }
 
 /**
+ * Create with the host's current mask and reserve the name before sampling, in one filesystem-worker turn.
+ * Null means that the host's libuv operations are unavailable; no create has been attempted.
+ */
+export declare function readWindowsClockProbe(path: string): Promise<WindowsClockReading | undefined | null>
+
+/** Removes a regular file older than `beforeMs` using the handle whose last-write time was checked. */
+export declare function removeWindowsFileOlderThan(path: string, beforeMs: number): Promise<undefined>
+
+/** Retry a refused temporary-link removal only if both open names still identify the published file. */
+export declare function removeWindowsHardLink(temporary: string, published: string): Promise<boolean>
+
+/**
  * Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,
  * so a moved item is put back without ever replacing another. Throws on any other failure.
  */
@@ -944,6 +961,12 @@ export type WaitOutcome =
 export interface WindowsAccessRule {
   allow: boolean
   sid: string
+}
+
+export interface WindowsClockReading {
+  mtimeMs: number
+  createdInMs: number
+  pending?: WindowsTemporaryFile
 }
 
 export declare function windowsDirectorySecurity(path: string): WindowsDirectorySecurity | null

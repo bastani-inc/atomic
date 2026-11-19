@@ -850,6 +850,7 @@ module.exports.TaskLease = nativeBinding.TaskLease
 module.exports.TaskSupervisor = nativeBinding.TaskSupervisor
 module.exports.NapiTaskSupervisor = nativeBinding.NapiTaskSupervisor
 module.exports.WaitLease = nativeBinding.WaitLease
+module.exports.WindowsTemporaryFile = nativeBinding.WindowsTemporaryFile
 module.exports.AdmissionRefusalKind = nativeBinding.AdmissionRefusalKind
 module.exports.AgentStatus = nativeBinding.AgentStatus
 module.exports.AgentTaskKind = nativeBinding.AgentTaskKind
@@ -869,6 +870,9 @@ module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessT
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
 module.exports.pendingStdinInput = nativeBinding.pendingStdinInput
 module.exports.processCreationTime = nativeBinding.processCreationTime
+module.exports.readWindowsClockProbe = nativeBinding.readWindowsClockProbe
+module.exports.removeWindowsFileOlderThan = nativeBinding.removeWindowsFileOlderThan
+module.exports.removeWindowsHardLink = nativeBinding.removeWindowsHardLink
 module.exports.renameNoReplace = nativeBinding.renameNoReplace
 module.exports.renameNoReplaceAsync = nativeBinding.renameNoReplaceAsync
 module.exports.search = nativeBinding.search
@@ -880,3 +884,10 @@ module.exports.trySharedAdvisoryLock = nativeBinding.trySharedAdvisoryLock
 module.exports.windowsDirectorySecurity = nativeBinding.windowsDirectorySecurity
 module.exports.windowsDirectorySecurityAsync = nativeBinding.windowsDirectorySecurityAsync
 module.exports.YieldReason = nativeBinding.YieldReason
+
+if (process.platform === 'win32' && module.exports.readWindowsClockProbe && module.exports.removeWindowsHardLink) {
+  try {
+    // Permission-managed hosts must perform their own filesystem checks.
+    if (!process.permission) process[Symbol.for('@bastani/atomic/windows-temporary@3')] = new WeakRef(module.exports)
+  } catch { /* Optional on restricted hosts. */ }
+}

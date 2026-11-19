@@ -5,6 +5,7 @@
 ### Fixed
 
 - On Windows, `TaskSupervisor` no longer reports a command started with `keepBackgroundOnExit` that ran to completion as failed with `Windows stdin worker stop was not confirmed` when a loaded machine has not yet run its input thread by the end of the cleanup grace. Such a command keeps its background processes, so its job never counts as ended and the earlier fix did not apply. An input thread that is not writing is now confirmed once the supervisor closes the command's input under it, which leaves it nothing to write; one blocked in a write still fails the cleanup ([#5512](https://github.com/bastani-inc/atomic/issues/5512))
+- Windows clock probes use the host runtime’s creation mask. A refused pool-record cleanup can compare both open file identities before removing only the temporary hard link ([#5605](https://github.com/bastani-inc/atomic/issues/5605), [#5636](https://github.com/bastani-inc/atomic/issues/5636)).
 
 ## [0.9.89] - 2026-11-18
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, toNamespacedPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import { renameWithRetry } from "../rename-retry.ts";
@@ -12,7 +12,7 @@ import { isDeniedSnapshotPath } from "./policy.ts";
 import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.js";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
-import { lockShared, sharedClockNow } from "./shared-clock.ts";
+import { lockShared, sharedClockNow, windowsTemporaryFiles } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
 export { processStartToken } from "../process-start-token.js";
@@ -555,19 +555,43 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 
 async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
 	const temporary = `${file}.${randomUUID()}.tmp`;
+	const windows = process.platform === "win32";
+	const data = JSON.stringify(record);
+	let created = false;
+	let published = false;
 	try {
-		await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+		// Let the runtime apply its actual umask at creation and write through the handle granted there.
+		try {
+			await writeFile(temporary, data, { mode: 0o600, flag: windows ? "wx" : "w" });
+			created = true;
+		} catch (error) {
+			const { code, syscall } = error as NodeJS.ErrnoException;
+			created = code !== "EEXIST" && syscall !== "open";
+			throw error;
+		}
 		try {
 			await link(temporary, file);
+			published = true;
 			return true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
 			throw error;
 		}
 	} finally {
-		await rm(temporary, { force: true }).catch((error) => {
-			reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
-		});
+		if (created || !windows) {
+			await rm(temporary, { force: true }).catch(async (error: NodeJS.ErrnoException) => {
+				if (windows && published && (error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY")) {
+					// Never retry a pathname unlink. Both open handles must identify the published file.
+					if (
+						await windowsTemporaryFiles()
+							?.removeWindowsHardLink(toNamespacedPath(temporary), toNamespacedPath(file))
+							.catch(() => false)
+					)
+						return;
+				}
+				reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
+			});
+		}
 	}
 }
 
