@@ -7,7 +7,6 @@ import {
 	isStaleExtensionContextError,
 	STALE_EXTENSION_CONTEXT_MESSAGE,
 } from "../../packages/coding-agent/src/core/extensions/stale-context.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { resolveSubagentIntercomTarget } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -55,20 +54,12 @@ function eventBus(emitter: EventEmitter) {
 	};
 }
 
-/** A workflow stage's tool context whose session model fallback later retires: every read then throws. */
-function retirableStageContext(root: string, boundary: WorkflowStageAdmissionBoundary) {
+/** A tool context whose session model fallback later retires: every read then throws. */
+function retirableContext(root: string) {
 	let retired = false;
 	const live = <T>(value: T): T => {
 		if (retired) throw new Error(STALE_EXTENSION_CONTEXT_MESSAGE);
 		return value;
-	};
-	const orchestrationContext = {
-		kind: "workflow-stage",
-		workflowRunId: "workflow-run",
-		workflowStageId: "stage",
-		workflowStageName: "stage",
-		constraints: { disableWorkflowTool: true },
-		messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
 	};
 	const ctx = {
 		get cwd() {
@@ -80,13 +71,10 @@ function retirableStageContext(root: string, boundary: WorkflowStageAdmissionBou
 		model: undefined,
 		modelRegistry: { getAvailable: () => [] },
 		sessionManager: {
-			getSessionFile: () => join(root, "stage.jsonl"),
-			getSessionId: () => "session-stage",
+			getSessionFile: () => join(root, "parent.jsonl"),
+			getSessionId: () => "session-parent",
 			getLeafId: () => null,
 			getEntries: () => [],
-		},
-		get orchestrationContext() {
-			return live(orchestrationContext);
 		},
 		isIdle: () => true,
 		isProjectTrusted: () => true,
@@ -107,12 +95,12 @@ function retirableStageContext(root: string, boundary: WorkflowStageAdmissionBou
 
 type RunSync = SubagentExecutorRuntimeDeps["runSync"];
 
-function stageExecutor(root: string, emitter: EventEmitter, runtimeRunSync: RunSync) {
+function executorFor(root: string, emitter: EventEmitter, runtimeRunSync: RunSync) {
 	const notifications: string[] = [];
 	const notified = Promise.withResolvers<void>();
 	const pi = {
 		events: eventBus(emitter),
-		getSessionName: () => "stage-parent",
+		getSessionName: () => "parent",
 		sendMessage(message: { content?: string }) {
 			notifications.push(message.content ?? "");
 			notified.resolve();
@@ -123,7 +111,7 @@ function stageExecutor(root: string, emitter: EventEmitter, runtimeRunSync: RunS
 		pi: pi as unknown as ExecutorDeps["pi"],
 		state: {
 			baseCwd: root,
-			currentSessionId: "session-stage",
+			currentSessionId: "session-parent",
 			subagentInProgress: false,
 			foregroundControls: new Map(),
 			lastForegroundControlId: null,
@@ -161,11 +149,10 @@ test("a detached subagent that exits after model fallback retired its launching 
 	const rejections = captureRejections();
 	const emitter = new EventEmitter();
 	const bus = eventBus(emitter);
-	const boundary = new WorkflowStageAdmissionBoundary();
 	const gate = Promise.withResolvers<void>();
 	const launch = Promise.withResolvers<RunSyncOptions>();
 	const detachedResults: SingleResult[] = [];
-	const { executor, notifications, notified, unregisterNotify } = stageExecutor(
+	const { executor, notifications, notified, unregisterNotify } = executorFor(
 		root,
 		emitter,
 		async (cwd, agents, agentName, task, options) => {
@@ -181,14 +168,14 @@ test("a detached subagent that exits after model fallback retired its launching 
 			});
 		},
 	);
-	const stage = retirableStageContext(root, boundary);
+	const parent = retirableContext(root);
 	try {
 		const execution = executor.execute(
 			"tool-call",
 			{ agent: "worker", task: "single", artifacts: false },
 			new AbortController().signal,
 			undefined,
-			stage.ctx,
+			parent.ctx,
 		);
 		const launched = await launch.promise;
 		await sleep(10);
@@ -205,8 +192,8 @@ test("a detached subagent that exits after model fallback retired its launching 
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
 		assert.equal((await execution).details?.results[0]?.detached, true);
 
-		// Model fallback replaces the stage session that launched the child; the stage itself stays open.
-		stage.retire();
+		// Model fallback replaces the session that launched the child.
+		parent.retire();
 		gate.resolve();
 
 		await notified;
@@ -242,11 +229,11 @@ test("a queued subagent without a task host starts in its launch directory after
 	const root = makeTempDirectory("atomic-queued-ownerless-retired-3981-");
 	roots.push(root);
 	const rejections = captureRejections();
-	const stage = retirableStageContext(root, new WorkflowStageAdmissionBoundary());
+	const parent = retirableContext(root);
 	const started: string[] = [];
 	const firstRunning = Promise.withResolvers<void>();
 	const firstGate = Promise.withResolvers<void>();
-	const { executor, unregisterNotify } = stageExecutor(
+	const { executor, unregisterNotify } = executorFor(
 		root,
 		new EventEmitter(),
 		async (cwd, agents, agentName, task, options) => {
@@ -274,14 +261,14 @@ test("a queued subagent without a task host starts in its launch directory after
 				},
 				new AbortController().signal,
 				undefined,
-				stage.ctx,
+				parent.ctx,
 			)
 			.catch(() => undefined);
 		await firstRunning.promise;
 		assert.deepEqual(started, [root], "the second child is still queued");
 
 		// Model fallback replaces the session that launched it before a slot frees.
-		stage.retire();
+		parent.retire();
 		firstGate.resolve();
 		await execution;
 

@@ -86,6 +86,7 @@ export const SLASH_SUBAGENT_RESPONSE_EVENT = "subagent:slash:response";
 export const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const SUBAGENT_ACTIONS = [
+	"models",
 	"list",
 	"get",
 	"create",

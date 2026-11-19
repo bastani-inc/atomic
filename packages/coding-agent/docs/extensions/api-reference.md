@@ -311,7 +311,7 @@ pi.on("session_start", (_event, ctx) => {
 
 ## ExtensionToolContext
 
-Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools` and `executeTool(name, args, options?)`. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
+Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools`, `executeTool(name, args, options?)`, and `parentToolCallId` for nested invocations. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
 
 ## ExtensionCommandContext
 
