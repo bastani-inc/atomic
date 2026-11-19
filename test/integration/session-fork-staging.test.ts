@@ -10,9 +10,15 @@ import type {
 	SqliteExecutor,
 	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
+import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
+import {
+	ensureForkStagingTable,
+	FORK_STAGING_CLEANUP_ROWS,
+	FORK_STAGING_OPEN_CLEANUPS,
+} from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
 	SESSION_BLOB_CHUNK_BYTES,
@@ -669,6 +675,54 @@ for (const backend of storageBackends) {
 					assert.equal(await stagedRows(destDb, destPrefix), 0);
 					assert.equal(await dest.readHeader("child"), undefined);
 					assert.deepEqual(await listedIds(dest), []);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"each open removes a bounded share of a stopped clone's rows and never a live clone's",
+			() =>
+				withScope(async (scope) => {
+					const destPrefix = `${scope.prefix}d_`;
+					const database = await scope.connect();
+					await (await SqlSessionStore.open(database, { prefix: destPrefix })).close();
+					const table = stagingTable(destPrefix);
+					await ensureForkStagingTable(database, dialectOf(database), table);
+					const rows = 3 * FORK_STAGING_OPEN_CLEANUPS * FORK_STAGING_CLEANUP_ROWS;
+					await database.transaction(async (tx) => {
+						for (const [transfer, size] of [
+							["stopped", 0],
+							["live", Number.MAX_SAFE_INTEGER],
+						] as const) {
+							await tx.run(
+								`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, 0, 0, 0, 'child', ?, 'token')`,
+								transfer,
+								size,
+							);
+							for (let seq = 1; seq <= rows; seq++)
+								await tx.run(
+									`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, 1, ?, 0, ?, 0, '{}')`,
+									transfer,
+									seq,
+									`e${seq}`,
+								);
+						}
+					});
+					const left = async (transfer: string) =>
+						Number((await database.get(`SELECT count(*) AS n FROM ${table} WHERE transfer_id = ?`, transfer))!.n);
+					let opens = 0;
+					for (let before = await left("stopped"); before > 0; opens++) {
+						await (await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix })).close();
+						const after = await left("stopped");
+						assert.ok(after < before, "every open makes progress");
+						assert.ok(
+							before - after <= FORK_STAGING_OPEN_CLEANUPS * FORK_STAGING_CLEANUP_ROWS,
+							`one open removed ${before - after} rows`,
+						);
+						before = after;
+					}
+					assert.ok(opens > 1, `the cleanup took ${opens} opens`);
+					assert.equal(await left("live"), rows + 1, "a clone whose lease runs keeps every row");
 				}),
 			SERVER_TIMEOUT_MS,
 		);
