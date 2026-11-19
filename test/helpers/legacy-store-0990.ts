@@ -143,23 +143,34 @@ function workflowSchema(fixture: readonly Statement[], ledger: boolean): Stateme
 	const indexWrites = (statement: Statement) =>
 		(statement.kind === "trigger" || statement.kind === "function") && MAIN_SNAPSHOT_INDEX.test(statement.sql);
 	const dropped = new Set(fixture.filter(indexWrites).map((statement) => statement.object));
-	return fixture.filter((statement) => {
-		if (statement.kind === "other") return false;
-		if (statement.table === "atomic_migrations") {
-			if (statement.kind !== "rows") return !ledger;
-			return WORKFLOW_LEDGER_DOMAINS.some((domain) => statement.sql.includes(`'${domain}'`));
-		}
-		if (!statement.table.startsWith("wf_") && !statement.object.startsWith("wf_")) return false;
-		if (statement.kind === "rows") return /_meta$|atomic_migrations$|_index_sources$/.test(statement.table);
-		if (dropped.has(statement.object)) return false;
-		// A PostgreSQL trigger names the function it runs.
-		return !(statement.kind === "trigger" && [...dropped].some((name) => statement.sql.includes(`${name}(`)));
-	});
+	const workflowLedgerRows = (sql: string) => WORKFLOW_LEDGER_DOMAINS.some((domain) => sql.includes(`'${domain}'`));
+	return fixture
+		.filter((statement) => {
+			if (statement.kind === "other") return false;
+			if (statement.table === "atomic_migrations") {
+				if (statement.kind !== "rows") return !ledger;
+				return workflowLedgerRows(statement.sql);
+			}
+			if (!statement.table.startsWith("wf_") && !statement.object.startsWith("wf_")) return false;
+			if (statement.kind === "rows") return /_meta$|atomic_migrations$|_index_sources$/.test(statement.table);
+			if (dropped.has(statement.object)) return false;
+			// A PostgreSQL trigger names the function it runs.
+			return !(statement.kind === "trigger" && [...dropped].some((name) => statement.sql.includes(`${name}(`)));
+		})
+		.map((statement) =>
+			// PostgreSQL's dump writes every domain's ledger rows in one statement, a row a line: keep the workflow domains'.
+			statement.table === "atomic_migrations" && statement.kind === "rows"
+				? { ...statement, sql: statement.sql.split("\n").filter(workflowLedgerRows).join("\n") }
+				: statement,
+		);
 }
 
-/** The names 0.9.90 gave its tables, the prefix of every other name it gave the server. */
+/**
+ * The names 0.9.90 gave its tables and indexes under no prefix: the prefix of every other name it gave the server, and
+ * the trigram indexes, which no table's name begins.
+ */
 function tableNames(statements: readonly Statement[]): string[] {
-	return [...new Set(statements.filter((s) => s.kind === "table").map((s) => s.object))].sort(
+	return [...new Set(statements.filter((s) => s.kind === "table" || s.kind === "index").map((s) => s.object))].sort(
 		(a, b) => b.length - a.length,
 	);
 }

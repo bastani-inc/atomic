@@ -239,6 +239,19 @@ test("passing evidence of all seven scenarios is accepted, invariant by invarian
 	);
 });
 
+test("a ref without the workflow runtime runs session and subagent resume scenarios and reports the unavailable ones", async () => {
+	const { runMultiNodeResume } = await import("../distributed/harness/resume-suite.mjs");
+	const { remote, calls } = fleet();
+	const result = await runMultiNodeResume({ ...context(), legacyWorkflows: false }, remote);
+	assert.ok(calls.includes("resume-session") && calls.includes("wake-subagent") && calls.includes("gitless-resume"));
+	assert.ok(!calls.includes("record-run") && !calls.includes("start-pool") && !calls.includes("record-fork"));
+	assert.deepEqual(result.metrics.unavailableScenarios, ["2", "3", "4"]);
+	assert.deepEqual(
+		result.invariants.filter((item) => !item.passed),
+		[],
+	);
+});
+
 test("the suite drives all seven scenarios across three nodes, with chaos in each, and refuses false evidence (#4329)", async () => {
 	const { runMultiNodeResume } = await import("../distributed/harness/resume-suite.mjs");
 	const { remote, calls } = fleet();

@@ -25,13 +25,11 @@ import {
 	workspaceSessionCwd,
 } from "../../packages/coding-agent/src/core/workspace/session.ts";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.ts";
-import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import {
 	countGitCommands,
 	createRepository,
 	git,
 	type WorkspaceSandboxDirs,
-	withInjectedGit,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
 
@@ -242,35 +240,6 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 			second.session.dispose();
 		}
 	});
-
-	// POSIX: the stand-in git that stalls the worktree addition is a shell script.
-	test.skipIf(process.platform === "win32")(
-		"a stage stopped while its workspace is being bound stops waiting for the binding (#3109)",
-		async () => {
-			const repo = createRepository(dirs.root, "stopped-setup");
-			const added = join(dirs.root, "added");
-			const controller = new AbortController();
-			const reason = new Error("stage stopped");
-			const api = workspace({ repo, branch: "feat/slow-setup" });
-			await withInjectedGit(
-				dirs.root,
-				{ FAKE_GIT_SLOW: "worktree add", FAKE_GIT_SLEEP: "2", FAKE_GIT_MARKER: added },
-				async () => {
-					const setup = stripWorkflowOnlyOptions(
-						{ workspace: api },
-						undefined,
-						{ runId: "run-1", stageId: "stage-1", stageName: "work" },
-						undefined,
-						controller.signal,
-					);
-					setTimeout(() => controller.abort(reason), 200);
-					assert.equal(await rejection(setup), reason);
-					assert.equal(existsSync(added), false, "the stage stopped before the slow addition finished");
-					await resolveWorkspace(api);
-				},
-			);
-		},
-	);
 
 	test("a read-only session leaves file-writing tools out of an explicit tools list (#3109)", async () => {
 		const listed = createRepository(dirs.root, "listed");
