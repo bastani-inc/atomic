@@ -18,6 +18,7 @@ import {
 import { hostInputError } from "./host-input.js";
 import {
 	captureRegistrationInvocation as captureInvocation,
+	discoveryCalls,
 	invocationExtension,
 	invocationRuntime,
 	originalRegistrationCallback,
@@ -116,6 +117,7 @@ export function createExtensionAPI(
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	registrationSource: object | string = extension,
+	installation: object | string = extension,
 ): { api: ExtensionAPI; commit: () => void; discard: () => void } {
 	const originalRuntime = runtime;
 	const startupOwner = startupSourceId(registrationSource);
@@ -216,11 +218,25 @@ export function createExtensionAPI(
 		},
 		on(event: string, handler: HandlerFn): () => void {
 			assertActive();
-			const registeredHandler = captureRegistrationInvocation((...args: Parameters<HandlerFn>) => handler(...args));
+			let discoveryId: string | undefined;
+			const registeredHandler = captureRegistrationInvocation((...args: Parameters<HandlerFn>) => {
+				const call = discoveryId === undefined ? undefined : discoveryCalls.get(args[0] as object);
+				if (!call || discoveryId === undefined) return handler(...args);
+				call.calls++;
+				try {
+					const value = handler(...args);
+					call.delegate = { id: discoveryId, threw: false, value };
+					return value;
+				} catch (error) {
+					call.delegate = { id: discoveryId, threw: true, value: error };
+					throw error;
+				}
+			});
 			if (event === "session_start" || event === "resources_discover") {
 				const slot = nextStartupHandlerSlot.get(event) ?? 0;
 				nextStartupHandlerSlot.set(event, slot + 1);
-				registerFactoryStartupHandler(registeredHandler, startupOwner, event, slot);
+				const id = registerFactoryStartupHandler(registeredHandler, startupOwner, event, slot);
+				if (event === "resources_discover") discoveryId = JSON.stringify([startupSourceId(installation), id]);
 			}
 			const list = extension.handlers.get(event) ?? [];
 			list.push(registeredHandler);

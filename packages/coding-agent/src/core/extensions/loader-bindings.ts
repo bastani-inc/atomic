@@ -38,8 +38,48 @@ export function startupSourceId(source: object | string): string {
 	return typeof source === "string" ? `file:${source}` : `object:${objectId(source)}`;
 }
 
-export function registerFactoryStartupHandler(handler: Callback, owner: string, event: string, ordinal: number): void {
-	identities.startup.set(originalRegistrationCallback(handler), JSON.stringify([owner, event, ordinal]));
+export function registerFactoryStartupHandler(
+	handler: Callback,
+	owner: string,
+	event: string,
+	ordinal: number,
+): string {
+	const original = originalRegistrationCallback(handler);
+	const id = JSON.stringify([owner, event, ordinal]);
+	identities.startup.set(original, id);
+	return id;
+}
+
+/** A raw loader callback may forward a factory registration. Match only a single call's actual return or throw. */
+interface DiscoveryCall {
+	calls: number;
+	delegate?: { id: string; threw: boolean; value: unknown };
+}
+const discoveriesKey = Symbol.for("atomic.extension-forwarded-discoveries.v1");
+const discoveriesHost = globalThis as typeof globalThis & { [discoveriesKey]?: WeakMap<object, DiscoveryCall> };
+discoveriesHost[discoveriesKey] ??= new WeakMap();
+export const discoveryCalls = discoveriesHost[discoveriesKey];
+
+export function isRawStartupHandler(handler: Callback): boolean {
+	return !identities.startup.has(originalRegistrationCallback(handler));
+}
+
+export function watchDiscoveryCall(event: object): DiscoveryCall {
+	const call: DiscoveryCall = { calls: 0 };
+	discoveryCalls.set(event, call);
+	return call;
+}
+
+export function forwardedDiscoveryId(
+	call: DiscoveryCall | undefined,
+	returned: unknown,
+	error: unknown,
+): string | undefined {
+	const delegate = call?.delegate;
+	if (call?.calls !== 1 || !delegate) return undefined;
+	return (delegate.threw ? Object.is(delegate.value, error) : returned !== undefined && delegate.value === returned)
+		? delegate.id
+		: undefined;
 }
 
 /** Identify the registrations in a dispatch snapshot. Neighbouring handlers and their ordering are not part of a token. */

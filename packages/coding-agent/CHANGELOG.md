@@ -68,6 +68,8 @@
 - Selecting a workflow in `/resume` after another caller has resumed it and it has blocked again now asks you to refresh the list instead of retrying the newer attempt ([#5569](https://github.com/bastani-inc/atomic/issues/5569)).
 - Pressing Esc while a chat switches to a fallback model now ends the turn without sending the pending request. A new message can still retry normally, and `abort_retry` during the first request does not disable a later retry ([#5564](https://github.com/bastani-inc/atomic/issues/5564)).
 - On a store shared with Atomic 0.9.87 or earlier, snapshot collection no longer deletes the bundle a partly restored worktree still needs after the older Atomic has indexed its sessions. The older Atomic could do that by finishing an index rebuild that this Atomic, or Atomic 0.9.88 or 0.9.89, had to stop, or by installing its own index triggers after this Atomic's had gone missing, even when only one of them was missing. This Atomic now recognises these cases and indexes those sessions again before it deletes anything. Until its rebuild is done, Atomic 0.9.88 and 0.9.89 sharing the store read the index as another version's and rebuild it themselves instead of trusting it ([#5558](https://github.com/bastani-inc/atomic/issues/5558))
+- Quitting at the first prompt after declining project trust no longer crashes if the bundled local model provider is still loading ([#5639](https://github.com/bastani-inc/atomic/issues/5639)).
+- Interactive startup reports a discovery registration’s failure once when an SDK loader rebuilds its forwarding callback. A later `/reload` reports the failure again ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 
 ## [0.9.89] - 2026-11-18
 

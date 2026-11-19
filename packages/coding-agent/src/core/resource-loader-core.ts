@@ -49,6 +49,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private additionalThemePaths: string[];
 	private builtinPackagePaths: PackageSource[];
 	private extensionFactories: InlineExtension[];
+	private factoryInstallations: object[];
 	private noExtensions: boolean;
 	private disabledBuiltinExtensions: Set<string>;
 	private noSkills: boolean;
@@ -137,6 +138,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 			...(inheritanceSnapshot?.extensionFactories ?? []),
 			...(options.extensionFactories ?? []),
 		]);
+		// Allocate an identity for each installation, before an override can filter or reorder the loaded extensions.
+		this.factoryInstallations = this.extensionFactories.map(() => ({}));
 		this.packageManager = new DefaultPackageManager({
 			cwd: this.cwd,
 			agentDir: this.agentDir,
@@ -330,7 +333,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		});
 	}
 	private createCandidate(settingsManager: SettingsManager, eventBus: EventBus): DefaultResourceLoader {
-		return new DefaultResourceLoader({
+		const candidate = new DefaultResourceLoader({
 			cwd: this.cwd,
 			agentDir: this.agentDir,
 			settingsManager,
@@ -363,6 +366,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 						: [...this.trustedBorrowedProjectLocalSources],
 			},
 		});
+		candidate.factoryInstallations = this.factoryInstallations;
+		return candidate;
 	}
 
 	/** @internal A borrowed discovery loader is not a session extension generation. */

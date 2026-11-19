@@ -4,6 +4,7 @@ import {
 	drainSessionWork,
 	hasCallingSessionWork,
 	sessionLifetime,
+	sessionQuitSignal,
 	trackSessionWork,
 } from "../session-lifecycle-work.ts";
 import { hostInputError } from "./host-input.js";
@@ -20,6 +21,7 @@ interface WorkBinding {
 	run<T>(operation: () => Promise<T>): Promise<T>;
 	drain(): Promise<void>;
 	signal(): AbortSignal;
+	quitting?(): boolean;
 }
 type OwnedRuntime = ExtensionRuntime & { [workBinding]?: WorkBinding };
 
@@ -30,11 +32,16 @@ export function bindExtensionWork(runtime: ExtensionRuntime, owner: object): voi
 		run: (operation) => trackSessionWork(owner, () => trackSessionWork(runtime, operation)),
 		drain: () => drainSessionWork(runtime),
 		signal: () => sessionLifetime(owner),
+		quitting: () => sessionQuitSignal(owner).aborted,
 	};
 }
 
 export function extensionSessionSignal(runtime: ExtensionRuntime): AbortSignal {
 	return (runtime as OwnedRuntime)[workBinding]?.signal() ?? sessionLifetime(runtime);
+}
+
+export function extensionSessionQuitting(runtime: ExtensionRuntime): boolean {
+	return (runtime as OwnedRuntime)[workBinding]?.quitting?.() === true;
 }
 
 export function sealExtensionWork(runtime: ExtensionRuntime): void {
