@@ -8,6 +8,7 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
+import type { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { VerbatimCompactionDetails } from "../src/core/compaction/compaction-types.js";
 import { isProviderCredentialRejection, normalizeModelFailureSignal } from "../src/core/model-fallback-failures.js";
@@ -47,6 +48,7 @@ async function runSession(
 	args: string[],
 	settings: Record<string, unknown> = {},
 	failures?: ReadonlyMap<string, string | GitHubCopilotAuthenticationError>,
+	beforePrompt?: (session: AgentSession) => void,
 ) {
 	const base = getModel("anthropic", "claude-sonnet-4-5")!;
 	const runtime = await ModelRuntime.create({
@@ -118,6 +120,7 @@ async function runSession(
 	cleanups.push(() => session.dispose());
 	const eventTypes: string[] = [];
 	session.subscribe((event) => eventTypes.push(event.type));
+	beforePrompt?.(session);
 	const outcome = await session.prompt("Say which model you are.").then(
 		() => undefined,
 		(error: unknown) => error,
@@ -151,6 +154,37 @@ describe("a model chain skips models whose provider has no credentials", () => {
 			{ model: id(NO_KEY, 1), provider: NO_KEY.provider, reason: "no-credentials" },
 		]);
 		assert.doesNotMatch(JSON.stringify(sessionManager.getEntries()), /working-key|revoked-key/);
+	});
+
+	test("interrupting the switch away from a model with no credentials sends no request (#5564)", async () => {
+		const { requests, eventTypes, session } = await runSession(
+			["--model", id(NO_KEY), "--fallback-models", id(WORKING)],
+			{},
+			undefined,
+			(starting) => {
+				starting.subscribe((event) => {
+					if (event.type === "model_fallback_start") void starting.interruptTurn();
+				});
+			},
+		);
+		assert.ok(eventTypes.includes("model_fallback_start"));
+		assert.deepEqual(requests, []);
+		await session.prompt("new turn");
+		assert.deepEqual(requests, [id(WORKING)]);
+	});
+
+	test("a retry interrupt arriving during fallback request preparation still stops dispatch (#5564)", async () => {
+		const { requests } = await runSession(
+			["--model", id(REVOKED), "--fallback-models", id(WORKING)],
+			{},
+			undefined,
+			(starting) => {
+				starting.subscribe((event) => {
+					if (event.type === "agent_start" && starting.model?.provider === WORKING.provider) starting.abortRetry();
+				});
+			},
+		);
+		assert.deepEqual(requests, [id(REVOKED)]);
 	});
 
 	test("a chain with no model that has credentials fails at once, naming each model and the provider it lacks", async () => {

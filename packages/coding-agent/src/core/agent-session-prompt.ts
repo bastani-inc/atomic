@@ -18,6 +18,7 @@ import {
 	isProtectedStreamingCustomMessage,
 	queueHeldCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
+import { retryIsCurrent } from "./agent-session-retry.ts";
 import type {
 	PromptDisposition,
 	PromptOptions,
@@ -324,6 +325,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 	let preparingRun = false;
+	let fallbackGeneration: number | undefined;
 	const admission = reserveAdmissionForQueuedPrompt(this, text, options);
 	const held = registerInputForCompaction(this, text, options, expandPromptTemplates);
 	// The sender learns at once that the session took the input, so an interactive host can stop
@@ -551,8 +553,13 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 						`Run '/login ${this.model.provider}' to re-authenticate.`,
 				);
 			}
+			fallbackGeneration = this._retryGeneration;
 			await this._selectModelWithCredentials();
 			assertCurrent();
+			if (!retryIsCurrent(this, fallbackGeneration)) {
+				preflightResult(true, "handled");
+				return;
+			}
 		}
 
 		this._isPreparingRun = "user";
@@ -642,7 +649,14 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		dispatched = true;
 		preflightResult?.(true, disposition);
 	};
-	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted, reportDispatch, true);
+	const turn = this._runAgentPrompt(
+		messages,
+		workflowDelivery?.promptStarted,
+		reportDispatch,
+		true,
+		undefined,
+		fallbackGeneration,
+	);
 	workflowDelivery?.delivered?.("prompt");
 	try {
 		await turn;
@@ -663,6 +677,7 @@ export async function _runAgentPrompt(
 	reportDispatch?: (disposition: PromptDisposition) => void,
 	prepared = false,
 	customStarter?: CustomMessage,
+	fallbackGeneration?: number,
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
@@ -677,7 +692,7 @@ export async function _runAgentPrompt(
 	}
 	if (this._isEmittingAgentSettled) {
 		deferSettledAction(this, () =>
-			this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter),
+			this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter, fallbackGeneration),
 		);
 		return;
 	}
@@ -784,6 +799,10 @@ export async function _runAgentPrompt(
 		}
 		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 			throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
+		if (fallbackGeneration !== undefined && !retryIsCurrent(this, fallbackGeneration)) {
+			reportDispatch?.("handled");
+			return;
+		}
 		this._pendingToolNames.clear();
 		reportDispatch?.("started");
 		const turn = this.agent.prompt(messages);

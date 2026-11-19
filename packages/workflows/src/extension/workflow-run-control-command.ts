@@ -1,5 +1,6 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { staleResumeSelectionMessage } from "../durable/resume-runtime.js";
 import { DurableBackendNotInitializedError, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
@@ -34,7 +35,7 @@ import {
 	type ResumePickerCatalogRows,
 	resumePickerLiveUpdateOptions,
 } from "./workflow-resume-picker-rows.js";
-import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
+import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 import { injectWorkflowResumeSummary } from "./workflow-resume-summary.js";
 import { isResolvedRunId, overlaySurfaceFromContext, resolveRunId, resolveStageTarget } from "./workflow-targets.js";
 
@@ -46,6 +47,7 @@ export async function handleRunControlCommand(
 	ctx: PiCommandContext,
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowRunControlDeps,
+	expectedUpdatedAt?: number,
 ): Promise<boolean> {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
 	deps = { ...deps, owner };
@@ -229,7 +231,10 @@ export async function handleRunControlCommand(
 		// The flag may stand anywhere among the arguments: the rest are the run, its stage and the message.
 		const acceptEntryChanges = rest.includes(ACCEPT_ENTRY_CHANGES_FLAG);
 		const args = acceptEntryChanges ? rest.filter((token) => token !== ACCEPT_ENTRY_CHANGES_FLAG) : rest;
-		const resumeOptions: DurableResumeCommandOptions = acceptEntryChanges ? { acceptEntryChanges: true } : {};
+		const resumeOptions: DurableResumeCommandOptions = {
+			...(acceptEntryChanges ? { acceptEntryChanges: true } : {}),
+			...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt }),
+		};
 		const durableResume = (workflowId: string | undefined, catalog?: WorkflowResumeCatalog) =>
 			handleDurableResume(workflowId, ctx, reporter, deps, catalog, resumeOptions);
 		const target = args[0];
@@ -353,17 +358,25 @@ export async function handleRunControlCommand(
 				fail(`Failed to resolve workflow resume target: ${error instanceof Error ? error.message : String(error)}`);
 				return true;
 			}
+			if (expectedUpdatedAt !== undefined) {
+				await backend.hydrateWorkflow(target, { checkHeader: true });
+				if (backend.getWorkflow(target)?.updatedAt !== expectedUpdatedAt) {
+					fail(staleResumeSelectionMessage(target));
+					return true;
+				}
+			}
 			const localResolution = resolveRunId(target, store);
 			const localBeforePreparation = isResolvedRunId(localResolution) ? store.run(localResolution.runId) : undefined;
 			const exactBeforePreparation = localBeforePreparation?.id === target ? localBeforePreparation : undefined;
+			// Only an exact target can be refused before checking the other stored roots for prefix collisions.
 			const shadow =
-				localBeforePreparation === undefined
+				exactBeforePreparation === undefined
 					? "not_shadow"
-					: classifyDurableResumeShadow(localBeforePreparation, store, { ...shadowDeps, backend });
+					: classifyDurableResumeShadow(exactBeforePreparation, store, { ...shadowDeps, backend });
 			if (shadow === "ineligible") {
 				fail(
 					"Workflow " +
-						localBeforePreparation!.id +
+						exactBeforePreparation!.id +
 						" has no durable checkpoint or pending prompt progress and is not resumable.",
 				);
 				return true;
@@ -403,6 +416,7 @@ export async function handleRunControlCommand(
 				runId = exactBeforePreparation.id;
 			} else {
 				const localIsDurableResumeShadow = shadow === "eligible";
+				let storedIds: readonly string[] | undefined;
 				let durable: readonly ResumableWorkflowEntry[] = [];
 				let completed: readonly ResumableWorkflowEntry[] = backend.listCompletedWorkflows();
 				let preparationError: string | undefined;
@@ -416,6 +430,7 @@ export async function handleRunControlCommand(
 					const runtime = deps.runtimeForContext(ctx);
 					try {
 						const catalog = isRunIdPrefix(target) ? await runtime.prepareDurableCatalog?.() : undefined;
+						storedIds = catalog?.inspectableIds;
 						durable = catalog?.resumable ?? (await runtime.prepareDurableResumable(target));
 						completed =
 							catalog?.completed ??
@@ -432,7 +447,7 @@ export async function handleRunControlCommand(
 				const loadableRuns = topLevelWorkflowRuns(store.runs()).filter(
 					(run) =>
 						backend.isWorkflowLoadable(run.id) &&
-						!reconcileDurableResumeShadow(run, store, { ...shadowDeps, backend }),
+						classifyDurableResumeShadow(run, store, { ...shadowDeps, backend }) === "not_shadow",
 				);
 				await refreshWorkflowArtifactPresence(loadableRuns, store.runs());
 				const combined = resolveWorkflowResumeTarget(
@@ -442,6 +457,7 @@ export async function handleRunControlCommand(
 					completed,
 					store.runs(),
 					backend,
+					storedIds,
 				);
 				if (combined.kind === "malformed" || combined.kind === "ambiguous") {
 					fail(combined.message);
@@ -460,7 +476,7 @@ export async function handleRunControlCommand(
 						fail(`Failed to resolve workflow resume target: ${preparationError}`);
 						return true;
 					}
-					return await durableResume(target);
+					return await durableResume(combined.kind === "stored" ? combined.workflowId : target);
 				}
 			}
 		}
@@ -532,6 +548,13 @@ export async function handleRunControlCommand(
 		}
 		let result: Awaited<ReturnType<typeof resumeRun>>;
 		try {
+			if (
+				expectedUpdatedAt !== undefined &&
+				requireStoreDurableBackend(store, stageRunId).getWorkflow(stageRunId)?.updatedAt !== expectedUpdatedAt
+			) {
+				fail(staleResumeSelectionMessage(stageRunId));
+				return true;
+			}
 			result = await resumeRun(stageRunId, { ...owner, stageId, message, actor: "user" });
 		} catch (error) {
 			fail(`Failed to resume run ${stageRunId}: ${error instanceof Error ? error.message : String(error)}`);
