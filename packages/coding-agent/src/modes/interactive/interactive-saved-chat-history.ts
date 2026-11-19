@@ -9,6 +9,7 @@ import {
 	WindowedContainer,
 } from "@bastani/atomic-tui";
 import type { SessionEntry, SessionManager } from "../../core/session-manager.ts";
+import { chatPosition } from "../../core/storage/session/chat-records.js";
 import type {
 	SessionHistoryItem,
 	SessionHistoryPage,
@@ -47,23 +48,61 @@ export interface SavedPageRecords {
 	readonly data: ChatPageDecorations;
 }
 
-/** Read the saved lines of a page's entries with the page. They are not cached: they leave with its rows. */
+/** Read the saved lines of a page's entries with the page. They are not cached: they leave with its rows.
+ * `back`: the page was read back, so the prompt it starts with may have overtaken notices ending the page before. */
 async function readPageRecords(
 	mode: InteractiveModeBase,
 	manager: SessionManager,
 	entries: SessionEntry[],
 	root: boolean,
+	back = false,
 ): Promise<SavedPageRecords | undefined> {
 	if (mode.sessionManager !== manager || entries.length === 0) return undefined;
 	const mount = sessionChatMount(mode, manager);
 	if (!mount) return undefined;
 	const positions = new ChatReaderLayout(entries, new Container(), { root });
+	const targets = positions.orderTargets();
+	if (back && chatPosition(entries[0]!).role === "prompt" && !targets.includes(entries[0]!.id))
+		targets.push(entries[0]!.id);
 	const data = await readMountedAnchors(
 		{ scope: mount.scope, present: mount.present, records: new Map() },
 		positions.anchors(),
-		positions.orderTargets(),
+		targets,
 	);
 	return data ? { root, data } : undefined;
+}
+
+/**
+ * A prompt is drawn above the notices that overtook it on their way to storage (#5682) by a page holding both, so a
+ * page does not end between them: read on, it stops before such notices when their prompt is past its end; read back,
+ * it starts after such a prompt when their first notice is before its start. The next read continues from that edge.
+ * A page keeps at least one entry, so a run longer than a page stays where the store cut it.
+ */
+function keepOvertakenRuns(
+	direction: Direction,
+	items: readonly SessionHistoryItem[],
+	before: ReadonlyMap<string, string> | undefined,
+): readonly SessionHistoryItem[] {
+	if (!before?.size || items.length < 2) return items;
+	const at = items.map((item) => chatPosition(entryForDisplay(item)));
+	const ids = new Set(at.map((position) => position.id));
+	const linked = (i: number) => at[i]!.parentId === at[i - 1]!.id;
+	if (direction === "older") {
+		let prompt = 0;
+		while (at[prompt]?.role === "notice" && (prompt === 0 || linked(prompt))) prompt++;
+		const first = at[prompt];
+		if (first?.role !== "prompt" || (prompt > 0 && !linked(prompt)) || prompt + 1 >= items.length) return items;
+		for (const [anchor, id] of before) if (id === first.id && !ids.has(anchor)) return items.slice(prompt + 1);
+		return items;
+	}
+	let start = at.length - 1;
+	if (at[start]!.role !== "notice") return items;
+	while (start > 1 && at[start - 1]!.role === "notice" && linked(start)) start--;
+	for (let i = start; i < at.length; i++) {
+		const prompt = before.get(at[i]!.id);
+		if (prompt !== undefined && !ids.has(prompt)) return items.slice(0, i);
+	}
+	return items;
 }
 
 /** Saved entries drawn for a copy, not mounted: where each row belongs, and the reads its edge cards still need. */
@@ -366,6 +405,7 @@ async function readVisiblePage(
 	mode: InteractiveModeBase,
 	manager: SessionManager,
 	options: SessionHistoryReadOptions,
+	direction: Direction,
 ): Promise<VisiblePage | undefined> {
 	const read = manager.readHistory(options);
 	let page: SessionHistoryPage | undefined;
@@ -379,7 +419,13 @@ async function readVisiblePage(
 	page = await withOversizedToolResults(manager, page, options.signal);
 	options.signal?.throwIfAborted();
 	// The page's saved lines arrive with it, so it is drawn once, with each line where the whole chat shows it.
-	const records = await readPageRecords(mode, manager, page.items.map(entryForDisplay), page.items[0]?.seq === 1);
+	const records = await readPageRecords(
+		mode,
+		manager,
+		page.items.map(entryForDisplay),
+		page.items[0]?.seq === 1,
+		direction === "older",
+	);
 	return { page, records };
 }
 
@@ -544,7 +590,12 @@ class SavedChatHistory {
 			controller.signal,
 			direction,
 			request,
-			readVisiblePage(this.mode, this.manager, { ...request.options, adjacent: true, signal: controller.signal }),
+			readVisiblePage(
+				this.mode,
+				this.manager,
+				{ ...request.options, adjacent: true, signal: controller.signal },
+				direction,
+			),
 		);
 	}
 
@@ -635,23 +686,27 @@ class SavedChatHistory {
 		const at = this.chat.children.indexOf(this.marker);
 		if (!page || at < 0 || this.mode.sessionManager !== this.manager) return;
 		if (direction === "start") this.clearPages();
+		const items = keepOvertakenRuns(direction, page.items, records?.data.before);
+		const older = items[0] === page.items[0],
+			newer = items.at(-1) === page.items.at(-1);
 		const children = this.draw(
 			this.mode,
-			page.items.map(entryForDisplay),
-			page.items.map((item) => item.seq),
+			items.map(entryForDisplay),
+			items.map((item) => item.seq),
 			this.exceptions,
 			page.adjacent,
 			undefined,
 			records,
 		);
+		// An edge cut short continues with a range read from the page's own edge, not with the store's cursor.
 		const mounted: MountedPage = {
 			children,
-			older: page.adjacent?.older,
-			newer: page.adjacent?.newer,
-			first: page.items[0]?.seq ?? range.from,
-			last: page.items.at(-1)?.seq ?? range.to,
-			from: range.from,
-			to: range.to,
+			older: older ? page.adjacent?.older : undefined,
+			newer: newer ? page.adjacent?.newer : undefined,
+			first: items[0]?.seq ?? range.from,
+			last: items.at(-1)?.seq ?? range.to,
+			from: older ? range.from : items[0]!.seq,
+			to: newer ? range.to : items.at(-1)!.seq,
 		};
 		if (direction === "newer") {
 			const previous = this.pages.findLast((mountedPage) => mountedPage.children.length)?.children.at(-1);

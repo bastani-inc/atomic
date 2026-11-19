@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import { ScrollView, type TuiAltScreen } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.js";
@@ -703,3 +704,142 @@ test("a committed boundary precedes its unprefixed hard-limit error exactly once
 	// The compaction event draws the first diagnostic; the later failed assistant reply has its own row.
 	assert.deepEqual(lines.slice(1), [end.errorMessage, `Error: ${end.errorMessage}`]);
 });
+
+/** A fullscreen chat of `session` whose transcript the test scrolls, as a terminal shows it. */
+function fullscreenChat(session: Harness["session"]) {
+	const host = {
+		session,
+		services: { agentDir: tmpdir() },
+		diagnostics: [],
+		setBeforeSessionInvalidate() {},
+		setRebindSession() {},
+		async dispose() {},
+	} as unknown as AgentSessionRuntime;
+	const terminal = new RecordingTerminal();
+	terminal.columns = 100;
+	terminal.rows = 40;
+	const mode = new InteractiveMode(host, { terminal });
+	(mode as unknown as { isInitialized: boolean }).isInitialized = true;
+	const tui = mode.ui as unknown as TuiAltScreen;
+	const transcript = new ScrollView(mode.documentContainer, { follow: "end", primary: true });
+	mode.transcriptScrollView = transcript;
+	tui.setLayoutRoot(transcript);
+	releaseStartupChatOutput(mode);
+	tui.start();
+	cleanups.push(() => {
+		tui.stop();
+		mode.stop();
+	});
+	return { mode, tui, transcript };
+}
+
+test.each(["in-process", "isolated"])(
+	"on the %s host, a prompt stays above the notices that overtook it when a saved page ends between them (#5606)",
+	async (host) => {
+		const root = await mkdtemp(join(tmpdir(), "atomic-saved-page-order-"));
+		cleanups.push(() => rm(root, { force: true, recursive: true }));
+		const manager = await SessionManager.create(root, join(root, "sessions"));
+		const scope = manager.chatRecordScope();
+		assert.ok(scope);
+		let filled = 0;
+		const fillTo = async (seq: number) => {
+			while ((manager.getEntrySeq(manager.getLeafId() ?? "") ?? 0) < seq) {
+				const n = filled++;
+				await manager.appendMessage(
+					n % 2 === 0
+						? { role: "user", content: `FILL-${n} ask`, timestamp: n }
+						: fauxAssistantMessage(`FILL-${n} done`),
+				);
+			}
+		};
+		/** Notices shown while `label`'s prompt was on its way to storage are saved before it, with the edge that
+		 * shows the prompt first. Returns the prompt's saved entry. */
+		const overtaken = async (label: string, notices: number) => {
+			let first = "";
+			for (let i = 0; i < notices; i++) {
+				const id = await manager.appendCustomMessageEntry("note", `${label}-NOTICE-${i}`, true, undefined, true);
+				first ||= id;
+			}
+			const prompt = await manager.appendMessage({ role: "user", content: `${label}-PROMPT`, timestamp: 1 });
+			await scope.store.append(scope.owner, first, { kind: "promptBefore", promptId: prompt });
+			return manager.getEntrySeq(prompt);
+		};
+		// Saved pages hold 64 entries. Read on from the start they end at 64, 128, 192, 256; read back from 260, the
+		// last saved entry, they start at 197, 133, 69, 5. Each run below has a page edge inside it in one direction.
+		await fillTo(62);
+		assert.equal(await overtaken("A", 3), 66, "notices 63-65: read on, a page ends after the second");
+		await fillTo(130);
+		assert.equal(await overtaken("C", 3), 134, "notices 131-133: read back, a page starts at the third");
+		await fillTo(194);
+		assert.equal(await overtaken("B", 2), 197, "notices 195-196: read back, a page starts at the prompt");
+		await fillTo(260);
+		const pair = await createEngineHostPair({
+			sessionManager: manager,
+			hostSessionManager: await SessionManager.open(manager.getSessionFile()!),
+			engineExtensions: [
+				(pi) => {
+					pi.on("session_before_compact", () => ({ compactedText: "fresh context" }));
+				},
+			],
+		});
+		cleanups.push(() => pair.cleanup());
+		const session = host === "isolated" ? pair.runtime.session : pair.engine.session;
+		const { mode, tui, transcript } = fullscreenChat(session);
+		cleanups.push(session.subscribe((event) => void mode.handleEvent(event as never)));
+		mode.renderInitialMessages();
+		await pair.engine.session.compact();
+		await pair.drain();
+		assert.equal(manager.getEntrySeq(manager.getLeafId()!), 261, "the clear is the entry after the saved history");
+		const lines = () => mode.documentContainer.render(100).map((line) => stripVTControlCharacters(line));
+		// The chat shows the new context, with the saved history above it read in pages.
+		await vi.waitFor(() => assert.ok(!lines().some((line) => line.includes("FILL-"))));
+		const document = () => lines().filter((line) => /-(NOTICE-\d|PROMPT)/.test(line));
+		const seen = new Set<string>();
+		const check = () => {
+			const fills = lines().flatMap((line) => /FILL-(\d+) (?:ask|done)/.exec(line)?.[1] ?? []);
+			assert.deepEqual(
+				fills.map(Number),
+				fills.map((_, i) => Number(fills[0]) + i),
+				"saved rows stay in order, none repeated or skipped",
+			);
+			const rows = document();
+			for (const [label, notices] of [
+				["A", 3],
+				["C", 3],
+				["B", 2],
+			] as const) {
+				const prompt = rows.findIndex((line) => line.includes(`${label}-PROMPT`));
+				const shown = Array.from({ length: notices }, (_, i) =>
+					rows.findIndex((line) => line.includes(`${label}-NOTICE-${i}`)),
+				).filter((at) => at >= 0);
+				if (prompt < 0 || !shown.length) continue;
+				assert.ok(
+					shown.every((at) => at > prompt),
+					`${label}'s prompt is drawn above every notice that overtook it:\n${rows.join("\n")}`,
+				);
+				if (shown.length === notices) seen.add(label);
+			}
+		};
+		const walk = async (step: number, done: () => boolean) => {
+			for (let i = 0; i < 400 && !done(); i++) {
+				transcript.scrollBy(step);
+				for (let turn = 0; turn < 30; turn++) {
+					tui.renderNow();
+					await new Promise<void>((resolve) => setImmediate(resolve));
+				}
+				check();
+			}
+			assert.ok(done(), "the walk reached the other end of the saved history");
+		};
+		const shows = (text: string) => () =>
+			tui.getScreenLines().some((line) => stripVTControlCharacters(line).includes(text));
+		const [first, last] = ["FILL-0 ask", `FILL-${filled - 1} ${filled % 2 ? "ask" : "done"}`];
+		await walk(-10, shows(first));
+		assert.deepEqual([...seen].sort(), ["A", "B", "C"], "reading back drew each run with its prompt");
+		seen.clear();
+		transcript.scrollToStart();
+		await walk(0, shows(first));
+		await walk(10, shows(last));
+		assert.deepEqual([...seen].sort(), ["A", "B", "C"], "reading on drew each run with its prompt");
+	},
+);
