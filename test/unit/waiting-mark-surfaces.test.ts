@@ -219,6 +219,136 @@ test.each(["sweep_worker ops", "sweep_worker docs", "sweep_worker:qa", "sweep_wo
 	},
 );
 
+test("a reopened nameless subagent notice uses its own settlement, not another task with the same number (#5690)", async () => {
+	const title = "Subagent docs worker killed (non-resumable): paused · awaiting resume: check the queue";
+	const taskId = savedNotices.stopped088.taskId;
+	const intent = { taskId, ownerId: "owner-1-0", terminalSequence: "7", taskKind: "agent", display: false };
+	for (const [cause, expected] of [
+		["user", "◼ docs worker stopped"],
+		["pause", "⏸ docs worker killed (non-resumable): paused · awaiting resume"],
+	] as const) {
+		await expectReopenedNotice(
+			title,
+			{ ...intent, completionId: "settlement", notification: { ...savedNotices.stopped088, title } },
+			expected,
+			undefined,
+			async (session) => {
+				await session.appendCustomEntry("task-completion-intent", {
+					...intent,
+					completionId: "settlement",
+					result: { kind: "cancelled", cause },
+				});
+				await session.appendCustomEntry("task-completion-intent", {
+					...intent,
+					completionId: "another-settlement",
+					result: { kind: "cancelled", cause: cause === "user" ? "pause" : "user" },
+				});
+			},
+		);
+	}
+});
+
+test("a reopened card neither borrows a sibling branch's intent nor invents an ambiguous agent name (#5690)", async () => {
+	const title =
+		"Subagent docs worker killed (non-resumable): paused · awaiting resume: more killed (non-resumable): check the queue";
+	const taskId = savedNotices.stopped088.taskId;
+	for (const sibling of [false, true]) {
+		await expectReopenedNotice(
+			title,
+			{ notification: { ...savedNotices.stopped088, title } },
+			sibling ? "⏸ docs worker killed (non-resumable): paused · awaiting resume" : "◼ Subagent stopped",
+			undefined,
+			async (session) => {
+				const root = await session.appendMessage({ role: "user", content: "Check the queue", timestamp: 1 });
+				await session.appendCustomEntry("task-completion-intent", {
+					completionId: "receipt",
+					ownerId: "owner-1-0",
+					terminalSequence: "7",
+					taskId,
+					taskKind: "agent",
+					display: false,
+					result: { kind: "cancelled", cause: "user" },
+				});
+				if (sibling) await session.recordBranch(root);
+			},
+			"receipt",
+		);
+	}
+});
+
+test("a surviving pause result takes precedence over a previously reopened header (#5690)", async () => {
+	const session = SessionManager.inMemory();
+	const title = "Subagent docs worker killed (non-resumable): paused · awaiting resume: verify";
+	const saved = { completionId: "settlement", taskId: savedNotices.stopped088.taskId };
+	await session.appendCustomEntry("task-completion-intent", {
+		...saved,
+		result: { kind: "cancelled", cause: "user" },
+	});
+	await session.appendCustomMessageEntry("task-completion", title, true, {
+		...saved,
+		notification: { ...savedNotices.stopped088, title },
+	});
+	const message = session.buildSessionContext().messages.find((message) => message.role === "custom");
+	assert.ok(message);
+	message.details = {
+		...saved,
+		notification: { ...savedNotices.stopped088, title },
+		result: { kind: "cancelled", cause: "pause" },
+	};
+	const card = TaskCompletionMessage.fromMessage(message, false);
+	assert.ok(card);
+	assert.equal(
+		stripVTControlCharacters(card.render(120)[0]!).trim(),
+		"⏸ docs worker killed (non-resumable): paused · awaiting resume",
+	);
+});
+
+test("a compacted chat can show the stop recorded before its delivered card (#5690)", async () => {
+	const title = "Subagent docs worker timed out: quit · paused, awaiting resume: check the queue";
+	const taskId = savedNotices.stopped088.taskId;
+	await expectReopenedNotice(
+		title,
+		{ notification: { ...savedNotices.stopped088, title } },
+		"◼ docs worker stopped",
+		undefined,
+		async (session) => {
+			await session.appendCustomEntry("task-completion-intent", {
+				completionId: "receipt",
+				ownerId: "owner-1-0",
+				taskId,
+				terminalSequence: "7",
+				taskKind: "agent",
+				display: false,
+				result: { kind: "cancelled", cause: "execution-timeout" },
+			});
+			const last = await session.appendMessage({ role: "user", content: "Check the queue", timestamp: 1 });
+			await session.appendCompaction(
+				"Checked the queue",
+				null,
+				100,
+				{
+					strategy: "verbatim-lines",
+					promptVersion: 7,
+					form: "compacted",
+					parameters: { query: "queue" },
+					stats: {
+						linesBefore: 2,
+						linesDeleted: 1,
+						linesKept: 1,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 50,
+						percentReduction: 50,
+					},
+				},
+				undefined,
+				last,
+			);
+		},
+		"receipt",
+	);
+});
+
 test("a separately saved name identifies a stopped child even when its task starts with pause or wait wording (#5690)", async () => {
 	for (const stop of ["killed (non-resumable)", "timed out", "stopped (session closed)", "stopped"]) {
 		for (const description of [
@@ -397,12 +527,24 @@ async function expectReopenedNotice(
 	details: unknown,
 	expected: string,
 	preview?: string,
+	beforeNotice?: (session: SessionManager) => Promise<void>,
+	admissionKey?: string,
 ): Promise<void> {
 	for (const backend of ["sqlite", "jsonl"] as const)
 		await withDiskSessions(backend, async (open) => {
 			const writer = await open();
 			const session = await SessionManager.create(writer.store, process.cwd());
-			await session.appendCustomMessageEntry(TASK_COMPLETION_MESSAGE_TYPE, body, true, details);
+			await beforeNotice?.(session);
+			await session.appendCustomMessageEntry(
+				TASK_COMPLETION_MESSAGE_TYPE,
+				body,
+				true,
+				details,
+				undefined,
+				undefined,
+				admissionKey,
+			);
+			if (admissionKey) await session.appendCustomEntry("task-completion-ack", { completionId: admissionKey });
 			const sessionId = session.getSessionId();
 			await writer.close();
 

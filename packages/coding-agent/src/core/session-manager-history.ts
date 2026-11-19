@@ -19,6 +19,7 @@ import type {
 	SessionProjection,
 	SessionTreeNode,
 } from "./session-manager-types.ts";
+import { ReopenedCompletionHeaders } from "./tasks/reopened-completion.js";
 
 /** Build the single context message a durable entry contributes, if any. */
 function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
@@ -106,8 +107,9 @@ function projectContextEntry(
 	edit: ContextEditEntry | undefined,
 	purpose: "model" | "transcript",
 	onTranscriptEdit?: () => void,
+	headers?: ReopenedCompletionHeaders,
 ): AgentMessage[] {
-	const messages = sessionEntryToContextMessages(entry);
+	const messages = sessionEntryToDisplayMessages(entry, headers);
 	// Context edits change what the next request sees, not the rows the reader already saw. A row no reader sees
 	// follows the model, so a transcript never carries hidden content the model no longer has.
 	if (!edit) return messages;
@@ -147,6 +149,16 @@ export function getLatestCompactionBoundaryEntry(
 		if (details?.strategy === "verbatim-lines") return entry as CompactionEntry<VerbatimCompactionDetails>;
 	}
 	return null;
+}
+
+export function sessionEntryToDisplayMessages(
+	entry: SessionEntry,
+	headers?: ReopenedCompletionHeaders,
+): AgentMessage[] {
+	const messages = sessionEntryToContextMessages(entry);
+	if (entry.type === "custom_message" && entry.customType === "task-completion" && messages[0]?.role === "custom")
+		headers?.apply(entry, messages[0]);
+	return messages;
 }
 
 /** Convert one durable session entry into the messages it contributes to model context. */
@@ -270,6 +282,7 @@ export function buildSessionProjection(
 	const { thinkingLevel, model } = getSessionContextSettings(path);
 	const contextEntries = buildContextEntries(entries, leaf.id, byId, walked);
 	const edits = collectContextEdits(contextEntries);
+	const headers = new ReopenedCompletionHeaders(() => path);
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	// A summary boundary from an older release replays with its kept messages as structured messages.
@@ -281,7 +294,7 @@ export function buildSessionProjection(
 				messages:
 					boundary && sourceEntry.type === "compaction" && sourceEntry.id !== boundary.id
 						? []
-						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose, onTranscriptEdit),
+						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose, onTranscriptEdit, headers),
 			}),
 		);
 		return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };
@@ -316,7 +329,7 @@ export function buildSessionProjection(
 					? boundaryMessages
 					: keptTailIds.has(sourceEntry.id) || sourceEntry.type === "compaction"
 						? []
-						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose, onTranscriptEdit),
+						: projectContextEntry(sourceEntry, edits.get(sourceEntry.id), purpose, onTranscriptEdit, headers),
 		}),
 	);
 	return { entries: projected, messages: projected.flatMap((entry) => entry.messages), thinkingLevel, model };

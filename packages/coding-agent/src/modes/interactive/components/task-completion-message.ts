@@ -12,6 +12,7 @@ import {
 	type TaskNoticeLine,
 } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import { reopenedCompletionName } from "../../../core/tasks/reopened-completion.js";
 import type { TaskTranscriptHistory, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
 import { theme } from "../theme/theme.js";
@@ -421,6 +422,8 @@ export type TaskCompletionTranscriptLoadResult =
 	| undefined;
 
 export interface TaskCompletionMessageOptions {
+	/** The host's independently witnessed header when the card is painted in another process. */
+	readonly reopenedStopName?: string;
 	readonly loadTranscript?: (
 		taskId: TaskId,
 	) => Promise<TaskCompletionTranscriptLoadResult> | TaskCompletionTranscriptLoadResult;
@@ -707,6 +710,12 @@ export class TaskCompletionMessage implements Component {
 		const notice = Array.isArray(read) ? read[0] : read;
 		const card = new TaskCompletionMessage(notice, expanded, options);
 		if (card.#reuseHeader(previous, notice)) return card;
+		const restored = options?.reopenedStopName ?? reopenedCompletionName(message);
+		if (restored !== undefined && notice.preview === "" && notice.agentName?.endsWith(":")) {
+			const body = ownData(message, "content");
+			if (body === "" || body === notice.title) card.stoppedName = restored;
+			return card;
+		}
 		const evidence = stopEvidence.get(notice);
 		if (evidence) {
 			// A surviving body rules out recovery before we scan the independent name. Never invoke a body getter.

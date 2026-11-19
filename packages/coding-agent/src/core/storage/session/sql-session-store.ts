@@ -22,6 +22,7 @@ import {
 	foreignResumeIds,
 	isSessionResumeIndex,
 	latestCompactionOf,
+	readEarlierCompletionIntents,
 	type SessionResumeIndex,
 	sessionResumeFrom,
 	sessionResumeOf,
@@ -1890,6 +1891,10 @@ export class SqlSessionStore implements SessionStore {
 			for (const [start, end] of plan.branch)
 				branch.push(...(await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])));
 			const state = await this.readSeqs(tx, sessionId, plan.state);
+			if (plan.compaction)
+				await readEarlierCompletionIntents(index, branch, state, plan.compaction.retainedStartSeq, (seqs) =>
+					this.readSeqs(tx, sessionId, seqs),
+				);
 			const leaf =
 				leafSeq <= 0
 					? undefined
