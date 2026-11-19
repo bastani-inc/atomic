@@ -300,7 +300,6 @@ async function decideOn<const Q extends DecisionQuestions>(
 				},
 				signal: request.signal,
 				timeoutMs: request.deadline,
-				retryDeadline: request.retryDeadline,
 				retry: request.retry,
 			},
 			undefined,

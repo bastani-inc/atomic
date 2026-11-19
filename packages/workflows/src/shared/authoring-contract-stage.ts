@@ -151,7 +151,7 @@ export interface WorkflowModelCatalogPort {
 /** A decision a workflow asks of the host's decision model; the host supplies settings, registry and current model. */
 export type WorkflowDecisionRequest<Q extends DecisionQuestions = DecisionQuestions> = Pick<
 	DecisionRequest<Q>,
-	"state" | "questions" | "instructions" | "deadline" | "retryDeadline" | "signal" | "requireProbabilities" | "model"
+	"state" | "questions" | "instructions" | "deadline" | "signal" | "requireProbabilities" | "model"
 >;
 
 export interface WorkflowMaxOutput {

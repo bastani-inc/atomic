@@ -214,10 +214,10 @@ export class StagePredictor {
 	): Promise<StageDecisionResult> {
 		const deadline = new AbortController();
 		const startedAt = Date.now();
-		const at = performance.now() + this.deadlineMs;
-		const expire = () =>
-			deadline.abort(new StageDecisionTimeoutError(phase, this.deadlineMs, Date.now() - startedAt));
-		const timer = setTimeout(expire, this.deadlineMs);
+		const timer = setTimeout(
+			() => deadline.abort(new StageDecisionTimeoutError(phase, this.deadlineMs, Date.now() - startedAt)),
+			this.deadlineMs,
+		);
 		timer.unref();
 		const signal = AbortSignal.any([deadline.signal, this.disposed.signal]);
 		try {
@@ -226,7 +226,6 @@ export class StagePredictor {
 				questions,
 				instructions,
 				deadline: this.deadlineMs,
-				retryDeadline: { at, onExpired: expire },
 				signal,
 			});
 			return await new Promise<StageDecisionResult>((resolve, reject) => {
@@ -353,7 +352,6 @@ export function stageDecisionPortFromModels(
 				questions: request.questions as DecisionQuestions,
 				instructions: request.instructions,
 				deadline: request.deadline,
-				...(request.retryDeadline === undefined ? {} : { retryDeadline: request.retryDeadline }),
 				signal: request.signal,
 				requireProbabilities: true,
 			});

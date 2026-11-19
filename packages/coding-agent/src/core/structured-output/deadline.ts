@@ -70,11 +70,7 @@ export class DecisionAttempt {
 /** How every generation of one decision ended and how long it took, across repairs, retries and candidates. */
 export class DecisionTrace {
 	private readonly attempts: DecisionAttempt[] = [];
-	readonly retryDeadline?: RetryDeadline;
-
-	constructor(retryDeadline?: RetryDeadline) {
-		this.retryDeadline = retryDeadline;
-	}
+	declare retryDeadline?: RetryDeadline;
 
 	get size(): number {
 		return this.attempts.length;
@@ -118,10 +114,11 @@ export interface DecisionRun {
 export async function withinDecisionDeadline<T>(
 	callerSignal: AbortSignal | undefined,
 	timeoutMs: number,
-	parentRetryDeadline: RetryDeadline | undefined,
 	run: (decision: DecisionRun) => Promise<T>,
+	options?: { guardProviderRetries: true },
 ): Promise<T> {
 	const controller = new AbortController();
+	const trace = new DecisionTrace();
 	const forwardCallerAbort = () => controller.abort(callerSignal?.reason);
 	if (callerSignal?.aborted) forwardCallerAbort();
 	else callerSignal?.addEventListener("abort", forwardCallerAbort, { once: true });
@@ -135,11 +132,7 @@ export async function withinDecisionDeadline<T>(
 				attempts: trace.describe(),
 			}),
 		);
-	const at = startedAt + timeoutMs;
-	const parentAt = typeof parentRetryDeadline === "number" ? parentRetryDeadline : parentRetryDeadline?.at;
-	const trace = new DecisionTrace(
-		parentAt !== undefined && parentAt <= at ? parentRetryDeadline : { at, onExpired: expire },
-	);
+	if (options?.guardProviderRetries) trace.retryDeadline = { at: startedAt + timeoutMs, onExpired: expire };
 	const timer = setTimeout(expire, timeoutMs);
 	try {
 		return await run({ signal: controller.signal, trace });

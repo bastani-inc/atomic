@@ -112,6 +112,7 @@ async function inferChat<T extends TSchema>(
 		parameters: request.schema,
 	};
 	let response: AssistantMessage;
+	const retryOptions = trace.retryDeadline === undefined ? undefined : { retryDeadline: trace.retryDeadline };
 	let callCount = 0;
 	assertActive();
 	try {
@@ -145,8 +146,8 @@ async function inferChat<T extends TSchema>(
 						},
 						{
 							signal,
-							retryDeadline: trace.retryDeadline,
-							...(callCount++ > 0 ? { [assistantRetryAttempt]: true } : {}),
+							...retryOptions,
+							...(retryOptions && callCount++ > 0 ? { [assistantRetryAttempt]: true } : {}),
 							maxRetries: 0,
 							transport: "sse",
 							toolChoice: "auto",
@@ -167,7 +168,7 @@ async function inferChat<T extends TSchema>(
 			},
 			request.retry ?? DEFAULT_DECISION_RETRY,
 			signal,
-			{ retryDeadline: trace.retryDeadline },
+			retryOptions,
 		);
 	} catch (error) {
 		signal.throwIfAborted();
@@ -360,7 +361,7 @@ async function inferClassifier<T extends TSchema>(
 			{ state: request.state, questions },
 			{
 				signal,
-				retryDeadline: trace.retryDeadline,
+				...(trace.retryDeadline === undefined ? {} : { retryDeadline: trace.retryDeadline }),
 				maxRetries:
 					request.retry?.enabled === false ? 0 : (request.retry?.maxRetries ?? DEFAULT_DECISION_RETRY.maxRetries),
 			},
@@ -413,8 +414,11 @@ export async function generateStructuredOutput<T extends TSchema>(
 ): Promise<StructuredOutputResult<Static<T>>> {
 	assertNotCancelled(request.signal);
 	const timeoutMs = resolveDecisionDeadlineMs(request.timeoutMs);
-	return withinDecisionDeadline(request.signal, timeoutMs, request.retryDeadline, ({ signal, trace }) =>
-		generateWithinDeadline({ ...request, signal }, trace),
+	return withinDecisionDeadline(
+		request.signal,
+		timeoutMs,
+		({ signal, trace }) => generateWithinDeadline({ ...request, signal }, trace),
+		{ guardProviderRetries: true },
 	);
 }
 
@@ -763,15 +767,9 @@ export async function runDecision<T extends TSchema>(
 	const retry = inference.retry ?? settings.getRetrySettings?.() ?? DEFAULT_DECISION_RETRY;
 	const deadlineMs = resolveDecisionDeadlineMs(timeoutMs, settings.getHttpIdleTimeoutMs?.());
 	const prepare = options.prepare;
-	const result = await withinDecisionDeadline(
-		request.signal,
-		deadlineMs,
-		request.retryDeadline,
-		({ signal, trace }) => {
-			const infer = () =>
-				inferDecision({ ...inference, model, retry, signal, trace }, 3, validateDecision, fallback);
-			return prepare ? prepare(signal).then(infer) : infer();
-		},
-	);
+	const result = await withinDecisionDeadline(request.signal, deadlineMs, ({ signal, trace }) => {
+		const infer = () => inferDecision({ ...inference, model, retry, signal, trace }, 3, validateDecision, fallback);
+		return prepare ? prepare(signal).then(infer) : infer();
+	});
 	return { ...result, source: model.kind === "classifier" && result.fallback === undefined ? "classifier" : "chat" };
 }

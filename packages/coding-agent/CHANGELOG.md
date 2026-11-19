@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Structured-output and decision requests, including workflow stage inference, no longer send a provider backoff retry after the decision deadline when the process is busy ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
+- `generateStructuredOutput()` and the `structured_output` tool no longer send a provider backoff retry after their timeout when the process is busy ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).
 
 ## [0.9.90] - 2026-11-19
 
