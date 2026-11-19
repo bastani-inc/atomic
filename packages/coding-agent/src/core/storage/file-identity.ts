@@ -793,6 +793,8 @@ function* configuredRelativeTargetsSteps(
 			home,
 		);
 	}
+	// The workflow journal selections of earlier releases select nothing now, but a store they pointed at still marks
+	// where this agent directory's earlier stores are.
 	const workflows = cli?.value ?? environment.ATOMIC_WORKFLOWS_JOURNAL ?? environment.ATOMIC_STORAGE;
 	if (workflows !== undefined) {
 		pushSelectionTargets(targets, workflows, home, workflows === shared);
