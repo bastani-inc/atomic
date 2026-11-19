@@ -114,7 +114,8 @@ for (const backend of storageBackends) {
 					replacement = "zz-replacement";
 				await startRoot(peer, first);
 				const cutPage = view === "run versions" ? 2 : 1;
-				await seedHeaders(writer, runs, cutPage * (database.descriptor.adapter === "node-sqlite" ? 128 : 4096));
+				const pageSize = database.descriptor.adapter === "node-sqlite" ? 128 : 4096;
+				await seedHeaders(writer, runs, cutPage * pageSize);
 				const reader = await JournalDurableBackend.open(journal, { ownsJournal: false, runs: [first] });
 				closers.push(() => reader.close());
 				assert.deepEqual(
@@ -122,13 +123,17 @@ for (const backend of storageBackends) {
 					[first],
 				);
 				let pages = 0;
+				let replaced = false;
 				const restore = observeSqlReads(database, {
 					after: async (rows) => {
-						if (rows.length <= 1 || !("run_id" in rows[0]!) || ++pages !== cutPage) return;
+						if (replaced || rows.length <= 1 || !("run_id" in rows[0]!)) return;
+						// With a single-statement listing the whole catalog has already been read.
+						if (++pages < cutPage && rows.length <= pageSize) return;
 						// The page has already been read. The other connection commits both writes before scanning continues.
 						await peer.deleteRun(first);
 						if (view === "resumable catalog") await writer.run(`DELETE FROM ${runs} WHERE name = 'run'`);
 						await startRoot(peer, replacement);
+						replaced = true;
 					},
 				});
 				const list = async () =>
@@ -141,7 +146,7 @@ for (const backend of storageBackends) {
 				} finally {
 					restore();
 				}
-				assert.ok(pages >= cutPage);
+				assert.ok(replaced, "the writer replaced the root before the read returned");
 				assert.equal(ids.includes(first) && ids.includes(replacement), false, "the two roots never coexisted");
 				assert.deepEqual(
 					(await list()).filter((id) => id === first || id === replacement),
