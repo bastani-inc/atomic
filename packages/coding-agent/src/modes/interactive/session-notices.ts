@@ -9,7 +9,7 @@ function renderLegacyWorkflowNotice(mode: InteractiveModeBase, count: number | u
 		new Text(
 			theme.fg(
 				"dim",
-				`Found ${count} legacy workflow file${count === 1 ? "" : "s"}. Ask Atomic to read one and run its steps with codemode and subagents.`,
+				`Found ${count} legacy workflow file${count === 1 ? "" : "s"}. Ask Atomic to convert ${count === 1 ? "it into a skill" : "them into skills"} for use with codemode and subagents.`,
 			),
 			1,
 			0,

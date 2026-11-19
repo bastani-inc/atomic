@@ -1,6 +1,6 @@
 ---
 title: "Orchestration with codemode and subagents"
-description: "Run multi-step work in chat, keep track of background children, and use an earlier workflow file as a recipe."
+description: "Run multi-step work in chat, keep track of background children, and convert an earlier workflow file into a reusable skill."
 ---
 
 # Orchestration with codemode and subagents
@@ -55,4 +55,4 @@ Use [the codemode store](/codemode#store-values) for small handoffs such as task
 - [Loop-until-done](/orchestration/patterns#loop-until-done): check each repair and stop at success or the round limit.
 - [Stacked slices](/orchestration/patterns#stacked-slices): launch each dependent task from its verified prerequisite.
 
-Have an earlier workflow file or builtin name? See [Use an earlier workflow file](/orchestration/migrating-workflows). To save new procedures, use a [skill](/skills#skills-as-workflows).
+Have an earlier workflow file or builtin name? See [Convert an earlier workflow into a skill](/orchestration/migrating-workflows). To save new procedures, use a [skill](/skills#skills-as-workflows).
