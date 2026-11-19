@@ -2,7 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
-import type { CustomMessage } from "../../../core/messages.js";
+import type { CustomMessage } from "../../../core/messages.ts";
 import {
 	completionTitleDescription,
 	completionTitleText,
