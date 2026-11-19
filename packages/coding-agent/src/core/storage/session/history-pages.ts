@@ -8,6 +8,7 @@ import {
 	SESSION_HISTORY_PAGE_ENTRIES,
 	SESSION_HISTORY_SCAN_ENTRIES,
 	type SessionBranchSpan,
+	type SessionEntrySizes,
 	type SessionHistoryPage,
 	type SessionHistoryReadOptions,
 	type SessionStore,
@@ -88,6 +89,9 @@ export async function* historyPages(
 		throw new RangeError(`History pages hold from 1 to ${SESSION_HISTORY_SCAN_ENTRIES} entries`);
 	const scan = options.pageEntries !== undefined;
 	let pinned: SessionBranchSpan | undefined;
+	// Sizes a forward scan read past the end of its last page, which start its next page when they fill it or reach
+	// the end of the run.
+	let spare: SessionEntrySizes["sizes"] | undefined;
 	while (start <= end) {
 		options.signal?.throwIfAborted();
 		const branchCut =
@@ -123,21 +127,29 @@ export async function* historyPages(
 			low = page[0]!.seq;
 			high = page[page.length - 1]!.seq;
 		} else {
-			const sized = scan
-				? await store.readEntrySizes!(sessionId, from, through, pageEntries)
-				: await store.readEntrySizes!(sessionId, from, through);
-			options.signal?.throwIfAborted();
-			stamp ??= sized.epoch;
-			scope ??= cursorScope(sessionId, stamp);
-			if (sized.epoch !== stamp || sized.lastSeq < end)
-				throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
-			const ordered = reverse ? [...sized.sizes].reverse() : sized.sizes;
+			let sizes = spare;
+			if (
+				sizes?.[0]?.seq !== from ||
+				(sizes.at(-1)!.seq < through &&
+					sizes.reduce((sum, size) => sum + size.bytes, 0) <= SESSION_HISTORY_PAGE_BYTES)
+			) {
+				const sized = scan
+					? await store.readEntrySizes!(sessionId, from, through, pageEntries)
+					: await store.readEntrySizes!(sessionId, from, through);
+				options.signal?.throwIfAborted();
+				stamp ??= sized.epoch;
+				scope ??= cursorScope(sessionId, stamp);
+				if (sized.epoch !== stamp || sized.lastSeq < end)
+					throw new SessionConflictError(sessionId, watermark, sized.lastSeq);
+				sizes = sized.sizes;
+			}
+			const ordered = reverse ? [...sizes].reverse() : sizes;
 			const first = ordered[0];
 			const edge = reverse ? through : from;
 			if (!first || first.seq !== edge) throw new Error(`Missing session history at entry ${edge}`);
 			low = high = edge;
 			if (first.bytes > SESSION_HISTORY_PAGE_BYTES) {
-				page = [{ kind: "oversized", sessionId, epoch: stamp, seq: edge, bytes: first.bytes }];
+				page = [{ kind: "oversized", sessionId, epoch: stamp!, seq: edge, bytes: first.bytes }];
 			} else {
 				let used = 0;
 				for (const size of ordered) {
@@ -152,6 +164,7 @@ export async function* historyPages(
 					throw new SessionConflictError(sessionId, watermark, range.lastSeq);
 				page = range.entries.map((entry, i) => ({ seq: range.seqs?.[i] ?? low + i, entry }));
 			}
+			if (scan && !reverse) spare = sizes.filter((size) => size.seq > high);
 		}
 		if (reverse) end = low - 1;
 		else start = high + 1;

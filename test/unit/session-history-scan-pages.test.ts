@@ -172,6 +172,8 @@ describe.each(["memory", "jsonl", "sqlite", "legacy"] as const)("a scan of a %s 
 		// Before the entry larger than a page, that entry, and after it.
 		assert.equal(whole.length, 3);
 		assert.equal(wholeReads.readRange, 2);
+		// One read of the session's head, and the sizes read for the first page serve the other two.
+		assert.equal(wholeReads.readEntrySizes, 2);
 		const [, branchReads] = await countReads(store, () =>
 			pagesOf(store, { branchLeafSeq: leaf, pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
 		);
