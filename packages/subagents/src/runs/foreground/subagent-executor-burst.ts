@@ -12,7 +12,6 @@ import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
 import { registerBurstDisplay, releaseBurstDisplay, updateBurstDisplay } from "./subagent-executor-burst-display.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { withForkContext } from "./subagent-executor-input.js";
-import { getLiveResultIndices } from "./subagent-executor-live-update.js";
 import { getParentAskHandoff } from "./subagent-executor-parent-ask-projection.js";
 import {
 	BURST_PREPARED_TASKS,
@@ -323,7 +322,7 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 	const sharedDetails = result.details;
 	if (!sharedDetails || (!live && sharedDetails.results.length === 0)) return result;
 
-	const liveIndices = live ? getLiveResultIndices(result) : undefined;
+	const liveIndices = live ? sharedDetails.resultIndices : undefined;
 	const results = liveIndices
 		? sharedDetails.results.filter((_child, index) => {
 				const resultIndex = liveIndices[index];
@@ -348,6 +347,13 @@ function projectResult(result: SubagentToolResult, route: ResultRoute, live = fa
 			...(sharedDetails.runId !== undefined ? { runId: sharedDetails.runId } : {}),
 			...(sharedDetails.context !== undefined ? { context: sharedDetails.context } : {}),
 			results,
+			...(liveIndices
+				? {
+						resultIndices: liveIndices
+							.filter((i) => i >= route.start && i < route.start + route.length)
+							.map((i) => i - route.start),
+					}
+				: {}),
 			...(progress?.length ? { progress } : {}),
 			...(controlEvents?.length ? { controlEvents } : {}),
 			...(sharedDetails.totalSteps !== undefined ? { totalSteps: route.length } : {}),
