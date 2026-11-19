@@ -8,7 +8,7 @@ function evaluate(...args: string[]) {
 	return spawnSyncCollect(["python3", resolve(root, "test/fixtures/skill-trigger-stream.py"), ...args], {
 		env: {
 			PATH: process.env.PATH,
-			PYTHONPATH: resolve(root, "packages/workflows/skills/skill-creator"),
+			PYTHONPATH: resolve(root, "packages/subagents/skills/skill-creator"),
 			PYTHONDONTWRITEBYTECODE: "1",
 		},
 	});
