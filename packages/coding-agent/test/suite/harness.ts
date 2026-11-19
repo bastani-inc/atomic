@@ -82,6 +82,7 @@ export interface HarnessOptions {
 	tools?: AgentTool[];
 	customTools?: ToolDefinition[];
 	initialActiveToolNames?: string[];
+	initialContextTransform?: CreateAgentSessionOptions["initialContextTransform"];
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
 	resourceLoader?: ResourceLoader;
@@ -218,6 +219,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		baseToolsOverride: toolMap,
 		customTools: options.customTools,
 		initialActiveToolNames: options.initialActiveToolNames,
+		contextProjectionTransform: options.initialContextTransform,
 		usesDefaultTools: options.initialActiveToolNames === undefined,
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
