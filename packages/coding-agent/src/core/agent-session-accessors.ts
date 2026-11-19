@@ -1,8 +1,33 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { finalizeProjectedMessages } from "./agent-session-boundaries.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
+
+function finalizeTranscript(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
+	const finalized = finalizeProjectedMessages(session, messages);
+	// recordBashResult adds source-only output directly to the resident chat, after its context transform.
+	const runOnly = session._runOnlyBashMessages;
+	if (!runOnly) return finalized;
+	const resident = session.messages;
+	const first = resident.findIndex((message) => runOnly.has(message));
+	if (first < 0) return finalized;
+	// Use the following resident row as an anchor: a prompt admitted after a shell must stay after it.
+	const anchors = new Set(finalized);
+	const before = new Map<AgentMessage, AgentMessage[]>();
+	let shells: AgentMessage[] = [];
+	for (const message of resident.slice(first)) {
+		if (runOnly.has(message)) shells.push(message);
+		else if (shells.length > 0 && anchors.has(message)) {
+			before.set(message, shells);
+			shells = [];
+		}
+	}
+	return before.size === 0
+		? finalized.concat(shells)
+		: finalized.flatMap((message) => (before.get(message) ?? []).concat(message)).concat(shells);
+}
 
 export function installAgentSessionAccessors(prototype: AgentSession): void {
 	Object.defineProperties(prototype, {
@@ -88,7 +113,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					(message) =>
 						this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message),
 				);
-				if (pending.length === 0 && beforeSave === undefined) return finalizeProjectedMessages(this, messages);
+				if (pending.length === 0 && beforeSave === undefined) return finalizeTranscript(this, messages);
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
 				// An independent delivery can save a notice after the pinned leaf and publish it while the input's
 				// write is still outstanding. Its source ID distinguishes it from both the prefix and the pending input.
@@ -106,7 +131,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					messages.push(message);
 				}
 				// Paired and repaired as the context is: a call whose result was never saved shows it was interrupted.
-				return finalizeProjectedMessages(this, messages);
+				return finalizeTranscript(this, messages);
 			},
 		},
 		steeringMode: {

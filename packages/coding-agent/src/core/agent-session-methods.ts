@@ -651,6 +651,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_retryCancelled: boolean;
 	_bashAbortControllers: Map<string | symbol, Set<AbortController>>;
 	_pendingBashMessages: BashExecutionMessage[];
+	_runOnlyBashMessages?: WeakSet<object>;
 	_extensionRunner: ExtensionRunner;
 	_workflows?: SessionWorkflowsHandle;
 	_turnIndex: number;

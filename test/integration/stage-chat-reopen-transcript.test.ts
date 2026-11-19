@@ -118,6 +118,55 @@ test.each(histories)(
 	},
 );
 
+test("a reopened stage still shows shell output recorded for this run only after a retry (#5613)", async () => {
+	// The result was added directly to the running session, after its model-context filter.
+	const fixture = await createStageSkillFixture({
+		initialContextTransform: (rows) => rows.filter((m) => m.role !== "bashExecution"),
+	});
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let turn: Promise<unknown> | undefined;
+	try {
+		await retriedFailure(fixture);
+		const session = fixture.stage.session;
+		const output = "Output for this run only";
+		await session.recordBashResult(
+			"echo result",
+			{ output, exitCode: 0, cancelled: false, truncated: false },
+			{ persist: false, defer: false },
+		);
+		const count = (view: StageChatView) => text(view).split(output).length - 1;
+		assert.equal(session.messages.filter((m) => m.role === "bashExecution" && m.output === output).length, 1);
+		assert.equal(count(fixture.mount()), 1);
+		withWorkerView(fixture, (mirror) => assert.equal(count(fixture.mount({ handle: mirror })), 1));
+		assert.equal(
+			session.sessionManager.buildSessionContext().messages.some((m) => m.role === "bashExecution"),
+			false,
+		);
+		const manager = session.sessionManager;
+		const append = manager.appendMessage.bind(manager);
+		vi.spyOn(manager, "appendMessage").mockImplementation(async (message) => {
+			if (message.role === "user") {
+				entered.resolve();
+				await release.promise;
+			}
+			return append(message);
+		});
+		const prompt = "Prompt after shell";
+		fixture.stage.appendResponses([fauxAssistantMessage("Done.")]);
+		turn = fixture.handle.prompt(prompt);
+		await entered.promise;
+		const rows = (view: StageChatView) =>
+			view.render(120).flatMap((line) => [output, prompt].filter((s) => stripAnsi(line).includes(s)));
+		assert.deepEqual(rows(fixture.mount()), [output, prompt]);
+		withWorkerView(fixture, (mirror) => assert.deepEqual(rows(fixture.mount({ handle: mirror })), [output, prompt]));
+	} finally {
+		release.resolve();
+		await turn;
+		await fixture.cleanup();
+	}
+});
+
 test("the workflow transcript of a stage never returns a hidden row left out of its context (#5613)", async () => {
 	const fixture = await createStageSkillFixture();
 	try {
@@ -160,6 +209,71 @@ test("a worker view of a stage holds no hidden rows left out of its context (#56
 		await fixture.cleanup();
 	}
 });
+
+test("switching away from an edited stage branch restores path-only inspection without reading history (#5613)", async () => {
+	const fixture = await createStageSkillFixture();
+	try {
+		const session = fixture.stage.session;
+		const manager = session.sessionManager;
+		const fork = manager.getLeafId();
+		assert.ok(fork);
+		await retriedFailure(fixture);
+		const edited = manager.getLeafId();
+		assert.ok(edited);
+		await manager.branch(fork);
+		for (let index = 0; index < 64; index++)
+			await manager.appendMessage({ role: "user", content: `active branch ${index}`, timestamp: index });
+		session.refreshContext();
+		const reads = vi.spyOn(manager, "getEntries");
+		const result = stageTranscript(fixture);
+		assert.equal(result.inlineMode, "path_only");
+		assert.equal(result.entryCount, session.messages.length);
+		assert.deepEqual(result.entries, []);
+		assert.equal(fixture.handle.messages, session.messages);
+		assert.equal(reads.mock.calls.length, 0);
+		await manager.branch(edited);
+		session.refreshContext();
+		assert.match(text(fixture.mount()), /529 overloaded/);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test.each([false, true])(
+	"a path-only workflow transcript still reads no entries with an active edit (displayed: %s) (#5613)",
+	async (displayed) => {
+		const fixture = await createStageSkillFixture();
+		try {
+			const session = fixture.stage.session;
+			const manager = session.sessionManager;
+			if (displayed) await retriedFailure(fixture);
+			else {
+				const id = await manager.appendCustomMessageEntry("note", "omitted hidden note", false);
+				await manager.appendContextEdit(id, null);
+				session.refreshContext();
+			}
+			const reads = vi.spyOn(manager, "getEntries");
+			const result = stageTranscript(fixture);
+			assert.equal(result.inlineMode, "path_only");
+			assert.deepEqual(result.entries, []);
+			assert.equal(reads.mock.calls.length, 0);
+			assert.equal(result.entryCount, session.messages.length);
+			const emptyPreview = stageTranscript(fixture, { tail: 0 });
+			assert.deepEqual(emptyPreview.entries, []);
+			assert.equal(reads.mock.calls.length, 0);
+			assert.equal(emptyPreview.entryCount, session.messages.length);
+			if (!displayed) {
+				assert.equal(fixture.handle.messages, session.messages);
+				assert.equal(reads.mock.calls.length, 0);
+			} else {
+				assert.match(text(fixture.mount()), /529 overloaded/);
+				assert.equal(stageTranscript(fixture, { tail: 1 }).entryCount, session.messages.length + 1);
+			}
+		} finally {
+			await fixture.cleanup();
+		}
+	},
+);
 
 test("a path-only workflow transcript of a stage reads none of its saved entries (#5613)", async () => {
 	const fixture = await createStageSkillFixture();

@@ -166,6 +166,8 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private contextEdits = 0;
+	/** Whether a retained row at this leaf differs between the transcript and model projections. */
+	private projectedEdits: { leafId: string | null; visible: boolean } | undefined;
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
 
@@ -546,6 +548,7 @@ export class SessionManager {
 		this.labelsById = index.labelsById;
 		this.labelTimestampsById = index.labelTimestampsById;
 		this.contextEdits = index.contextEdits;
+		this.projectedEdits = undefined;
 		this.leafId = index.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
@@ -707,6 +710,8 @@ export class SessionManager {
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
 			if (entry.type === "context_edit") this.contextEdits++;
+			else if (entry.type !== "compaction" && this.projectedEdits?.leafId === entry.parentId)
+				this.projectedEdits.leafId = entry.id;
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
@@ -1201,19 +1206,27 @@ export class SessionManager {
 
 	/** Project the current leaf and its compaction boundary. Transcript rows keep the content shown before model-only edits. */
 	buildSessionProjection(purpose: "model" | "transcript" = "model", leafId = this.leafId): SessionProjection {
-		return buildSessionProjection(
+		let visible = false;
+		const projection = buildSessionProjection(
 			this.getEntries(),
 			leafId,
 			this.byId,
 			this.sessionId,
 			leafId === this.leafId ? this.activeBranch() : leafId === null ? undefined : this.getBranch(leafId),
 			purpose,
+			() => {
+				visible = true;
+			},
 		);
+		if (leafId === this.leafId) this.projectedEdits = { leafId, visible };
+		return projection;
 	}
 
-	/** Whether any entry, on any branch, edits the model context. Without one the transcript is the model context. */
+	/** Whether an edit on the active branch changes a row still shown in its transcript. */
 	hasContextEdits(): boolean {
-		return this.contextEdits > 0;
+		if (this.contextEdits === 0 || this.leafId === null) return false;
+		if (this.projectedEdits?.leafId !== this.leafId) this.buildSessionProjection();
+		return this.projectedEdits!.visible;
 	}
 
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */

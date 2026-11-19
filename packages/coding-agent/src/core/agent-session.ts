@@ -215,6 +215,7 @@ class AgentSessionBase {
 	protected _retryCancelled = false;
 	protected _bashAbortControllers = new Map<string | symbol, Set<AbortController>>();
 	protected _pendingBashMessages: BashExecutionMessage[] = [];
+	protected _runOnlyBashMessages?: WeakSet<object>;
 	protected _extensionRunner!: ExtensionRunner;
 	protected _turnIndex = 0;
 	/** Source entry IDs for projected messages, so boundaries and omissions resolve provenance. */
