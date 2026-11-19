@@ -71,6 +71,10 @@
 - Shell completion notices and `/tasks` no longer show replacement characters when the last 8 KiB of output start inside a UTF-8 character. Saved shell excerpts and expanded previews keep emoji, combining sequences and omission labels whole. Short task titles in the agent panel and attached chat now keep emoji and combining sequences whole and count the ellipsis inside the 60-unit limit ([#5654](https://github.com/bastani-inc/atomic/issues/5654)).
 - When a paused or blocked workflow run leaves the agent panel, the main chat now shows `/workflows to see runs` below the prompt when it fits beside the status and existing hints. The run stays out of the panel and does not count as an agent ([#5710](https://github.com/bastani-inc/atomic/issues/5710)).
 
+- On Windows, stopping a blueprint step after its command exited without a Job object now warns that descendants may still be running. A command that never started emits no such warning. Atomic does not kill by the exited command’s PID ([#5664](https://github.com/bastani-inc/atomic/issues/5664)).
+- Blueprint steps no longer get extra time to launch previously refused programs or action commands when the system clock moves backward. Time spent asleep counts toward retry and action launch deadlines and is included in reported step durations. Fractional timeouts keep the action’s original deadline, and a long timeout no longer becomes a 1 ms timer ([#5707](https://github.com/bastani-inc/atomic/issues/5707)).
+- A Windows command that keeps its background processes no longer fails after completion just because its idle input thread was paused while holding the input queue lock ([#5702](https://github.com/bastani-inc/atomic/issues/5702)).
+
 ## [0.9.89] - 2026-11-18
 
 Compaction clears the context and lets the agent recover it from history, `model: "auto"` runs your default model, an agent panel keeps subagents and workflows in view, and the interface stays responsive under load.
