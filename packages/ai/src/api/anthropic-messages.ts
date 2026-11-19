@@ -70,6 +70,7 @@ import {
 	type TranscriptContext,
 } from "../utils/transcript.ts";
 import { convertAnthropicAssistantContent } from "./anthropic-assistant-content.ts";
+import { takeAnthropicSerializedBody } from "./anthropic-serialized-body.ts";
 import {
 	ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE,
 	getJsonSchemaToolParameters,
@@ -1108,11 +1109,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
+			let serializedBody: Middleware | undefined;
 			const send = (body: ThreadedParams) =>
 				retryProviderRequest(
 					() => {
 						streamAttempt.begin();
-						return client.beta.messages.create({ ...body, stream: true }, requestOptions).asResponse();
+						const transport = serializedBody ? { ...requestOptions, middleware: [serializedBody] } : requestOptions;
+						serializedBody = undefined;
+						return client.beta.messages.create({ ...body, stream: true }, transport).asResponse();
 					},
 					{
 						maxRetries: options?.maxRetries,
@@ -1134,6 +1138,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				if (built.providerThinkingLevel) output.providerThinkingLevel = built.providerThinkingLevel;
 				params = built.params;
 				const nextParams = await options?.onPayload?.(params, model);
+				serializedBody = takeAnthropicSerializedBody(params);
 				if (nextParams !== undefined) params = nextParams as MessageCreateParamsStreaming;
 				assertPayloadPreservesFastRoute(model, params);
 				const prepared =

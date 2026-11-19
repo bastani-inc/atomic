@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isProxy } from "node:util/types";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
@@ -145,6 +146,18 @@ export let appendOwnedSubagentChildRecord: (
 	data: { readonly childId?: string; readonly owner?: { readonly sessionId?: string } },
 	live: () => boolean,
 ) => Promise<void>;
+
+// A child factory and its host can load independent SDK copies. Their constructors are not
+// interchangeable, but both can identify the physical header without calling virtual host methods.
+const forkGeneration = Symbol.for("atomic.session-manager/fork-generation@1");
+
+/** @internal Read only the native manager's local generation. Unknown/virtual hosts have no receipt. */
+export function physicalForkHeader(manager: SessionManager): SessionHeader | undefined {
+	if (isProxy(manager)) return undefined;
+	const prototype: object | null = Object.getPrototypeOf(manager);
+	const read = prototype && !isProxy(prototype) && Object.getOwnPropertyDescriptor(prototype, forkGeneration)?.value;
+	return typeof read === "function" ? read.call(manager) : undefined;
+}
 
 /** An in-memory session tree whose mutations await the backing store. */
 export class SessionManager {
@@ -1264,6 +1277,12 @@ export class SessionManager {
 	buildSessionContext(): SessionContext {
 		const { messages, thinkingLevel, model } = this.buildSessionProjection();
 		return { messages, thinkingLevel, model };
+	}
+
+	/** @internal Starting or replacing a session installs a new header in slot zero, even for the same public ID. */
+	[forkGeneration](): SessionHeader | undefined {
+		const header = this.fileEntries[0];
+		return header?.type === "session" ? header : undefined;
 	}
 
 	/** Get session header. */
