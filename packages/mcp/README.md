@@ -78,7 +78,7 @@ Tools use names such as `mcp__github__search_code`. Collisions after identifier 
 
 The default exposure is `codemode`: scripts discover tools through `searchTools()`, `describeTool()`, and `ALL_TOOLS`, then call them. `deferred` tools become declared after `tool_search` loads a match. `direct` tools are declared immediately; `hidden` tools are unreachable. `toolExposure` overrides the server's default. Exact names win over patterns; among patterns, the first match wins.
 
-Atomic activates codemode for codemode servers and tool search for deferred servers. Set `"autoEnableCodemode": false` beside `mcpServers` to prevent automatic codemode activation. A project value overrides the user-level value. Scripts read server instructions with `describeNamespace("mcp__github")`.
+Atomic activates codemode for codemode servers and tool search for deferred servers. An explicit `-codemode` in `defaultTools` or `--tools` prevents MCP from activating codemode; omission from a plain `defaultTools` list does not. Set `"autoEnableCodemode": false` beside `mcpServers` to disable MCP's automatic activation without removing codemode from the ordinary defaults. A project value overrides the user-level value. Scripts read server instructions with `describeNamespace("mcp__github")`.
 
 Enabled servers connect in the background. The first prompt waits up to 10 seconds for direct-tool servers. Discovery and calls wait for the servers they need. Dropped connections reconnect on the next call, and tool-list notifications update registrations.
 

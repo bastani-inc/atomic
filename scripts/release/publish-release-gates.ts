@@ -54,6 +54,8 @@ export type PreparationInspection =
 export type PreparationReuseState = {
 	readonly worktreeStatus: string;
 	readonly baseSha: string;
+	/** Verified merge base when the remote base has advanced past the preparation parent. */
+	readonly mergeBaseSha?: string;
 	readonly remoteSha?: string;
 	readonly localSha?: string;
 	readonly pullRequests: readonly {
@@ -119,7 +121,7 @@ export function evaluatePreparationReuse(
 		commit === undefined ||
 		commit.sha !== state.remoteSha ||
 		commit.parents.length !== 1 ||
-		commit.parents[0] !== state.baseSha
+		commit.parents[0] !== (state.mergeBaseSha ?? state.baseSha)
 	) {
 		throw new ReleaseBlocked(
 			`release commit ${state.remoteSha} is not exactly one commit atop origin/${baseRef} ${state.baseSha}`,
@@ -140,6 +142,7 @@ export function evaluatePreparationReuse(
 
 export type GateResult = {
 	readonly status: "passed" | "pending" | "failed";
+	readonly lastObservation?: "pending";
 	readonly summary: string;
 	readonly evidenceUrl?: string;
 };
@@ -212,10 +215,6 @@ export type ReleaseBoundary = {
 		readonly signal: AbortSignal;
 	}) => Promise<GateResult>;
 };
-
-function abortError(): Error {
-	return new DOMException("The operation was aborted", "AbortError");
-}
 
 export const systemPollClock: PollClock = {
 	now: () => Date.now(),
@@ -298,6 +297,46 @@ export function evaluateRequiredChecks(
 	};
 }
 
+async function pollGate(
+	label: string,
+	inspect: () => Promise<GateResult>,
+	signal: AbortSignal,
+	clock: PollClock,
+	timeoutMs: number,
+	intervalMs: number,
+): Promise<GateResult> {
+	const startedAt = clock.now();
+	let pending: GateResult | undefined;
+	try {
+		for (;;) {
+			signal.throwIfAborted();
+			const result = await inspect();
+			if (result.status === "failed") return result;
+			signal.throwIfAborted();
+			if (result.status !== "pending") return result;
+			pending = result;
+			const remaining = timeoutMs - (clock.now() - startedAt);
+			if (remaining <= 0) break;
+			// Waking at the deadline still gets one inspection before a pending result times out.
+			await clock.sleep(Math.min(intervalMs, remaining), signal);
+		}
+	} catch (error) {
+		// The hard CLI deadline also cancels a GitHub read or sleep. Retain the last
+		// complete observation, but never turn an auth/transport/operator error into pending.
+		if (
+			!signal.aborted ||
+			signal.reason?.name !== "TimeoutError" ||
+			(error !== signal.reason && !(error instanceof Error && error.name === "AbortError"))
+		)
+			throw error;
+	}
+	return {
+		status: "failed",
+		...(pending ? { lastObservation: "pending" as const } : {}),
+		summary: `${label} timed out after ${timeoutMs} ms: ${pending?.summary ?? "No complete observation."}`,
+	};
+}
+
 export async function pollRequiredChecks(input: {
 	readonly inspect: (signal: AbortSignal) => Promise<RequiredChecksSnapshot>;
 	readonly expected: {
@@ -313,16 +352,14 @@ export async function pollRequiredChecks(input: {
 	const clock = input.clock ?? systemPollClock;
 	const timeoutMs = input.timeoutMs ?? REQUIRED_CHECK_TIMEOUT_MS;
 	const intervalMs = input.intervalMs ?? REQUIRED_CHECK_POLL_INTERVAL_MS;
-	const startedAt = clock.now();
-	for (;;) {
-		if (input.signal.aborted) throw input.signal.reason ?? abortError();
-		const result = evaluateRequiredChecks(await input.inspect(input.signal), input.expected);
-		if (result.status !== "pending") return result;
-		if (clock.now() - startedAt >= timeoutMs) {
-			return { status: "failed", summary: `Required CI timed out after ${timeoutMs} ms: ${result.summary}` };
-		}
-		await clock.sleep(Math.min(intervalMs, timeoutMs - (clock.now() - startedAt)), input.signal);
-	}
+	return pollGate(
+		"Required CI",
+		async () => evaluateRequiredChecks(await input.inspect(input.signal), input.expected),
+		input.signal,
+		clock,
+		timeoutMs,
+		intervalMs,
+	);
 }
 
 export function evaluatePublishRuns(
@@ -377,16 +414,14 @@ export async function pollPublish(input: {
 	const clock = input.clock ?? systemPollClock;
 	const timeoutMs = input.timeoutMs ?? PUBLISH_TIMEOUT_MS;
 	const intervalMs = input.intervalMs ?? PUBLISH_POLL_INTERVAL_MS;
-	const startedAt = clock.now();
-	for (;;) {
-		if (input.signal.aborted) throw input.signal.reason ?? abortError();
-		const result = evaluatePublishRuns(await input.inspect(input.signal), input.expected);
-		if (result.status !== "pending") return result;
-		if (clock.now() - startedAt >= timeoutMs) {
-			return { status: "failed", summary: `Publish action timed out after ${timeoutMs} ms: ${result.summary}` };
-		}
-		await clock.sleep(Math.min(intervalMs, timeoutMs - (clock.now() - startedAt)), input.signal);
-	}
+	return pollGate(
+		"Publish action",
+		async () => evaluatePublishRuns(await input.inspect(input.signal), input.expected),
+		input.signal,
+		clock,
+		timeoutMs,
+		intervalMs,
+	);
 }
 
 export type ReleaseCommandResult = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
@@ -420,6 +455,10 @@ async function systemRunCommand(
 		const child = spawn(command, args, {
 			cwd,
 			signal,
+			// updateWorktree defers cancellation until Git is finished. Do not let a
+			// terminal signal to the CLI's process group interrupt checkout mid-write.
+			detached: command === "git" && (args[0] === "switch" || args[0] === "pull"),
+			windowsHide: true,
 			env: createGitEnvironment(),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -628,9 +667,28 @@ async function inspectPreparation(input: {
 			page += 1;
 		}
 	}
+	// The base can advance while CI runs, and the new tip need not exist in this checkout.
+	// Compare immutable SHAs without fetching into the worktree. Only one commit unique to
+	// the release branch is allowed; its sole parent must be the common ancestor.
+	let mergeBaseSha: string | undefined;
+	if (commit?.parents.length === 1 && commit.parents[0].sha !== baseSha && remoteSha !== undefined) {
+		const comparison = await ghJson<{
+			base_commit: { sha: string };
+			merge_base_commit: { sha: string };
+			ahead_by: number;
+		}>(
+			input.transport,
+			`repos/${RELEASE_REPOSITORY}/compare/${baseSha}...${remoteSha}?per_page=1`,
+			input.cwd,
+			input.signal,
+		);
+		if (comparison.base_commit.sha === baseSha && comparison.ahead_by === 1)
+			mergeBaseSha = comparison.merge_base_commit.sha;
+	}
 	return evaluatePreparationReuse(input.release, input.baseRef, {
 		worktreeStatus,
 		baseSha,
+		mergeBaseSha,
 		...(remoteSha === undefined ? {} : { remoteSha }),
 		...(localSha === undefined ? {} : { localSha }),
 		pullRequests: pulls.map((pull) => ({
@@ -857,16 +915,22 @@ export async function mergeExactHead(
 		release?: ValidatedRelease;
 		dryRun: boolean;
 		signal: AbortSignal;
+		syncSignal?: AbortSignal;
 	},
 	transport = systemReleaseCommandTransport,
 ) {
 	const { cwd, baseRef, pullRequest, signal } = input;
 	const run = (...argv: string[]) => checkedCommand(transport, argv, cwd, signal);
-	const clean = async () => {
-		const status = await run("git", "status", "--porcelain=v1", "--untracked-files=all");
+	const clean = async (checkSignal: AbortSignal) => {
+		const status = await checkedCommand(
+			transport,
+			["git", "status", "--porcelain=v1", "--untracked-files=all"],
+			cwd,
+			checkSignal,
+		);
 		if (status) throw new ReleaseBlocked(`release checkout is not clean: ${status}`);
 	};
-	await clean();
+	await clean(signal);
 	const readPr = () =>
 		ghJson<ApiPullRequest>(transport, `repos/${RELEASE_REPOSITORY}/pulls/${pullRequest.number}`, cwd, signal);
 	const initial = await readPr();
@@ -924,15 +988,24 @@ export async function mergeExactHead(
 	}
 	if (!pr.merged || !pr.merge_commit_sha || !/^[0-9a-f]{40}$/u.test(pr.merge_commit_sha))
 		throw new ReleaseBlocked("Exact head is not yet provably merged; base not synchronized.");
-	await clean();
-	await run("git", "switch", baseRef);
-	await run("git", "fetch", "--no-tags", "origin", `refs/heads/${baseRef}`);
-	await run("git", "pull", "--ff-only", "origin", baseRef);
-	await clean();
-	const baseSha = await run("git", "rev-parse", "HEAD");
-	const remote = await run("git", "ls-remote", "--heads", "origin", `refs/heads/${baseRef}`);
-	if (remote !== `${baseSha}\trefs/heads/${baseRef}` || (await run("git", "branch", "--show-current")) !== baseRef)
+	// The PR is merged. A slow sync must not inherit the inspection deadline. Stop at
+	// safe boundaries rather than killing a Git process while it updates the worktree.
+	const syncSignal = input.syncSignal ?? signal;
+	const syncGit = (...args: string[]) => checkedCommand(transport, ["git", ...args], cwd, syncSignal);
+	const updateWorktree = async (...args: string[]) => {
+		syncSignal.throwIfAborted();
+		await checkedCommand(transport, ["git", ...args], cwd, new AbortController().signal);
+		syncSignal.throwIfAborted();
+	};
+	await clean(syncSignal);
+	await updateWorktree("switch", baseRef);
+	await syncGit("fetch", "--no-tags", "origin", `refs/heads/${baseRef}`);
+	await updateWorktree("pull", "--ff-only", "origin", baseRef);
+	await clean(syncSignal);
+	const baseSha = await syncGit("rev-parse", "HEAD");
+	const remote = await syncGit("ls-remote", "--heads", "origin", `refs/heads/${baseRef}`);
+	if (remote !== `${baseSha}\trefs/heads/${baseRef}` || (await syncGit("branch", "--show-current")) !== baseRef)
 		throw new ReleaseBlocked(`Local HEAD does not match origin/${baseRef}.`);
-	await run("git", "merge-base", "--is-ancestor", pr.merge_commit_sha, baseSha);
+	await syncGit("merge-base", "--is-ancestor", pr.merge_commit_sha, baseSha);
 	return { status: "passed", baseRef, baseSha, pr: pullRequest };
 }
