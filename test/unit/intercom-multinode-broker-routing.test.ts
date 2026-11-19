@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
-import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
+import {
+	openNodeSqliteDatabase,
+	type SqliteDatabase,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteValue,
+} from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
@@ -59,6 +66,7 @@ import {
 	SEND_RESPONSE_TIMEOUT_MS,
 } from "../../packages/intercom/retry-policy.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { databaseAnswer, STALL_PAST_BOUND_MS, stallEventLoop } from "../helpers/event-loop-stall.js";
 import {
 	type OpenSharedStoreFixture,
 	registerKnownSessionStoreConformance,
@@ -975,6 +983,82 @@ test("a same-id retry of a message delivered across nodes is not delivered again
 	assert.deepEqual(messageFrames(back, sent.id), []);
 });
 
+test("a same-id retry of a message delivered across nodes is not delivered again when its broker stalls while it looks the retry up (#5607)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const sent = message();
+	a!.send(sender, "recipient", sent);
+	await waitFor(() => messageFrames(recipient, sent.id)[0]);
+	b!.router.received(recipient, sent.id);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+	b!.leave(recipient);
+	const back = await a!.connect("recipient", {
+		returnAddress: recipient.registrationReturnAddress!,
+		id: recipient.info.id,
+	});
+	// The outbox answers the retry's lookup at once, but broker a does not run for longer than the lookup may wait.
+	const outbox = a!.opened.state.outbox;
+	const read = outbox.read.bind(outbox);
+	let stalled = false;
+	Object.assign(outbox, {
+		read: async (id: string) => {
+			if (id === sent.id && !stalled) {
+				stalled = true;
+				setTimeout(() => stallEventLoop(LOCAL_RETRY_LOOKUP_BOUND_MS + STALL_PAST_BOUND_MS), 0);
+				await databaseAnswer();
+			}
+			return read(id);
+		},
+	});
+
+	a!.send(sender, "recipient", sent);
+
+	const outcomes = await waitFor(() => {
+		const all = framesOf(sender).filter(
+			(frame) => (frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === sent.id,
+		);
+		return all.length >= 2 ? all : undefined;
+	});
+	assert.equal(stalled, true);
+	assert.equal(outcomes[1]?.type, "delivered");
+	assert.deepEqual(messageFrames(back, sent.id), [], "the broker's own stall is not the database's time");
+});
+
+test("a reply whose ask's route only the shared state has is delivered when its broker stalls while it looks the route up (#5607)", async () => {
+	const [a] = await cluster(1);
+	const asker = await a!.connect("asker");
+	const replier = await a!.connect("replier");
+	// The ask moved to the shared state while its peers were away; both are back on this broker.
+	const ask = { senderSessionId: asker.info.id, targetSessionId: replier.info.id, messageId: randomUUID() };
+	const pendingAsks = a!.opened.state.pendingAsks;
+	assert.equal((await pendingAsks.record(ask)).status, "recorded");
+	// The shared state answers the route's lookup at once, but broker a does not run for longer than the lookup may wait.
+	const matchesReply = pendingAsks.matchesReply.bind(pendingAsks);
+	let stalled = false;
+	Object.assign(pendingAsks, {
+		matchesReply: async (route: Parameters<typeof matchesReply>[0]) => {
+			if (route.replyTo === ask.messageId && !stalled) {
+				stalled = true;
+				setTimeout(() => stallEventLoop(PRESENCE_REGISTRATION_BOUND_MS + STALL_PAST_BOUND_MS), 0);
+				await databaseAnswer();
+			}
+			return matchesReply(route);
+		},
+	});
+
+	const reply = message({ replyTo: ask.messageId, content: { text: "answer" } });
+	a!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+
+	const frame = await waitFor(() => messageFrames(asker, reply.id)[0] ?? reasonOf(outcomeOf(replier, reply.id)));
+	assert.equal(stalled, true);
+	assert.deepEqual(
+		frame,
+		{ type: "message", from: replier.info, message: reply },
+		"the broker's own stall is not the database's time",
+	);
+});
+
 test("a local send is delivered at once when the shared database stops answering its retry lookup, and only once", async () => {
 	const [a] = await cluster(1);
 	const sender = await a!.connect("sender");
@@ -1508,6 +1592,169 @@ test("an asker that moved to its recipient's broker while away gets the failure 
 	);
 	assert.ok(failure.type === "message");
 	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+});
+
+test("an away asker that comes back while its recipient on another broker ends gets the failure at once, not at a backup poll (#5607)", async () => {
+	const [a, b] = await cluster();
+	const returnAddress = randomUUID();
+	const asker = await a!.connect("asker", { returnAddress });
+	const recipient = await b!.connect("recipient");
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	b!.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+	// The asker is only away (its Atomic session restarts).
+	a!.sessions.delete(asker.info.id);
+	a!.router.sessionLeft(asker, undefined, false);
+	await waitOffline(b!, asker);
+	// Broker b has found the asker away and is writing its failure when the asker registers on broker a again.
+	const outbox = b!.opened.state.outbox;
+	const enqueue = outbox.enqueue.bind(outbox);
+	let writing!: () => void;
+	const failureBeingWritten = new Promise<void>((resolve) => {
+		writing = resolve;
+	});
+	let write!: () => void;
+	const written = new Promise<void>((resolve) => {
+		write = resolve;
+	});
+	Object.assign(outbox, {
+		enqueue: async (row: Parameters<typeof enqueue>[0]) => {
+			if (row.frame.type === "message" && row.frame.message.replyTo === ask.id) {
+				writing();
+				await written;
+			}
+			return enqueue(row);
+		},
+	});
+
+	b!.leave(recipient);
+	await failureBeingWritten;
+	const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
+	write();
+
+	// Well within the backup poll's interval, which would otherwise be the first scan to find the failure.
+	const failure = await waitFor(
+		() => framesOf(back).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+		OUTBOX_BACKUP_POLL_INTERVAL_MS / 3,
+	);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+});
+
+test("a send queued for an offline session that comes back while the send is being written is delivered at once, not at a backup poll (#5607)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const returnAddress = randomUUID();
+	const recipient = await b!.connect("recipient", { returnAddress });
+	b!.leave(recipient);
+	await waitOffline(a!, recipient);
+	// Broker a has found the recipient offline and is writing the send when the recipient registers on broker b again.
+	const state = a!.opened.state;
+	const reserveAndEnqueue = state.reserveAndEnqueue!.bind(state);
+	const sent = message();
+	let writing!: () => void;
+	const sendBeingWritten = new Promise<void>((resolve) => {
+		writing = resolve;
+	});
+	let write!: () => void;
+	const written = new Promise<void>((resolve) => {
+		write = resolve;
+	});
+	Object.assign(state, {
+		reserveAndEnqueue: async (...args: Parameters<typeof reserveAndEnqueue>) => {
+			if (args[0].messageId === sent.id) {
+				writing();
+				await written;
+			}
+			return reserveAndEnqueue(...args);
+		},
+	});
+
+	a!.send(sender, recipient.info.id, sent);
+	await sendBeingWritten;
+	const back = await b!.connect("recipient", { returnAddress, id: recipient.info.id });
+	write();
+
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "queued");
+	// Well within the backup poll's interval, which would otherwise be the first scan to find the send.
+	await waitFor(() => messageFrames(back, sent.id)[0], OUTBOX_BACKUP_POLL_INTERVAL_MS / 3);
+});
+
+/**
+ * Counts the statements `database` runs for calls made inside `within`, those of its transactions included: a broker's
+ * polls and renewals run outside any send, so what runs inside a send's context is what that send costs.
+ */
+function countStatements(database: SqliteDatabase, within: AsyncLocalStorage<true>) {
+	let count = 0;
+	const tally = () => {
+		if (within.getStore() === true) count++;
+	};
+	const counted = (executor: SqliteExecutor): SqliteExecutor => ({
+		exec: (sql) => {
+			tally();
+			return executor.exec(sql);
+		},
+		run: (sql, ...params) => {
+			tally();
+			return executor.run(sql, ...params);
+		},
+		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			tally();
+			return executor.get<T>(sql, ...params);
+		},
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			tally();
+			return executor.all<T>(sql, ...params);
+		},
+	});
+	const original = {
+		exec: database.exec.bind(database),
+		run: database.run.bind(database),
+		get: database.get.bind(database),
+		all: database.all.bind(database),
+		transaction: database.transaction.bind(database),
+	};
+	Object.assign(database, counted(original), {
+		transaction: <T>(
+			callback: (transaction: SqliteExecutor) => Promise<T>,
+			options?: Parameters<SqliteDatabase["transaction"]>[1],
+		) => original.transaction((transaction) => callback(counted(transaction)), options),
+	});
+	return { count: () => count, restore: () => Object.assign(database, original) };
+}
+
+/**
+ * What queuing one send for an offline session costs the shared database: its target resolved (the live presences, a
+ * reservation, its known session and its id's binding), its row looked up, reserved and written in one transaction, and
+ * one read once it is written.
+ */
+const QUEUED_SEND_STATEMENTS = 12;
+
+test("sends queued for a session that stays offline cost the shared database no more statements each than before (#5607)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("away");
+	b!.leave(recipient);
+	await waitOffline(a!, recipient);
+	const sends = 64;
+	const within = new AsyncLocalStorage<true>();
+	const statements = countStatements(a!.database, within);
+	try {
+		for (let index = 0; index < sends; index++) {
+			const sent = message({ content: { text: `queued ${index}` } });
+			assert.equal((await within.run(true, () => sendAndSettle(a!, sender, "away", sent))).type, "queued");
+		}
+		// What a send still does after its sender heard it is queued is counted too.
+		await vi.waitFor(() => assert.ok(statements.count() >= sends * QUEUED_SEND_STATEMENTS), {
+			timeout: CROSS_NODE_WAIT_MS,
+		});
+		await new Promise((resolveSettled) => setTimeout(resolveSettled, 250));
+	} finally {
+		statements.restore();
+	}
+	assert.equal(statements.count(), sends * QUEUED_SEND_STATEMENTS);
 });
 
 test("an ask whose route write fails is redelivered and keeps its reply route instead of settling without one", async () => {

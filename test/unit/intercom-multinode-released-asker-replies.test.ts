@@ -14,9 +14,12 @@ const { SupervisorChannelCache } = await import("../../packages/intercom/broker/
 const { releasedReservationKey } = await import("../../packages/intercom/broker/released-children.js");
 const { deliveryTargetIdentity } = await import("../../packages/intercom/broker/send-handler.js");
 const { UNCERTAIN_RECEIPT_REASON } = await import("../../packages/intercom/broker/recipient-receipts.js");
-const { BROKER_LEASE_RENEW_INTERVAL_MS, BROKER_LEASE_STALE_AFTER_MS, OUTBOX_CLAIM_STALE_AFTER_MS } = await import(
-	"../../packages/intercom/broker/multinode-state-store.js"
-);
+const {
+	BROKER_LEASE_RENEW_INTERVAL_MS,
+	BROKER_LEASE_STALE_AFTER_MS,
+	OUTBOX_BACKUP_POLL_INTERVAL_MS,
+	OUTBOX_CLAIM_STALE_AFTER_MS,
+} = await import("../../packages/intercom/broker/multinode-state-store.js");
 const { normalizeGroup } = await import("../../packages/intercom/group.js");
 const { addressesReleasedAsker, isReleasedReplyCandidate, releasedAskerReplyRefusal, releasedReplyAckOutcome } =
 	await import("../../packages/intercom/broker/released-asker-remote-replies.js");
@@ -2458,6 +2461,58 @@ describe("a released asker's question lasts as long as the ask does (#4852)", ()
 		assert.equal(only(handoffsTo(owner), "handoffs").replyTo, questionId);
 		const kept = await b.state.releasedAsks.lookup({ questionId: refused, replierSessionId: replier.info.id });
 		assert.equal(kept.status === "found" && kept.ask.state, "open");
+	});
+
+	test("a released asker's failure reaches an owner that comes back while it is being queued at once, not at a backup poll (#5607)", async () => {
+		let writing!: () => void;
+		const failureBeingWritten = new Promise<void>((resolve) => {
+			writing = resolve;
+		});
+		let write!: () => void;
+		const written = new Promise<void>((resolve) => {
+			write = resolve;
+		});
+		const shared = await cluster();
+		const a = await startNode(shared);
+		const b = await startNode(shared, (state) => ({
+			...state,
+			outbox: {
+				...state.outbox,
+				enqueue: async (request) => {
+					if (request.frame.message.id.startsWith("ended:")) {
+						writing();
+						await written;
+					}
+					return state.outbox.enqueue(request);
+				},
+			},
+		}));
+		const replier = session("replier");
+		await register(b, replier);
+		// The owner is offline: Intercom still knows it, no broker hosts it.
+		const owner = session("owner");
+		await a.state.knownSessions.record({
+			targetIdentity: deliveryTargetIdentity(owner),
+			intercomSessionId: owner.info.id,
+			...(owner.registrationReturnAddress === undefined ? {} : { atomicSessionId: owner.registrationReturnAddress }),
+			name: "owner",
+			group: CREW,
+			groups: [CREW],
+		});
+		const { questionId } = await releaseChild(a, owner, "worker", replier);
+
+		// Broker b has found the owner offline and is queuing the failure when the owner registers on broker a.
+		await leave(b, replier);
+		await failureBeingWritten;
+		await register(a, owner);
+		write();
+
+		// Well within the backup poll's interval, which would otherwise be the first scan to find the failure.
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), {
+			timeout: OUTBOX_BACKUP_POLL_INTERVAL_MS / 3,
+			interval: 5,
+		});
+		assert.equal(only(handoffsTo(owner), "handoffs").replyTo, questionId);
 	});
 
 	test("a released asker's failure queued just before its broker stops still reaches the owner once (#4992)", async () => {

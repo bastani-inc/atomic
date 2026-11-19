@@ -147,9 +147,48 @@ export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
  */
 export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
 /**
+ * #5607: the most a stall of this broker may add to a `runningTimeBound` over the plain wall-clock bound it
+ * replaced, so a sender waiting on one still has its answer in time.
+ */
+const RUNNING_TIME_STALL_ALLOWANCE_MS = 2_500;
+/** #5607: how often a `runningTimeBound` counts this broker's running time. */
+const RUNNING_TIME_TICK_MS = 100;
+/** #5607: a tick that comes this much later than the one before ran after a delay of this broker's event loop. */
+const RUNNING_TIME_LATE_MS = 2 * RUNNING_TIME_TICK_MS;
+
+/**
+ * #5607: calls `expire` once this broker has run for `ms`, unless the returned cancel runs first. A bound on the shared
+ * database's answer must not count the time this broker itself did not run (a starved host, a suspended process): an
+ * answer that arrived meanwhile is read only after the timers that came due, so a wall-clock bound would expire on it
+ * first. Here a delay counts as one tick, and the first tick after a delay never ends the bound: the answers that
+ * arrived meanwhile are read before the next tick. A database that does not answer still ends the bound after `ms` of
+ * the broker running, and a broker that keeps running late ends it on its second late tick in a row. Whatever the
+ * stalls, the first tick once `wallMs` have passed ends it, as a wall-clock bound of `wallMs` would, so what waits on
+ * the bound is never answered later than that.
+ */
+function runningTimeBound(ms: number, wallMs: number, expire: () => void): () => void {
+	let remaining = Math.ceil(ms / RUNNING_TIME_TICK_MS);
+	const started = performance.now();
+	let previous = started;
+	let previousLate = false;
+	const ticks = setInterval(() => {
+		const now = performance.now();
+		const late = now - previous > RUNNING_TIME_LATE_MS;
+		const afterDelay = late && !previousLate;
+		previous = now;
+		previousLate = late;
+		remaining--;
+		if (now - started < wallMs && (remaining > 0 || afterDelay)) return;
+		clearInterval(ticks);
+		expire();
+	}, RUNNING_TIME_TICK_MS);
+	ticks.unref?.();
+	return () => clearInterval(ticks);
+}
+/**
  * The longest a send to a local recipient waits for the shared outbox to say whether it is a retry of a cross-node
  * send. Local delivery does not depend on the shared database (spec §8): past this bound the send is delivered
- * locally, with the local accepted-delivery cache as its duplicate protection.
+ * locally, with the local accepted-delivery cache as its duplicate protection. #5607: in this broker's running time.
  */
 export const LOCAL_RETRY_LOOKUP_BOUND_MS = 300;
 /**
@@ -941,8 +980,10 @@ export class MultiNodeRouter {
 				owed: true,
 			});
 			if (enqueued.status === "invalid" || enqueued.status === "full") continue;
-			if (enqueued.status === "inserted" && owner.hostBrokerId !== undefined) {
-				await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
+			if (enqueued.status === "inserted") {
+				if (owner.hostBrokerId !== undefined) {
+					await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
+				} else void this.wakeHolderOf(owner.identity, enqueued.row.sequence);
 			}
 			await this.state.releasedAsks.claim({
 				questionId: ask.questionId,
@@ -1058,8 +1099,10 @@ export class MultiNodeRouter {
 					replyTo: ask.messageId,
 				});
 			}
-			if (enqueued.status === "inserted" && hosted !== undefined) {
-				await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
+			if (enqueued.status === "inserted") {
+				if (hosted !== undefined) {
+					await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
+				} else void this.wakeHolderOf(asker.targetIdentity, enqueued.row.sequence);
 			}
 		}
 	}
@@ -1264,14 +1307,17 @@ export class MultiNodeRouter {
 	 * Whether another broker holds the live presence of `targetIdentity`: a registration of that identity is connected
 	 * there. Read behind what this broker already queued for the identity, without holding up what it queues next, so a
 	 * slow read never delays a later registration of it. A database that fails or does not answer within
-	 * `REMOTE_SESSIONS_BOUND_MS` counts as no, and its late answer is ignored.
+	 * `REMOTE_SESSIONS_BOUND_MS` of this broker's running time (#5607) counts as no, and its late answer is ignored.
 	 */
 	identityPresentElsewhere(targetIdentity: string): Promise<boolean> {
 		if (this.closed) return Promise.resolve(false);
 		const earlier = this.serials.get(targetIdentity) ?? Promise.resolve();
 		return new Promise((resolve) => {
-			const bound = setTimeout(() => resolve(false), REMOTE_SESSIONS_BOUND_MS);
-			bound.unref?.();
+			const cancelBound = runningTimeBound(
+				REMOTE_SESSIONS_BOUND_MS,
+				REMOTE_SESSIONS_BOUND_MS + RUNNING_TIME_STALL_ALLOWANCE_MS,
+				() => resolve(false),
+			);
 			void earlier
 				.then(() => this.state.leases.read({ kind: "presence", targetIdentity }))
 				.then(
@@ -1286,7 +1332,7 @@ export class MultiNodeRouter {
 						resolve(false);
 					},
 				)
-				.finally(() => clearTimeout(bound));
+				.finally(cancelBound);
 		});
 	}
 
@@ -1782,11 +1828,11 @@ export class MultiNodeRouter {
 		const adopted = this.adoptSharedRoute(request, target, late);
 		// A reply that must answer an open ask can only be authorized by the shared state when this broker's routes do not
 		// authorize it, so it waits for that state longer than a send the local path delivers anyway.
+		// #5607: in this broker's running time, so a stall of its own does not send the reply down the local path's refusal.
 		const boundMs = request.requirePendingReply ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
-		let bound: ReturnType<typeof setTimeout> | undefined;
+		let cancelBound: (() => void) | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), boundMs);
-			bound.unref?.();
+			cancelBound = runningTimeBound(boundMs, boundMs + RUNNING_TIME_STALL_ALLOWANCE_MS, () => resolve("expired"));
 		});
 		try {
 			if ((await Promise.race([adopted, expired])) === "expired") {
@@ -1797,7 +1843,7 @@ export class MultiNodeRouter {
 		} catch (error) {
 			this.report(error);
 		} finally {
-			clearTimeout(bound);
+			cancelBound?.();
 		}
 	}
 
@@ -1982,7 +2028,13 @@ export class MultiNodeRouter {
 			this.fail(request, outboxFullReason(enqueued));
 			return;
 		}
-		await this.answerExistingRow(request, { ...owner, groups: new Set(), gates: {} }, digest, enqueued.row);
+		await this.answerExistingRow(
+			request,
+			{ ...owner, groups: new Set(), gates: {} },
+			digest,
+			enqueued.row,
+			enqueued.status === "inserted" ? enqueued : undefined,
+		);
 	}
 
 	/** #4386: a reply that claimed its question but left no row to hand over gives the question back to other replies. */
@@ -2044,10 +2096,13 @@ export class MultiNodeRouter {
 			this.report(error);
 			return undefined;
 		});
-		let bound: ReturnType<typeof setTimeout> | undefined;
+		let cancelBound: (() => void) | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), LOCAL_RETRY_LOOKUP_BOUND_MS);
-			bound.unref?.();
+			cancelBound = runningTimeBound(
+				LOCAL_RETRY_LOOKUP_BOUND_MS,
+				LOCAL_RETRY_LOOKUP_BOUND_MS + RUNNING_TIME_STALL_ALLOWANCE_MS,
+				() => resolve("expired"),
+			);
 		});
 		try {
 			const existing = await Promise.race([lookup, expired]);
@@ -2072,7 +2127,7 @@ export class MultiNodeRouter {
 			if (await this.routeUnreachable(request, target)) return;
 			request.notFound();
 		} finally {
-			clearTimeout(bound);
+			cancelBound?.();
 		}
 	}
 
@@ -2266,7 +2321,7 @@ export class MultiNodeRouter {
 				replyTo: message.replyTo!,
 			});
 		}
-		await this.answerExistingRow(request, target, digest, enqueued.row);
+		await this.answerExistingRow(request, target, digest, enqueued.row, enqueued.status === "inserted" ? enqueued : undefined);
 	}
 
 	/**
@@ -2334,12 +2389,16 @@ export class MultiNodeRouter {
 		return true;
 	}
 
-	/** Report a row's current state to its sender, and keep waiting on it until it settles. */
+	/**
+	 * Report a row's current state to its sender, and keep waiting on it until it settles. `inserted`: this send just
+	 * wrote the row.
+	 */
 	private async answerExistingRow(
 		request: RemoteSendRequest,
 		target: RemoteTarget,
 		digest: string,
 		row: OutboxRow,
+		inserted?: { readonly position?: number },
 	): Promise<void> {
 		const { message } = request;
 		if (row.digest !== digest || row.targetIdentity !== target.identity) {
@@ -2378,7 +2437,12 @@ export class MultiNodeRouter {
 		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
 		this.waiters.set(message.id, waiter);
 		if (offline) {
-			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
+			if (inserted?.position === undefined) {
+				await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
+			} else this.host.write(request.socket, queuedFrame(message.id, request.attemptId, inserted.position));
+			// #5607: only the send that wrote the row looks again; its place came with the write, so the look costs no
+			// statement more than queuing did before.
+			if (inserted !== undefined) void this.wakeHolderOf(target.identity, row.sequence);
 			return;
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
@@ -2387,6 +2451,23 @@ export class MultiNodeRouter {
 		// broker (`wakeWaitingOrigins`), so a send racing its recipient's quit is queued either way. The waiter's own
 		// receipt wait keeps running meanwhile, so slow reads here never hold the sender past it.
 		void this.queueIfRecipientLeft(waiter).catch((error: Error) => this.report(error));
+	}
+
+	/**
+	 * #5607: a row was written for a target that had no live presence when this broker looked. The target may have
+	 * registered since, and its broker's catch-up scan may have run before the row was written, so that broker would not
+	 * find it until a backup poll. Looked up again now the row exists, the broker that holds its presence is told. Only a
+	 * hint: one lookup and at most one hint, which nothing waits for (a departure goes on without it), and a lookup or
+	 * hint that fails leaves the row to that backup poll, as before, and fails nothing else.
+	 */
+	private async wakeHolderOf(targetIdentity: string, version: number): Promise<void> {
+		try {
+			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
+			if (this.closed || read.status !== "found" || read.lease.ageMs >= BROKER_LEASE_STALE_AFTER_MS) return;
+			await this.bus.publish({ brokerId: read.lease.holderId, reason: "outbox", version });
+		} catch (error) {
+			if (!this.closed) this.report(error);
+		}
 	}
 
 	private async writeQueued(

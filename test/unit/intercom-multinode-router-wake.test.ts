@@ -45,6 +45,7 @@ import {
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import { databaseAnswer, STALL_PAST_BOUND_MS, stallEventLoop } from "../helpers/event-loop-stall.js";
 import {
 	openMemoryHeldSendFixture,
 	openMemoryKnownSessionFixture,
@@ -2006,6 +2007,104 @@ describe("an Intercom id bound to the return address that registered it", () => 
 
 		await node.router.close();
 		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a closed router grants nothing");
+	});
+
+	test("an expired claim does not bind an unused id while its confirmation is pending (#5607)", async () => {
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		const requests = vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			await databaseAnswer();
+			return bind(...args);
+		});
+
+		const claim = node.router.claimSessionId(id, "return-1");
+		// The database answers at once, but this broker does not run for longer than the claim may wait.
+		stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS);
+
+		await claim;
+		assert.deepEqual(
+			requests.mock.calls.map(([sessionId]) => sessionId),
+			[id],
+		);
+	});
+
+	test("a returning session keeps its id when its binding is confirmed just before the deadline (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		let answer!: () => void;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			const binding = await bind(...args);
+			await answered;
+			return binding;
+		});
+
+		const claim = node.router.claimSessionId(id, "return-1");
+		let granted: boolean | undefined;
+		void claim.then((result) => {
+			granted = result;
+		});
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 1);
+		assert.equal(granted, undefined);
+		answer();
+		assert.equal(await claim, true);
+	});
+
+	test("a broker that stalls while it reads whether a session is connected through another broker still reads the answer (#5607)", async () => {
+		const node = await startNode(await cluster());
+		const elsewhere = session("elsewhere");
+		const identity = deliveryTargetIdentity(elsewhere);
+		const taken = await node.state.leases.acquire(
+			{ kind: "presence", targetIdentity: identity, session: elsewhere.info },
+			"another-broker",
+			BROKER_LEASE_STALE_AFTER_MS,
+		);
+		assert.equal(taken.status, "acquired");
+		const leases = node.state.leases;
+		const read = leases.read.bind(leases);
+		vi.spyOn(leases, "read").mockImplementationOnce(async (...args) => {
+			// The database answers at once, but this broker then does not run for longer than any of its lookups waits.
+			setTimeout(() => stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS), 0);
+			await databaseAnswer();
+			return read(...args);
+		});
+
+		assert.equal(
+			await node.router.identityPresentElsewhere(identity),
+			true,
+			"the broker's own stall is not the database's time",
+		);
+	});
+
+	test("a database that does not answer still ends the claim of a broker that keeps running late, with a fresh id (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		vi.spyOn(node.state.knownSessions, "bind").mockReturnValueOnce(new Promise(() => {}));
+
+		const claim = node.router.claimSessionId(id, "return-1");
+		let granted: boolean | undefined;
+		void claim.then((result) => {
+			granted = result;
+		});
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 100);
+		// From here every tick of the broker comes late: it is slow, not stalled once, and the claim must not wait for good.
+		for (let tick = 0; tick < 2 && granted === undefined; tick++) {
+			stallEventLoop(STALL_PAST_BOUND_MS / 5);
+			await vi.advanceTimersByTimeAsync(100);
+		}
+
+		assert.equal(granted, false, "a late broker still ends an unanswered claim");
 	});
 
 	test("a presence taken under an id bound to another return address is not routed to by that id", async () => {
