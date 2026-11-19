@@ -99,6 +99,15 @@ test(
 				schedule,
 			);
 		});
+		const saved = Promise.withResolvers<void>();
+		const append = manager.appendCustomEntry.bind(manager);
+		vi.spyOn(manager, "appendCustomEntry").mockImplementation(async (type, data) => {
+			const entryId = await append(type, data);
+			const entry = manager.getEntry(entryId);
+			if (entry && isSubagentChildRecord(entry) && entry.data?.childId === id && entry.data.state === "running")
+				saved.resolve();
+			return entryId;
+		});
 		let wake: Promise<void> | undefined;
 		try {
 			const request: { value?: AgentWakeDispatcher } = {};
@@ -120,30 +129,29 @@ test(
 			const runner = session.extensionRunner;
 			const tool = runner.getToolDefinition("subagent");
 			assert.ok(tool);
-			gate.resolve();
-			const records = () =>
-				manager
-					.getEntries()
-					.filter(isSubagentChildRecord)
-					.flatMap((entry) => (entry.data?.childId === id && entry.data.state === "running" ? [entry.data] : []));
-			await Promise.race([
-				vi.waitFor(() => assert.equal(records().length, 1)),
-				wake.then(() => assert.fail("wake did not wait for its live task")),
-			]);
-			const answer = await tool.execute(
+			const resume = tool.execute(
 				"competing-resume",
 				{ action: "resume", id, message: "do not start again" },
 				new AbortController().signal,
 				undefined,
 				runner.createToolContext("competing-resume", undefined),
 			);
+			gate.resolve();
+			await Promise.race([saved.promise, wake.then(() => assert.fail("wake did not wait for its live task"))]);
+			const answer = await resume;
+			const records = async () =>
+				(await manager.getSessionStore().load(manager.getSessionId())).entries
+					.filter(isSubagentChildRecord)
+					.flatMap((entry) => (entry.data?.childId === id && entry.data.state === "running" ? [entry.data] : []));
+			const running = await records();
+			assert.equal(running.length, 1);
 			assert.ok(answer.isError);
-			assert.match(JSON.stringify(answer.content), new RegExp(`already running as task ${records()[0]?.taskId}`));
+			assert.match(JSON.stringify(answer.content), new RegExp(`already running as task ${running[0]?.taskId}`));
 			assert.equal(tasks.length, 1);
 			assert.match(tasks[0]!, /checks finished/);
 			finish.resolve();
 			await wake;
-			assert.equal(records().length, 1);
+			assert.equal((await records()).length, 1);
 		} finally {
 			gate.resolve();
 			finish.resolve();

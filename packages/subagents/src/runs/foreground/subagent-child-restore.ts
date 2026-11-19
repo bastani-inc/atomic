@@ -60,6 +60,7 @@ import { resumeRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
+import { type ChildOwnerAPI, subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
@@ -134,7 +135,8 @@ export {
 	type WorkflowDormantRunSubagentHoldRequest,
 } from "./subagent-child-hold.js";
 
-export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime"> & {
+export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "config" | "discoverAgents" | "runtime"> & {
+	readonly pi: ChildOwnerAPI;
 	/** The owner's own Intercom identity, which a relaunched child's bridge names as its supervisor. */
 	readonly state?: Pick<ExecutorDeps["state"], "ownIntercomSession">;
 };
@@ -999,6 +1001,9 @@ export async function restoreSubagentChild(
 	resume?: SubagentChildResumeRequest,
 	refuseRelaunch?: () => SubagentChildRecord | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	deps = { ...deps, pi: owner.pi };
+	ctx = owner.ctx;
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
 	// The owner's own session when the index's latest record is in a copy of it that is no longer open.

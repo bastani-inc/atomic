@@ -47,6 +47,7 @@ import {
 	subagentChildRecordOf,
 	subagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
+import { subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	currentWakeFailure,
 	observeChildRecordFailure,
@@ -102,7 +103,11 @@ export function bindReleasedChildWakes(
 	ctx: ExtensionContext,
 	events: IntercomEventBus,
 	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
+	start: (work: () => void) => void = (work) => work(),
 ): () => void {
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	ctx = owner.ctx;
+	deps = { ...deps, pi: owner.pi };
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const namespace = subagentWakeNamespace(ownerSessionId);
 	let holdFailureNotified = false;
@@ -149,7 +154,6 @@ export function bindReleasedChildWakes(
 		void reserveReleasedChildrenOf(events, ownerSessionId);
 		void markEndedChildrenOf(events, ownerSessionId);
 	};
-	reserveAll();
 	/**
 	 * The child's latest record when a wake must not relaunch it after all: a pause or quit of it is in flight, or its
 	 * latest record is no longer released or ended on its own (#4845). Undefined when it may run.
@@ -193,7 +197,8 @@ export function bindReleasedChildWakes(
 				);
 				if (unsaved.length > 0) await holdResults(record, unsaved);
 				if (refuseRelaunch(record)() !== undefined) return;
-				if (record.intercomTarget !== undefined) void acknowledgeReleasedChildWake(events, record.intercomTarget);
+				if (record.intercomTarget !== undefined)
+					void acknowledgeReleasedChildWake(deps.pi.events, record.intercomTarget);
 				await restore(
 					record,
 					{
@@ -234,7 +239,7 @@ export function bindReleasedChildWakes(
 				const notice = record === undefined ? undefined : noticeOf(record);
 				if (notice === undefined) return;
 				await deliverLocalCompletionNotification(
-					events,
+					deps.pi.events,
 					notice,
 					`released-wake-failure-${childId}-${record?.taskId ?? "none"}`,
 				);
@@ -251,8 +256,12 @@ export function bindReleasedChildWakes(
 			});
 	};
 	const stopReporting = dispatcher.onUnobservedFailure(report);
-	wakeReleasedChildrenOfEarlierProcess(dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
-	reportInterruptedStillRunningCalls(deps.pi, dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+	// Route replacement is synchronous at commit. Only start background work after the previous generation retires.
+	start(() => {
+		reserveAll();
+		wakeReleasedChildrenOfEarlierProcess(dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+		reportInterruptedStillRunningCalls(deps.pi, dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+	});
 	const unsubscribe = events.on(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, (payload) => {
 		const childName = (payload as { readonly childName?: string } | null)?.childName;
 		if (typeof childName !== "string") return;

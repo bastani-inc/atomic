@@ -70,6 +70,7 @@ import {
 	observeSubagentChildRecord,
 	subagentChildRecordOf,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import { bindSubagentChildOwner } from "../../packages/subagents/src/runs/foreground/subagent-child-owner.js";
 import {
 	createSubagentChildRecordSink,
 	currentWakeFailure,
@@ -5324,14 +5325,20 @@ test("an SDK wake reopening during reload saves through its replacement owner (#
 			},
 		},
 	};
+	const retireOwner = bindSubagentChildOwner(first.pi, old);
 	const unbind = bindReleasedChildWakes(first, old, first.pi.events, dispatcher);
 	const opening = gateRestoreOf(h, "subagent-worker-sdk-reload");
 	const finish = Promise.withResolvers<void>();
 	const wake = wakeWithResult(h, dispatcher, id, finish);
 	try {
 		await opening.reached;
+		const retireSuccessor = bindSubagentChildOwner(h.deps.pi, h.ctx);
 		const successor = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
-		cleanups.push(async () => successor());
+		cleanups.push(async () => {
+			successor();
+			retireSuccessor();
+		});
+		retireOwner();
 		unbind();
 		retired = true;
 		opening.gate.resolve();
