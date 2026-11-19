@@ -172,6 +172,7 @@ export function createWorkflowBoundaryFactory(input: {
 					? { summary: stageSnapshot.result }
 					: {}),
 				...stageReplayFields(stageSnapshot),
+				...(stageSnapshot.childStartAbsent ? { childStartAbsent: true } : {}),
 				...(stageSnapshot.startedChildRunId !== undefined
 					? { startedChildRunId: stageSnapshot.startedChildRunId }
 					: {}),
@@ -193,7 +194,7 @@ export function createWorkflowBoundaryFactory(input: {
 			) {
 				stageSnapshot.startedChildRunId = child.id;
 				startedChildStatus = child.status;
-			}
+			} else stageSnapshot.childStartAbsent = true;
 			delete stageSnapshot.workflowChildRun;
 			delete stageSnapshot.workflowChild;
 		};

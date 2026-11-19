@@ -196,7 +196,7 @@ function failedBoundaryPooledStage(
 	boundary: StageSnapshot,
 ): { readonly runId: string; readonly stage: StageSnapshot } | undefined {
 	if (boundary.status !== "failed") return undefined;
-	const children = failedBoundaryChildRuns(runs, runId, boundary.id, boundary.startedChildRunId);
+	const children = failedBoundaryChildRuns(runs, runId, boundary.id, boundary);
 	const pooled = children.flatMap((run) =>
 		run.stages.filter((stage) => stage.workerExecution !== undefined).map((stage) => ({ runId: run.id, stage })),
 	);

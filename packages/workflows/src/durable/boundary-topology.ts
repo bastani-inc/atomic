@@ -427,7 +427,16 @@ function makeTopology(
 		boundary = { ...identity, event, status };
 	} else {
 		if (status === "running") throw invalid(input, "boundary terminal has a running status");
-		boundary = { ...identity, event, status, ...(startedChildStatus !== undefined ? { startedChildStatus } : {}) };
+		boundary = {
+			...identity,
+			event,
+			status,
+			...(startedChildStatus !== undefined
+				? { startedChildStatus }
+				: status !== "completed"
+					? { childStartAbsent: true }
+					: {}),
+		};
 	}
 	return {
 		version: DURABLE_STAGE_TOPOLOGY_VERSION,

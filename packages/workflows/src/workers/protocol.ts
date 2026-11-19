@@ -58,7 +58,15 @@ export interface StageReceipts {
  * receipts of the stages of the child's nested workflow runs; the child's own stages carry theirs. The pool stores it
  * whole, so a restarted root still reads them, and the root records them all before the child settles (#4513).
  */
-export type PooledRunResult = RunResult & { readonly nestedStageReceipts?: readonly StageReceipts[] };
+export type PooledRunResult = RunResult & {
+	readonly nestedStageReceipts?: readonly StageReceipts[];
+	/** Only a child that started has a run. Inputs come from the work; stages, tools and outputs from the result. */
+	readonly childRun?: Omit<
+		RunSnapshot,
+		"inputs" | "stages" | "toolNodes" | "result" | "error" | "pendingStageMessages"
+	>;
+	readonly childExecution?: RunSnapshot["stages"][number]["workerExecution"];
+};
 
 export interface WorkerStart {
 	/** The SQLite database holding the pool's tables; absent for a shared pool, opened by its durable selection. */

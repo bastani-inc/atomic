@@ -58,7 +58,12 @@ import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-re
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot, WorkflowWorktreeRestoreOutcome } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
-import { isStaleWorkLeaseError, PoolNotInitializedError, StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+import {
+	isPublicationRejectedError,
+	isStaleWorkLeaseError,
+	PoolNotInitializedError,
+	StaleWorkLeaseError,
+} from "../shared/worker-pool-errors.js";
 import {
 	failedOnPoolFault,
 	infrastructureFaultOf,
@@ -69,6 +74,11 @@ import {
 	WorkerStartupError,
 	WorkerStartupTimeoutError,
 } from "../shared/workflow-infrastructure-error.js";
+import {
+	authoritativeWorkflowChildRunId,
+	findSnapshotRun,
+	findSnapshotStage,
+} from "../shared/workflow-run-ownership.js";
 import { workerProcessExited } from "./admission-host.js";
 import { assertRouteOwned } from "./attempt-view.js";
 import { CheckpointShipping } from "./checkpoint-shipping.js";
@@ -314,6 +324,17 @@ function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
  * run, and no transcript, since none streams from that host. Its session and turn read as started, so text sent to it
  * goes out at once; the host holds it until the stage can take it.
  */
+/** Whether a published nested run's parent names it; undefined for a missing run or a parent outside the publication. */
+function publishedChildLink(runs: readonly RunSnapshot[], runId: string): boolean | undefined {
+	const child = findSnapshotRun(runs, runId);
+	const parentId = child?.parentRunId;
+	const stageId = child?.parentStageId;
+	if (parentId === undefined || stageId === undefined) return undefined;
+	const parent = findSnapshotRun(runs, parentId);
+	if (parent === undefined) return undefined;
+	return authoritativeWorkflowChildRunId(findSnapshotStage(parent.stages, stageId)) === runId;
+}
+
 function remoteStageSnapshot(stage: StageSnapshot): PooledStageChatSnapshot {
 	return {
 		canPause: false,
@@ -681,7 +702,10 @@ export class PoolCoordinator {
 	private readonly sentRuns = new RunChangesEncoder();
 	private readonly batches = new Map<number, { readonly entries: readonly PoolActivityEntry[]; settle(): void }>();
 	/** The root's refusal of each work's latest refused publication, bound to the attempt that published it. */
-	private readonly publicationFailures = new Map<string, { readonly generation: number; readonly error: Error }>();
+	private readonly publicationFailures = new Map<
+		string,
+		{ readonly generation: number; readonly error: Error; readonly unlinkedChild?: string }
+	>();
 	private readonly requests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	private readonly deliveryRequests = new Map<number, { readonly slot: WorkerSlot; readonly workerRequest: number }>();
 	private readonly inflight = new Set<Promise<unknown>>();
@@ -942,6 +966,10 @@ export class PoolCoordinator {
 			const batch = this.batches.get(notice.batch);
 			this.batches.delete(notice.batch);
 			const rejected = new Map(notice.rejected.map((entry) => [entry.workId, entry]));
+			const publications =
+				rejected.size === 0
+					? undefined
+					: new Map(batch?.entries.map((published) => [published.work.id, published]));
 			for (const entry of rejected.values()) {
 				const error = rehydrateError(entry.error);
 				// The root's store refused the publication only for a while (unreachable, or busy): it is not the attempt's
@@ -949,17 +977,41 @@ export class PoolCoordinator {
 				// full, unless newer activity already waits (#4768).
 				if (infrastructureFaultOf(error) === "storage_unavailable") {
 					this.sentRuns.forget(entry.workId);
-					const refused = batch?.entries.find((published) => published.work.id === entry.workId);
+					const refused = publications?.get(entry.workId);
 					if (refused !== undefined && !this.pendingActivity.has(entry.workId))
 						this.pendingActivity.set(entry.workId, refused);
 					this.scheduleFlush();
 					continue;
 				}
-				this.publicationFailures.set(entry.workId, { generation: entry.generation, error });
+				const refused = publications?.get(entry.workId);
+				const unlinkedChild =
+					isPublicationRejectedError(error) &&
+					error.reason === "outside-subtree" &&
+					error.runId !== undefined &&
+					refused?.work.generation === entry.generation &&
+					publishedChildLink(refused.runs, error.runId) === false
+						? error.runId
+						: undefined;
+				this.publicationFailures.set(entry.workId, { generation: entry.generation, error, unlinkedChild });
 			}
-			this.routes?.accept(
-				(batch?.entries ?? []).filter((entry) => rejected.get(entry.work.id)?.generation !== entry.work.generation),
-			);
+			if (this.routes !== undefined || this.publicationFailures.size > 0) {
+				const entries = batch?.entries ?? [];
+				const accepted =
+					rejected.size === 0
+						? entries
+						: entries.filter((entry) => rejected.get(entry.work.id)?.generation !== entry.work.generation);
+				if (this.publicationFailures.size > 0)
+					for (const { work, runs } of accepted) {
+						const failure = this.publicationFailures.get(work.id);
+						if (
+							failure?.generation === work.generation &&
+							failure.unlinkedChild !== undefined &&
+							publishedChildLink(runs, failure.unlinkedChild)
+						)
+							this.publicationFailures.delete(work.id);
+					}
+				this.routes?.accept(accepted);
+			}
 			batch?.settle();
 		}
 	}
@@ -1922,7 +1974,12 @@ export class PoolCoordinator {
 	/** Records the latest activity of one attempt; the root receives it with the next summary. */
 	private publish(work: PoolWork, runs: readonly RunSnapshot[]): void {
 		const failure = this.publicationFailures.get(work.id);
-		if (failure?.generation === work.generation) throw failure.error;
+		if (failure?.generation === work.generation) {
+			if (failure.unlinkedChild === undefined || !publishedChildLink(runs, failure.unlinkedChild))
+				throw failure.error;
+			// No delta may use the refused publication as its base. The refusal remains until the root accepts the correction.
+			this.sentRuns.forget(work.id);
+		}
 		// A worker host relays its attempts' activity to the root through the shared journal.
 		if (this.satellite !== undefined) {
 			this.relayPending.set(work.id, { work: token(work), runs });

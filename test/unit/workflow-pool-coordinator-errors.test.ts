@@ -493,6 +493,69 @@ test("the root's refusal of a published attempt reaches its worker typed, on its
 	}
 });
 
+test("a corrected child link goes to the root in full before further changes (#5646)", async () => {
+	const f = await fixture({ workers: 1, publish: true });
+	try {
+		const [worker] = f.workers as [FakeWorker];
+		const work = (await worker.request({ kind: "claim" })).value as PoolWork;
+		const parent = { ...childRun(work.childRunId), parentRunId: "root", parentStageId: work.boundaryId };
+		const nested = { ...childRun("nested"), parentRunId: parent.id, parentStageId: "call" };
+		const bad = [parent, nested];
+		await worker.request({ kind: "activity", runs: bad });
+		const batch = await f.next(isEvent("activity"));
+		const rejection = new PublicationRejectedError({
+			root: "root",
+			workId: work.id,
+			generation: work.generation,
+			reason: "outside-subtree",
+			runId: nested.id,
+		});
+		f.notice({
+			kind: "published",
+			batch: batch.batch,
+			rejected: [{ workId: work.id, generation: work.generation, error: serializeError(rejection) }],
+		});
+		for (const runs of [bad, [{ ...parent, label: "unrelated" }, nested]]) {
+			assert.equal(refusal(await worker.request({ kind: "activity", runs })).message, rejection.message);
+		}
+		const correct = [
+			{
+				...parent,
+				stages: [
+					{
+						id: "call",
+						name: "call",
+						status: "failed" as const,
+						startedChildRunId: nested.id,
+						parentIds: [],
+						toolEvents: [],
+					},
+				],
+			},
+			nested,
+		];
+		const after = f.events.length;
+		const reply = await worker.request({ kind: "activity", runs: correct });
+		assert.equal(reply.error, undefined, "the worker can offer the correction");
+		const retry = await f.next(isEvent("activity"), after);
+		assert.deepEqual(retry.entries[0]!.runs, correct);
+		assert.equal(
+			refusal(await worker.request({ kind: "activity", runs: bad })).message,
+			rejection.message,
+			"offering a correction does not clear the refusal before the root accepts it",
+		);
+		f.notice({ kind: "published", batch: retry.batch, rejected: [] });
+		const next = f.events.length;
+		assert.equal((await worker.request({ kind: "activity", runs: correct })).error, undefined);
+		const changes = await f.next(isEvent("activity"), next);
+		const delta = changes.entries[0]!.runs[0]!;
+		assert.equal("kind" in delta && delta.kind, "changes");
+		f.notice({ kind: "published", batch: changes.batch, rejected: [] });
+	} finally {
+		await f.close();
+	}
+});
+
 test("the root's typed refusal of a readiness or delivery request reaches the worker typed (#4327)", async () => {
 	const f = await fixture({ workers: 1, publish: true });
 	try {

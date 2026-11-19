@@ -211,7 +211,7 @@ function collapsedPooledStages(
 	return stages.flatMap((boundary) => {
 		if (boundary.status !== "failed") return [];
 		const { runId, stageId } = boundary.workflowGraphTarget;
-		return failedBoundaryChildRuns(runs, runId, stageId, boundary.startedChildRunId).flatMap((run) =>
+		return failedBoundaryChildRuns(runs, runId, stageId, boundary).flatMap((run) =>
 			run.stages
 				.filter((stage) => stage.workerExecution !== undefined && (stage.id === target || stage.name === target))
 				.map((stage) => ({ runId: run.id, stageId: stage.id })),

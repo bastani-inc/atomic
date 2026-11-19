@@ -335,6 +335,12 @@ try {
 		const root = store.runs().find((candidate) => candidate.id === ROOT);
 		record = { status: root?.status, error: root?.error ?? null };
 	}
+	if (process.env.SHARED_POOL_REPORT_LIVE_CHILDREN === "1") {
+		record.liveChildren = store.run(ROOT).stages.map((boundary) => ({
+			boundary: boundary.id,
+			child: store.run(boundary.workflowChild.runId),
+		}));
+	}
 	writeFileSync(join(directory, `outcome-${mode}.json`), JSON.stringify({ ...record, children: outcomes }));
 } finally {
 	await backend.close();

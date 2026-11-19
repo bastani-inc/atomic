@@ -796,7 +796,29 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
 				attemptRequests.writable = undefined;
-				await attemptRequests.send({ kind: "complete", result: completedAttemptResult(result, store) });
+				const completed = completedAttemptResult(result, store);
+				const child = store.run(work.childRunId);
+				if (child === undefined) await attemptRequests.send({ kind: "complete", result: completed });
+				else {
+					const {
+						inputs: _inputs,
+						stages: _stages,
+						toolNodes: _tools,
+						result: _output,
+						error: _error,
+						pendingStageMessages: _pending,
+						...childRun
+					} = child;
+					const { generation, renewedAt, expiresAt } = work;
+					await attemptRequests.send({
+						kind: "complete",
+						result: {
+							...completed,
+							childRun,
+							childExecution: { worker: work.worker!, generation, renewedAt, expiresAt },
+						},
+					});
+				}
 			} catch (error) {
 				if (!replies.attemptFenced) throw error;
 				// Its new owner, if any, replays the child; this worker ends the attempt and serves the next one.

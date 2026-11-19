@@ -380,7 +380,9 @@ export class PoolStageHandoff {
 		});
 	}
 
-	async complete(work: Pick<PoolWork, "id" | "childRunId" | "scope" | "generation">): Promise<void> {
+	async complete(
+		work: Pick<PoolWork, "id" | "childRunId" | "boundaryId" | "inputs" | "scope" | "generation">,
+	): Promise<void> {
 		const root = this.lease.runId;
 		const result = (await this.queue.result(root, work.id)) as PooledRunResult | undefined;
 		await this.backend.catchUpWorkflow(root);
@@ -398,7 +400,32 @@ export class PoolStageHandoff {
 			if (child?.runId === boundary.child.runId)
 				terminals.set(child.runId, { status: child.status, outputs: child.outputs });
 		}
-		this.store.batch(() => this.settle(work, result, terminals));
+		this.store.batch(() => {
+			this.settle(work, result, terminals);
+			// No activity arrived. Only restore the worker's own run, while the root still names it at this boundary.
+			const child = result.childRun;
+			if (
+				child === undefined ||
+				this.store.run(work.childRunId) !== undefined ||
+				child.id !== work.childRunId ||
+				result.runId !== work.childRunId ||
+				child.parentRunId !== root ||
+				child.parentStageId !== work.boundaryId ||
+				child.rootRunId !== root ||
+				authoritativeWorkflowChildRunId(this.boundary(work.boundaryId)) !== child.id
+			)
+				return;
+			this.claimRun?.(child.id);
+			this.publishRun({
+				...child,
+				inputs: work.inputs,
+				stages: result.stages.map((stage) => ({ ...stage, workerExecution: result.childExecution })),
+				toolNodes: result.toolNodes,
+				result: result.result,
+				error: result.error,
+				pendingStageMessages: [...pendingStageMessagesForDurableRun(this.backend, child.id, root)],
+			});
+		});
 	}
 
 	/**

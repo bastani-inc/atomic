@@ -872,6 +872,7 @@ function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readon
 		toolEvents: [],
 		attachable: false,
 		...(workflowChild !== undefined ? { workflowChild } : {}),
+		...(boundary?.event === "terminal" && boundary.childStartAbsent === true ? { childStartAbsent: true } : {}),
 		...(boundary !== undefined && startedChildStatus(draft) !== undefined
 			? { startedChildRunId: boundary.child.runId }
 			: {}),

@@ -70,9 +70,10 @@ export function failedBoundaryChildRuns(
 	runs: readonly RunSnapshot[],
 	parent: string,
 	stage: string,
-	startedChildRunId: string | undefined,
+	boundary: Pick<StageSnapshot, "startedChildRunId" | "childStartAbsent">,
 ): readonly RunSnapshot[] {
-	if (startedChildRunId === undefined) return childRunsInSource(runs, parent, stage);
+	const { startedChildRunId, childStartAbsent } = boundary;
+	if (startedChildRunId === undefined) return childStartAbsent ? [] : childRunsInSource(runs, parent, stage);
 	const child = findSnapshotRun(runs, startedChildRunId);
 	return child?.parentRunId === parent &&
 		child.parentStageId === stage &&
