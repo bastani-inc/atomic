@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, it } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
@@ -14,7 +17,13 @@ import {
 	sessionTailOf as rawSessionTailOf,
 	sessionCompactionOf,
 } from "../../packages/coding-agent/src/core/storage/session/session-resume.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import {
+	SESSION_ENTRY_CHUNK_BYTES,
+	SESSION_RESUME_REBUILD,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { seedLegacyResumeSession } from "../helpers/legacy-resume-session.js";
+import { refuseChunkProjection } from "../helpers/resume-projection-limit.js";
 import { makeTempDirectory } from "../helpers/runtime.js";
 
 function sessionTailOf(...args: Parameters<typeof rawSessionTailOf>) {
@@ -27,6 +36,7 @@ function tailContent<T extends { epoch?: string; seqs?: readonly number[]; lastE
 }
 const createdAt = "2026-11-16T00:00:00.000Z";
 const header = { id: "session", version: 4 as const, createdAt, cwd: "/project" };
+const pageEntries = SESSION_RESUME_REBUILD.pageEntries;
 
 function entry(index: number, extra: Partial<SessionEntry> = {}): SessionEntry {
 	return {
@@ -39,9 +49,9 @@ function entry(index: number, extra: Partial<SessionEntry> = {}): SessionEntry {
 	} as SessionEntry;
 }
 
-function compactedEntries(history: number): SessionEntry[] {
+function compactedEntries(history: number, after = 0): SessionEntry[] {
 	const entries: SessionEntry[] = [];
-	for (let index = 1; index <= history; index++) {
+	for (let index = after + 1; index <= history; index++) {
 		entries.push(
 			index === 3
 				? ({
@@ -245,6 +255,321 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 			await store.close();
 			await database.close();
 		}
+	});
+
+	it("reads inline pages while an unrelated SQLite blob chunk is write-locked (#5590)", async () => {
+		const uri = `${pathToFileURL(databasePath()).href}?cache=shared`;
+		await onDatabase(uri, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const writer = new DatabaseSync(uri);
+			let held = false;
+			try {
+				await seedLegacyResumeSession(db, store, header, pageEntries + 1);
+				await store.create({ ...header, id: "other" }, []);
+				await store.putBlob("other", Buffer.from("other session's data"));
+				writer.exec("BEGIN IMMEDIATE");
+				held = true;
+				writer.prepare("UPDATE session_blob_chunks SET data=data WHERE session_id=?").run("other");
+				const all = db.all.bind(db);
+				db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+					try {
+						return await all<T>(sql, ...args);
+					} finally {
+						if (held) {
+							writer.exec("ROLLBACK");
+							held = false;
+						}
+					}
+				};
+				assert.equal(await store.findLatestCompaction(header.id), undefined);
+				assert.equal(await hasResumeIndex(db), true);
+			} finally {
+				if (held) writer.exec("ROLLBACK");
+				writer.close();
+				await store.close();
+			}
+		});
+	});
+
+	it("does not enumerate table layouts to open an indexed SQLite session (#5590)", async () => {
+		const path = databasePath();
+		await writeSession(path, compactedEntries(5));
+		await onDatabase(path, async (db) => {
+			const get = db.get.bind(db);
+			const scanned: string[] = [];
+			db.get = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (/pragma_table_list/i.test(sql)) scanned.push(sql);
+				return get<T>(sql, ...args);
+			};
+			const store = await SqlSessionStore.open(db);
+			try {
+				assert.equal((await store.findLatestCompaction(header.id))?.entry.id, "e6");
+				assert.deepEqual(scanned, []);
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
+	it("rebuilds using a SQLite adapter that accepts only positional parameters (#5590)", async () => {
+		await onDatabase(databasePath(), async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const all = db.all.bind(db);
+			db.all = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (/\?\d/.test(sql)) throw new TypeError("numbered parameters require named bindings");
+				return all<T>(sql, ...args);
+			};
+			try {
+				for (const id of [header.id, "wide".repeat(1024)]) {
+					await store.create({ ...header, id }, compactedEntries(5));
+					await db.run("UPDATE session_sessions SET summary_state = '{}' WHERE id = ?", id);
+					assert.equal((await store.findLatestCompaction(id))?.entry.id, "e6");
+				}
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
+	it("yields between chunk pages and does not publish an index for an intervening replacement (#5590)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(5);
+		const old = entries[0]!;
+		assert.ok(old.type === "message" && old.message.role === "user");
+		old.message.content = "x".repeat(3 * 1024 * 1024);
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			refuseChunkProjection(db, old.id);
+			const get = db.get.bind(db);
+			let replacement: Promise<void> | undefined;
+			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const row = await get<T>(sql, ...args);
+				if (row?.data instanceof Uint8Array && !replacement)
+					replacement = new Promise((resolve) => setImmediate(resolve)).then(async () => {
+						await store.replace(header.id, header, [entry(1, { id: "replacement" })], {
+							expectSeq: entries.length,
+						});
+					});
+				return row;
+			};
+			try {
+				assert.equal((await store.readResume(header.id)).lastEntryId, "replacement");
+			} finally {
+				await replacement;
+				await store.close();
+			}
+		});
+	});
+
+	it("rebuilds from the transcript after interruption inside a later chunked entry (#5590)", async () => {
+		const path = databasePath();
+		const interruptedAt = pageEntries;
+		const suffix = compactedEntries(interruptedAt + 1, interruptedAt);
+		const interrupted = suffix[0]!;
+		assert.ok(interrupted.type === "message" && interrupted.message.role === "user");
+		interrupted.message.content = "x".repeat(3 * 1024 * 1024);
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			await seedLegacyResumeSession(db, store, header, interruptedAt);
+			await store.append(header.id, suffix, { expectSeq: interruptedAt });
+			await store.close();
+		});
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			refuseChunkProjection(db, interrupted.id);
+			const summary = () => db.get("SELECT summary_state FROM session_sessions WHERE id = ?", header.id);
+			const before = await summary();
+			const get = db.get.bind(db);
+			let chunks = 0;
+			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const row = await get<T>(sql, ...args);
+				if (row?.data instanceof Uint8Array && ++chunks === 2) throw new Error("interrupted chunk read");
+				return row;
+			};
+			await assert.rejects(() => store.readResume(header.id), /interrupted chunk read/);
+			// An older reader publishes by spreading this entire object into its final summary.
+			assert.deepEqual(await summary(), before, "an interrupted rebuild must not enlarge the shared summary");
+			assert.equal(await hasResumeIndex(db), false);
+			await store.close();
+		});
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const all = db.all.bind(db);
+			let firstProjected: SqliteValue | undefined;
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				firstProjected ??= rows.find((row) => "resume_type" in row)?.entry_id;
+				return rows;
+			};
+			assert.equal((await store.readResume(header.id)).lastSeq, interruptedAt + suffix.length);
+			assert.equal(firstProjected, "e1");
+			assert.equal(await hasResumeIndex(db), true);
+			await store.close();
+		});
+	});
+
+	it.each(["text and tool calls", "retired errors"] as const)(
+		"rebuilds %s within the cost of projecting their joined rows (#5590)",
+		async (shape) => {
+			const path = databasePath();
+			const errors = shape === "retired errors";
+			const chunkedEntries = errors ? 8 : 12;
+			const targetBytes = (errors ? 8 : 3) * SESSION_ENTRY_CHUNK_BYTES;
+			const fragment = errors ? "a" : 'line "a"\\b\n';
+			const text = fragment.repeat(Math.floor(targetBytes / (JSON.stringify(fragment).length - 2)));
+			const entries = Array.from({ length: chunkedEntries }, (_, i) =>
+				entry(i + 1, {
+					message: {
+						role: "assistant",
+						timestamp: i,
+						provider: "p",
+						model: "m",
+						api: "openai-completions",
+						stopReason: errors ? "error" : "stop",
+						...(errors ? { errorMessage: text } : {}),
+						content: errors
+							? []
+							: [
+									{ type: "text", text },
+									{ type: "toolCall", id: "t", name: "edit", arguments: {} },
+								],
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						},
+					},
+				}),
+			);
+			if (errors) {
+				const kept = entry(chunkedEntries + 1, { message: { role: "user", timestamp: 1, content: [] } });
+				entries.push(kept, {
+					type: "compaction",
+					id: "boundary",
+					parentId: kept.id,
+					timestamp: createdAt,
+					summary: "done",
+					firstKeptEntryId: kept.id,
+					tokensBefore: chunkedEntries,
+				});
+			}
+			await writeSession(path, entries);
+			const measure = (mode: string) =>
+				JSON.parse(
+					execFileSync(
+						process.execPath,
+						[
+							"--expose-gc",
+							"--import",
+							"jiti/register",
+							"test/fixtures/session-resume-rebuild-cost.ts",
+							path,
+							mode,
+						],
+						{ encoding: "utf8" },
+					),
+				) as { micros: number; peakBytes: number; toolCalls: number };
+			// CPU time excludes time waiting for other test workers. Bracket the run with two independent controls
+			// to measure allocator and timer noise on this machine rather than setting a machine-specific RSS/time limit.
+			const first = measure("joined");
+			const actual = measure("stored");
+			const second = measure("joined");
+			assert.equal(first.toolCalls, errors ? 0 : chunkedEntries);
+			assert.equal(actual.toolCalls, first.toolCalls);
+			const cpuJitterFraction = 0.2;
+			const allocatorSlackBytes = 2 * SESSION_ENTRY_CHUNK_BYTES;
+			const cpuBudget = Math.max(first.micros, second.micros) * (1 + cpuJitterFraction);
+			const peakBudget = Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes;
+			assert.ok(
+				actual.micros <= cpuBudget && actual.peakBytes <= peakBudget,
+				JSON.stringify({ actual, first, second }),
+			);
+		},
+		120_000,
+	);
+
+	it("interrupting a slower reader keeps a peer's published index (#5590)", async () => {
+		const path = databasePath();
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			await seedLegacyResumeSession(db, store, header, pageEntries + 1);
+			const all = db.all.bind(db);
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				if (rows.some((row) => row.entry_id === `e${pageEntries}`)) {
+					await onDatabase(path, async (other) => {
+						const peer = await SqlSessionStore.open(other);
+						try {
+							await peer.findLatestCompaction(header.id);
+						} finally {
+							await peer.close();
+						}
+					});
+				}
+				if (rows.some((row) => row.entry_id === `e${pageEntries + 1}`))
+					throw new Error("reader stopped on the next page");
+				return rows;
+			};
+			try {
+				await assert.rejects(() => store.findLatestCompaction(header.id), /reader stopped on the next page/);
+				assert.ok(await hasResumeIndex(db), "the completed index must still be published");
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
+	it("preserves overflowing usage totals across an interrupted page fold (#5590)", async () => {
+		const path = databasePath();
+		const prefix = pageEntries - 2;
+		const next = pageEntries + 1;
+		const suffix = compactedEntries(next, prefix);
+		for (const seq of [next - 2, next - 1, next]) {
+			const input = seq === next ? 1 : Number.MAX_VALUE;
+			suffix[seq - prefix - 1] = entry(seq, {
+				type: "usage",
+				kind: "auxiliary",
+				provider: "p",
+				model: "m",
+				usage: {
+					input,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: input,
+					cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+			});
+		}
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			await seedLegacyResumeSession(db, store, header, prefix);
+			await store.append(header.id, suffix, { expectSeq: prefix });
+			const all = db.all.bind(db);
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				if (rows.some((row) => row.entry_id === `e${next}`)) throw new Error("lost page reader");
+				return rows;
+			};
+			await assert.rejects(() => store.readResume(header.id), /lost page reader/);
+			await store.close();
+		});
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			await store.readResume(header.id);
+			const row = await db.get<{ summary_state: string }>(
+				"SELECT summary_state FROM session_sessions WHERE id = ?",
+				header.id,
+			);
+			// An uninterrupted fold overflows to Infinity, which the published JSON index represents as null.
+			assert.equal(JSON.parse(row!.summary_state).resume.totals.auxiliary.input, null);
+			await store.close();
+		});
 	});
 
 	it("rebuilds the index after an earlier build appends without it (#5249)", async () => {
