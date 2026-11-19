@@ -18,6 +18,7 @@ export function registerSessionWorkOwner(owner: object): void {
 	sessionWorkOwners.add(owner);
 }
 const quitSignals = new WeakMap<object, AbortController>();
+const quittingSessions = new WeakSet<object>();
 export const sessionGenerationClosing = new WeakSet<object>();
 const retiringWork = new WeakMap<object, Set<Promise<void>>>();
 const retirementChanges = new WeakMap<object, { promise: Promise<void>; resolve: () => void }>();
@@ -139,7 +140,7 @@ export function trackSessionWork<T>(session: object, operation: () => Promise<T>
 }
 
 export function isSessionQuitting(session: object): boolean {
-	return quitSignals.get(session)?.signal.aborted === true;
+	return quittingSessions.has(session);
 }
 
 export function sessionQuitSignal(session: object): AbortSignal {
@@ -152,6 +153,8 @@ export function sessionQuitSignal(session: object): AbortSignal {
 }
 
 export function abortSessionWork(session: object, quitting = false): void {
+	// Record terminal intent before notifying subscribers. A host can also abort its own command signal.
+	if (quitting) quittingSessions.add(session);
 	sessionLifetime(session);
 	lifetimes.get(session)!.abort();
 	if (quitting) {

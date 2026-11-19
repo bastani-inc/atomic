@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,22 @@ import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/reso
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { bunExecutable } from "../helpers/runtime.js";
+
+const commandSignalFixture = fileURLToPath(new URL("../fixtures/startup-command-signal.mjs", import.meta.url));
+for (const [runtime, executable] of [
+	["Node", process.execPath],
+	["Bun", bunExecutable()],
+] as const) {
+	test.each(["revoked", "metered", "aborted"])(
+		`discovery continues after a command's signal is %s (${runtime}, #5639)`,
+		(scenario) => {
+			const result = spawnSync(executable, [commandSignalFixture, scenario], { encoding: "utf8", timeout: 60_000 });
+			assert.ifError(result.error);
+			assert.equal(result.status, 0, result.stderr);
+		},
+	);
+}
 
 test("a forwarding SDK runtime does not admit a new workflow observer during quit (#5639)", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-shutdown-observer-"));
