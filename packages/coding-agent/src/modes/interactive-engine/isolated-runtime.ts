@@ -986,6 +986,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				},
 			},
 			recordBashResult: { configurable: true, value: () => {} },
+			// The engine owns the tool renderers; the host owns the user's working directory and destination.
+			exportToHtml: {
+				configurable: true,
+				value: async (outputPath?: string, options?: { themeName?: string }) => {
+					const { writeHtmlExport } = await import("../../core/export-html/index.ts");
+					const file = this.remoteSessionFile;
+					const id = this.remoteSessionId ?? session.sessionManager.getSessionId();
+					const { html } = await this.client.requestInternal<{ html: string }>({
+						type: "render_html",
+						themeName: options?.themeName,
+					});
+					return writeHtmlExport(html, outputPath, file, id);
+				},
+			},
 			abortBash: {
 				configurable: true,
 				value: (id?: string) => {

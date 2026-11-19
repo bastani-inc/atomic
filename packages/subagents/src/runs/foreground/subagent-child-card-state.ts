@@ -1,4 +1,12 @@
-import { type CustomEntry, type ExtensionContext, type SessionEntry, sliceHead } from "@bastani/atomic";
+import {
+	type CustomEntry,
+	type ExtensionContext,
+	noticeSubject,
+	type SavedTaskTranscripts,
+	type SessionEntry,
+	sliceHead,
+	type TaskTranscriptQuery,
+} from "@bastani/atomic";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
 import { reopenChildSession, type SessionStoreSource } from "./subagent-child-session.js";
@@ -12,7 +20,9 @@ export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
  */
 export const SUBAGENT_CHILD_RELEASED_STATUS = "released";
 
-export function isSubagentChildRecord(value: SessionEntry): value is CustomEntry<SubagentChildRecord> {
+export function isSubagentChildRecord(
+	value: SessionEntry,
+): value is CustomEntry<SubagentChildRecord> & { data: SubagentChildRecord } {
 	if (value.type !== "custom" || value.customType !== SUBAGENT_CHILD_RECORD_TYPE) return false;
 	const data = value.data as Partial<SubagentChildRecord> | undefined;
 	return (
@@ -66,6 +76,11 @@ const TRANSCRIPT_LINES = 12;
 const TRANSCRIPT_LINE_CHARS = 200;
 /** How often an expanded card of a running child, which keeps saving messages, reads its transcript again. */
 const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
+/**
+ * How long a card waits for its child's transcript before it says the transcript is unavailable rather than showing no
+ * tool calls. A read that finishes later still replaces that.
+ */
+export const SUBAGENT_TRANSCRIPT_READ_LIMIT_MS = 10_000;
 /** How far up from a session's leaf an entry this process just appended is looked for. */
 const APPENDED_ENTRY_SEARCH_DEPTH = 32;
 
@@ -80,6 +95,7 @@ function newChildIndex() {
 		// Open copies of a session, preferred first. Do not retain a closed copy (#5252).
 		readers: new Map<string, WeakRef<RecordReader>[]>(),
 		childIdsByTaskId: new Map<string, string>(),
+		taskRevision: 0,
 		watchers,
 		invalidators: new WeakMap<object, () => void>(),
 		collectedCards: new FinalizationRegistry<WatchedCard>(({ key, cards, ref }) => {
@@ -91,8 +107,9 @@ function newChildIndex() {
 const INDEX = Symbol.for("@bastani/subagents/child-record-index@1");
 const processIndex = globalThis as { [INDEX]?: ReturnType<typeof newChildIndex> };
 processIndex[INDEX] ??= newChildIndex();
+const childIndex = processIndex[INDEX];
 const { entries, unsavedRecords, pendingWrites, readers, childIdsByTaskId, watchers, invalidators, collectedCards } =
-	processIndex[INDEX];
+	childIndex;
 
 export { pendingWrites as pendingSubagentChildWrites };
 export interface SubagentChildToolCallEntry {
@@ -124,6 +141,8 @@ interface TranscriptCache {
 	readonly key: string;
 	lines?: readonly string[];
 	details?: SubagentChildTranscriptDetails;
+	/** The read of the transcript while it is in flight; it settles once the read is done or took too long. */
+	loading?: Promise<void>;
 }
 /** Each card's transcripts, by child id: they are dropped with the card. */
 const transcripts = new WeakMap<object, Map<string, TranscriptCache>>();
@@ -281,6 +300,7 @@ export function observeSubagentChildRecord(
 /** A card finds a child by any task id it ran as; a released child's task is no longer one. */
 function indexTaskId(record: SubagentChildRecord): void {
 	if (record.taskId === undefined) return;
+	childIndex.taskRevision++;
 	if (record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) {
 		if (childIdsByTaskId.get(record.taskId) === record.childId) childIdsByTaskId.delete(record.taskId);
 	} else if (!childIdsByTaskId.has(record.taskId)) childIdsByTaskId.set(record.taskId, record.childId);
@@ -682,8 +702,9 @@ async function postLaunchMessages(
 	sessionManager: NonNullable<
 		Extract<Awaited<ReturnType<typeof reopenChildSession>>, { sessionManager: unknown }>["sessionManager"]
 	>,
+	recordedAttempt?: SubagentChildRecord,
 ): Promise<readonly TranscriptMessage[]> {
-	const full = await resolveSavedRecord(from, entry);
+	const full = recordedAttempt ?? (await resolveSavedRecord(from, entry));
 	const launchLeafId = full?.launchLeafId;
 	const launchLeafSeq = full?.launchLeafSeq;
 	let branch = sessionManager.getBranch();
@@ -754,9 +775,15 @@ export function clearSubagentChildTranscriptCache(card: object): void {
 	transcriptGenerations.set(card, (transcriptGenerations.get(card) ?? 0) + 1);
 }
 
+/**
+ * The child's transcript as `card` shows it, read from the child's own session. The first call starts the read and
+ * returns what the card had before, if anything; the card is redrawn once the read is done. `waitForLoad`, from a view
+ * that draws the card once, such as an HTML export, receives that read so the view can draw the card again with it.
+ */
 export function subagentChildTranscriptDetails(
 	card: object,
 	record: SubagentChildIndexEntry,
+	waitForLoad?: (load: Promise<unknown>) => void,
 ): SubagentChildTranscriptDetails | undefined {
 	if (record.childSessionId === undefined && record.childSessionFile === undefined) return undefined;
 	const running = record.state === "running";
@@ -765,7 +792,10 @@ export function subagentChildTranscriptDetails(
 	const cache = transcripts.get(card) ?? new Map<string, TranscriptCache>();
 	transcripts.set(card, cache);
 	const cached = cache.get(record.childId);
-	if (cached?.key === key) return cached.details;
+	if (cached?.key === key) {
+		if (cached.loading !== undefined) waitForLoad?.(cached.loading);
+		return cached.details;
+	}
 	const from = source;
 	if (!from) return cached?.details;
 	const gen = transcriptGenerations.get(card) ?? 0;
@@ -775,12 +805,12 @@ export function subagentChildTranscriptDetails(
 		...(cached?.details ? { details: cached.details } : {}),
 	};
 	cache.set(record.childId, entry);
-	void (async () => {
+	const current = () =>
+		(transcriptGenerations.get(card) ?? 0) === gen && transcripts.get(card)?.get(record.childId) === entry;
+	const read = (async () => {
 		const reopened = await reopenChildSession(from, record);
 		if ("reason" in reopened) {
-			if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
-				return;
-			}
+			if (!current()) return;
 			const details: SubagentChildTranscriptDetails = {
 				toolCalls: [],
 				lines: [],
@@ -793,9 +823,7 @@ export function subagentChildTranscriptDetails(
 			return;
 		}
 		const messages = await postLaunchMessages(from, record, reopened.sessionManager);
-		if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
-			return;
-		}
+		if (!current()) return;
 		const details = extractTranscriptDetails(messages);
 		const changed = !sameDetails(entry.details, details);
 		entry.lines = details.lines;
@@ -807,11 +835,129 @@ export function subagentChildTranscriptDetails(
 			}, RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
 		}
 	})().catch(() => undefined);
+	// A read that does not end in time leaves the card saying so, rather than listing no tool calls.
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const limit = new Promise<void>((resolve) => {
+		timer = setTimeout(() => {
+			if (current() && entry.details === undefined) {
+				entry.details = {
+					toolCalls: [],
+					lines: [],
+					unavailable: `Transcript unavailable · reading it took longer than ${SUBAGENT_TRANSCRIPT_READ_LIMIT_MS / 1000}s`,
+				};
+				notify(record.childId);
+			}
+			resolve();
+		}, SUBAGENT_TRANSCRIPT_READ_LIMIT_MS);
+		timer.unref?.();
+	});
+	entry.loading = Promise.race([read, limit]).finally(() => {
+		clearTimeout(timer);
+		entry.loading = undefined;
+	});
+	waitForLoad?.(entry.loading);
 	return entry.details;
 }
 
 export function subagentChildTranscript(card: object, record: SubagentChildIndexEntry): readonly string[] | undefined {
 	return subagentChildTranscriptDetails(card, record)?.lines;
+}
+
+/** Only legacy notices need this lookup. Read the owner's recorded attempts instead of retaining an alias for every released wake. */
+function legacyChild(
+	owner: ExtensionContext["sessionManager"],
+	notice: TaskTranscriptQuery,
+): { found: string | null | undefined; matches: boolean; recorded?: SubagentChildIndexEntry } {
+	const ownerId = owner.getSessionId();
+	let found: string | null | undefined;
+	let matches = false;
+	let reachedNotice = false;
+	let recorded: SubagentChildIndexEntry | undefined;
+	const observe = (record: SubagentChildRecord, entryId?: string) => {
+		if (record.taskId !== notice.taskId) return;
+		if (found === undefined) found = record.childId;
+		else if (found !== record.childId) found = null;
+		if (entryId !== undefined && !reachedNotice && record.agent === notice.agentName) {
+			if (record.childSessionId || record.childSessionFile)
+				recorded = projectionOf(record, copiedInto(record, ownerId), { entryId, sessionId: ownerId });
+			if (matches) return;
+			const prompt = record.launch?.intentTask ?? record.launch?.task;
+			const title = prompt?.split(/\r?\n/).find((line) => /\P{White_Space}/u.test(line)) ?? record.task;
+			matches = title !== undefined && noticeSubject(title) === notice.subject;
+		}
+	};
+	for (const entry of owner.getEntries()) {
+		if (isSubagentChildRecord(entry)) observe(entry.data, entry.id);
+		else if (entry.type === "custom_message" && entry.customType === "task-completion") {
+			const details = entry.details as { completionId?: unknown; taskId?: unknown } | undefined;
+			if (details?.completionId === notice.completionId && details?.taskId === notice.taskId) reachedNotice = true;
+		}
+	}
+	// Later or not-yet-saved attempts can make the number ambiguous, but cannot identify this earlier completion.
+	for (const record of unsavedRecords.values()) if (record.owner?.sessionId === ownerId) observe(record);
+	return { found, matches: reachedNotice && matches, recorded };
+}
+
+/**
+ * The transcripts of finished subagents for their notices once the task that ran them is gone, as after a restart: the
+ * child's own session, read as its launch card reads it. The notice keeps what it read only while it is expanded.
+ */
+export function savedSubagentTranscripts(manager: ExtensionContext["sessionManager"]): SavedTaskTranscripts {
+	const owner = new WeakRef(manager);
+	const store = manager.getSessionStore();
+	const from = { sessionManager: { getSessionStore: () => store } };
+	// Cache results only for the lifetime of a displayed legacy notice, never by task number. New histories or
+	// unsettled child records need a fresh lookup; ordinary repaints of a saved notice do not rescan the history.
+	const lookedUp = new WeakMap<
+		TaskTranscriptQuery,
+		{ seq: number; full: boolean; revision: number; identity: ReturnType<typeof legacyChild> }
+	>();
+	const legacy = (task: TaskTranscriptQuery) => {
+		const reader = owner.deref();
+		if (!reader || !task.agentName || !task.subject || !task.completionId) return undefined;
+		const seq = reader.getLastSeq();
+		const full = reader.hasFullHistory();
+		const cached = lookedUp.get(task);
+		if (cached?.seq === seq && cached.full === full && cached.revision === childIndex.taskRevision)
+			return cached.identity;
+		const identity = legacyChild(reader, task);
+		lookedUp.set(task, { seq, full, revision: childIndex.taskRevision, identity });
+		return identity;
+	};
+	const lookup = (task: TaskTranscriptQuery) => {
+		if (task.launchId !== undefined) return entries.get(task.launchId);
+		const identity = legacy(task);
+		if (!identity?.matches || identity.found === undefined) return undefined;
+		return identity.found === null ? "several" : identity.recorded;
+	};
+	return {
+		ownerSessionId: manager.getSessionId(),
+		has(task) {
+			const child = lookup(task);
+			return (
+				child === "several" ||
+				(child !== undefined && (child.childSessionId !== undefined || child.childSessionFile !== undefined))
+			);
+		},
+		async load(task) {
+			const child = lookup(task);
+			if (child === "several")
+				return { entries: [], unavailable: `more than one subagent ran as ${task.taskId} in this session` };
+			if (child === undefined || (child.childSessionId === undefined && child.childSessionFile === undefined))
+				return undefined;
+			let recordedAttempt: SubagentChildRecord | undefined;
+			if (task.launchId === undefined) {
+				const entry = child.entryId && owner.deref()?.getEntry(child.entryId);
+				if (!entry || !isSubagentChildRecord(entry)) return undefined;
+				recordedAttempt = entry.data;
+			}
+			const reopened = await reopenChildSession(from, child);
+			if ("reason" in reopened) return { entries: [], unavailable: reopened.reason };
+			const messages = await postLaunchMessages(from, child, reopened.sessionManager, recordedAttempt);
+			return { entries: messages.map((message) => ({ type: "message", message })) as unknown as SessionEntry[] };
+		},
+		ranAsSeveral: (_taskId, task) => legacy(task)?.found === null,
+	};
 }
 
 /** What the child index and the cards keep, by kind; counted by tests and the benchmark. */
@@ -822,10 +968,19 @@ export function subagentChildCardStateSizes(): {
 	readonly owners: number;
 	readonly readers: number;
 	readonly watchers: number;
+	readonly otherIndexKeys: number;
 } {
+	// Account for every strong map in the process index, including any not yet given its own diagnostic.
+	const named = new Set<unknown>([entries, unsavedRecords, childIdsByTaskId, readers, watchers]);
+	const otherIndexKeys = Object.values(childIndex).reduce<number>(
+		(count, value) => count + (value instanceof Map && !named.has(value) ? value.size : 0),
+		0,
+	);
 	return {
+		otherIndexKeys,
 		records: entries.size,
 		unsavedRecords: unsavedRecords.size,
+		// Legacy notice lookups use saved records and retain no separate task aliases.
 		taskIds: childIdsByTaskId.size,
 		owners: loadedOwners.size,
 		readers: readers.size,

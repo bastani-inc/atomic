@@ -3,6 +3,7 @@ import {
 	type DefaultTextStyle,
 	Markdown,
 	type MarkdownTheme,
+	sliceByColumn,
 	stripTerminalSequences,
 	Text,
 	truncateToWidth,
@@ -33,8 +34,38 @@ export interface ToolBlockSpec {
 	readonly outputPad?: number;
 }
 
+/**
+ * A call title that may span rows, such as a script shown as the call's argument. When it renders more than one row,
+ * the first row follows the status glyph, the other rows sit under the title, and the metadata ends the last row.
+ */
+export interface ToolBlockTitleRows extends Component {
+	readonly toolBlockTitleRows: true;
+}
+
+function keepsTitleRows(title: string | Component): title is ToolBlockTitleRows {
+	return typeof title !== "string" && "toolBlockTitleRows" in title && title.toolBlockTitleRows === true;
+}
+
+/** The columns an indented row keeps for its text however narrow the width: one wide character, such as `漢` or `😀`. */
+export const NARROWEST_INDENTED_TEXT = 2;
+
+/**
+ * How much of `indent` a row of `width` columns can spend before its text: all of it, unless that would leave the text
+ * less than {@link NARROWEST_INDENTED_TEXT} columns. In a narrow block the indents give way first, so a wide character
+ * still fits on a row of its own rather than being cut.
+ */
+export function indentWithin(width: number, indent: number): number {
+	return Math.max(0, Math.min(Math.floor(indent), Math.floor(width) - NARROWEST_INDENTED_TEXT));
+}
+
+/** The first `columns` columns of an indent or prefix. */
+function leadingColumns(prefix: string, columns: number): string {
+	return columns >= visibleWidth(prefix) ? prefix : sliceByColumn(prefix, 0, columns);
+}
+
 export const TOOL_BLOCK_LIMITS = {
 	bash: 5,
+	script: 10,
 	search: 8,
 	paths: 8,
 	diff: 12,
@@ -100,6 +131,86 @@ export function componentNeedsWorkingClock(component: Component | undefined): bo
 	);
 }
 
+/**
+ * A component that can also draw its rows one at a time. `render` returns them all at once; `streamRows` yields them as
+ * they are drawn, so a block thousands of rows long, such as an expanded card holding a long output, can be drawn a
+ * slice per turn of the event loop by {@link SlicedRows}.
+ */
+export interface RowStream extends Component {
+	streamRows(width: number): Iterable<string>;
+}
+
+/** The rows of `component` at `width`, drawn one at a time when it can, otherwise all at once. */
+export function streamRows(component: Component, width: number): Iterable<string> {
+	return "streamRows" in component && typeof component.streamRows === "function"
+		? (component as RowStream).streamRows(width)
+		: component.render(width);
+}
+
+/** How long one render may spend drawing a large block before the event loop runs again. */
+export const ROW_SLICE_BUDGET_MS = 8;
+
+/**
+ * Rows of a large block drawn a slice per turn. Each render draws more rows until {@link ROW_SLICE_BUDGET_MS} has
+ * passed and returns the rows drawn so far; once the event loop has run, `requestRender` asks for the next render,
+ * which draws the next slice, until every row is drawn. The rows stay drawn for that width, so a later render returns
+ * them at once. Without `requestRender`, as in a view that draws once, the first render draws every row.
+ */
+export class SlicedRows implements Component {
+	private readonly source: Component;
+	private readonly requestRender: (() => void) | undefined;
+	private width = 0;
+	private drawn: string[] = [];
+	private rest: Iterator<string> | undefined;
+	private scheduled = false;
+
+	constructor(source: Component, requestRender?: () => void) {
+		this.source = source;
+		this.requestRender = requestRender;
+	}
+
+	invalidate(): void {
+		this.width = 0;
+		this.drawn = [];
+		this.rest = undefined;
+		this.source.invalidate();
+	}
+
+	render(width: number): string[] {
+		const columns = Math.floor(width);
+		if (columns < 1) return [];
+		if (columns !== this.width) {
+			this.width = columns;
+			this.drawn = [];
+			this.rest = streamRows(this.source, columns)[Symbol.iterator]();
+		}
+		const rest = this.rest;
+		if (rest !== undefined) {
+			const deadline = this.requestRender ? performance.now() + ROW_SLICE_BUDGET_MS : Number.POSITIVE_INFINITY;
+			for (let count = 1; ; count++) {
+				const next = rest.next();
+				if (next.done) {
+					this.rest = undefined;
+					break;
+				}
+				this.drawn.push(next.value);
+				if (count % 16 === 0 && performance.now() >= deadline) break;
+			}
+			if (this.rest !== undefined) this.scheduleNextSlice();
+		}
+		return [...this.drawn];
+	}
+
+	private scheduleNextSlice(): void {
+		if (this.scheduled) return;
+		this.scheduled = true;
+		setImmediate(() => {
+			this.scheduled = false;
+			if (this.rest !== undefined) this.requestRender?.();
+		}).unref?.();
+	}
+}
+
 export class ToolBlockRecords implements Component {
 	readonly toolBlockKind = "records";
 	private readonly records: readonly (string | Component)[];
@@ -115,23 +226,42 @@ export class ToolBlockRecords implements Component {
 		for (const record of this.records) if (typeof record !== "string") record.invalidate();
 	}
 	render(width: number): string[] {
-		if (width < 1) return [];
-		const contentWidth = Math.max(1, width - DETAIL_PREFIX.length);
-		return this.records.flatMap((record) => {
+		return [...this.drawRows(width)];
+	}
+	streamRows(width: number): Iterable<string> {
+		// A subclass that draws itself its own way is drawn as it renders.
+		return this.render === ToolBlockRecords.prototype.render ? this.drawRows(width) : this.render(width);
+	}
+	private *drawRows(width: number): Generator<string> {
+		if (width < 1) return;
+		const prefixWidth = indentWithin(width, DETAIL_PREFIX.length);
+		const contentWidth = Math.max(1, width - prefixWidth);
+		const firstPrefix = theme.fg("dim", leadingColumns(DETAIL_FIRST_PREFIX, prefixWidth));
+		const prefix = theme.fg("dim", leadingColumns(DETAIL_PREFIX, prefixWidth));
+		for (const record of this.records) {
 			const component = typeof record === "string" ? new Text(theme.fg("toolOutput", record), 0, 0) : record;
-			const lines = component.render(contentWidth);
-			if (
-				this.options.preserveConnectors &&
-				typeof record !== "string" &&
-				stripTerminalSequences(lines[0] ?? "").startsWith(DETAIL_FIRST_PREFIX) &&
-				lines.slice(1).every((line) => line.trim() === "" || stripTerminalSequences(line).startsWith(DETAIL_PREFIX))
-			)
-				return component.render(width).map((line) => truncateToWidth(line, width, "…"));
-			return lines.map((line, index) => {
-				const prefix = index === 0 ? DETAIL_FIRST_PREFIX : DETAIL_PREFIX;
-				return truncateToWidth(`${theme.fg("dim", prefix)}${line.trimEnd()}`, width, "…");
-			});
-		});
+			if (this.options.preserveConnectors && typeof record !== "string") {
+				// Whether the record draws its own connectors is known only once all its rows are drawn.
+				const lines = component.render(contentWidth);
+				if (
+					stripTerminalSequences(lines[0] ?? "").startsWith(DETAIL_FIRST_PREFIX) &&
+					lines
+						.slice(1)
+						.every((line) => line.trim() === "" || stripTerminalSequences(line).startsWith(DETAIL_PREFIX))
+				) {
+					for (const line of component.render(width)) yield truncateToWidth(line, width, "…");
+					continue;
+				}
+				for (let index = 0; index < lines.length; index++)
+					yield truncateToWidth(`${index === 0 ? firstPrefix : prefix}${lines[index]!.trimEnd()}`, width, "…");
+				continue;
+			}
+			let first = true;
+			for (const line of streamRows(component, contentWidth)) {
+				yield truncateToWidth(`${first ? firstPrefix : prefix}${line.trimEnd()}`, width, "…");
+				first = false;
+			}
+		}
 	}
 }
 
@@ -148,20 +278,58 @@ export class ToolBlock implements Component {
 	constructor(spec: ToolBlockSpec) {
 		this.spec = spec;
 	}
+	/** The blank columns every row starts with at `width`: the block's output pad, or less when the width is narrow. */
+	marginAt(width: number): number {
+		return width < 1 ? 0 : indentWithin(width, this.spec.outputPad ?? 1);
+	}
 	invalidate(): void {
 		if (typeof this.spec.title !== "string") this.spec.title.invalidate();
 		this.spec.body?.invalidate();
 		this.spec.details?.invalidate();
 	}
 	render(width: number): string[] {
-		if (width < 1) return [];
-		const pad = Math.max(0, Math.min(Math.floor(this.spec.outputPad ?? 1), Math.floor(width) - 1));
+		return [...this.drawRows(width)];
+	}
+
+	streamRows(width: number): Iterable<string> {
+		// A subclass that draws itself its own way is drawn as it renders.
+		return this.render === ToolBlock.prototype.render ? this.drawRows(width) : this.render(width);
+	}
+
+	private *drawRows(width: number): Generator<string> {
+		if (width < 1) return;
+		const pad = this.marginAt(width);
 		const contentWidth = Math.max(1, Math.floor(width) - pad);
 		const marker = STATUS_MARKERS[this.spec.status];
 		const glyph =
 			this.spec.status === "running" && !noColor() ? atomicWorkingGlyph() : theme.fg(marker.color, marker.glyph);
 		const titleWidth = Math.max(0, contentWidth - 2);
 		const meta = [...(this.spec.meta ?? [])].filter((part) => visibleWidth(part) > 0);
+		const metaText = () => meta.map((part) => ` · ${part}`).join("");
+		// Rows of a title that spans several sit under its first, which follows the glyph; when the block is too narrow
+		// for that indent, they keep the columns and the first row is cut instead.
+		const rowsIndent = indentWithin(contentWidth, 2);
+		const rowsWidth = contentWidth - rowsIndent;
+		const titleRows = keepsTitleRows(this.spec.title)
+			? this.titleRows(this.spec.title, rowsWidth, visibleWidth(metaText()))
+			: undefined;
+		if (titleRows) {
+			const last = titleRows.length - 1;
+			while (meta.length > 0 && visibleWidth(titleRows[last] ?? "") + visibleWidth(metaText()) > rowsWidth)
+				meta.pop();
+			yield* this.withBody(
+				titleRows.map((row, index) =>
+					truncateToWidth(
+						`${index === 0 ? `${glyph} ` : " ".repeat(rowsIndent)}${row}${index === last ? theme.fg("dim", metaText()) : ""}`,
+						contentWidth,
+						"…",
+					),
+				),
+				contentWidth,
+				pad,
+			);
+			return;
+		}
 		const titleText =
 			typeof this.spec.title === "string" ? inlineText(this.spec.title) : renderedTitle(this.spec.title, titleWidth);
 		const args = this.spec.args === undefined ? undefined : inlineText(this.spec.args);
@@ -169,7 +337,6 @@ export class ToolBlock implements Component {
 			typeof this.spec.title === "string"
 				? visibleWidth(titleText) + (args === undefined ? 0 : 2 + (args.length > 0 ? 1 : 0))
 				: Math.min(visibleWidth(titleText), 8);
-		const metaText = () => meta.map((part) => ` · ${part}`).join("");
 		while (meta.length > 0 && minimumTitle + visibleWidth(metaText()) > titleWidth) meta.pop();
 		const availableTitle = Math.max(0, titleWidth - visibleWidth(metaText()));
 		let title: string;
@@ -187,24 +354,39 @@ export class ToolBlock implements Component {
 				availableTitle,
 			);
 		const header = truncateToWidth(`${glyph} ${title}${theme.fg("dim", metaText())}`, contentWidth, "…");
-		const rows = [header];
+		yield* this.withBody([header], contentWidth, pad);
+	}
+
+	/**
+	 * The title's rows when it spans several, or undefined when it fits one row, which the caller lays out as usual. A
+	 * title that fits alone but not beside its metadata is asked again with that room left over.
+	 */
+	private titleRows(title: ToolBlockTitleRows, width: number, metaWidth: number): string[] | undefined {
+		const rows = title.render(width);
+		if (rows.length > 1) return rows;
+		if (metaWidth === 0 || visibleWidth(rows[0] ?? "") + metaWidth <= width) return undefined;
+		const narrower = title.render(Math.max(1, width - metaWidth));
+		return narrower.length > 1 ? narrower : undefined;
+	}
+
+	private *withBody(header: readonly string[], contentWidth: number, pad: number): Generator<string> {
+		const margin = " ".repeat(pad);
+		const plain = noColor();
+		const row = (line: string) => (plain ? stripTerminalSequences(`${margin}${line}`) : `${margin}${line}`);
+		for (const line of header) yield row(line);
 		if (this.spec.body) {
-			const bodyWidth = Math.max(1, contentWidth - 2);
-			for (const line of this.spec.body.render(bodyWidth)) {
-				rows.push(truncateToWidth(`  ${line.trimEnd()}`, contentWidth, "…"));
-			}
+			const bodyIndent = " ".repeat(indentWithin(contentWidth, 2));
+			const bodyWidth = Math.max(1, contentWidth - bodyIndent.length);
+			for (const line of streamRows(this.spec.body, bodyWidth))
+				yield row(truncateToWidth(`${bodyIndent}${line.trimEnd()}`, contentWidth, "…"));
 		}
 		if (this.spec.details) {
 			const records =
 				"toolBlockKind" in this.spec.details && this.spec.details.toolBlockKind === "records"
 					? this.spec.details
 					: new ToolBlockRecords([this.spec.details]);
-			for (const line of records.render(contentWidth)) rows.push(line);
+			for (const line of streamRows(records, contentWidth)) yield row(line);
 		}
-		return rows.map((line) => {
-			const result = `${" ".repeat(pad)}${line}`;
-			return noColor() ? stripTerminalSequences(result) : result;
-		});
 	}
 }
 
@@ -221,15 +403,36 @@ export class ToolBlockGroup implements Component {
 		for (const block of this.blocks) block.invalidate();
 	}
 	render(width: number): string[] {
-		const rows: string[] = [];
-		for (const block of this.blocks) {
-			const rendered = block.render(width);
-			if (rendered.length === 0) continue;
-			if (rows.length > 0) rows.push("");
-			for (const line of rendered) rows.push(line);
-		}
-		return rows;
+		return [...streamSeparated(this.blocks, width)];
 	}
+	streamRows(width: number): Iterable<string> {
+		// A subclass that draws itself its own way is drawn as it renders.
+		return this.render === ToolBlockGroup.prototype.render ? streamSeparated(this.blocks, width) : this.render(width);
+	}
+}
+
+/** The rows of each component in turn, a blank row between two that draw any. */
+export function* streamSeparated(components: readonly Component[], width: number): Generator<string> {
+	let drawn = false;
+	for (const component of components) {
+		let first = true;
+		for (const line of streamRows(component, width)) {
+			if (first && drawn) yield "";
+			first = false;
+			drawn = true;
+			yield line;
+		}
+	}
+}
+
+/**
+ * Whether every row `component` draws at `width` starts with its blank margin, so a view can draw it a column wider
+ * and drop that column row by row: a tool block drawn the standard way, with an output pad at that width.
+ */
+export function drawsWithMargin(component: Component, width: number): component is ToolBlock {
+	return (
+		component instanceof ToolBlock && component.render === ToolBlock.prototype.render && component.marginAt(width) > 0
+	);
 }
 
 export function isToolBlock(component: Component): component is ToolBlock | ToolBlockGroup {

@@ -670,8 +670,18 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_tools", await session.getToolStatusAsync());
 			}
 
+			case "render_html": {
+				const { renderAgentSessionHtml } = await import("../../core/agent-session-export.ts");
+				return createRpcSuccessResponse(id, "render_html", {
+					html: await renderAgentSessionHtml(session, command.themeName),
+				});
+			}
+
 			case "export_html": {
-				const path = await session.exportToHtml(command.outputPath);
+				const path = await session.exportToHtml(
+					command.outputPath,
+					command.themeName === undefined ? {} : { themeName: command.themeName },
+				);
 				return createRpcSuccessResponse(id, "export_html", { path });
 			}
 

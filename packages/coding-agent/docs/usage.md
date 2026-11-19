@@ -191,7 +191,7 @@ The agent remembers earlier work through `history://`: it recalls this project's
 
 ## Exporting and Sharing Sessions
 
-Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them.
+Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them. Tool calls look as they do in the chat, a click opening one as `Ctrl+O` does; a subagent card lists the tool calls read from the subagent's own session. `atomic --export <session.jsonl> [file]` writes the same page from a saved session file; there, a `codemode` call is drawn as in the chat, and the page draws other tools itself, with their arguments and the text of their results.
 
 Use `/share` to upload a private GitHub gist with a shareable link. The link opens the session in Atomic's viewer at `https://bastani.ai/session/`; set `ATOMIC_SHARE_VIEWER_URL` to use your own viewer instead.
 

@@ -39,6 +39,8 @@ export const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 	"switch_session",
 	"new_session",
 	"import_session",
+	// Rendering an entire export may await several tool renderers' transcript reads.
+	"render_html",
 	"navigate_tree",
 	"invoke_shortcut",
 	"start_pending_recovery",
