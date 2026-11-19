@@ -19,7 +19,7 @@ subagent({
 
 `auto` stands for your default model: the `defaultProvider` and `defaultModel` [settings](/settings#model-&-thinking), which hold the model you last chose with `/model`, when that model has credentials. The child runs it at the agent's `thinking` level when the agent sets one; otherwise at the model's `modelThinkingLevels` entry, then `defaultThinkingLevel`, then `medium`. When no default model is configured or it is unavailable, the child runs the launching session's model at the session's thinking level, unless the agent sets its own `thinking`. Levels the model does not support are clamped.
 
-No model is asked to choose, and the task does not affect which model runs. A concrete model on the call wins over an agent's `auto` default, and omitting `model` keeps normal inheritance. Workflow stages follow the same rule; see [stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection).
+No model is asked to choose, and the task does not affect which model runs. A concrete model on the call wins over an agent's `auto` default, and omitting `model` keeps normal inheritance.
 
 To run a role on another model, name it as `provider/model[:effort]` on the call, in the agent definition, or in a builtin override. The `taskNeeds` and `modelConstraints` fields of earlier releases are ignored when they are still passed. When Atomic starts, it deletes them from the builtin agent overrides saved in your global settings and in a trusted project's `.atomic/settings.json`, keeps every other setting, and tells you once.
 

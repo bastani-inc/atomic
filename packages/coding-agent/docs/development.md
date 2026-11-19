@@ -20,10 +20,7 @@ In debug mode, every area below appends one JSON line per event to `~/.atomic/ag
 
 | Area | Own variable | What it shows | Own variable writes to |
 |------|--------------|---------------|------------------------|
-| `workflow` | `ATOMIC_WORKFLOW_DEBUG=1` | Failed background workflow discovery, failed workflow lifecycle, HiL-answer and heartbeat notices, heartbeat intervals too large to schedule, and, in debug mode only (`ATOMIC_WORKFLOW_DEBUG=1` alone does not write them), a detached tool call dropped because its conversation moved past it (`stale-detached-call`) and a stage prompt or retry not sent because its session waits on a detached call's result (`stage-input-held-for-detached-results`) | stderr |
 | `decision` | None | A [classifier decision](/settings#decisionmodel) that failed and fell back to the current chat model | — |
-| `pooled-watch` | `ATOMIC_DEBUG_POOLED_WATCH=1`, or a file path | Each step of watching a pooled stage: watches opening and ending, reconnects, rebinds, delivered messages and their outcomes, admissions and refusals | `pooled-watch-trace.jsonl` next to the pool journal, or the named file |
-| `pool` | None | Worker pool coordination counters: requests and journal writes per second, by kind. Debug mode also shows them as the `pool:` line in workflow status | — |
 | `storage` | None | Each [writers' queue degradation](/storage) of a SQLite database, once per reason: its code, reason, adapter, database path and error code, never the error message | — |
 
 Debug output holds only what each area already reports, such as ids, names, counts and error messages. It never includes prompts or message text. Credentials in common forms are replaced with `[redacted]`: bearer tokens, JWTs, GitHub tokens, private key blocks, `sk-…` style API keys, and `key: value` or `key=value` pairs whose name is a key, token, secret or password. Other credential formats can pass through, so review the log before sharing it. Long text is cut to 2,000 characters.

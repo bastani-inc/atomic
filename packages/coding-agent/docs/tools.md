@@ -40,7 +40,7 @@ return files.map((text) => text.slice(0, 1000));
 
 Codemode works with every provider. On models that support OpenAI grammar tools, Atomic also constrains its input to JavaScript source; other models receive it as an ordinary tool. Run `/tools` to confirm it is active.
 
-Scripts run in a fresh QuickJS worker with a 256 MiB memory limit. They have no direct Node, filesystem, network, modules, timers, or credential globals. Tool calls still run with the session's permissions and can have real side effects; a failed script does **not** undo them. Workflow, subagent, Intercom/supervisor, and user-question tools are model-only and cannot be called from scripts. Allowlists, exclusions, and deactivated direct MCP tools remain authoritative.
+Scripts run in a fresh QuickJS worker with a 256 MiB memory limit. They have no direct Node, filesystem, network, modules, timers, or credential globals. Tool calls still run with the session's permissions and can have real side effects; a failed script does **not** undo them. Use direct tools for user questions, supervisor requests, and subagent definition management. See [Orchestration](/orchestration) for script-callable subagent actions. Allowlists, exclusions, and deactivated direct MCP tools remain authoritative.
 
 Use `text(value)`, `image(dataUrlOrImageContent)`, `console.log(...)`, or a top-level return for output; `exit()` ends early. An optional first line configures output and a caller-owned deadline:
 
@@ -163,7 +163,7 @@ Configured command prefixes and SDK `spawnHook` rewrites remain executable shell
 
 ## `kill`
 
-`kill({ id: taskId })` stops an owned background shell task launched by `bash` or `powershell`, including a command that automatically yielded. Pass its returned task ID verbatim, not a PID. The tool is owner-scoped in main and workflow-stage chat and does not cancel subagents or another owner's work.
+`kill({ id: taskId })` stops an owned background shell task launched by `bash` or `powershell`, including a command that automatically yielded. Pass its returned task ID verbatim, not a PID. The tool is scoped to the launching session and does not cancel subagents or another owner's work.
 
 The result reports the cancellation decision and current execution and cleanup states. A request is not confirmation of termination. Repeated requests preserve the original cancellation decision; already-completed work retains its outcome. Cleanup failures are reported explicitly. See [Background tasks](/background-tasks#stop-a-shell-task-from-a-tool-call) for states, retained output, and `/tasks` controls.
 
@@ -214,7 +214,7 @@ Directory reads show a depth-2 tree sorted by most-recent modification time, wit
 - SQLite table and row selectors, with `limit`, `offset`, `where`, `order`, `schema`, and `sampleRows` query parameters.
 - `skill://` (read and search only; edit a skill file by its path) and source-backed `local://` selectors. Search output and `write` results name the underlying filesystem path.
 - `artifact://<id>` for saved tool output (read-only), and `conflict://` for merge conflicts under the working directory.
-- `history://` for the current project's past sessions and workflow runs (read-only), through whichever session store and workflow journal are configured. See [Recalling earlier work](/sessions#recalling-earlier-work).
+- `history://` for the current project's past sessions (read-only), through the configured session store. See [Recalling earlier work](/sessions#recalling-earlier-work).
 
 These are the only internal URL schemes. `read`, `search`, `write`, `find` and `bash` share one list, and any other `scheme://` is not an Atomic resource: `read`, `search` and `write` report it as unsupported and `bash` leaves it as text. `find` accepts the schemes that resolve to filesystem paths (`skill://`, `local://`, `artifact://`).
 
@@ -273,13 +273,13 @@ Ask only when a decision is needed. Do not ask again for already-authorized work
 
 In a real confirmation, identify the target PRs in the question or immediately preceding context. This example explains question routing; it does not authorize merging any PRs.
 
-A cancelled or unanswered question is not approval. If no usable question tool is available, continue autonomously using best judgment and state evidence-backed assumptions rather than stopping just because the tool is missing. Preserve safety, authorization, and explicit approval gates. Workflow-authored `ctx.ui` gates and `workflow answer` for relaying actual user responses remain supported.
+A cancelled or unanswered question is not approval. If no usable question tool is available, continue autonomously using best judgment and state evidence-backed assumptions rather than stopping just because the tool is missing. Preserve safety, authorization, and explicit approval gates.
 
 ## Persisted tool output
 
 When output does not fit in a tool result, Atomic saves it to a file and returns its path: `Full output: <path>` for `bash`, or `Full output saved to: <path>` for any tool result that crosses the persistence threshold. Atomic limits these files' location, size, and lifetime.
 
-**Where.** Sessions kept in a session directory save tool results in `<sessionDir>/tool-results/`. Each saved result is named by the SHA-256 of its content, identical outputs share one file, and the result shows `Content: sha256:<hex>` after the path. A result that arrives for an agent released while it waited (a workflow stage, including one on a pooled worker, or a background subagent), in a session kept in SQLite or libSQL (or in memory), is stored in the session store with the session instead, and the result names `tool-output://<sha256>` rather than a path. Read it with `read` (line ranges such as `tool-output://<sha256>:1-200` work) or `search`; that session and the sessions forked or branched from it can read it from any host that shares the store. Cleanup never removes it, deleting the session does, and exporting the session carries it in the file. A custom session store without `putBlob` and `getBlob` keeps these results in the temp tree below. Bash overflow logs, streamed spill files, and every other tool result of a session that is not kept in a session directory use one owner- and session-scoped temp tree:
+**Where.** Sessions kept in a session directory save tool results in `<sessionDir>/tool-results/`. Each saved result is named by the SHA-256 of its content, identical outputs share one file, and the result shows `Content: sha256:<hex>` after the path. A result that arrives for a subagent released while it waited, in a session kept in SQLite or libSQL (or in memory), is stored in the session store with the session instead, and the result names `tool-output://<sha256>` rather than a path. Read it with `read` (line ranges such as `tool-output://<sha256>:1-200` work) or `search`; that session and the sessions forked or branched from it can read it from any host that shares the store. Cleanup never removes it, deleting the session does, and exporting the session carries it in the file. A custom session store without `putBlob` and `getBlob` keeps these results in the temp tree below. Bash overflow logs, streamed spill files, and every other tool result of a session that is not kept in a session directory use one owner- and session-scoped temp tree:
 
 ```text
 <tmpdir>/atomic-<uid>/<session-id>/

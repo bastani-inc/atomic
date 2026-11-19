@@ -102,7 +102,7 @@ If no app manifest (`atomic`, or legacy `pi`) is present, Atomic auto-discovers 
 
 Workflow files import `workflow` from `@bastani/atomic/workflows`, import `Type` from `typebox`, and export the definition returned by `workflow({ ... })`. TypeScript resolves the published `@bastani/atomic/workflows` specifier through the `@bastani/atomic` package.
 
-Workflow files support `typebox`, `typebox/compile`, and `typebox/value`. Use these current imports even when an extension in the same package uses the host's additional schema aliases. See [Programmatic usage](/workflows/api-reference#programmatic-usage).
+Workflow files support `typebox`, `typebox/compile`, and `typebox/value`. Use these current imports even when an extension in the same package uses the host's additional schema aliases.
 
 When a package manifest exists, declared resource arrays normally define what loads. Workflows are the exception: if `atomic.workflows` / legacy `pi.workflows` is omitted, Atomic still checks conventional `workflows/` and `workflow/` directories.
 
@@ -116,7 +116,7 @@ Do not list these host-provided packages in `dependencies`. An installed copy ca
 
 Workflow packages import `workflow` from `@bastani/atomic/workflows`, import `Type` from `typebox`, and export definitions returned by `workflow({ ... })`. List `@bastani/atomic` and `typebox` in `peerDependencies` so package consumers receive the workflow SDK and schema library.
 
-Package-authored workflows should follow the same [guiding principles](/workflows/authoring#guiding-principles) as project workflows.
+To retain a procedure from a package-authored workflow as a skill, see [Convert an earlier workflow into a skill](/orchestration/migrating-workflows).
 
 Other Atomic packages must be bundled in your tarball. Add them to `dependencies` and `bundledDependencies`, then reference their resources through `node_modules/` paths. Atomic loads packages with separate module roots, so separate installs do not collide or share modules.
 

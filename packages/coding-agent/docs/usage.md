@@ -49,7 +49,7 @@ Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening
 
 The `@` and `/` menus end with one hint line naming the keys that work there. Tab completes without sending. Enter inserts an `@` path; for a `/`-prefixed completion, including an absolute path, Enter submits the completed prompt. Remapped menu keys appear only when an app shortcut or earlier menu action does not take them first.
 
-Ctrl+R searches the prompts the current chat has recorded, newest first: prompts sent through templates or skills as you typed them, and a prompt an `input` hook rewrote as the hook left it. ↑ and ↓ still walk through what you typed. In writable subagent and workflow stage chats, the search uses that chat's transcript. Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys. Read-only chats keep their transcript scrolling keys and do not open prompt search.
+Ctrl+R searches the prompts the current chat has recorded, newest first: prompts sent through templates or skills as you typed them, and a prompt an `input` hook rewrote as the hook left it. ↑ and ↓ still walk through what you typed. In writable subagent chats, the search uses that chat's transcript. Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys. Read-only chats keep their transcript scrolling keys and do not open prompt search.
 
 Prompt history keeps what you typed, including input rewritten by an extension before it reaches the model. An `input` hook does not erase the original from saved session history. Avoid typing secrets directly into prompts.
 
@@ -86,8 +86,6 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models and automatically save the startup default |
 | `/thinking` | Switch thinking level and automatically save the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/workflows` | Browse running and completed workflows |
-| `/workflow-authoring` | Load the reference for writing workflow definitions |
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
@@ -101,7 +99,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/copy` | Copy last assistant message to clipboard |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
-| `/reload` | Reload keybindings, extensions, skills, prompts, context files and workflow resources |
+| `/reload` | Reload keybindings, extensions, skills, prompts and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display the full version history |
 | `/exit` | Exit Atomic |
@@ -117,7 +115,7 @@ You can submit messages while the agent is still working:
 - **Ctrl+C** clears the editor first when it has text. With an empty editor, it aborts active/queued work and pauses queued messages in place. They remain queued, in their original per-queue order, until you submit the next ordinary chat message; that submission resumes the chat and makes each queued item eligible once. After the abort settles, Ctrl+C on an empty editor shows "Press Ctrl+C again to exit" without releasing the hold, and a second press within 0.8 s exits.
 - **ALT+Up** explicitly retrieves queued messages back to the editor without aborting active work or resuming a paused session. Even when retrieval empties the queue, the pause remains active until the next ordinary submission. It restores exactly what the session still held when it handled the key press: a message queued an instant earlier comes back, and one the agent has already taken into its turn does not come back a second time. If the engine process cannot be reached, nothing is removed and Atomic shows an error.
 
-Each queue preserves submission order, and steering messages take priority over follow-ups. Messages submitted during compaction keep their queue type and join that queue when compaction finishes or is cancelled, even if the agent is still working. Prompt templates and skills wait the same way. Slash commands that do not send a prompt, such as `/settings`, `/tasks`, `/model` and extension commands like `/workflows`, run immediately during compaction. A message that such a command sends, for example through `pi.sendUserMessage()`, also waits until compaction ends. It is shown as queued, goes out once, and keeps its place after the messages typed before the command. **ALT+Up** and Ctrl+C return it to the editor like the rest of the queue.
+Each queue preserves submission order, and steering messages take priority over follow-ups. Messages submitted during compaction keep their queue type and join that queue when compaction finishes or is cancelled, even if the agent is still working. Prompt templates and skills wait the same way. Slash commands that do not send a prompt, such as `/settings`, `/tasks` and `/model`, run immediately during compaction. A message that such a command sends, for example through `pi.sendUserMessage()`, also waits until compaction ends. It is shown as queued, goes out once, and keeps its place after the messages typed before the command. **ALT+Up** and Ctrl+C return it to the editor like the rest of the queue.
 
 Messages you submit while Atomic is still preparing a prompt, while it waits to retry a failed request, or while extensions finish handling the end of a run are queued the same way. They show as queued at once and join the run at its next turn boundary, in the order you submitted them. If the agent refuses one, Atomic returns the text to the editor, or keeps it queued, and shows the error.
 
@@ -127,7 +125,7 @@ Both interrupts hold a queued message only while it is still waiting in the queu
 
 Both abort routes ask the agent to stop cooperatively, and neither route terminates the engine during normal cancellation. The turn ends once each of its tool calls has stopped. A tool call still waiting for an earlier call to finish ends at once with `Operation aborted` and does not run. A tool call that has not stopped 10 seconds after the interrupt (set `ATOMIC_TOOL_ABORT_GRACE_MS` to change this; see [Environment variables](/environment-variables)) gets the result `Operation aborted: <tool> did not stop within 10 seconds after the turn was interrupted`, and the turn ends anyway. Such a call may keep running in the background, but later tool calls no longer wait for it. Anything it returns or throws after the grace period is discarded; it does not enter the chat or a later model request.
 
-Ctrl+C also provides a recovery path. It reaches Atomic even when an extension's custom UI owns the screen, closing that UI if it does not handle the key. If the engine stops answering, a queue clear or cancellation remains unanswered for over one second, or either operation fails, Ctrl+C replaces the engine. This includes cancelling chat, shell commands, compaction, and retries, even while engine heartbeats continue. It also covers a replacement that hangs during startup or fails to start. Recovery is explicit: a stalled control does not restart the engine on its own. Replacing the engine interrupts its running workflows and tools; inspect workflow status before resuming work.
+Ctrl+C also provides a recovery path. It reaches Atomic even when an extension's custom UI owns the screen, closing that UI if it does not handle the key. If the engine stops answering, a queue clear or cancellation remains unanswered for over one second, or either operation fails, Ctrl+C replaces the engine. This includes cancelling chat, shell commands, compaction, and retries, even while engine heartbeats continue. It also covers a replacement that hangs during startup or fails to start. Recovery is explicit: a stalled control does not restart the engine on its own. Replacing the engine interrupts running tools. Check `/tasks` and the session transcript before repeating an action.
 
 If a message could not be sent, Atomic restores it to the editor exactly as typed, including pasted content. It appears above anything typed while the send was pending, separated by a blank line, together with later queued messages in their original order. Atomic does not also show a red error. See [Keybindings](/keybindings#application).
 
@@ -187,7 +185,7 @@ Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in eit
 
 The default prompt asks the agent to write self-describing code and not add code comments unless you ask for them or the task calls for them. To get comments, request them in your prompt (for example "add JSDoc to the exported functions"), or make it a standing rule in a context file or `APPEND_SYSTEM.md` (for example "Document every exported function with a JSDoc block"). The default guideline explicitly defers to those instructions, so no other configuration is needed.
 
-The agent remembers earlier work through `history://`: it recalls this project's past sessions and workflow runs, and the preferences you stated in them, when you refer to earlier work, when a task resembles one done before, and before it chooses between a workflow and inline work, how to verify a change, or how long a task will take. Workflow stages and subagents recall the same history by default. With a shell tool, the agent also searches commits, issues, PRs and their comments for relevant prior work. See [Recalling earlier work](/sessions#recalling-earlier-work).
+The agent remembers earlier work through `history://`: it recalls this project's past sessions and the preferences you stated in them when you refer to earlier work, when a task resembles one done before, or when planning verification and estimating effort. Subagents can recall session history too. With a shell tool, the agent also searches commits, issues, PRs and their comments for relevant prior work. See [Recalling earlier work](/sessions#recalling-earlier-work).
 
 ## Exporting and Sharing Sessions
 
@@ -253,6 +251,6 @@ Moved to [CLI reference](/reference/cli#environment-variables).
 
 ## Design Principles
 
-Atomic keeps the core CLI small, while this distribution bundles first-party package extensions for workflows, subagents, MCP, web access, and [intercom](/intercom). Other workflows can still be installed as extensions or packages, or handled externally with tools such as containers and tmux.
+Atomic keeps the core CLI small, while this distribution bundles first-party integrations for subagents, MCP, web access, and [Intercom](/intercom). For reusable procedures, write a [skill](/skills#skills-as-workflows).
 
 For the full rationale, read the [blog post](https://mariozechner.at/posts/2025-11-30-pi-coding-agent/).

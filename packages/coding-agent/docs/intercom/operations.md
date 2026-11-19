@@ -132,7 +132,7 @@ An idle broker may leave one `broker.sock.replace.lock.gen<N>` directory contain
 
 ## Workflow and Subagent Notifications
 
-Intercom is also the delivery channel for workflow run results and subagent control notices from [workflows](/workflows) and [subagents](/subagents).
+Intercom also delivers control notices for [subagents](/subagents).
 
 ### Workflow Delivery Modes
 

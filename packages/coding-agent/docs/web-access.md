@@ -34,7 +34,7 @@ Keys come from the environment or from `~/.atomic/web-search.json`:
 
 By default `web_search` returns raw results. `/curator on` (or `"workflow": "summary-review"` in `web-search.json`) opens a browser page where you review the results and approve a summary before the agent sees them; `/curator off` turns it back off. The curator changes how results are reviewed, not which provider is used.
 
-It needs an interactive session with a person at a browser. Subagents, workflow stages, and non-interactive runs skip it and return raw results. If the page cannot open, for example on a machine with no desktop browser, `web_search` returns raw results with a note instead of failing; run `/curator off` to stop trying.
+It needs an interactive session with a person at a browser. Subagents and non-interactive runs skip it and return raw results. If the page cannot open, for example on a machine with no desktop browser, `web_search` returns raw results with a note instead of failing; run `/curator off` to stop trying.
 
 ## Fetching with `fetch_content`
 

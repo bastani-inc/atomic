@@ -7,7 +7,7 @@ description: "Use desktop apps, browsers, and terminals with Atomic on macOS, Li
 
 Atomic can work in applications, not just edit code. Computer use can create a Blender scene, build a presentation, edit a video, operate a desktop app, or move work between applications. Browser and terminal automation cover related tasks with more direct controls.
 
-This guide explains tool selection, setup, and safe operation. To test a software change and attach the results to a PR, see [Verification and evidence](/workflows/verification).
+This guide explains tool selection, setup, and safe operation. To check a software change, reproduce the actual user interaction and save the observed result.
 
 Jump to [application scripting](#application-scripting-and-apis), [desktop automation](#desktop-automation-with-agent-desktop), [browser automation](#browser-automation-with-agent-browser), [terminal automation](#terminal-automation-with-herdr), or [creative workflows](#creative-work-and-computer-use-workflows). Platform setup: [macOS](#macos), [Linux](#linux), [Windows](#windows).
 
@@ -20,7 +20,7 @@ Start with the result you need, not the application you could click through. If 
 | Create or edit files, such as presentations, documents, spreadsheets, or media | **A file library or CLI** | Use an app API or UI when the library cannot preserve required features, or when you need rendering or visual adjustments. |
 | Interactive terminal or TUI | **Herdr** | Use tmux on macOS/Linux or native Windows psmux when Herdr cannot be used. Ordinary shell commands need no multiplexer. |
 | Website or web app in Chrome/Chromium, Mobile Safari in the iOS Simulator or on a connected iPhone/iPad, Electron desktop app (VS Code, Slack, Discord, Figma, Notion, Spotify) or another app that exposes a Chrome DevTools Protocol (CDP) port, Slack workspace, or cloud browser | **agent-browser** | Prefer it whenever the target is web content it can reach: its text snapshots and element refs cost far fewer tokens than screenshot-driven computer use. See [what agent-browser covers](#what-agent-browser-covers). Use agent-desktop for anything native outside that list or whenever agent-browser hits a limitation. Keep existing browser test suites for repeatable tests. |
-| Native desktop application, menus and menu bars, desktop Safari, Firefox or another non-Chromium browser, browser chrome, OS dialogs and permission prompts, work across apps, or any agent-browser limitation | **agent-desktop**: the bundled `agent-desktop` skill with one-shot `agent-desktop` commands when a model chooses each action; the `agent-desktop` CLI called from `ctx.tool` when workflow code owns the scenario | Use application scripting or a CLI when they make the task easier, safer, or more reliable. It reads accessibility trees only. Native iOS apps in the iOS Simulator and Android emulators need `xcrun simctl`, Appium/XCUITest, or `adb`; see [coverage and limits](#coverage-and-limits). |
+| Native desktop application, menus and menu bars, desktop Safari, Firefox or another non-Chromium browser, browser chrome, OS dialogs and permission prompts, work across apps, or any agent-browser limitation | **agent-desktop**: the bundled `agent-desktop` skill with one-shot `agent-desktop` commands when a model chooses each action; a skill's script can call the same CLI for a repeatable scenario | Use application scripting or a CLI when they make the task easier, safer, or more reliable. It reads accessibility trees only. Native iOS apps in the iOS Simulator and Android emulators need `xcrun simctl`, Appium/XCUITest, or `adb`; see [coverage and limits](#coverage-and-limits). |
 
 You can combine tools without driving the whole task through a desktop. Generate a presentation with `python-pptx`, then inspect rendered slides for layout problems. Use Blender's Python API to generate repeated objects, then agent-desktop for adjustments in the visible editor. Use browser DOM controls rather than desktop clicks for a web form. For a supported web-service operation that does not require browser interaction, an authorized API request may be enough.
 
@@ -195,10 +195,10 @@ Atomic uses the CLI in two ways. Choose by who decides the next action:
 
 | Situation | How | Why |
 | --- | --- | --- |
-| A language model chooses each action: an interactive session driving, inspecting, or automating a desktop app, or any workflow stage acting outside `ctx.tool` | The bundled `agent-desktop` skill and one-shot `agent-desktop` commands | The model decides turn by turn. The skill's loop is written for one command at a time, and the evidence is the JSON results, screenshots, and trace the commands produce. |
-| A custom workflow's TypeScript owns the scenario and its postcondition, run inside `ctx.tool(name, args, fn, { timeoutMs })` | The `agent-desktop` CLI, called from the `ctx.tool` function | Code owns the sequence, and the result is durably checkpointed and replayed on resume. |
+| A language model chooses each action: an interactive session or subagent driving, inspecting, or automating a desktop app | The bundled `agent-desktop` skill and one-shot `agent-desktop` commands | The model decides turn by turn. The skill's loop is written for one command at a time, and the evidence is the JSON results, screenshots, and trace the commands produce. |
+| A script owns the sequence and the postcondition | The `agent-desktop` CLI, called by the script | The script can check each JSON response and stop on failure. Inspect actual state before repeating an interrupted action. |
 
-The rule of thumb: **when a model chooses the next action, use the skill and one-shot commands; when TypeScript code owns the sequence and the postcondition, call the CLI from `ctx.tool`.** agent-desktop has no TypeScript SDK. Its CLI prints one JSON envelope per command, and that envelope is the contract. Before reaching for either, check whether [agent-browser covers the target](#what-agent-browser-covers): websites and web apps in Chrome/Chromium, Mobile Safari in the iOS Simulator, Electron and other CDP-exposing apps, Slack, and cloud browsers. It is much cheaper than screenshot-driven computer use there. Use agent-desktop for native desktop apps, menus and menu bars, OS dialogs and permission prompts, work across apps, browser chrome and desktop browsers, and whenever agent-browser hits a limitation. Terminals stay with [Herdr](#terminal-automation-with-herdr), falling back to tmux or psmux.
+The rule of thumb: **When a model chooses the next action, use the skill and one-shot commands. When a script owns the sequence, call the CLI from the script.** agent-desktop has no TypeScript SDK. Its CLI prints one JSON envelope per command, and that envelope is the contract. Before reaching for either, check whether [agent-browser covers the target](#what-agent-browser-covers): websites and web apps in Chrome/Chromium, Mobile Safari in the iOS Simulator, Electron and other CDP-exposing apps, Slack, and cloud browsers. It is much cheaper than screenshot-driven computer use there. Use agent-desktop for native desktop apps, menus and menu bars, OS dialogs and permission prompts, work across apps, browser chrome and desktop browsers, and whenever agent-browser hits a limitation. Terminals stay with [Herdr](#terminal-automation-with-herdr), falling back to tmux or psmux.
 
 Atomic bundles the skill. You do not need `npx skills add` for it, and an installed copy can go stale when you upgrade the CLI. Do not link or copy another skill into `~/.agents/skills`, `~/.claude/skills`, or other agent directories, and leave any existing user-level skill alone.
 
@@ -222,7 +222,7 @@ npm install -g agent-desktop --allow-scripts=agent-desktop   # npm 11
 
 There is no Homebrew or Scoop package: the custom tap and bucket were removed in 1.0.1, and an older tap or bucket install stays pinned to its version and can shadow the npm command. If `agent-desktop version` is older than expected, check which executable runs with `command -v agent-desktop` (PowerShell: `Get-Command agent-desktop`) and uninstall the old one with the package manager that installed it. Upgrade by running the npm install again.
 
-Report what the install did. Never loop on it. In a workflow stage, a refused or failed install is reported as `blocked`/`needs_human` together with the exact command above, not worked around with an alternative tool.
+Report what the install did. Never loop on it. If installation is refused or fails, report what blocked it and the exact command rather than silently switching tools.
 
 agent-desktop's documentation describes no telemetry or update check, so Atomic's guidance sets no opt-out environment variable. Check the release notes when you upgrade.
 
@@ -240,7 +240,7 @@ agent-desktop status
 - **Windows.** No permission dialog exists. Run the command in the interactive desktop session of the signed-in user: Session 0 services, the UAC secure desktop, the sign-in screen, a locked desktop, and another user's session are not supported. Windows blocks input from a non-elevated terminal into an elevated app (UIPI), so stop for the user or use an authorized non-elevated path rather than escalating just to force input through.
 - **Linux.** Run the command inside the graphical session of the user who owns the apps, with a running AT-SPI bus, so the session bus, display, and runtime directory come from its environment. Ubuntu 24.04 or later is the supported base; other distributions need the at-spi2-core bridge fix noted in the platform guide. An empty `supported_surfaces` means the bus did not answer. A TTY login, an SSH shell without the session variables, or a container without a bus sees no apps. X11 and Wayland sessions both work and differ in input, capture, and window control.
 
-A missing macOS permission, a non-interactive Windows session, or no graphical Linux session with an accessibility bus is a `blocked`/`needs_human` finding in a workflow stage. Report the exact fix from the list above and re-run `agent-desktop status` on resume. Let the user grant permissions; do not script around consent dialogs.
+A missing macOS permission, a non-interactive Windows session, or no graphical Linux session with an accessibility bus blocks desktop automation. Report the exact prerequisite and rerun `agent-desktop status` after the user fixes it. Let the user grant permissions; do not script around consent dialogs.
 
 ### Drive an app from the shell
 
@@ -262,17 +262,17 @@ Replace the app name and refs with values from your own run, and do not reuse an
 - **Headless first.** Ref actions use semantic accessibility calls and do not take focus, move the cursor, or use the clipboard. Add the global `--headed` flag only when the user permits physical input such as double-click, hover, drag, or focus, and never to recover from a headless failure. Dangerous shortcuts such as quit and lock are refused without `--force`.
 - **PowerShell.** Quote every ref (`'@s8f3k2p9:e12'`), because a bare `@token` is the splatting operator.
 - **Sessions.** For a multi-command run, `agent-desktop session start --name run-1` returns a session id; pass it with `--session` or `AGENT_DESKTOP_SESSION` on every command so refs and traces stay in your namespace, and end only your own session with `agent-desktop session end <id>`. `agent-desktop batch '[...]'` runs several commands in one process and is not a transaction.
-- **Evidence.** Keep the JSON results and save `agent-desktop screenshot --app "Notes" after.png`; a session with tracing on can export an HTML timeline with `agent-desktop trace export`. A screenshot is evidence for you, not proof that an action worked. When the work ends in a PR, attach the before and after PNGs to the PR body (`gh pr create --body-file body.md --attach 'before.png#Before' --attach 'after.png#After'` on supported GitHub) next to the scenario they prove, and cite the JSON by name as a local artifact; see [Verification and evidence](/workflows/verification#native-github-media).
+- **Evidence.** Keep the JSON results and save `agent-desktop screenshot --app "Notes" after.png`; a session with tracing on can export an HTML timeline with `agent-desktop trace export`. A screenshot is evidence for you, not proof that an action worked. When the work ends in a PR, attach the before and after PNGs to the PR body (`gh pr create --body-file body.md --attach 'before.png#Before' --attach 'after.png#After'` on supported GitHub) next to the scenario they prove, and cite the JSON by name. Review the images for private information and confirm publication is authorized before attaching them.
 
 For the web contents of a Chromium or Electron app that you launch, `agent-desktop launch "Obsidian" --cdp` starts it fresh with a loopback-only debugging port and prints the port; `agent-browser connect <port>` then drives its pages (`agent-browser skills get electron` has the guide). The port exists only for a fresh process, so a running app must be closed first, which loses its state: ask before you do that. Keep the native menu bar, file dialogs and sheets, window management, notifications, screenshots, and any app you did not launch on agent-desktop. While the port is open, any local process of the same user can control the app's web contents, so request `--cdp` only for the step that needs it; `close-app` ends the exposure.
 
-### Run a scenario from workflow code
+### Run a scenario from a script
 
-When a custom workflow owns the scenario, call the `agent-desktop` CLI from inside `ctx.tool` so the observe, act, verify loop is a durable, replayable node. The [workflow authoring guide](/workflows/authoring#desktop-verification-with-agent-desktop-in-ctx-tool) has the runnable example; the summary is:
+For repeatable checks, put the scenario in a [skill's `scripts/` directory](/skills/authoring). Call the script from a permitted shell tool, including through codemode. It should report what it actually observed:
 
 - **Prerequisite.** `agent-desktop` on the host, installed by [the steps above](#install-if-missing). The preflight below reports it missing as a limitation rather than installing during the run.
-- **One process per command.** Spawn `agent-desktop`, parse the one JSON envelope it prints, and branch on `ok`, `error.code`, and `disposition`, never on message text. Forward the `signal` and give `ctx.tool` a positive finite `timeoutMs`.
-- **Readiness preflight.** A first `ctx.tool` checks `agent-desktop version` and `agent-desktop status`, and calls `ctx.exit({ status: "blocked", reason })` for a missing macOS permission, an absent Linux accessibility bus, or a missing install.
+- **One process per command.** Spawn `agent-desktop`, parse the one JSON envelope it prints, and branch on `ok`, `error.code`, and `disposition`, never on message text. Bound each call with a timeout and forward cancellation to the subprocess.
+- **Readiness preflight.** Check `agent-desktop version` and `agent-desktop status` first. Stop and report a missing macOS permission, an absent Linux accessibility bus, or a missing install.
 - **Loop.** `snapshot` (check `data.complete`) → resolve exactly one element with `find` → act on the ref → `wait` for the postcondition → read it back. Re-drill after any UI change.
 - **Result.** Machine-readable `verified` / `refuted` / `blocked` / `unknown`; the wrapper maps anything but `verified` to a nonzero outcome. An action whose delivery is not `not_delivered`, or that times out before its response, is `unknown`, resolved by reading the state, never by replaying the mutation.
 
@@ -352,10 +352,10 @@ For a real task, act between the snapshot and final capture. Read element refere
 - Inspect visible results and relevant console/network output (`agent-browser console`, `agent-browser errors`, `agent-browser network requests`). Keep semantic locators and assertions in a maintained browser test suite for repeatable regression coverage.
 - Use the CLI's file-upload support for supported file inputs rather than driving an OS file picker. Switch to agent-desktop or native tooling only for UI outside the page, and then recheck focus before returning to browser control.
 - Treat cookies, saved authentication state, and network logs as sensitive. Do not commit or attach a browser profile as evidence.
-- Keep `screenshot` PNGs and `record` recordings from the verified flow; when the work ends in a PR, attach them to the PR body with `gh pr create --attach` on supported GitHub, each next to the scenario it proves. See [Verification and evidence](/workflows/verification#native-github-media).
+- Keep `screenshot` PNGs and `record` recordings from the verified flow; when the work ends in a PR, attach them to the PR body with `gh pr create --attach` on supported GitHub, each next to the scenario it proves. Check that the upload is authorized and doesn't disclose private data.
 - `set device` emulates a mobile viewport in Chromium; `-p ios` runs real Mobile Safari. Neither exercises a native Android or iOS app, which needs `adb`, `xcrun simctl`, or Appium and XCUITest.
 
-For verification captures and recordings, see [browser evidence](/workflows/verification#browser-changes).
+Keep only evidence from the flow you actually exercised; label simulated devices as such.
 
 ## Terminal automation with Herdr
 
@@ -410,7 +410,7 @@ Use literal text and a separate Enter to avoid interpreting arbitrary text as ke
 
 When waiting for a completion marker, use the tmux skill's `scripts/wait-for-text.sh -t <pane-id> -F -p <marker> -T <seconds>`. It exits nonzero if it cannot confirm the match before the timeout, including when a pane capture stalls. If it times out, inspect the pane before retrying the command: the command may still be running or may already have finished.
 
-For modified-key setup in Atomic, see [tmux setup](/tmux). For behavioral checks and recordings, see [terminal evidence](/workflows/verification#terminal-changes).
+For modified-key setup in Atomic, see [tmux setup](/tmux).
 
 ## macOS
 
@@ -486,7 +486,7 @@ Choose the deliverable first. A library or application API may produce it withou
 
 Do not substitute a screenshot for the editable project or final export the user requested. Reopen saved files, check missing assets and fonts, and inspect the actual export. For video, check audio and timing as well as a still frame. Keep originals intact and use explicit save paths. Rendering, uploading, or exporting through a paid service may need separate authorization.
 
-When the user specifically wants a computer-use workflow, give the stage that operates the desktop the `agent-desktop` skill, or put a code-owned scenario in `ctx.tool` that calls the `agent-desktop` CLI. For artifact-only requests, keep script-based work outside the desktop session and omit UI stages that add no useful operation or check. A desktop sequence is:
+For a computer-use task, give the agent operating the desktop the `agent-desktop` skill, or let a script call the CLI for a known sequence. For artifact-only requests, omit UI steps that add no useful operation or check. A desktop sequence is:
 
 1. Prepare assets and confirm the intended application, output formats, and permissions.
 2. Open the dedicated desktop and inspect its starting state.
@@ -494,9 +494,9 @@ When the user specifically wants a computer-use workflow, give the stage that op
 4. Reopen and inspect the deliverables, then make bounded corrections if needed.
 5. Hand off local files. Publish or upload only to an authorized target.
 
-Pass scripts, project files, and artifact paths between stages rather than long click transcripts. Give one stage exclusive desktop ownership and use finite deadlines for renders and exports. Stop on unexpected dialogs, incomplete snapshots (`data.complete` is `false`), missing permissions, or failed observations. On resume, inspect the app and files before repeating an action.
+Pass scripts, project files, and artifact paths between agents rather than long click transcripts. Give one agent exclusive desktop ownership and use finite deadlines for renders and exports. Stop on unexpected dialogs, incomplete snapshots (`data.complete` is `false`), missing permissions, or failed observations. On resume, inspect the app and files before repeating an action.
 
-See [workflow authoring](/workflows/authoring) for stages and human-input gates. Use durable `ctx.tool` calls for workflow-owned external operations, with finite timeouts and cancellation; model stages can use the appropriate automation tools to operate the app. If the user asks to work inline, keep the same safety and deliverable checks without creating a workflow.
+If you delegate, keep user approvals in the parent chat and check the returned files against the request. The same safety and deliverable checks apply when working directly.
 
 ## Troubleshooting
 

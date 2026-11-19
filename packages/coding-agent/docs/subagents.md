@@ -152,7 +152,7 @@ These are the limits that apply:
 
 - **Children per parallel set.** One set holds up to `parallel.maxTasks` children (default 1000, no hard cap). `parallel.concurrency` and `parallel.runningCapacity` (each default 1000) bound how many run at once per parent. For more than 1000, raise all three, as shown in [Context and execution modes](#context-and-execution-modes).
 - **Nesting.** Subagent delegation is one level deep and cannot be configured: a child cannot call `subagent`. To nest teams, start them from workflow stages. Each stage can launch its own parallel set, and `ctx.workflow(...)` nests child workflows up to the workflow `maxDepth` (default 3, configurable).
-- **Workflow fan-out.** `ctx.parallel(...)` has no task-count limit. The workflow `defaultConcurrency` setting (default 1000) or a per-call `concurrency` bounds how many stages run at once. Set `workflows.localWorkers` to run first-level child workflows in a pool of worker processes. See [Workflow configuration](/workflows/operations#workflow-configuration) and [Local workflow workers](/workflows/operations#local-workflow-workers).
+- **Workflow fan-out.** `ctx.parallel(...)` has no task-count limit. The workflow `defaultConcurrency` setting (default 1000) or a per-call `concurrency` bounds how many stages run at once. Set `workflows.localWorkers` to run first-level child workflows in a pool of worker processes.
 - **Teams.** Intercom groups have no member limit. Give each team its own `group` so its members coordinate internally. Team members reach their lead with `contact_supervisor`, the lead steers them, and the leads, as stages of one workflow, talk to each other in the invocation group.
 
 For example, 20 parallel workflow stages that each launch 50 children form a swarm of 1,000 agents. The workflow and subagent defaults already run them all at once: up to 1000 stages and 1000 running children per parent. Lower `defaultConcurrency` or a per-call `concurrency` to run fewer stages at a time. Beyond these settings, the practical ceiling is your provider rate limits, machine memory, and any workflow admission limits you set.
@@ -293,7 +293,7 @@ A background subagent that waits more than a minute on a tool call marked `detac
 - Steering and follow-up messages the child had queued and not yet read when it was released are delivered when it wakes, once and in order. Turn-starting Intercom messages, extension messages and background completion notices accepted during release are kept too, with steering or follow-up delivery. Their cards are saved once, and their context is delivered once on wake. Extension messages with `excludeFromContext: true` keep only their saved cards and never reach the model. This release guarantee does not apply to `deliverAs: "nextTurn"`.
 - A result that arrives while a woken child is running is kept, and wakes the child again once that run ends.
 - `pause` and `quit` on a released child only stop it from being woken; results that arrive meanwhile are kept and delivered when you `resume` it. `resume` wakes it with your `message` if given, as soon as fewer than `parallel.runningCapacity` of the session's released children are waking; it does not count once the child runs, and results that arrive while that run goes on are saved with the child at once.
-- Released children wake through the session that launched them. If that session's connection closes while they wait, as a workflow stage's does while the stage is [suspended](/workflows/operations#suspended-stages), Intercom keeps their holds: a message to one waits up to 20 seconds and then gets a retryable `recipient_owner_suspended` error, and when the same session is back it takes its released children over and is asked to wake them for the messages waiting then. To reach a suspended stage meanwhile, send to its `workflow:<rootRunId>/<stage>` target, which queues the message until the stage reopens.
+- Released children wake through the session that launched them. If that session's connection closes while they wait, Intercom keeps their holds: a message to one waits up to 20 seconds and then gets a retryable `recipient_owner_suspended` error, and when the same session is back it takes its released children over and is asked to wake them for the messages waiting then. To reach a suspended stage meanwhile, send to its `workflow:<rootRunId>/<stage>` target, which queues the message until the stage reopens.
 - Each run of a child that has finished stays listed in `/tasks` as one small record, with no live session, socket or timer, until that session closes.
 - The results a wake carries are saved with the child before the child is reopened, so a restart in between wakes it with them instead of running the finished call again. If a wake fails, for example because the child's agent is no longer defined, the results it carried stay saved with the child. `status` shows the failure, its code and what to do, and the session that launched the child gets one notice. `resume` tries again and delivers the saved results.
 - If a child record could not be saved, `status` reports the last failure and its hint for the launching session. Check the session store before retrying; unsaved state cannot survive a restart.
@@ -432,7 +432,7 @@ To run more than 1000 children at once, raise concurrency and running capacity a
 
 Running capacity is selected when a parent's first child is created. Restart Atomic after changing this setting to apply the new capacity.
 
-`resumeInFlight` controls what happens when a session starts or is resumed to subagents you paused or quit that are still awaiting resume (the same values as the [workflow setting](/workflows/operations)):
+`resumeInFlight` controls what happens when a session starts or is resumed to subagents you paused or quit that are still awaiting resume:
 
 ```json
 { "resumeInFlight": "ask" }
@@ -518,7 +518,7 @@ Moved to [Subagent reference](/subagents/reference#reasoning-levels).
 
 ## Related docs
 
-- [Workflows](/workflows) for multi-stage reusable automation.
+- [Orchestration](/orchestration) for multi-step tasks in the parent chat.
 - [Intercom](/intercom) for cross-session messaging and supervisor escalation.
 - [Skills](/skills) for reusable instructions invoked with `/skill:<name>`.
 - [Settings](/settings) for user and project configuration.

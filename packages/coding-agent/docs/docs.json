@@ -52,7 +52,6 @@
             "group": "Running work for you",
             "pages": [
               "guides/orchestration",
-              "guides/workflows",
               "guides/subagents",
               "background-tasks",
               "guides/intercom",
@@ -117,18 +116,6 @@
               "orchestration",
               "orchestration/patterns",
               "orchestration/migrating-workflows",
-              {
-                "group": "Workflows",
-                "pages": [
-                  "workflows",
-                  "workflows/builtins",
-                  "workflows/authoring",
-                  "workflows/reliable-design",
-                  "workflows/verification",
-                  "workflows/operations",
-                  "workflows/api-reference"
-                ]
-              },
               {
                 "group": "Subagents",
                 "pages": [
@@ -270,6 +257,14 @@
     }
   },
   "redirects": [
+    { "source": "/workflows", "destination": "/orchestration" },
+    { "source": "/guides/workflows", "destination": "/orchestration" },
+    { "source": "/workflows/builtins", "destination": "/orchestration/migrating-workflows" },
+    { "source": "/workflows/authoring", "destination": "/orchestration/migrating-workflows" },
+    { "source": "/workflows/reliable-design", "destination": "/orchestration" },
+    { "source": "/workflows/verification", "destination": "/orchestration" },
+    { "source": "/workflows/operations", "destination": "/orchestration/migrating-workflows" },
+    { "source": "/workflows/api-reference", "destination": "/orchestration/migrating-workflows" },
     {
       "source": "/session",
       "destination": "/session-format"
