@@ -1,4 +1,5 @@
 import { describe } from "vitest";
+import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import type { RuntimeDispatchOptions } from "../../packages/workflows/src/extension/runtime.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
@@ -306,6 +307,170 @@ describe("two resumes of the same block start one replacement (#5534)", () => {
 		await jobs.get(runId)?.promise;
 		assert.equal(attempts.count, 3, "the new block was resumed");
 		assert.equal(effectiveRunStatus(store.run(runId)!), "completed");
+	});
+
+	async function retryFixture() {
+		const backend = await createMemoryTestBackend();
+		const store = createStore();
+		const jobs = createJobTracker();
+		const attempts = { count: 0 };
+		const def = workflow({
+			name: "retry-check",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.tool("check", {}, async () => {
+					if (++attempts.count === 1) throw new Error("check failed");
+					return "ok";
+				});
+				return {};
+			},
+		});
+		const deps = { registry: createRegistry([def]), durableBackend: backend, baseRunOpts: { store }, jobs };
+		return { backend, store, jobs, def, attempts, deps };
+	}
+
+	test("a retry during lease release resumes the run after its cancelled claim rolled back (#5534)", async () => {
+		const { backend, store, jobs, def, attempts, deps } = await retryFixture();
+		const { runId, status } = await run(def, {}, { store, durableBackend: backend });
+		assert.equal(status, "failed");
+		const written = Promise.withResolvers<void>();
+		const acknowledge = Promise.withResolvers<void>();
+		const retiring = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const append = backend.journal.append.bind(backend.journal);
+		backend.journal.append = async (...args) => {
+			const result = await append(...args);
+			written.resolve();
+			await acknowledge.promise;
+			return result;
+		};
+		const releaseLease = backend.journal.release.bind(backend.journal);
+		backend.journal.release = async (lease) => {
+			retiring.resolve();
+			await release.promise;
+			return releaseLease(lease);
+		};
+		try {
+			const controller = new AbortController();
+			const first = resumeDurableWorkflow(runId, { ...deps, signal: controller.signal });
+			await written.promise;
+			controller.abort(new Error("cancelled resume"));
+			await assert.rejects(first, /cancelled resume/);
+			acknowledge.resolve();
+			await retiring.promise;
+			assert.equal(backend.getWorkflow(runId)?.status, "failed");
+			assert.equal(attempts.count, 1);
+			const retry = resumeDurableWorkflow(runId, deps);
+			release.resolve();
+			const result = await retry;
+			assert.ok(result.ok, result.message);
+			await jobs.get(runId)?.promise;
+			assert.equal(attempts.count, 2);
+			assert.equal(backend.getWorkflow(runId)?.status, "completed");
+		} finally {
+			acknowledge.resolve();
+			release.resolve();
+		}
+	});
+
+	test("a short id resumes its only candidate while a different matching run is starting (#5534)", async () => {
+		const { backend, store, jobs, def, attempts, deps } = await retryFixture();
+		const prefix = "abcdef01";
+		const a = `${prefix}-0000-4000-8000-000000000001`;
+		const b = `${prefix}-0000-4000-8000-000000000002`;
+		for (const workflowId of [a, b])
+			await backend.commitWorkflowRegistration({
+				workflowId,
+				name: def.name,
+				inputs: {},
+				createdAt: 1,
+				status: "failed",
+				resumable: true,
+				completedCheckpoints: 0,
+			});
+		const starting = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const other = resumeDurableWorkflow(b, {
+			...deps,
+			baseRunOpts: {
+				store,
+				persistence: {
+					async appendEntry(type) {
+						if (type === "workflow.run.start") {
+							starting.resolve();
+							await release.promise;
+						}
+					},
+				},
+			},
+		});
+		try {
+			await starting.promise;
+			const first = await resumeDurableWorkflow(a, deps);
+			assert.ok(first.ok, first.message);
+			await jobs.get(a)?.promise;
+			assert.equal(backend.getWorkflow(a)?.status, "failed");
+			assert.deepEqual(
+				backend.listResumableWorkflows().map((entry) => entry.workflowId),
+				[a],
+			);
+			const runtime = createExtensionRuntime({ registry: deps.registry, store, jobs });
+			const retry = await runtime.resumeDurableWorkflow(prefix, {
+				actor: "user",
+				definition: def,
+				durableBackend: backend,
+			});
+			assert.ok(retry.ok, retry.message);
+			await jobs.get(a)?.promise;
+			assert.equal(attempts.count, 2);
+			assert.equal(backend.getWorkflow(a)?.status, "completed");
+		} finally {
+			release.resolve();
+			await other;
+			await jobs.get(b)?.promise;
+		}
+	});
+
+	test("the journal's resume bookkeeping keeps no completed and removed run ids (#5534)", async () => {
+		const { backend, store, jobs, def, attempts, deps } = await retryFixture();
+		const entries: { id: string; retained(): boolean }[] = [];
+		for (let n = 0; n < 8; n++) {
+			const id = `55340000-0000-4000-8000-00000000000${n}`;
+			attempts.count = 0;
+			assert.equal((await run(def, {}, { runId: id, store, durableBackend: backend })).status, "failed");
+			// Follow the per-run counters and request listeners registered during synchronous admission. Neither
+			// should remain registered after the run ends; don't depend on garbage collection or elapsed time.
+			const set = Map.prototype.set;
+			const add = Set.prototype.add;
+			let resumed: ReturnType<typeof resumeDurableWorkflow>;
+			try {
+				Map.prototype.set = function (key, value) {
+					if (key === id && typeof value === "number") entries.push({ id, retained: () => this.has(key) });
+					return set.call(this, key, value);
+				};
+				Set.prototype.add = function (value) {
+					if (typeof value === "function") entries.push({ id, retained: () => this.has(value) });
+					return add.call(this, value);
+				};
+				resumed = resumeDurableWorkflow(id, deps);
+			} finally {
+				Map.prototype.set = set;
+				Set.prototype.add = add;
+			}
+			const result = await resumed;
+			assert.ok(result.ok, result.message);
+			await jobs.get(id)?.promise;
+			assert.equal(backend.getWorkflow(id)?.status, "completed");
+			assert.equal(store.removeRun(id), true);
+			await backend.deleteWorkflow(id);
+			assert.equal(backend.getWorkflow(id), undefined);
+		}
+		assert.deepEqual(
+			entries.filter((entry) => entry.retained()).map((entry) => entry.id),
+			[],
+		);
 	});
 
 	test("a resume that started nothing leaves the block to a request that saw it", async () => {

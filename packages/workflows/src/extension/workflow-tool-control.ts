@@ -1,8 +1,8 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
-import { resumeAdmissionMark } from "../durable/run-claims.js";
+import { type ResumeAdmissionMark, resumeAdmissionMark } from "../durable/run-claims.js";
 import { runNotFoundResumeResult } from "../durable/run-not-found.js";
-import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
+import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
@@ -62,7 +62,7 @@ export interface WorkflowControlActionDeps {
 	 * A resume only: the mark (`resumeAdmissionMark`) the request took when it resolved its run, before its own awaits
 	 * (#5534). Taken on entry when absent.
 	 */
-	admissionMark?: number;
+	admissionMark?: ResumeAdmissionMark;
 }
 
 export type WorkflowForeignRunGuard = Pick<WorkflowControlActionDeps, "getRuntime" | "authorize">;
@@ -666,15 +666,12 @@ export async function workflowResumeAction(
 	deps.signal?.throwIfAborted();
 	const explicitTarget = args.runId?.trim();
 	// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
-	if (deps.admissionMark === undefined && explicitTarget !== undefined && explicitTarget.length > 0)
-		deps = {
-			...deps,
-			admissionMark: resumeAdmissionMark(explicitTarget, availableStoreDurableBackend(store, explicitTarget)),
-		};
+	using explicit = explicitTarget ? resumeAdmissionMark(explicitTarget, deps.admissionMark) : undefined;
+	if (explicit !== undefined) deps = { ...deps, admissionMark: explicit.resumed };
 	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
 		// #2603: resume prefixes must see both live and durable candidates before
 		// local precedence can select a run.
-		return resolveExplicitDurableTarget(explicitTarget, args, deps, topLevelWorkflowRuns(store.runs()));
+		return await resolveExplicitDurableTarget(explicitTarget, args, deps, topLevelWorkflowRuns(store.runs()));
 	}
 	const target = resolveToolRunTarget(args, "No active run to resume.", store);
 	if (target.kind === "all")
@@ -684,15 +681,12 @@ export async function workflowResumeAction(
 	}
 	if (target.kind === "not_found") {
 		if (explicitTarget !== undefined && explicitTarget.length > 0) {
-			return resolveExplicitDurableTarget(explicitTarget, args, deps);
+			return await resolveExplicitDurableTarget(explicitTarget, args, deps);
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
-	if (deps.admissionMark === undefined)
-		deps = {
-			...deps,
-			admissionMark: resumeAdmissionMark(target.runId, availableStoreDurableBackend(store, target.runId)),
-		};
+	using local = resumeAdmissionMark(target.runId, deps.admissionMark);
+	deps = { ...deps, admissionMark: local.resumed };
 	await deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
 	// so it cannot disagree with the resolved run; the old re-resolution branch
@@ -721,7 +715,7 @@ export async function workflowResumeAction(
 	if (shadow === "eligible") {
 		const refusal = refuseStageScopedDurableResume(target.runId, args);
 		if (refusal !== undefined) return refusal;
-		return resumeDurableShadow(target.runId, deps, args.budget);
+		return await resumeDurableShadow(target.runId, deps, args.budget);
 	}
 	if (shadow === "ineligible") {
 		return {
@@ -770,7 +764,7 @@ export async function workflowResumeAction(
 	if (isDurableAuthorExit) {
 		const refusal = refuseStageScopedDurableResume(stageRunId, args);
 		if (refusal !== undefined) return refusal;
-		return resumeDurableShadow(stageRunId, deps, args.budget);
+		return await resumeDurableShadow(stageRunId, deps, args.budget);
 	}
 	if (isResumableContinuation) {
 		try {

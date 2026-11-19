@@ -16,7 +16,7 @@ import {
 	type ResumeDurableResult,
 	resumeDurableWorkflow as resumeDurableWorkflowAdapter,
 } from "../durable/resume-runtime.js";
-import { hasActiveLiveRun, resumeAdmissionMark } from "../durable/run-claims.js";
+import { hasActiveLiveRun, type ResumeAdmissionMark, resumeAdmissionMark } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { canonicalDirectoryAsync } from "../durable/sdk-recovery-scope.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
@@ -99,7 +99,7 @@ export interface DurableResumeRuntime {
 			 * The mark (`resumeAdmissionMark`) the request took when it read the run, before its own awaits: a resume
 			 * admitted after it already resumed what the request saw (#5534). Taken on entry when absent.
 			 */
-			readonly admissionMark?: number;
+			readonly admissionMark?: ResumeAdmissionMark;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -264,13 +264,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		async resumeDurableWorkflow(workflowId, options): Promise<ResumeDurableResult> {
 			options?.signal?.throwIfAborted();
 			// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
-			const admissionMark =
-				options?.admissionMark ??
-				resumeAdmissionMark(
-					workflowId,
-					options?.durableBackend ?? availableRunDurableBackend(deps.store, workflowId) ?? backendRef.current,
-				);
-			return raceWorkflowRequestAbort(
+			using mark = resumeAdmissionMark(workflowId, options?.admissionMark);
+			return await raceWorkflowRequestAbort(
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
 					const backend = await withRecovery(async () => {
 						const backend =
@@ -291,7 +286,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					});
 					const adapterDeps: ResumeDurableDeps = {
 						registry: deps.registry,
-						admissionMark,
+						admissionMark: mark.resumed,
 						signal: options?.signal,
 						onRunAccepted: options?.onRunAccepted,
 						onBeforeResume: options?.onBeforeResume,

@@ -160,7 +160,8 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 		async resumeRun(runId) {
 			try {
 				// What `r` resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
-				const admissionMark = resumeAdmissionMark(runId, availableStoreDurableBackend(owner.store, runId));
+				using mark = resumeAdmissionMark(runId);
+				const admissionMark = mark.resumed;
 				const run = owner.store.run(runId);
 				if (run === undefined) return { ok: false, message: "That run is gone." };
 				const hadPausedRunState = run.status === "paused";

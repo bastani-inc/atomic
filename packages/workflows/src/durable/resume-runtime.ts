@@ -33,14 +33,14 @@ import { forkDurableRun } from "./fork-run.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import {
-	admitResume,
 	claimsOf,
 	hasActiveLiveRun,
 	hasForkClaim,
 	hasResumeClaim,
 	pendingResumes,
+	type ResumeAdmissionMark,
+	recordResumeStart,
 	resumeAdmissionMark,
-	resumedSince,
 	unsettledResumeClaims,
 } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
@@ -97,7 +97,7 @@ export interface ResumeDurableDeps {
 	 * reads the run and awaits before it calls passes its mark, so a resume admitted meanwhile answers its request
 	 * (#5534). Taken on entry when absent.
 	 */
-	readonly admissionMark?: number;
+	readonly admissionMark?: ResumeAdmissionMark;
 }
 
 function resumeBackend(deps: ResumeDurableDeps, workflowId?: string): DurableWorkflowBackend {
@@ -165,7 +165,7 @@ export async function resumeDurableWorkflow(
 ): Promise<ResumeDurableResult> {
 	resolveWorktreeSnapshotSettings(deps.baseRunOpts.snapshots, "sdk", "snapshots");
 	const backend = resumeBackend(deps, workflowId);
-	const mark = deps.admissionMark ?? resumeAdmissionMark(workflowId, backend);
+	using mark = resumeAdmissionMark(workflowId, deps.admissionMark);
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
 	let handle = backend.getWorkflow(id);
@@ -179,7 +179,7 @@ export async function resumeDurableWorkflow(
 		// is that replacement, or will be, not the attempt that failed or blocked, and the run reads as that attempt only
 		// until the replacement starts. The request waits for nothing and starts nothing (#5534).
 		if (hasResumeClaim(backend, id)) return pendingResumeResult(id);
-		if (resumedSince(backend, id, mark)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
+		if (mark.resumed(backend, id)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
 		// The failure or block can reach a caller before the old attempt finishes its persistence and releases its
 		// lease: a blocked run's journal still says `running` until then. Wait for that attempt before admitting a
 		// replacement, then discard its now-stale catalog version.
@@ -213,9 +213,8 @@ export async function resumeDurableWorkflow(
 		return pendingResumeResult(id);
 	// Exactly one replacement per block or failure (#5534): of the requests that saw it, the first one here is admitted,
 	// in this turn, and every other one is told it was resumed, however long its own reads took.
-	if (resumedSince(backend, id, mark)) return alreadyResumedResult(handle?.name ?? id, id);
+	if (mark.resumed(backend, id)) return alreadyResumedResult(handle?.name ?? id, id);
 	pending.add(id);
-	const admission = admitResume(backend, id);
 	// #5149: an abort releases the caller only until the executor is admitted; from then on the resume has succeeded.
 	let admitted = false;
 	const caller = new AbortController();
@@ -230,18 +229,7 @@ export async function resumeDurableWorkflow(
 				admitted = true;
 			});
 		const claimed = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
-		// An admission that started no replacement leaves the run as it was, for a request that saw it to resume.
-		const execution = claimed.then(
-			(result) => {
-				admission.settle(result.ok);
-				return result;
-			},
-			(error: unknown) => {
-				admission.settle(false);
-				throw error;
-			},
-		);
-		return await raceAbort(execution, deps.signal === undefined ? undefined : caller.signal);
+		return await raceAbort(claimed, deps.signal === undefined ? undefined : caller.signal);
 	} finally {
 		deps.signal?.removeEventListener("abort", releaseCaller);
 		pending.delete(id);
@@ -656,6 +644,7 @@ async function resumeDurableWorkflowClaimed(
 		};
 	}
 
+	recordResumeStart(backend, resolved.workflowId);
 	return {
 		ok: true,
 		runId: accepted.runId,

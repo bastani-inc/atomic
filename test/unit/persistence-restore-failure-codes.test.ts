@@ -3,8 +3,10 @@ import { describe, test } from "vitest";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { adoptWorkflowHostStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { WorkflowFailureCode } from "../../packages/workflows/src/shared/store-types.js";
 import { WORKFLOW_INFRASTRUCTURE_FAULTS } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 
 /** Restores `entries` as a session start does, keeping finished and blocked runs. */
 function restore(entries: SessionEntry[]) {
@@ -161,6 +163,35 @@ describe("a restored session keeps every recorded failure code", () => {
 });
 
 describe("a restored block", () => {
+	test("a re-adopted store keeps a previously restored block resting in the panel (#5534)", () => {
+		const scope = {};
+		const { store } = adoptWorkflowHostStore(scope);
+		// Older restores kept the block time and recoverability, but not a disposition.
+		store.recordRunStart({
+			id: "legacy",
+			name: "legacy",
+			inputs: {},
+			status: "running",
+			startedAt: 1,
+			stages: [],
+			toolNodes: [],
+			blockedAt: 2,
+			resumable: true,
+			failureKind: "provider",
+			failureRecoverability: "recoverable",
+			failedStageId: "build",
+			error: "provider unavailable",
+		});
+		const retained = store.run("legacy");
+		const reloaded = adoptWorkflowHostStore(scope).store;
+		assert.equal(reloaded, store);
+		assert.equal(reloaded.run("legacy"), retained);
+		assert.equal(
+			panelItemsFromSnapshot(reloaded.graphSnapshot()).find((item) => item.id === "run:legacy")?.state,
+			"paused",
+		);
+	});
+
 	test("recorded without its disposition still reads as blocked: every run.blocked entry records an active block", () => {
 		const run = restore([
 			start,

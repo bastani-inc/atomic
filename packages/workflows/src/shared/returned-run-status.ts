@@ -108,6 +108,9 @@ export function structuredRecoverableWorkflowFailureText(
 
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
 	if (run.status === "running" && run.phase === "starting") return "pending";
+	// A retained store may already have restored the block before restores recorded its active_blocked disposition.
+	if (run.status === "running" && run.blockedAt !== undefined && run.failureRecoverability === "recoverable")
+		return "blocked";
 	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (
 		(run.status === "running" || run.status === "completed") &&
