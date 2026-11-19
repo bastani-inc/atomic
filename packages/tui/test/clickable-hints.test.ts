@@ -366,6 +366,38 @@ describe("a hint keeps its action on every row it is drawn over, and no further"
 		tui.stop();
 	});
 
+	it("does not insert a marker-only row between an exact-width key and its wrapped label (#5528)", () => {
+		const wrapped = wrapTextWithAnsi(clickableKeyTextHint("esc", " close"), 3);
+		assert.deepEqual(
+			wrapped.map((row) => readHintSpans(row).line),
+			["esc", "clo", "se"],
+		);
+		assert.deepEqual(wrapped.map(hintsOn), [["escape: esc"], ["escape: clo"], ["escape: se"]]);
+	});
+
+	it("wraps marked text into the same rows as unmarked text at widths 1 through 40 (#5528)", () => {
+		for (const label of [
+			" close",
+			" choose  ",
+			" to return to the current session",
+			" 界e\u0301確認",
+			"\n  choose\n",
+			" \x1b[4munderlined text\x1b[24m",
+		]) {
+			for (const key of ["esc", "ctrl+f8", "↑↓", "1-4"]) {
+				const plain = key + label;
+				const marked = clickableKeyTextHint(key, label);
+				for (let width = 1; width <= 40; width++) {
+					assert.deepEqual(
+						wrapTextWithAnsi(marked, width).map((row) => readHintSpans(row).line),
+						wrapTextWithAnsi(plain, width),
+						`${JSON.stringify(plain)} at width ${width}`,
+					);
+				}
+			}
+		}
+	});
+
 	it("marks each row of a hint wrapped at a space, broken inside a long word, or continued after a newline", () => {
 		// A row is padded or bordered after it is wrapped, and the hint must end where its text does.
 		const bordered = (line: string) => hintsOn(`${line}   │`);

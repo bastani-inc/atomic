@@ -1043,6 +1043,37 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 	return result.length > 0 ? result : [""];
 }
 
+function hintMarkerLength(line: string, index: number): number {
+	if (line.startsWith(HINT_CLOSE, index)) return HINT_CLOSE.length;
+	return line.startsWith(HINT_OPEN, index) ? ansiCodeLength(line, index) : 0;
+}
+
+/** Hint markers carry the active action across a wrap but do not by themselves make a row. */
+function hasWrapContent(line: string): boolean {
+	for (let i = 0; i < line.length; ) {
+		const length = hintMarkerLength(line, i);
+		if (!length) return true;
+		i += length;
+	}
+	return false;
+}
+
+/** Trim the same spaces as the unmarked row, retaining any hint markers among them. */
+function trimWrapEnd(line: string): string {
+	const trimmed = line.trimEnd();
+	if (!trimmed.endsWith("\x07")) return trimmed;
+	let end = trimmed.length;
+	const markers: string[] = [];
+	while (end > 0 && trimmed.charCodeAt(end - 1) === 7) {
+		const start = trimmed.lastIndexOf("\x1b", end - 1);
+		if (start < 0 || hintMarkerLength(trimmed, start) !== end - start) break;
+		markers.push(trimmed.slice(start, end));
+		end = start;
+		while (end > 0 && WHITESPACE_REGEX.test(trimmed[end - 1]!)) end--;
+	}
+	return markers.length ? trimmed.slice(0, end) + markers.reverse().join("") : trimmed;
+}
+
 function wrapSingleLine(line: string, width: number): string[] {
 	if (!line) {
 		return [""];
@@ -1066,9 +1097,9 @@ function wrapSingleLine(line: string, width: number): string[] {
 
 		// Token itself is too long - break it character by character
 		if (tokenVisibleLength > width && !isWhitespace) {
-			if (currentLine) {
+			if (hasWrapContent(currentLine)) {
 				// Trim before adding the reset, which would otherwise block the final trimEnd()
-				currentLine = currentLine.trimEnd();
+				currentLine = trimWrapEnd(currentLine);
 				// Add specific reset for underline only (preserves background)
 				const lineEndReset = tracker.getLineEndReset();
 				if (lineEndReset) {
@@ -1094,7 +1125,7 @@ function wrapSingleLine(line: string, width: number): string[] {
 
 		if (totalNeeded > width && currentVisibleLength > 0) {
 			// Trim trailing whitespace, then add underline reset (not full reset, to preserve background)
-			let lineToWrap = currentLine.trimEnd();
+			let lineToWrap = trimWrapEnd(currentLine);
 			if (isWhitespace) {
 				// The dropped space may carry codes (e.g. closing a styled word). Keep them on the wrapped line so
 				// the style ends there and is not re-opened on the next line.
@@ -1114,7 +1145,12 @@ function wrapSingleLine(line: string, width: number): string[] {
 			}
 			currentLine = tracker.getActiveCodes() + token;
 			currentVisibleLength = tokenVisibleLength;
-		} else if (isWhitespace && totalNeeded > width && token.includes("\x1b")) {
+		} else if (
+			isWhitespace &&
+			totalNeeded > width &&
+			token.includes("\x1b") &&
+			hasWrapContent(extractAnsiCodes(token))
+		) {
 			// Whitespace wider than an empty line. Plain spaces are removed by the final trimEnd(), but codes after
 			// them (e.g. a trailing reset) would block that and leave the line wider than width. Keep only the codes.
 			currentLine += extractAnsiCodes(token);
@@ -1127,13 +1163,13 @@ function wrapSingleLine(line: string, width: number): string[] {
 		updateTrackerFromText(token, tracker);
 	}
 
-	if (currentLine) {
+	if (hasWrapContent(currentLine)) {
 		// No reset at end of final line - let caller handle it
 		wrapped.push(currentLine);
 	}
 
 	// Trailing whitespace can cause lines to exceed the requested width
-	return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
+	return wrapped.length > 0 ? wrapped.map(trimWrapEnd) : [""];
 }
 
 export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
