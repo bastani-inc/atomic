@@ -6,6 +6,7 @@ import {
 	Text,
 	type TUI,
 	truncateToWidth,
+	visibleWidth,
 } from "@bastani/atomic-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.js";
@@ -253,6 +254,22 @@ export function atomicWorkingGlyph(frameOrOptions: number | AtomicWorkingStatusO
 		: colorizePhase(frameIndex, frame, options.palette);
 }
 
+/** A working line's message, or one that fits itself to the columns the line leaves it. */
+export type AtomicWorkingMessage = string | ((columns: number) => string);
+
+/**
+ * The columns a working line `width` columns wide leaves its message on one row: all but its one-column margins, its
+ * glyph and the space after it, and `meta`.
+ */
+export function workingMessageColumns(width: number, meta?: WorkingRunMetaInput): number {
+	const metaText = meta ? formatWorkingMeta(meta) : "";
+	return Math.max(0, width - 4 - (metaText ? visibleWidth(` (${metaText})`) : 0));
+}
+
+function workingMessageText(message: AtomicWorkingMessage, columns = Number.POSITIVE_INFINITY): string {
+	return typeof message === "string" ? message : message(columns);
+}
+
 export class AtomicWorkingStatusComponent implements Component {
 	private readonly options: AtomicWorkingStatusOptions;
 
@@ -314,7 +331,7 @@ export class AtomicWorkingLoader implements Component {
 	private readonly ui: TUI;
 	private readonly spinnerColor: ((text: string) => string) | undefined;
 	private readonly messageColor: (text: string) => string;
-	private message: string;
+	private message: AtomicWorkingMessage;
 	private stopClock: (() => void) | undefined;
 	private delegateGeneration = 0;
 	private indicator: LoaderIndicatorOptions | undefined;
@@ -327,7 +344,7 @@ export class AtomicWorkingLoader implements Component {
 		ui: TUI,
 		spinnerColor: ((text: string) => string) | undefined,
 		messageColor: (text: string) => string,
-		message = DEFAULT_WORKING_MESSAGE,
+		message: AtomicWorkingMessage = DEFAULT_WORKING_MESSAGE,
 		indicator?: LoaderIndicatorOptions,
 	) {
 		this.ui = ui;
@@ -338,17 +355,16 @@ export class AtomicWorkingLoader implements Component {
 	}
 
 	render(width: number): string[] {
-		return (
-			this.delegate?.render(width) ??
-			new AtomicWorkingStatusComponent({
-				frame: atomicWorkingFrame(),
-				message: this.message,
-				spinnerColor: this.spinnerColor,
-				messageColor: this.messageColor,
-				meta: this.meta?.(),
-				logo: this.logo,
-			}).render(width)
-		);
+		if (this.delegate) return this.delegate.render(width);
+		const meta = this.meta?.();
+		return new AtomicWorkingStatusComponent({
+			frame: atomicWorkingFrame(),
+			message: workingMessageText(this.message, workingMessageColumns(width, meta)),
+			spinnerColor: this.spinnerColor,
+			messageColor: this.messageColor,
+			meta,
+			logo: this.logo,
+		}).render(width);
 	}
 
 	private sanitizeBorderLine(line: string): string {
@@ -443,9 +459,9 @@ export class AtomicWorkingLoader implements Component {
 		this.metaTimer = timer;
 	}
 
-	setMessage(message: string): void {
+	setMessage(message: AtomicWorkingMessage): void {
 		this.message = message;
-		this.delegate?.setMessage(message);
+		this.delegate?.setMessage(workingMessageText(message));
 		this.ui.requestRender();
 	}
 
@@ -468,7 +484,13 @@ export class AtomicWorkingLoader implements Component {
 			},
 		} as TUI;
 		const spinnerColor = this.spinnerColor ?? ((text: string) => theme.fg("accent", text));
-		this.delegate = new Loader(guardedUi, spinnerColor, this.messageColor, this.message, this.indicator);
+		this.delegate = new Loader(
+			guardedUi,
+			spinnerColor,
+			this.messageColor,
+			workingMessageText(this.message),
+			this.indicator,
+		);
 	}
 
 	invalidate(): void {}
