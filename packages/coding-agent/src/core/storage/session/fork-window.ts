@@ -13,10 +13,14 @@ export interface ForkMetadata {
 	readonly customType?: string;
 	readonly hash?: string;
 	readonly assistantModel?: ModelChangeEntry;
+	readonly label?: LabelEntry;
+	readonly labelTarget?: string;
+	readonly labelSet?: boolean;
 }
 
 export function forkMetadata(seq: number, entry: SessionEntry): ForkMetadata {
 	const link = { id: entry.id, parentId: entry.parentId };
+	if (entry.type === "label") return { seq, type: entry.type, ...link, label: entry };
 	if (
 		entry.type === "compaction" &&
 		(entry.details as { strategy?: string } | undefined)?.strategy === "verbatim-lines"
@@ -61,7 +65,7 @@ export type ReadMetadata = (seqs: readonly number[]) => Promise<ForkMetadata[]>;
 export type ScanForkRecords = (
 	ranges: readonly Range[],
 	customTypes: readonly string[],
-	labels?: boolean,
+	entryTypes?: readonly string[],
 ) => AsyncIterable<ForkMetadata>;
 
 function namedOutputs(entries: readonly SessionStoredEntry[], sessionId: string): Set<string> {
@@ -107,6 +111,7 @@ export async function locateFork(
 	entryId: string,
 	metadata: ReadMetadata,
 	unindexed = false,
+	pageSize = 64,
 ) {
 	if (!index.needsBranchRebuild && index.lastId === entryId) return { index, leaf: index.seq };
 	let leaf = 0,
@@ -119,13 +124,17 @@ export async function locateFork(
 	const states: number[] = [];
 	let labels = false,
 		bindings = false;
+	let nameSeq: number | undefined, summarySeq: number | null | undefined;
 	for (let end = index.seq; end > 0 && (next !== null || unindexed); ) {
-		const start = Math.max(1, end - 63);
+		const start = Math.max(1, end - pageSize + 1);
 		const page = await metadata(Array.from({ length: end - start + 1 }, (_, i) => start + i));
 		for (let i = page.length - 1; i >= 0; i--) {
 			const m = page[i]!;
 			if (unindexed && m.type === "label") labels = true;
 			if (next === null || m.id !== next) continue;
+			if (nameSeq === undefined && m.type === "session_info") nameSeq = m.seq;
+			if (summarySeq === undefined && (m.type === "session_summary" || m.type === "branch_summary"))
+				summarySeq = m.type === "branch_summary" ? null : m.seq;
 			if (unindexed) {
 				if (m.type === "custom" && m.customType === "workspace_binding") bindings = true;
 				if (
@@ -155,8 +164,16 @@ export async function locateFork(
 	const state = unindexed ? states.map((seq, i) => (seq - (states[i - 1] ?? 0)).toString(36)).join(".") : index.state;
 	return {
 		leaf,
-		index: { ...index, leafSeq: leaf, jumps: jumps.reverse(), compactions, state },
-		extras: { labels, bindings },
+		index: {
+			...index,
+			leafSeq: leaf,
+			jumps: jumps.reverse(),
+			compactions,
+			state,
+			nameSeq,
+			summarySeq: summarySeq ?? undefined,
+		},
+		extras: { labels, bindings, branchCatalog: true },
 	};
 }
 
@@ -175,10 +192,16 @@ export async function indexedForkWindow(
 	readMany: (seqs: readonly number[]) => Promise<readonly SessionStoredEntry[]>,
 	metadata: ReadMetadata,
 	scan: ScanForkRecords,
-	extras?: { labels: boolean; bindings: boolean },
+	extras?: { labels: boolean; bindings: boolean; branchCatalog?: boolean },
+	orderedLabels?: () => Promise<readonly number[]>,
 ): Promise<SessionForkWindow | undefined> {
 	if (leafSeq <= 0) return undefined;
-	const ranges = branchRanges(index, leafSeq).reverse();
+	const ranges: Range[] = [];
+	for (const [lo, hi] of branchRanges(index, leafSeq).reverse()) {
+		const last = ranges.at(-1);
+		if (last && last[1] + 1 === lo) ranges[ranges.length - 1] = [last[0], hi];
+		else ranges.push([lo, hi]);
+	}
 	const compact = latestCompactionOf(index, leafSeq);
 	const rows: SessionStoredEntry[] = [];
 	const takeRanges = async (intervals: readonly Range[]) => {
@@ -214,11 +237,28 @@ export async function indexedForkWindow(
 		const bindings =
 			extras?.bindings || Object.keys(index.latest).some((key) => key.startsWith("workspace_binding:"));
 		const keep = new Set<number>();
-		if (bindings || wanted.size) {
-			for await (const meta of scan(before, [
-				...(bindings ? ["workspace_binding"] : []),
-				...(wanted.size ? ["atomic.tool-output"] : []),
-			])) {
+		// These catalog values are usually already indexed. A later name, summary or retirement on a
+		// different branch is not authoritative for this child: resolve the last record on its path.
+		const catalogTypes: string[] = [];
+		if (index.nameSeq && !rows.some(({ entry }) => entry.type === "session_info")) {
+			if (onEarlierBranch(index.nameSeq)) keep.add(index.nameSeq);
+			else if (!extras?.branchCatalog) catalogTypes.push("session_info");
+		}
+		if (!rows.some(({ entry }) => entry.type === "session_summary" || entry.type === "branch_summary")) {
+			if (index.summarySeq && onEarlierBranch(index.summarySeq)) keep.add(index.summarySeq);
+			else if (!extras?.branchCatalog && (index.summarySeq || index.jumps.length || leafSeq !== index.leafSeq))
+				catalogTypes.push("session_summary", "branch_summary");
+		}
+		let nameSeq: number | undefined, summarySeq: number | undefined;
+		if (bindings || wanted.size || catalogTypes.length) {
+			for await (const meta of scan(
+				before,
+				[...(bindings ? ["workspace_binding"] : []), ...(wanted.size ? ["atomic.tool-output"] : [])],
+				catalogTypes,
+			)) {
+				if (meta.type === "session_info") nameSeq = meta.seq;
+				else if (meta.type === "session_summary") summarySeq = meta.seq;
+				else if (meta.type === "branch_summary") summarySeq = undefined;
 				if (meta.customType === "workspace_binding" && onEarlierBranch(meta.seq)) keep.add(meta.seq);
 				if (meta.hash && wanted.has(meta.hash)) {
 					archived = true;
@@ -227,6 +267,8 @@ export async function indexedForkWindow(
 			}
 		}
 		if (!archived) {
+			if (nameSeq) keep.add(nameSeq);
+			if (summarySeq) keep.add(summarySeq);
 			// The branch-state index contains tool policies, codemode writes, snapshots and explicit thinking/model changes.
 			// Only the effective model is needed; it can also come from a covered assistant response. Don't load that answer.
 			const transition = await modelPosition(index, before, metadata);
@@ -282,14 +324,35 @@ export async function indexedForkWindow(
 	});
 	const labels = new Map<string, LabelEntry>();
 	const targets = new Set(entries.filter((e) => extras?.labels || index.latest[`label:${e.id}`]).map((e) => e.id));
-	if (targets.size) {
+	if (targets.size && orderedLabels && rows.length < index.seq) {
+		const wanted = new Set([...targets].map((id) => index.latest[`label:${id}`]?.[0]));
+		const seqs = (await orderedLabels()).filter((seq) => wanted.has(seq));
+		const known = new Map(rows.filter((r) => r.entry.type === "label").map((r) => [r.seq, r.entry]));
+		for (const row of await readMany(seqs.filter((seq) => !known.has(seq)))) known.set(row.seq, row.entry);
+		for (const seq of seqs) {
+			const e = known.get(seq);
+			if (e?.type === "label" && e.label && targets.has(e.targetId)) labels.set(e.targetId, e);
+		}
+	} else if (targets.size) {
 		// Labels may have been set or cleared on another branch after launch. A replacement keeps its
 		// original place in the map; clearing and later setting the same label gives it a new place.
-		for await (const m of scan([[1, index.seq]], [], true)) {
-			const label = (await read(m.seq, m.seq))[0]?.entry;
-			if (label?.type !== "label" || !targets.has(label.targetId)) continue;
-			if (label.label) labels.set(label.targetId, label);
-			else labels.delete(label.targetId);
+		const active = new Map<string, ForkMetadata>();
+		const apply = (m: ForkMetadata) => {
+			const target = m.label?.targetId ?? m.labelTarget;
+			if (target === undefined || !targets.has(target)) return;
+			if (m.label?.label || m.labelSet) active.set(target, m);
+			else active.delete(target);
+		};
+		if (rows.length === index.seq) {
+			for (const row of rows)
+				if (row.entry.type === "label") apply({ seq: row.seq, type: "label", label: row.entry });
+		} else for await (const m of scan([[1, index.seq]], [], ["label"])) apply(m);
+		// Inline labels arrive in the scan itself; only selected, still-active large labels need a batched payload read.
+		const missing = await readMany([...active.values()].filter((m) => !m.label).map((m) => m.seq));
+		const large = new Map(missing.map((row) => [row.seq, row.entry]));
+		for (const [target, m] of active) {
+			const entry = m.label ?? large.get(m.seq);
+			if (entry?.type === "label") labels.set(target, entry);
 		}
 	}
 	return { header, entries, labels: [...labels.values()], lastSeq: index.seq, epoch: index.epoch };
@@ -354,13 +417,13 @@ export function rangedForkMetadata(
 }
 
 export function scanForkRecords(metadata: ReadMetadata): ScanForkRecords {
-	return async function* (ranges, customTypes, labels) {
+	return async function* (ranges, customTypes, entryTypes = []) {
 		for (const [lo, hi] of ranges)
 			for (let seq = lo; seq <= hi; seq += 128) {
 				const page = await metadata(Array.from({ length: Math.min(128, hi - seq + 1) }, (_, i) => seq + i));
 				for (const m of page)
 					if (
-						(labels && m.type === "label") ||
+						entryTypes.includes(m.type) ||
 						(m.type === "custom" && m.customType && customTypes.includes(m.customType))
 					)
 						yield m;

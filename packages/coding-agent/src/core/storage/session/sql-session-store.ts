@@ -1877,8 +1877,11 @@ export class SqlSessionStore implements SessionStore {
 		return this.transaction(async (tx) => {
 			// Check the index in the same snapshot as the entries. A peer can legitimately invalidate or
 			// remove it when appending to a side branch; that must not make a committed fork point disappear.
-			const row = await tx.get<ResumeRow>(
-				`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id=?${this.dialect.lockClause("share")}`,
+			const snapshots = snapshotIndexTables(this.prefix);
+			const row = await tx.get<ResumeRow & { leaf_seq: number | null }>(
+				`SELECT header_json,last_seq,summary_state,revision,CASE WHEN EXISTS (SELECT 1 FROM ${snapshots.sources} WHERE source='session-entries' AND backfilled_through>=watermark) THEN (SELECT max(seq) FROM ${snapshots.sessionLinks} WHERE session_id=s.id AND entry_id=?) ELSE (SELECT max(seq) FROM ${this.tables.entries} WHERE session_id=s.id AND entry_id=?) END AS leaf_seq FROM ${this.tables.sessions} s WHERE s.id=?${this.dialect.lockClause("share")}`,
+				entryId,
+				entryId,
 				sessionId,
 			);
 			if (!row) throw new SessionNotFoundError(sessionId);
@@ -1891,7 +1894,7 @@ export class SqlSessionStore implements SessionStore {
 				: cached?.revision === row.revision
 					? cached.index
 					: undefined;
-			const leaf = (await this.seqOfEntry(tx, sessionId, entryId)) ?? 0;
+			const leaf = Number(row.leaf_seq);
 			if (!leaf) return undefined;
 			const metadata = async (seqs: readonly number[]) => {
 				const result: import("./fork-window.js").ForkMetadata[] = [];
@@ -1944,14 +1947,23 @@ export class SqlSessionStore implements SessionStore {
 						async (seqs) => {
 							// Chunked rows store their ID, parent and type inline. A chunked compaction or custom
 							// record needs the bounded projection; other rows need only their links for this walk.
-							const projection = this.dialect.jsonObject([
-								...["id", "parentId", "type", "customType", "firstKeptEntryId", "coveredThroughEntryId"].map(
-									(key) => [key, j(key)] as const,
-								),
-								["strategy", this.dialect.jsonText("entry_json", "details", "strategy")],
+							const pg = this.dialect.name === "postgres";
+							const key = (...path: string[]) =>
+								pg
+									? this.dialect.jsonAt({ column: "entry_json", element: "parsed" }, ...path)
+									: this.dialect.jsonText("entry_json", ...path);
+							// Parse once per row on PostgreSQL, and transfer short tuples rather than repeating field names.
+							const projection = this.dialect.jsonArray([
+								"entry_id",
+								key("parentId"),
+								key("type"),
+								key("customType"),
+								key("firstKeptEntryId"),
+								key("coveredThroughEntryId"),
+								key("details", "strategy"),
 							]);
 							const links = await tx.all<SqliteRow & { seq: number; chunks: number; link: string | null }>(
-								`SELECT seq,chunks,CASE WHEN ${this.dialect.textByteLength(`CAST(${projection} AS TEXT)`)}<=512 THEN CAST(${projection} AS TEXT) END AS link FROM ${entries} WHERE session_id=? AND seq BETWEEN ? AND ? ORDER BY seq`,
+								`WITH projected AS MATERIALIZED (SELECT seq,chunks,CAST(${projection} AS TEXT) AS link FROM ${entries} ${pg ? `CROSS JOIN LATERAL (SELECT ${postgresJsonb("entry_json")} AS value OFFSET 0) AS parsed` : ""} WHERE session_id=? AND seq BETWEEN ? AND ?) SELECT seq,chunks,CASE WHEN ${this.dialect.textByteLength("link")}<=512 THEN link END AS link FROM projected ORDER BY seq`,
 								sessionId,
 								seqs[0]!,
 								seqs.at(-1)!,
@@ -1961,30 +1973,37 @@ export class SqlSessionStore implements SessionStore {
 								const link =
 									r.link === null
 										? undefined
-										: (JSON.parse(r.link) as {
-												id: string;
-												parentId: string | null;
-												type: string;
-												customType?: string;
-												firstKeptEntryId: string | null;
-												coveredThroughEntryId?: string;
-												strategy?: string;
-											});
-								if (!link || (Number(r.chunks) > 0 && (link.type === "custom" || link.type === "compaction")))
+										: (JSON.parse(r.link) as [
+												string,
+												string | null,
+												string,
+												string | null,
+												string | null,
+												string | null,
+												string | null,
+											]);
+								if (!link || (Number(r.chunks) > 0 && (link[2] === "custom" || link[2] === "compaction")))
 									page.push(...(await metadata([Number(r.seq)])));
-								else
+								else {
+									const [id, parentId, type, customType, first, covered, strategy] = link;
 									page.push({
 										seq: Number(r.seq),
-										...link,
-										...(link.type === "compaction" && link.strategy === "verbatim-lines"
-											? { boundary: { first: link.firstKeptEntryId, covered: link.coveredThroughEntryId } }
+										id,
+										parentId,
+										type,
+										customType: customType ?? undefined,
+										...(type === "compaction" && strategy === "verbatim-lines"
+											? { boundary: { first, covered: covered ?? undefined } }
 											: {}),
 									});
+								}
 							}
 							return page;
 						},
 						true,
+						SESSION_READ_FETCH.max,
 					);
+			const labelBody = `CASE WHEN chunks=0 AND ${this.dialect.textByteLength("entry_json")}<=512 THEN entry_json END`;
 			return indexedForkWindow(
 				header,
 				selected.index,
@@ -1992,22 +2011,37 @@ export class SqlSessionStore implements SessionStore {
 				(lo, hi) => this.readRows(tx, sessionId, "seq BETWEEN ? AND ?", [lo, hi]),
 				(seqs) => this.readSeqs(tx, sessionId, seqs),
 				metadata,
-				async function* (ranges, kinds, labels) {
-					const filter = labels
-						? `${j("type")}='label'`
-						: `${j("type")}='custom' AND (chunks>0 OR ${j("customType")} IN (${kinds.map(() => "?").join(",")}))`;
+				async function* (ranges, kinds, types = []) {
+					const filters: string[] = [];
+					if (types.length) filters.push(`${j("type")} IN (${types.map(() => "?").join(",")})`);
+					if (kinds.length)
+						filters.push(
+							`(${j("type")}='custom' AND (chunks>0 OR ${j("customType")} IN (${kinds.map(() => "?").join(",")})))`,
+						);
 					for (const [lo, hi] of ranges)
 						for (let seq = lo; seq <= hi; ) {
-							const rows = await tx.all<SqliteRow & { seq: number }>(
-								`SELECT seq FROM ${entries} WHERE session_id=? AND seq BETWEEN ? AND ? AND ${filter} ORDER BY seq LIMIT 128`,
+							const labels = types.length === 1 && types[0] === "label";
+							const limit = labels ? SESSION_READ_FETCH.first : SESSION_READ_FETCH.max;
+							const rows = await tx.all<SqliteRow & { seq: number; kind: string; body?: string | null }>(
+								`SELECT seq,${j("type")} AS kind${labels ? `,${labelBody} AS body` : ""} FROM ${entries} WHERE session_id=? AND seq BETWEEN ? AND ? AND (${filters.join(" OR ")}) ORDER BY seq LIMIT ${limit}`,
 								sessionId,
 								seq,
 								hi,
+								...types,
 								...kinds,
 							);
-							if (labels) for (const row of rows) yield { type: "label", seq: Number(row.seq) };
-							else for (const m of await metadata(rows.map((r) => Number(r.seq)))) yield m;
-							if (rows.length < 128) break;
+							const deferred = rows
+								.filter((r) => r.kind === "custom" || (r.kind === "label" && !r.body))
+								.map((r) => Number(r.seq));
+							const projected = new Map<number, import("./fork-window.js").ForkMetadata>();
+							for (let i = 0; i < deferred.length; i += SEQ_BATCH)
+								for (const m of await metadata(deferred.slice(i, i + SEQ_BATCH))) projected.set(m.seq, m);
+							for (const row of rows)
+								yield projected.get(Number(row.seq)) ??
+									(row.body
+										? forkMetadata(Number(row.seq), JSON.parse(row.body) as SessionEntry)
+										: { type: row.kind, seq: Number(row.seq) });
+							if (rows.length < limit) break;
 							seq = Number(rows.at(-1)!.seq) + 1;
 						}
 				},

@@ -297,6 +297,8 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 					details: { strategy: "short" },
 					firstKeptEntryId: true,
 					coveredThroughEntryId: true,
+					targetId: true,
+					label: "truth",
 					data: { hash: "hash" },
 					id: true,
 					parentId: true,
@@ -308,6 +310,8 @@ export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uin
 	);
 	const type = String(e.type);
 	const link = { id: String(e.id), parentId: e.parentId === null ? null : String(e.parentId) };
+	if (type === "label" && typeof e.targetId === "string")
+		return { seq, type, ...link, labelTarget: e.targetId, labelSet: Boolean(e.label) };
 	if (type === "compaction" && object(e.details).strategy === "verbatim-lines")
 		return {
 			seq,
