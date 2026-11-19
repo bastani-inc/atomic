@@ -1,7 +1,8 @@
 import type { ToolCall, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import type { SessionEntry } from "../session-manager.ts";
-import type { SessionHistoryPage } from "../storage/session/types.js";
 import type { ToolHtmlRenderer } from "./index.ts";
+import { editsFor, type JsonSpan } from "./json-spans.js";
+import type { captureHtmlHistory } from "./session-data.js";
 
 const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"]);
 
@@ -19,12 +20,26 @@ type Rendered = { callHtml?: string; resultHtmlCollapsed?: string; resultHtmlExp
 
 /** An extension can keep and mutate a previous call's arguments or result while rendering a different call.
  * Retain those exposed inputs until the export is serialized. Do not retain other message blocks or history. */
-export async function renderHtmlInputs(pages: AsyncIterable<SessionHistoryPage>, renderer: ToolHtmlRenderer) {
+export async function renderHtmlInputs(
+	source: Awaited<ReturnType<typeof captureHtmlHistory>>,
+	renderer: ToolHtmlRenderer,
+) {
 	const events: (Call | Result)[] = [];
 	const lastUse = new Map<string, number>();
-	for await (const { items } of pages) {
+	const oversized = new Map<number, Map<string, JsonSpan>>();
+	for await (const { items } of source.readHistory()) {
 		for (const item of items) {
-			if (!("entry" in item) || item.entry.type !== "message") continue;
+			if (!("entry" in item)) {
+				const { oversizedRenderInputs } = await import("./oversized-render-inputs.js");
+				const h = await oversizedRenderInputs(item, source, TEMPLATE_RENDERED_TOOLS, (id) => lastUse.has(id));
+				if (h.spans.size) oversized.set(item.seq, h.spans);
+				for (const event of h.events) {
+					lastUse.set(event.id, events.length);
+					events.push(event);
+				}
+				continue;
+			}
+			if (item.entry.type !== "message") continue;
 			const message = item.entry.message;
 			if (message.role === "assistant" && Array.isArray(message.content)) {
 				for (const [index, block] of message.content.entries()) {
@@ -100,6 +115,22 @@ export async function renderHtmlInputs(pages: AsyncIterable<SessionHistoryPage>,
 	}
 	return {
 		rendered,
+		oversizedPatches(seq: number) {
+			const spans = oversized.get(seq);
+			if (!spans) return;
+			const values: { span: JsonSpan; json: string | undefined }[] = [];
+			const add = (key: string, value: unknown) => {
+				const span = spans.get(key);
+				if (span) values.push({ span, json: JSON.stringify(value) });
+			};
+			for (const [i, args] of argumentsAt.get(seq) ?? []) add(`arg:${i}`, args);
+			const r = resultAt.get(seq);
+			if (r) {
+				add("content", r.content);
+				add("details", r.details);
+			}
+			return editsFor(values);
+		},
 		/** Main serializes the whole export at one point. Take that cut only for values an extension could
 		 * have mutated; unrelated rows remain in the durable store and never enter this snapshot. */
 		freezeInputs(): void {

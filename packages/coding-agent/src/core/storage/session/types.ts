@@ -192,6 +192,8 @@ export interface SessionCompactionPoint {
 export interface ArchivedChildCatalogEntry {
 	readonly firstSeq: number;
 	readonly entryId: string;
+	/** A later resident observation already covers every field of the archived record. Preserve historical task aliases, but do not reread the earlier payload. */
+	readonly coveredBy?: string;
 	readonly childId: string;
 	readonly ownerSessionId: string;
 	readonly runId: string;

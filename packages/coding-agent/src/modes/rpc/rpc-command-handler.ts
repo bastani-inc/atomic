@@ -784,19 +784,15 @@ export function createRpcCommandHandler({
 			case "get_fork_messages": {
 				if (session.sessionManager.hasFullHistory())
 					return createRpcSuccessResponse(id, command.type, { messages: session.getUserMessagesForForking() });
-				const messages: Array<{ entryId: string; text: string }> = [];
-				for (const entry of session.sessionManager.getEntries()) {
-					if (entry.type !== "message" || entry.message.role !== "user") continue;
-					const text =
-						typeof entry.message.content === "string"
-							? entry.message.content
-							: entry.message.content
-									.filter((block) => block.type === "text")
-									.map((block) => block.text)
-									.join("");
-					if (text) messages.push({ entryId: entry.id, text });
+				const { ForkPromptArchive } = await import("../interactive/components/user-message-selector-archive.js");
+				const { archive, prompts } = await ForkPromptArchive.open(session.sessionManager);
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						messages: prompts.map(({ entryId, text }) => ({ entryId, text })),
+					});
+				} finally {
+					archive.dispose();
 				}
-				return createRpcSuccessResponse(id, command.type, { messages });
 			}
 
 			case "get_last_assistant_text": {

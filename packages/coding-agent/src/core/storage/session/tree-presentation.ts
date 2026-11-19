@@ -93,18 +93,48 @@ function* clippedString(limit: number, clip?: () => void): Reader<string> {
 	}
 	return value;
 }
-const stringField = (limit: number, words?: readonly string[], clip?: () => void): Shape =>
+function* trimmedPrefix(limit: number, clip?: () => void): Reader<string> {
+	let text = "",
+		leading = true,
+		cut = false,
+		nonblankTail = false;
+	for (let part = yield; part.name === "stringChunk"; part = yield) {
+		let s = part.value;
+		if (leading) {
+			s = s.trimStart();
+			if (!s) continue;
+			leading = false;
+		}
+		const take = Math.min(s.length, Math.max(0, limit - text.length));
+		text += s.slice(0, take);
+		if (take < s.length) {
+			cut = true;
+			nonblankTail ||= !!s.slice(take).trim();
+		}
+	}
+	if (cut) clip?.();
+	return text + (nonblankTail ? "x" : "");
+}
+const stringField = (limit: number, words?: readonly string[], clip?: () => void, trim = false): Shape =>
 	function* (t: Token) {
 		if (t.name !== "startString") {
 			yield* skip(t);
 			return null;
 		}
-		return words ? yield* matchedString(words) : yield* clippedString(limit, clip);
+		return words
+			? yield* matchedString(words)
+			: trim
+				? yield* trimmedPrefix(limit, clip)
+				: yield* clippedString(limit, clip);
 	};
-const textBlocks = (max: number, stringWords?: readonly string[], clip?: () => void): Shape =>
+const textBlocks = (max: number, stringWords?: readonly string[], clip?: () => void, trim = false): Shape =>
 	function* (t: Token) {
 		if (t.name === "startString")
-			return stringWords ? yield* matchedString(stringWords) : yield* clippedString(max, clip);
+			return stringWords
+				? yield* matchedString(stringWords)
+				: trim
+					? yield* trimmedPrefix(max, clip)
+					: yield* clippedString(max, clip);
 		if (t.name !== "startArray") {
 			yield* skip(t);
 			return null;
@@ -117,7 +147,7 @@ const textBlocks = (max: number, stringWords?: readonly string[], clip?: () => v
 			} else {
 				const block = yield* readValue(item, {
 					type: "short",
-					text: stringField(max - out.length, undefined, clip),
+					text: stringField(max - out.length, undefined, clip, trim && out.length === 0),
 				});
 				if (
 					block &&
@@ -149,7 +179,7 @@ export async function treePresentation(
 				timestamp: "string",
 				parentId: "string",
 				customType: text,
-				summary: text,
+				summary: stringField(limit, words, clip, true),
 				name: text,
 				provider: text,
 				modelId: text,
@@ -160,13 +190,13 @@ export async function treePresentation(
 				label: text,
 				replacement: "objectPresent",
 				targetId: text,
-				content: textBlocks(words ? 200 : limit, words, clip),
+				content: textBlocks(words ? 200 : limit, words, clip, words === undefined),
 				message: {
 					role: "short",
 					content: textBlocks(200),
-					command: text,
+					command: stringField(limit, words, clip, true),
 					stopReason: "short",
-					errorMessage: stringField(160),
+					errorMessage: stringField(160, undefined, undefined, true),
 					toolName: stringField(limit, undefined, clip),
 					toolCallId: "string",
 				},

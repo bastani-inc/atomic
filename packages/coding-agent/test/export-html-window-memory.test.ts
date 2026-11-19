@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Text } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { exportSessionToHtml } from "../src/core/export-html/index.js";
 import { createToolHtmlRenderer } from "../src/core/export-html/tool-renderer.js";
 import { type SessionEntry, SessionManager } from "../src/core/session-manager.js";
@@ -225,7 +225,92 @@ test("HTML serialization freezes exposed renderer inputs together before the fir
 	}
 });
 
-test("HTML export streams previous windows, including exact oversized Unicode entries, without hydrating them (#5554)", async () => {
+test("HTML renders oversized extension calls and results while streaming unrelated message fields (#5554)", async () => {
+	initTheme("dark");
+	const dir = await mkdtemp(join(tmpdir(), "export-large-tool-"));
+	const store = new MemorySessionStore();
+	try {
+		const m = await SessionManager.create(store, dir);
+		const unrelated = "unrelated-large-text" + "x".repeat(SESSION_HISTORY_PAGE_BYTES);
+		const content = "large tool output " + "y".repeat(SESSION_HISTORY_PAGE_BYTES);
+		await m.appendMessage(
+			fauxAssistantMessage([
+				{ type: "text", text: unrelated },
+				fauxToolCall("custom_tool", { word: "initial" }, { id: "ext" }),
+			]),
+		);
+		await m.appendMessage({
+			role: "toolResult",
+			toolCallId: "ext",
+			toolName: "custom_tool",
+			timestamp: 0,
+			isError: false,
+			content: [{ type: "text", text: content }],
+			details: { phase: "before" },
+		});
+		const raw = (await store.load(m.getSessionId())).entries;
+		const seen: string[] = [];
+		let first: unknown;
+		const parse = JSON.parse;
+		let unrelatedParses = 0;
+		const trap = vi.spyOn(JSON, "parse").mockImplementation((s, r) => {
+			if (s.length > SESSION_HISTORY_PAGE_BYTES && s.includes("unrelated-large-text")) unrelatedParses++;
+			return parse(s, r);
+		});
+		let output: string;
+		try {
+			output = await exportSessionToHtml(m, undefined, {
+				outputPath: join(dir, "large.html"),
+				toolRenderer: {
+					renderCall(_id, _name, args) {
+						seen.push("call");
+						if (!first) first = args;
+						else assert.equal(args, first);
+						(args as { word: string }).word = "modified";
+						return "call-html";
+					},
+					renderResult(_id, _name, blocks, details) {
+						seen.push("result");
+						assert.equal(blocks[0]?.text, content);
+						blocks[0]!.text = "changed";
+						(details as { phase: string }).phase = "after";
+						return { expanded: "result-html" };
+					},
+				},
+			});
+		} finally {
+			trap.mockRestore();
+		}
+		assert.deepEqual(seen, ["call", "result", "call"]);
+		assert.equal(unrelatedParses, 0);
+		const decoded = await exportedData(output);
+		const a = raw[0]!,
+			b = raw[1]!;
+		assert.ok(
+			a.type === "message" &&
+				a.message.role === "assistant" &&
+				b.type === "message" &&
+				b.message.role === "toolResult",
+		);
+		const call = a.message.content[1]!;
+		assert.ok(call.type === "toolCall");
+		call.arguments.word = "modified";
+		b.message.content = [{ type: "text", text: "changed" }];
+		b.message.details = { phase: "after" };
+		const expected = {
+			header: m.getHeader(),
+			entries: raw,
+			leafId: m.getLeafId(),
+			renderedTools: { ext: { callHtml: "call-html", resultHtmlExpanded: "result-html" } },
+		};
+		assert.equal(JSON.stringify(decoded), JSON.stringify(expected));
+	} finally {
+		await store.close();
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("HTML export streams previous windows, including exact oversized Unicode entries, without hydrating them into the manager (#5554)", async () => {
 	initTheme("dark");
 	const dir = await mkdtemp(join(tmpdir(), "export-html-window-"));
 	const store = new MemorySessionStore();
