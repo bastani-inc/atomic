@@ -5,7 +5,7 @@ description: Make a schema-validated structured decision without starting an age
 
 # Structured decisions
 
-Atomic has one decision service. [`decide()`](#decide) asks the user's configured [`decisionModel`](/settings#decisionmodel) typed questions and returns typed answers with probabilities. Workflow stage predictions and [readiness after a steer](/workflows/operations#readiness-after-a-steer) decide through it. The `structured_output` tool starts on the same decision model, resolved the same way, and its failures there are `DecisionError`s. `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models the caller names, through the same engine. None of them starts a child agent, executes the caller's other tools, authorizes an action, or changes the selected chat model.
+Atomic has one decision service. [`decide()`](#decide) asks the user's configured [`decisionModel`](/settings#decisionmodel) typed questions and returns typed answers with probabilities. The `structured_output` tool starts on the same decision model, resolved the same way, and its failures there are `DecisionError`s. `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models the caller names, through the same engine. None of them starts a child agent, executes the caller's other tools, authorizes an action, or changes the selected chat model.
 
 ## decide
 
@@ -46,7 +46,7 @@ if (approve >= 0.9 && (result.answers.complete.probability ?? 0) >= 0.8) {
 }
 ```
 
-Keep code in control: compare an option's probability with a threshold per action, give actions that cannot be undone a higher bar, and route anything below the thresholds to a person or a slower step. A Choice always picks an option, even when none fits, so pair it with a yes/no question that checks it applies. `decide()` never caches; cache results in your code when you need to. Extensions read the setting with `ctx.getDecisionModel()`; workflows can call `decide` from `@bastani/atomic/workflows`.
+Keep code in control: compare an option's probability with a threshold per action, give actions that cannot be undone a higher bar, and route anything below the thresholds to a person or a slower step. A Choice always picks an option, even when none fits, so pair it with a yes/no question that checks it applies. `decide()` never caches; cache results in your code when you need to. Extensions read the setting with `ctx.getDecisionModel()`. Import `decide` from `@bastani/atomic`.
 
 `deadline` is a wall-clock limit in milliseconds for the whole decision, including configured-credential screening, every request, retry, repair and fallback; it defaults to [`httpIdleTimeoutMs`](/settings#http). `signal` cancels it, and the call then rejects with the signal's reason. `model` names an exact model that decides instead of `decisionModel`. State that contains an environment credential, key-shaped text, or a saved credential identified by the model registry is refused before any model request.
 
@@ -64,7 +64,7 @@ Legacy `routerModel` settings migrate to `decisionModel` automatically; they do 
 | --- | --- | --- | --- | --- |
 | `DecisionConfigError` | `invalid-setting` | `decisionModel` is not a string or has surrounding whitespace | `source`, `field` | Set an exact `provider/model`, `auto` or `""`. |
 | `DecisionRequestError` | `invalid-request` | Empty or non-JSON `state`, credential in `state`, no questions, a malformed question, blank `instructions`, a bad `deadline` or `model` | `field`, `reason` | Fix the request; nothing was sent. |
-| `DecisionModelUnavailableError` | `model-unavailable` | `decisionModel` is not a registered chat or classifier model (`not-in-catalog`), no chat model is selected (`no-chat-model`), probabilities are required from a chat model (`no-probabilities`), or the extension or workflow host provides no decision model or model registry (`host-unsupported`) | `reason`, `model` | Choose another decision model or select a chat model; for `host-unsupported`, run in an Atomic session. |
+| `DecisionModelUnavailableError` | `model-unavailable` | `decisionModel` is not a registered chat or classifier model (`not-in-catalog`), no chat model is selected (`no-chat-model`), probabilities are required from a chat model (`no-probabilities`), or the extension host provides no decision model or model registry (`host-unsupported`) | `reason`, `model` | Choose another decision model or select a chat model; for `host-unsupported`, run in an Atomic session. |
 | `DecisionTimeoutError` | `timeout` | The deadline passed | `timeoutMs`, `elapsedMs`, `phase`, `attempts` | Retry, or allow a longer deadline. Retryable. |
 | `DecisionOutputError` | `invalid-output` | The model answered, but no answer satisfied the questions after repairs | `model`, `detail` | Make the questions unambiguous or choose another model. |
 | `DecisionProviderError` | `provider-failure` | The model's request failed | `model`, `providerStatus`, `providerCode`, `retryAfterMs`, `detail` | Retryable for a rate limit or exhausted quota (`providerCode`); otherwise check the provider. |
@@ -72,7 +72,6 @@ Legacy `routerModel` settings migrate to `decisionModel` automatically; they do 
 ## Where the decision model decides
 
 - **The `structured_output` tool** without its own `model` starts on `decisionModel`, resolved as `decide()` resolves it: a classifier answers when the result schema is a finite Choice, and otherwise the call's `fallbackModels` and then the current chat model answer. An unregistered or invalid `decisionModel` rejects with `DecisionModelUnavailableError` or `DecisionConfigError`, and a call that no candidate answers rejects with `DecisionOutputError` or `DecisionProviderError`.
-- **Readiness after a steer** asks an advance/stay Choice and a yes/no companion; see [Readiness after a steer](/workflows/operations#readiness-after-a-steer).
 - **`generateStructuredOutput()`** uses only the models it names and the current chat model; pass `settings` to start it on `decisionModel` as the tool does.
 
 ## Select the inference model

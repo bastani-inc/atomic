@@ -144,7 +144,6 @@ function guardedContext(mode: ExtensionContext["mode"]) {
 			},
 		}),
 		getSubagentPolicy: () => undefined,
-		getOrchestrationContext: () => undefined,
 	} as ExtensionContextSource);
 	return {
 		ctx,
@@ -160,13 +159,7 @@ function guardedContext(mode: ExtensionContext["mode"]) {
 
 function runnerOwner(mode: ExtensionContext["mode"]) {
 	const notifications: Array<{ message: string; level?: string }> = [];
-	const runner = new ExtensionRunner(
-		[],
-		{ invalidate() {} } as never,
-		"/tmp",
-		{} as never,
-		{} as never,
-	);
+	const runner = new ExtensionRunner([], { invalidate() {} } as never, "/tmp", {} as never, {} as never);
 	runner.setUIContext(
 		mode === "tui" || mode === "rpc"
 			? ({ notify: (message: string, level?: string) => notifications.push({ message, level }) } as never)
