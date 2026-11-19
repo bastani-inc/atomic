@@ -374,70 +374,57 @@ test("literal table budgets stay scoped and dynamic tables cannot borrow them", 
 	);
 });
 
-test("curried CLI cases keep their structural budgets without lending them to other tests", () => {
-	const directory = mkdtempSync(join(tmpdir(), "duration-cli-cases-"));
-	try {
-		const file = "cli.test.ts";
-		const titles = ["refuses return", "refuses completion"];
-		writeFileSync(
-			join(directory, file),
-			"const REAL_CLI_MS = 240_000;\n" +
-				titles
-					.map((title) => "test(" + JSON.stringify(title) + ", async () => { await scenario(); }, REAL_CLI_MS);")
-					.join("\n"),
-		);
-		const durations = [22_625.2187, 24_011.3266];
-		const scored = evaluateDurations(
-			report(
-				[{ file, tests: titles.map((title, index) => ({ title, status: "passed", duration: durations[index] })) }],
-				directory,
-			),
-			30_000,
-			directory,
-		);
-		assert.equal(scored.samples.length, 2);
-		for (const [index, title] of titles.entries()) {
-			const sample = scored.samples.find((entry) => entry.name === title);
-			assert.equal(sample?.timeoutMs, 240_000);
-			assert.equal(sample?.explicit, true);
-			assert.equal(sample?.ratio, durations[index]! / 240_000);
-		}
-		assert.deepEqual(scored.warnings, []);
-
-		const unbudgeted = evaluateDurations(
-			report(
-				[
-					{
-						file,
-						tests: [
-							{
-								title: "the driver and the fixture agree on the state file name",
-								status: "passed",
-								duration: 24_000,
-							},
-							{ scopes: ["unrelated scope"], title: titles[0]!, status: "passed", duration: 24_000 },
-						],
-					},
-					{
-						file: "test/unit/grok-4-6-provider-migration.test.ts",
-						tests: titles.map((title) => ({ title, status: "passed", duration: 24_000 })),
-					},
-				],
-				directory,
-			),
-			30_000,
-			directory,
-		);
-		assert.equal(unbudgeted.samples.length, 4);
-		for (const sample of unbudgeted.samples) {
-			assert.equal(sample.timeoutMs, 30_000);
-			assert.equal(sample.explicit, false);
-			assert.equal(sample.ratio, 0.8);
-		}
-		assert.deepEqual(unbudgeted.warnings, unbudgeted.samples);
-	} finally {
-		rmSync(directory, { recursive: true, force: true });
+test("real SDK retirement cases keep their structural budgets without lending them to other tests", () => {
+	const file = "test/integration/sdk-builtin-host-parity-retirement.test.ts";
+	const titles = [
+		"built Node finalizes failed 'new' retirement with 'none' failure",
+		"built Node finalizes failed 'new' retirement with 'cleanup' failure",
+	];
+	// A curried table declaration names both cases and their budget, not the unrelated tests below.
+	const durations = [22_625.2187, 24_011.3266];
+	const scored = evaluateDurations(
+		report([
+			{ file, tests: titles.map((title, index) => ({ title, status: "passed", duration: durations[index] })) },
+		]),
+		30_000,
+		root,
+	);
+	assert.equal(scored.samples.length, 2);
+	for (const [index, title] of titles.entries()) {
+		const sample = scored.samples.find((entry) => entry.name === title);
+		assert.equal(sample?.timeoutMs, 60_000);
+		assert.equal(sample?.explicit, true);
+		assert.equal(sample?.ratio, durations[index]! / 60_000);
 	}
+	assert.deepEqual(
+		scored.warnings.map((sample) => sample.name),
+		[titles[1]],
+	);
+
+	const unbudgeted = evaluateDurations(
+		report([
+			{
+				file,
+				tests: [
+					{ title: "an unrelated SDK case", status: "passed", duration: 24_000 },
+					{ scopes: ["unrelated scope"], title: titles[0]!, status: "passed", duration: 24_000 },
+				],
+			},
+			{
+				file: "test/unit/grok-4-6-provider-migration.test.ts",
+				tests: titles.map((title) => ({ title, status: "passed", duration: 24_000 })),
+			},
+		]),
+		30_000,
+		root,
+	);
+	assert.equal(unbudgeted.samples.length, 4);
+	for (const sample of unbudgeted.samples) {
+		assert.equal(sample.timeoutMs, 30_000);
+		assert.equal(sample.explicit, false);
+		assert.equal(sample.ratio, 0.8);
+	}
+	assert.deepEqual(unbudgeted.warnings, unbudgeted.samples);
 });
 
 test("foreign members, lookalike modifiers and dynamic tables do not donate timeout budgets", () => {
