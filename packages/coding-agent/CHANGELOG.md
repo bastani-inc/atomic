@@ -53,6 +53,7 @@
 - On Windows, a `!command` config value or a blueprint step that is stopped has its process tree terminated once. Atomic no longer terminates it again when the command's exit arrives, or when an abort comes after its timeout ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 - On Windows, a blueprint step stopped after its command exited, while a process the step started still writes its output, no longer kills by the command's pid, which may already name another process. This applies when the step's processes could not be contained ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 - A pending block click uses the block’s current output, group and width, even after a resize. A block with nothing more to show leaves the chat following new output. Ctrl+O takes precedence over an earlier click, and a burst of single clicks in an isolated chat no longer loses toggles ([#5562](https://github.com/bastani-inc/atomic/issues/5562)).
+- A model request waiting for a free slot under a provider request limit no longer starts after its caller's deadline or cancellation has passed. When the slot opens at the same moment as the deadline, or while the process is busy and gets to both late, the deadline now wins and the request ends as aborted. A request whose caller gives up while a worker pool's shared rate limit is answering is no longer sent either ([#5604](https://github.com/bastani-inc/atomic/issues/5604)).
 
 ## [0.9.89] - 2026-11-18
 
