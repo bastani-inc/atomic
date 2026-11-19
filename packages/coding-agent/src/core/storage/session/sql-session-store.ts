@@ -15,6 +15,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { deferForkWrite, forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-cut.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
 	branchRanges,
@@ -605,21 +606,6 @@ export class SqlSessionStore implements SessionStore {
 		return { ...this.database.descriptor, ...(this.prefix === "" ? {} : { prefix: this.prefix }) };
 	}
 
-	get forkSourceKey(): string | undefined {
-		const { adapter, location } = this.database.descriptor;
-		return location && location !== ":memory:" ? JSON.stringify([adapter, location, this.prefix]) : undefined;
-	}
-
-	async readForkLength(sessionId: string): Promise<number | undefined> {
-		this.assertOpen();
-		validateSessionText("sessionId", sessionId);
-		const row = await this.database.get<SqliteRow & { last_seq: number }>(
-			`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
-			sessionId,
-		);
-		return row && Number(row.last_seq);
-	}
-
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
@@ -641,7 +627,9 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.transaction(async (tx) => {
+		const report = sessionForkWrite(options);
+		let publish: (() => void) | undefined;
+		const write = this.transaction(async (tx) => {
 			const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
 			// A new snapshot record is written only while every blob it references is still stored (#5077).
@@ -652,7 +640,7 @@ export class SqlSessionStore implements SessionStore {
 				),
 			);
 			const lastSeq = previous.last_seq + entries.length;
-			const { texts } = await this.saveSummary(
+			const { texts, epoch, revision } = await this.saveSummary(
 				tx,
 				sessionId,
 				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
@@ -660,8 +648,19 @@ export class SqlSessionStore implements SessionStore {
 				await this.appendedResume(tx, sessionId, summaryState.resume, previous.last_seq, entries),
 			);
 			await this.insertEntries(tx, sessionId, entries, previous.last_seq, texts);
+			if (report) publish = () => report(this, `${epoch}:${options.expectSeq}`, `${epoch}:${lastSeq}`, revision);
 			return { lastSeq };
 		}, SESSION_TRANSACTION);
+		if (!report) return write;
+		try {
+			const result = await write;
+			publish?.();
+			return result;
+		} catch (error) {
+			// A failed commit is not a new source revision. Only a manager that reconciles a lost ACK may publish it.
+			if (publish) deferForkWrite(options, publish);
+			throw error;
+		}
 	}
 
 	async replace(
@@ -690,6 +689,7 @@ export class SqlSessionStore implements SessionStore {
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
+		const forkRequest = sessionForkRead(sessionId);
 		if (hasHistoryLoadObserver()) {
 			const row = await this.database.get<{ last_seq: number }>(
 				`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
@@ -697,7 +697,7 @@ export class SqlSessionStore implements SessionStore {
 			);
 			if (row) announceHistoryLoad(row.last_seq);
 		}
-		return this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
+		return this.transaction((tx) => this.read(tx, sessionId, forkRequest), SESSION_TRANSACTION);
 	}
 
 	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
@@ -1321,17 +1321,23 @@ export class SqlSessionStore implements SessionStore {
 		query.signal?.throwIfAborted();
 	}
 
-	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
+	private async read(
+		tx: SqliteExecutor,
+		sessionId: string,
+		request?: ReturnType<typeof sessionForkRead>,
+	): Promise<SessionSnapshot> {
 		const row = await tx.get<HeaderRow>(
 			`SELECT header_json, last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		return {
+		const snapshot = {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
 			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
 			lastSeq: row.last_seq,
 		};
+		if (request) forkSnapshotWitness(request, this, String(row.revision))?.(snapshot);
+		return snapshot;
 	}
 
 	private async readRows(
@@ -1891,13 +1897,14 @@ export class SqlSessionStore implements SessionStore {
 		snapshot: SessionSnapshot,
 		previous?: SessionSummaryState,
 		appendedResume?: SessionResumeIndex,
-	): Promise<{ readonly texts: readonly SessionSummaryText[]; readonly epoch: string }> {
+	): Promise<{ readonly texts: readonly SessionSummaryText[]; readonly epoch: string; readonly revision: string }> {
 		const { header, lastSeq } = snapshot;
 		const { state: listed, texts } = applySessionSummaryEntries(previous, snapshot.entries);
 		const resume = previous === undefined ? foldSessionResume(undefined, snapshot.entries) : appendedResume;
 		const epoch = resume?.epoch ?? (previous as StoredSummaryState | undefined)?.epoch ?? newRevision();
 		const state: StoredSummaryState = resume === undefined ? { ...listed, epoch } : { ...listed, resume, epoch };
 		const summary = materializeSessionSummaryMetadata(header, state);
+		const revision = newRevision();
 		await tx.run(
 			`INSERT INTO ${this.tables.sessions}
 				(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count,
@@ -1924,9 +1931,9 @@ export class SqlSessionStore implements SessionStore {
 			summary.summary === undefined ? null : this.encode(summary.summary),
 			summary.summarizedThroughId ?? null,
 			this.encode(state),
-			newRevision(),
+			revision,
 		);
-		return { texts, epoch };
+		return { texts, epoch, revision };
 	}
 
 	private async insertEntries(

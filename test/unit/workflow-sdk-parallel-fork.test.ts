@@ -20,7 +20,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-test("queued children keep the original prefix when the SDK opened their source (#5631)", async () => {
+test("queued children using independently opened SDK stores copy at their own admission", async () => {
 	const cwd = makeTempDirectory("workflow-sdk-fork-");
 	const backend = await JournalDurableBackend.open(await openSqlRunJournal(join(cwd, "run.sqlite")));
 	const stores = new Set<SessionStore>();
@@ -70,7 +70,9 @@ test("queued children keep the original prefix when the SDK opened their source 
 			const created = await create(options, meta);
 			const session = asAgentSession("session" in created ? created.session : created);
 			assert.ok(session);
-			stores.add(session.sessionManager.getSessionStore());
+			const store = session.sessionManager.getSessionStore();
+			assert.equal(stores.has(store), false);
+			stores.add(store);
 			if (meta?.stageName === "source") {
 				assert.equal(options.sessionManager, undefined);
 				source = session.sessionManager;
@@ -105,7 +107,7 @@ test("queued children keep the original prefix when the SDK opened their source 
 			{ cwd, durableBackend: backend, store: createStore(), adapters: { agentSession: adapter } },
 		);
 		assert.equal(result.status, "completed", result.error);
-		assert.deepEqual(requests, [["original"], ["original", "left"], ["original", "right"]]);
+		assert.deepEqual(requests, [["original"], ["original", "left"], ["original", "later source turn", "right"]]);
 	} finally {
 		faux.unregister();
 		await backend.close();

@@ -26,10 +26,6 @@ import type { AgentSessionAdapter } from "./stage-runner-helpers.js";
 useTemporaryAgentDir();
 afterEach(closeMemoryTestBackends);
 
-function observeForkReads(store: SessionStore) {
-	return store.readForkLength && vi.spyOn(store, "readForkLength");
-}
-
 test.each(["archived directory", "legacy SQLite import"])(
 	"a cached parallel fork leaves session storage untouched (%s, #5630)",
 	async (selection) => {
@@ -83,12 +79,12 @@ test.each(["archived directory", "legacy SQLite import"])(
 			await rename(directory, archive);
 			if (selection === "legacy SQLite import") sessionDir = undefined;
 			const ranges = vi.spyOn(legacy, "readRange");
-			const capture = observeForkReads(legacy);
+			const loads = vi.spyOn(legacy, "load");
 			await execute(sessionDir === undefined ? legacy : undefined);
 			assert.equal(existsSync(directory), false, "replay must leave the archived directory absent");
 			await Promise.all(ranges.mock.results.map((r) => r.value));
 			assert.equal(await sql.readHeader(source.getSessionId()), undefined);
-			assert.equal(capture?.mock.calls.length ?? 0, 0);
+			assert.equal(loads.mock.calls.length, 0);
 			assert.equal(calls, 1);
 		} finally {
 			await legacy.close();
@@ -107,7 +103,7 @@ test("fail-fast fan-out from one SQLite source does not read it once per task cw
 		const source = await SessionManager.create(store, cwd);
 		await source.appendMessage({ role: "user", timestamp: 1, content: "original" });
 		const ranges = vi.spyOn(store, "readRange");
-		const capture = observeForkReads(store);
+		const loads = vi.spyOn(store, "load");
 		const steps = Array.from({ length: 4000 }, (_, i) => ({
 			name: `worker-${i}`,
 			prompt: "hello",
@@ -145,8 +141,9 @@ test("fail-fast fan-out from one SQLite source does not read it once per task cw
 		);
 		assert.equal(result.status, "completed", result.error);
 		assert.equal(opens, 1);
-		const sourceReads =
-			ranges.mock.calls.filter(([id]) => id === source.getSessionId()).length + (capture?.mock.calls.length ?? 0);
+		const sourceReads = [...ranges.mock.calls, ...loads.mock.calls].filter(
+			([id]) => id === source.getSessionId(),
+		).length;
 		assert.ok(sourceReads <= 1, `one source required ${sourceReads} prefix reads`);
 	} finally {
 		await store.close();

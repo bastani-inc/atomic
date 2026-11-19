@@ -11,6 +11,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-cut.js";
 import {
 	foldSessionResume,
 	foreignResumeIds,
@@ -269,11 +270,6 @@ export class MemorySessionStore implements SessionStore {
 		return { adapter: "memory", location: ":memory:" };
 	}
 
-	async readForkLength(sessionId: string): Promise<number | undefined> {
-		this.assertOpen();
-		return this.records.get(sessionId)?.lastSeq;
-	}
-
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
@@ -304,6 +300,11 @@ export class MemorySessionStore implements SessionStore {
 		record.lastSeq += entries.length;
 		record.index = index;
 		record.summaryState = applySessionSummaryEntries(record.summaryState, entries).state;
+		sessionForkWrite(options)?.(
+			this,
+			`${record.index.epoch}:${options.expectSeq}`,
+			`${record.index.epoch}:${record.lastSeq}`,
+		);
 		return { lastSeq: record.lastSeq };
 	}
 
@@ -358,7 +359,7 @@ export class MemorySessionStore implements SessionStore {
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
-		return (await this.decode(sessionId, record)) ?? this.load(sessionId);
+		return (await this.decode(sessionId, record, sessionForkRead(sessionId))) ?? this.load(sessionId);
 	}
 
 	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
@@ -884,14 +885,23 @@ export class MemorySessionStore implements SessionStore {
 	 * The session as it is now: its file, read once, then the entries held in memory. Undefined when its file could
 	 * not be read because the session was deleted or replaced meanwhile.
 	 */
-	private async decode(sessionId: string, record: StoredSession): Promise<SessionSnapshot | undefined> {
+	private async decode(
+		sessionId: string,
+		record: StoredSession,
+		request?: ReturnType<typeof sessionForkRead>,
+	): Promise<SessionSnapshot | undefined> {
 		for (;;) {
 			while (record.spilling !== undefined) await settled(record.spilling);
 			const header = decodeHeader(record);
 			const lastSeq = record.lastSeq;
 			const held = joinEntries(record);
+			const witness = request && forkSnapshotWitness(request, this, `${record.index.epoch}:${lastSeq}`);
 			const { directory, file, spilledBytes, spilledChecksum } = record;
-			if (directory === undefined) return { header, entries: parseEntries(held), lastSeq };
+			if (directory === undefined) {
+				const snapshot = { header, entries: parseEntries(held), lastSeq };
+				witness?.(snapshot);
+				return snapshot;
+			}
 			let spilled: Uint8Array;
 			try {
 				spilled = await readSpillFile(directory, file, sessionId, spilledBytes);
@@ -902,7 +912,13 @@ export class MemorySessionStore implements SessionStore {
 				if (record.file !== file) continue;
 				throw error;
 			}
-			return { header, entries: parseHistory(directory, sessionId, spilled, held, spilledChecksum), lastSeq };
+			const snapshot = {
+				header,
+				entries: parseHistory(directory, sessionId, spilled, held, spilledChecksum),
+				lastSeq,
+			};
+			witness?.(snapshot);
+			return snapshot;
 		}
 	}
 

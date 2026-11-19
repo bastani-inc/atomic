@@ -232,6 +232,7 @@ export interface ParallelFailFastStage {
 }
 
 export interface ParallelFailFastScope {
+	readonly forkCut?: import("@bastani/atomic").SessionForkCut;
 	failed: boolean;
 	firstFailure?: unknown;
 	readonly activeStages: Map<string, ParallelFailFastStage>;

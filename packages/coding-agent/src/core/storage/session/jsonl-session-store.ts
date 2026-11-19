@@ -35,6 +35,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-cut.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -574,36 +575,6 @@ export class JsonlSessionStore implements SessionStore {
 		return { adapter: "jsonl", location: this.directory };
 	}
 
-	get forkSourceKey(): string {
-		return JSON.stringify(["jsonl", this.directory, this.exactDirectory]);
-	}
-
-	async readForkLength(sessionId: string): Promise<number | undefined> {
-		if (this.closed) throw new StoreClosedError(this.descriptor);
-		const located = await this.locate(sessionId);
-		if (!located) return undefined;
-		const { path, state, stats } = located;
-		if (state?.stamp === this.stamp(stats)) return state.lastSeq;
-		// Use a private range index, not the store queue, lock or on-disk sidecar. Stop at the size
-		// observed during lookup even if an independent handle appends while we count the lines.
-		const reader = new JsonlSessionStore(this.directory, this.exactDirectory);
-		const file = await open(path, "r");
-		try {
-			const { page, changed } = await reader.readRangeFrom(
-				file,
-				path,
-				{ fromSeq: 1, toSeq: 0 },
-				located.stored,
-				stats,
-				undefined,
-				true,
-			);
-			return changed || !Number.isFinite(page.lastSeq) ? undefined : page.lastSeq;
-		} finally {
-			await file.close();
-		}
-	}
-
 	create(
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
@@ -668,13 +639,20 @@ export class JsonlSessionStore implements SessionStore {
 				throw cause;
 			}
 			const lastSeq = state.lastSeq + entries.length;
+			let witness: Buffer;
+			let payloadBytes: number;
+			{
+				const bytes = Buffer.from(payload);
+				payloadBytes = bytes.length;
+				witness = witnessOf(Buffer.concat([state.witness, bytes]));
+			}
 			const appended = await this.remember(path, {
 				...state,
 				lastSeq,
 				lastEntryId: entries.at(-1)?.id,
 				terminated: true,
 				torn: false,
-				witness: witnessOf(Buffer.concat([state.witness, Buffer.from(payload)])),
+				witness,
 				...(state.summaryState === undefined
 					? {}
 					: { summaryState: applySessionSummaryEntries(state.summaryState, entries).state }),
@@ -684,6 +662,10 @@ export class JsonlSessionStore implements SessionStore {
 				rangeIndex.seenStamp = this.stamp(appended);
 				rangeIndex.seenSize = Number(appended.size);
 			}
+			// A second handle can write while this directory's lock is held. Do not vouch for a larger file.
+			const forkWrite = sessionForkWrite(options);
+			if (forkWrite && appended.size === BigInt(offset + payloadBytes))
+				forkWrite(this, state.stamp, this.stamp(appended));
 			await this.indexAppended(path, state, entries, lines, offset + (state.terminated ? 0 : 1));
 			return { lastSeq };
 		});
@@ -721,10 +703,15 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	load(sessionId: string): Promise<SessionSnapshot> {
+		const request = sessionForkRead(sessionId);
 		return this.run(async () => {
 			const located = await this.locate(sessionId);
 			if (!located) throw new SessionNotFoundError(sessionId);
-			return this.readPersisted(located.path, located.stored);
+			if (!request) return this.readPersisted(located.path, located.stored);
+			const snapshot = await this.readPersisted(located.path, located.stored);
+			const state = this.fileStates.get(located.path);
+			if (state?.stamp === this.stamp(located.stats)) forkSnapshotWitness(request, this, state.stamp)?.(snapshot);
+			return snapshot;
 		});
 	}
 
@@ -804,7 +791,6 @@ export class JsonlSessionStore implements SessionStore {
 		stored: StoredSessionHeader,
 		stats: BigIntStats,
 		state: SessionFileState | undefined,
-		countToEnd = false,
 	): Promise<{
 		readonly page: SessionEntriesPage;
 		readonly boundary: { witness: Buffer; witnessEnd: number };
@@ -909,12 +895,10 @@ export class JsonlSessionStore implements SessionStore {
 				index.completeEnd > 0
 					? { offset: index.completeEnd, seq: index.completeCount, header: false }
 					: { offset: 0, seq: 0, header: true };
-			const end = countToEnd
-				? size
-				: Math.min(
-						size,
-						start.offset + Math.max(0, Math.min(query.maxChars ?? RANGE_PROBE_BYTES, RANGE_PROBE_BYTES)),
-					);
+			const end = Math.min(
+				size,
+				start.offset + Math.max(0, Math.min(query.maxChars ?? RANGE_PROBE_BYTES, RANGE_PROBE_BYTES)),
+			);
 			const probe = await scanSessionLines(file, end, end === size, start, index, query.signal, {
 				skipTypes: [],
 				begin: () => "pass",

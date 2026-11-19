@@ -96,16 +96,6 @@ export class LegacySessionStore implements SessionStore {
 		return this.inner.descriptor;
 	}
 
-	get forkSourceKey(): string | undefined {
-		const inner = this.inner.forkSourceKey;
-		return inner === undefined ? undefined : JSON.stringify(["legacy", inner, this.legacyDirectory]);
-	}
-
-	async readForkLength(sessionId: string): Promise<number | undefined> {
-		// An unmigrated legacy transcript remains untouched until a live fork actually opens it.
-		return this.inner.readForkLength?.(sessionId);
-	}
-
 	/** The blob table of the wrapped store, so sessions on the default database record snapshots and collect them. */
 	get snapshotBlobs(): SnapshotBlobStore | undefined {
 		return this.inner.snapshotBlobs;

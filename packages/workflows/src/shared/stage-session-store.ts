@@ -13,7 +13,6 @@ import {
 	sessionBlobHashes,
 } from "@bastani/atomic";
 import { ForkEntryNotFoundError } from "../durable/fork-errors.js";
-import type { StageOptions } from "./types.js";
 
 export async function stageSessionStore(
 	options: Pick<CreateAgentSessionOptions, "sessionManager" | "cwd" | "agentDir" | "settingsManager"> & {
@@ -45,18 +44,12 @@ export async function forkStageSession(
 	options: NewSessionOptions,
 	destination: SessionStore = store,
 	entryId?: string,
-	parallelForkLength?: StageOptions["parallelForkLength"],
+	forkCut?: import("@bastani/atomic").SessionForkCut,
 ): Promise<SessionManager> {
-	const source = await store.load(sessionId);
-	const prefixLength =
-		parallelForkLength && entryId === undefined
-			? await parallelForkLength(store, sessionId, source.entries.length)
-			: undefined;
+	const source = await (forkCut && entryId === undefined ? forkCut.load(store, sessionId) : store.load(sessionId));
 	const entries =
 		entryId === undefined
-			? prefixLength === undefined || prefixLength >= source.entries.length
-				? source.entries
-				: source.entries.slice(0, prefixLength)
+			? source.entries
 			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
 	const hashes = sessionBlobHashes(store, entries);

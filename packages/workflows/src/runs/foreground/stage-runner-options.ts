@@ -77,6 +77,7 @@ export async function stripWorkflowOnlyOptions(
 	meta: StageExecutionMeta,
 	pendingStageDelivery?: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["pendingStageDelivery"],
 	signal?: AbortSignal,
+	forkCut?: import("@bastani/atomic").SessionForkCut,
 ): Promise<CreateAgentSessionOptions> {
 	const classification = workflowSessionOptions(meta);
 	const orchestrationContext = workflowOrchestrationContext(meta, options, pendingStageDelivery);
@@ -104,7 +105,6 @@ export async function stripWorkflowOnlyOptions(
 		context,
 		forkFromSessionId,
 		forkFromEntryId,
-		parallelForkLength,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
 		resumeInsideCall: _resumeInsideCall,
@@ -152,7 +152,7 @@ export async function stripWorkflowOnlyOptions(
 			classification,
 			undefined,
 			forkFromEntryId,
-			parallelForkLength,
+			forkCut,
 		);
 	} else if (sessionOptions.sessionManager === undefined) {
 		if (sessionStore !== undefined) {

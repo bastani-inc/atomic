@@ -18,7 +18,16 @@ import type { AgentSessionAdapter } from "./stage-runner-helpers.js";
 useTemporaryAgentDir();
 afterEach(closeMemoryTestBackends);
 
-test.each(["memory", "jsonl", "sqlite"])(
+test.each([
+	"memory",
+	"jsonl",
+	"jsonl second handle",
+	"sqlite",
+	"per-step source",
+	"overridden source",
+	"computed source",
+	"replaced revision",
+])(
 	"a parallel captures its fork without locking the source before an earlier replay write finishes (%s, #5630)",
 	async (kind) => {
 		const backend = await createMemoryTestBackend();
@@ -34,11 +43,11 @@ test.each(["memory", "jsonl", "sqlite"])(
 		const db = kind === "sqlite" ? await openNodeSqliteDatabase(join(directory, "sessions.db")) : undefined;
 		const writer = db
 			? await SqlSessionStore.open(db)
-			: kind === "jsonl"
+			: kind.startsWith("jsonl")
 				? await JsonlSessionStore.open(directory)
 				: new MemorySessionStore();
 		const sessionStore =
-			kind === "jsonl"
+			kind === "jsonl second handle"
 				? await JsonlSessionStore.open(directory, {
 						scanExisting: false,
 						lockFs: { ...fs, mkdir },
@@ -71,22 +80,49 @@ test.each(["memory", "jsonl", "sqlite"])(
 					}
 					await writing.promise;
 					locks = 0;
-					const group = ctx.parallel(
-						[
-							{ name: "left", prompt: "left" },
-							{ name: "right", prompt: "right" },
-						],
-						{
-							context: "fork",
-							forkFromSessionId: source.getSessionId(),
-							sessionStore,
-						},
-					);
+					const fork = { context: "fork" as const, forkFromSessionId: source.getSessionId(), sessionStore };
+					const steps = [
+						{ name: "left", prompt: "left" },
+						{ name: "right", prompt: "right" },
+					];
+					let admission = false;
+					const group =
+						kind === "per-step source"
+							? ctx.parallel(steps.map((step) => ({ ...step, ...fork })))
+							: kind === "overridden source"
+								? ctx.parallel(
+										steps.map((step) => ({ ...step, sessionStore })),
+										fork,
+									)
+								: kind === "computed source"
+									? ctx.parallel(steps, {
+											...fork,
+											get sessionStore() {
+												assert.ok(admission, "storage getter ran before admission");
+												return sessionStore;
+											},
+										})
+									: ctx.parallel(steps, fork);
 					try {
 						await source.appendMessage({ role: "user", content: "after launch", timestamp: 2 });
+						if (kind === "replaced revision") {
+							const snapshot = await writer.load(fork.forkFromSessionId);
+							// The replacement deliberately keeps both IDs and the length. Neither identifies this generation.
+							await writer.replace(
+								fork.forkFromSessionId,
+								snapshot.header,
+								snapshot.entries.map((entry, i) =>
+									entry.type === "message" && entry.message.role === "user"
+										? { ...entry, message: { ...entry.message, content: `replacement ${i}` } }
+										: entry,
+								),
+								{ expectSeq: snapshot.lastSeq },
+							);
+						}
 						assert.deepEqual(prefixes, [], "no child opens before the replay write is released");
 						captureLocks = locks;
 					} finally {
+						admission = true;
 						release.resolve();
 					}
 					await group;
@@ -125,7 +161,13 @@ test.each(["memory", "jsonl", "sqlite"])(
 			const resumed = await execute();
 			assert.equal(resumed.status, "completed", resumed.error);
 			assert.equal(captureLocks, 0, "capturing the prefix must not take the source writer's lock");
-			assert.deepEqual(prefixes, [["before launch"], ["before launch"]]);
+			const expected =
+				kind === "replaced revision"
+					? ["replacement 0", "replacement 1"]
+					: sessionStore === writer && !kind.endsWith("source")
+						? ["before launch"]
+						: ["before launch", "after launch"];
+			assert.deepEqual(prefixes, [expected, expected]);
 		} finally {
 			if (sessionStore !== writer) await sessionStore.close();
 			await writer.close();

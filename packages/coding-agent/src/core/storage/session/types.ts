@@ -264,10 +264,6 @@ export interface SessionSearchIndex {
 
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
-	/** Equal only for handles opening the same physical session collection. Otherwise use the handle itself. */
-	readonly forkSourceKey?: string;
-	/** Observe an existing session's append position without importing it, taking a session lock or queuing its writers. */
-	readForkLength?(sessionId: string): Promise<number | undefined>;
 	/**
 	 * Which running sessions have this store's sessions open (#4971). Absent when the store keeps none: markers are then
 	 * files under the agent directory, seen only by processes that share it.

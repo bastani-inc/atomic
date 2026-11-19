@@ -90,6 +90,13 @@ import {
 	SessionNotFoundError,
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
+import {
+	confirmRecoveredForkWrite,
+	markSessionForkAppend,
+	retireForkWrite,
+	sessionForkClock,
+	watchedForkClock,
+} from "./storage/session/fork-cut.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import { readSessionRange } from "./storage/session/session-resume.js";
@@ -167,6 +174,8 @@ export class SessionManager {
 		| { readonly sessionId: string; readonly store: SessionStore; readonly release: () => Promise<void> }
 		| undefined;
 	private mutation: Promise<void> = Promise.resolve();
+	private forkOpened = sessionForkClock();
+	private forkSubmitted = 0;
 	/** Custom entries written with a message, in its own store write, by the message they go with. */
 	private readonly messageCompanions = new WeakMap<object, () => MessageCompanionEntry | undefined>();
 	private fileEntries: FileEntry[] = [];
@@ -220,11 +229,21 @@ export class SessionManager {
 	}
 
 	private runMutation<T>(operation: () => Promise<T>): Promise<T> {
-		const result = this.mutation.then(operation);
-		this.mutation = result.then(
-			() => {},
-			() => {},
+		const submitted = watchedForkClock(this.store, this.sessionId);
+		const result = this.mutation.then(
+			!submitted
+				? operation
+				: () => {
+						this.forkSubmitted = submitted;
+						return operation();
+					},
 		);
+		const settled = submitted
+			? () => {
+					this.forkSubmitted = 0;
+				}
+			: () => {};
+		this.mutation = result.then(settled, settled);
 		return result;
 	}
 
@@ -277,6 +296,7 @@ export class SessionManager {
 			readonly links: ReadonlyMap<string, string>;
 		},
 	): void {
+		this.forkOpened = sessionForkClock();
 		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
 		this.lastSeq = lastSeq;
@@ -689,13 +709,18 @@ export class SessionManager {
 		if (this.deletedFromStore) return this.applyAppended(entries);
 		for (let attempt = 1; ; attempt++) {
 			const expectSeq = this.lastSeq;
+			const options = { expectSeq, ...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }) };
 			try {
-				this.lastSeq = (
-					await this.store.append(this.sessionId, entries, {
-						expectSeq,
-						...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-					})
-				).lastSeq;
+				if (this.forkSubmitted && entries[0])
+					markSessionForkAppend(
+						this.forkOpened,
+						this.forkSubmitted,
+						this.store,
+						this.sessionId,
+						options,
+						entries[0].id,
+					);
+				this.lastSeq = (await this.store.append(this.sessionId, entries, options)).lastSeq;
 			} catch (error) {
 				if (error instanceof SessionNotFoundError) {
 					this.deletedFromStore = true;
@@ -703,8 +728,13 @@ export class SessionManager {
 				}
 				if (appendFailureWroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
 				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
-				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
+				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) {
+					if (this.forkSubmitted) confirmRecoveredForkWrite(options);
+					return;
+				}
 				continue;
+			} finally {
+				if (this.forkSubmitted) retireForkWrite(options);
 			}
 			this.applyAppended(entries);
 			return;
