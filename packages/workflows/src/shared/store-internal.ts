@@ -382,6 +382,9 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	function placeRun(run: RunSnapshot): void {
 		const position = runPosition(state, run.id);
 		if (position !== undefined) {
+			// Admission, restore and rollback can replace the snapshot, but never rewind its occurrence counter.
+			const previous = state.runs[position]!.runGeneration;
+			if (previous !== undefined && previous > (run.runGeneration ?? 0)) run.runGeneration = previous;
 			state.runs[position] = run;
 			indexChildRun(state, run);
 			return;
