@@ -13,6 +13,7 @@ import type { WorkflowDefinition, WorkflowExitStatus } from "../../packages/work
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { durableNestedRunSnapshots as referenceNestedRunSnapshots } from "../helpers/reference-nested-run-snapshots/completed-catalog.js";
 import { durableCompletedNestedRunSubtree as referenceCompletedNestedRunSubtree } from "../helpers/reference-nested-run-snapshots/completed-subtree.js";
+import { legacyBoundaryRecord } from "../helpers/reference-nested-run-snapshots/legacy-boundary-record.js";
 import {
 	closeMemoryTestBackends,
 	createMemoryTestBackend,
@@ -90,7 +91,7 @@ async function recordedHistory(seed: number): Promise<{ rootId: string; checkpoi
 			adapters: { complete: { complete: async (text: string) => text } },
 		},
 	);
-	return { rootId, checkpoints: backend.listCheckpoints(rootId) };
+	return { rootId, checkpoints: backend.listCheckpoints(rootId).map(legacyBoundaryRecord) };
 }
 
 const DRIFTS = ["renamed", "earlier", "output", "parents", "stage-id", "occurrence", "child-owned"] as const;
