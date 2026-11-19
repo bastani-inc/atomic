@@ -162,6 +162,9 @@ export class WindowedContainer extends Container {
 	/** The host's laid-out entries this container's children occupied, `[first, end)`. */
 	private windowSpan = { first: 0, end: 0 };
 	private laidOut: Entry[] = [];
+	private observed = false;
+	/** Observe only children whose rows are actually returned to the viewport, never an offscreen measurement. */
+	onVisibleChild?: (child: Component) => void;
 	private offsets: number[] = [0];
 	private staleOffsetsFrom = Number.POSITIVE_INFINITY;
 	private width = 0;
@@ -231,7 +234,7 @@ export class WindowedContainer extends Container {
 		return {
 			top,
 			length,
-			at: (index) => this.rowAt(index),
+			at: this.observed ? (index) => this.visibleRowAt(index) : (index) => this.rowAt(index),
 			trackRow: (index) => {
 				if (index < 0 || index >= length) return undefined;
 				const anchor = this.locateAnchor(index);
@@ -391,6 +394,15 @@ export class WindowedContainer extends Container {
 		return this.offsets[this.laidOut.length] ?? 0;
 	}
 
+	private visibleRowAt(row: number): string | undefined {
+		const line = this.rowAt(row);
+		if (line !== undefined) {
+			const entry = this.laidOut[this.lastRowIndex];
+			if (entry) entry.owner?.onVisibleChild?.(entry.component);
+		}
+		return line;
+	}
+
 	private rowAt(row: number): string | undefined {
 		if (row < 0 || row >= this.rowCount()) return undefined;
 		let index = this.lastRowIndex;
@@ -463,7 +475,9 @@ export class WindowedContainer extends Container {
 		let index = 0;
 		let rebuilt: Entry[] | undefined;
 		const position = (): number => rebuilt?.length ?? index;
+		this.observed = false;
 		const visit = (container: WindowedContainer): void => {
+			if (container.onVisibleChild) this.observed = true;
 			for (const child of container.windowChildren()) {
 				if (child instanceof WindowedContainer) {
 					child.windowHost = this;

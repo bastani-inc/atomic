@@ -1135,3 +1135,140 @@ test("a copy draws a selected tool card whose result is saved pages after its ca
 		assert.match(copied, /at the end$/);
 	}
 });
+
+/** Saved reader-only lines: one at the start of the conversation and one after each listed answer. */
+async function saveLinesAfterAnswers(mode: InteractiveMode, turns: readonly number[]): Promise<void> {
+	const manager = mode.sessionManager;
+	const scope = manager.chatRecordScope();
+	assert.ok(scope, "the session keeps reader-only records");
+	await scope.store.append(scope.owner, "", { kind: "line", level: "warning", text: "Warning: SAVED-AT-START" });
+	for (const turn of turns) {
+		const answer = manager
+			.getEntries()
+			.find(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					JSON.stringify(entry.message.content).includes(`Answer ${turn}\\n`),
+			);
+		assert.ok(answer, `answer ${turn} is saved`);
+		await scope.store.append(scope.owner, answer.id, {
+			kind: "line",
+			level: "error",
+			text: `Error: Retry failed after 3 attempts: SAVED-AFTER-${turn}`,
+		});
+	}
+}
+
+/** Each saved line is shown once, after the rows of its answer and before the next prompt. */
+function assertLinesInPlace(lines: readonly string[], turns: readonly number[]): void {
+	const at = (pattern: RegExp) => {
+		const rows = lines.flatMap((line, row) => (pattern.test(line) ? [row] : []));
+		assert.equal(rows.length, 1, `${pattern} appears ${rows.length} times:\n${lines.join("\n")}`);
+		return rows[0]!;
+	};
+	assert.ok(at(/SAVED-AT-START/) < at(/Turn 0: check/), "the start's line comes first");
+	for (const turn of turns) {
+		const line = at(new RegExp(`SAVED-AFTER-${turn}\\b`));
+		assert.ok(line > at(new RegExp(`Answer ${turn}\\b`)), `the line of answer ${turn} follows it`);
+		assert.ok(
+			line < at(new RegExp(`Turn ${turn + 1}: check`)),
+			`the line of answer ${turn} precedes the next prompt`,
+		);
+	}
+}
+
+test("saved pages of the main chat show each saved line where the whole chat shows it, once, also when copied (#5593)", async () => {
+	const copy = async (jump: boolean) => {
+		const { mode, tui, transcript, terminal } = await openResumedSession(30);
+		const copies = recordCopies(tui);
+		await saveLinesAfterAnswers(mode, [2, 27]);
+		await mode.sessionManager.appendCompaction("cleared history", null, 100, CLEARED);
+		await mode.sessionManager.appendMessage({ role: "user", content: "current input", timestamp: Date.now() });
+		mode.renderInitialMessages();
+		transcript.scrollToStart();
+		let screen = await settle(tui, () =>
+			mode.documentContainer.render(COLUMNS).some((line) => line.includes("SAVED-AFTER-2")),
+		);
+		assertLinesInPlace(
+			mode.documentContainer.render(COLUMNS).map((line) => stripTerminalSequences(line)),
+			[2],
+		);
+		mouse(terminal, "press", 0, rowOf(screen, "SAVED-AT-START"));
+		if (jump) transcript.scrollToEnd();
+		const reached = (lines: string[]) =>
+			lines.some((line) => line.includes("current input")) &&
+			(jump || lines.some((line) => line.includes("Answer 29")));
+		for (let step = 0; !reached(screen); step++) {
+			assert.ok(step < 200, `never reached the live rows:\n${screen.join("\n")}`);
+			if (!jump && !screen.some((line) => line.includes("current input"))) {
+				transcript.scrollBy(ROWS - 4);
+				await settle(tui, () => true);
+				mouse(terminal, "drag", 4, ROWS - 2);
+			}
+			screen = await settle(tui, () => true);
+		}
+		if (!jump) {
+			const shown = mode.documentContainer.render(COLUMNS).map((line) => stripTerminalSequences(line));
+			const at = (text: string) => shown.findIndex((line) => line.includes(text));
+			assert.equal(shown.filter((line) => line.includes("SAVED-AFTER-27")).length, 1, shown.join("\n"));
+			assert.ok(at("Answer 27") < at("SAVED-AFTER-27") && at("SAVED-AFTER-27") < at("Turn 28: check"));
+		}
+		const tail = rowOf(screen, "current input");
+		mouse(terminal, "drag", 60, tail);
+		mouse(terminal, "release", 60, tail);
+		for (let i = 0; i < 20 && copies.length === 0; i++) await nextTurn();
+		assert.equal(copies.length, 1, "the release did not copy");
+		tui.resetTextSelection();
+		return copies[0]!;
+	};
+	const mounted = await copy(false);
+	assertLinesInPlace(mounted.split("\n"), [2, 27]);
+	assert.equal(await copy(true), mounted, "a copy of released pages draws their saved lines too");
+});
+
+test("a compaction while the reader is above the end keeps the saved lines they see where they were, once (#5593)", async () => {
+	const { mode, tui, transcript } = await openResumedSession(100);
+	await saveLinesAfterAnswers(mode, [94, 95, 96]);
+	mode.renderInitialMessages();
+	tui.renderNow();
+	await fillIn(mode, 100);
+	tui.renderNow();
+	await settle(tui, () => true);
+	// Park with answer 95's saved line on screen.
+	for (let i = 0; i < 40 && !plainScreen(tui).some((line) => line.includes("SAVED-AFTER-95")); i++) {
+		transcript.scrollBy(-4);
+		await settle(tui, () => true);
+	}
+	const parked = plainScreen(tui);
+	assert.ok(
+		parked.some((line) => line.includes("SAVED-AFTER-95")),
+		parked.join("\n"),
+	);
+	assert.equal(transcript.isFollowingEnd, false);
+	await compactLive(mode, null);
+	tui.renderNow();
+	assert.deepEqual(plainScreen(tui), parked, "the reader keeps the rows and saved lines they were reading");
+	// The pages read past either edge of the kept rows show their own saved lines, none twice.
+	const inPlace = (turns: readonly number[]) => {
+		const document = mode.documentContainer.render(COLUMNS).map((line) => stripTerminalSequences(line));
+		const at = (text: string) => document.findIndex((line) => line.includes(text));
+		for (const turn of turns) {
+			const rows = document.filter((line) => line.includes(`SAVED-AFTER-${turn}`));
+			assert.equal(rows.length, 1, `answer ${turn}'s line appears once:\n${document.join("\n")}`);
+			assert.ok(at(`SAVED-AFTER-${turn}`) > at(`Answer ${turn}`));
+			assert.ok(at(`SAVED-AFTER-${turn}`) < at(`Turn ${turn + 1}: check`));
+		}
+	};
+	for (let i = 0; i < 40 && !heldTurns(mode).includes(90); i++) {
+		transcript.scrollBy(-ROWS);
+		await settle(tui, () => true);
+	}
+	inPlace([94, 95]);
+	// A newer page is read as the reader nears the new context.
+	for (let i = 0; i < 80 && !heldTurns(mode).includes(99); i++) {
+		if (!/Context cleared/.test(plainScreen(tui).join("\n"))) transcript.scrollBy(ROWS);
+		await settle(tui, () => true);
+	}
+	inPlace([95, 96]);
+});

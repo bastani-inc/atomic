@@ -85,6 +85,7 @@ import {
 	type StorageFailureCause,
 	StorageRollbackError,
 } from "./storage/errors.js";
+import { type ChatRecordOwner, chatEpoch, type SessionChatRecords } from "./storage/session/chat-records.js";
 import { ChildCatalog } from "./storage/session/child-catalog.js";
 import { validateSessionEntryStructure } from "./storage/session/entry-structure.js";
 import {
@@ -270,6 +271,7 @@ export class SessionManager {
 
 	private entrySeqs = new Map<string, number>();
 	private historyEpoch: string | undefined;
+	private chatEpoch: string | undefined;
 	private lastEntryId: string | null = null;
 	private recoveryState: SessionRecoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 	private admissionKeys = new SessionKeyDigests();
@@ -395,6 +397,7 @@ export class SessionManager {
 		this.admissionKeys = new SessionKeyDigests();
 		this.workflowStarts = {};
 		for (const [i, entry] of entries.entries()) updateWorkflowStarts(this.workflowStarts, entry, i + 1);
+		this.chatEpoch = chatEpoch(header);
 		this.omittedTotals = partial?.omitted;
 		this.branchLinks = partial?.links;
 		this.historyLoad = undefined;
@@ -510,6 +513,18 @@ export class SessionManager {
 			this.leafId = parent;
 		}
 		return true;
+	}
+
+	/** @internal The display reader's authority. A missing generation or unsupported adapter fails closed. */
+	chatRecordScope(): { store: SessionChatRecords; owner: ChatRecordOwner } | undefined {
+		const epoch = this.historyEpoch ?? this.chatEpoch;
+		if (!epoch || this.deletedFromStore || isProxy(this.store)) return undefined;
+		try {
+			const store = this.store.chatRecords;
+			return store ? { store, owner: { id: this.sessionId, epoch, file: this.sessionFile } } : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	getEntrySeq(id: string): number | undefined {

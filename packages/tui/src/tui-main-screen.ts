@@ -3,7 +3,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getTuiEnvValue } from "./env.ts";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
-import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
+import {
+	type Component,
+	type Container,
+	type ScrollbackFrameGate,
+	type ScrollbackFrameGateOptions,
+	type TUI,
+	TuiBase,
+	type TuiStopOptions,
+} from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
 /** OSC 133 prompt markers at the start of a rendered line. Fullscreen uses them for prompt navigation. */
@@ -11,6 +19,8 @@ const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 const MAX_RENDER_WRITE_CHARS = 1024 * 1024;
+/** The most rendered rows a scrollback frame gate holds, in UTF-8 bytes; a larger frame is written as rendered. */
+const MAX_HELD_FRAME_BYTES = 64 * 1024;
 
 /**
  * Streams terminal output in 1 MiB chunks so a full render never forms one string large enough to exceed V8's limit.
@@ -126,6 +136,56 @@ export interface TuiMainScreenRenderState {
 
 let debugLogAppends: Promise<void> = Promise.resolve();
 
+/** A frame's rendered rows, ready to compare with and write over the previous frame. */
+interface RenderedFrame {
+	readonly lines: string[];
+	readonly cursorPos: { row: number; col: number } | null;
+	readonly width: number;
+	readonly height: number;
+}
+
+/** What the previous frame left, read before rendering, as every frame reads it. */
+interface FrameStart {
+	readonly widthChanged: boolean;
+	readonly heightChanged: boolean;
+	readonly prevViewportTop: number;
+	readonly hardwareCursorRow: number;
+}
+
+interface HeldFrame {
+	readonly frame: RenderedFrame;
+	readonly start: FrameStart;
+	/** The gated container's first row in the frame, and the rows each of its children drew. */
+	readonly row: number;
+	readonly children: ReadonlyArray<{ component: Component; height: number }>;
+}
+
+interface FrameGateState {
+	container: Container | undefined;
+	readonly timeoutMs: number;
+	onRelease: (() => void) | undefined;
+	held: HeldFrame | undefined;
+	timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+function sameFrame(a: RenderedFrame, b: RenderedFrame): boolean {
+	if (a.width !== b.width || a.height !== b.height || a.lines.length !== b.lines.length) return false;
+	if (a.cursorPos?.row !== b.cursorPos?.row || a.cursorPos?.col !== b.cursorPos?.col) return false;
+	for (let i = 0; i < a.lines.length; i++) if (a.lines[i] !== b.lines[i]) return false;
+	return true;
+}
+
+/** Within the byte bound, and no row the differential writer would refuse: such a frame must throw where main throws. */
+function holdable(lines: readonly string[], width: number): boolean {
+	let bytes = 0;
+	for (const line of lines) {
+		bytes += Buffer.byteLength(line);
+		if (bytes > MAX_HELD_FRAME_BYTES) return false;
+	}
+	for (const line of lines) if (!isImageLine(line) && visibleWidth(line) > width) return false;
+	return true;
+}
+
 function appendDebugLog(logPath: string, data: string): void {
 	debugLogAppends = debugLogAppends.then(async () => {
 		try {
@@ -151,6 +211,39 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private hardwareCursorRow = 0;
 	private maxLinesRendered = 0;
 	private previousViewportTop = 0;
+	private frameGate: FrameGateState | undefined;
+
+	/**
+	 * Hold at most one frame that draws `container`, at most 64 KiB and `timeoutMs`, while a side lookup for its rows is
+	 * outstanding. Every frame still renders when it would without a gate. A frame that does not draw the container is
+	 * written at once. A second, different frame writes the held one first, then itself, in order, and releases the gate.
+	 * A frame over the byte bound, a frame with an overlay, an expired hold, a newer gate, a forced redraw and `stop()` do
+	 * the same: the held frame is written exactly as it was rendered, and rows the lookup returns later wait for a later
+	 * redraw.
+	 */
+	gateScrollbackFrame(container: Container, options: ScrollbackFrameGateOptions): ScrollbackFrameGate | undefined {
+		this.releaseFrameGate();
+		if (this.stopped) return undefined;
+		const state: FrameGateState = {
+			container,
+			timeoutMs: options.timeoutMs,
+			onRelease: options.onRelease,
+			held: undefined,
+			timer: undefined,
+		};
+		this.frameGate = state;
+		return {
+			settle: (update) => this.settleFrameGate(state, update),
+			release: () => {
+				if (this.frameGate === state) this.releaseFrameGate();
+			},
+		};
+	}
+
+	override stop(options: TuiStopOptions = {}): void {
+		this.releaseFrameGate();
+		super.stop(options);
+	}
 
 	captureRenderState(): TuiMainScreenRenderState {
 		return {
@@ -165,6 +258,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	}
 
 	restoreRenderState(state: TuiMainScreenRenderState): void {
+		this.releaseFrameGate();
 		this.previousLines = state.previousLines.map((line) => (isImageLine(line) ? "" : line));
 		this.previousKittyImageIds = new Set();
 		this.previousWidth = state.previousWidth;
@@ -176,6 +270,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	}
 
 	protected override resetRenderState(): void {
+		this.releaseFrameGate();
 		this.previousLines = [];
 		this.previousWidth = -1;
 		this.previousHeight = -1;
@@ -268,33 +363,164 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
-		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
+		let start = this.frameStart(width, height);
+
+		// Render all components to get new lines
+		// Resolve fake cursors before compositing so overlays and line slicing see plain SGR codes
+		// Drop OSC 133 markers: the terminal reads 133;A as a new shell prompt, which ends program status (OSC 7501)
+		let newLines: string[];
+		let cursorPos: { row: number; col: number } | null;
+		try {
+			newLines = this.resolveFakeCursors(this.render(width).map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
+
+			// Composite overlays into the rendered lines (before differential compare)
+			if (this.hasOverlayEntries) {
+				newLines = this.compositeOverlays(newLines, width, height);
+			}
+
+			// Extract cursor position before applying line resets (marker must be found first)
+			cursorPos = this.extractCursorPosition(newLines, height);
+
+			newLines = this.applyLineResets(newLines);
+		} catch (error) {
+			// A renderer threw: main had already written the frame that is held.
+			if (this.frameGate?.held) this.releaseFrameGate();
+			throw error;
+		}
+		const frame: RenderedFrame = { lines: newLines, cursorPos, width, height };
+		const gate = this.frameGate;
+		if (gate) {
+			const outcome = this.offerFrame(gate, frame, start);
+			if (outcome === "held") return;
+			// The held frame is now on screen, where main wrote it before rendering this one.
+			if (outcome === "wrote-held") start = this.frameStart(width, height);
+		}
+		this.writeFrame(frame, start);
+	}
+
+	private frameStart(width: number, height: number): FrameStart {
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
 		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
-		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
+		return {
+			widthChanged: this.previousWidth !== 0 && this.previousWidth !== width,
+			heightChanged,
+			prevViewportTop: heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop,
+			hardwareCursorRow: this.hardwareCursorRow,
+		};
+	}
+
+	/** Hold `frame`, or say whether the held frame was written ahead of it. */
+	private offerFrame(gate: FrameGateState, frame: RenderedFrame, start: FrameStart): "held" | "wrote-held" | "write" {
+		if (gate.held) {
+			// Nothing changed: main would only place the cursor where the held frame places it.
+			if (sameFrame(gate.held.frame, frame)) return "held";
+			this.releaseFrameGate();
+			return "wrote-held";
+		}
+		const drawn = gate.container && this.drawnRowsOf(gate.container, frame.width);
+		let height = 0;
+		for (const child of drawn?.children ?? []) height += child.height;
+		if (!drawn || height === 0) return "write";
+		const cursor = frame.cursorPos?.row;
+		if (
+			this.hasOverlayEntries ||
+			(cursor !== undefined && cursor >= drawn.row && cursor < drawn.row + height) ||
+			!holdable(frame.lines, frame.width)
+		) {
+			this.releaseFrameGate();
+			return "write";
+		}
+		gate.held = { frame, start, row: drawn.row, children: drawn.children };
+		gate.timer = setTimeout(() => {
+			if (this.frameGate === gate) this.releaseFrameGate();
+		}, gate.timeoutMs);
+		return "held";
+	}
+
+	private settleFrameGate(gate: FrameGateState, update: (() => void) | undefined): void {
+		if (this.frameGate !== gate) return;
+		const { held, container } = gate;
+		let frame = held?.frame;
+		try {
+			// Before any frame drew the container, the next frame draws what `update` leaves.
+			if (!held || !container) update?.();
+			else if (update) frame = this.recomposeHeldFrame(held, container, update);
+		} finally {
+			if (this.frameGate === gate) {
+				if (held && frame) gate.held = { ...held, frame };
+				this.releaseFrameGate();
+			}
+		}
+	}
+
+	/**
+	 * The held frame, with the container's children as `update` leaves them: rows the frame drew for children that remain,
+	 * and rows of the children `update` added. A child added since the frame was rendered waits for the next frame.
+	 */
+	private recomposeHeldFrame(held: HeldFrame, container: Container, update: () => void): RenderedFrame {
+		const { frame } = held;
+		const before = new Set(container.children);
+		update();
+		const drawn = new Map<Component, string[][]>();
+		let end = held.row;
+		for (const { component, height } of held.children) {
+			const rows = frame.lines.slice(end, end + height);
+			const kept = drawn.get(component);
+			if (kept) kept.push(rows);
+			else drawn.set(component, [rows]);
+			end += height;
+		}
+		const lines = frame.lines.slice(0, held.row);
+		for (const child of container.children) {
+			const rows =
+				drawn.get(child)?.shift() ?? (before.has(child) ? undefined : this.finishRows(child.render(frame.width)));
+			if (rows) for (const line of rows) lines.push(line);
+		}
+		const moved = lines.length - end;
+		for (let i = end; i < frame.lines.length; i++) lines.push(frame.lines[i]!);
+		const cursorPos =
+			frame.cursorPos && frame.cursorPos.row >= end
+				? { row: frame.cursorPos.row + moved, col: frame.cursorPos.col }
+				: frame.cursorPos;
+		return { lines, cursorPos, width: frame.width, height: frame.height };
+	}
+
+	/** The per-line treatment a rendered frame gets, for rows that join a frame which was already rendered. */
+	private finishRows(rows: string[]): string[] {
+		return this.applyLineResets(this.resolveFakeCursors(rows.map((line) => line.replace(OSC133_ZONE_PREFIX, ""))));
+	}
+
+	private endFrameGate(gate: FrameGateState): void {
+		if (gate.timer) clearTimeout(gate.timer);
+		gate.timer = undefined;
+		gate.held = undefined;
+		gate.container = undefined;
+	}
+
+	/** Write a held frame exactly as it was rendered, and end the gate. */
+	private releaseFrameGate(): void {
+		const gate = this.frameGate;
+		if (!gate) return;
+		this.frameGate = undefined;
+		const held = gate.held;
+		const onRelease = gate.onRelease;
+		gate.onRelease = undefined;
+		this.endFrameGate(gate);
+		if (held && !this.stopped) this.writeFrame(held.frame, held.start);
+		onRelease?.();
+	}
+
+	private writeFrame(frame: RenderedFrame, start: FrameStart): void {
+		const { lines: newLines, cursorPos, width, height } = frame;
+		const { widthChanged, heightChanged } = start;
+		let prevViewportTop = start.prevViewportTop;
 		let viewportTop = prevViewportTop;
-		let hardwareCursorRow = this.hardwareCursorRow;
+		let hardwareCursorRow = start.hardwareCursorRow;
 		const computeLineDiff = (targetRow: number): number => {
 			const currentScreenRow = hardwareCursorRow - prevViewportTop;
 			const targetScreenRow = targetRow - viewportTop;
 			return targetScreenRow - currentScreenRow;
 		};
-
-		// Render all components to get new lines
-		// Resolve fake cursors before compositing so overlays and line slicing see plain SGR codes
-		// Drop OSC 133 markers: the terminal reads 133;A as a new shell prompt, which ends program status (OSC 7501)
-		let newLines = this.resolveFakeCursors(this.render(width).map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
-
-		// Composite overlays into the rendered lines (before differential compare)
-		if (this.hasOverlayEntries) {
-			newLines = this.compositeOverlays(newLines, width, height);
-		}
-
-		// Extract cursor position before applying line resets (marker must be found first)
-		const cursorPos = this.extractCursorPosition(newLines, height);
-
-		newLines = this.applyLineResets(newLines);
-
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;

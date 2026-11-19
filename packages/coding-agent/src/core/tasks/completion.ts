@@ -82,6 +82,11 @@ export type TaskCompletionNotice = {
 	requestedModel?: string;
 	/** The notice's line; notices saved by earlier versions lack it and show their title. */
 	line?: TaskNoticeLine;
+	/**
+	 * The id the notice's resume call names, for a subagent that stays resumable; the expanded card shows it. Notices
+	 * saved by earlier versions lack it.
+	 */
+	resumeId?: string;
 };
 
 export function completionTitleText(text: string): string {
@@ -187,7 +192,7 @@ function completionExcerpt(
 export function taskCompletionNotice(
 	envelope: TaskCompletionEnvelope,
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking"> &
-		Partial<Pick<TaskRecord, "requestedModel" | "metrics">>,
+		Partial<Pick<TaskRecord, "requestedModel" | "metrics" | "launchOperationId">>,
 	output?: string,
 	omissions?: readonly OmissionSpan[],
 ): TaskCompletionNotice {
@@ -196,6 +201,7 @@ export function taskCompletionNotice(
 	const preview = [envelope.result.kind === "failed" ? envelope.result.message : "", output ?? ""]
 		.filter(Boolean)
 		.join("\n");
+	const resumable = noticeResumeId(envelope, task);
 	return {
 		title:
 			formatTaskCompletion(envelope, task).split("\n")[0] + (exitCode === undefined ? "" : ` · exit ${exitCode}`),
@@ -211,6 +217,7 @@ export function taskCompletionNotice(
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
 		line: taskNoticeLine(envelope, task),
+		...(resumable === undefined ? {} : { resumeId: resumable }),
 	};
 }
 
@@ -334,11 +341,65 @@ export function releasedWaitingTools(result: TaskResult): string | undefined {
  * The id a subagent resume names: the child id the agent launched under. A resumed child's launch operation appends
  * `:resume:<id>` to it. Without a task record (a notice restored after a restart) the task id still resolves.
  */
-function resumeId(envelope: TaskCompletionEnvelope, task?: Partial<Pick<TaskRecord, "launchOperationId">>): string {
+export function subagentResumeId(taskId: string, task?: Partial<Pick<TaskRecord, "launchOperationId">>): string {
 	const operation = task?.launchOperationId;
-	if (!operation) return envelope.taskId;
+	if (!operation) return taskId;
 	const suffix = operation.indexOf(":resume:");
 	return suffix > 0 ? operation.slice(0, suffix) : operation;
+}
+
+function resumeId(envelope: TaskCompletionEnvelope, task?: Partial<Pick<TaskRecord, "launchOperationId">>): string {
+	return subagentResumeId(envelope.taskId, task);
+}
+
+/**
+ * The id a subagent's notice names in its resume call, or undefined when it names none: a subagent that finished, or
+ * that a pause or quit stopped. {@link formatTaskCompletion} names the call under the same conditions.
+ */
+function noticeResumeId(
+	envelope: TaskCompletionEnvelope,
+	task?: Partial<Pick<TaskRecord, "kind" | "launchOperationId">>,
+): string | undefined {
+	if ((task?.kind ?? envelope.taskKind) !== "agent" || envelope.interruptedByRestart === true) return undefined;
+	return resumableSubagentResult(envelope.result) ? resumeId(envelope, task) : undefined;
+}
+
+/**
+ * Whether a subagent that settled with `result` stays resumable from its own session: it finished, completed or
+ * failed, or a pause or quit stopped it. A kill ends it for good, a released one wakes by itself, and any other stop
+ * may have ended it with its owner, so none of those reads as resumable.
+ */
+export function resumableSubagentResult(result: TaskResult): boolean {
+	return result.kind !== "cancelled" || isResumableStop(result);
+}
+
+const supersededInList = new WeakMap<readonly TaskRecord[], ReadonlySet<TaskId>>();
+
+/**
+ * The id `/tasks` shows for a settled subagent that stays resumable, the id its notice's resume call names. With the
+ * list the task is shown in, only the subagent's latest attempt there names it: an attempt a resume continued does not.
+ */
+export function settledTaskResumeId(
+	task: Pick<TaskRecord, "kind" | "execution" | "launchOperationId" | "ref">,
+	tasks?: readonly TaskRecord[],
+): string | undefined {
+	if (task.kind !== "agent" || task.execution.kind !== "settled") return undefined;
+	if (!resumableSubagentResult(task.execution.result)) return undefined;
+	if (tasks !== undefined) {
+		// Each row of a list asks: work it out once per list, not once per row.
+		let superseded = supersededInList.get(tasks);
+		if (superseded === undefined) {
+			superseded = supersededSettledAttempts(tasks);
+			supersededInList.set(tasks, superseded);
+		}
+		if (superseded.has(task.ref.taskId)) return undefined;
+	}
+	return subagentResumeId(task.ref.taskId, task);
+}
+
+/** The sentence that tells how to continue a finished subagent: its exact resume call. */
+export function finishedSubagentResumeText(id: string): string {
+	return `Resume it with subagent({ action: "resume", id: "${id}", message: "…" }) to continue it with a follow-up.`;
 }
 
 /** Human/model-facing notice; the envelope remains the structured delivery identity. */
@@ -348,6 +409,8 @@ export function formatTaskCompletion(
 		Partial<Pick<TaskRecord, "launchOperationId" | "model" | "requestedModel">>,
 	output?: string,
 	omissions?: readonly OmissionSpan[],
+	/** The Intercom name of the subagent, when its notice knows it. */
+	intercomTarget?: string,
 ): string {
 	const kind = task?.kind ?? envelope.taskKind;
 	const label =
@@ -372,6 +435,8 @@ export function formatTaskCompletion(
 			? cancelReasonText(result)
 			: undefined;
 	const interruptedByRestart = envelope.interruptedByRestart === true;
+	// A subagent that completed or failed keeps its session: resume continues it with a follow-up.
+	const finishedAgent = kind === "agent" && result.kind !== "cancelled" && !interruptedByRestart;
 	const status = waitingOn
 		? `released while waiting on ${waitingOn}`
 		: interruptedByRestart
@@ -424,7 +489,9 @@ export function formatTaskCompletion(
 							? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
 							: timedOut
 								? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
-								: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+								: finishedAgent
+									? `This execution has ended. Do not restart it merely to retrieve its result. ${finishedSubagentResumeText(resumeId(envelope, task))}${intercomTarget ? ` Once resumed, it takes Intercom messages again as ${completionTitleText(intercomTarget)}.` : ""} The user can inspect retained output with /tasks.`
+									: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }

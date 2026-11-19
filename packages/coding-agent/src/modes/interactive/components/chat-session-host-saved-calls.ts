@@ -6,6 +6,7 @@ import {
 	callsAwaitingLaterResults,
 	endsAwaitedResults,
 	isResultWithoutCall,
+	isTaskDisplayLine,
 	settleUnansweredCalls,
 	type ToolChatEntry,
 } from "./chat-message-renderer.ts";
@@ -108,7 +109,12 @@ export class SavedPageCalls<TExtraEntry extends ChatTranscriptEntryLike> {
 	}
 
 	private isMessageEntry(entry: ChatSessionHostEntry<TExtraEntry>): entry is ChatMessageEntry {
-		return !this.state.extraEntries.includes(entry as TExtraEntry) && "kind" in entry && entry.kind !== "task";
+		return (
+			!this.state.extraEntries.includes(entry as TExtraEntry) &&
+			"kind" in entry &&
+			entry.kind !== "task" &&
+			!isTaskDisplayLine(entry)
+		);
 	}
 
 	private lastIndexOf(record: PageCalls<ChatSessionHostEntry<TExtraEntry>>): number {

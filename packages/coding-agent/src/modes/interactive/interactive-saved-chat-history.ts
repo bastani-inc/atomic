@@ -1,5 +1,6 @@
 import {
 	type Component,
+	Container,
 	type HistoryLeaf,
 	type HistoryRowsBlock,
 	type ScrollView,
@@ -15,6 +16,8 @@ import type {
 } from "../../core/storage/session/types.js";
 import { rowSource, savedRowKey, savedSeqOf } from "../../core/tasks/transcript-origin.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
+import { ChatReaderLayout, chatDecorationRow } from "./chat-reader-layout.js";
+import { type ChatPageDecorations, readMountedAnchors, sessionChatMount } from "./chat-reader-records.js";
 import { parkedRun } from "./components/parked-rows.ts";
 import { SavedRendererInstances } from "./components/saved-renderer-instances.js";
 
@@ -34,7 +37,34 @@ type Draw = (
 	exceptions: SavedRendererInstances,
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 	copy?: SavedCopyDraw,
+	records?: SavedPageRecords,
 ) => Component[];
+
+/** The saved reader-only lines of one page's entries, read with the page and drawn with it, as the whole chat
+ * draws them. `root`: the page starts the conversation, so it also shows what was saved before any entry. */
+export interface SavedPageRecords {
+	readonly root: boolean;
+	readonly data: ChatPageDecorations;
+}
+
+/** Read the saved lines of a page's entries with the page. They are not cached: they leave with its rows. */
+async function readPageRecords(
+	mode: InteractiveModeBase,
+	manager: SessionManager,
+	entries: SessionEntry[],
+	root: boolean,
+): Promise<SavedPageRecords | undefined> {
+	if (mode.sessionManager !== manager || entries.length === 0) return undefined;
+	const mount = sessionChatMount(mode, manager);
+	if (!mount) return undefined;
+	const positions = new ChatReaderLayout(entries, new Container(), { root });
+	const data = await readMountedAnchors(
+		{ scope: mount.scope, present: mount.present, records: new Map() },
+		positions.anchors(),
+		positions.orderTargets(),
+	);
+	return data ? { root, data } : undefined;
+}
 
 /** Saved entries drawn for a copy, not mounted: where each row belongs, and the reads its edge cards still need. */
 export interface SavedCopyDraw {
@@ -211,6 +241,8 @@ export interface ParkedViewport {
 	readonly adopted: readonly Component[];
 	/** The adopted rows by saved row key, `${seq}:${part}`. */
 	readonly keys: ReadonlyMap<string, Component>;
+	/** Anchors whose saved lines the kept rows show: the new context does not draw them again. */
+	readonly shownRecords?: ReadonlySet<string>;
 }
 
 /**
@@ -250,8 +282,14 @@ export function parkViewport(mode: InteractiveModeBase, context: readonly Sessio
 		message: isChatMessageComponent,
 	});
 	if (!run) return undefined;
-	const retired = run.retired.filter((child) => !fixed.has(child));
-	const kept = run.adopted.filter((child) => !fixed.has(child));
+	const retired = withRecordRows(
+		children,
+		run.retired.filter((child) => !fixed.has(child)),
+	);
+	const kept = withRecordRows(
+		children,
+		run.adopted.filter((child) => !fixed.has(child)),
+	);
 	const adopted = new Map<string, Component>();
 	for (const child of kept) {
 		const key = savedRowKey(child);
@@ -264,11 +302,45 @@ export function parkViewport(mode: InteractiveModeBase, context: readonly Sessio
 	}
 	mounts.get(mode)?.keep(moving);
 	for (const child of moving) chat.removeChild(child);
+	const shown = new Set<string>();
+	for (const child of [...retired, ...kept]) {
+		const record = chatDecorationRow(child);
+		if (record) shown.add(record.id);
+	}
 	return {
 		parked: retired.length ? { rows: retired, first: run.first, last: run.last } : undefined,
 		adopted: kept,
 		keys: adopted,
+		shownRecords: shown,
 	};
+}
+
+/**
+ * The rows of one part of a parked view with the reader-only lines that belong to them: a line drawn after one of
+ * their rows, including those just below the last one, stays with them. Any other line in the part belongs to the
+ * rows next to it, which are drawn again past an edge or by the new context, with that line.
+ */
+function withRecordRows(children: readonly Component[], part: readonly Component[]): Component[] {
+	if (!part.length) return [];
+	const rows = new Set(part.filter((child) => !chatDecorationRow(child)));
+	const keeps = (child: Component, previous: Component | undefined) => {
+		const record = chatDecorationRow(child)!;
+		return record.after ? rows.has(record.after) : previous !== undefined && rows.has(previous);
+	};
+	const result: Component[] = [];
+	let previous: Component | undefined;
+	for (const child of part) {
+		if (!chatDecorationRow(child)) previous = child;
+		else if (!keeps(child, previous)) continue;
+		result.push(child);
+	}
+	const last = part.at(-1)!;
+	for (let i = children.indexOf(last) + 1; i < children.length; i++) {
+		const child = children[i]!;
+		if (!chatDecorationRow(child) || !keeps(child, previous)) break;
+		result.push(child);
+	}
+	return result;
 }
 
 function entryForDisplay(item: SessionHistoryItem): SessionEntry {
@@ -285,10 +357,16 @@ function entryForDisplay(item: SessionHistoryItem): SessionEntry {
 			};
 }
 
+interface VisiblePage {
+	readonly page: SessionHistoryPage;
+	readonly records?: SavedPageRecords;
+}
+
 async function readVisiblePage(
+	mode: InteractiveModeBase,
 	manager: SessionManager,
 	options: SessionHistoryReadOptions,
-): Promise<SessionHistoryPage | undefined> {
+): Promise<VisiblePage | undefined> {
 	const read = manager.readHistory(options);
 	let page: SessionHistoryPage | undefined;
 	try {
@@ -297,7 +375,12 @@ async function readVisiblePage(
 	} finally {
 		await read.return();
 	}
-	return page && withOversizedToolResults(manager, page, options.signal);
+	if (!page) return undefined;
+	page = await withOversizedToolResults(manager, page, options.signal);
+	options.signal?.throwIfAborted();
+	// The page's saved lines arrive with it, so it is drawn once, with each line where the whole chat shows it.
+	const records = await readPageRecords(mode, manager, page.items.map(entryForDisplay), page.items[0]?.seq === 1);
+	return { page, records };
 }
 
 /** Network I/O owns only its abort signal and a weak return address, not the terminal and every rendered row. */
@@ -306,11 +389,11 @@ function requestPage(
 	signal: AbortSignal,
 	direction: Direction,
 	range: { readonly from: number; readonly to: number },
-	read: Promise<SessionHistoryPage | undefined>,
+	read: Promise<VisiblePage | undefined>,
 ): void {
 	void read.then(
 		(page) => {
-			if (!signal.aborted) owner.deref()?.publish(direction, page, range);
+			if (!signal.aborted) owner.deref()?.publish(direction, page?.page, range, page?.records);
 		},
 		(error) => {
 			if (!signal.aborted) owner.deref()?.failed(error);
@@ -389,6 +472,13 @@ class SavedChatHistory {
 			if (!alive()) throw closed();
 			const { items } = await withOversizedToolResults(this.manager, page, signal);
 			if (!alive()) throw closed();
+			const records = await readPageRecords(
+				this.mode,
+				this.manager,
+				items.map(entryForDisplay),
+				items[0]?.seq === 1,
+			);
+			if (!alive()) throw closed();
 			const first = items[0]?.seq,
 				end = items.at(-1)?.seq;
 			if (first === undefined || end === undefined) continue;
@@ -409,6 +499,7 @@ class SavedChatHistory {
 				this.exceptions,
 				undefined,
 				copy,
+				records,
 			);
 			try {
 				await copy.settled;
@@ -453,7 +544,7 @@ class SavedChatHistory {
 			controller.signal,
 			direction,
 			request,
-			readVisiblePage(this.manager, { ...request.options, adjacent: true, signal: controller.signal }),
+			readVisiblePage(this.mode, this.manager, { ...request.options, adjacent: true, signal: controller.signal }),
 		);
 	}
 
@@ -538,6 +629,7 @@ class SavedChatHistory {
 		direction: Direction,
 		page: SessionHistoryPage | undefined,
 		range: { readonly from: number; readonly to: number },
+		records?: SavedPageRecords,
 	): void {
 		this.pending = undefined;
 		const at = this.chat.children.indexOf(this.marker);
@@ -549,6 +641,8 @@ class SavedChatHistory {
 			page.items.map((item) => item.seq),
 			this.exceptions,
 			page.adjacent,
+			undefined,
+			records,
 		);
 		const mounted: MountedPage = {
 			children,

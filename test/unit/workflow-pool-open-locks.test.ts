@@ -65,6 +65,22 @@ test("a worker opens the pool's session store without a write transaction once i
 	assert.equal(writes(), 0, "opening and reading the store took the write lock");
 });
 
+test("a pool's sessions in a local libSQL journal save no reader-only chat records; in a SQLite journal they do (#5682)", async () => {
+	// @libsql/client waits for another process's write lock on the calling thread, even to begin a transaction: a saved
+	// diagnostic there would stop a pooled stage's event loop where main writes nothing for it.
+	const libsqlSessions = await openPoolSessions(sqlPoolStorage(await sharedJournal())!);
+	cleanups.push(() => libsqlSessions.close());
+	assert.equal(libsqlSessions.chatRecords, undefined);
+
+	const directory = makeLibsqlDirectory("pool-chat-records-");
+	cleanups.push(() => removeLibsqlDirectory(directory));
+	const sqlite = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
+	cleanups.push(() => sqlite.close());
+	const sqliteSessions = await openPoolSessions(sqlPoolStorage(sqlite)!);
+	cleanups.push(() => sqliteSessions.close());
+	assert.ok(sqliteSessions.chatRecords);
+});
+
 test("a worker opens the pool's queue without a write transaction once its tables exist (#4768)", async () => {
 	const journal = await sharedJournal();
 	// The first open creates the queue's tables, under the write lock.

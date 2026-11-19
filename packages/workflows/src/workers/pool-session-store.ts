@@ -74,6 +74,10 @@ export async function openPoolSessions(storage: SqlPoolStorage): Promise<Session
 		transaction: (body) => storage.transaction(body),
 		close: async () => {},
 	};
+	// Over a local libSQL journal every write waits for another process's lock on the calling thread: the sessions store
+	// then saves no reader-only chat records, as on that database itself (#5682).
+	if (storage.locksOnThread)
+		Object.defineProperty(database, Symbol.for("atomic.storage.locks-on-thread.v1"), { value: true });
 	const { StorageProvider } = await import("@bastani/atomic/storage");
 	return new StorageProvider().openSessionStore(
 		{ kind: "database", database, prefix },

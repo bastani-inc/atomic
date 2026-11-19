@@ -1,12 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { BigIntStats } from "node:fs";
 import { isProxy } from "node:util/types";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
+import type { SessionHeader } from "../session-manager-types.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
+import {
+	type ChatPosition,
+	type ChatRecordOwner,
+	chatPosition,
+	type SessionChatRecords,
+} from "../storage/session/chat-records.js";
 import { chunkedToolResult, chunkedToolResultEntry } from "../storage/session/chunked-tool-result.js";
-import { transcriptCursorWithin } from "../storage/session/history-pages.js";
+import { historyPageGeneration, transcriptCursorWithin } from "../storage/session/history-pages.js";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
 import { readTaskOutputTail } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
@@ -24,6 +32,13 @@ import {
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
 import { loadArchiveSnapshot } from "./task-archive-snapshot.ts";
+import {
+	bindTaskChatPage,
+	type CaptureTaskChatFile,
+	captureTaskChatFile,
+	chatPageRequest,
+	taskChatPage,
+} from "./task-chat-records.js";
 import type { FileTaskPage } from "./task-file-history.js";
 import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPageWithCuts } from "./transcript.js";
@@ -70,6 +85,7 @@ type ArchiveReader = (
 		identifyRow?: (generation: string, row: number) => string | undefined,
 	) => PageResult | Promise<PageResult>,
 	loadSnapshot: typeof loadArchiveSnapshot,
+	captureFile?: CaptureTaskChatFile,
 ) => Promise<PageResult>;
 export interface FileArchive {
 	readonly path: string;
@@ -249,6 +265,17 @@ export function readTaskPageForView(
 		: cursor === undefined
 			? read.call(source, id)
 			: read.call(source, id, cursor);
+}
+/** A page a chat shows: the native projection also says where its displayed records came from. The source's own
+ * transcript API keeps its synchronous/rejection behavior and its data. */
+export function readTaskPageForChat(
+	view: object,
+	source: TaskViewSource,
+	id: TaskId,
+	cursor: string | undefined,
+	signal: AbortSignal,
+) {
+	return chatPageRequest.run({ view: new WeakRef(view) }, () => readTaskPageForView(source, id, cursor, signal));
 }
 const cancellableDetails = new WeakSet<TaskViewSource["taskDetailText"]>();
 /** Pass cancellation only to a detail reader that accepts it. Old SDK readers see their original arguments. */
@@ -447,7 +474,11 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					savedTranscriptView(
 						session,
 						taskId,
-						(opts) => taskFilePages(file.path, file.sessionId, opts ?? {}),
+						(opts) =>
+							taskFilePages(file.path, file.sessionId, {
+								...(opts ?? {}),
+								...(chatPageRequest.getStore() ? { identify: true } : {}),
+							}),
 						cursor,
 						file,
 						signal,
@@ -817,12 +848,17 @@ async function savedTranscriptView(
 	// A cut inside one saved reply continues in the same saved entry: that is read as a page, as before.
 	if (boundary !== undefined && raw !== undefined && offset === undefined)
 		return savedBoundaryView(session, read, raw, scope, boundary === "c", file, signal);
+	const display = chatPageRequest.getStore();
+	// A chat shows the saved lines of the generation it reads: the live session's, the store page's, or the file's.
+	const liveScope = display && session.chatSession?.sessionManager?.chatRecordScope?.();
+	const captureFile = display && !liveScope && file ? await captureTaskChatFile(file.path, file.sessionId) : undefined;
 	for await (const page of read({
 		...(raw === undefined ? { direction: "backward" as const } : { cursor: raw }),
 		adjacent: true,
 		...(signal ? { signal } : {}),
 	})) {
 		signal?.throwIfAborted();
+		if (display) display.scope = liveScope ?? pageChatScope(page, captureFile);
 		const settled = new Map<number, Entries[number]>();
 		for (const item of page.items) {
 			if ("entry" in item) continue;
@@ -892,6 +928,7 @@ async function savedTranscriptView(
 			undefined,
 			{
 				storedRows: entries.length,
+				startsHistory: !(page.adjacent ? page.adjacent.older : page.nextCursor),
 				origin(row, message, fragment) {
 					const seq = page.items[row]?.seq;
 					if (!file && seq !== undefined) noteSavedSeq(message, seq);
@@ -938,6 +975,8 @@ async function savedTranscriptView(
 			};
 			const fragments = taskTranscriptFragments(result);
 			if (fragments) bindTaskTranscriptFragments(displayed, fragments);
+			const chatPage = taskChatPage(result);
+			if (chatPage) bindTaskChatPage(displayed, chatPage);
 			return displayed;
 		}
 		offset = undefined;
@@ -948,6 +987,30 @@ async function savedTranscriptView(
 	return { ok: false, error: { message: "Transcript unavailable" } };
 }
 
+type TaskChatScope = { store: SessionChatRecords; owner: ChatRecordOwner };
+/** The reader-only records of the stored generation a saved page was read from, if its store keeps any. */
+function pageChatScope(
+	page: object,
+	captureFile: ((header: SessionHeader, stats: BigIntStats) => void) | undefined,
+): TaskChatScope | undefined {
+	if ("file" in page) {
+		const identity = (page as FileTaskPage).identity;
+		const display = chatPageRequest.getStore();
+		if (!identity || !captureFile || !display) return undefined;
+		display.scope = undefined;
+		captureFile(identity.header, identity.stats);
+		return display.scope;
+	}
+	const generation = historyPageGeneration(page);
+	if (!generation) return undefined;
+	try {
+		const store = generation.store.chatRecords;
+		return store ? { store, owner: { id: generation.sessionId, epoch: generation.epoch } } : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** A record's ordinal identifies it within a file generation, not across a replacement of that file. */
 function readArchivedPage(
 	session: TaskTranscriptSource,
@@ -955,31 +1018,35 @@ function readArchivedPage(
 	cursor: string | undefined,
 	read: ArchiveReader,
 ): Promise<PageResult> {
-	return read((entries, storedRows, generation, identifyRow) => {
-		const records: { row: number; notice: NoticePosition }[] = [];
-		const page = transcriptView(session, taskId, entries, cursor, {
-			storedRows,
-			collect: (row, notice) => records.push({ row, notice }),
-		});
-		if (!records.length) return page;
-		return generation().then((key) => {
-			let missing = key === undefined;
-			if (key !== undefined) {
-				for (const { row, notice } of records) {
-					const record = identifyRow ? identifyRow(key, row) : key;
-					if (record === undefined) missing = true;
-					else notice.occurrence = `${record}:${row}`;
+	return read(
+		(entries, storedRows, generation, identifyRow) => {
+			const records: { row: number; notice: NoticePosition }[] = [];
+			const page = transcriptView(session, taskId, entries, cursor, {
+				storedRows,
+				collect: (row, notice) => records.push({ row, notice }),
+			});
+			if (!records.length) return page;
+			return generation().then((key) => {
+				let missing = key === undefined;
+				if (key !== undefined) {
+					for (const { row, notice } of records) {
+						const record = identifyRow ? identifyRow(key, row) : key;
+						if (record === undefined) missing = true;
+						else notice.occurrence = `${record}:${row}`;
+					}
 				}
-			}
-			if (missing) {
-				// Without a record identity keep both failures. An unsaved final answer still has its live identity.
-				const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
-				if (notices.length) bindTaskTranscriptFragments(page, { notices });
-				else fragmentsByResult.delete(page);
-			}
-			return page;
-		});
-	}, loadArchiveSnapshot);
+				if (missing) {
+					// Without a record identity keep both failures. An unsaved final answer still has its live identity.
+					const notices = fragmentsByResult.get(page)!.notices.filter((notice) => notice.occurrence !== "");
+					if (notices.length) bindTaskTranscriptFragments(page, { notices });
+					else fragmentsByResult.delete(page);
+				}
+				return page;
+			});
+		},
+		loadArchiveSnapshot,
+		chatPageRequest.getStore() ? captureTaskChatFile : undefined,
+	);
 }
 
 /** A raw item cursor names an occurrence in the window from which it was issued. A receipt-less custom source
@@ -1008,11 +1075,14 @@ function transcriptView(
 		storedRows: number;
 		collect: (row: number, notice: NoticePosition) => void;
 		origin?: (row: number, msg: AgentMessage, fragment: number) => void;
+		/** A saved page with no page before it: it shows the start of the conversation. */
+		startsHistory?: boolean;
 	},
 	window?: Parameters<typeof taskTranscriptPageWithCuts>[5],
 ): TaskViewResult<TaskTranscriptView> {
 	let fromEarlier: string | undefined;
 	let intoLater: string | undefined;
+	let slice: { readonly start: number; readonly end: number; readonly total: number } | undefined;
 	const page = taskTranscriptPageWithCuts(
 		taskId,
 		session.getSessionId(),
@@ -1022,7 +1092,13 @@ function transcriptView(
 			fromEarlier = first;
 			intoLater = last;
 		},
-		window,
+		window && {
+			...window,
+			located(start, end, total) {
+				slice = { start, end, total };
+				window.located(start, end, total);
+			},
+		},
 	);
 	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
 	const items = page.ok ? page.value.items : [];
@@ -1030,20 +1106,60 @@ function transcriptView(
 	const itemIds = new Set(items.map((item) => item.id));
 	let notices: NoticePosition[] | undefined;
 	let repeats: Map<string, number> | undefined;
+	const displayRequest = chatPageRequest.getStore();
+	const scope =
+		displayRequest &&
+		(displayRequest.scope ?? (!archive ? session.chatSession?.sessionManager?.chatRecordScope?.() : undefined));
+	// Saved history before a live window is read in pages of its own: the window owns rows from its start, and only
+	// the page that starts the conversation also owns what was shown before any entry.
+	const earlier = !window && session.readHistory ? session.getEarlierCursor?.() : undefined;
+	const first = window ? !slice || slice.start === 0 : page.ok && !page.value.nextCursor;
+	const owned =
+		scope && page.ok
+			? ownedRows(
+					taskId,
+					session.getSessionId(),
+					entries,
+					entryIds,
+					window ? slice !== undefined && slice.end < slice.total : cursor !== undefined,
+					intoLater,
+					first && (window ? archive?.startsHistory === true : earlier === undefined),
+					first,
+				)
+			: undefined;
+	const screen = scope &&
+		owned && {
+			scope,
+			// The first page also owns the start of the conversation, which holds what was shown before any entry.
+			positions: new Map<string, number>(owned.root ? [["", -1]] : []),
+			entries: owned.prefix,
+			prefix: owned.prefix.length,
+		};
 	let nextMessageIndex = 0;
 	const messages = entries.flatMap<AgentMessage>((entry, row) => {
 		const id = entry.id;
-		if (!entryIds.has(id)) return [];
+		const shown = entryIds.has(id);
+		const context = shown && entry.type !== "message" ? sessionEntryToContextMessages(entry) : undefined;
+		if (screen && owned.owns(entry, row) && (!archive || row < archive.storedRows) && id !== intoLater) {
+			screen.entries.push(chatPosition(entry));
+			// Its lines follow the last row it draws; a row the page never draws keeps the place before it.
+			screen.positions.set(id, nextMessageIndex - 1 + (shown ? (context?.length ?? 1) : 0));
+		}
+		if (!shown) return [];
 		// A live row keeps where its message was saved: the saved page that shows it again keeps its stateful renderer.
 		const seq = archive ? undefined : session.getEntrySeq?.(id);
-		const shown = projectEntry(entry, row);
-		if (seq !== undefined) for (const message of shown) noteSavedSeq(message, seq);
-		return shown;
+		const projected = projectEntry(entry, row, context);
+		if (seq !== undefined) for (const message of projected) noteSavedSeq(message, seq);
+		return projected;
 	});
-	function projectEntry(entry: (typeof entries)[number], row: number): AgentMessage[] {
+	function projectEntry(
+		entry: (typeof entries)[number],
+		row: number,
+		context: AgentMessage[] | undefined,
+	): AgentMessage[] {
 		const id = entry.id;
 		if (entry.type !== "message") {
-			const projected = sessionEntryToContextMessages(entry);
+			const projected = context ?? [];
 			nextMessageIndex += projected.length;
 			if (archive?.origin) for (const m of projected) archive.origin(row, m, 0);
 			return projected;
@@ -1088,10 +1204,7 @@ function transcriptView(
 	const activeToolStarts =
 		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
 	let nextCursor = page.ok ? page.value.nextCursor : undefined;
-	if (!nextCursor && !window && session.readHistory) {
-		const before = session.getEarlierCursor?.();
-		if (before) nextCursor = savedTaskScope(taskId, session.getSessionId()) + before + "~b";
-	}
+	if (!nextCursor && earlier) nextCursor = savedTaskScope(taskId, session.getSessionId()) + earlier + "~b";
 	const value: TaskTranscriptView = {
 		messages,
 		...(nextCursor !== undefined ? { nextCursor } : {}),
@@ -1101,5 +1214,62 @@ function transcriptView(
 	};
 	const result = { ok: true, value } as const;
 	if (notices) bindTaskTranscriptFragments(result, { notices });
+	if (screen) bindTaskChatPage(result, screen);
 	return result;
+}
+
+/**
+ * The source rows whose display-only records a task page draws: the rows it shows, except the start of a reply that
+ * ends on the later page, and each row no page shows after one of them (on the first page of `entries`, also before
+ * them all; `continues`: a later page of `entries` follows this one).
+ * A notice run that leads onto the page from an earlier one is kept as row-less positions, so an order edge saved at
+ * its first notice can be checked against the stored rows before that page is read.
+ */
+function ownedRows(
+	taskId: string,
+	sessionId: string,
+	entries: Entries,
+	entryIds: ReadonlySet<string>,
+	continues: boolean,
+	intoLater: string | undefined,
+	root: boolean,
+	fromStart = root,
+): { root: boolean; prefix: ChatPosition[]; owns: (entry: Entries[number], row: number) => boolean } | undefined {
+	const first = entries.findIndex((entry) => entryIds.has(entry.id));
+	if (first < 0) return undefined;
+	const drawn = (entry: Entries[number]) => taskTranscriptPageWithCuts(taskId, sessionId, [entry], undefined).ok;
+	const from = fromStart ? 0 : first;
+	let to = entries.length;
+	if (intoLater !== undefined) {
+		for (let row = first; row < entries.length; row++)
+			if (entries[row]!.id === intoLater) {
+				to = row;
+				break;
+			}
+	} else if (continues) {
+		let row = entries.length - 1;
+		while (row > first && !entryIds.has(entries[row]!.id)) row--;
+		for (row++; row < entries.length; row++)
+			if (drawn(entries[row]!)) {
+				to = row;
+				break;
+			}
+	}
+	const prefix: ChatPosition[] = [];
+	const start = chatPosition(entries[from]!);
+	if (!root && start.role !== "other") {
+		let parentId = start.parentId;
+		for (let row = from - 1; row >= 0; row--) {
+			const position = chatPosition(entries[row]!);
+			if (position.role !== "notice" || position.id !== parentId) break;
+			prefix.push(position);
+			parentId = position.parentId;
+		}
+		prefix.reverse();
+	}
+	return {
+		root,
+		prefix,
+		owns: (entry, row) => row >= from && row < to && (entryIds.has(entry.id) || !drawn(entry)),
+	};
 }

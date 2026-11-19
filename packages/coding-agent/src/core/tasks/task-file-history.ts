@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import type { BigIntStats } from "node:fs";
 import { type FileHandle, open, stat } from "node:fs/promises";
-import type { SessionEntry } from "../session-manager-types.ts";
+import type { SessionEntry, SessionHeader } from "../session-manager-types.ts";
 import { EntryTypeReader, JsonTextChecker } from "../storage/session/entry-type.js";
 import {
 	SESSION_HISTORY_PAGE_BYTES as BUDGET,
@@ -18,6 +19,8 @@ export interface FileTaskPage {
 	nextCursor?: string;
 	file: true;
 	generation: string;
+	/** The file's header and identity when the page was read, if asked for: what its reader-only records belong to. */
+	identity?: { readonly header: SessionHeader; readonly stats: BigIntStats };
 }
 type Span = { start: number; end: number; next: number };
 type FileCut = {
@@ -161,6 +164,7 @@ async function filePage(
 	metadataOnly = false,
 	expectedGeneration?: string,
 	entries = LIMIT,
+	identify = false,
 ): Promise<FileTaskPage> {
 	const source = digest(JSON.stringify([path, id]));
 	const cut = cursor === undefined ? undefined : decode(cursor, source);
@@ -291,12 +295,24 @@ async function filePage(
 				: position(low, lowAfter, false, top, "before");
 			const end = await file.stat({ bigint: true });
 			if (end.size !== stat.size || end.mtimeNs !== stat.mtimeNs || end.ctimeNs !== stat.ctimeNs) continue;
+			let identity: FileTaskPage["identity"];
+			if (identify && header.end <= BUDGET) {
+				try {
+					identity = {
+						header: JSON.parse((await lines.bytes(0, header.end)).toString("utf8")) as SessionHeader,
+						stats: stat,
+					};
+				} catch {
+					/* A header that cannot be read identifies no records. */
+				}
+			}
 			return {
 				file: true,
 				generation,
 				items,
 				adjacent: { current, older, newer },
 				nextCursor: backward ? older : newer,
+				...(identity ? { identity } : {}),
 			};
 		}
 		throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
@@ -317,6 +333,8 @@ export async function* taskFilePages(
 		detail?: { throughId?: string };
 		/** At most this many entries per page, never more than a page holds. */
 		limit?: number;
+		/** Also return the file's header and identity with each page. */
+		identify?: boolean;
 	},
 ): AsyncGenerator<FileTaskPage, void> {
 	let cursor = options.cursor;
@@ -333,6 +351,7 @@ export async function* taskFilePages(
 			options.metadataOnly,
 			options.expectedGeneration,
 			entries,
+			options.identify,
 		);
 		yield page;
 		if (!page.nextCursor) return;
