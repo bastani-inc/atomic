@@ -159,3 +159,27 @@ describe("a restored session keeps every recorded failure code", () => {
 		assert.equal(run.failureCode, undefined);
 	});
 });
+
+describe("a restored block", () => {
+	test("recorded without its disposition still reads as blocked: every run.blocked entry records an active block", () => {
+		const run = restore([
+			start,
+			stageStart,
+			{
+				id: "e3",
+				type: "workflow.run.blocked",
+				payload: {
+					runId: "r1",
+					failedStageId: "s1",
+					error: "the provider is overloaded",
+					failureKind: "provider",
+					failureRecoverability: "recoverable",
+					resumable: true,
+					ts: 3,
+				},
+			},
+		]);
+		assert.equal(run.failureDisposition, "active_blocked");
+		assert.equal(effectiveRunStatus(run), "blocked");
+	});
+});

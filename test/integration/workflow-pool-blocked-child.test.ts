@@ -24,7 +24,10 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-/** Two pools, the root's and its resume's, each starting a worker process that loads the packaged workflows runtime. */
+/**
+ * Two pools, the root's and its resume's, each starting a worker process that loads the packaged workflows runtime.
+ * Local worker pools run on Linux and macOS only; Windows refuses to start one.
+ */
 const POOL_TIMEOUT_MS = 180_000;
 
 beforeAll(async () => {
@@ -141,7 +144,7 @@ async function blockedPooledChild(
 }
 
 describe("a pooled child blocked on a recoverable failure (#5534)", () => {
-	test(
+	test.skipIf(process.platform === "win32")(
 		"whose woken stage cannot reopen its session store reads as blocked in the root's store, as the root does, and the graph's resume once the store is back continues the stage",
 		async () => {
 			const pooled = await blockedPooledChild("sessionBlockedChild");
@@ -184,7 +187,7 @@ describe("a pooled child blocked on a recoverable failure (#5534)", () => {
 		POOL_TIMEOUT_MS,
 	);
 
-	test(
+	test.skipIf(process.platform === "win32")(
 		"on its stage's provider outage reads as blocked in the root's store, and a resume after a restart once the provider is back runs it again, and only it",
 		async () => {
 			const pooled = await blockedPooledChild("providerBlockedChild", { completedFirst: true });
@@ -221,7 +224,7 @@ describe("a pooled child blocked on a recoverable failure (#5534)", () => {
 });
 
 describe("a pooled child that failed on its own logic", () => {
-	test(
+	test.skipIf(process.platform === "win32")(
 		"keeps its failure when the root resumes: only a block or a fault of the pool runs a child again",
 		async () => {
 			const pooled = await blockedPooledChild("failingChild");

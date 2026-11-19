@@ -2,7 +2,7 @@ import { resumableEntryFromHandle } from "../durable/backend.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { resumeAdmissionMark } from "../durable/run-claims.js";
 import { runNotFoundResumeResult } from "../durable/run-not-found.js";
-import { requireStoreDurableBackend } from "../durable/store-backend.js";
+import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { abortToolNode } from "../runs/background/quit-tool-node.js";
@@ -667,7 +667,10 @@ export async function workflowResumeAction(
 	const explicitTarget = args.runId?.trim();
 	// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
 	if (deps.admissionMark === undefined && explicitTarget !== undefined && explicitTarget.length > 0)
-		deps = { ...deps, admissionMark: resumeAdmissionMark(explicitTarget) };
+		deps = {
+			...deps,
+			admissionMark: resumeAdmissionMark(explicitTarget, availableStoreDurableBackend(store, explicitTarget)),
+		};
 	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
 		// #2603: resume prefixes must see both live and durable candidates before
 		// local precedence can select a run.
@@ -685,7 +688,11 @@ export async function workflowResumeAction(
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
-	if (deps.admissionMark === undefined) deps = { ...deps, admissionMark: resumeAdmissionMark(target.runId) };
+	if (deps.admissionMark === undefined)
+		deps = {
+			...deps,
+			admissionMark: resumeAdmissionMark(target.runId, availableStoreDurableBackend(store, target.runId)),
+		};
 	await deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
 	// so it cannot disagree with the resolved run; the old re-resolution branch

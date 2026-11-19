@@ -164,9 +164,9 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
-	const mark = deps.admissionMark ?? resumeAdmissionMark(workflowId);
 	resolveWorktreeSnapshotSettings(deps.baseRunOpts.snapshots, "sdk", "snapshots");
 	const backend = resumeBackend(deps, workflowId);
+	const mark = deps.admissionMark ?? resumeAdmissionMark(workflowId, backend);
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
 	let handle = backend.getWorkflow(id);
@@ -180,7 +180,7 @@ export async function resumeDurableWorkflow(
 		// is that replacement, or will be, not the attempt that failed or blocked, and the run reads as that attempt only
 		// until the replacement starts. The request waits for nothing and starts nothing (#5534).
 		if (hasResumeClaim(backend, id)) return pendingResumeResult(id);
-		if (resumedSince(id, mark)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
+		if (resumedSince(backend, id, mark)) return alreadyResumedResult(handle?.name ?? live?.name ?? id, id);
 		// The failure or block can reach a caller before the old attempt finishes its persistence and releases its
 		// lease: a blocked run's journal still says `running` until then. Wait for that attempt before admitting a
 		// replacement, then discard its now-stale catalog version.
@@ -214,9 +214,9 @@ export async function resumeDurableWorkflow(
 		return pendingResumeResult(id);
 	// Exactly one replacement per block or failure (#5534): of the requests that saw it, the first one here is admitted,
 	// in this turn, and every other one is told it was resumed, however long its own reads took.
-	if (resumedSince(id, mark)) return alreadyResumedResult(handle?.name ?? id, id);
+	if (resumedSince(backend, id, mark)) return alreadyResumedResult(handle?.name ?? id, id);
 	pending.add(id);
-	const admission = admitResume(id);
+	const admission = admitResume(backend, id);
 	// #5149: an abort releases the caller only until the executor is admitted; from then on the resume has succeeded.
 	let admitted = false;
 	const caller = new AbortController();

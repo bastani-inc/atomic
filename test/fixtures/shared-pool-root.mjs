@@ -18,6 +18,7 @@ const { run } = await load("../../packages/workflows/src/engine/run.ts");
 const { createJobTracker } = await load("../../packages/workflows/src/runs/background/job-tracker.ts");
 const { createStore } = await load("../../packages/workflows/src/shared/store.ts");
 const { effectiveRunStatus } = await load("../../packages/workflows/src/shared/returned-run-status.ts");
+const { parseWorkflowChildResult } = await load("../../packages/workflows/src/durable/workflow-child-result.ts");
 const { createRegistry } = await load("../../packages/workflows/src/workflows/registry.ts");
 const { loadWorkerWorkflow } = await load("../../packages/workflows/src/workers/definitions.ts");
 const { createStageControlRegistry } = await load("../../packages/workflows/src/runs/foreground/stage-control-registry.ts");
@@ -367,9 +368,23 @@ try {
 					workers: run.stages.map((stage) => stage.workerExecution?.worker ?? null),
 				}))
 			: undefined;
+	// And the child results this root's journal recorded at its child boundaries.
+	const boundaries =
+		scenario === "blocked"
+			? backend.listCheckpoints(ROOT).flatMap((checkpoint) => {
+					const terminal = checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "terminal";
+					const result = terminal ? parseWorkflowChildResult(checkpoint.output) : undefined;
+					return result === undefined ? [] : [{ workflow: result.workflow, status: result.status }];
+				})
+			: undefined;
 	writeFileSync(
 		join(directory, `outcome-${mode}.json`),
-		JSON.stringify({ ...record, children: outcomes, ...(views === undefined ? {} : { views }) }),
+		JSON.stringify({
+			...record,
+			children: outcomes,
+			...(views === undefined ? {} : { views }),
+			...(boundaries === undefined ? {} : { boundaries }),
+		}),
 	);
 } finally {
 	await backend.close();
