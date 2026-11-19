@@ -41,6 +41,7 @@ import {
 	renderChatSessionPendingMessages,
 	renderChatSessionUsage,
 	renderChatSessionWorkingStatus,
+	restoreChatSessionTokens,
 	setExpandedOverride,
 	transcriptCacheKey,
 	transcriptEntryName,
@@ -70,9 +71,10 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
+import { pagedNotices } from "./task-transcript-notices.ts";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
 import { isClickedGroup } from "./transcript-block-clicks.ts";
-import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
+import { type AgentTokenMeterSnapshot, type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -178,7 +180,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	handleTaskInput(data: string): boolean {
 		return this.taskInspector?.handleInput(data) === true;
 	}
-	appendMessages(messages: readonly AgentSnapshotMessage[]): void {
+	appendMessages(messages: readonly AgentSnapshotMessage[], settledTokens?: AgentTokenMeterSnapshot): void {
 		const hadFirstUser = this.state.seenFirstRawUser;
 		if (!hadFirstUser && messages.length > 0) {
 			const firstUser = firstRawUserExactText(messages);
@@ -191,6 +193,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (!hadFirstUser && this.state.seenFirstRawUser) {
 			syncFirstUserEntry(this.state);
 		}
+		if (settledTokens) restoreChatSessionTokens(this.state, settledTokens);
 	}
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
@@ -201,6 +204,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.state.firstUserEntryExactText = firstUser.exactText;
 		}
 		const previousCount = countableTranscriptLength(this.state);
+		const notices = pagedNotices.get(this);
+		if (notices?.card) this.state.assistantCard = notices.card;
 		this.state.liveChat.prependMessages(messages);
 		if (firstUser.seenUser || this.state.firstUserEntry === undefined) {
 			syncFirstUserEntry(this.state);
@@ -217,6 +222,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const firstUser = firstRawUserExactText(messages);
 		this.state.seenFirstRawUser = firstUser.seenUser;
 		this.state.firstUserEntryExactText = firstUser.exactText;
+		const notices = pagedNotices.get(this);
+		if (notices) pagedNotices.set(this.state.transcript, notices);
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
 		syncFirstUserEntry(this.state);
 		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
@@ -288,7 +295,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		let messages: readonly AgentSnapshotMessage[];
 		try {
 			const manager = await SessionManager.open(store, sessionId, undefined, { history: "tail" });
-			messages = repairOrphanToolResults(manager.buildSessionContext().messages, {
+			messages = repairOrphanToolResults(manager.buildSessionProjection("transcript").messages, {
 				repairTrailing: true,
 				...(inFlightToolCallIds === undefined ? {} : { inFlightToolCallIds }),
 			}) as readonly AgentSnapshotMessage[];
@@ -791,12 +798,17 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		messages: readonly MeteredRunMessage[],
 		streaming?: MeteredRunMessage,
 		turnStartedAt?: number,
+		requestSide?: boolean,
 	): void {
 		if (this.state.disposed) return;
 		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
-			this.state.workingRunMeter.resume(turnStartedAt ?? run.startedAt, run.settledTokens, run.requesting);
+			this.state.workingRunMeter.resume(
+				turnStartedAt ?? run.startedAt,
+				run.settledTokens,
+				requestSide ?? run.requesting,
+			);
 			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
 		}
 		if (this.state.workingMessage === undefined) {

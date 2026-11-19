@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { closeEach, withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import { dialectOf, type StorageDialect } from "./dialect.js";
-import type { StorageFailureCause } from "./errors.js";
+import { isStorageResponseRefusal, type StorageFailureCause, type StoragePayloadTooLargeError } from "./errors.js";
 import {
 	discoverLegacyJournal,
 	ensureRunJournalSchema,
@@ -243,16 +243,31 @@ interface UnreadableSource {
 	readonly oldFormat: boolean;
 }
 
+/** A named source kept open until the caller selects a run (or reports the original refusal). */
+interface RefusedCatalog {
+	readonly oldFormat: "refused";
+	readonly path: string;
+	readonly reader: SqliteDatabase;
+	readonly failure: StoragePayloadTooLargeError;
+}
+
 /**
  * Opens a journal file for an export and begins its read transaction; the reason when it cannot. `open` opens a
  * named selection's database instead, which is read without a transaction: its runs are each read whole.
  */
+function openExportSource(path: string, t: Tables, shardId: number): Promise<ExportSource | UnreadableSource>;
+function openExportSource(
+	path: string,
+	t: Tables,
+	shardId: undefined,
+	open: (() => Promise<SqliteDatabase>) | undefined,
+): Promise<ExportSource | UnreadableSource | RefusedCatalog>;
 async function openExportSource(
 	path: string,
 	t: Tables,
 	shardId: number | undefined,
 	open?: () => Promise<SqliteDatabase>,
-): Promise<ExportSource | UnreadableSource> {
+): Promise<ExportSource | UnreadableSource | RefusedCatalog> {
 	if (open === undefined && !existsSync(path))
 		return { path, reason: "the journal file no longer exists", oldFormat: false };
 	let database: SqliteDatabase;
@@ -272,7 +287,19 @@ async function openExportSource(
 			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}
-		const runs = await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} ORDER BY run_id`);
+		const request = database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} ORDER BY run_id`);
+		let runs: JournalRunTableRow[];
+		try {
+			runs = await request;
+		} catch (error) {
+			if (open === undefined || !isStorageResponseRefusal(error)) throw error;
+			return {
+				oldFormat: "refused",
+				path,
+				reader: database,
+				failure: error,
+			};
+		}
 		return {
 			path,
 			database,
@@ -284,6 +311,74 @@ async function openExportSource(
 	} catch (error) {
 		await database.close().catch(() => undefined);
 		return { path, reason: `the journal file cannot be read: ${(error as Error).message}`, oldFormat: false };
+	}
+}
+
+function singleExportId(ids: readonly string[] | undefined): string | undefined {
+	let selected: string | undefined;
+	let count = 0;
+	for (const id of ids ?? []) {
+		if (++count > 1) return undefined;
+		selected = id;
+	}
+	return selected;
+}
+
+function catalogRefusal({ path, failure }: RefusedCatalog): StorageTransferError {
+	return new StorageTransferError({ path, reason: `the journal file cannot be read: ${failure.message}` });
+}
+
+async function exportSelectedAfterRefusal(
+	refused: RefusedCatalog,
+	id: string,
+	options: WorkflowRunExportOptions,
+	directory: string,
+	t: Tables,
+): Promise<WorkflowRunExportReport | undefined> {
+	const { reader: database, path } = refused;
+	let refusedPoint: StoragePayloadTooLargeError | undefined;
+	const header = async <Row extends SqliteRow>(tx: SqliteExecutor, columns: string) => {
+		const version = await schemaVersion(tx, t);
+		if (!isReadableRunJournalVersion(version))
+			throw new StorageTransferError({ path, reason: `unsupported journal schema version ${String(version)}` });
+		const row = await tx.get<Row>(`SELECT ${columns} FROM ${t.runs} WHERE run_id = ?`, id).catch((error: unknown) => {
+			if (isStorageResponseRefusal(error)) refusedPoint = error;
+			throw error;
+		});
+		if (!row) throw new StorageTransferError({ path, id, reason: `run ${id} is not in this workflow journal` });
+		return row;
+	};
+	try {
+		const { run, events } = await database.transaction(
+			async (tx) => {
+				const run = await header<JournalRunTableRow>(tx, "*");
+				const events = await withJournalPayloads(
+					tx,
+					t.eventChunks,
+					await tx.all<JournalEventTableRow>(`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`, id),
+				);
+				return { run, events };
+			},
+			{ readOnly: true },
+		);
+		// Do not publish a run deleted or upgraded during recovery. The header body was already read with its events.
+		await database.transaction((tx) => header(tx, "1 AS found"), { readOnly: true });
+		// Only a complete, supported run reaches the caller's remaining selection options, outside the transaction.
+		let included = !options.unfinished || !isFinishedJournalStatus(run.status) ? [id] : [];
+		if (options.limit !== undefined) included = included.slice(0, options.limit);
+		if (included.length === 0) {
+			await mkdir(directory, { recursive: true });
+			return { written: [], unchanged: [], skipped: [] };
+		}
+		const file = transferFile(directory, id),
+			lines = exportLines(run, events, path);
+		await mkdir(directory, { recursive: true });
+		const outcome = await writeLinesAtomically(file, lines);
+		return { written: outcome === "written" ? [id] : [], unchanged: outcome === "written" ? [] : [id], skipped: [] };
+	} catch (error) {
+		// Only the confirmed header refusal goes back to the caller's close-before-diagnostic path.
+		if (refusedPoint !== undefined && error === refusedPoint) return undefined;
+		throw error;
 	}
 }
 
@@ -447,6 +542,7 @@ export async function exportWorkflowRuns(
 	const skipped: { path: string; runId?: string; reason: string }[] = [];
 	const sources = new ExportSources(t);
 	let single: ExportSource | undefined;
+	let refused: RefusedCatalog | undefined;
 	return withCleanup(
 		async () => {
 			const listed = new Map<string, { readonly source: ExportSource; readonly run: JournalRunTableRow }>();
@@ -460,6 +556,7 @@ export async function exportWorkflowRuns(
 						storage.kind === "database" ? storage.open : undefined,
 					);
 					if ("database" in opened) single = opened;
+					else if (opened.oldFormat === "refused") refused = opened;
 					// A named database that cannot be read fails the export: an empty export would pass for a backup.
 					else if (storage.kind === "database" && !opened.oldFormat)
 						throw new StorageTransferError({ path: opened.path, reason: opened.reason });
@@ -485,6 +582,17 @@ export async function exportWorkflowRuns(
 						if (!view.owners.has(run.run_id) && !listed.has(run.run_id)) listed.set(run.run_id, { source, run });
 			}
 			let selected = [...listed.values()];
+			if (refused !== undefined) {
+				const id = singleExportId(options.runs);
+				if (id !== undefined) {
+					const report = await exportSelectedAfterRefusal(refused, id, options, directory, t);
+					if (report !== undefined) return report;
+				}
+				const original = refused;
+				refused = undefined;
+				await original.reader.close().catch(() => undefined);
+				throw catalogRefusal(original);
+			}
 			if (options.runs !== undefined) {
 				for (const runId of options.runs) {
 					if (listed.has(runId)) continue;
@@ -539,6 +647,7 @@ export async function exportWorkflowRuns(
 		async () => {
 			await sources.close();
 			if (single !== undefined) await closeExportSource(single);
+			if (refused !== undefined) await refused.reader.close();
 		},
 	);
 }

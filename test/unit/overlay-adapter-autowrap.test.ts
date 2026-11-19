@@ -76,6 +76,9 @@ async function registerIsolatedTests(): Promise<void> {
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 
 	const retryStatus = await import("../../packages/coding-agent/src/core/session-retry-status.js");
+	const { AgentTokenMeter } = await import(
+		"../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js"
+	);
 	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
 	// Stage chats hand a click on a block to the shared block-click helpers.
 	const { repaintAfterSingleClick, rowsFrom } = await import(
@@ -90,6 +93,7 @@ async function registerIsolatedTests(): Promise<void> {
 	mock.module("@bastani/atomic", () => ({
 		...navKeys,
 		...retryStatus,
+		AgentTokenMeter,
 		repaintAfterSingleClick,
 		rowsFrom,
 		sliceHead,

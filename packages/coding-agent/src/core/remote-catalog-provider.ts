@@ -2,6 +2,7 @@ import {
 	type AnyModel,
 	getModelType,
 	isModelType,
+	type ModelsRefreshOptions,
 	type ModelsStoreEntry,
 	type ModelType,
 	type Provider,
@@ -15,9 +16,11 @@ import {
 import { VERSION } from "../config.js";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
+import { sessionLifecycleCreation } from "./session-lifecycle-scope.ts";
 
 /** Where Atomic refreshes its model catalog: models.dev's public `api.json`. Override with `ATOMIC_MODEL_CATALOG_URL`. */
 export const DEFAULT_CATALOG_BASE_URL = "https://models.dev";
+
 /** One catalog download's deadline, body included. The catalog is a few megabytes. */
 const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 15_000;
 export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -341,6 +344,22 @@ export function withPersonalizedCatalog(
  * Lists the models an account offers that `catalog` lacks, or undefined when the account's list
  * could not be read, which keeps the models saved before.
  */
+export interface AccountCatalogObservation {
+	missing: boolean;
+	publishing?: ModelsRefreshOptions;
+}
+
+// A borrowed refresh function must never retain the runtime, credentials, or session that observed it.
+let observations: WeakMap<NonNullable<Provider["refreshModels"]>, AccountCatalogObservation> | undefined;
+export function observeAccountCatalog(provider: Provider | undefined): AccountCatalogObservation | undefined {
+	const refresh = provider?.refreshModels;
+	if (!refresh) return undefined;
+	const observation = { missing: false };
+	observations ??= new WeakMap();
+	observations.set(refresh, observation);
+	return observation;
+}
+
 export type DiscoverModels = (
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
@@ -379,7 +398,7 @@ export function withDiscoveredModels(provider: Provider, discover: DiscoverModel
 		getModels: () => withDiscovered(provider.getModels()).filter((model) => isModelType(model, "chat")),
 		getAllModels: () => withDiscovered(catalogModels()),
 		refreshModelsAuth: "credential",
-		refreshModels: async (context) => {
+		refreshModels: async function refreshModels(context) {
 			const stored = context.stored;
 			const saved = (stored?.models ?? []).filter(
 				(model) => model.provider === provider.id && isDiscoveredModel(model),
@@ -392,6 +411,14 @@ export function withDiscoveredModels(provider: Provider, discover: DiscoverModel
 				!(await context.publish({
 					update: () => {
 						discovered = saved;
+						const observation = observations?.get(refreshModels);
+						if (observation) {
+							observation.missing = !context.allowNetwork && stored === undefined;
+							if (observation.missing && observation.publishing) {
+								const creation = sessionLifecycleCreation.getStore();
+								if (creation?.catalogRestore === observation.publishing) creation.copilotObservation = "absent";
+							}
+						}
 					},
 				}))
 			) {

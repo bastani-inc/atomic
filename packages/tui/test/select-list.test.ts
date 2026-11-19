@@ -152,6 +152,33 @@ describe("SelectList: the shared picker look (#5224)", () => {
 		assert.equal(last.trim(), "↑ 4 more · ↓ 3 more");
 	});
 
+	it("does not activate an abandoned press when the next click lands on the more indicator (#5693)", () => {
+		const list = new SelectList(items, 5, testTheme);
+		const chosen: string[] = [];
+		list.onSelect = (item) => chosen.push(item.value);
+		const send = (type: "press" | "drag" | "release" | "click", y: number) =>
+			list.handleMouse({
+				type,
+				y,
+				x: 8,
+				screenX: 8,
+				screenY: y,
+				button: "left",
+				height: 6,
+				width: 80,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			});
+		send("press", 4);
+		send("drag", 2);
+		send("release", 2);
+		assert.match(list.render(80)[5]!, /more/);
+		send("press", 5);
+		send("click", 5);
+		assert.deepStrictEqual(chosen, []);
+	});
+
 	it("names only the direction that has more rows at an end of the list", () => {
 		const rendered = new SelectList(items, 5, testTheme).render(80);
 		assert.equal((rendered.at(-1) ?? "").trim(), "↓ 7 more");

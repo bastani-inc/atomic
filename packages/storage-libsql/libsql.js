@@ -8,6 +8,7 @@ import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError, switchToW
 
 /**
  * @typedef {{ url: string, authToken?: string, namespace?: string, headers?: Readonly<Record<string, string>> }} LibsqlDatabaseOptions
+ * @typedef {[typeof import("@libsql/hrana-client"), typeof import("@libsql/core/config"), typeof import("@libsql/core/uri"), typeof import("@libsql/core/api")]} ServerProtocol
  */
 
 /** Header names an HTTP request can carry: RFC 9110 tokens. */
@@ -1500,7 +1501,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		throw new StorageAdapterLoadError("@libsql/client", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 	}
 	const local = /^file:/i.test(url);
-	/** @type {[typeof import("@libsql/hrana-client"), typeof import("@libsql/core/config"), typeof import("@libsql/core/uri"), typeof import("@libsql/core/api")] | undefined} */
+	/** @type {ServerProtocol | undefined} */
 	let protocol;
 	if (!local) {
 		try {
@@ -1524,6 +1525,40 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			throw new StorageAdapterLoadError("libsql", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 		}
 	}
+	const redact = redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]);
+	const connect = () => createConnection(url, authToken, added, redact, createClient, protocol);
+	const database = connect();
+	// The reader shares the checked route and credentials, but no client, stream or queue. Reads need no write setup.
+	if (!local) database.openReader = async () => connect();
+	try {
+		await database.exec("PRAGMA foreign_keys = ON");
+		// Readers and the one writer of a file share it through the write-ahead log, as in Atomic's own SQLite stores;
+		// in the default rollback journal a read refuses a writer's commit and the other way round. The mode is stored
+		// in the file, so this changes it once and costs nothing afterwards. SQLite does not wait for another
+		// connection's lock while it changes the mode, so the switch waits out the busy timeout itself: several
+		// processes opening one new file at once, or one writing it, would otherwise fail the open with SQLITE_BUSY.
+		if (local) await switchToWriteAheadLog((sql) => database.exec(sql), FILE_BUSY_TIMEOUT_MS);
+		return database;
+	} catch (error) {
+		await database
+			.close()
+			.catch((cleanupCause) =>
+				Object.defineProperty(/** @type {Error} */ (error), "cleanupCause", { value: cleanupCause, configurable: true }),
+			);
+		throw error;
+	}
+}
+
+/**
+ * @param {string} url
+ * @param {string | undefined} authToken
+ * @param {[string, string][]} added
+ * @param {(text: string) => string} redact
+ * @param {typeof import("@libsql/client").createClient} createClient
+ * @param {ServerProtocol | undefined} protocol
+ */
+function createConnection(url, authToken, added, redact, createClient, protocol) {
+	const local = protocol === undefined;
 	/** @type {import("@libsql/client").Client | undefined} */
 	let client;
 	const abandoned = new AbandonedStreams();
@@ -1660,10 +1695,9 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		);
 		return results.map(driverResult);
 	};
-	const redact = redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]);
 	/** The server's location as diagnostics show it, without credentials. */
 	const redacted = redact(url);
-	const database = createSqliteDatabase({
+	return createSqliteDatabase({
 		descriptor: { adapter: "libsql", location: url },
 		redact,
 		transientFailure,
@@ -1765,23 +1799,6 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			if (local) await releaseClosedConnections();
 		},
 	});
-	try {
-		await database.exec("PRAGMA foreign_keys = ON");
-		// Readers and the one writer of a file share it through the write-ahead log, as in Atomic's own SQLite stores;
-		// in the default rollback journal a read refuses a writer's commit and the other way round. The mode is stored
-		// in the file, so this changes it once and costs nothing afterwards. SQLite does not wait for another
-		// connection's lock while it changes the mode, so the switch waits out the busy timeout itself: several
-		// processes opening one new file at once, or one writing it, would otherwise fail the open with SQLITE_BUSY.
-		if (local) await switchToWriteAheadLog((sql) => database.exec(sql), FILE_BUSY_TIMEOUT_MS);
-		return database;
-	} catch (error) {
-		await database
-			.close()
-			.catch((cleanupCause) =>
-				Object.defineProperty(/** @type {Error} */ (error), "cleanupCause", { value: cleanupCause, configurable: true }),
-			);
-		throw error;
-	}
 }
 
 /** @satisfies {import("@bastani/atomic/storage").StorageAdapterModule} */
