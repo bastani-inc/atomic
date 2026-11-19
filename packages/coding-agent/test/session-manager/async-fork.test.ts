@@ -20,7 +20,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
-	return { ...actual, writeFile: vi.fn(actual.writeFile) };
+	return { ...actual, writeFile: vi.fn(actual.writeFile), stat: vi.fn(actual.stat) };
 });
 
 test("streamed forks retain history and can append without replacing it (#3577)", async () => {
@@ -251,6 +251,43 @@ test("a file forked into its own directory keeps every branch byte for byte; ano
 			await windowed.getSessionStore().close();
 		}
 	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("without inode identities, only disjoint directories prove a fork's destination another collection (#5594)", async () => {
+	const dir = await fsPromises.realpath(await mkdtemp(join(tmpdir(), "session-file-no-identity-")));
+	const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+	try {
+		const nested = join(dir, "forks"),
+			sibling = join(dir, "source", "..", "sibling");
+		await mkdir(nested);
+		await mkdir(join(dir, "source"));
+		await mkdir(sibling);
+		const body = savedLines([
+			said("root", null, "start"),
+			said("abandoned", "root", "sibling"),
+			said("now", "root", "c"),
+		]);
+		const header = `${JSON.stringify(savedHeader(dir))}\n`;
+		await writeFile(join(dir, "own.jsonl"), header + body);
+		await writeFile(join(dir, "source", "own.jsonl"), header + body);
+		// As on a network filesystem: these directories report no inode.
+		const unidentified = new Set([dir, nested, join(dir, "source"), join(dir, "sibling")]);
+		vi.mocked(fsPromises.stat).mockImplementation((async (path: string, options?: { bigint?: boolean }) => {
+			const stats = await actual.stat(path, options);
+			return unidentified.has(String(path)) ? Object.assign(stats, { ino: options?.bigint ? 0n : 0 }) : stats;
+		}) as unknown as typeof fsPromises.stat);
+		const intoNested = await SessionManager.forkFrom(join(dir, "own.jsonl"), dir, nested);
+		assert.equal(await savedBody(intoNested.getSessionFile()!), body);
+		assert.equal(intoNested.getHeader()?.parentInOtherStore, undefined);
+		await intoNested.getSessionStore().close();
+		const intoSibling = await SessionManager.forkFrom(join(dir, "source", "own.jsonl"), dir, sibling);
+		assert.equal(intoSibling.getHeader()?.parentInOtherStore, true);
+		assert.equal(await intoSibling.findEntrySeq("abandoned"), undefined);
+		await intoSibling.getSessionStore().close();
+	} finally {
+		vi.mocked(fsPromises.stat).mockImplementation(actual.stat);
 		await rm(dir, { recursive: true, force: true });
 	}
 });

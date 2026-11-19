@@ -10,15 +10,19 @@ interface JsonlForkScope {
 	readonly exact: boolean;
 }
 
-/** Whether two JSONL collections are one, by filesystem identity. An exact directory and a project root
- * are different only when neither contains the other; a failed identity check proves nothing. */
+/** Whether two JSONL collections are one, by filesystem identity. Two exact directories with distinct identities
+ * are different; otherwise collections are different only when neither path contains the other. A filesystem
+ * without identities (inode 0) proves sameness only by equal canonical paths. A failed check proves nothing. */
 export async function jsonlDirectoryRelation(a: JsonlForkScope, b: JsonlForkScope): Promise<ForkStoreRelation> {
 	try {
 		const [pa, pb] = await Promise.all([realpath(a.directory), realpath(b.directory)]);
 		const [sa, sb] = await Promise.all([stat(pa, { bigint: true }), stat(pb, { bigint: true })]);
-		if (sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0n) return a.exact === b.exact ? "same" : "unknown";
+		const identified = sa.ino !== 0n && sb.ino !== 0n;
+		if (identified ? sa.dev === sb.dev && sa.ino === sb.ino : pa === pb)
+			return a.exact === b.exact ? "same" : "unknown";
 		const outside = (p: string) => isAbsolute(p) || p === ".." || p.startsWith(`..${sep}`);
-		if ((a.exact && b.exact) || (outside(relative(pa, pb)) && outside(relative(pb, pa)))) return "different";
+		if ((identified && a.exact && b.exact) || (outside(relative(pa, pb)) && outside(relative(pb, pa))))
+			return "different";
 	} catch {
 		/* A failed identity check is not evidence that private history belongs to another collection. */
 	}
