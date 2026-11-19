@@ -605,6 +605,7 @@ interface SourceState {
 	 * from its first row (#5558).
 	 */
 	readonly takeover: boolean;
+	readonly retired?: readonly string[];
 }
 
 /**
@@ -613,6 +614,14 @@ interface SourceState {
  * 0.9.89 write the row as `(0, 0)`.
  */
 const PUBLISHED_VERSION = 1;
+
+/** Receipts for physical session-index generations. Released builds read only their own source names. */
+export const SESSION_INDEX_RETIRED_PREFIX = "session-entries@retired:";
+type SessionIndexReset = (
+	tx: SqliteExecutor,
+	tables: SnapshotIndexTables,
+	triggers: readonly string[],
+) => Promise<boolean>;
 
 /**
  * A row that a development build marked a source with while it removed the source's index in batches. An index an
@@ -1107,10 +1116,20 @@ async function installSource(
 	dialect: StorageDialect,
 	t: SnapshotIndexTables,
 	source: IndexSource,
+	reset?: SessionIndexReset,
 ): Promise<void> {
-	for (const sql of source.reset ?? []) await transaction.run(sql);
-	// Triggers of these names that an older build installed are replaced, not kept (#5065).
-	for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
+	const detached =
+		source.name === "session-entries" &&
+		(await reset?.(
+			transaction,
+			t,
+			source.triggers.map((trigger) => trigger.name),
+		));
+	if (!detached) {
+		for (const sql of source.reset ?? []) await transaction.run(sql);
+		// Triggers of these names that an older build installed are replaced, not kept (#5065).
+		for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
+	}
 	await transaction.exec(source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"));
 	await transaction.run(
 		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
@@ -1164,6 +1183,7 @@ async function installMissingSources(
 	t: SnapshotIndexTables,
 	prefix: string,
 	dialect: StorageDialect,
+	reset?: SessionIndexReset,
 ): Promise<void> {
 	for (const { source, installed, deferred } of await readSourceStates(
 		transaction,
@@ -1171,7 +1191,7 @@ async function installMissingSources(
 		t,
 		indexSources(prefix, t, dialect),
 	)) {
-		if (!installed && !deferred) await installSource(transaction, dialect, t, source);
+		if (!installed && !deferred) await installSource(transaction, dialect, t, source, reset);
 	}
 }
 
@@ -1181,6 +1201,7 @@ async function readSourceStates(
 	dialect: StorageDialect,
 	t: SnapshotIndexTables,
 	sources: readonly IndexSource[],
+	listRetired = false,
 ): Promise<SourceState[]> {
 	const names = sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
 	// Builds before 0.9.88 open SQLite and libSQL databases only, so only there can a trigger of this build's name be
@@ -1217,12 +1238,24 @@ async function readSourceStates(
 		);
 	const signed = checked("signed");
 	const marked = checked("marked");
+	let retired: string[] | undefined;
 	const progress = new Map(
 		(
 			await executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
 				`SELECT source, watermark, backfilled_through FROM ${t.sources}`,
 			)
-		).map((row) => [row.source, row]),
+		).map((row) => {
+			if (
+				listRetired &&
+				sqlite &&
+				row.source.startsWith(SESSION_INDEX_RETIRED_PREFIX) &&
+				Number(row.backfilled_through) === 0
+			) {
+				retired ??= [];
+				retired.push(row.source);
+			}
+			return [row.source, row] as const;
+		}),
 	);
 	return sources
 		.filter((source) => present.has(source.table))
@@ -1278,6 +1311,7 @@ async function readSourceStates(
 				deferred: row !== undefined && (foreign || Number(row.watermark) === -1),
 				foreign,
 				takeover: withholdsVersion(dialect, source) && installed && version !== undefined && !backfilled,
+				...(retired && source.name === "session-entries" ? { retired } : {}),
 			};
 		});
 }
@@ -1397,10 +1431,24 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * that exist, so a store that creates its own tables, such as a new run journal, takes the write lock once for all
 	 * of them.
 	 */
-	static async initialize(transaction: SqliteExecutor, prefix = "", dialect: StorageDialect): Promise<void> {
+	static async initialize(
+		transaction: SqliteExecutor,
+		prefix = "",
+		dialect: StorageDialect,
+		reset?: SessionIndexReset,
+	): Promise<void> {
 		const t = snapshotIndexTables(prefix);
 		await createSnapshotIndexTables(transaction, t, prefix, dialect);
-		await installMissingSources(transaction, t, prefix, dialect);
+		await installMissingSources(transaction, t, prefix, dialect, reset);
+	}
+
+	/** @internal Resolve the space reading and load migration code before taking SQLite's writer lock. */
+	static async prepareSessionIndexReset(database: SqliteDatabase): Promise<SessionIndexReset | undefined> {
+		if (dialectOf(database).name !== "sqlite") return undefined;
+		const available = await database.freeBytes?.().catch(() => undefined);
+		if (available === undefined) return undefined;
+		const { detachSessionIndex } = await import("./session-index-reset.js");
+		return (tx, tables, triggers) => detachSessionIndex(tx, tables, triggers, available);
 	}
 
 	/**
@@ -1567,19 +1615,25 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Resolves with the state of every referencing table.
 	 */
 	private async installIndex(pace?: BackgroundCollectionPace, includeDeferred = false): Promise<SourceState[]> {
-		const states = await readSourceStates(this.database, this.dialect, this.tables, this.sources);
+		const states = await readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
 		const missing = states.filter((state) => !state.installed && (includeDeferred || !state.deferred));
 		for (const { source } of missing) {
+			const reset =
+				source.name === "session-entries"
+					? await SqlSnapshotBlobStore.prepareSessionIndexReset(this.database)
+					: undefined;
 			await this.write(pace, async (transaction) => {
 				const [current] = await readSourceStates(transaction, this.dialect, this.tables, [source]);
 				if (current === undefined || current.installed || (current.deferred && !includeDeferred)) return;
 				// Its triggers lock the table: under short lock waits, so a stalled transaction never queues writers (#5218).
 				await withShortSchemaLockWaits(transaction, this.dialect, () =>
-					installSource(transaction, this.dialect, this.tables, source),
+					installSource(transaction, this.dialect, this.tables, source, reset),
 				);
 			});
 		}
-		return missing.length === 0 ? states : readSourceStates(this.database, this.dialect, this.tables, this.sources);
+		return missing.length === 0
+			? states
+			: readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
 	}
 
 	/**
@@ -1591,18 +1645,43 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * before each batch and rejects with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
-		for (const { source, backfilled } of await this.installIndex(options.pace, true)) {
+		const states = await this.installIndex(options.pace, true);
+		for (const { source, backfilled } of states) {
 			if (backfilled) continue;
+			const reset =
+				source.name === "session-entries"
+					? await SqlSnapshotBlobStore.prepareSessionIndexReset(this.database)
+					: undefined;
 			for (let done = false; !done; ) {
 				options.signal?.throwIfAborted();
-				done = await this.backfillBatch(source, options);
+				done = await this.backfillBatch(source, options, reset);
 				await this.betweenBatches(options.pace);
 			}
 		}
+		// Reclamation must not delay publication: released collectors see exactly the same install and backfill as
+		// before, even when either version exits at a batch boundary. Only unreferenced physical rows remain here.
+		for (const { retired } of states)
+			for (const receipt of retired ?? []) {
+				const { drainRetiredSessionIndex } = await import("./session-index-reset.js");
+				for (;;) {
+					await this.betweenBatches(options.pace);
+					options.signal?.throwIfAborted();
+					const done = await this.write(options.pace, async (tx) => {
+						const finished = await drainRetiredSessionIndex(tx, this.tables, receipt);
+						if (options.holder !== undefined) await this.renewClaim(tx, options.holder);
+						return finished;
+					});
+					if (done) break;
+				}
+			}
 	}
 
 	/** Indexes the next rows of `source`, and resolves true once every row at or below its watermark is indexed. */
-	private backfillBatch(source: IndexSource, { holder, pace, signal }: SnapshotIndexOptions): Promise<boolean> {
+	private backfillBatch(
+		source: IndexSource,
+		{ holder, pace, signal }: SnapshotIndexOptions,
+		reset?: SessionIndexReset,
+	): Promise<boolean> {
 		const t = this.tables;
 		const row = this.dialect.rowOrder();
 		const withholds = withholdsVersion(this.dialect, source);
@@ -1614,7 +1693,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				// in this transaction, its old rows removed, as at the start of a collection. Left as it is, that build could
 				// index it its way, and builds 0.9.88 and 0.9.89 trust their version row (#5558).
 				await withShortSchemaLockWaits(transaction, this.dialect, () =>
-					installSource(transaction, this.dialect, t, source),
+					installSource(transaction, this.dialect, t, source, reset),
 				);
 				if (holder !== undefined) await this.renewClaim(transaction, holder);
 				return false;

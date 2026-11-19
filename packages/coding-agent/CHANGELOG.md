@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On SQLite and local libSQL stores with sufficient free space, upgrading a large snapshot reference index from Atomic 0.9.87 or earlier, or opening one that lost a trigger, no longer freezes Atomic while it clears millions of old rows. Collection releases them in short, resumable batches. Stores with custom schema that depends on the index, or without verifiable disk headroom, keep the previous atomic reset ([#5553](https://github.com/bastani-inc/atomic/issues/5553)).
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.
