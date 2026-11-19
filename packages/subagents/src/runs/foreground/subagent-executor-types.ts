@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, SessionManager } from "@bastani/atomic";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, SessionManager } from "@bastani/atomic";
 import type { AgentConfig, AgentDiscoveryOptions, AgentScope } from "../../agents/agents.js";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.js";
 import type { ModelInfo } from "../../shared/model-info.js";
@@ -22,6 +22,11 @@ export const BURST_TASK_INPUT_INDEX = Symbol("burstTaskInputIndex");
 export const BURST_PREPARED_TASKS = Symbol("burstPreparedTasks");
 /** The named worktree a launch's child runs in, once it exists (#5202). */
 export const NAMED_WORKTREE = Symbol("namedWorktree");
+
+/** Bridges and direct model calls have no caller; nested invocations carry their own cancellation lifetime. */
+export function isScriptSubagentCall(ctx: ExtensionContext & Pick<ExtensionToolContext, "parentToolCallId">): boolean {
+	return ctx.parentToolCallId !== undefined;
+}
 
 export interface TaskParam {
 	agent: string;

@@ -2,7 +2,7 @@ import { calculateCost } from "../models.ts";
 import type { ClassifierApi, ClassifierModel, ClassifierOptions, ProviderHeaders, Usage } from "../types.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 
 export interface ClassifierHttpError extends Error {
 	status: number | undefined;
@@ -67,7 +67,8 @@ export async function postClassifierRequest(
 	let payload = body;
 	const transformed = await options.onPayload?.(payload, model);
 	if (transformed !== undefined) payload = transformed;
-	const requestFetch = options.fetch ?? globalThis.fetch;
+	const retryTransport = ProviderRetryTransport.for(options);
+	const requestFetch = retryTransport?.fetch ?? options.fetch ?? globalThis.fetch;
 	const { response, json } = await retryProviderRequest(
 		async () => {
 			const timeoutSignal = options.timeoutMs !== undefined ? AbortSignal.timeout(options.timeoutMs) : undefined;
@@ -95,6 +96,7 @@ export async function postClassifierRequest(
 			signal: options.signal,
 			noRetryStatuses,
 		},
+		retryTransport,
 	);
 	await options.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 	return json;

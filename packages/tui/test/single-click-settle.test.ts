@@ -51,6 +51,106 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 }
 
 describe("a single click's action waits until it cannot become a double-click", () => {
+	for (const capture of [false, true]) {
+		it(`hiding and showing a dialog revokes its held choice without losing button-up (capture: ${capture}) (#5643)`, async (t) => {
+			const { terminal, tui } = settleFixture();
+			const events: string[] = [];
+			const dialog = new Container();
+			const child: Component = {
+				render: () => ["Choose red"],
+				invalidate() {},
+				handleMouse(event) {
+					events.push(event.type);
+					if (event.type === "press" && capture) return { handled: true, capture: true };
+					if (event.type === "click") return { handled: true };
+					return undefined;
+				},
+			};
+			dialog.addChild(child);
+			const overlay = tui.showOverlay(dialog, { anchor: "top-left", width: 15 });
+			tui.setFocus(child);
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			terminal.sendInput(press(2, 0));
+			overlay.setHidden(true);
+			overlay.setHidden(false);
+			terminal.sendInput(release(2, 0));
+			assert.deepStrictEqual(events, ["press", "release"]);
+			terminal.sendInput(press(9, 0));
+			terminal.sendInput(release(9, 0));
+			assert.deepStrictEqual(events.slice(2), ["press", "release", "click"]);
+		});
+	}
+
+	for (const handlesDouble of [false, true]) {
+		it(`the row still decides whether a repeat click copies a word (handled: ${handlesDouble}) (#5643)`, async (t) => {
+			const { terminal, tui, click, copied } = settleFixture();
+			const dialog = new Container();
+			const counts: number[] = [];
+			const child: Component = {
+				render: () => ["Second choice"],
+				invalidate() {},
+				handleMouse(event) {
+					if (event.type !== "click") return undefined;
+					counts.push(event.clickCount!);
+					return event.clickCount === 2 && handlesDouble ? { handled: true } : undefined;
+				},
+			};
+			dialog.addChild(child);
+			const overlay = tui.showOverlay(dialog, { anchor: "top-left", width: 15 });
+			tui.setFocus(child);
+			tui.start();
+			t.after(() => tui.stop());
+			await terminal.waitForRender();
+			mockClickClock(t);
+			click(0, 0);
+			terminal.sendInput(press(0, 0));
+			overlay.setHidden(true);
+			overlay.setHidden(false);
+			terminal.sendInput(release(0, 0));
+			assert.deepStrictEqual(counts, [1, 2]);
+			assert.deepStrictEqual(copied, handlesDouble ? [] : ["Second"]);
+		});
+	}
+
+	it("cancels a deferred choice only when its own overlay occurrence ends (#5643)", async (t) => {
+		const { terminal, tui, click } = settleFixture();
+		const events: string[] = [];
+		const child: Component = {
+			render: () => ["Choose red"],
+			invalidate() {},
+			handleMouse(event) {
+				if (event.type !== "click") return undefined;
+				events.push("offer");
+				return {
+					handled: true,
+					whenSingleClick: () => events.push("commit"),
+					onSingleClickCancel: () => events.push("cancel"),
+				};
+			},
+		};
+		const dialog = new Container();
+		dialog.addChild(child);
+		const other = tui.showOverlay(dialog, { anchor: "top-right", width: 10 });
+		const owner = tui.showOverlay(dialog, { anchor: "top-left", width: 10 });
+		tui.setFocus(child);
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		mockClickClock(t);
+		click(2, 0);
+		other.hide();
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(events, ["offer", "commit"]);
+		click(7, 0);
+		owner.setHidden(true);
+		owner.setHidden(false);
+		assert.deepStrictEqual(events, ["offer", "commit", "offer"]);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(events, ["offer", "commit", "offer", "cancel"]);
+	});
+
 	it("runs once the multi-click interval has passed since the press, and not before", async () => {
 		const { terminal, tui, acted, clicks, click } = settleFixture();
 		tui.start();
