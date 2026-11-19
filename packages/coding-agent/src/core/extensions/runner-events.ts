@@ -172,9 +172,10 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 ): Promise<RunnerEmitResult<TEvent>> {
 	let result: SessionBeforeEventResult | undefined;
 	const promptNotifications: Promise<void>[] = [];
+	const copies = event.type === "session_start" ? new Map<string, number>() : undefined;
 
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, event.type)) {
-		let tokens: string[] | undefined;
+		const tokens = copies ? startupRegistrationTokens(ext, handlers, copies) : undefined;
 		for (const [index, handler] of handlers.entries()) {
 			// Workflow publishers can retire while a previous handler awaits.
 			if (isCurrent && !isCurrent()) return result as RunnerEmitResult<TEvent>;
@@ -201,7 +202,6 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 					if (result.cancel) return result as RunnerEmitResult<TEvent>;
 				}
 			} catch (error) {
-				if (event.type === "session_start") tokens ??= startupRegistrationTokens(handlers);
 				emitCaughtError(emitError, ext.path, event.type, error, tokens?.[index]);
 			}
 		}
@@ -616,8 +616,9 @@ export async function runResourcesDiscoverHandlers(
 	const promptPaths: ResourcesDiscoverCombinedResult["promptPaths"] = [];
 	const themePaths: ResourcesDiscoverCombinedResult["themePaths"] = [];
 
+	const copies = new Map<string, number>();
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, "resources_discover")) {
-		let tokens: string[] | undefined;
+		const tokens = startupRegistrationTokens(ext, handlers, copies);
 		for (const [index, handler] of handlers.entries()) {
 			try {
 				const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
@@ -634,7 +635,6 @@ export async function runResourcesDiscoverHandlers(
 					themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
 			} catch (error) {
-				tokens ??= startupRegistrationTokens(handlers);
 				emitCaughtError(emitError, ext.path, "resources_discover", error, tokens[index]);
 			}
 		}

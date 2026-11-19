@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
@@ -19,7 +19,7 @@ import {
 } from "../src/core/agent-session-runtime.js";
 import { createUnstartedAgentSessionFromServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import type { ExtensionFactory, LoadExtensionsResult } from "../src/core/extensions/types.js";
+import type { ExtensionFactory, InlineExtension, LoadExtensionsResult } from "../src/core/extensions/types.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -63,9 +63,10 @@ afterEach(async () => {
  * the project trust question or loads `-e` extensions does.
  */
 async function createMode(
-	extension: ExtensionFactory,
+	extension: ExtensionFactory | InlineExtension[],
 	options: {
 		settlesStartupTrust?: boolean;
+		additionalExtensionPaths?: string[];
 		extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
 	} = {},
 ) {
@@ -99,7 +100,8 @@ async function createMode(
 			modelRuntime,
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
-				extensionFactories: [extension],
+				extensionFactories: Array.isArray(extension) ? extension : [extension],
+				additionalExtensionPaths: options.additionalExtensionPaths,
 				extensionsOverride: options.extensionsOverride,
 				noSkills: true,
 				noPromptTemplates: true,
@@ -327,6 +329,119 @@ test(
 		assert.equal(occurrences(chat, "at factoryStartup"), 1, chat);
 		assert.equal(occurrences(chat, "at sharedStartup"), 2, chat);
 		assert.equal(occurrences(chat, 'Extension "<inline:1>" error: startup error'), 3, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"a rediscovered file reports its handler once at startup and again on /reload (#5501)",
+	async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-5501-file-"));
+		cleanup.push(async () => rmSync(dir, { recursive: true, force: true }));
+		const extension = join(dir, "extension.ts");
+		const calls = join(dir, "calls");
+		writeFileSync(
+			extension,
+			`import {appendFileSync} from "node:fs";
+		export default (pi) => {
+			pi.on("resources_discover", () => {
+				appendFileSync(${JSON.stringify(calls)}, "x");
+				throw "file discovery failed";
+			});
+		};`,
+		);
+		const { mode } = await createMode([], { additionalExtensionPaths: [extension] });
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const row = "error: file discovery failed";
+		assert.equal(readFileSync(calls, "utf8"), "xx");
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 1);
+		await mode.handleReloadCommand();
+		assert.equal(readFileSync(calls, "utf8"), "xxx");
+		assert.equal(occurrences(normalizeRenderedOutput(mode.chatContainer), row), 2);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test.each([false, true])(
+	"startup distinguishes two raw installations from pi.on even for the same callable (separate lists: %s) (#5501)",
+	async (separateLists) => {
+		let calls = 0;
+		async function sharedSite() {
+			// With separate lists the last installation only fails on the completion pass.
+			if (++calls !== 3 || !separateLists) throw new Error("shared error");
+		}
+		const factory: ExtensionFactory = (pi) => {
+			pi.on("resources_discover", sharedSite);
+		};
+		const { mode } = await createMode(
+			[
+				{ name: "same", factory },
+				{ name: "same", factory: () => {} },
+			],
+			{
+				settlesStartupTrust: true,
+				extensionsOverride(base) {
+					const [a, b] = base.extensions.filter((ext) => ext.path === "<inline:same>");
+					a.handlers.get("resources_discover")!.push(sharedSite);
+					const target = separateLists ? b : a;
+					target.handlers.set("resources_discover", [
+						...(target.handlers.get("resources_discover") ?? []),
+						sharedSite,
+					]);
+					return base;
+				},
+			},
+		);
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const chat = normalizeRenderedOutput(mode.chatContainer);
+		assert.equal(calls, 6);
+		assert.equal(occurrences(chat, "at sharedSite"), 3, chat);
+		assert.equal(occurrences(chat, 'Extension "<inline:same>" error: shared error'), 3, chat);
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test.each([
+	{ label: "two named factories", name: "filesystem", deferred: false, copy: false },
+	{ label: "named and unnamed factories", name: "2", deferred: false, copy: false },
+	{ label: "two named factories re-evaluated by deferred startup", name: "filesystem", deferred: true, copy: false },
+	{ label: "same-named factories copied by a loader override", name: "filesystem", deferred: true, copy: true },
+])(
+	"startup distinguishes $label with the same displayed extension path and /reload reports them again (#5501)",
+	async ({ name, deferred, copy }) => {
+		let left = 0;
+		let right = 0;
+		const first: ExtensionFactory = (pi) => {
+			pi.on("resources_discover", function firstProvider() {
+				left++;
+				throw new Error("provider error");
+			});
+		};
+		const second: ExtensionFactory = (pi) => {
+			pi.on("resources_discover", function secondProvider() {
+				if (++right >= 2) throw new Error("provider error");
+			});
+		};
+		const { mode } = await createMode([{ name, factory: first }, name === "2" ? second : { name, factory: second }], {
+			settlesStartupTrust: !deferred,
+			extensionsOverride: copy
+				? (base) => ({ ...base, extensions: base.extensions.map((ext) => ({ ...ext })) })
+				: undefined,
+		});
+		mode.deferredStartupPending = true;
+		await mode.completeDeferredStartup();
+		const chat = normalizeRenderedOutput(mode.chatContainer);
+		const row = `Extension "<inline:${name}>" error: provider error`;
+		assert.deepEqual([left, right], [2, 2]);
+		assert.equal(occurrences(chat, "at firstProvider"), 1, chat);
+		assert.equal(occurrences(chat, "at secondProvider"), 1, chat);
+		assert.equal(occurrences(chat, row), 2, chat);
+		await mode.handleReloadCommand();
+		const reload = normalizeRenderedOutput(mode.chatContainer);
+		assert.deepEqual([left, right], [3, 3]);
+		assert.equal(occurrences(reload, row), 4, reload);
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );

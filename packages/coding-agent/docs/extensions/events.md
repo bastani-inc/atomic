@@ -9,7 +9,7 @@ description: Every extension event, its payload, and its return contract.
 
 ### Lifecycle Overview
 
-Interactive trust-gated startup first emits `session_start` and `resources_discover` for the permitted trust-safe extensions, then resolves `project_trust`. After authorization, newly loaded extensions receive `session_start`; resource discovery runs again against the completed set. A `resources_discover` handler that fails both times with the same error is reported once. Different handlers are reported separately, even if they throw the same message. Existing reporters keep their session and do not receive a second `session_start`. Noninteractive startup resolves trust before the ordinary session lifecycle.
+Interactive trust-gated startup first emits `session_start` and `resources_discover` for the permitted trust-safe extensions, then resolves `project_trust`. After authorization, newly loaded extensions receive `session_start`; resource discovery runs again against the completed set. A `resources_discover` handler that fails both times with the same error is reported once. Different handlers are reported separately, even if they throw the same message or their extensions have the same display name. Existing reporters keep their session and do not receive a second `session_start`. Noninteractive startup resolves trust before the ordinary session lifecycle.
 
 ```
 Atomic starts

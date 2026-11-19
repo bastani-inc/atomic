@@ -233,7 +233,9 @@ const startupFailureReports = new WeakMap<AgentSession, Set<string>>();
 
 /** Records a startup failure; false when this session's startup already reported the same one. */
 function recordStartupFailure(session: AgentSession, error: ExtensionError): boolean {
-	const key = JSON.stringify([error.extensionPath, error.event, startupErrorHandlerTokens.get(error), error.error]);
+	const token = startupErrorHandlerTokens.get(error);
+	if (token === undefined) return true;
+	const key = JSON.stringify([token, error.event, error.error]);
 	const reported = startupFailureReports.get(session) ?? new Set<string>();
 	startupFailureReports.set(session, reported);
 	if (reported.has(key)) return false;

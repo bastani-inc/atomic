@@ -23,6 +23,7 @@ import {
 	originalRegistrationCallback,
 	registerFactoryStartupHandler,
 	resolveInvocationRuntime,
+	startupSourceId,
 } from "./loader-bindings.ts";
 import { getWorkflowHostModules } from "./loader-host-modules.js";
 import {
@@ -114,8 +115,10 @@ export function createExtensionAPI(
 	eventBus: EventBus,
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
+	registrationSource: object | string = extension,
 ): { api: ExtensionAPI; commit: () => void; discard: () => void } {
 	const originalRuntime = runtime;
+	const startupOwner = startupSourceId(registrationSource);
 	(extension as ExtensionWithLifetime)[apiLifetime] = { retired: false, releases: new Set() };
 	const captureRegistrationInvocation = <T>(value: T): T => captureInvocation(value, originalRuntime);
 	runtime = invocationRuntime(runtime);
@@ -217,7 +220,7 @@ export function createExtensionAPI(
 			if (event === "session_start" || event === "resources_discover") {
 				const slot = nextStartupHandlerSlot.get(event) ?? 0;
 				nextStartupHandlerSlot.set(event, slot + 1);
-				registerFactoryStartupHandler(registeredHandler, extension.path, event, slot);
+				registerFactoryStartupHandler(registeredHandler, startupOwner, event, slot);
 			}
 			const list = extension.handlers.get(event) ?? [];
 			list.push(registeredHandler);
