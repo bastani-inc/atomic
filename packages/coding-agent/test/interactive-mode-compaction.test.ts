@@ -8,7 +8,6 @@ import { Container, getKeybindings, setKeybindings, Text } from "@bastani/atomic
 import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";
-import { hostNoticeForEvent, hostNoticeMessage } from "../src/core/host-notices.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import {
 	type CustomMessage,
@@ -192,7 +191,6 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages, showCache
 		renderSessionContext: vi.fn(Reflect.get(InteractiveMode.prototype, "renderSessionContext")),
 		renderSessionEntries: vi.fn(Reflect.get(InteractiveMode.prototype, "renderSessionEntries")),
 		addRenderedChatEntry: Reflect.get(InteractiveMode.prototype, "addRenderedChatEntry"),
-		addMessageToChat: Reflect.get(InteractiveMode.prototype, "addMessageToChat"),
 		chatMessageRenderOptions: Reflect.get(InteractiveMode.prototype, "chatMessageRenderOptions"),
 		renderDeferredUserInput: Reflect.get(InteractiveMode.prototype, "renderDeferredUserInput"),
 		rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
@@ -212,19 +210,6 @@ async function emit(
 		event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent | AgentContinueErrorEvent,
 	) => Promise<void>;
 	await handleEvent.call(mode, event);
-}
-
-/** Shows what the session shows after `event`: the line it saves about how the turn ended, if any (#5649). */
-async function emitSessionNotice(mode: object, event: CompactionEndEvent | AgentContinueErrorEvent): Promise<void> {
-	const notice = hostNoticeForEvent(event as never, undefined);
-	if (notice === undefined) return;
-	const message = hostNoticeMessage(notice, 0);
-	const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
-		this: object,
-		event: { type: string; message: unknown },
-	) => Promise<void>;
-	await handleEvent.call(mode, { type: "message_start", message });
-	await handleEvent.call(mode, { type: "message_end", message });
 }
 
 function visibleBoundaries(container: Container): CompactionBoundaryMessageComponent[] {
@@ -364,8 +349,7 @@ for (const queueMode of ["steer", "followUp"] as const) {
 					await vi.waitFor(() => assert.deepEqual(getUserTexts(harness), expected));
 					await harness.session.agent.waitForIdle();
 					assert.deepEqual(mode.compactionQueuedMessages, []);
-					// The session, not this handler, shows how the compaction ended (#5649).
-					assert.deepEqual(mode.showError.mock.calls, []);
+					assert.deepEqual(mode.showError.mock.calls, !midTurn && aborted ? [["Compaction cancelled"]] : []);
 				} finally {
 					releaseTool();
 					unsubscribe();
@@ -596,20 +580,16 @@ describe("InteractiveMode compaction events", () => {
 	it("renders a committed boundary together with a later failure (#4977)", async () => {
 		const { mode, chatContainer } = makeMode([]);
 
-		const end: CompactionEndEvent = {
+		await emit(mode, {
 			type: "compaction_end",
 			reason: "overflow",
 			result,
 			aborted: false,
 			willRetry: true,
 			errorMessage: "Context overflow recovery failed: boom",
-		};
-		await emit(mode, end);
-		await emitSessionNotice(mode, end);
+		});
 		expect(mode.addCompactionBoundaryToChat).toHaveBeenCalledWith(result);
-		const text = renderedText(chatContainer);
-		expect(text.match(/Error: Context overflow recovery failed: boom/g)).toHaveLength(1);
-		expect(text.indexOf("Context compacted")).toBeLessThan(text.indexOf("Context overflow recovery failed"));
+		expect(renderedText(chatContainer)).toContain("Context overflow recovery failed: boom");
 	});
 
 	it("releases queued input when mid-turn compaction ends", async () => {
@@ -676,25 +656,20 @@ describe("InteractiveMode compaction events", () => {
 	});
 
 	it("stops the working loader when direct post-compaction continuation fails", async () => {
-		const { mode, workingLoaders, chatContainer } = makeMode([]);
+		const { mode, workingLoaders } = makeMode([]);
 		mode.showWorkingLoaderNow.call(mode);
 		expect(renderedText(mode.statusContainer)).toContain("Working...");
 
-		const failure: AgentContinueErrorEvent = {
+		await emit(mode, {
 			type: "agent_continue_error",
 			source: "post_compaction",
 			errorMessage: "Post-compaction continuation failed: provider failed",
-		};
-		await emit(mode, failure);
-		await emitSessionNotice(mode, failure);
+		});
 
 		expect(workingLoaders[0]?.stop).toHaveBeenCalledOnce();
 		expect(mode.loadingAnimation).toBeUndefined();
 		expect(renderedText(mode.statusContainer)).not.toContain("Working...");
-		expect(mode.showError).not.toHaveBeenCalled();
-		expect(
-			renderedText(chatContainer).match(/Error: Post-compaction continuation failed: provider failed/g),
-		).toHaveLength(1);
+		expect(mode.showError).toHaveBeenCalledWith("Post-compaction continuation failed: provider failed");
 	});
 
 	it("keeps the session compaction start clock across summarization retry attempts (#5243)", async () => {

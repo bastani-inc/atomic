@@ -325,12 +325,6 @@ Atomic records one of its own: when the oversized result of an agent released wh
 {"type":"custom","id":"j0k1l2m3","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:22:00.000Z","customType":"atomic.leaf"}
 ```
 
-Atomic also records the lines it writes into a chat about how a turn ended, in a `custom` entry with `customType: "atomic.turn-outcome.v1"`: a retry that failed or was cancelled (`Retry failed after N attempts: …`), a compaction that failed or was cancelled, a continuation after compaction that could not start, and a checkout snapshot that could not be recorded. `data.level` is `error` (shown as `Error: …`), `warning` (`Warning: …`) or `status` (the dimmed text alone), and `data.text` is the line, at most 4096 UTF-8 bytes; a longer one is cut at a whole character and ends with `…`. The entry is written where the line was shown. The open chat shows the entire live diagnostic inline, even when it exceeds the storage cap. A row drawn from saved history can offer a preview when the reader can retrieve the complete stored text. Recent previews use at most 192 UTF-8 bytes each and 384 bytes in total; older rows keep the kind of outcome and its history location. Expand a preview to see its `history://sessions/<session-id>?notice=<entry-id>` link. The link reads just that entry. A chat without a readable link, such as a parent viewing a child’s private session file, shows the stored text inline. HTML and JSONL exports include the complete stored text, not the chat preview. Chats show each row in its original place when the session is resumed or a stage or subagent chat is reopened; it is never part of model context or compaction. While a chat is open, the session shows the line as a display-only `custom` message of the same `customType`, which JSON and RPC event streams also carry. Older Atomic versions load it as an ordinary custom entry and do not show it.
-
-```json
-{"type":"custom","id":"l2m3n4o5","parentId":"k1l2m3n4","timestamp":"2024-12-03T14:24:00.000Z","customType":"atomic.turn-outcome.v1","data":{"level":"error","text":"Retry failed after 3 attempts: 529 overloaded"}}
-```
-
 A resume that restored a checkout or ran a blueprint step records where its time went in a `custom` entry with `customType: "resume_timings"`. Durations are whole milliseconds; `phases` holds only the phases that ran (`fetch`, `reconstruct`, `materialize`, `lfs`, `verify`, `publish`, `seed`), `mode` is `fresh`, `claimed`, `in-place` or `degraded`, `fetch` is `none`, `shallow`, `full` or `bundle`, and `exit` is `ok`, `failed` or `timed-out`. `latestResumeTimings(sessionManager)` returns the latest one and `formatResumeTimings()` the lines `/session snapshot` shows.
 
 ```json
@@ -339,7 +333,7 @@ A resume that restored a checkout or ran a blueprint step records where its time
 
 ### CustomMessageEntry
 
-Extension-injected messages that DO participate in LLM context.
+Messages that participate in LLM context unless `excludeFromContext` is true.
 
 ```json
 {"type":"custom_message","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:25:00.000Z","customType":"my-extension","content":"Injected context...","display":true}
@@ -349,6 +343,9 @@ Fields:
 - `content`: String or `(TextContent | ImageContent)[]` (same as UserMessage)
 - `display`: `true` = show in TUI with distinct styling, `false` = hidden
 - `details`: Optional extension-specific metadata (not sent to LLM)
+- `excludeFromContext`: `true` for a display-only message that is not sent to the model
+
+Atomic saves its turn-ending diagnostics as display-only messages of type `atomic.turn-outcome.v1`. For example, a cancelled retry leaves `Error: Retry failed after 1 attempts: Retry cancelled` in the session. A chat reading that history shows the line inline, in order with the surrounding messages.
 
 ### LabelEntry
 

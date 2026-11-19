@@ -4,7 +4,6 @@ import { cleanupSessionResources } from "@bastani/atomic-ai/compat";
 import { abortBash } from "./agent-session-bash.ts";
 import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
-import { recordHostNotice } from "./agent-session-host-notices.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
 import {
@@ -55,6 +54,7 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
 import type { SessionShutdownEvent } from "./extensions/types.ts";
+import { HOST_NOTICE_TYPE, hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 import {
@@ -64,6 +64,7 @@ import {
 	hasCallingSessionWork,
 	ownedSessionPermits,
 	ownedSessionStores,
+	sessionGenerationClosing,
 	sessionLifetime,
 	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
@@ -81,11 +82,23 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	const status = retryStatusUpdate(event);
 	if (status !== undefined) this._retryStatus = status ?? undefined;
 	observeToolExecutionTiming(this, event);
-	const publish = recordHostNotice(this, event);
+	const notice = hostNoticeForEvent(event, this._compactionReason);
+	if (notice && !this._disposed && !sessionGenerationClosing.has(this)) {
+		// Enqueue the ordinary display-only row before a listener can append the next input. The original event
+		// still draws the live line; neither a slow nor a refused write changes what its listeners see.
+		const saved = this.sessionManager.appendCustomMessageEntry(
+			HOST_NOTICE_TYPE,
+			notice.text,
+			true,
+			notice.level,
+			true,
+		);
+		this._agentEventQueue = Promise.all([this._agentEventQueue, saved.catch(() => {})]).then(() => {});
+		this._agentEventQueue.catch(() => {});
+	}
 	for (const l of this._eventListeners) {
 		l(event);
 	}
-	publish?.();
 }
 
 export function _emitQueueUpdate(this: AgentSession): void {

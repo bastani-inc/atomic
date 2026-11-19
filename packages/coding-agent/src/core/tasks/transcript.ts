@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import { hostNoticeFromEntry } from "../host-notices.ts";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { Failure, Result } from "./contracts.js";
 import { type TaskLease, type TaskTranscriptSource, taskTranscriptSource } from "./supervisor.js";
@@ -95,11 +94,6 @@ export function taskTranscriptPage(
 		}
 		if (entry.type === "custom_message") {
 			if (entry.display) add({ id: entry.id, kind: "custom-message", source });
-			continue;
-		}
-		// A line Atomic wrote about how a turn ended shows where it was written (#5649).
-		if (hostNoticeFromEntry(entry) !== undefined) {
-			add({ id: entry.id, kind: "custom-message", source });
 			continue;
 		}
 		if (entry.type !== "message") continue;

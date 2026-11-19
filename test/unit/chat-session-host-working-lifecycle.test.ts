@@ -9,7 +9,6 @@ import { setThemeInstance } from "../../packages/coding-agent/src/modes/interact
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import { useAnsiColorEnvironment } from "../helpers/ansi-color-env.ts";
 import {
-	applySessionEvent,
 	editorTheme,
 	installLifecycleFakeClock,
 	plainStyle,
@@ -238,7 +237,7 @@ test("ChatSessionHost terminal cleanup stops ordinary and compaction animation w
 			host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
 			assert.equal(host.hasAnimationTick(), true);
 
-			applySessionEvent(host, terminalEvent);
+			host.applyAgentEvent(terminalEvent as never);
 			assert.equal(host.hasAnimationTick(), false, terminalEvent.type);
 			assert.equal(timers.intervalCount(), 0, terminalEvent.type);
 			assert.deepEqual(host.renderWorkingStatus(64), [], terminalEvent.type);
@@ -336,8 +335,9 @@ test("ChatSessionHost stops lifecycle animation on failed or cancelled compactio
 				reason: "manual",
 				aborted: true,
 				willRetry: false,
+				errorMessage: "Operation cancelled",
 			},
-			"Compaction cancelled",
+			"Operation cancelled",
 		],
 	] as const) {
 		const timers = installLifecycleFakeClock();
@@ -346,7 +346,7 @@ test("ChatSessionHost stops lifecycle animation on failed or cancelled compactio
 			host.applyAgentEvent({ type: "agent_start" } as never);
 			host.applyAgentEvent({ type: "turn_start" } as never);
 			host.applyAgentEvent({ type: "compaction_start", reason: event.reason } as never);
-			applySessionEvent(host, event);
+			host.applyAgentEvent(event as never);
 
 			assert.equal(host.hasAnimationTick(), false);
 			assert.equal(timers.intervalCount(), 0);

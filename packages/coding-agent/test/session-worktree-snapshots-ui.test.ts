@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { Container } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { hostNoticeForEvent } from "../src/core/host-notices.ts";
 import { recordResumeTimings } from "../src/core/resume/timings.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openSessionInWorktree } from "../src/core/session-worktree-snapshots.ts";
@@ -292,15 +291,17 @@ describe("snapshot-unavailable events in the TUI", () => {
 			new WorkspaceSnapshotError("not-a-repository", "/tmp"),
 			new WorkspaceSnapshotError("unborn-head", "/tmp"),
 		]) {
-			const event = { type: "worktree_snapshot_unavailable" as const, reason: serializeWorkspaceError(reason) };
-			assert.equal(hostNoticeForEvent(event, undefined), undefined);
-			await handleEvent.call(host, event);
+			await handleEvent.call(host, {
+				type: "worktree_snapshot_unavailable",
+				reason: serializeWorkspaceError(reason),
+			});
 		}
-		const unsupported = new WorkspaceSnapshotError("blob-store-unsupported", "jsonl");
-		const event = { type: "worktree_snapshot_unavailable" as const, reason: serializeWorkspaceError(unsupported) };
-		// The session shows the warning as a line it saves with the turn; the chat's handler adds nothing (#5649).
-		assert.deepEqual(hostNoticeForEvent(event, undefined), { level: "warning", text: unsupported.message });
-		await handleEvent.call(host, event);
 		assert.deepEqual(host.warnings, []);
+		const unsupported = new WorkspaceSnapshotError("blob-store-unsupported", "jsonl");
+		await handleEvent.call(host, {
+			type: "worktree_snapshot_unavailable",
+			reason: serializeWorkspaceError(unsupported),
+		});
+		assert.deepEqual(host.warnings, [unsupported.message]);
 	});
 });

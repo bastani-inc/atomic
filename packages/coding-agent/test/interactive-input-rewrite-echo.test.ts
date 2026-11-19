@@ -4,7 +4,6 @@ import { Container } from "@bastani/atomic-tui";
 import { afterEach, describe, test, vi } from "vitest";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
-import { hostNoticeFromMessage } from "../src/core/host-notices.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import {
 	createGate,
@@ -87,9 +86,6 @@ function followCompaction(rig: Rig): void {
 	});
 	rig.host.session.subscribe(async (event) => {
 		if (event.type === "compaction_start" || event.type === "compaction_end") await handleEvent.call(rig.host, event);
-		// The session shows how a compaction ended as a line it saves (#5649).
-		const notice = event.type === "message_end" ? hostNoticeFromMessage(event.message) : undefined;
-		if (notice) rig.host.notices.push(`${notice.level}: ${notice.text}`);
 	});
 }
 

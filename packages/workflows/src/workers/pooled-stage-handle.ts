@@ -4,11 +4,7 @@ import {
 	type AgentSessionEvent,
 	AgentTokenMeter,
 	type BashResult,
-	hostNoticeFromMessage,
-	hostNoticeMessageFromEntry,
-	retainTurnOutcome,
 	type SessionCommandCatalog,
-	settleTurnOutcome,
 	type TaskViewSource,
 } from "@bastani/atomic";
 import {
@@ -828,7 +824,7 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 
 	private adoptHistory(history: Pick<PooledStageChatSnapshot, "messages" | "contextMeter">): void {
-		this.settled = history.messages.map((message) => retainTurnOutcome(this, message));
+		this.settled = [...history.messages];
 		this.contextTokens = history.contextMeter && new AgentTokenMeter([], history.contextMeter);
 		this.requestSide = history.contextMeter?.requestSide ?? false;
 	}
@@ -918,30 +914,12 @@ export class PooledStageHandle implements StageControlHandle {
 				this.streamingNow = false;
 				this.streaming = undefined;
 				return;
-			case "entry_appended": {
-				const saved = hostNoticeMessageFromEntry(event.entry);
-				if (saved && saved.details?.label !== saved.content) {
-					// Only the snapshot a later attachment reads changes. Live listeners keep their full row.
-					const index = this.settled.findLastIndex(
-						(row) => hostNoticeFromMessage(row)?.settlesId === event.entry.id,
-					);
-					if (index >= 0) this.settled[index] = saved;
-				}
-				return;
-			}
 			case "message_start":
 			case "message_update":
 				if (event.message.role === "assistant") this.streaming = event.message as StreamingMessage;
-				else if (
-					event.type === "message_start" &&
-					event.message.role === "custom" &&
-					hostNoticeFromMessage(event.message)?.pendingId
-				)
-					this.settled.push(retainTurnOutcome(this, event.message));
 				return;
 			case "message_end":
-				if (event.message.role !== "custom" || !settleTurnOutcome(this, event.message))
-					this.settled.push(retainTurnOutcome(this, event.message));
+				this.settled.push(event.message);
 				if (this.contextTokens) {
 					this.contextTokens.settled(event.message);
 					this.requestSide = event.message.role === "user" || event.message.role === "toolResult";

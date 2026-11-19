@@ -26,7 +26,6 @@ import type {
 	WorkflowRunJsonValue,
 	WorkflowRunSummary,
 } from "../extensions/workflow-run-control.js";
-import { hostNoticeFromEntry } from "../host-notices.ts";
 import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
@@ -109,7 +108,7 @@ const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
 const DISCOVERY_TTL_MS = 60_000;
 const MAX_PARKED_DISCOVERIES = 16;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
-	sessions: ["limit", "offset", "project", "cursor", "session", "after", "notice"],
+	sessions: ["limit", "offset", "project", "cursor", "session", "after"],
 	workflows: ["limit", "offset", "cursor", "run"],
 	root: ["limit", "offset", "project", "cursor"],
 };
@@ -119,7 +118,6 @@ type Domain = "sessions" | "workflows";
 interface HistoryTarget {
 	readonly domain?: Domain;
 	readonly id?: string;
-	readonly notice?: string;
 	readonly limit: number;
 	readonly offset: number;
 	/** `undefined` selects the current project, `"all"` every project, anything else is a project directory. */
@@ -237,8 +235,6 @@ function parseTarget(url: string): HistoryTarget {
 	if (project === "") throw new Error("history project must be 'all' or a directory");
 	const session = params.get("session") ?? undefined;
 	if (session === "") throw new Error("history session must be a session id");
-	const notice = params.get("notice");
-	if (notice !== null && (!idText || !notice)) throw new Error("A turn outcome needs a session ID and an entry ID");
 	const run = params.get("run") ?? undefined;
 	if (run === "") throw new Error("history run must be a workflow run id");
 	const afterText = params.get("after");
@@ -255,7 +251,6 @@ function parseTarget(url: string): HistoryTarget {
 	return {
 		domain,
 		...(idText ? { id: decodeURIComponent(idText) } : {}),
-		...(notice === null ? {} : { notice }),
 		limit,
 		offset,
 		...(project === undefined ? {} : { project }),
@@ -1507,21 +1502,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 	): Promise<string> {
 		const { id, header } = await authorizedSession(target, budget);
 		const place = placeOf(id, requireStore(id), target);
-		if (target.notice !== undefined) {
-			// A delayed append cannot predict its sequence. Resolve the saved ID only when the reader opens the link.
-			const seq = await budget.race(place.store.findEntrySeq?.(id, target.notice) ?? Promise.resolve(undefined));
-			const row =
-				seq === undefined || !place.store.readEntryRange
-					? undefined
-					: (
-							await budget.race(
-								place.store.readEntryRange(id, { fromSeq: seq, toSeq: seq, signal: budget.storeSignal }),
-							)
-						).entries[0]?.entry;
-			const notice = row?.id === target.notice ? hostNoticeFromEntry(row) : undefined;
-			if (!notice) throw new Error(`Saved turn outcome not found: ${target.notice}`);
-			return notice.text;
-		}
 		const headerLines = transcriptHeaderLines(header, target.project === undefined);
 		const cursor: SeqCursor | undefined =
 			target.cursor === undefined
