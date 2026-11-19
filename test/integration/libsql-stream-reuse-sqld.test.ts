@@ -24,33 +24,55 @@ const withSqld = test.skipIf(url === undefined || url === "");
 const SQLD_STREAM_EXPIRY_MS = 10_000;
 
 /**
- * Whether a pipeline answer failed its last request, the statement, with `SQLITE_BUSY`. sqld answers a write that meets
- * its checkpoint so, without running it and keeping the stream, and the adapter sends the statement again (#4817).
+ * The code a pipeline answer failed its last request, the statement, with, if it failed it. sqld answers a write that
+ * meets its checkpoint `SQLITE_BUSY` (#4817), and a statement it prepared while other connections changed the schema,
+ * as other test files sharing the server do, `SQLITE_SCHEMA` (#5456). Either way it ran none of the statement and kept
+ * the stream, and the adapter runs the statement again.
  */
-function answeredBusy(body: string): boolean {
+function statementFailure(body: string): string | undefined {
 	try {
 		const { results } = JSON.parse(body) as { results?: { type?: string; error?: { code?: string } }[] };
 		const last = results?.at(-1);
-		return last?.type === "error" && last.error?.code === "SQLITE_BUSY";
+		return last?.type === "error" ? last.error?.code : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Whether a pipeline request's last request, the statement, is an `INSERT`. */
+function sendsInsert(body: string): boolean {
+	try {
+		const { requests } = JSON.parse(body) as { requests?: { stmt?: { sql?: string } }[] };
+		return /^INSERT\b/.test(requests?.at(-1)?.stmt?.sql ?? "");
 	} catch {
 		return false;
 	}
 }
 
 /**
- * Counts the pipeline requests sent, those that continue a stream, by the baton their bodies carry, and those whose
- * statement the server answered busy.
+ * Counts the pipeline requests sent, those that continue a stream, by the baton their bodies carry, those whose
+ * statement the server answered busy, and those whose statement, a read or a write, it answered `SQLITE_SCHEMA`.
  */
-function countRequests(): { sent: number; continued: number; busy: number } {
-	const counts = { sent: 0, continued: 0, busy: 0 };
+function countRequests(): {
+	sent: number;
+	continued: number;
+	busy: number;
+	schemaChangedReads: number;
+	schemaChangedWrites: number;
+} {
+	const counts = { sent: 0, continued: 0, busy: 0, schemaChangedReads: 0, schemaChangedWrites: 0 };
 	const real = globalThis.fetch;
 	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
 		const request = new Request(input, init);
 		if (request.method !== "POST" || !/\/pipeline$/.test(new URL(request.url).pathname)) return real(request);
 		counts.sent++;
-		if (/"baton":"/.test(await request.clone().text())) counts.continued++;
+		const body = await request.clone().text();
+		if (/"baton":"/.test(body)) counts.continued++;
 		const response = await real(request);
-		if (answeredBusy(await response.clone().text())) counts.busy++;
+		const failure = statementFailure(await response.clone().text());
+		if (failure === "SQLITE_BUSY") counts.busy++;
+		else if (failure === "SQLITE_SCHEMA" && sendsInsert(body)) counts.schemaChangedWrites++;
+		else if (failure === "SQLITE_SCHEMA") counts.schemaChangedReads++;
 		return response;
 	});
 	return counts;
@@ -67,14 +89,21 @@ withSqld("against sqld, statements outside a transaction continue one stream (#5
 			await database.run(`INSERT INTO ${table} VALUES (?)`, n);
 			await database.get(`SELECT COUNT(*) AS count FROM ${table}`);
 		}
-		// A statement sqld answered busy, as it answers a write that meets its checkpoint, is sent again on the same
-		// stream: one more request, which continues the stream as well.
-		const busy = counts.busy - before.busy;
-		assert.equal(counts.sent - before.sent, 40 + busy, "one request per statement, and one per busy answer");
+		// A statement sqld answered busy, as it answers a write that meets its checkpoint, or a read it answered
+		// `SQLITE_SCHEMA`, as it answers one it prepared while other connections changed the schema, is sent again on the
+		// same stream: one more request, which continues the stream as well. A write it answered `SQLITE_SCHEMA` runs again
+		// in a write transaction of its own (#5462), on a stream of its own: one more request, which continues no stream.
+		const onStream = counts.busy - before.busy + counts.schemaChangedReads - before.schemaChangedReads;
+		const inTransaction = counts.schemaChangedWrites - before.schemaChangedWrites;
+		assert.equal(
+			counts.sent - before.sent,
+			40 + onStream + inTransaction,
+			"one request per statement, and one per busy or SQLITE_SCHEMA answer",
+		);
 		assert.equal(
 			counts.continued - before.continued,
-			39 + busy,
-			"every request after the first continued its stream",
+			39 + onStream,
+			"every request after the first continued its stream, but a write's rerun in a transaction of its own",
 		);
 		const row = await database.get<{ count: bigint }>(`SELECT COUNT(*) AS count FROM ${table}`);
 		assert.equal(Number(row?.count), 20);

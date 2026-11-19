@@ -103,6 +103,12 @@ export interface SessionResumeIndex {
 	readonly snapshotRecords: Readonly<Record<string, number>>;
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
+	/**
+	 * Every entry an extension saved with `pi.appendEntry` (see {@link isExtensionCustomState}), on any branch. They
+	 * remain history; a subagent fork copies those on its branch. Absent from an index an earlier build saved or
+	 * extended, which a fork then compensates for by scanning.
+	 */
+	readonly extensionState?: readonly number[];
 }
 
 const ZERO_USAGE: SessionUsageTotals = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
@@ -207,6 +213,47 @@ const BRANCH_CUSTOM_STATE_TYPES = new Set([
 ]);
 export function isBranchCustomState(customType: string | undefined): boolean {
 	return customType !== undefined && BRANCH_CUSTOM_STATE_TYPES.has(customType);
+}
+/**
+ * Custom entry types that Atomic and its bundled extensions write, or still read from older sessions. Every other
+ * type is state an extension saved with `pi.appendEntry`, which a subagent fork copies from its branch as the
+ * complete-branch copy did (#5500). A type missing here is copied too, so the list only limits what a fork copies.
+ */
+const ATOMIC_CUSTOM_TYPES = new Set([
+	...BRANCH_CUSTOM_STATE_TYPES,
+	LEAF_MOVE_TYPE,
+	TASK_COMPLETION_INTENT_TYPE,
+	TASK_COMPLETION_ACK_TYPE,
+	DELIVERY_OP_TYPE,
+	"atomic.fork-anchor",
+	"atomic.share",
+	"atomic.tool-output",
+	"intercom_ask",
+	"intercom_ask_settled",
+	"intercom_control_error",
+	"intercom_inbox",
+	"intercom_inbox_handled",
+	"intercom_received",
+	"intercom_reply_wait",
+	"intercom_result_error",
+	"intercom_sent",
+	"intercom_session_identity",
+	"intercom_session_memberships",
+	"resume_timings",
+	"subagent-child",
+	"subagent-slash-final-snapshot",
+	"web-search-results",
+	"workflow-stage-parked-tasks",
+	"workflow.run.blocked",
+	"workflow.run.end",
+	"workflow.run.start",
+	"workflow.stage.end",
+	"workflow.stage.progress",
+	"workflow.stage.start",
+	"workspace_binding",
+]);
+export function isExtensionCustomState(customType: string | undefined): boolean {
+	return !!customType && !ATOMIC_CUSTOM_TYPES.has(customType);
 }
 export function isSessionHistoryEntry(entry: SessionEntry): boolean {
 	if (entry.type === "message") return entry.message?.role !== "system";
@@ -661,6 +708,8 @@ export function foldSessionResume(
 	const positions = statePositions(previous);
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
+	// An index an earlier build saved does not list extension state, so extending it cannot either.
+	const extensionState = previous === undefined ? [] : previous.extensionState && [...previous.extensionState];
 	let needsBranchRebuild = previous?.needsBranchRebuild ?? false;
 	const own = new Map<string, number>(lastId === null ? [] : [[lastId, seq]]);
 	const resolve = (id: string | null | undefined): number =>
@@ -700,6 +749,7 @@ export function foldSessionResume(
 		}
 		applyBranchState(protocols, assistants, entry, seq, branchActive, modelTransition);
 		addStatePosition(positions, entry, seq);
+		if (entry.type === "custom" && isExtensionCustomState(entry.customType)) extensionState?.push(seq);
 		totals = addEntryToHistoryTotals(totals, entry);
 		if (entry.type === "message" && entry.message?.role === "assistant" && countedUsage(entry.message.usage)) {
 			latestAssistantSeq = seq;
@@ -724,6 +774,7 @@ export function foldSessionResume(
 		...positions,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
+		...(extensionState ? { extensionState } : {}),
 	};
 }
 
@@ -788,12 +839,14 @@ const UPGRADED_CUSTOM_TYPES = new Set(["subagent-child", "workflow.run.start", "
 
 /**
  * The entries a version-5 upgrade reads: every entry outside the conversation (`!isSessionHistoryEntry`: these
- * types, system messages, and the custom types of branch state) and the child and workflow-run records, which are
- * the other custom types here. A store may select a superset; the upgrade ignores the rest.
+ * types, system messages, and the custom types of branch state), the child and workflow-run records, which are
+ * the other custom types here, and the extension state: every custom type outside `atomicCustomTypes`. A store may
+ * select a superset; the upgrade ignores the rest.
  */
 export const RESUME_UPGRADE_SOURCES = {
 	types: [...SESSION_STATE_TYPES],
 	customTypes: [...BRANCH_CUSTOM_STATE_TYPES, ...UPGRADED_CUSTOM_TYPES],
+	atomicCustomTypes: [...ATOMIC_CUSTOM_TYPES],
 } as const;
 
 function upgradeSource(entry: SessionEntry): boolean {
@@ -805,8 +858,9 @@ function upgradeSource(entry: SessionEntry): boolean {
  * after an upgrade; the result equals the index a fold of every entry builds. The conversation fields (topology,
  * totals, models, assistants, compactions) and the recovery protocols this version folds as version 5 did carry
  * over, and admission keys become digests. The rest is derived again from the sources: the child records and
- * aliases, open workflow runs, the active branch's settings and checkout snapshots, and the state positions.
- * Add the sources in sequence order, on any branch.
+ * aliases, open workflow runs, the active branch's settings and checkout snapshots, the state positions, and the
+ * extension state, which an index from a build before that field does not list. Add the sources in sequence order,
+ * on any branch.
  */
 export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 	add(entry: SessionEntry, seq: number): void;
@@ -830,11 +884,14 @@ export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 		snapshotPins: [],
 	});
 	const positions = statePositions();
+	// Derived rather than carried: an index from a build before the field does not list it.
+	const extensionState: number[] = [];
 	let lastSeq = 0;
 	return {
 		add(entry, seq) {
 			if (seq <= lastSeq || seq > previous.seq) throw new RangeError(`Resume upgrade source ${seq} out of order`);
 			lastSeq = seq;
+			if (entry.type === "custom" && isExtensionCustomState(entry.customType)) extensionState.push(seq);
 			if (!upgradeSource(entry)) return;
 			// None of the sources is an assistant message or a protocol record the carried fields fold.
 			applyBranchState(protocols, [], entry, seq, ranges === undefined || onBranch(ranges, seq), false);
@@ -857,6 +914,7 @@ export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 				...positions,
 				totals: previous.totals,
 				...(previous.latestAssistantSeq !== undefined ? { latestAssistantSeq: previous.latestAssistantSeq } : {}),
+				extensionState,
 			};
 		},
 	};
@@ -891,7 +949,10 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		typeof index.snapshotRecords === "object" &&
 		index.snapshotRecords !== null &&
 		typeof index.totals === "object" &&
-		index.totals !== null
+		index.totals !== null &&
+		(index.extensionState === undefined ||
+			(Array.isArray(index.extensionState) &&
+				index.extensionState.every((seq) => Number.isSafeInteger(seq) && seq > 0 && seq <= lastSeq)))
 	);
 }
 

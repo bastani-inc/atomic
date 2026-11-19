@@ -1338,7 +1338,7 @@ export class JsonlSessionStore implements SessionStore {
 						many,
 						metadata,
 						async function* (ranges, kinds, types = []) {
-							if (kinds.length || types.includes("label")) {
+							if (kinds.length || types.includes("label") || types.includes("custom")) {
 								yield* scan(ranges, kinds, types);
 								return;
 							}
