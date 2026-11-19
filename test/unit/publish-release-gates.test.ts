@@ -7,6 +7,7 @@ import {
 	evaluatePreparationReuse,
 	evaluatePublishRuns,
 	evaluateRequiredChecks,
+	mergeExactHead,
 	type PollClock,
 	type PublishRun,
 	pollPublish,
@@ -17,7 +18,7 @@ import {
 	type RequiredChecksSnapshot,
 	releaseVersionPattern,
 	validateReleaseRequest,
-} from "../../scripts/release/publish-release.js";
+} from "../../scripts/release/publish-release-gates.js";
 import { bunExecutable } from "../helpers/runtime.js";
 
 const headSha = "1".repeat(40);
@@ -116,7 +117,7 @@ function apiPull() {
 		state: "open",
 		merged: false,
 		base: { ref: "main", repo: { full_name: "bastani-inc/atomic" } },
-		head: { ref: release.branch, sha: headSha },
+		head: { ref: release.branch, sha: headSha, repo: { full_name: "bastani-inc/atomic" } },
 	};
 }
 
@@ -189,11 +190,109 @@ test("the preparation CLI rejects invalid release requests before reading the re
 	] as const) {
 		const result = spawnSync(
 			bunExecutable(),
-			["scripts/release/publish-release.ts", "inspect-preparation", kind, version, base],
+			[
+				"scripts/release/publish-release.ts",
+				"inspect-preparation",
+				"--kind",
+				kind,
+				"--version",
+				version,
+				"--base",
+				base,
+				"--dry-run",
+			],
 			{ encoding: "utf8" },
 		);
 		assert.equal(result.status, 1, result.stderr);
-		assert.match(result.stderr, expected);
+		assert.match(JSON.parse(result.stdout).summary, expected);
+	}
+});
+
+test("exact-head merge refuses changed PRs and absent or failed checks; a verified dry run has no side effects", async () => {
+	for (const state of ["drift", "wrong PR", "missing", "failed", "inconsistent merge", "passed", "execute"] as const) {
+		let prReads = 0;
+		let merged = false;
+		const transport = fakeTransport((argv) => {
+			const cmd = argv.join(" ");
+			const prep = exactPreparationResponse(argv);
+			if (prep) return prep;
+			if (cmd.endsWith("/pulls/42")) {
+				const pr = apiPull();
+				if (state === "drift") pr.head.sha = "7".repeat(40);
+				if (state === "wrong PR") pr.number = 43;
+				prReads++;
+				if (merged || (state === "inconsistent merge" && prReads === 2))
+					return commandResult(
+						JSON.stringify({ ...pr, state: "closed", merged: true, merge_commit_sha: baseSha }),
+					);
+				return commandResult(JSON.stringify(pr));
+			}
+			if (cmd.includes(`commits/${headSha}?`))
+				return commandResult(
+					JSON.stringify({
+						sha: headSha,
+						parents: [{ sha: baseSha }],
+						files: [{ filename: "packages/coding-agent/CHANGELOG.md" }],
+					}),
+				);
+			if (cmd.includes("/protection/required_status_checks"))
+				return commandResult(JSON.stringify({ checks: [{ context: "ci", app_id: 1 }] }));
+			if (cmd.includes("/rules/branches")) return commandResult("[]");
+			if (cmd.includes("/check-runs"))
+				return commandResult(
+					JSON.stringify({
+						check_runs:
+							state === "missing"
+								? []
+								: [
+										{
+											id: 1,
+											name: "ci",
+											status: "completed",
+											conclusion: state === "failed" ? "failure" : "success",
+											app: { id: 1 },
+										},
+									],
+					}),
+				);
+			if (cmd.includes("/status?")) return commandResult('{"statuses":[]}');
+			if (state === "execute") {
+				if (cmd === `gh pr merge ${pullRequest.url} --squash --match-head-commit ${headSha}`) {
+					merged = true;
+					return commandResult();
+				}
+				if (
+					cmd === "git switch main" ||
+					cmd === "git fetch --no-tags origin refs/heads/main" ||
+					cmd === "git pull --ff-only origin main" ||
+					cmd === `git merge-base --is-ancestor ${baseSha} ${baseSha}`
+				)
+					return commandResult();
+				if (cmd === "git rev-parse HEAD") return commandResult(baseSha);
+				if (cmd === "git branch --show-current") return commandResult("main");
+			}
+			throw Error(`Unexpected operation: ${cmd}`);
+		});
+		const gate = mergeExactHead(
+			{
+				cwd: "/unused",
+				baseRef: "main",
+				release,
+				pullRequest,
+				signal: new AbortController().signal,
+				dryRun: state === "passed",
+			},
+			transport,
+		);
+		if (state === "passed") assert.equal((await gate).action, "would-merge-exact-head");
+		else if (state === "execute") {
+			assert.equal((await gate).baseSha, baseSha);
+			assert.equal(merged, true);
+		} else
+			await assert.rejects(
+				gate,
+				/Expected open or merged|pending or not yet created|terminal failure|merged state changed/u,
+			);
 	}
 });
 

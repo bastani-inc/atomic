@@ -5,7 +5,6 @@
 This repo is the private `atomic-monorepo` npm workspace. It currently houses:
 
 - `@bastani/atomic` in `packages/coding-agent` — the Atomic-branded fork of pi's coding-agent CLI, and the package users install.
-- `@bastani/workflows` in `packages/workflows` — a first-party extension for Atomic/pi that brings multi-stage, DAG-driven workflow execution to agent sessions.
 - `@bastani/subagents` in `packages/subagents` — builtin subagent orchestration, reusable agent definitions, skills, prompts, and foreground/background execution.
 - `@bastani/mcp` in `packages/mcp` — builtin MCP adapter extension that exposes MCP servers as agent tools.
 - `@bastani/web-access` in `packages/web-access` — builtin web search, URL fetching, GitHub repository, PDF, and video extraction tools.
@@ -92,7 +91,6 @@ name it.
 - Avoid ambiguous types like `any` and `unknown`. Use specific types instead.
 - The Bun runtime/CI pin and its types are both 1.4.4 (`@types/bun` 1.4.4, which depends on `bun-types` 1.4.4). Move the runtime and types together, and verify with `npm run typecheck` when bumping types. If `bun check` reports an error that TypeScript 7 `tsc` does not, it is a Bun bug: add an explicit type annotation at the reported site rather than loosening the code, and report it upstream.
 - Source files use `.js` import extensions (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to the underlying `.ts` source directly — no loader hook required. atomic's loader follows the same convention as pi.
-- Do not add a build step (`dist/`, `tsconfig.build.json`, etc.) to `packages/workflows`; it distributes raw TypeScript and the host loads it directly. `packages/coding-agent` is copied from upstream pi and keeps its existing build setup.
 - When using skills, if you see a frontmatter of `metadata: internal` set to `true` (if missing assume `false`), that means the skill is for internal developers of this package. If this flag is omitted, the skill is meant for consumers/everyday users.
 
 ## Design Context
@@ -244,7 +242,7 @@ The selected base is never advanced by the version stamp. The script resolves it
 
 When asked to publish a release or prerelease, follow the repository-local [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`). Ask for a missing version; infer release versus prerelease from a valid version and clarify ambiguity. Default the release base to `main`. Require non-main bases to be protected with the repository's required CI checks.
 
-Use the skill's read-only gates in `scripts/release/publish-release.ts`; do not substitute a green PR badge, bypass a gate or repeat a push after losing its response. The skill requires a clean checkout, prepares or reuses one exact changelog-only PR, gates its verified head for up to 45 minutes, and only then merges, fast-forwards the versionless base and cuts the detached tag. The tag starts `publish.yml`. Wait up to 60 minutes for its exact push run; never reset, force-push, move a tag or dispatch a duplicate publication.
+Use `validate`, `inspect-preparation`, `check-changelog-diff`, `wait-required-checks`, `merge-exact-head` and `wait-publish-run` in `scripts/release/publish-release.ts` as the skill directs. Never substitute a green PR badge, bypass a gate, or repeat a push after losing its response. Use `--dry-run` to verify without merging; an actual merge, push or tag requires an explicit request to publish. The skill requires a clean checkout, prepares or reuses one exact changelog-only PR, gates its verified head for up to 45 minutes, and only then merges, fast-forwards the versionless base and cuts the detached tag. The tag starts `publish.yml`. Wait up to 60 minutes for its exact push run; never reset, force-push, move a tag or dispatch a duplicate publication.
 
 ## Docs
 
@@ -329,20 +327,17 @@ Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not
 
 ## Tips
 
-1. The workflows extension is bundled into `@bastani/atomic`. For local development against upstream pi, symlink `packages/workflows` into `~/.pi/agent/extensions/workflows` if you want host-level discovery outside Atomic.
-2. Rely on agent skills to provide information on best practices during implementation. Here is a short list of Agent Skills that are incredibly relevant to this project that you should try to use when applicable:
+1. Rely on agent skills to provide information on best practices during implementation. Here is a short list of Agent Skills that are incredibly relevant to this project that you should try to use when applicable:
     - bun
     - gh-commit
     - gh-create-pr
     - prek
     - typescript-advanced-types
     - typescript-expert
-3. Ask for clarity if you are unsure about a change. The developer is your best friend and oftentimes can clarify intent.
-4. When modifying this extension, follow pi's extension and SDK conventions.
+2. Ask for clarity if you are unsure about a change. The developer is your best friend and oftentimes can clarify intent.
+3. When modifying extensions, follow pi's extension and SDK conventions.
 
 <EXTREMELY_IMPORTANT>
-`@bastani/workflows` ships raw `.ts` files with no build step — do NOT introduce `dist/`, `tsconfig.build.json`, `outDir`, or any bundling.
-
 Install with `npm ci --ignore-scripts`, and add dependencies with `npm install`. Never run
 `yarn install` or `pnpm install`, and do not bring back `bun install`: each writes a competing
 lockfile that `npm ci` neither reads nor verifies, and bypasses the `save-exact` pin in the
