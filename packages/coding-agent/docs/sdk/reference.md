@@ -127,6 +127,10 @@ refresh, and `modelRefreshTimeoutMs` (default `15_000`) bounds how long that ref
 before it is aborted. Pass `refreshOnCreate: false` to skip the initial catalog and
 availability refresh entirely; built-in models remain available.
 
+`createAgentSession()` does not fetch an account model list at startup. If its cache restore found no GitHub Copilot catalog and its first prompt has no usable model or fallback, the session can look up the exact saved Copilot model. A supplied `model`, a working preset or fallback, and a cached catalog need no lookup. Only that session uses the result; `models-store.json`, credentials and model listings do not change.
+
+The `modelFallbackMessage` returned by `createAgentSession()` describes startup. If the account confirms the model is absent, the first prompt's error says so. A refused, offline or cancelled lookup keeps the usual error. Pass `signal` to `createAgentSession()` to cancel the lookup, or `allowModelNetwork: false` to `ModelRuntime.create()` to disable it. Custom asynchronous-only credential stores keep the usual local selection; discovery never waits on their read queue.
+
 ```typescript
 const refreshedRuntime = await ModelRuntime.create({
   allowModelNetwork: true,
