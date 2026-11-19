@@ -140,7 +140,7 @@ The same statements work on every service:
 
 When the runtime role lacks a privilege, the store fails with `StorageConfigError` reason `"missing-privilege"`, whose message names the privilege PostgreSQL refused and the grant or command that fixes it, rather than a bare `42501`. A runtime role on a schema an older `atomic storage migrate` set up gets the same error, asking for `atomic storage migrate` as the owner role.
 
-One table is the exception: the fork staging table, through which a whole-session clone from a connection Atomic cannot prove to be the destination's own is copied a page at a time. `atomic storage migrate` creates it, and so does the first such clone run by a role that may create tables. A low-privilege runtime role that finds it missing does not fail: it clones those sessions as earlier releases did, reading each into memory and creating the copy in one transaction, and warns once per process to run `atomic storage migrate` as the owner role.
+One table is the exception: the fork staging table, through which a whole-session clone from a connection Atomic cannot prove to be the destination's own is copied in batches of about 8 MiB, never read whole. `atomic storage migrate` creates it, and so does the first such clone run by a role that may create tables. A low-privilege runtime role that finds it missing does not fail: it clones those sessions as earlier releases did, reading each into memory and creating the copy in one transaction, and warns once per process to run `atomic storage migrate` as the owner role.
 
 #### Upgrading from tables in `public`
 

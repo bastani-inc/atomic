@@ -70,7 +70,7 @@ interface StagedRow {
 	readonly data?: Uint8Array;
 }
 
-/** One stored row of a source blob, read by itself; `chunks` -1 is the legacy one-row layout, read whole. */
+/** Some bytes of a source blob, read by themselves: a stored chunk row, or a cut of a legacy one-row blob (`chunks` -1). */
 export interface ForkStagingBlobPart {
 	readonly bytes: number;
 	readonly chunks: number;
@@ -130,10 +130,20 @@ export interface ForkStagingTarget {
 	sourceStoredEntryChunks(
 		store: SessionStore,
 	): ((reference: OversizedSessionEntry, index: number) => Promise<Uint8Array | undefined>) | undefined;
-	/** A reader of one blob row at a time when `store` is a SQL session store whose blob reads are its own. */
+	/**
+	 * A reader of a blob's bytes from an offset, one stored chunk row or, of a legacy one-row blob, at most `legacyBytes`,
+	 * when `store` is a SQL session store whose blob reads are its own.
+	 */
 	sourceBlobParts(
 		store: SessionStore,
-	): ((sessionId: string, hash: string, index: number) => Promise<ForkStagingBlobPart | undefined>) | undefined;
+	):
+		| ((
+				sessionId: string,
+				hash: string,
+				offset: number,
+				legacyBytes: number,
+		  ) => Promise<ForkStagingBlobPart | undefined>)
+		| undefined;
 }
 
 /** Staging writes touch only the staging table: its own lock domain, never the sessions tables' schema check. */
@@ -275,7 +285,7 @@ async function wholeSourceFork(
 	if (!missingStagingHinted) {
 		missingStagingHinted = true;
 		globalThis.process?.emitWarning?.(
-			`This database role may not create the fork staging table ${target.table}, so whole-session clones into it are read into memory. Run \`atomic storage migrate\` as the owner role to copy them a page at a time.`,
+			`This database role may not create the fork staging table ${target.table}, so whole-session clones into it are read into memory. Run \`atomic storage migrate\` as the owner role to copy them in bounded batches instead.`,
 		);
 	}
 	const entries: SessionEntry[] = [];
@@ -670,9 +680,10 @@ export async function createStagedFork(
 }
 
 /**
- * Stages the blob `hash` of the source session under `ordinal`, one stored chunk at a time when the source is a SQL
- * session store and whole, as `copySessionBlobs` reads it, otherwise. Resolves with its chunk count, or undefined when
- * the source no longer holds it.
+ * Stages the blob `hash` of the source session under `ordinal`. From a SQL session store, one stored chunk row at a
+ * time, or for a blob in the legacy one-row layout, cuts of at most {@link FORK_STAGING_BATCH_BYTES} the database makes
+ * without converting it; each cut costs the database one read of the whole value, so larger cuts mean fewer. Otherwise
+ * whole, as `copySessionBlobs` reads it. Resolves with its chunk count, or undefined when the source no longer holds it.
  */
 async function stageBlob(
 	target: ForkStagingTarget,
@@ -686,27 +697,38 @@ async function stageBlob(
 	const incomplete = (bytes: number) =>
 		new SessionBlobError("blob-incomplete", { sessionId: source.sessionId, hash, bytes });
 	if (parts !== undefined) {
-		let part = await parts(source.sessionId, hash, 0);
-		if (part === undefined) return undefined;
-		if (part.chunks >= 0) {
-			const { bytes, chunks } = part;
-			if (chunks !== Math.ceil(bytes / size)) throw incomplete(bytes);
-			for (let idx = 0; idx < chunks; idx++) {
-				if (idx > 0) part = await parts(source.sessionId, hash, idx);
-				// The session was deleted meanwhile: it holds nothing, as getBlob would report.
-				if (part === undefined) return undefined;
-				if (part.data?.byteLength !== Math.min(size, bytes - idx * size)) throw incomplete(bytes);
-				await stage({ kind: BLOB_CHUNK, seq: ordinal, idx, data: part.data });
-			}
-			await stage({ kind: BLOB, seq: ordinal, idx: chunks, name: hash, size: bytes });
-			return chunks;
+		const first = await parts(source.sessionId, hash, 0, FORK_STAGING_BATCH_BYTES);
+		if (first === undefined) return undefined;
+		const { bytes } = first;
+		const chunks = Math.ceil(bytes / size);
+		let idx = 0;
+		for (let offset = 0, part: ForkStagingBlobPart | undefined = first; offset < bytes; ) {
+			if (offset > 0) part = await parts(source.sessionId, hash, offset, FORK_STAGING_BATCH_BYTES);
+			// The session was deleted meanwhile: it holds nothing, as getBlob would report.
+			if (part === undefined) return undefined;
+			// A legacy blob converted to chunks meanwhile keeps its bytes and their cut: it reads on from its chunk rows.
+			const legacy = part.chunks === -1;
+			const length = Math.min(legacy ? FORK_STAGING_BATCH_BYTES : size, bytes - offset);
+			if (part.bytes !== bytes || (!legacy && part.chunks !== chunks) || part.data?.byteLength !== length)
+				throw incomplete(bytes);
+			for (let start = 0; start < length; start += size)
+				await stage({ kind: BLOB_CHUNK, seq: ordinal, idx: idx++, data: part.data.subarray(start, start + size) });
+			offset += length;
 		}
+		if (idx !== chunks || (first.chunks !== -1 && first.chunks !== chunks)) throw incomplete(bytes);
+		await stage({ kind: BLOB, seq: ordinal, idx: chunks, name: hash, size: bytes });
+		return chunks;
 	}
 	const data = await source.store.getBlob!(source.sessionId, hash);
 	if (data === undefined) return undefined;
 	const chunks = Math.ceil(data.byteLength / size);
-	for (let idx = 0; idx < chunks; idx++)
-		await stage({ kind: BLOB_CHUNK, seq: ordinal, idx, data: data.subarray(idx * size, (idx + 1) * size) });
+	for (let index = 0; index < chunks; index++)
+		await stage({
+			kind: BLOB_CHUNK,
+			seq: ordinal,
+			idx: index,
+			data: data.subarray(index * size, (index + 1) * size),
+		});
 	await stage({ kind: BLOB, seq: ordinal, idx: chunks, name: hash, size: data.byteLength });
 	return chunks;
 }

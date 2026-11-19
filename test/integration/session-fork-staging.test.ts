@@ -545,6 +545,109 @@ for (const backend of storageBackends) {
 		);
 
 		test(
+			"multi-MiB blobs reach Node in bounded parts and are copied byte for byte, one in the legacy one-row layout without converting it",
+			() =>
+				withScope(async (scope) => {
+					const sourcePrefix = `${scope.prefix}s_`;
+					const seeding = await scope.connect();
+					await (await SqlSessionStore.open(seeding, { prefix: sourcePrefix })).create(header("src"), [
+						user("e1", null, "blobs", 1),
+					]);
+					// More than two cuts on a SQLite file; a libSQL server caps a row at 5 MB, so its legacy rows were smaller.
+					const legacyBytes = bytesOf(
+						backend.name === "SQLite file"
+							? 2 * FORK_STAGING_BATCH_BYTES + 17
+							: 4 * SESSION_BLOB_CHUNK_BYTES + 17,
+						11,
+					);
+					const legacyHash = sha256(legacyBytes);
+					// SQLite and libSQL tables written before chunked blobs kept each blob in one row; PostgreSQL never did.
+					const legacy = dialectOf(seeding).name === "sqlite";
+					const blobs = renderStorageIdentifiers("sessions", SESSION_TABLES, sourcePrefix);
+					if (legacy) {
+						await seeding.exec(`DROP TABLE ${blobs.blobs}; DROP TABLE ${blobs.blobChunks};
+							CREATE TABLE ${blobs.blobs} (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL,
+							data BLOB NOT NULL, PRIMARY KEY (session_id, hash)) STRICT`);
+						await seeding.run(
+							`INSERT INTO ${blobs.blobs} VALUES ('src', ?, ?, ?)`,
+							legacyHash,
+							legacyBytes.byteLength,
+							legacyBytes,
+						);
+					}
+					// The largest bytes value the source database hands Node while the clone runs.
+					let largest = 0;
+					let measuring = false;
+					const measure = <R>(rows: R): R => {
+						if (measuring)
+							for (const row of Array.isArray(rows) ? rows : rows === undefined ? [] : [rows])
+								for (const value of Object.values(row as object))
+									if (value instanceof Uint8Array) largest = Math.max(largest, value.byteLength);
+						return rows;
+					};
+					const measured = <E extends SqliteExecutor>(executor: E): E =>
+						new Proxy(executor, {
+							get(target, key) {
+								const value = Reflect.get(target, key, target) as unknown;
+								if (typeof value !== "function") return value;
+								if (key === "get" || key === "all")
+									return async (...args: unknown[]) => measure(await Reflect.apply(value, target, args));
+								if (key === "transaction")
+									return (body: (tx: SqliteExecutor) => Promise<unknown>, options?: object) =>
+										Reflect.apply(value, target, [(tx: SqliteExecutor) => body(measured(tx)), options]);
+								return value.bind(target);
+							},
+						});
+					const source = await SqlSessionStore.open(measured(await scope.connect()), { prefix: sourcePrefix });
+					const chunkedBytes = bytesOf(5 * SESSION_BLOB_CHUNK_BYTES + 23, 13);
+					const chunked = await source.putBlob("src", chunkedBytes);
+					await source.append(
+						"src",
+						[
+							...(legacy ? [toolOutput("e2", "e1", legacyHash, legacyBytes.byteLength, 2)] : []),
+							toolOutput("e3", legacy ? "e2" : "e1", chunked.hash, chunked.bytes, 3),
+						],
+						{ expectSeq: 1 },
+					);
+					const mainDb = await scope.connect();
+					const stagingDb = await scope.connect();
+					const mainDest = await SqlSessionStore.open(mainDb, { prefix: `${scope.prefix}m_` });
+					const stagingDest = await SqlSessionStore.open(stagingDb, { prefix: `${scope.prefix}t_` });
+					await mainClone(source, "src", mainDest, header("child", "src"));
+					measuring = true;
+					const staged = await stagedClone(source, "src", stagingDest, header("child", "src"));
+					measuring = false;
+					assert.deepEqual(staged.created.remainingBlobs, []);
+					// A chunk row; a cut of a legacy row, which the database reads whole once per cut, is at most one batch.
+					const bound = legacy ? FORK_STAGING_BATCH_BYTES : SESSION_BLOB_CHUNK_BYTES;
+					assert.ok(largest <= bound, `Node received ${largest} bytes at once`);
+					assert.deepEqual(
+						await stored(stagingDb, `${scope.prefix}t_`, "child"),
+						await stored(mainDb, `${scope.prefix}m_`, "child"),
+					);
+					assert.deepEqual(await stagingDest.getBlob("child", chunked.hash), chunkedBytes);
+					if (legacy) {
+						assert.deepEqual(await stagingDest.getBlob("child", legacyHash), legacyBytes);
+						const kept = await seeding.get(
+							`SELECT chunks, length(data) AS bytes FROM ${blobs.blobs} WHERE session_id = 'src' AND hash = ?`,
+							legacyHash,
+						);
+						assert.deepEqual(
+							{ chunks: Number(kept?.chunks), bytes: Number(kept?.bytes) },
+							{ chunks: -1, bytes: legacyBytes.byteLength },
+							"the source keeps its legacy row as it was",
+						);
+						const converted = await seeding.get(
+							`SELECT count(*) AS n FROM ${blobs.blobChunks} WHERE session_id = 'src' AND hash = ?`,
+							legacyHash,
+						);
+						assert.equal(Number(converted?.n), 0, "nothing converts the legacy blob");
+					}
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
 			"two stores on one queued connection clone into each other without either waiting on the other",
 			() =>
 				withScope(async (scope) => {

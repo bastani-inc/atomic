@@ -842,7 +842,7 @@ export class SqlSessionStore implements SessionStore {
 			sourceBlobParts: (source) => {
 				const store = nativeForkReader(source, "blob");
 				return store instanceof SqlSessionStore && store.getBlob === SqlSessionStore.prototype.getBlob
-					? (sessionId, hash, index) => store.readBlobPart(sessionId, hash, index)
+					? (sessionId, hash, offset, legacyBytes) => store.readBlobPart(sessionId, hash, offset, legacyBytes)
 					: undefined;
 			},
 		};
@@ -893,17 +893,28 @@ export class SqlSessionStore implements SessionStore {
 		}, SESSION_TRANSACTION);
 	}
 
-	/** One stored row of a blob, so a staged clone holds one chunk at a time; `chunks` -1 is the legacy layout. */
+	/**
+	 * The bytes of a blob from `offset`, a multiple of {@link SESSION_BLOB_CHUNK_BYTES}, so a staged clone never holds
+	 * the whole of a large one (#5594): the stored chunk row there, or for a blob in the legacy one-row layout (`chunks`
+	 * -1), at most `legacyBytes` cut from its data column by the database, which loads that one value itself for each
+	 * cut. Nothing is converted or written.
+	 */
 	private async readBlobPart(
 		sessionId: string,
 		hash: string,
-		index: number,
+		offset: number,
+		legacyBytes: number,
 	): Promise<{ readonly bytes: number; readonly chunks: number; readonly data?: Uint8Array } | undefined> {
 		this.assertOpen();
+		// The data column exists only in SQLite tables written before chunked blobs.
+		const legacy = this.legacyBlobData
+			? "CASE WHEN b.chunks = -1 THEN substr(b.data, ?, ?) ELSE c.data END"
+			: "c.data";
 		const row = await this.database.get<SqliteRow & { bytes: number; chunks: number; data: Uint8Array | null }>(
-			`SELECT b.bytes, b.chunks, c.data FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
+			`SELECT b.bytes, b.chunks, ${legacy} AS data FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
 				ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = ? WHERE b.session_id = ? AND b.hash = ?`,
-			index,
+			...(this.legacyBlobData ? [offset + 1, legacyBytes] : []),
+			Math.floor(offset / SESSION_BLOB_CHUNK_BYTES),
 			sessionId,
 			hash,
 		);
