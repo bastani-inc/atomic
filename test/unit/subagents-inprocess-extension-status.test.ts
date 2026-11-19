@@ -139,8 +139,6 @@ test(
 				onExecution(execution) {
 					cleanup = execution.cleanup;
 				},
-				yieldTaskWait() {},
-				isParentObserving: () => false,
 			};
 
 			const result = await runSingleInProcess(root, agent(), "report a status", {
