@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A paged workflow listing no longer shows a deleted run alongside a replacement that never coexisted with it. Reloading a long run keeps the same catalog order as reloading a short one. Folding an earlier checkpoint shipment no longer makes a worker's newer acknowledged result look stale ([#5480](https://github.com/bastani-inc/atomic/issues/5480)).
 - Nested workflows that finish or fail on a worker now appear with their final state in the parent graph, even if they finish before the first progress update. A failed or skipped workflow call keeps the stages and tools of the child it actually started inspectable ([#5616](https://github.com/bastani-inc/atomic/issues/5616)).
 - After resuming a workflow with a different stage registry, clearing the old registry no longer removes the resumed stage’s question or redirects its chat to an earlier attempt. Inspecting the completed run also keeps questions in its open stage chat answerable ([#5577](https://github.com/bastani-inc/atomic/issues/5577)).
+- Resuming a failed workflow by ID or with `r` in its graph waits for the previous attempt to finish saving, keeps the original run ID and reuses completed checkpoints. `/resume <prefix>` lists all matching top-level IDs instead of starting the only resumable match ([#5569](https://github.com/bastani-inc/atomic/issues/5569)).
 
 ## [0.9.89] - 2026-11-18
 
