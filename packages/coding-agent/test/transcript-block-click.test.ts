@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
+	Box,
 	Container,
 	getKeybindings,
 	MULTI_CLICK_INTERVAL_MS,
@@ -26,6 +27,7 @@ import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.js";
 import { CustomEntryComponent } from "../src/modes/interactive/components/custom-entry.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import {
 	type ClickExpandableBlock,
 	clickableBlocksView,
@@ -1230,6 +1232,71 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		}
 	});
 
+	test("shrinking an order summary between press and release does not click the button that moves up (#5696)", async () => {
+		const summary = ["Review this order", "Order summary"];
+		const cancel = extensionButton(["[ Cancel order ]"]);
+		const panel = new Container();
+		panel.addChild({ render: () => summary, invalidate() {} });
+		panel.addChild(cancel);
+		const chat = await mountChat(100, 60, { messageRenderers: { order: () => panel } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "order",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Order summary/);
+			const column = chat.columnOf(row, "Order");
+			chat.press(column, row);
+			summary.pop();
+			assert.match(chat.screen()[row]!, /Order summary/);
+			chat.release(column, row);
+			assert.equal(cancel.clicks, 0);
+			// Measuring the transcript does not repaint either. A second press still sees the summary.
+			chat.transcriptText();
+			const second = chat.columnOf(row, "summary");
+			chat.press(second, row);
+			chat.release(second, row);
+			chat.settle();
+			assert.equal(cancel.clicks, 0);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("repainting an identical button from a different instance cancels the old button's click (#5696)", async () => {
+		const original = extensionButton(["[ Approve ]"]);
+		const replacement = extensionButton(["[ Approve ]"]);
+		const box = new Box(2, 1);
+		box.addChild(original);
+		const chat = await mountChat(100, 60, { messageRenderers: { approval: () => box } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "approval",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Approve \]/);
+			const col = chat.columnOf(row, "Approve");
+			chat.press(col, row);
+			box.clear();
+			box.addChild(replacement);
+			chat.tui.renderNow();
+			box.clear();
+			box.addChild(original);
+			chat.release(col, row);
+			assert.deepEqual([original.clicks, replacement.clicks], [0, 0]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	for (const change of ["removed", "zero-height"] as const) {
 		test(`an extension's ${change} button gets no click before the next paint (#5696)`, async () => {
 			const label = ["[ Approve ]"];
@@ -1265,6 +1332,59 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			}
 		});
 	}
+
+	test("dispatching a click on passive tool output renders that output only once (#5696)", async () => {
+		const output = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`);
+		let rowsRendered = 0;
+		const chat = new StartupChatContainer();
+		chat.releaseStartupOutput();
+		const tool = new ToolExecutionComponent(
+			"report",
+			"report-1",
+			{},
+			{},
+			{
+				renderShell: "self",
+				renderCall: () => new Text("Report", 0, 0),
+				renderResult: () => ({
+					invalidate() {},
+					render: () => {
+						rowsRendered += output.length;
+						return output;
+					},
+				}),
+			},
+			{ requestRender() {} } as never,
+			"/workspace",
+		);
+		try {
+			tool.setArgsComplete();
+			tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+			chat.addChild(tool);
+			const frame = chat.layoutWindow({ width: 80, height: 24, top: 0, followEnd: false, requestRender() {} });
+			const y = 3;
+			assert.equal(frame.at(y), "line 2");
+			const cell = {
+				button: "left",
+				x: 2,
+				y,
+				screenX: 2,
+				screenY: y,
+				width: 80,
+				height: frame.length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			} as const;
+			chat.handleMouse({ ...cell, type: "press" });
+			chat.handleMouse({ ...cell, type: "release" });
+			rowsRendered = 0;
+			assert.ok(chat.handleMouse({ ...cell, type: "click" })?.whenSingleClick);
+			assert.equal(rowsRendered, output.length);
+		} finally {
+			tool.dispose();
+		}
+	});
 
 	test("a click on the title row of a tool block its renderer draws opens it, and a control below takes its own click (#5696)", async () => {
 		const call = extensionButton(["\u25cf Deploy(staging)"]);

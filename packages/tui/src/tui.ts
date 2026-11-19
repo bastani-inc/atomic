@@ -5,6 +5,15 @@
 import { performance } from "node:perf_hooks";
 import { type HintAction, hintKeyInput, runAsHintActivation, stripHintMarkers } from "./clickable-hints.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
+import {
+	type ChildRow,
+	type DrawnChild,
+	frameOf,
+	type MouseCell,
+	MouseLayout,
+	paintedMouseCell,
+	sameMouseCell,
+} from "./mouse-layout.ts";
 import type { Terminal } from "./terminal.ts";
 import {
 	parseOscColorResponse,
@@ -387,7 +396,44 @@ type OverlayFocusRestorePolicy = "clear" | "preserve";
  */
 export class Container implements Component {
 	children: Component[] = [];
-	private mouseLayout?: { width: number; children: Array<{ component: Component; height: number }> };
+	/** Subclasses that draw their own rows record the children they actually drew here. */
+	protected readonly mouseLayout = new MouseLayout();
+	private pressedCell?: MouseCell;
+
+	/** Remember which component owns the pressed cell before forwarding the press. */
+	protected pressMouseCell(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
+		const hit = this.childAtRow(event.width, event.y, true);
+		this.pressedCell = this.cellAtHit(event, hit);
+		return this.dispatchToChild(event, hit);
+	}
+
+	/** The control must own the cell in both painted frames and still occupy it when the click is delivered. */
+	protected clickPressedCell(event: TuiMouseEvent): () => TuiMouseDispatchResult | undefined {
+		const pressed = this.pressedCell;
+		this.pressedCell = undefined;
+		const hit = () => this.childAtRow(event.width, event.y, true);
+		if (!sameMouseCell(pressed, this.cellAtHit(event, hit()))) return () => undefined;
+		return () => {
+			const current = hit();
+			return sameMouseCell(pressed, this.cellAtHit(event, current, true))
+				? this.dispatchToChild(event, current)
+				: undefined;
+		};
+	}
+
+	private cellAtHit(event: TuiMouseEvent, hit: ChildRow | undefined, measured = false): MouseCell | undefined {
+		const entry = hit?.entry;
+		return (
+			entry &&
+			paintedMouseCell(
+				entry.component,
+				event.x,
+				entry.row,
+				event.width,
+				measured ? frameOf(entry.component) : entry.frame,
+			)
+		);
+	}
 
 	addChild(component: Component): void {
 		this.children.push(component);
@@ -414,15 +460,21 @@ export class Container implements Component {
 	 * The child drawn at `row` of this container at `width`, with the row inside that child and the child's height.
 	 * Reads the row heights of the last render at `width`; another width renders the children to measure them.
 	 */
-	childAtRow(width: number, row: number): { component: Component; row: number; height: number } | undefined {
+	childAtRow(width: number, row: number, paintedOnly = false): ChildRow | undefined {
 		if (row < 0) return undefined;
-		const mouseChildren =
-			this.mouseLayout?.width === width
-				? this.mouseLayout.children
-				: this.children.map((component) => ({ component, height: component.render(width).length }));
+		const mouseChildren: DrawnChild[] =
+			this.mouseLayout.atWidth(width) ??
+			(paintedOnly ? [] : this.children.map((component) => ({ component, height: component.render(width).length })));
 		let childY = 0;
-		for (const { component, height } of mouseChildren) {
-			if (row >= childY && row < childY + height) return { component, row: row - childY, height };
+		for (const child of mouseChildren) {
+			const { component, height } = child;
+			if (row >= childY && row < childY + height)
+				return {
+					component,
+					row: row - childY,
+					height,
+					...(paintedOnly ? { entry: { component, row: row - childY, frame: child.frame } } : {}),
+				};
 			childY += height;
 		}
 		return undefined;
@@ -430,8 +482,11 @@ export class Container implements Component {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
 		if (event.y < 0 || event.y >= event.height) return undefined;
-		const hit = this.childAtRow(event.width, event.y);
-		if (!hit) return undefined;
+		return this.dispatchToChild(event, this.childAtRow(event.width, event.y));
+	}
+
+	private dispatchToChild(event: TuiMouseEvent, hit: ChildRow | undefined): TuiMouseDispatchResult | undefined {
+		if (!hit || event.y < 0 || event.y >= event.height) return undefined;
 		const result = dispatchMouseEvent(hit.component, { ...event, y: hit.row, height: hit.height });
 		if (result?.focus && (this as Component).handleInput) return { ...result, focusTarget: this };
 		return result;
@@ -442,12 +497,12 @@ export class Container implements Component {
 		const mouseChildren: Array<{ component: Component; height: number }> = [];
 		for (const child of this.children) {
 			const childLines = child.render(width);
-			mouseChildren.push({ component: child, height: childLines.length });
+			mouseChildren.push(this.mouseLayout.child(child, childLines.length));
 			for (const line of childLines) {
 				lines.push(line);
 			}
 		}
-		this.mouseLayout = { width, children: mouseChildren };
+		this.mouseLayout.set(width, mouseChildren);
 		return lines;
 	}
 }

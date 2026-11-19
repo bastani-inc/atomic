@@ -192,7 +192,7 @@ function clickUnitAt(
 
 /** Only decides who gets the click first. `clickUnitAt` checks that the painted block is still present before claiming it. */
 export function isBlockTitleRow(container: Container, width: number, row: number): boolean {
-	const hit = container.childAtRow(width, row);
+	const hit = container.childAtRow(width, row, true);
 	if (!hit) return false;
 	if (isClickExpandableBlock(hit.component)) return hit.row === hit.component.titleRow;
 	const nested = hit.component as Container;

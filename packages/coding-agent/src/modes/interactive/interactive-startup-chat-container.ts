@@ -1,4 +1,4 @@
-import { type ScrollView, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
+import { type ScrollView, type TuiMouseEvent, WindowedContainer, withMeasuredMouseLayouts } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
 import { isSingleLeftClick } from "./components/single-click.ts";
@@ -35,11 +35,25 @@ export class StartupChatContainer extends WindowedContainer {
 	 * or collapses it once the click cannot become a double-click.
 	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
-		if (event.type !== "press" && !isSingleLeftClick(event)) return super.handleMouse(event);
-		const titleRow = event.type === "click" && isBlockTitleRow(this, event.width, event.y);
-		// Resolve the block before dispatching to its contents: its live click area refreshes the child rows,
-		// so a button removed since the last paint no longer receives the click.
-		const block = handleTranscriptBlockClick(
+		if (event.type === "press") {
+			this.blockClick(event);
+			return this.pressMouseCell(event);
+		}
+		if (!isSingleLeftClick(event)) return super.handleMouse(event);
+		const title = isBlockTitleRow(this, event.width, event.y);
+		const inside = this.clickPressedCell(event);
+		const result = withMeasuredMouseLayouts(() => {
+			const block = this.blockClick(event);
+			if (title) return block;
+			// The block's area check may find different children from those on screen. It can rule out a
+			// pressed control; it must not redirect the click, or change what the next press finds painted.
+			return inside() ?? block;
+		});
+		return result ?? (title ? inside() : undefined);
+	}
+
+	private blockClick(event: TuiMouseEvent): ContainerMouseResult {
+		return handleTranscriptBlockClick(
 			this,
 			this,
 			event,
@@ -50,9 +64,6 @@ export class StartupChatContainer extends WindowedContainer {
 				if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
 			},
 		);
-		if (titleRow && block) return block;
-		const inside = super.handleMouse(event);
-		return inside?.handled ? inside : (block ?? inside);
 	}
 
 	countedChildren(): number {
