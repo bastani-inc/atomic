@@ -2,7 +2,6 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { finalizeProjectedMessages, repairUniquifiedMessages } from "./agent-session-boundaries.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { uniquifyToolCallIds } from "./context-tool-pairing.js";
-import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
 import type { SessionProjection } from "./session-manager-types.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
@@ -255,19 +254,6 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		extensionRunner: {
 			get() {
 				return this._extensionRunner;
-			},
-		},
-		workflows: {
-			get() {
-				this._workflows ??= new SessionWorkflowsHandle(
-					() => this._extensionRunner?.getWorkflowRunControl(),
-					() => {
-						const runner = this._extensionRunner;
-						if (this._disposed || runner === undefined) return undefined;
-						return (observer) => runner.observeWorkflowActivity(observer);
-					},
-				);
-				return this._workflows;
 			},
 		},
 	});

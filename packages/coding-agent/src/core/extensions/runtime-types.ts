@@ -22,8 +22,6 @@ import type {
 } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type { ToolDefinition, ToolInfo, ToolRendererResolver } from "./tool-types.ts";
-import type { WorkflowActivityHub } from "./workflow-activity-hub.js";
-import type { WorkflowRunControlHub } from "./workflow-run-control-hub.js";
 
 export interface RegisteredTool {
 	definition: ToolDefinition;
@@ -97,12 +95,7 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => Pr
 export interface ExtensionRuntimeState {
 	getSettings?: () => import("../settings-types.ts").Settings;
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
-	workflowJournal?: import("../storage/provider.js").RunJournalOption;
 	storageAgentDir?: string;
-	/** Shared by extension loading and its runner generation. */
-	workflowActivityHub: WorkflowActivityHub;
-	/** Holds the session-scoped run-control implementation registered by the workflows extension. */
-	workflowRunControlHub: WorkflowRunControlHub;
 	agentPanelSourceHub: import("../tasks/agent-panel-source.ts").AgentPanelSourceHub;
 	/** Package-manifest and `registerMcpServer()` MCP servers visible to every extension of this generation. */
 	mcpServerRegistry: McpServerRegistry;
@@ -206,11 +199,6 @@ export interface ExtensionContextActions {
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	isSessionSummaryEnabled?: () => boolean;
-	generateWorkflowSummary?: (
-		text: string,
-		signal: AbortSignal,
-		options?: { terminal?: boolean },
-	) => Promise<string | undefined>;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (options?: CompactOptions) => void;

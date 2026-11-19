@@ -10,7 +10,6 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { WorkflowStageAdmissionBoundary } from "../workflow-stage-admission.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ExtensionUIContext } from "./ui-types.js";
-import type { WorkflowActivityObserver, WorkflowActivitySubscription } from "./workflow-events.js";
 export interface ExecuteToolOptions {
 	signal?: AbortSignal;
 	onUpdate?: import("@bastani/atomic-agent-core").AgentToolUpdateCallback;
@@ -215,8 +214,6 @@ export type OrchestrationContext = WorkflowStageOrchestrationContext;
 export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
 export interface ExtensionContext {
-	/** Observe the owning session's workflow activity, starting with an ordered snapshot. */
-	observeWorkflowActivity(observer: WorkflowActivityObserver): WorkflowActivitySubscription;
 	/** Paths of actually loaded extensions, when supplied by the host. */
 	getExtensionPaths?(): string[];
 	/** Internal actual-session binding; never populated from model arguments. */
@@ -282,14 +279,8 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
-	/** Whether background session and workflow summaries are enabled. */
+	/** Whether background session summaries are enabled. */
 	isSessionSummaryEnabled?(): boolean;
-	/** Generate a read-only workflow summary with this session's model and credentials. */
-	generateWorkflowSummary?(
-		text: string,
-		signal: AbortSignal,
-		options?: { terminal?: boolean },
-	): Promise<string | undefined>;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
 	shutdown(): void;
 	/** Get current context usage for the active model. */

@@ -991,20 +991,6 @@ The actions are optional:
 
 The types are exported from `@bastani/atomic`: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelAnswerOptions`, `AgentPanelSourceRegistration` and `AgentPanelSession`. The same rows are available outside extensions. `agentPanelItems(session)` returns the session's tasks and every source's items, `subscribeAgentPanel(session, listener)` notifies on any change, including after a reload, and `openAgentPanelItem`, `stopAgentPanelItem` and `answerAgentPanelItem` run the actions by item id. Obtain the item through `agentPanelItems(session)` before calling these helpers. When calling `answerAgentPanelItem(session, id, text, options)`, pass the question's captured `AgentPanelAnswerOptions` rather than reading a new item immediately before sending. Workflow rows require their captured `promptId`; omitting it or supplying only matching question text is refused, even if a replacement question has identical text. `dismissedAgentPanelItems(session)` is the session's set of dismissed ids, and `agentPanelTaskId(id)` returns the task id of a `task:` item.
 
-### pi.getWorkflowHostModules()
-
-Returns a promise for the running host's in-memory module namespaces. The workflows adapter uses this capability to avoid re-evaluating the host's package graphs for each workflow file.
-
-The returned object has exactly these keys:
-
-- `@bastani/atomic`
-- `@bastani/atomic-ai`, backed by the host's compatibility API
-- `@bastani/atomic-ai/providers/all`
-
-These are shared host instances, not isolated copies. Workflow imports use the host's versions rather than project-local copies of these exact specifiers, preserving identity for exports such as `AuthStorage` and sharing module state. This also supports standalone-binary projects without those packages in `node_modules`. Other deep subpaths and third-party dependencies still resolve from disk. Workflow files and their relative imports are evaluated fresh on `/reload`.
-
-`getWorkflowHostModules()` is required on the current Atomic `ExtensionAPI`. It is optional on the workflows adapter's host interface so older or alternative hosts can omit it. Integrations that support those hosts should check for the method before calling it, for example `await pi.getWorkflowHostModules?.()`. Without it, the workflows adapter retains filesystem package resolution and needs resolvable packages for these imports.
-
 ### pi.exec(command, args, options?)
 
 Execute a command without a shell.

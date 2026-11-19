@@ -308,24 +308,6 @@ Rebinding does not repeat startup hooks. Abort, reload, and disposal invalidate 
 
 Extension authors should check `ctx.hasHumanInput` before asking questions and `ctx.hasUI` before rendering. Existing `ctx.ui.confirm/select/input/editor` calls use the host adapter; dialog timeouts cancel their requests. Without an adapter, ordinary dialogs reject with `HumanInputUnavailable`. The `ask_user_question` tool retains its compatible `{ answers: [], cancelled: true, error: "no_ui" }` details. `ui.custom` still requires a presentation host and is not part of `HostInput`.
 
-#### Durable workflow approvals
-
-Workflow input uses the same callbacks for stage questionnaires, extension dialogs and nested workflows, including dialogs raised by local worker stages. Return the answer through the callback to let the waiting stage continue. Requests include `workflowRunId` and `workflowStageId`; combine them with `requestId` to associate a question with its run. A stage dialog and its questionnaire can be pending together, regardless of which arrives first. Keep both requests live until each settles: opening or answering either request does not withdraw or restart the other. A stage can then open another dialog with a new request ID. Answer that request separately, even when it comes from the same worker and stage. A replacement worker's new dialog also needs a fresh answer, even if its text matches an earlier dialog. Author semantic `ctx.ui` calls rather than terminal-specific branches so the definition works across hosts.
-
-A durable approval stays pending when input is unavailable, cancelled, or invalid. Withdrawing the adapter neither approves the request nor discards the run. Bind a new adapter to present a live pending request again. It receives a fresh request ID; late answers to the withdrawn request cannot authorize work.
-
-To continue a saved run in another session:
-
-1. Keep its definition and durable storage available.
-2. Bind the new host.
-3. Use `session.workflows.resume(runId)` ([Workflow run control](#workflow-run-control)), `/resume`, or the workflow tool's `resume` action.
-
-Rebinding alone does not reopen a saved run. See [workflow operations](/workflows/operations) for inspection, graceful quit, and resume.
-
-Launching without an adapter still preserves required gates and returns the run identity. Inspect status, then bind an authorized host or submit a validated answer. Headless CLI launches use the same execution defaults, but skip pickers and return without waiting for terminal completion. Explicit runtime execution restrictions still apply.
-
-Only an actual `true` confirms a primitive approval. Choosing to stay on a questionnaire's stage does not advance it. Missing input never bypasses approval or an exhausted budget; obtain approval before explicitly resuming with a raised budget.
-
 #### Diagnostics and provider state
 
 `onDiagnostic` receives session-attributed operational diagnostics. Existing errors and tool results remain available without a callback. Third-party extensions can still write directly to the console; the callback does not intercept their output.
@@ -405,129 +387,6 @@ await session.intercom.setReachable(["doc-1907", "doc-2011"]);
 
 `createAgentSessionFromServices()` accepts the same `intercom` option, so a runtime factory can pass it through. `session.intercom.setReachable(groups)` takes effect from the session's next Intercom call; its promise settles once the broker holds the new set, or at once while the session is not connected, which then registers with the new set. Narrowing it also leaves any group the session joined that is no longer reachable. `session.intercom.group` and `session.intercom.reachable` report the current policy. On a session created without the option, `group` is `undefined` and `setReachable` rejects with `IntercomPolicyError`; such sessions keep the usual Intercom rules. An invalid `intercom` option (an empty or reserved group name such as `auto`, or more than 1,000 reachable groups) makes `createAgentSession()` reject with `IntercomPolicyError` before anything is created.
 
-### Workflow run control
-
-`session.workflows` controls this session's runs without slash commands or the model-facing `workflow` tool. A fresh session can inspect a durable root by its full UUID within the same working directory and journal. Inspection stays read-only and does not add the run to `listRuns()`.
-
-```typescript
-interface SessionWorkflows {
-  listRuns(
-    filter?: { status?: WorkflowRunFilterStatus; includeDurable?: boolean },
-    options?: { signal?: AbortSignal },
-  ): Promise<readonly WorkflowRunSummary[]>;
-  getRun(runId: string): Promise<WorkflowRunDetail>;
-  getStages(runId: string, filter?: { status?: WorkflowStageStatus }): Promise<readonly WorkflowRunStageSummary[]>;
-  pause(runId: string, options?: { stageId?: string }): Promise<WorkflowRunControlOutcome>;
-  pause(target: { all: true }): Promise<WorkflowRunControlOutcome>;
-  quit(target: string | { all: true }): Promise<WorkflowRunControlOutcome>;
-  resume(runId: string, options?: { stageId?: string; message?: string }): Promise<WorkflowRunControlOutcome>;
-  waitForSettled(runId: string): Promise<void>;
-  observe(observer: WorkflowActivityObserver): WorkflowActivitySubscription;
-}
-```
-
-`listRuns()` and `getRun()` expose `label`, `identity`, `summary`, and `summarizedThrough` (Unix milliseconds). The identity prefers the label, then the objective/prompt input, then the run ID. Use `listRuns({ includeDurable: true })` to include stored resumable and completed top-level runs launched from the current project directory alongside this session's live runs. Stored runs must have a recorded session owner, matching the SDK's run-detail access rules, so a run without a recorded session owner is not listed. A run control registered with `registerWorkflowRunControl` may implement the optional `listProjectRuns()`, which lists every top-level run recorded for the current project directory whoever started it; the bundled workflows extension does, and `history://workflows` uses it when present. The first listing of stored runs in a process reads the workflow journal, which can take seconds on a large one; pass `{ signal }` as the last argument of `listRuns()` or `listProjectRuns()` to stop waiting: the call then rejects with the signal's reason. The default remains this session's runs only. Saved summaries can lag current progress and remain readable with summary generation disabled.
-
-`listRuns()` returns the same per-run data as `workflow status`: id, workflow name, status, active stages, and unanswered prompts (`awaitingInput`). Run IDs accept the full UUID or a unique 8-character prefix. `getRun()`, `getStages()`, `pause()` and `quit()` resolve a prefix against the runs this session holds and reject it at once when none matches, so pass the full UUID for a run recorded by an earlier process. `pause`, `quit` and `resume` resolve with the tool's acknowledged outcome: `action`, `runId` (`--all` for a batch), a `status` of `ok`, `running`, `paused`, `partial`, `noop` or `cancelled`, and a human-readable `message`. A `noop` means the request was understood and found nothing to change, such as pausing a run that already ended. A `partial` outcome means part of the request took effect. For `pause({ all: true })` and `quit({ all: true })`, `partial` means this call stopped at least one run and others are still active: `failedRuns` lists each run that is still active with its `runId`, a `reason` (for example `pause_failed` or `no_active_stages`) and a `message`, so check `outcome.status === "partial"` before treating a batch stop as complete. If active runs could not be stopped and this call stopped none, the call rejects with `WorkflowRunControlError` (`WORKFLOW_RUN_CONTROL_FAILED`) whose `failedRuns` carries the same list, even when other runs were already paused. Runs that are already paused or already ended are not failures, and a batch with no active run left to stop resolves as a `noop`. Call `getRun()` before retrying.
-
-After an owning process crashes, create a new authorized SDK session with the original `cwd` and workflow journal. Keep the workflow definition available, then call `getRun(runId)` with the saved full UUID. Once the journal lease has expired (about two minutes without renewal), status reports `crashed`. `resume(runId)` claims the run under a new fenced lease, keeps its UUID, and replays completed checkpoints. This works with `SessionManager.inMemory()` and does not require reopening a session file. Concurrent recovery attempts admit only one executor; inspect again if another caller won the claim.
-
-A run with a live foreign lease remains read-only, even while a long-running tool has not refreshed progress. `pause()` and `quit()` require the owning session. Missing ownership metadata, a different working directory, or unavailable journal storage prevents adoption. Use the full UUID to recover a foreign run.
-
-Disposing an owning session with `await session.dispose()` stops its in-flight runs at their last checkpoint and records their release in the journal. Another authorized SDK session with the same `cwd` and journal can then call `resume(runId)`. The adopting session becomes the owner, and completed checkpoints replay without rerunning their callbacks.
-
-A run reports `completed`, `failed` or `killed` to `workflow_lifecycle` and `session.workflows` as soon as it ends, and then records that ending in the journal. With a remote journal this takes a few round trips. `await session.dispose()` waits up to 10 seconds for runs in that window before it closes the journal. If the journal still cannot record an ending, `dispose()` rejects with `ShutdownFailed` and names the run, rather than leaving the journal showing it as `running`. To wait without disposing, for example before another process reads the journal, call `await session.workflows.waitForSettled(runId)`. It resolves once the ending is in the journal and the run's lease is released, resolves at once for a run this session is not executing, and rejects with `WorkflowRunStorageError` when the journal could not record the ending. It has no timeout of its own, so race it against your own deadline.
-
-Workflow resume is project-scoped. SDK and workflow-tool resume calls for a run from a different `cwd` return an actionable error without changing it. To continue in a different project, fork the run instead: `forkRun(runId, { cwd })` from `@bastani/atomic/workflows`, the `workflow` tool's `fork` action, or `f` in a stage's detail in the run's graph. The fork receives a new run ID and copies saved progress; the original run is left untouched. See [`forkRun`](/workflows/api-reference#forkrun-runid-options). To keep the original ID, create the successor session with the original `cwd`.
-
-```ts
-await owner.dispose(); // quits in-flight runs at their last checkpoint and releases them
-
-await successor.workflows.resume(runId); // adopts the run, even from another process
-```
-
-Switching sessions (`/new`, `/fork`, `/resume`) also releases the previous session's paused runs for adoption. Reloading does not release runs. A paused run whose owning session has not released it stays protected; finished runs are not resumable.
-
-Journal fencing protects ownership and durable checkpoints, not arbitrary external effects. An interrupted `ctx.tool` callback can run again if its result was not checkpointed. Make external effects idempotent, for example by using a stable run/node operation key with an API that deduplicates requests.
-
-If storage fails, preserve the journal and run ID, restore access, inspect the retained run, and resume explicitly. A failed pause leaves the local scheduler paused; resume retries the journal transition before releasing it. A failed resume keeps the scheduler paused and surfaces the error.
-
-Pausing a run doesn't park a stage that is waiting on a prompt, including an `ask_user_question` delivered through `HostInput.questionnaire`. If no other work is active, `pause(runId)` and `pause({ all: true })` mark the run `paused` without cancelling its question. Questions not yet shown wait until the run resumes. A later pause counts it as already paused. If your host then answers an already-open prompt, the stage can continue its turn before you call `resume`. To keep a paused run fully stopped, hold prompt answers until you resume it.
-
-Requests that cannot be carried out reject with a subclass of `WorkflowRunControlError`. Branch on `code` or use `instanceof`:
-
-| Class | `code` | Meaning |
-| --- | --- | --- |
-| `WorkflowRunNotFoundError` | `WORKFLOW_RUN_NOT_FOUND` | The run ID is unknown or malformed, or a prefix is ambiguous or matches no run in this session. |
-| `WorkflowRunOwnershipError` | `WORKFLOW_RUN_OWNED_ELSEWHERE` | Mutation requires another session's ownership, the run is still live, or the durable run is outside this host's recovery scope. Inspect it read-only when in scope; control live work from its owner. |
-| `WorkflowRunNotResumableError` | `WORKFLOW_RUN_NOT_RESUMABLE` | The run completed, was killed, or has no durable progress to resume. |
-| `WorkflowStageNotFoundError` | `WORKFLOW_STAGE_NOT_FOUND` | `stageId` matches no stage of the run, or the stage has no control to pause. |
-| `WorkflowStageAmbiguousError` | `WORKFLOW_STAGE_AMBIGUOUS` | `stageId` matches more than one stage; pass a more specific identifier. |
-| `WorkflowStageResumeUnsupportedError` | `WORKFLOW_STAGE_RESUME_UNSUPPORTED` | A durable run resumes as a whole; call `resume()` without `stageId`. |
-| `WorkflowRunStorageError` | `WORKFLOW_RUN_STORAGE` | The workflow journal is unavailable, closed, or failed. Restore storage access and inspect the retained run before retrying. |
-| `WorkflowRunControlError` | `WORKFLOW_RUN_CONTROL_FAILED` | Another failure; `message` explains it. |
-| `WorkflowRunControlUnavailableError` | `WORKFLOW_RUN_CONTROL_UNAVAILABLE` | The workflows package is disabled, or the session was disposed. |
-
-Each error carries the `runId` when one applies. A refused batch also carries `failedRuns`.
-
-A host with a stop button can pause its session's runs and resume the same runs later:
-
-```typescript
-import { createAgentSession, WorkflowRunControlError } from "@bastani/atomic";
-
-const { session } = await createAgentSession();
-
-async function onStopClicked() {
-  const outcome = await session.workflows.pause({ all: true });
-  showStatus(outcome.message);
-}
-
-async function onResumeClicked() {
-  for (const run of await session.workflows.listRuns({ status: "paused" })) {
-    try {
-      const outcome = await session.workflows.resume(run.runId);
-      showStatus(`${run.name}: ${outcome.message}`);
-    } catch (error) {
-      if (!(error instanceof WorkflowRunControlError)) throw error;
-      showStatus(`${run.name}: ${error.code}: ${error.message}`);
-    }
-  }
-}
-```
-
-`pause` holds the live run and keeps it resumable in this process; `quit` retires the executor at a durability boundary so a later process can resume it. After `quit`, or when resuming a run from a previous process, `resume` follows the durable resume path: keep the workflow definition and durable storage available. See [pausing, quitting, and resuming](/workflows/operations#pausing-quitting-and-resuming) for what each action guarantees.
-
-#### Observing workflow runs
-
-To follow runs instead of polling `listRuns()`, call `session.workflows.observe(observer)`. It covers runs that the agent launches with the `workflow` tool, and needs no extension. The first frame is a `snapshot`. After it come `changed` and `removed` frames, delivered in order. Each callback finishes before the next one starts. Call `dispose()` on the returned subscription to stop. The frames and cursors follow the [workflow activity contract](/extensions/events#workflow-activity-and-lifecycle-hooks).
-
-Each root summary carries a `graph` with the nodes of that root's workflow, including the nodes of nested child workflows. Nodes are `stage` nodes and `ctx.tool` nodes. Each one has an `id`, `kind`, `name`, `status`, `parentIds`, `runId`, `nodeId` (its run-local id), `depth`, and `executionOrder` when it is known. Tool nodes add their `ordinal`. A stage that is waiting on a prompt adds `pendingPrompt` with the prompt's `id`, `kind`, `message`, `choices`, and `createdAt`. A prompt that a run raises outside any stage appears in `graph.runPrompts` with the same fields and the `runId` that owns it. A node status change produces a `changed` frame. Frames are plain JSON-serializable objects.
-
-```typescript
-import type { WorkflowRootActivity } from "@bastani/atomic";
-
-const roots = new Map<string, WorkflowRootActivity>();
-const subscription = session.workflows.observe((frame) => {
-  if (frame.kind === "snapshot") {
-    roots.clear();
-    // `recovering` or `unavailable` means activity is unknown, not idle.
-    if (frame.availability === "ready") for (const root of frame.roots) roots.set(root.rootRunId, root);
-  } else if (frame.kind === "changed") {
-    roots.set(frame.root.rootRunId, frame.root);
-    for (const node of frame.root.graph?.nodes ?? []) {
-      renderNode(node.id, node.name, node.status, node.parentIds);
-    }
-  } else {
-    roots.delete(frame.rootRunId);
-  }
-});
-
-// Later:
-subscription.dispose();
-```
-
-Observation can start before the workflows package has finished loading; the first snapshot then reports `availability: "unavailable"`, and a `ready` snapshot follows. The subscription survives `session.reload()`. After a reload, the observer receives a new snapshot with a new cursor `epoch`, so replace everything you knew. When the session is disposed, each observer receives a final `snapshot` with `availability: "unavailable"` before `dispose()` resolves; after that, `observe()` throws `WorkflowRunControlUnavailableError`. This stream reports root activity and graph state. It does not carry the events inside each stage.
-
 ### Workflow and subagent children
 
 Children inherit the invoking session's model/auth runtime, settings, agent directory, human-input callbacks, and diagnostic sink. Choosing a child model or fallback does not switch to global credentials.
@@ -600,8 +459,6 @@ interface AgentSession {
   sessionFile: string | undefined;
   sessionId: string;
 
-  // Typed control of the workflow runs this session owns
-  readonly workflows: SessionWorkflows;
 
   // Model and thinking control
   setModel(model: Model, options?: { persist?: boolean; thinkingLevel?: ThinkingLevel }): Promise<void>;
@@ -680,7 +537,7 @@ const subscription = session.subscribe(
 
 Disposal and reload wait for admitted callbacks, resource refreshes, and subprocesses. Ensure callbacks can settle independently of disposal, including work started by cleanup handlers. Give `pi.exec()` calls a timeout or cancellation signal, and await them in the handler so you can inspect failures. Never make cleanup wait for disposal itself.
 
-Register cleanup before acquiring resources or starting asynchronous callbacks. Call the unsubscribe returned by `pi.events.on()` or a workflow publisher's `dispose()` when you no longer need it; both are idempotent. Generation cleanup releases remaining handles and reports failures.
+Register cleanup before acquiring resources or starting asynchronous callbacks. Call the unsubscribe returned by `pi.events.on()` when you no longer need it; it is idempotent. Generation cleanup releases remaining handles and reports failures.
 
 #### Reload failures and resource ownership
 

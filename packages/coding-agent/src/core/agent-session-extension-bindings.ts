@@ -4,7 +4,6 @@ import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { authForStream } from "./agent-session-models.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import {
 	activatesAfterRecordedLoadout,
@@ -15,7 +14,6 @@ import {
 import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
 import { migrateCompactionModelSettings } from "./compaction/model-resolver.js";
-import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
 import {
 	ExtensionStartupError,
 	type ExtensionStartupFailure,
@@ -46,7 +44,6 @@ import {
 	renewSessionWork,
 	retireSessionReloadGeneration,
 	sessionGenerationClosing,
-	sessionLifetime,
 	trackSessionReload,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
@@ -59,7 +56,6 @@ import { createSyntheticSourceInfo } from "./source-info.ts";
 import { notifyAgentPanelSourceHubRebound } from "./tasks/agent-panel-source.ts";
 import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
 import { defaultToolNamesFor } from "./tools/index.js";
-import { trackTerminalWorkflowSummary } from "./workflow-summary-lifecycle.ts";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
@@ -436,7 +432,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 	runner.bindCommandContext(this._extensionCommandContextActions);
 	runner.bindChildSessionOptions(liveChildSessionOptions(this));
 	runner.bindInheritedHistory(this._inheritedHistory);
-	runner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);
+	runner.bindStorageAgentDir(this._storageAgentDir);
 
 	this._extensionErrorUnsubscriber?.();
 	this._extensionErrorUnsubscriber = this._extensionErrorListener
@@ -728,41 +724,6 @@ export function _bindExtensionCore(
 			},
 			hasPendingMessages: () => this.pendingMessageCount > 0,
 			isSessionSummaryEnabled: () => this.settingsManager.getSessionSummarySettings().enabled,
-			generateWorkflowSummary: async (text, requestSignal, options) => {
-				if (this._disposed || sessionGenerationClosing.has(this)) return undefined;
-				if (!this.settingsManager.getSessionSummarySettings().enabled) return undefined;
-				const model = this.model;
-				if (!model) return undefined;
-				const generate = async (signal: AbortSignal) => {
-					try {
-						if (signal.aborted) return undefined;
-						const auth = authForStream(this, await this._getRequiredRequestAuth(model));
-						if (signal.aborted) return undefined;
-						const result = await generateWorkflowSummary(text, {
-							model,
-							...auth,
-							signal,
-							streamFn: this.agent.streamFunction,
-							retry: this.settingsManager.getRetrySettings(),
-						});
-						return signal.aborted || result.error || result.aborted ? undefined : result.summary;
-					} catch {
-						return undefined;
-					}
-				};
-				return options?.terminal
-					? trackTerminalWorkflowSummary(this, requestSignal, generate)
-					: trackSessionWork(this, () => {
-							const signal = AbortSignal.any([requestSignal, sessionLifetime(this)]);
-							let abort!: () => void;
-							return new Promise<string | undefined>((resolve) => {
-								abort = () => resolve(undefined);
-								signal.addEventListener("abort", abort, { once: true });
-								if (signal.aborted) abort();
-								else void generate(signal).then(resolve);
-							}).finally(() => signal.removeEventListener("abort", abort));
-						});
-			},
 			shutdown: () => {
 				if (publication) publication.defer(() => this._extensionShutdownHandler?.());
 				else this._extensionShutdownHandler?.();
@@ -1052,7 +1013,7 @@ async function reloadOwnedGeneration(
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		candidateRunner.bindChildSessionOptions(liveChildSessionOptions(this));
 		candidateRunner.bindInheritedHistory(this._inheritedHistory);
-		candidateRunner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);
+		candidateRunner.bindStorageAgentDir(this._storageAgentDir);
 		if (options?.failOnExtensionErrors && errors.length > 0)
 			throw new Error(
 				`Failed to load extensions: ${errors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`,
@@ -1100,7 +1061,6 @@ async function reloadOwnedGeneration(
 	// Publication transferred ownership: keep the started candidate reachable even
 	// when reconstruction fails, and retain retiring cleanup through every step.
 	this._extensionRunner = candidateRunner;
-	this._workflows?.rebindObservers();
 	notifyAgentPanelSourceHubRebound(this);
 	retainedRuntimes.add(extensionsResult.runtime);
 	const failures: unknown[] = [];
