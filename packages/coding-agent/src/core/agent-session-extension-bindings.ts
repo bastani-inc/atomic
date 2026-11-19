@@ -3,6 +3,7 @@ import type { Provider } from "@bastani/atomic-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import { closeAgentSession, closedExtensionBindError } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
@@ -202,12 +203,14 @@ async function extendRunnerResources(
 	reportError?: (error: ExtensionError) => void,
 ): Promise<void> {
 	if (!runner.hasHandlers("resources_discover")) return;
+	// Close seals the current runner. Don't enter its discovery batch after a suspended startup hook returns.
+	if (session._disposed && runner === session.extensionRunner) throw closedExtensionBindError(session);
 	const { skillPaths, promptPaths, themePaths } = await runner.emitResourcesDiscover(
 		session._cwd,
 		reason,
 		reportError,
 	);
-	if (session._disposed) throw hostInputError("SessionClosed");
+	if (session._disposed) throw closedExtensionBindError(session);
 	if (skillPaths.length === 0 && promptPaths.length === 0 && themePaths.length === 0) return;
 	const extensionPaths: ResourceExtensionPaths = {
 		skillPaths: buildExtensionResourcePathsForLoader(session, loader, skillPaths),
@@ -290,7 +293,7 @@ function startExtensions(
 		failedExtensionStarts.add(runner);
 		return rollbackStartup(runner, error instanceof Error ? error : new Error(String(error)), async (cause) => {
 			try {
-				if (!hasSessionReload(session)) await session.dispose();
+				if (!hasSessionReload(session)) await closeAgentSession(session, "startupRollback");
 			} catch (cleanupError) {
 				const errors = [cause, cleanupError];
 				throw Object.assign(
@@ -311,7 +314,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	if (this._disposed) {
 		// Failed creation retains its original rejection; it never admits another startup.
 		if (failedExtensionStarts.has(this._extensionRunner)) return extensionStarts.get(this._extensionRunner)!;
-		throw hostInputError("SessionClosed");
+		throw closedExtensionBindError(this);
 	}
 	if (bindings.onUIPrompt !== undefined) uiPromptBindings.set(this, bindings.onUIPrompt);
 	if (bindings.humanInput !== undefined) {
@@ -340,7 +343,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 
 	this._applyExtensionBindings(this._extensionRunner);
 	await startExtensions(this, this._extensionRunner, this._resourceLoader, this._sessionStartEvent, async () => {
-		if (this._disposed) throw hostInputError("SessionClosed");
+		if (this._disposed) throw closedExtensionBindError(this);
 		this._rebuildSystemPrompt(this.getActiveToolNames());
 	});
 	migrateSavedCompactionModel(this);

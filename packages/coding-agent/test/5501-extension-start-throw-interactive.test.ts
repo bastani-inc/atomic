@@ -21,6 +21,7 @@ import { createUnstartedAgentSessionFromServices } from "../src/core/agent-sessi
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ExtensionFactory, InlineExtension, LoadExtensionsResult } from "../src/core/extensions/types.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
+import { DefaultResourceLoader, type ResourceExtensionPaths } from "../src/core/resource-loader.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -68,6 +69,7 @@ async function createMode(
 		settlesStartupTrust?: boolean;
 		additionalExtensionPaths?: string[];
 		extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult;
+		loaderClass?: typeof DefaultResourceLoader;
 	} = {},
 ) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-5501-cwd-"));
@@ -94,21 +96,33 @@ async function createMode(
 		],
 	});
 	const createRuntime: CreateAgentSessionRuntimeFactory = async (runtimeOptions) => {
+		const loaderOptions = {
+			cwd: runtimeOptions.cwd,
+			agentDir: runtimeOptions.agentDir,
+			builtinPackagePaths: [],
+			additionalExtensionPaths: options.additionalExtensionPaths,
+			extensionsOverride: options.extensionsOverride,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		};
+		const extensionFactories = Array.isArray(extension) ? extension : [extension];
 		const services = await createAgentSessionServices({
 			cwd: runtimeOptions.cwd,
 			agentDir: runtimeOptions.agentDir,
 			modelRuntime,
-			resourceLoaderOptions: {
-				builtinPackagePaths: [],
-				extensionFactories: Array.isArray(extension) ? extension : [extension],
-				additionalExtensionPaths: options.additionalExtensionPaths,
-				extensionsOverride: options.extensionsOverride,
-				noSkills: true,
-				noPromptTemplates: true,
-				noThemes: true,
-				noContextFiles: true,
-			},
+			resourceLoaderOptions: { ...loaderOptions, extensionFactories: options.loaderClass ? [] : extensionFactories },
 		});
+		if (options.loaderClass) {
+			const loader = new options.loaderClass({
+				...loaderOptions,
+				settingsManager: services.settingsManager,
+				extensionFactories,
+			});
+			await loader.reload();
+			services.resourceLoader = loader;
+		}
 		const created = await createUnstartedAgentSessionFromServices({
 			services,
 			sessionManager: runtimeOptions.sessionManager,
@@ -142,8 +156,40 @@ function occurrences(text: string, part: string): number {
 }
 
 test(
-	"stopping the interactive host while an eager session_start is pending exits normally (#5697)",
+	"eager startup propagates the error from a resource loader using a closed session (#5697)",
 	async () => {
+		const { mode: catalog } = await createMode(() => {});
+		await catalog.runtimeHost.dispose();
+		let catalogError: unknown;
+		class CatalogLoader extends DefaultResourceLoader {
+			override async extendResources(paths: ResourceExtensionPaths): Promise<void> {
+				if (paths.skillPaths?.length) {
+					try {
+						await catalog.session.prompt("refresh skill catalog");
+					} catch (error) {
+						catalogError = error;
+						throw error;
+					}
+				}
+				await super.extendResources(paths);
+			}
+		}
+		const { mode } = await createMode(
+			(pi) => {
+				pi.on("resources_discover", () => ({ skillPaths: ["./catalog"] }));
+			},
+			{ loaderClass: CatalogLoader },
+		);
+
+		await assert.rejects(mode.init(), (error) => error === catalogError);
+		assert.ok(catalogError instanceof Error && "code" in catalogError && catalogError.code === "SessionClosed");
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test.each([false, true])(
+	"stopping the interactive host while an eager session_start is pending exits normally (resource discovery: %s) (#5697)",
+	async (discoversResources) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const { mode } = await createMode((pi) => {
@@ -151,6 +197,7 @@ test(
 				entered.resolve();
 				await release.promise;
 			});
+			if (discoversResources) pi.on("resources_discover", () => ({}));
 		});
 		const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
 			throw new Error(`process.exit(${code})`);

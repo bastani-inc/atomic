@@ -1,4 +1,4 @@
-import { isAgentSessionClosed } from "../../core/agent-session-events.ts";
+import { isCancelledExtensionBind } from "../../core/agent-session-events.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 
@@ -10,10 +10,8 @@ export async function bindInitialEagerSession(mode: InteractiveModeBase): Promis
 		try {
 			await mode.rebindCurrentSession();
 		} catch (error) {
-			// Shutdown or a session switch can retire this bind while startup is waiting.
-			if (!isAgentSessionClosed(session) || (error as { code?: unknown } | null)?.code !== "SessionClosed") {
-				throw error;
-			}
+			// Rollback may already have closed the session. Only its requested close cancels the bind.
+			if (!isCancelledExtensionBind(session, error)) throw error;
 			if (mode.session === session) return "closed";
 			// The replacement installed its own binding. Finish the startup display for it.
 		} finally {

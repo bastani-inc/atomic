@@ -41,6 +41,7 @@ import {
 	subscribeSession,
 } from "./event-subscriptions/session-subscription.js";
 import type { EventSource, Subscription } from "./event-subscriptions/types.js";
+import { hostInputError } from "./extensions/host-input.js";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
@@ -732,6 +733,18 @@ export function _disconnectFromAgent(this: AgentSession): void {
 const shutdownEventFailures = new WeakMap<AgentSession, Error[]>();
 const sessionClosures = new WeakMap<object, Promise<void>>();
 const sessionRetirements = new WeakMap<AgentSession, Promise<void>>();
+// Only a requested close can cancel a bind. A startup rollback closes the session to clean up its failure.
+const cancelledBinds = new WeakMap<object, WeakSet<Error>>();
+
+export function closedExtensionBindError(session: object): Error {
+	const error = hostInputError("SessionClosed");
+	cancelledBinds.get(session)?.add(error);
+	return error;
+}
+
+export function isCancelledExtensionBind(session: object, error: unknown): boolean {
+	return error instanceof Error && cancelledBinds.get(session)?.has(error) === true;
+}
 
 /** A close has started; this session will not accept another extension bind. */
 export function isAgentSessionClosed(session: object): boolean {
@@ -741,12 +754,14 @@ export function isAgentSessionClosed(session: object): boolean {
 /** Shared terminal boundary for direct SDK disposal and runtime replacement. */
 export function closeAgentSession(
 	session: AgentSession,
+	origin: "request" | "startupRollback",
 	event: SessionShutdownEvent = { type: "session_shutdown", reason: "quit" },
 	beforeInvalidate?: () => void,
 ): Promise<void> {
 	const handoff = event.reason !== "quit" && hasCallingSessionWork(session);
 	const existing = sessionClosures.get(session);
 	if (existing) return (handoff && sessionRetirements.get(session)) || existing;
+	if (origin === "request") cancelledBinds.set(session, new WeakSet());
 	let resolveRetired!: () => void;
 	let rejectRetired!: (error: Error) => void;
 	const retirement = new Promise<void>((resolve, reject) => {
@@ -852,7 +867,7 @@ export function closeAgentSession(
 }
 
 export function dispose(this: AgentSession): Promise<void> {
-	return closeAgentSession(this);
+	return closeAgentSession(this, "request");
 }
 
 // =========================================================================
@@ -863,7 +878,7 @@ export function dispose(this: AgentSession): Promise<void> {
 
 export const agentSessionEventsMethods = {
 	_close(this: AgentSession, event: SessionShutdownEvent, beforeInvalidate?: () => void) {
-		return closeAgentSession(this, event, beforeInvalidate);
+		return closeAgentSession(this, "request", event, beforeInvalidate);
 	},
 	_emit,
 	_emitQueueUpdate,
