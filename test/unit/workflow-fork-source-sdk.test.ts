@@ -10,6 +10,8 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
@@ -23,6 +25,7 @@ async function requestsFor(
 	body: (ctx: WorkflowRunContext, source: () => SessionManager, cwd: string) => Promise<void>,
 ): Promise<string[][]> {
 	const cwd = makeTempDirectory("workflow-sdk-fork-");
+	const backend = await JournalDurableBackend.open(await openSqlRunJournal(join(cwd, "run.sqlite")));
 	const faux = registerFauxProvider({ models: [{ id: "local" }] });
 	try {
 		const requests: string[][] = [];
@@ -93,7 +96,7 @@ async function requestsFor(
 				cwd,
 				defaultSessionDir: join(cwd, "sessions"),
 				store: createStore(),
-				journal: { path: join(cwd, "run.sqlite") },
+				durableBackend: backend,
 				adapters: { agentSession: adapter },
 			},
 		);
@@ -101,6 +104,7 @@ async function requestsFor(
 		return requests;
 	} finally {
 		faux.unregister();
+		await backend.close();
 		removeTempDirectory(cwd);
 	}
 }
