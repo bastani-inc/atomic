@@ -2,7 +2,13 @@ import { getBranchPath } from "../../session-manager-history.ts";
 import { ChildCatalog } from "./child-catalog.js";
 import { foldSessionResume, sessionResumeOf, transcriptBranchSpan } from "./session-resume.js";
 import { assertSnapshotCut, snapshotStamp } from "./snapshot-cut.js";
-import type { SessionBranchPageCut, SessionRecordHeader, SessionStore, SessionWriteOptions } from "./types.js";
+import type {
+	SessionBranchPageCut,
+	SessionRecordHeader,
+	SessionSnapshot,
+	SessionStore,
+	SessionWriteOptions,
+} from "./types.js";
 import { type AssistantAnswer, lastBranchAnswer } from "./window-answer.js";
 
 export { assertSnapshotCut, snapshotChunk, snapshotHead, snapshotPage, snapshotStamp } from "./snapshot-cut.js";
@@ -15,7 +21,17 @@ export async function snapshotWindow(
 	expected?: string,
 	isProxy?: import("../../tasks/reopened-completion.js").CompletionProxyCheck,
 ) {
-	const snapshot = await store.load(sessionId);
+	return windowFromSnapshot(await store.load(sessionId), leaf, through, expected, isProxy);
+}
+
+/** Select from already available rows without reading or retaining a second decoded copy of their payloads. */
+export function windowFromSnapshot(
+	snapshot: SessionSnapshot,
+	leaf?: string,
+	through?: number,
+	expected?: string,
+	isProxy?: import("../../tasks/reopened-completion.js").CompletionProxyCheck,
+) {
 	const cut = through ?? snapshot.lastSeq;
 	assertSnapshotCut(snapshot, expected, cut);
 	const entries = cut === snapshot.entries.length ? snapshot.entries : snapshot.entries.slice(0, cut);

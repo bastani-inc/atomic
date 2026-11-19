@@ -6,8 +6,15 @@ import { inspect } from "node:util";
 import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import { describe, test, vi } from "vitest";
 import { runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import { copySessionBlobs } from "../../packages/coding-agent/src/core/session-tool-output.js";
 import { strayPostgresStorageTables } from "../../packages/coding-agent/src/core/storage/postgres-schema.js";
+import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import {
+	SESSION_FORMAT_VERSION,
+	type SessionRecordHeader,
+} from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { dumpLegacyWorkflowTables, LEGACY_STORE, seedLegacyStore } from "../helpers/legacy-store-0990.js";
@@ -294,6 +301,101 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			// Again, as after an upgrade with nothing new: still nothing to change.
 			const again = await migrateAs(roles, "owner");
 			assert.equal(again.code, 0, again.err);
+		});
+	});
+
+	test("a runtime role clones whole sessions as main did until storage migrate creates the fork staging table, then a page at a time without DDL (#5594)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const owner = await roles.open("owner");
+			const staging = `${PREFIX}session_fork_staging`;
+			const stagingExists = async () =>
+				(await owner.get("SELECT to_regclass(?) AS present", staging))?.present !== null;
+			assert.ok(await stagingExists(), "storage migrate creates the staging table as the owner");
+			// The database as an earlier release's migrate left it: no staging table.
+			await owner.exec(`DROP TABLE ${staging}`);
+			await grantRuntime(owner, roles);
+
+			const source = await SqlSessionStore.open(await roles.open("runtime"), { prefix: PREFIX });
+			const header = (id: string): SessionRecordHeader => ({
+				id,
+				version: SESSION_FORMAT_VERSION,
+				createdAt: "2026-11-19T00:00:00.000Z",
+				cwd: "/project",
+			});
+			const message = (id: string, parentId: string | null, text: string): SessionEntry =>
+				({
+					type: "message",
+					id,
+					parentId,
+					timestamp: "2026-11-19T00:00:00.000Z",
+					message: { role: "user", content: text, timestamp: 0 },
+				}) as SessionEntry;
+			await source.create(header("src"), [message("e1", null, "hello")]);
+			const blob = await source.putBlob("src", new Uint8Array(3 * 1024 * 1024 + 5).fill(3));
+			await source.append(
+				"src",
+				[
+					message("e2", "e1", `big ${"x".repeat(1_500_000)}`),
+					{
+						type: "custom",
+						id: "e3",
+						parentId: "e2",
+						timestamp: "2026-11-19T00:00:00.000Z",
+						customType: "atomic.tool-output",
+						data: { toolCallId: "call", hash: blob.hash, bytes: blob.bytes },
+					} as SessionEntry,
+				],
+				{ expectSeq: 1 },
+			);
+			const clone = async (child: string, statements: string[]) => {
+				const dest = await SqlSessionStore.open(recording(await roles.open("runtime"), statements), {
+					prefix: PREFIX,
+				});
+				const head = await source.readEntrySizes("src", 1, 0);
+				const created = await dest.createStagedFork(
+					{ ...header(child), parentSessionId: "src" },
+					completeSessionForkStream("src", head.epoch, head.lastSeq),
+					{ store: source, sessionId: "src", epoch: head.epoch, hashes: [], receipts: new Map() },
+				);
+				if (created.remainingBlobs.length > 0)
+					await copySessionBlobs(source, "src", dest, child, created.remainingBlobs);
+				assert.deepEqual((await dest.load(child)).entries, (await source.load("src")).entries);
+				assert.deepEqual(await dest.getBlob(child, blob.hash), await source.getBlob("src", blob.hash));
+				return created;
+			};
+
+			// Before the migrate: the role may not create the table, so the clone is main's, with one hint.
+			const warnings: string[] = [];
+			const warned = (warning: Error) => warnings.push(warning.message);
+			process.on("warning", warned);
+			try {
+				const before: string[] = [];
+				const created = await clone("before", before);
+				assert.deepEqual(created.remainingBlobs, [blob.hash], "main copies the blobs after the child");
+				assert.ok(!(await stagingExists()));
+				assert.ok(before.every((sql) => !sql.includes(`INSERT INTO ${staging}`)));
+				await clone("before-again", []);
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.equal(warnings.filter((text) => text.includes("atomic storage migrate")).length, 1);
+			} finally {
+				process.off("warning", warned);
+			}
+
+			// After the owner's migrate: the runtime role stages a page at a time and runs no DDL.
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.ok(await stagingExists());
+			const after: string[] = [];
+			const created = await clone("after", after);
+			assert.deepEqual(created.remainingBlobs, []);
+			assert.deepEqual(after.flatMap(ddl), []);
+			assert.ok(
+				after.some((sql) => sql.startsWith(`INSERT INTO ${staging}`)),
+				"the clone was staged",
+			);
+			assert.equal(Number((await owner.get(`SELECT count(*) AS n FROM ${staging}`))!.n), 0);
 		});
 	});
 

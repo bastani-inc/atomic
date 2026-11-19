@@ -46,6 +46,8 @@ export interface NewSessionOptions {
 
 export interface SessionOpenOptions {
 	readonly history?: "tail" | "full";
+	/** The entry to resume from instead of the current leaf. */
+	readonly leafId?: string;
 }
 
 export interface SessionEntryBase {
@@ -99,6 +101,8 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	summary: string;
 	/** First context-visible tail entry, or null when the durable summary replaces the entire pre-boundary transcript. */
 	firstKeptEntryId: string | null;
+	/** Source of the history link a legacy boundary synthesizes when replayed in a fork. */
+	recallSessionId?: string;
 	tokensBefore: number;
 	/**
 	 * Last entry the boundary covers, when it was placed before a turn that still waited on a tool result (or, in an
@@ -380,6 +384,7 @@ export type ReadonlySessionManager = Pick<
 	| "getEntry"
 	| "getLabel"
 	| "getBranch"
+	| "captureFork"
 	| "buildContextEntries"
 	| "buildSessionProjection"
 	| "getHeader"

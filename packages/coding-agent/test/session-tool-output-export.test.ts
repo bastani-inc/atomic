@@ -115,6 +115,92 @@ function fileLines(path: string): string[] {
 	return readFileSync(path, "utf8").trim().split("\n");
 }
 
+test("transcript and share exports hide structural fork anchors and keep their visible turns connected (#5594)", async () => {
+	const directory = temporaryDirectory("atomic-visible-fork-");
+	const store = await sqlStore(directory, "source");
+	const manager = await SessionManager.create(store, process.cwd());
+	const harness = await createHarness({ sessionManager: manager });
+	harnesses.push(harness);
+	const before = await manager.appendMessage({ role: "user", content: "first", timestamp: 1 });
+	const hidden = await manager.appendCustomEntry("atomic.fork-anchor");
+	const last = await manager.appendMessage({ role: "user", content: "last", timestamp: 2 });
+	for (const includeShareContext of [false, true]) {
+		const path = await harness.session.exportToJsonl(join(directory, `${includeShareContext}.jsonl`), {
+			includeShareContext,
+		});
+		const entries = fileLines(path)
+			.slice(1)
+			.map((line) => JSON.parse(line));
+		assert.ok(!entries.some((entry) => entry.id === hidden));
+		assert.equal(entries.find((entry) => entry.id === last).parentId, before);
+	}
+	const html = await harness.session.exportToHtml(join(directory, "chat.html"));
+	const sessionData = /<script id="session-data" type="application\/json">([^<]+)<\/script>/.exec(
+		readFileSync(html, "utf8"),
+	)?.[1];
+	assert.ok(sessionData);
+	const data: { entries: { id: string; parentId: string | null }[] } = JSON.parse(
+		Buffer.from(sessionData, "base64").toString("utf8"),
+	);
+	assert.ok(!data.entries.some((entry) => entry.id === hidden));
+	assert.equal(data.entries.find((entry) => entry.id === last)?.parentId, before);
+});
+
+test.each([false, true])(
+	"fork export preserves an uncovered turn when the cut has a visible predecessor: %s (#5594)",
+	async (hasPredecessor) => {
+		const directory = temporaryDirectory("atomic-visible-fork-cut-");
+		const store = await sqlStore(directory, "source");
+		const manager = await SessionManager.create(store, process.cwd());
+		const sibling = await manager.appendMessage({ role: "user", timestamp: 0, content: "unrelated branch" });
+		await manager.resetLeaf();
+		const first = hasPredecessor
+			? await manager.appendMessage({ role: "user", timestamp: 0, content: "covered" })
+			: null;
+		const cut = await manager.appendCustomEntry("atomic.fork-anchor");
+		const turn = await manager.appendMessage({ role: "user", timestamp: 1, content: "while clearing" });
+		const boundary = await manager.appendCompaction(
+			"cleared",
+			null,
+			100,
+			{
+				strategy: "verbatim-lines",
+				promptVersion: 7,
+				parameters: { query: "clear" },
+				form: "cleared",
+				stats: {
+					linesBefore: 1,
+					linesDeleted: 1,
+					linesKept: 0,
+					rangeCount: 0,
+					tokensBefore: 100,
+					tokensAfter: 0,
+					percentReduction: 100,
+				},
+			},
+			undefined,
+			cut,
+		);
+		const expected = manager.buildSessionContext().messages;
+		const reopenedSource = await SessionManager.open(store, manager.getSessionId());
+		const harness = await createHarness({ sessionManager: reopenedSource });
+		harnesses.push(harness);
+		assert.equal(reopenedSource.getEntry(sibling), undefined);
+		const path = await harness.session.exportToJsonl(join(directory, "fork.jsonl"));
+		assert.equal(reopenedSource.getEntry(sibling), undefined, "export the covered cut without hydrating the parent");
+		const lines = fileLines(path)
+			.slice(1)
+			.map((s) => JSON.parse(s));
+		assert.deepEqual(
+			lines.map((line) => line.id),
+			[first ?? cut, turn, boundary],
+		);
+		assert.equal(lines.at(-1).coveredThroughEntryId, first ?? cut);
+		const reopened = await SessionManager.importFromJsonl(path, directory, await sqlStore(directory, "target"));
+		assert.deepEqual(reopened.buildSessionContext().messages, expected);
+	},
+);
+
 test("an export carries the blob inline and an import into another database restores it (#4379)", async () => {
 	const directory = temporaryDirectory("atomic-tool-output-export-");
 	const { path, sessionId } = await exported(directory);

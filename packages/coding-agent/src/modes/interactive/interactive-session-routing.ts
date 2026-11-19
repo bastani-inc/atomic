@@ -504,6 +504,7 @@ function finishMissingCwdResume(mode: InteractiveModeBase, status: string): void
 		mode.clearFirstRunOnboardingUi();
 	}
 	mode.showStatus(status);
+	showSessionNotices(mode, mode.runtimeHost.takeResumeNotices());
 	mode.startSessionRecovery("resume");
 }
 
