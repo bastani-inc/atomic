@@ -43,11 +43,14 @@ export function sqlChatRecords(
 	const dialect = dialectOf(database);
 	let initialized: Promise<void> | undefined;
 	function initialize(): Promise<void> {
-		initialized ??= database
-			.exec(`CREATE TABLE IF NOT EXISTS ${table} (
+		const create = () =>
+			database.exec(`CREATE TABLE IF NOT EXISTS ${table} (
 			position ${dialect.types.serialKey}, session_id TEXT NOT NULL REFERENCES ${sessions}(id) ON DELETE CASCADE,
 			epoch TEXT NOT NULL, anchor TEXT NOT NULL, data TEXT NOT NULL);
-			CREATE INDEX IF NOT EXISTS ${index} ON ${table}(session_id, epoch, anchor, position);`)
+			CREATE INDEX IF NOT EXISTS ${index} ON ${table}(session_id, epoch, anchor, position);`);
+		// PostgreSQL fails one of two first diagnostics creating the table together; it then exists for the retry.
+		initialized ??= create()
+			.catch(() => create())
 			.catch((error: Error) => {
 				initialized = undefined;
 				throw error;

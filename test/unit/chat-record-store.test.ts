@@ -346,3 +346,29 @@ test("a memory read that overlaps a release still returns the lines that release
 		await store.close();
 	}
 });
+
+test("a diagnostic is saved when another writer creates the diagnostics table at the same moment (#5649)", async () => {
+	const db = await openNodeSqliteDatabase(":memory:");
+	const store = await SqlSessionStore.open(db);
+	try {
+		const manager = await SessionManager.create(store, process.cwd(), { id: "session" });
+		const anchor = await manager.appendMessage({ role: "user", content: "the first input", timestamp: 1 });
+		const scope = manager.chatRecordScope();
+		assert.ok(scope);
+		// As PostgreSQL reports two first diagnostics racing to create the table: the other one wins.
+		const exec = db.exec.bind(db);
+		let raced = false;
+		db.exec = async (sql) => {
+			if (raced || !sql.includes("CREATE TABLE IF NOT EXISTS session_chat_v1")) return exec(sql);
+			raced = true;
+			await exec(sql);
+			throw new Error('duplicate key value violates unique constraint "pg_class_relname_nsp_index"');
+		};
+		await scope.store.append(scope.owner, anchor, { kind: "line", level: "error", text: "Error: first" });
+		assert.equal(raced, true);
+		assert.equal((await scope.store.read(scope.owner, [anchor])).length, 1);
+	} finally {
+		await store.close();
+		await db.close();
+	}
+});
