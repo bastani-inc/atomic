@@ -398,3 +398,4 @@ UI previews are bounded and are not a substitute for retained output. Gaps and t
 
 - [Subagents](/subagents) covers definitions, models, context, and delegation boundaries.
 - [Keybindings](/keybindings) covers task-action remapping.
+- [Orchestration](/orchestration) explains how the parent continues from child results.

@@ -23,7 +23,7 @@ This page shows minimal and full `models.json` examples you can copy. [Models Co
 
 ## Use classifier models
 
-Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. Enable [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
+Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. In [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
 
 GitHub Copilot offers the text-only `github-copilot/microsoft-decision-1` classifier through its System One endpoint. It uses GitHub Copilot OAuth or `COPILOT_GITHUB_TOKEN`, with a 32,768-token context window.
 
@@ -37,13 +37,11 @@ Each System One service takes images in its own request format, which the model'
 
 ## Fallbacks and credentials
 
-A model chain is a pinned model followed by `fallbackModels` in a session, subagent, or workflow stage; `model: "auto"` starts the chain with your default model:
+A model chain is a pinned model followed by `fallbackModels` in a session or subagent; `model: "auto"` starts the chain with your default model:
 
 - Candidates whose providers lack usable credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents and stages). `auto` never stands for a default model whose provider has no credentials.
 - A provider that rejects credentials (HTTP 401, an invalid, expired, leaked, disabled, or restricted API key, an invalid request signature, an expired or invalid security token, an invalidated token, or a suspended API consumer) is skipped for the rest of that walk. A model-scoped HTTP 403 (such as missing model access or moderation) blocks only that model, leaving other models on that provider eligible.
-- A chain with no usable model fails at once naming each model and missing provider, or blocks for resume in a workflow stage. A single pinned model with no fallbacks is never replaced.
-
-A workflow task with `model: "auto"` that reads images runs only on models that accept image input, and its fallbacks skip models that do not.
+- A chain with no usable model fails at once naming each model and missing provider. A single pinned model with no fallbacks is never replaced.
 
 ## Table of Contents
 

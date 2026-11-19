@@ -1021,7 +1021,7 @@ pi.setActiveTools([...new Set([...active, "my_custom_tool"])]); // Keep current 
 pi.setActiveTools(["read", "bash"]); // Switch to read-only
 ```
 
-`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, `exposure`, `namespace`, `annotations`, and `sourceInfo`. See [tool exposure](/extensions/authoring#tool-exposure) before changing activation for script-callable tools.
+`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, `exposure`, `namespace`, `annotations`, and `sourceInfo`. `explicitDefaultOptOut: true` means a `-name` modifier explicitly removed that tool from the defaults; respect it when considering automatic activation. See [tool exposure](/extensions/authoring#tool-exposure) before changing activation for script-callable tools.
 
 Typical `sourceInfo.source` values:
 - `builtin` for built-in tools

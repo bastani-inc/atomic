@@ -34,7 +34,7 @@ Look up exact commands, settings, types, and tool contracts here. For a walkthro
 - [Intercom reference](/intercom/reference) — the `intercom` tool contract and settings.
 - [Package reference](/packages/reference) — filtering, scope, and deduplication.
 - [Provider API reference](/custom-provider/api-reference) — provider config and model definition contracts.
-- [Workflow API reference](/workflows/api-reference) — workflow, stage, and context contracts.
+- [Orchestration](/orchestration) — launch children from codemode and use their results.
 
 ## Platform setup
 

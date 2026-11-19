@@ -68,7 +68,7 @@ import { applyToolModifiers } from "./settings-merge.js";
 import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import { ChildTaskWaits } from "./tasks/child-command-owner.js";
 import { createToolNameMatcher } from "./tool-selection.ts";
-import { defaultToolNamesFor } from "./tools/index.js";
+import { defaultToolSelectionFor } from "./tools/index.js";
 import { scheduleSessionTempCleanup } from "./tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, type ProtectedPathLease, setActiveSessionTempId } from "./tools/session-temp-dir.ts";
 import { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
@@ -371,7 +371,7 @@ class AgentSessionBase {
 		this._usesDefaultTools = config.usesDefaultTools ?? false;
 		this._defaultToolModifiers = config.defaultToolModifiers ?? [];
 		const powerShellAvailable = config.powerShellAvailable ?? isPowerShellAvailable();
-		const builtinDefaultTools = defaultToolNamesFor(powerShellAvailable);
+		const builtinDefaultTools = defaultToolSelectionFor(powerShellAvailable, this._resourceLoader);
 		this._appliedDefaultTools = new Set(
 			this._usesDefaultTools
 				? applyToolModifiers(
