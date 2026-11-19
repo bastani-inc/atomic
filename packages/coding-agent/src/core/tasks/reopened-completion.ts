@@ -155,6 +155,17 @@ function stopName(details: object, target: LegacyCompletionTarget, witness: Stop
 	return name;
 }
 
+/** True only when this settled intent resolves the missing display header of this stored card. */
+export function resolvesCompletionHeader(card: SessionEntry, target: LegacyCompletionTarget, intent: unknown): boolean {
+	const witness = stopWitness(intent);
+	return (
+		card.type === "custom_message" &&
+		readable(card.details) &&
+		witness !== undefined &&
+		stopName(card.details, target, witness) !== undefined
+	);
+}
+
 // Presentation only: neither the durable entry, the model message, nor the shared parsed notice gains a field.
 const witnesses = new WeakMap<CustomMessage, StopWitness>();
 export function reopenedCompletionName(message: CustomMessage, isProxy: CompletionProxyCheck): string | undefined {
