@@ -2,6 +2,7 @@ import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { chatReceipt } from "../../core/chat-receipts.js";
 import type { ProjectTrustContext } from "../../core/extensions/index.js";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
@@ -249,9 +250,11 @@ export class RpcSessionBinding {
 		}
 		this.unsubscribe = session.subscribe((event) => {
 			// A finished message carries its save receipt, so a host can tell which saved entry its rows show.
-			const receipt = event.type === "message_end" ? session.entryReceipt?.(event.message) : undefined;
+			const saved = event.type === "message_end" ? session.entryReceipt?.(event.message) : undefined;
+			const receipt = this.writeEngineLine && chatReceipt(event);
 			const json = toJsonEvent(event);
-			this.output(receipt === undefined ? json : { ...json, entryId: receipt.entryId, seq: receipt.seq });
+			const withSaved = saved === undefined ? json : { ...json, entryId: saved.entryId, seq: saved.seq };
+			this.output(receipt ? { ...withSaved, atomicChatReceipt: receipt } : withSaved);
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {

@@ -185,12 +185,13 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	replaceTranscriptWindow(
 		messages: Parameters<LiveChatEntriesController["replaceMessages"]>[0],
 		parked?: ParkedTaskRows,
-	): void {
+	): ReadonlyMap<object, object> | undefined {
 		const previous = [...this.transcript];
 		this.liveChat.replaceMessages(messages, this.extraEntries);
-		if (parked) this.liveChat.keepParkedEntries(parked.rows, parked.adopted, savedRowKey);
+		const adopted = parked ? this.liveChat.keepParkedEntries(parked.rows, parked.adopted, savedRowKey) : undefined;
 		this.keepRetiredRenderers(previous);
 		this.releaseRetiredRows();
+		return adopted;
 	}
 
 	/** The saved-page key of a row: its page's origin, or a live row's from its save receipt. */

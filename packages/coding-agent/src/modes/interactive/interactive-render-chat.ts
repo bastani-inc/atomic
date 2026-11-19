@@ -1,8 +1,15 @@
 import { isProxy } from "node:util/types";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import { type TUI, WindowedContainer } from "@bastani/atomic-tui";
+import { type HistoryLeaf, type TUI, WindowedContainer } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
-import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import {
+	advanceCacheHistory,
+	cacheMissAfter,
+	createCacheMissModelSource,
+	formatCacheMissNotice,
+	type ModelPriceSource,
+	type PreviousRequest,
+} from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
@@ -30,6 +37,14 @@ import {
 } from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
+import { bindChatLayout, ChatReaderLayout, chatDecorationRow } from "./chat-reader-layout.js";
+import {
+	CHAT_RECORD_FIRST_PAINT_MS,
+	type ChatPageDecorations,
+	readMountedAnchors,
+	retainChatRecords,
+	sessionChatMount,
+} from "./chat-reader-records.js";
 import {
 	applyToolEntryState,
 	callsAwaitingLaterResults,
@@ -85,6 +100,7 @@ import {
 	parkViewport,
 	releaseSavedChatHistory,
 	type SavedCopyDraw,
+	type SavedPageRecords,
 	type SavedRendererInstances,
 	storedWidget,
 	widgetKey,
@@ -119,22 +135,27 @@ InteractiveModeBase.prototype.maybeShowAssistantDiagnostics = function (
 	const count = countDroppedThinkingBlocks(message);
 	if (count === 0) return;
 	let previousCount = 0;
-	// The live message_end notification precedes persistence of this response.
+	// The local host has already committed this occurrence; the isolated mirror may still end at its predecessor.
+	const publishing = this.session?.publishingReplyId?.(message);
 	const branch = this.sessionManager.getBranch();
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i];
-		if (entry.type === "message" && entry.message.role === "assistant") {
+		if (entry.type === "message" && entry.message.role === "assistant" && entry.id !== publishing) {
 			previousCount = countDroppedThinkingBlocks(entry.message);
 			break;
 		}
 	}
+	addThinkingDrop(this, count, previousCount);
+};
+
+function addThinkingDrop(mode: InteractiveModeBase, count: number, previousCount: number): void {
 	if (count <= previousCount) return;
 	const noun = count === 1 ? "thinking block" : "thinking blocks";
-	this.chatContainer.addChild(new Spacer(1));
-	this.chatContainer.addChild(
+	mode.chatContainer.addChild(new Spacer(1));
+	mode.chatContainer.addChild(
 		new Text(theme.fg("warning", `Anthropic dropped ${count} ${noun} (details in session)`), 1, 0),
 	);
-};
+}
 
 // Weak keys leave cleared/rebuilt transcripts collectible without separate lifecycle state.
 // Only persistent diagnostic statuses participate; ordinary chat/status is never evicted.
@@ -815,8 +836,74 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	this.ui.requestRender();
 };
 
+interface ReplyNotices {
+	message: AssistantMessage;
+	previousReply: AssistantMessage | undefined;
+	previousRequest: PreviousRequest | undefined;
+	models: ModelPriceSource;
+	summarizedParent?: string;
+	repeated?: {
+		occurrences: ReplyNotices[];
+		resolved?: true;
+		owner?: ReplyNotices;
+		miss?: ReturnType<typeof cacheMissAfter>;
+	};
+}
+
+function missForOccurrence(notes: ReplyNotices): ReturnType<typeof cacheMissAfter> {
+	const group = notes.repeated;
+	if (!group) return cacheMissAfter(notes.previousRequest, notes.message, notes.models);
+	// The cache statistics fold records the last miss for each saved object. Retain its exact occurrence,
+	// even when a later occurrence of that same object wasn't a miss. Distinct equal objects remain distinct.
+	if (!group.resolved) {
+		group.resolved = true;
+		for (let i = group.occurrences.length - 1; i >= 0; i--) {
+			const candidate = group.occurrences[i]!;
+			const miss = cacheMissAfter(candidate.previousRequest, candidate.message, candidate.models);
+			if (miss) {
+				group.owner = candidate;
+				group.miss = miss;
+				break;
+			}
+		}
+	}
+	return group.owner === notes ? group.miss : undefined;
+}
+
+function precedingDropCount(mode: InteractiveModeBase, notes: ReplyNotices): number | undefined {
+	if (notes.previousReply) return countDroppedThinkingBlocks(notes.previousReply);
+	// The provider's cumulative count does not start over at a summary. Only the first visible reply can
+	// need an omitted predecessor. Do not fetch old message bodies or guess when a tail-only reader lacks it.
+	let id = notes.summarizedParent;
+	if (id === undefined) return 0;
+	const seen = new Set<string>();
+	while (!seen.has(id)) {
+		seen.add(id);
+		const entry = mode.sessionManager?.getEntry(id);
+		if (!entry) return undefined;
+		if (entry.type === "message" && entry.message.role === "assistant")
+			return countDroppedThinkingBlocks(entry.message);
+		if (!entry.parentId) return 0;
+		id = entry.parentId;
+	}
+	return undefined;
+}
+
+function paintReplyNotices(mode: InteractiveModeBase, notes: ReplyNotices): void {
+	const { message } = notes;
+	if (message.stopReason !== "aborted" && message.stopReason !== "error") {
+		const count = countDroppedThinkingBlocks(message);
+		if (count > 0) {
+			const previous = precedingDropCount(mode, notes);
+			if (previous !== undefined) addThinkingDrop(mode, count, previous);
+		}
+	}
+	const miss = missForOccurrence(notes);
+	if (miss) mode.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
+}
+
 type TranscriptStep =
-	| { readonly kind: "entry"; readonly entry: ChatMessageEntry }
+	| { readonly kind: "entry"; readonly entry: ChatMessageEntry; readonly notices?: ReplyNotices }
 	| { readonly kind: "custom"; readonly entry: CustomEntry }
 	| {
 			readonly kind: "cost";
@@ -838,6 +925,7 @@ function planTranscript(
 		suppressCompactionBoundary?: VerbatimCompactionResult;
 		saved?: { seqs: Map<SessionEntry, number>; owners: WeakMap<object, string> };
 	},
+	layout?: ChatReaderLayout,
 ): TranscriptStep[] {
 	const steps: TranscriptStep[] = [];
 	const grouping: MainToolGrouping = options.saved
@@ -850,22 +938,42 @@ function planTranscript(
 		: mainToolGrouping(mode);
 	if (!options.saved) resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
+	const sources = layout ? ([] as string[]) : undefined;
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
 	const messageSeq = options.saved ? new Map<AgentMessage, number>() : undefined;
+	const models =
+		!options.saved && mode.settingsManager.getShowCacheMissNotices()
+			? createCacheMissModelSource(mode.session.modelRuntime)
+			: undefined;
+	let previousRequest: PreviousRequest | undefined;
+	let previousReply: AssistantMessage | undefined;
+	const replyGroups: ReplyNotices[] = [];
 	let firstMessage = true;
+	const firstOccurrence = models && new WeakMap<AssistantMessage, ReplyNotices>();
+	const boundary = sessionEntries[0];
+	const firstParent = sessionEntries[1]?.parentId;
+	const summarizedParent =
+		boundary?.type === "compaction"
+			? ((firstParent === boundary.id ? boundary.parentId : firstParent) ?? undefined)
+			: undefined;
 	const flushMessages = (): void => {
 		if (options.suppressCompactionBoundary && firstMessage) {
 			// A boundary replays after the system prompt it recorded, so the boundary is the first non-system message.
 			const boundaryIndex = messageBuffer.findIndex((message) => message.role !== "system");
 			if (isSynthesizedCompactionBoundary(messageBuffer[boundaryIndex], options.suppressCompactionBoundary)) {
 				messageBuffer = messageBuffer.filter((_, index) => index !== boundaryIndex);
+				sources?.splice(boundaryIndex, 1);
 			}
 		}
 		firstMessage = false;
 		if (options.saved) grouping.tracker.break();
 		else breakMainToolGroup(mode);
 		const saved = options.saved;
-		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta, {
+		// Pair by occurrence, not by message identity: an SDK caller can append the very same object twice.
+		let occurrence = 0;
+		const groups = replyGroups.length ? new Map<ChatMessageEntry, ReplyNotices>() : undefined;
+		let source = 0;
+		const entries = chatEntriesFromAgentMessages(messageBuffer, messageMeta, {
 			tracker: grouping.tracker,
 			...(saved && messageSeq
 				? {
@@ -873,7 +981,10 @@ function planTranscript(
 							saved.owners.set(e, `${messageSeq.get(message)}:${block}`),
 					}
 				: {}),
-		})) {
+			onMessageGroup: layout && sources ? (row) => layout.bind(sources[source++]!, row) : undefined,
+			onAssistantGroup: groups && ((lastRow) => groups.set(lastRow, replyGroups[occurrence++]!)),
+		});
+		for (const entry of entries) {
 			if (entry.kind === "tool" && entry.isPartial !== false) {
 				const startedAt = grouping.starts.get(entry.toolCallId);
 				if (startedAt !== undefined) {
@@ -885,9 +996,11 @@ function planTranscript(
 			if (entry.kind === "assistant")
 				grouping.carriedBreak = assistantCallBreaks(entry.message.content, grouping.carriedBreak).trailing;
 			else if (entry.kind !== "tool") grouping.carriedBreak = false;
-			steps.push({ kind: "entry", entry });
+			steps.push({ kind: "entry", entry, notices: groups?.get(entry) });
 			if (options.populateHistory && entry.kind === "user") mode.editor.addToHistory?.(entry.text);
 		}
+		replyGroups.length = 0;
+		if (sources) sources.length = 0;
 		messageBuffer = [];
 	};
 	const headers = new ReopenedCompletionHeaders(
@@ -906,14 +1019,28 @@ function planTranscript(
 			flushMessages();
 			if (options.saved) options.saved.owners.set(entry, `${options.saved.seqs.get(entry)}:entry`);
 			steps.push({ kind: "custom", entry });
+			layout?.bind(entry.id, entry);
 		} else {
 			const messages = sessionEntryToDisplayMessages(entry, headers);
 			const seq = options.saved ? options.saved.seqs.get(entry) : mode.sessionManager?.getEntrySeq?.(entry.id);
 			for (const message of messages) {
+				sources?.push(entry.id);
 				messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
 				if (seq !== undefined) noteSavedSeq(message, seq);
 				if (options.saved) messageSeq?.set(message, options.saved.seqs.get(entry)!);
+				if (models && firstOccurrence && message.role === "assistant") {
+					const notes: ReplyNotices = { message, previousReply, summarizedParent, previousRequest, models };
+					const saved = entry.type === "message" && entry.message.role === "assistant" ? entry.message : message;
+					const first = firstOccurrence.get(saved);
+					if (first) {
+						notes.repeated = first.repeated ??= { occurrences: [first] };
+						notes.repeated.occurrences.push(notes);
+					} else firstOccurrence.set(saved, notes);
+					replyGroups.push(notes);
+					previousReply = message;
+				}
 			}
+			if (models) previousRequest = advanceCacheHistory(previousRequest, entry);
 			messageBuffer.push(...messages);
 			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
 				flushMessages();
@@ -923,13 +1050,16 @@ function planTranscript(
 					entry.summary === options.suppressCompactionBoundary.compactedText &&
 					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
 				const seq = options.saved?.seqs.get(entry);
-				if (!suppressedLiveBoundary)
-					steps.push({
+				if (!suppressedLiveBoundary) {
+					const cost: TranscriptStep = {
 						kind: "cost",
 						type: entry.type,
 						usage: entry.usage,
 						...(seq === undefined ? {} : { seq }),
-					});
+					};
+					steps.push(cost);
+					layout?.extendGroup(entry.id, cost);
+				}
 			}
 		}
 	}
@@ -988,6 +1118,7 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 		if (latest) grouping.lastMember = component;
 	}
 	if (entry.kind === "assistant" && !adopted) addServiceTierWarnings(mode, entry.message);
+	if (step.notices && !adopted) paintReplyNotices(mode, step.notices);
 	if (!saved && entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
 		mode.pendingTools.set(entry.toolCallId, component);
 	}
@@ -1018,6 +1149,7 @@ function savedChatComponents(
 	exceptions: SavedRendererInstances,
 	adjacent: { readonly older?: string; readonly newer?: string } | undefined,
 	copy?: SavedCopyDraw,
+	records?: SavedPageRecords,
 ): Component[] {
 	const scratch = new Container();
 	// Each page draws after earlier rows, as the whole transcript does: its first message keeps its spacing.
@@ -1026,7 +1158,11 @@ function savedChatComponents(
 	try {
 		mode.chatContainer = scratch;
 		const saved = { seqs: new Map(entries.map((e, i) => [e, seqs[i]!])), owners: new WeakMap<object, string>() };
-		const steps = planTranscript(mode, entries, { saved });
+		// The page's saved lines go where the whole chat draws them: after the last row of their entry's group.
+		const layout = records ? new ChatReaderLayout(entries, scratch, { root: records.root }) : undefined;
+		const steps = planTranscript(mode, entries, { saved }, layout);
+		/** Each drawn row's saved leaf, for the saved lines drawn after it. */
+		const leaves = new Map<Component, HistoryLeaf>();
 		const held = new Set(
 			adjacent?.newer || copy?.edges.newer
 				? callsAwaitingLaterResults(steps.flatMap((step) => (step.kind === "entry" ? [step.entry] : [])))
@@ -1035,6 +1171,8 @@ function savedChatComponents(
 		const calls = new SavedPageCallsBuilder(mode, chat, seqs, exceptions, copy !== undefined);
 		const mark = (components: readonly Component[], key: string, provisional: boolean) => {
 			const { seq, block } = savedLeaf(key);
+			for (let part = 0; part < components.length; part++)
+				leaves.set(components[part]!, { source: exceptions.source, seq, block, part });
 			for (let part = 0; part < components.length; part++)
 				if (copy) copy.positions.set(components[part]!, { source: exceptions.source, seq, block, part });
 				else
@@ -1054,17 +1192,24 @@ function savedChatComponents(
 					: step.seq === undefined
 						? undefined
 						: `${step.seq}:cost`;
+			const index = scratch.children.length;
 			if (step.kind === "entry" && step.entry.kind === "tool" && held.has(step.entry)) {
 				const slot = calls.hold(step.entry, key);
 				scratch.addChild(slot);
 				if (key) mark([slot], key, true);
+				layout?.paint(step.entry, scratch, index);
 				continue;
 			}
-			const index = scratch.children.length;
 			const kept = key && (copy ? exceptions.peek(key) : exceptions.get(key));
 			if (kept) for (const component of kept) scratch.addChild(component);
 			else addTranscriptStep(mode, step, false, true);
+			layout?.paint(step.kind === "cost" ? step : step.entry, scratch, index);
 			const drawn = scratch.children.slice(index);
+			if (key) {
+				const { seq, block } = savedLeaf(key);
+				for (let part = 0; part < drawn.length; part++)
+					leaves.set(drawn[part]!, { source: exceptions.source, seq, block, part });
+			}
 			const alone = step.kind === "entry" && step.entry.kind === "tool" && isResultWithoutCall(step.entry);
 			if (key) {
 				if (!copy && !kept) exceptions.remember(key, drawn, savedLeaf(key));
@@ -1090,6 +1235,13 @@ function savedChatComponents(
 				);
 			calls.drew(step.entry);
 		}
+		if (layout && records) {
+			layout.apply(scratch, records.data);
+			markRecordRows(scratch.children, leaves, (row, leaf) => {
+				if (copy) copy.positions.set(row, leaf);
+				else WindowedContainer.markHistoryComponent(row, leaf.source, leaf.seq, leaf.block, leaf.part);
+			});
+		}
 		const page = scratch.children.slice(1);
 		if (copy) copy.settled = calls.settle(mode.sessionManager, copy.edges, copy.alive);
 		else if (page.length > 0) page.unshift(calls.finish(mode.sessionManager, adjacent));
@@ -1099,7 +1251,41 @@ function savedChatComponents(
 	}
 }
 
-function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly TranscriptStep[], end: Component): void {
+/**
+ * Give each saved line of a page the saved leaf right after the row it follows, so a selection or a copy places it
+ * where the page shows it. A line ahead of every row of the page goes just before the first one.
+ */
+function markRecordRows(
+	rows: readonly Component[],
+	leaves: ReadonlyMap<Component, HistoryLeaf>,
+	mark: (row: Component, leaf: HistoryLeaf) => void,
+): void {
+	let previous: HistoryLeaf | undefined;
+	let leading: Component[] = [];
+	for (const row of rows) {
+		const leaf = leaves.get(row);
+		if (leaf) {
+			for (let i = 0; i < leading.length; i++) mark(leading[i]!, { ...leaf, part: leaf.part - leading.length + i });
+			leading = [];
+			previous = leaf;
+			continue;
+		}
+		if (!chatDecorationRow(row)) continue;
+		if (!previous) {
+			leading.push(row);
+			continue;
+		}
+		previous = { ...previous, part: previous.part + 1 };
+		mark(row, previous);
+	}
+}
+
+function buildHistoryInSlices(
+	mode: InteractiveModeBase,
+	history: readonly TranscriptStep[],
+	end: Component,
+	layout?: WeakRef<ChatReaderLayout>,
+): void {
 	const chat = mode.chatContainer;
 	let remaining = history.length;
 	let before = end;
@@ -1114,7 +1300,9 @@ function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly Trans
 		try {
 			for (let steps = 0; remaining > 0 && steps < maxSteps; steps++) {
 				scratch.children = [preceding];
-				addTranscriptStep(mode, history[--remaining]!, false);
+				const step = history[--remaining]!;
+				addTranscriptStep(mode, step, false);
+				layout?.deref()?.paint(step.kind === "cost" ? step : step.entry, scratch, 1);
 				built.push(scratch.children.slice(1));
 				if (performance.now() >= deadline) break;
 			}
@@ -1167,7 +1355,16 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	const parked = options.parked;
 	installSavedChatHistory(this, sessionEntries, savedChatComponents, parked?.parked);
 	noteShownContext(this, sessionEntries);
-	const steps = planTranscript(this, sessionEntries, options);
+	const chat = this.chatContainer;
+	const regular = this.ui.mode !== "fullscreen";
+	const mount = sessionChatMount(this, this.sessionManager);
+	let layout = mount ? new ChatReaderLayout(sessionEntries, chat) : undefined;
+	if (layout) bindChatLayout(this, layout);
+	// Saved lines a parked reader still sees stay in their rows; this drawing does not show them twice.
+	if (layout && parked?.shownRecords) layout.keepShown(parked.shownRecords);
+	const steps = planTranscript(this, sessionEntries, options, layout);
+	// Only the drawn context's saved lines stay resident; a saved page reads its own with its rows.
+	if (mount && layout) retainChatRecords(mount, layout.anchors());
 	let tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
 	if (parked?.keys.size) {
 		// The reader's kept rows are drawn now, in place, so the first frame shows them where they were.
@@ -1183,24 +1380,43 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	if (tailStart > 0) {
 		const historyEnd = new Spacer(0);
 		this.chatContainer.addChild(historyEnd);
-		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
+		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd, layout && new WeakRef(layout));
 	}
+	const adoption = adoptions.get(this);
 	try {
-		for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
+		for (let index = tailStart; index < steps.length; index++) {
+			const step = steps[index]!;
+			const key = adoption && stepKey(step);
+			const start = chat.children.length;
+			addTranscriptStep(this, step);
+			// An adopted row is where the reader saw it, with the saved lines drawn after it then.
+			if (key === undefined || !adoption?.keys.has(key))
+				layout?.paint(step.kind === "cost" ? step : step.entry, chat, start);
+		}
 	} finally {
-		const adoption = adoptions.get(this);
 		adoptions.delete(this);
 		const unused = [...(adoption?.inserted ? [] : (parked?.adopted ?? [])), ...(parked?.parked?.rows ?? [])].filter(
 			(row) => !this.chatContainer.children.includes(row),
 		);
 		disposeRemoteRenderers(unused);
 	}
-	if (this.settingsManager.getShowCacheMissNotices()) {
-		for (const miss of collectCacheMisses(
-			sessionEntries,
-			createCacheMissModelSource(this.session.modelRuntime),
-		).values()) {
-			this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
+	if (mount && layout) {
+		if (!regular && chat instanceof StartupChatContainer) {
+			layout.observeWindowWhenPresent(chat, mount, () => this.ui.requestRender());
+		} else {
+			const page = readMountedAnchors(mount, () => layout?.anchors() ?? []);
+			const apply = (data?: ChatPageDecorations) => {
+				const changed = data !== undefined && layout?.apply(chat, data) === true;
+				layout = undefined;
+				return changed;
+			};
+			// The main-screen renderer writes the rows into the one frame it may hold for them; nothing renders again.
+			if (chat instanceof StartupChatContainer)
+				chat.awaitChatRecords(page, apply, this.ui, CHAT_RECORD_FIRST_PAINT_MS);
+			else
+				void page.then((data) => {
+					if (apply(data)) this.ui.requestRender();
+				});
 		}
 	}
 	restoreDeferredEchoes(this, pendingEchoes);

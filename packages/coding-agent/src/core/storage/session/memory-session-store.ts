@@ -3,6 +3,14 @@ import { getErrnoCode } from "../../tools/errno.ts";
 import { SessionSpillError, type SessionSpillErrorCode, type SessionSpillErrorFields } from "../errors.js";
 import { sha256Hex } from "./blob-hash.js";
 import { branchStatePages } from "./branch-state-pages.js";
+import {
+	bindChatEpoch,
+	boundedChatRecord,
+	type ChatRecord,
+	decodeChatRecord,
+	firstChatOrders,
+	type SessionChatRecords,
+} from "./chat-records.js";
 import { EntryTypeReader } from "./entry-type.js";
 import {
 	SessionConflictError,
@@ -101,6 +109,12 @@ export interface PrivateMirrorPage {
 
 interface StoredSession {
 	header: Uint8Array;
+	chat?: Map<string, ChatRecord[]>;
+	spilledChat?: Map<string, { directory: SessionHistoryDirectory; files: number[] }>;
+	/** Each move of `chat` to files, so a read that overlapped one reads again rather than missing its lines. */
+	chatMoves?: number;
+	/** Ids only, never spilled: each prompt's first edge, by prompt. */
+	orders?: Map<string, string>;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
 	summaryState: SessionSummaryState;
@@ -293,6 +307,58 @@ export class MemorySessionStore implements SessionStore {
 		registerForkScope(this, () => ({ kind: "memory", backing: this.records }));
 		if (historyFiles !== undefined) this.spill = new SpillDirectory(historyFiles);
 	}
+
+	readonly chatRecords: SessionChatRecords = {
+		append: async (owner, anchor, record) => {
+			const held = this.stored(owner.id);
+			if (!held || held.index.epoch !== owner.epoch) return;
+			record = boundedChatRecord(record);
+			held.chat ??= new Map();
+			const byAnchor = held.chat;
+			const list = byAnchor.get(anchor);
+			if (list) list.push({ ...record });
+			else byAnchor.set(anchor, [{ ...record }]);
+			if (record.kind === "promptBefore" && !held.orders?.has(record.promptId)) {
+				held.orders ??= new Map();
+				held.orders.set(record.promptId, anchor);
+			}
+		},
+		has: async (owner) => {
+			const held = this.stored(owner.id);
+			return held?.index.epoch === owner.epoch && (!!held.chat?.size || !!held.spilledChat?.size);
+		},
+		read: async (owner, anchors) => {
+			const held = this.stored(owner.id);
+			if (held?.index.epoch !== owner.epoch) return [];
+			for (;;) {
+				while (held.spilling) await settled(held.spilling);
+				const moves = held.chatMoves;
+				const rows: { anchor: string; record: ChatRecord }[] = [];
+				for (const anchor of anchors) {
+					const spill = held.spilledChat?.get(anchor);
+					if (spill)
+						for (const file of spill.files) {
+							const bytes = await spill.directory.read(file);
+							for (const line of Buffer.from(bytes).toString("utf8").split("\n")) {
+								const record = decodeChatRecord(line);
+								if (record) rows.push({ anchor, record });
+							}
+						}
+					for (const record of held.chat?.get(anchor) ?? []) rows.push({ anchor, record: { ...record } });
+				}
+				if (this.records.get(owner.id) !== held) return [];
+				if (held.chatMoves === moves) return rows;
+			}
+		},
+		readOrders: async (owner, promptIds) => {
+			const held = this.stored(owner.id);
+			if (held?.index.epoch !== owner.epoch || !held.orders) return [];
+			return firstChatOrders(
+				Array.from(held.orders, ([promptId, anchor]) => ({ anchor, promptId })),
+				promptIds,
+			);
+		},
+	};
 
 	get descriptor(): StorageDescriptor {
 		return { adapter: "memory", location: ":memory:" };
@@ -778,6 +844,7 @@ export class MemorySessionStore implements SessionStore {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
 		const snapshot = await this.decode(sessionId, record);
+		if (snapshot) bindChatEpoch(snapshot.header, record.index.epoch);
 		return snapshot
 			? noteSnapshotGeneration(this, snapshot, nativeLoad, record.index, "epoch")
 			: this.load(sessionId);
@@ -1381,7 +1448,10 @@ export class MemorySessionStore implements SessionStore {
 		const record = this.records.get(sessionId);
 		if (record === undefined) return;
 		const spilling: Promise<void> = settled(record.spilling)
-			.then(() => this.spillEntries(sessionId, record, spill))
+			.then(() => {
+				const entries = this.spillEntries(sessionId, record, spill);
+				return record.chat?.size ? entries.then(() => this.spillChatRecords(sessionId, record, spill)) : entries;
+			})
 			.finally(() => {
 				if (record.spilling === spilling) record.spilling = undefined;
 			});
@@ -1579,10 +1649,41 @@ export class MemorySessionStore implements SessionStore {
 		if (previous !== undefined) await this.removeFile(directory, sessionId, previous.file);
 	}
 
+	private async spillChatRecords(sessionId: string, record: StoredSession, spill: SpillDirectory): Promise<void> {
+		if (!record.chat?.size || this.records.get(sessionId) !== record) return;
+		const directory = record.directory ?? (await spill.directory());
+		if (!directory || this.records.get(sessionId) !== record) return;
+		record.spilledChat ??= new Map();
+		const pending = record.chat;
+		record.chat = undefined;
+		record.chatMoves = (record.chatMoves ?? 0) + 1;
+		for (const [anchor, lines] of pending) {
+			const bytes = utf8Encoder.encode(lines.map((line) => JSON.stringify({ v: 1, ...line })).join("\n"));
+			const file = spill.nextFile();
+			try {
+				await directory.write(file, bytes);
+				const previous = record.spilledChat.get(anchor);
+				if (previous) previous.files.push(file);
+				else record.spilledChat.set(anchor, { directory, files: [file] });
+			} catch (cause) {
+				record.chat ??= new Map();
+				record.chat.set(anchor, [...lines, ...(record.chat.get(anchor) ?? [])]);
+				spill.degraded(
+					"spill-write-failed",
+					{ directory: directory.path, sessionId, bytes: bytes.length, errno: getErrnoCode(cause) },
+					cause,
+				);
+			}
+		}
+	}
+
 	/** Removes the file of a session that was deleted or replaced, once a release writing to it has finished. */
 	private async removeSpillFile(sessionId: string, record: StoredSession): Promise<void> {
 		while (record.spilling !== undefined) await settled(record.spilling);
 		if (record.directory !== undefined) await this.removeFile(record.directory, sessionId, record.file);
+		if (record.spilledChat)
+			for (const { directory, files } of record.spilledChat.values())
+				for (const file of files) await this.removeFile(directory, sessionId, file);
 	}
 
 	private async removeFile(directory: SessionHistoryDirectory, sessionId: string, file: number): Promise<void> {

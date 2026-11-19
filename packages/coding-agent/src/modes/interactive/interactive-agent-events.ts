@@ -1,6 +1,7 @@
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
 import { sessionCloseReason } from "../../core/agent-session-events.ts";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import { chatReceipt } from "../../core/chat-receipts.js";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -11,6 +12,8 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
+import { chatLineDrawnLive, noteLiveChatRows } from "./chat-reader-layout.js";
+import { chatRecordsChanged } from "./chat-reader-records.js";
 import { hasAssistantVisibleContent, interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
@@ -19,7 +22,7 @@ import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { type EventStartup, eventStartupScope } from "./interactive-initial-session-binding.ts";
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
 	type AgentSessionEvent,
 	AssistantMessageComponent,
@@ -290,6 +293,10 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 
 	this.footer.invalidate();
 	this.programStatus.handleEvent(event);
+	// Rows this event draws for a saved line stand for that line, wherever a compaction keeps them.
+	const liveChat = this.chatContainer;
+	const drawnFrom = liveChat.children.length;
+	const drawnAfter = liveChat.children.at(-1);
 
 	switch (event.type) {
 		case "agent_start":
@@ -545,6 +552,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 					this.sessionManager.getEntries(),
 					event.message,
 					createCacheMissModelSource(this.session.modelRuntime),
+					this.session.publishingReplyId?.(event.message),
 				);
 				if (miss) this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 			}
@@ -851,6 +859,16 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			this.ui.requestRender();
 			break;
 		}
+	}
+	const receipt = chatReceipt(event);
+	if (receipt) {
+		chatRecordsChanged(this, receipt);
+		chatLineDrawnLive(this, receipt.id);
+		if (this.chatContainer === liveChat && liveChat.children[drawnFrom - 1] === drawnAfter)
+			noteLiveChatRows(
+				liveChat.children.slice(drawnFrom).filter((row) => !isChatMessageComponent(row)),
+				receipt.id,
+			);
 	}
 }
 

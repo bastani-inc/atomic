@@ -1,4 +1,5 @@
 import { hash } from "fast-sha256";
+import type { SessionChatRecords } from "./chat-records.js";
 import { SessionConflictError } from "./errors.js";
 import {
 	type HistoryPacketReader,
@@ -62,6 +63,17 @@ export function transcriptCursorWithin(
 	const from = Math.max(first, start);
 	const to = Math.min(last, end);
 	return from <= to ? `${match[1]}.${from}.${to}${backward ? ".b" : ""}.${first}.${last}` : undefined;
+}
+
+/** The stored generation a page was read from. Not part of the page's data: it identifies its reader-only records. */
+interface PageGeneration {
+	readonly store: { readonly chatRecords?: SessionChatRecords };
+	readonly sessionId: string;
+	readonly epoch: string;
+}
+const pageGenerations = new WeakMap<SessionHistoryPage, PageGeneration>();
+export function historyPageGeneration(page: object): PageGeneration | undefined {
+	return pageGenerations.get(page as SessionHistoryPage);
 }
 
 /** A lazy sequence of pages of the generation and watermark the caller observed. Metadata is sized before any
@@ -251,7 +263,7 @@ export async function* historyPages(
 			`${scope}.${from}.${to}${backward ? ".b" : ""}${options.adjacent || leaf !== undefined ? `.${firstSeq}.${lastSeq}` : ""}${leaf === undefined ? "" : `.p${leaf}`}${snapshotOnly ? `.s${cut}` : ""}`;
 		// Only a whole store can carry a task-reference watcher; a forked file's partial reader never has one.
 		if ("load" in store) observeReferenceCut(options, store, sessionId, stamp, cut);
-		yield {
+		const read: SessionHistoryPage = {
 			items: page,
 			...(hasNext ? { nextCursor: cursorFor(start, end, reverse) } : {}),
 			...(options.adjacent
@@ -264,6 +276,8 @@ export async function* historyPages(
 					}
 				: {}),
 		};
+		if (stamp !== undefined) pageGenerations.set(read, { store, sessionId, epoch: stamp });
+		yield read;
 		if (!hasNext) return;
 		await yieldToEventLoop();
 	}
