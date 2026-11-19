@@ -1,6 +1,7 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
+import { unsavedHostNotices } from "../../core/agent-session-host-notices.ts";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { hostNoticeFromMessage, hostNoticeMessageFromEntry } from "../../core/host-notices.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
@@ -835,6 +836,8 @@ function planTranscript(
 			}
 		}
 	}
+	// A line the session has shown and is still saving keeps its place at the end, after everything saved (#5649).
+	messageBuffer.push(...unsavedHostNotices(mode.session, sessionEntries));
 	flushMessages();
 	return steps;
 }

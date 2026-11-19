@@ -51,9 +51,9 @@ function count(rows: readonly string[], text: string): number {
 	return rows.filter((row) => row.includes(text)).length;
 }
 
-function mainChat(sessionManager: SessionManager): InteractiveMode {
+function mainChat(sessionManager: SessionManager, liveSession?: Harness["session"]): InteractiveMode {
 	const settingsManager = SettingsManager.inMemory();
-	const session = {
+	const session = liveSession ?? {
 		settingsManager,
 		sessionManager,
 		modelRuntime: { findModel: () => undefined, getAllModels: () => [] },
@@ -135,4 +135,32 @@ test("a stage or subagent chat shows a final retry failure live and again when i
 	const reopened = stageOrSubagentChat();
 	assert.equal(await reopened.loadSession(manager.getSessionStore(), manager.getSessionId()), true);
 	assert.deepEqual(visibleRows(reopened.renderBody(WIDTH, 200)), liveRows);
+});
+
+test("a main chat redrawn while the line is still being saved keeps it once (#5649)", async () => {
+	const { harness } = await failedRetrySession();
+	const manager = harness.sessionManager;
+	const append = manager.appendCustomEntry.bind(manager);
+	const saving = Promise.withResolvers<void>();
+	manager.appendCustomEntry = (async (customType: string, data?: unknown) => {
+		await saving.promise;
+		return append(customType, data);
+	}) as typeof manager.appendCustomEntry;
+	const live = mainChat(manager, harness.session);
+	const shown = Promise.withResolvers<void>();
+	harness.session.subscribe((event) => {
+		void live.handleEvent(event as never);
+		if (event.type === "message_end" && event.message.role === "custom") shown.resolve();
+	});
+
+	const prompt = harness.session.prompt("hello");
+	await shown.promise;
+	const liveRows = chatRows(live);
+	assert.equal(count(liveRows, RETRY_FAILED), 1, liveRows.join("\n"));
+	live.rebuildChatFromMessages();
+	assert.deepEqual(chatRows(live), liveRows, "redrawn while the line is being saved");
+	saving.resolve();
+	await prompt;
+	live.rebuildChatFromMessages();
+	assert.deepEqual(chatRows(live), liveRows, "redrawn once it is saved");
 });
