@@ -319,6 +319,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		await onDatabase(path, async (db) => {
 			const store = await SqlSessionStore.open(db);
 			refuseChunkProjection(db, interrupted.id);
+			const summary = () => db.get("SELECT summary_state FROM session_sessions WHERE id = ?", header.id);
+			const before = await summary();
 			advanceRebuildClockAt(db, pageEntries, savedThrough);
 			const get = db.get.bind(db);
 			let chunks = 0;
@@ -328,6 +330,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 				return row;
 			};
 			await assert.rejects(() => store.readResume(header.id), /interrupted chunk read/);
+			// An older reader publishes by spreading this entire object into its final summary.
+			assert.deepEqual(await summary(), before, "an interrupted rebuild must not enlarge the shared summary");
 			assert.equal(await hasResumeIndex(db), false);
 			await store.close();
 		});

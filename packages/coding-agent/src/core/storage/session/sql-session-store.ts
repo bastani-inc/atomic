@@ -95,6 +95,13 @@ export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
 export const SESSION_READ_PAGE_CHARS = 1024 * 1024;
 /** Rows per metadata query and minimum elapsed time between durable resume checkpoints. */
 export const SESSION_RESUME_REBUILD = { pageEntries: 512, checkpointIntervalMs: 60_000 } as const;
+// A prefix has no entries row or blob header and belongs to the session, including on deletion.
+// SQLite sweeps unreferenced entry chunks, so use a non-digest blob key. PostgreSQL's cold projection already
+// opens entry chunks, not blob chunks: reserve a negative seq, outside every public entry range.
+const SQLITE_CHECKPOINT = { column: "hash", value: "'resume-checkpoint'" } as const;
+const POSTGRES_CHECKPOINT = { column: "seq", value: "-1" } as const;
+const CHECKPOINT_BYTES = 4 * SESSION_BLOB_CHUNK_BYTES;
+const CHECKPOINT_TOKEN_BYTES = 32;
 /** Bound each write transaction while reusing the bytes already supplied to putBlob. */
 const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
@@ -331,15 +338,25 @@ function listingVersion(row: ListingRow): string {
 	return `${row.revision}\u0000${row.last_seq}\u0000${row.modified_at}\u0000${row.message_count}\u0000${row.has_name}\u0000${row.name}\u0000${row.summarized_through_id}\u0000${row.summary}\u0000${row.first_message}\u0000${row.header_json}`;
 }
 
-async function entryByteLengthOf(database: SqliteDatabase): Promise<(expression: string) => string> {
+interface EntryLayout {
+	readonly byteLength: (expression: string) => string;
+	readonly chunkRowids: boolean;
+}
+
+async function entryLayoutOf(database: SqliteDatabase, chunks: string): Promise<EntryLayout> {
 	const dialect = dialectOf(database);
-	if (dialect.name !== "sqlite") return dialect.textByteLength;
-	try {
-		await database.get("SELECT octet_length('') AS bytes");
-		return (expression) => `octet_length(${expression})`;
-	} catch {
-		return dialect.textByteLength;
+	if (dialect.name === "sqlite") {
+		try {
+			const row = await database.get(
+				`SELECT octet_length('') AS bytes, wr FROM pragma_table_list(?) WHERE schema = 'main'`,
+				chunks,
+			);
+			return { byteLength: (expression) => `octet_length(${expression})`, chunkRowids: row?.wr === 0 };
+		} catch {
+			/* Older SQLite engines have no octet_length. */
+		}
 	}
+	return { byteLength: dialect.textByteLength, chunkRowids: false };
 }
 
 export class SqlSessionStore implements SessionStore {
@@ -356,7 +373,7 @@ export class SqlSessionStore implements SessionStore {
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
 	readonly searchIndex?: SqlSessionSearchIndex;
-	private readonly entryByteLength: (expression: string) => string;
+	private readonly entryLayout: EntryLayout;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -380,11 +397,11 @@ export class SqlSessionStore implements SessionStore {
 		snapshotBlobs: SqlSnapshotBlobStore,
 		legacyBlobData: boolean,
 		searchIndex: SqlSessionSearchIndex | undefined,
-		entryByteLength: (expression: string) => string,
+		entryLayout: EntryLayout,
 	) {
 		this.database = database;
 		this.dialect = dialectOf(database);
-		this.entryByteLength = entryByteLength;
+		this.entryLayout = entryLayout;
 		this.tables = tables;
 		this.prefix = prefix ?? "";
 		this.cwdMatcher = cwdMatcher;
@@ -550,7 +567,7 @@ export class SqlSessionStore implements SessionStore {
 			blobs,
 			legacyBlobData,
 			searchIndex,
-			await entryByteLengthOf(database),
+			await entryLayoutOf(database, tables.entryChunks),
 		);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		return store;
@@ -725,8 +742,8 @@ export class SqlSessionStore implements SessionStore {
 			}
 		>(
 			`WITH sized AS (
-				SELECT seq, chunks, ${this.entryByteLength("entry_json")} AS raw_bytes,
-					${this.entryByteLength("entry_json")} + chunks * ? AS bytes
+				SELECT seq, chunks, ${this.entryLayout.byteLength("entry_json")} AS raw_bytes,
+					${this.entryLayout.byteLength("entry_json")} + chunks * ? AS bytes
 				FROM ${this.tables.entries}
 				WHERE session_id = ? AND seq >= ? AND seq <= ?
 			),
@@ -1425,7 +1442,7 @@ export class SqlSessionStore implements SessionStore {
 				sessionId,
 			);
 			if (!row) throw new SessionNotFoundError(sessionId);
-			const { resumeCheckpoint, ...state } = JSON.parse(row.summary_state) as StoredSummaryState;
+			const { resumeCheckpoint: legacyCheckpoint, ...state } = JSON.parse(row.summary_state) as StoredSummaryState;
 			if (isSessionResumeIndex(state.resume, Number(row.last_seq))) return;
 			const remembered = this.resumeIndexes.get(sessionId);
 			if (remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq)))
@@ -1547,16 +1564,19 @@ export class SqlSessionStore implements SessionStore {
 			const select = columns
 				.map(([key, expr]) => `${expr} AS ${this.dialect.identifier(`resume_${key.toLowerCase()}`)}`)
 				.join(", ");
+			const where = "WHERE session_id = ? AND seq > ? AND seq <= ?";
 			const page = `WITH page AS (
-				SELECT session_id,seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
-				WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ${SESSION_RESUME_REBUILD.pageEntries}
+				SELECT ${sqlite ? "" : "CASE WHEN chunks > 0 THEN session_id END AS session_id,"}seq,entry_id,chunks,entry_json FROM ${this.tables.entries}
+				${where} ORDER BY seq LIMIT ${SESSION_RESUME_REBUILD.pageEntries}
 			)`;
-			const parts = (source: string) => `FROM ${this.tables.entryChunks} WHERE session_id = ${source}.session_id
+			const parts = (
+				source: string,
+			) => `FROM ${this.tables.entryChunks} WHERE session_id = ${sqlite ? "?1" : `${source}.session_id`}
 				AND seq = ${source}.seq AND idx >= 0 AND idx < ${source}.chunks`;
 			const projection = sqlite
 				? `SELECT seq,entry_id,chunks,${select} FROM payloads ORDER BY seq`
-				: `, parsed AS MATERIALIZED (SELECT seq,entry_id,chunks,${postgresJsonb("entry_json")} AS value FROM payloads)
-					SELECT seq,entry_id,chunks,${select} FROM parsed ORDER BY seq`;
+				: `SELECT seq,entry_id,chunks,${select} FROM payloads
+					CROSS JOIN LATERAL (SELECT ${postgresJsonb("entry_json")} AS value OFFSET 0) AS parsed ORDER BY seq`;
 			// SQLite checks zeroblob against this connection's actual value limit without allocating the bytes.
 			// PostgreSQL fields must be smaller than 1 GiB. Ask for byte lengths, not a trial concatenation.
 			const fits = sqlite
@@ -1565,48 +1585,103 @@ export class SqlSessionStore implements SessionStore {
 			const joined = sqlite
 				? `(SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text ${parts("sized")} ORDER BY idx))`
 				: `(SELECT convert_from(string_agg(data, ''::bytea ORDER BY idx), 'UTF8') ${parts("sized")})`;
-			// On file SQLite, check each entry just before joining its chunks, not a whole page ahead of the reads.
+			// On SQLite, check each entry just before joining its chunks, not a whole page ahead of the reads.
 			// OFFSET 0 prevents SQLite from flattening the size check and evaluating it twice for the same entry.
 			// Materialize the joined payloads once so all projected fields share them. Only metadata leaves SQL.
-			const nativePage = `${page}, sized AS ${embedded ? "NOT MATERIALIZED" : "MATERIALIZED"} (
+			const directPage = `${page}, sized AS ${sqlite ? "NOT MATERIALIZED" : "MATERIALIZED"} (
 				SELECT page.*, CASE WHEN chunks = 0 OR EXISTS (SELECT 1 ${parts("page")} GROUP BY seq
-					HAVING count(*) = page.chunks AND ${fits}) THEN 0 ELSE chunks END AS remaining FROM page${embedded ? " LIMIT -1 OFFSET 0" : ""}
+					HAVING count(*) = page.chunks AND ${fits}) THEN 0 ELSE chunks END AS remaining FROM page${sqlite ? " LIMIT -1 OFFSET 0" : ""}
 			), payloads AS MATERIALIZED (
-				SELECT seq,entry_id,remaining AS chunks,CASE WHEN chunks > 0 AND remaining = 0 THEN ${joined} ELSE entry_json END AS entry_json
+				SELECT seq,entry_id,CASE WHEN remaining = 0 THEN chunks ELSE -chunks END AS chunks,
+					CASE WHEN chunks > 0 AND remaining = 0 THEN ${joined} ELSE entry_json END AS entry_json
 				FROM sized
 			) ${projection}`;
-			const stubPage = `${page}, payloads AS (SELECT * FROM page) ${projection}`;
+			// A wide owner key can occupy overflow pages of SQLite's composite chunk index. Walk that index
+			// once for the page, then check lengths and join by integer rowid in the same statement. Only
+			// locations are staged; the bounds below permit at most 512 x 64 distinct (seq,idx) pairs.
+			// Outside this window use the direct checked join, including for non-contiguous sequences.
+			const keysPerEntry = 64;
+			const through = `?2 + ${SESSION_RESUME_REBUILD.pageEntries}`;
+			const nativePage =
+				this.entryLayout.chunkRowids && Buffer.byteLength(sessionId) >= 512
+					? `${page},
+				keys AS MATERIALIZED (SELECT seq,idx,rowid AS rid FROM ${this.tables.entryChunks}
+					WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3 AND seq <= ${through} AND idx >= 0 AND idx < ${keysPerEntry}
+					ORDER BY seq,idx),
+				sized AS NOT MATERIALIZED (SELECT page.*, CASE WHEN chunks = 0 THEN NULL
+					WHEN seq <= ${through} AND chunks <= ${keysPerEntry} THEN (
+						SELECT CASE WHEN count(*) = page.chunks AND length(zeroblob(sum(bytes))) IS NOT NULL THEN json_group_array(rid) END
+						FROM (SELECT k.rid,length(c.data) AS bytes FROM keys k CROSS JOIN ${this.tables.entryChunks} c
+							WHERE k.seq = page.seq AND k.idx < page.chunks AND c.rowid = k.rid ORDER BY k.idx LIMIT -1 OFFSET 0))
+					WHEN EXISTS (SELECT 1 ${parts("page")} GROUP BY seq HAVING count(*) = page.chunks AND ${fits}) THEN '' END AS refs
+					FROM page LIMIT -1 OFFSET 0),
+				payloads AS MATERIALIZED (SELECT seq,entry_id,CASE WHEN chunks > 0 AND refs IS NULL THEN -chunks ELSE chunks END AS chunks,
+					CASE WHEN refs IS NULL THEN entry_json WHEN refs = '' THEN ${joined} ELSE (
+						SELECT group_concat(CAST((SELECT data FROM ${this.tables.entryChunks} WHERE rowid = ids.value) AS TEXT), '')
+						FROM (SELECT value FROM json_each(sized.refs) ORDER BY CAST(key AS INTEGER) LIMIT -1 OFFSET 0) ids) END AS entry_json FROM sized)
+				${projection}`
+					: directPage;
+			const stubPage = `${page}, payloads AS (SELECT seq,entry_id,-chunks AS chunks,entry_json FROM page) ${projection}`;
 			// Checkpoints are not published indexes. A revision or index-format change invalidates both passes.
-			const checkpoint =
-				resumeCheckpoint?.revision === row.revision &&
-				resumeCheckpoint.index?.seq > 0 &&
-				resumeCheckpoint.index.seq < Number(row.last_seq) &&
-				isSessionResumeIndex(resumeCheckpoint.index, resumeCheckpoint.index.seq)
-					? resumeCheckpoint
-					: undefined;
+			const validCheckpoint = (checkpoint?: ResumeCheckpoint): checkpoint is ResumeCheckpoint =>
+				checkpoint?.revision === row.revision &&
+				checkpoint.index?.seq > 0 &&
+				checkpoint.index.seq < Number(row.last_seq) &&
+				isSessionResumeIndex(checkpoint.index, checkpoint.index.seq);
+			const slot = this.checkpointSlot();
+			const checkpoint = validCheckpoint(legacyCheckpoint) ? legacyCheckpoint : undefined;
+			let saved: Uint8Array | null = null;
+			let checkSaved = Number(row.last_seq) > SESSION_RESUME_REBUILD.pageEntries;
 			let topology = checkpoint?.topology;
-			let expectedSummary = this.database.readOnly ? undefined : row.summary_state;
+			let canSave = !this.database.readOnly;
 			index = checkpoint?.index;
 			let nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
 			for (let pass = topology === undefined ? 0 : 1; pass < 2; pass++) {
-				for (let after = index?.seq ?? 0; after < Number(row.last_seq); ) {
+				pages: for (let after = index?.seq ?? 0; after < Number(row.last_seq); ) {
 					type ProjectedRow = SqliteRow & { seq: number; entry_id: string; chunks: number };
 					const args = [sessionId, after, row.last_seq] as const;
 					let rows: ProjectedRow[] = [];
 					const batch: SessionEntry[] = [];
 					let toolCalls = 0;
 					for (const sql of [nativePage, stubPage]) {
+						let canStream = true;
 						try {
-							rows = await this.database.all<ProjectedRow>(sql, ...args);
+							if (checkSaved) {
+								checkSaved = false;
+								// Only a cold, multi-page rebuild can have a saved prefix. Usually there is none:
+								// deliver the first page itself, without a separate round trip. A saved prefix skips it.
+								const guarded = sql.replace(
+									where,
+									`${where} AND NOT EXISTS (
+									SELECT 1 FROM ${slot.table} WHERE session_id = ${sqlite ? "?1" : "?"} AND ${slot.where})`,
+								);
+								rows = await this.database.all<ProjectedRow>(guarded, ...args, ...(sqlite ? [] : [sessionId]));
+								if (rows.length === 0) {
+									const receipt = await this.database.get<SqliteRow & { token: Uint8Array }>(
+										`SELECT substr(data,1,${CHECKPOINT_TOKEN_BYTES}) AS token FROM ${slot.table} WHERE session_id = ? AND ${slot.where}`,
+										sessionId,
+									);
+									saved = receipt?.token ?? null;
+									const prior = saved ? await this.readCheckpoint(sessionId, saved) : undefined;
+									if (validCheckpoint(prior)) {
+										index = prior.index;
+										topology = prior.topology;
+										pass = topology === undefined ? 0 : 1;
+										after = index.seq;
+									}
+									continue pages;
+								}
+							} else rows = await this.database.all<ProjectedRow>(sql, ...args);
 							for (const entry of rows) {
+								const chunks = Number(entry.chunks);
+								// Zero is inline, positive is a native join, negative still needs the bounded reader.
+								canStream = chunks > 0;
 								let projected: SqliteRow = entry;
-								if (Number(entry.chunks) > 0) {
+								if (chunks < 0) {
 									try {
 										const { chunkedResumeProjection } = await import("./chunked-resume-projection.js");
 										projected = await chunkedResumeProjection(entry, this.dialect.name === "postgres", () =>
-											this.entryChunks(this.database, sessionId, Number(entry.seq), Number(entry.chunks), {
-												revision: row.revision,
-											}),
+											this.entryChunks(sessionId, Number(entry.seq), -chunks, row.revision),
 										);
 									} catch (error) {
 										// A replacement between chunk reads can remove a chunk or change its JSON mid-token.
@@ -1684,10 +1759,25 @@ export class SqlSessionStore implements SessionStore {
 							// Read stubs and select the needed fields from chunks instead. No part of this page was folded.
 							if (
 								sql === stubPage ||
+								!canStream ||
 								!(error instanceof Error) ||
 								!["SyntaxError", "StoragePayloadTooLargeError", "StorageUnavailableError"].includes(error.name)
 							)
 								throw error;
+							if (rows.length === 0) {
+								// A refused SELECT delivers no rows. Probe only the two primary indexes, bounded to this
+								// page: retrying an entirely inline page would return exactly the same data or error.
+								const chunked = await this.database
+									.get(
+										`SELECT 1 FROM ${this.tables.entryChunks}
+									WHERE session_id = ? AND seq IN (SELECT seq FROM ${this.tables.entries} ${where}
+									ORDER BY seq LIMIT ${SESSION_RESUME_REBUILD.pageEntries}) LIMIT 1`,
+										sessionId,
+										...args,
+									)
+									.catch(() => undefined);
+								if (!chunked) throw error;
+							}
 							batch.length = 0;
 							toolCalls = 0;
 						}
@@ -1710,32 +1800,49 @@ export class SqlSessionStore implements SessionStore {
 					after = Number(rows.at(-1)!.seq);
 					// Checkpoints share SQLite's write lock with other sessions. Fast rebuilds need only the final publication.
 					if (
-						expectedSummary !== undefined &&
+						canSave &&
 						after < Number(row.last_seq) &&
 						index.seq === after &&
 						performance.now() >= nextCheckpointAt
 					) {
 						// Checkpoints feed another fold, unlike the final index. JSON null would silently turn an
 						// overflowing sum back into zero on the next addition. JSON.parse("1e999") preserves Infinity.
-						const next = JSON.stringify(
-							{ ...state, resumeCheckpoint: { revision: row.revision, index, topology } },
-							(_key, value: unknown) =>
-								value === Infinity || value === -Infinity
-									? (JSON as JSON & { rawJSON(text: string): object }).rawJSON(value > 0 ? "1e999" : "-1e999")
-									: value,
+						const next = JSON.stringify({ revision: row.revision, index, topology }, (_key, value: unknown) =>
+							value === Infinity || value === -Infinity
+								? (JSON as JSON & { rawJSON(text: string): object }).rawJSON(value > 0 ? "1e999" : "-1e999")
+								: value,
 						);
 
-						// A second reader may have finished at the same revision. Never replace its completed index with a prefix.
-						const saved = await this.database
-							.run(
-								`UPDATE ${this.tables.sessions} SET summary_state = ? WHERE id = ? AND revision = ? AND summary_state = ?`,
-								next,
-								sessionId,
-								row.revision,
-								expectedSummary,
-							)
-							.catch(() => ({ changes: 0 }));
-						expectedSummary = saved.changes === 1 ? next : undefined;
+						// Check both what the session published and which prefix we started with. Never replace a
+						// peer's newer checkpoint or add one after an older or newer reader finished the index.
+						if (Buffer.byteLength(next) + CHECKPOINT_TOKEN_BYTES <= CHECKPOINT_BYTES) {
+							const token = newRevision();
+							const save = (tx: SqliteExecutor) =>
+								tx.run(
+									`INSERT INTO ${slot.table} (session_id,${slot.column},idx,data)
+									 SELECT id,${slot.value},0,? FROM ${this.tables.sessions}
+									 WHERE id = ? AND revision = ? AND summary_state = ?${this.dialect.lockClause("share")}
+									 ON CONFLICT(session_id,${slot.column},idx) DO UPDATE SET data = excluded.data
+									 WHERE substr(${slot.table}.data,1,${CHECKPOINT_TOKEN_BYTES}) = ?`,
+									Buffer.from(token + next),
+									sessionId,
+									row.revision,
+									row.summary_state,
+									saved,
+								);
+							// A PG delete sweeps chunks before deleting the session row. Join its writer admission,
+							// or it could commit between our existence check and insert and leave an orphan.
+							// Skip this optional save, rather than waiting behind an incumbent writer.
+							const result = await (sqlite
+								? save(this.database)
+								: this.database.transaction(save, {
+										concurrency: { kind: "serial", domain: this.tables.sessions },
+										lockWaitMs: 1,
+									})
+							).catch(() => ({ changes: 0 }));
+							canSave = result.changes === 1;
+							if (canSave) saved = Buffer.from(token);
+						}
 						nextCheckpointAt = performance.now() + SESSION_RESUME_REBUILD.checkpointIntervalMs;
 					}
 					if (after < Number(row.last_seq)) await yieldTurn();
@@ -1752,7 +1859,7 @@ export class SqlSessionStore implements SessionStore {
 			if (current?.revision !== row.revision || Number(current.last_seq) !== Number(row.last_seq)) continue;
 			this.resumeIndexes.set(sessionId, { revision: row.revision, index });
 			while (this.resumeIndexes.size > 16) this.resumeIndexes.delete(this.resumeIndexes.keys().next().value!);
-			await this.database
+			const published = await this.database
 				.run(
 					`UPDATE ${this.tables.sessions} SET summary_state = ? WHERE id = ? AND revision = ? AND last_seq = ?`,
 					JSON.stringify({ ...state, resume: index, epoch: index.epoch }),
@@ -1761,9 +1868,60 @@ export class SqlSessionStore implements SessionStore {
 					row.last_seq,
 				)
 				.catch(() => ({ changes: 0 }));
+			if (published.changes === 1 && saved) await this.forgetCheckpoint(sessionId, saved);
 			return;
 		}
 		throw new SessionConflictError(sessionId, 0, 0);
+	}
+
+	private checkpointSlot() {
+		const postgres = this.dialect.name === "postgres";
+		const key = postgres ? POSTGRES_CHECKPOINT : SQLITE_CHECKPOINT;
+		return {
+			...key,
+			table: postgres ? this.tables.entryChunks : this.tables.blobChunks,
+			where: `${key.column} = ${key.value} AND idx = 0`,
+		};
+	}
+
+	private async readCheckpoint(sessionId: string, token: Uint8Array): Promise<ResumeCheckpoint | undefined> {
+		const slot = this.checkpointSlot();
+		const parts: Uint8Array[] = [];
+		let size: number = SESSION_BLOB_CHUNK_BYTES;
+		for (let offset = CHECKPOINT_TOKEN_BYTES; offset < CHECKPOINT_BYTES; ) {
+			try {
+				const row = await this.database.get<SqliteRow & { part: Uint8Array }>(
+					`SELECT substr(data,?,?) AS part FROM ${slot.table} WHERE session_id = ? AND ${slot.where}
+					 AND substr(data,1,${CHECKPOINT_TOKEN_BYTES}) = ?`,
+					offset + 1,
+					size,
+					sessionId,
+					token,
+				);
+				if (!row) return undefined;
+				parts.push(row.part);
+				offset += row.part.length;
+				if (row.part.length < size) break;
+			} catch (error) {
+				if (!(error instanceof Error && "code" in error && error.code === "payload-too-large")) throw error;
+				// A saved value can exceed the server's response limit, even when its write fit.
+				if (size === 1) return undefined;
+				size = Math.max(1, Math.floor(size / 2));
+			}
+		}
+		return JSON.parse(Buffer.concat(parts).toString("utf8")) as ResumeCheckpoint;
+	}
+
+	private async forgetCheckpoint(sessionId: string, token: Uint8Array): Promise<void> {
+		const slot = this.checkpointSlot();
+		await this.database
+			.run(
+				`DELETE FROM ${slot.table} WHERE session_id = ? AND ${slot.where}
+			 AND substr(data,1,${CHECKPOINT_TOKEN_BYTES}) = ?`,
+				sessionId,
+				token,
+			)
+			.catch(() => undefined);
 	}
 
 	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
@@ -1889,36 +2047,44 @@ export class SqlSessionStore implements SessionStore {
 		signal?: AbortSignal,
 	): Promise<Uint8Array[]> {
 		const chunks: Uint8Array[] = [];
-		for await (const chunk of this.entryChunks(tx, sessionId, seq, count, { signal })) chunks.push(chunk);
+		for (let index = 0; index < count; index++) {
+			signal?.throwIfAborted();
+			const chunk = await tx.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?`,
+				sessionId,
+				seq,
+				index,
+			);
+			if (chunk === undefined) {
+				throw new StorageError(`Session ${sessionId} entry ${seq} is missing chunk ${index} of ${count}`);
+			}
+			chunks.push(chunk.data);
+			if (signal !== undefined && index + 1 < count) await yieldTurn();
+		}
 		return chunks;
 	}
 
 	private async *entryChunks(
-		tx: SqliteExecutor,
 		sessionId: string,
 		seq: number,
 		count: number,
-		{ signal, revision }: { signal?: AbortSignal; revision?: string },
+		revision: string,
 	): AsyncGenerator<Uint8Array> {
-		const fence =
-			revision === undefined
-				? ""
-				: ` AND EXISTS (SELECT 1 FROM ${this.tables.sessions} WHERE id = ? AND revision = ?)`;
-		const fenceArgs = revision === undefined ? [] : [sessionId, revision];
 		for (let index = 0; index < count; index++) {
-			signal?.throwIfAborted();
-			const chunk = await tx.get<SqliteRow & { data: Uint8Array }>(
-				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?${fence}`,
+			const chunk = await this.database.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?
+				 AND EXISTS (SELECT 1 FROM ${this.tables.sessions} WHERE id = ? AND revision = ?)`,
 				sessionId,
 				seq,
 				index,
-				...fenceArgs,
+				sessionId,
+				revision,
 			);
 			if (chunk === undefined) {
 				throw new StorageError(`Session ${sessionId} entry ${seq} is missing chunk ${index} of ${count}`);
 			}
 			yield chunk.data;
-			if ((revision !== undefined || signal !== undefined) && index + 1 < count) await yieldTurn();
+			if (index + 1 < count) await yieldTurn();
 		}
 	}
 

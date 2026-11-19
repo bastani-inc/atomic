@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import pg from "pg";
 import { test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
@@ -50,7 +51,202 @@ function transcript(padding: string): SessionEntry[] {
 
 for (const backend of storageBackends) {
 	const run = backend.skipReason === undefined ? test : test.skip;
+	run(`a malformed inline field does not reread fitting entries on ${backend.name} (#5590)`, async () => {
+		const scope = await backend.openScope();
+		try {
+			const db = await scope.connect();
+			const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+			const [large] = transcript("x".repeat(2 * SESSION_ENTRY_CHUNK_BYTES));
+			await store.create(header, [
+				large!,
+				{
+					type: "custom",
+					customType: "extension",
+					id: "malformed",
+					parentId: "receipt",
+					timestamp,
+					data: { groups: "{not JSON" },
+				},
+			]);
+			const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+			await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
+			let projections = 0;
+			let chunkReads = 0;
+			const all = db.all.bind(db);
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				if (rows.some((row) => "resume_type" in row)) projections++;
+				return rows;
+			};
+			const get = db.get.bind(db);
+			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const row = await get<T>(sql, ...args);
+				if (row?.data instanceof Uint8Array) chunkReads++;
+				return row;
+			};
+			await assert.rejects(() => store.findLatestCompaction(header.id), SyntaxError);
+			assert.deepEqual({ projections, chunkReads }, { projections: 1, chunkReads: 0 });
+		} finally {
+			await scope.close();
+		}
+	});
+	if (backend.name === "Postgres") {
+		run("a resume lookup does not wait for chunk tables it does not read (#5590)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+				await store.create(
+					header,
+					Array.from({ length: SESSION_RESUME_REBUILD.pageEntries + 1 }, (_, i) => ({
+						type: "custom",
+						customType: "extension",
+						id: `e${i}`,
+						parentId: i ? `e${i - 1}` : null,
+						timestamp,
+						data: {},
+					})),
+				);
+				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+				await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
+				const schema = (await db.get<{ name: string }>("SELECT current_schema() AS name"))!.name;
+				const address = new URL(db.descriptor.location);
+				address.password = process.env.ATOMIC_TEST_POSTGRES_PASSWORD ?? "";
+				const locker = new pg.Client({ connectionString: address.href, connectionTimeoutMillis: 5_000 });
+				try {
+					await locker.connect();
+					await locker.query("BEGIN");
+					await locker.query(`LOCK TABLE ${schema}.${tables.blobChunks} IN ACCESS EXCLUSIVE MODE`);
+					db.all = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) =>
+						db.transaction(async (tx) => {
+							await tx.exec("SET LOCAL lock_timeout = '250ms'");
+							return tx.all<T>(sql, ...args);
+						});
+					db.get = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) =>
+						db.transaction(async (tx) => {
+							await tx.exec("SET LOCAL lock_timeout = '250ms'");
+							return tx.get<T>(sql, ...args);
+						});
+					assert.equal(
+						await store.findLatestCompaction(header.id),
+						undefined,
+						"cold lookup needs entries, not blobs",
+					);
+					await locker.query(`LOCK TABLE ${schema}.${tables.entryChunks} IN ACCESS EXCLUSIVE MODE`);
+					assert.equal(
+						await store.findLatestCompaction(header.id),
+						undefined,
+						"warm lookup needs neither chunk table",
+					);
+				} finally {
+					await locker.end();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+		run("projecting retired inline errors does not spool their decoded bodies (#5590)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+				const entries: SessionEntry[] = Array.from({ length: 24 }, (_, i) => ({
+					type: "message",
+					id: `error${i}`,
+					parentId: i ? `error${i - 1}` : null,
+					timestamp,
+					message: {
+						role: "assistant",
+						api: "openai-completions",
+						provider: "p",
+						model: "m",
+						content: [],
+						errorMessage: "x".repeat(320 * 1024),
+						stopReason: "error",
+						timestamp: i,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					},
+				}));
+				await store.create(header, entries);
+				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+				await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}' WHERE id = ?`, header.id);
+				const all = db.all.bind(db);
+				let tempBlocks: number | undefined;
+				db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+					if (sql.includes("resume_toolcalls"))
+						await db.transaction(async (tx) => {
+							await tx.exec("SET LOCAL work_mem = '4MB'");
+							const plan = await tx.get<{ "QUERY PLAN": string }>(
+								`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`,
+								...args,
+							);
+							tempBlocks = JSON.parse(plan!["QUERY PLAN"])[0].Plan["Temp Written Blocks"];
+						});
+					return all<T>(sql, ...args);
+				};
+				assert.equal(await store.findLatestCompaction(header.id), undefined);
+				assert.equal(tempBlocks, 0);
+			} finally {
+				await scope.close();
+			}
+		});
+	}
 	if (backend.name === "libSQL server (sqld)") {
+		run("a refused inline response is final after one projection and one page-key check (#5590)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+				const entries: SessionEntry[] = Array.from({ length: 250 }, (_, i) => ({
+					type: "message",
+					id: `tool${i}`,
+					parentId: i ? `tool${i - 1}` : null,
+					timestamp,
+					message: {
+						role: "toolResult",
+						toolName: "scan",
+						toolCallId: "t".repeat(49_152),
+						content: [],
+						isError: false,
+						timestamp: i,
+					},
+				}));
+				const fitting = "fitting";
+				await store.create({ ...header, id: fitting }, entries.slice(0, 1));
+				await store.create(header, entries);
+				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+				await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}'`);
+				let projections = 0;
+				let probes = 0;
+				const all = db.all.bind(db);
+				db.all = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+					if (sql.includes("resume_toolcalls")) projections++;
+					return all<T>(sql, ...args);
+				};
+				const get = db.get.bind(db);
+				db.get = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+					if (sql.includes(tables.entryChunks)) probes++;
+					return get<T>(sql, ...args);
+				};
+				assert.equal(await store.findLatestCompaction(fitting), undefined);
+				assert.deepEqual({ projections, probes }, { projections: 1, probes: 0 });
+				projections = 0;
+				await assert.rejects(() => store.findLatestCompaction(header.id), {
+					name: "StoragePayloadTooLargeError",
+					kind: "response",
+				});
+				assert.deepEqual({ projections, probes }, { projections: 1, probes: 1 });
+			} finally {
+				await scope.close();
+			}
+		});
 		run(
 			"a 17,500-entry resume rebuild writes only the completed index while another session appends (#5590)",
 			async () => {

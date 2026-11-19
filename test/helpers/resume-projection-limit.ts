@@ -7,7 +7,8 @@ export function refuseChunkProjection(db: SqliteDatabase, chunkedId: string): vo
 	const all = db.all.bind(db);
 	db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
 		const rows = await all<T>(sql, ...args);
-		if (rows.some((row) => row.entry_id === chunkedId && Number(row.chunks) === 0 && "resume_type" in row)) {
+		// A stub has no timestamp; refuse only a response that actually projected the supplied entry's body.
+		if (rows.some((row) => row.entry_id === chunkedId && row.resume_timestamp != null)) {
 			throw new StoragePayloadTooLargeError(SESSION_ENTRY_CHUNK_BYTES, 0, { kind: "response" });
 		}
 		return rows;
