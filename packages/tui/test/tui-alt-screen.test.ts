@@ -1933,12 +1933,18 @@ describe("TuiAltScreen", () => {
 	});
 
 	/** A main chat with a saved page between the marker and the live rows: 0 marker, 1-6 saved 0-5, 7-12 live 0-5. */
-	function pagedChat(live: (text: string) => Component = (text) => new Text(text, 0, 0), stored?: number) {
+	function pagedChat(
+		live: (text: string) => Component = (text) => new Text(text, 0, 0),
+		stored?: number,
+		/** Saved rows painted as a page edge stands them in, provisionally: `edge N` rather than the saved `saved N`. */
+		provisional: readonly number[] = [],
+	) {
 		const document = new WindowedContainer();
 		const source = Symbol("saved chat");
 		const saved = Array.from({ length: 6 }, (_, i) => {
-			const leaf = new Text(`saved ${i}`, 0, 0);
-			WindowedContainer.markHistoryComponent(leaf, source, i + 1, 0, 0);
+			const edge = provisional.includes(i);
+			const leaf = new Text(edge ? `edge ${i}` : `saved ${i}`, 0, 0);
+			WindowedContainer.markHistoryComponent(leaf, source, i + 1, 0, 0, edge);
 			return leaf;
 		});
 		const marker = new Text("older above", 0, 0);
@@ -2046,6 +2052,28 @@ describe("TuiAltScreen", () => {
 			const saved = ["saved 0", "saved 1", "saved 2", "saved 3", "saved 4", "saved 5"];
 			assert.equal(await chat.copy(), ["older above", ...saved, "live 0", "live 1", "liv"].join("\n"));
 			assert.deepEqual(chat.reads, [[1, 6]]);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	it("draws a provisional saved row for a copy as its entry is saved, even while it is mounted (#5593)", async () => {
+		const chat = pagedChat(undefined, 6, [3]);
+		await chat.start();
+		try {
+			await chat.paint(3);
+			chat.terminal.sendInput("\x1b[<0;3;1M");
+			chat.terminal.sendInput("\x1b[<32;3;4M");
+			chat.terminal.sendInput("\x1b[<0;3;4m");
+			await chat.paint();
+			assert.equal(await chat.copy(), "ved 2\nsaved 3\nsaved 4\nsav");
+			assert.deepEqual(chat.reads, [[4, 4]]);
+			await chat.dropSavedPage();
+			assert.equal(await chat.copy(), "ved 2\nsaved 3\nsaved 4\nsav");
+			assert.deepEqual(chat.reads, [
+				[4, 4],
+				[4, 4],
+			]);
 		} finally {
 			chat.tui.stop();
 		}
