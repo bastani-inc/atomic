@@ -76,6 +76,7 @@
 - Blueprint steps no longer get extra time to launch previously refused programs or action commands when the system clock moves backward. Time spent asleep counts toward retry and action launch deadlines and is included in reported step durations. Fractional timeouts keep the action’s original deadline, and a long timeout no longer becomes a 1 ms timer ([#5707](https://github.com/bastani-inc/atomic/issues/5707)).
 - A Windows command that keeps its background processes no longer fails after completion just because its idle input thread was paused while holding the input queue lock ([#5702](https://github.com/bastani-inc/atomic/issues/5702)).
 - Quitting at the first prompt after declining project trust no longer crashes if the bundled local model provider is still loading ([#5639](https://github.com/bastani-inc/atomic/issues/5639)).
+- `atomic --export <session.jsonl>` shows an agent card when a single subagent launch on the selected branch has a recorded child transcript or background handoff. Expand it to see the saved prompt, tool calls and answer, or a note when the child history is not included. The original arguments and receipt remain available beneath the card ([#5658](https://github.com/bastani-inc/atomic/issues/5658)).
 
 ## [0.9.89] - 2026-11-18
 
