@@ -398,6 +398,8 @@ pub(super) struct Task {
 	pub claimed: bool,
 	/// The runner has chosen its outcome, but still owns resources its terminal observer may remove.
 	pub finishing: bool,
+	/// The execution, its session and its output drained; only a batch-owned directory sweep remains.
+	pub directory_tail: bool,
 	pub activities: VecDeque<([u8; 32], ReportReceipt)>,
 	pub terminal: Option<(OutcomeReport, SettlementReceipt)>,
 	// Every terminal path retains its authentic journal receipt, including cancellation.
@@ -505,6 +507,7 @@ impl Actor {
 			record: record.clone(),
 			claimed: false,
 			finishing: false,
+			directory_tail: false,
 			activities: VecDeque::new(),
 			terminal: None,
 			settlement: None,
@@ -564,6 +567,19 @@ impl Actor {
 			cursor: s.cursor(oi),
 			result,
 		})
+	}
+	pub(super) fn handoff_directory(&self, runner: &RunnerLease) -> Door<()> {
+		let mut s = self.state.lock().unwrap();
+		let (oi, ti) = s.runner(self.id, &runner.cap)?;
+		let t = &mut s.owners[oi].tasks[ti];
+		if !t.finishing || t.command.is_some() {
+			return Err(fail("ReportConflict"));
+		}
+		t.directory_tail = true;
+		s.finish_close(oi);
+		drop(s);
+		self.changed.notify_waiters();
+		Ok(())
 	}
 	pub(super) fn task_ref(&self, task: &TaskLease) -> Door<NativeTaskRef> {
 		let s = self.state.lock().unwrap();

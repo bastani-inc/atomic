@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Task hosts can return the cancel decision `already-finishing`: the runner's outcome can no longer change, but cleanup has not yet finished. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- Task cancellation and owner-close receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Session switching does not wait on that Git work. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ## [0.9.90] - 2026-11-19
 

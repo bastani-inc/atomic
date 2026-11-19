@@ -381,6 +381,13 @@ impl NapiTaskSupervisor {
 				.and_then(|()| self.actor.runner_finishing(runner, result)),
 		)
 	}
+	/// The runner released its owned resources; only the batch's directory work still delays publication.
+	#[napi(ts_return_type = "{ok:true,value:undefined}|{ok:false,error:TaskFailure}")]
+	pub fn handoff_runner_directory(&self, env: Env, runner: &RunnerLease) -> DoorValue<()> {
+		DoorValue(
+			self.check(&env, "StaleAttempt").and_then(|()| self.actor.handoff_directory(runner)),
+		)
+	}
 	#[napi(ts_return_type = "{ok:true,value:NativeTaskRef}|{ok:false,error:TaskFailure}")]
 	pub fn task_reference(&self, env: Env, task: &TaskLease) -> DoorValue<NativeTaskRef> {
 		DoorValue(self.check(&env, "UnknownTask").and_then(|()| self.actor.task_ref(task)))

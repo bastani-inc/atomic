@@ -871,6 +871,40 @@ export async function runAgentTask(input: {
 					startedAt: dispatchedAt,
 					stepStartedAt: dispatchedAt,
 				});
+				const finishDirectory = (
+					status: string,
+					outcome: TaskResult | { rejected: unknown },
+					saved?: Promise<void>,
+				) => {
+					if (!finishWorktree) return undefined;
+					finishingWorktreeTasks.add(context.ref.taskId);
+					const journal = Promise.withResolvers<void>();
+					// The child record is enqueued synchronously below. Read its flush after that enqueue.
+					const drained = Promise.resolve().then(async () => {
+						const [session, output, intent, record] = await Promise.allSettled([
+							executionCleanup,
+							saved,
+							journal.promise,
+							input.recordChild?.flushed?.(),
+						]);
+						if (
+							session.status === "fulfilled" &&
+							(!session.value || session.value.kind === "reaped") &&
+							output.status === "fulfilled" &&
+							intent.status === "fulfilled" &&
+							record.status === "fulfilled"
+						)
+							context.handoffDirectory?.();
+					});
+					const swept = finishWorktree(status, drained);
+					Promise.resolve(context.markFinishing?.(outcome, swept)).then(journal.resolve, journal.reject);
+					return swept;
+				};
+				const reportOutput = (bytes: Buffer) =>
+					context.reportActivity({
+						reportId: "terminal-output",
+						change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
+					});
 				const result = registered.promise.then(async (lease): Promise<TaskResult> => {
 					try {
 						const ownerSessionId = input.recordChild?.ownerSessionId;
@@ -994,7 +1028,6 @@ export async function runAgentTask(input: {
 						let swept: Promise<void> | undefined;
 						let prepared: TaskResult | undefined;
 						if (finishWorktree) {
-							finishingWorktreeTasks.add(context.ref.taskId);
 							worktreeOutput = getSingleResultOutput(child);
 							// Retain requested files inside the worktree before releasing the dispatch's hold.
 							const saved = released
@@ -1007,9 +1040,8 @@ export async function runAgentTask(input: {
 								released,
 								cause,
 							);
-							const journal = Promise.withResolvers<void>();
-							swept = finishWorktree(status, Promise.allSettled([executionCleanup, saved, journal.promise]));
-							Promise.resolve(context.markFinishing?.(prepared, swept)).then(journal.resolve, journal.resolve);
+							reportOutput(Buffer.from(worktreeOutput));
+							swept = finishDirectory(status, prepared, saved);
 						}
 						if (released && child.released) {
 							// The record goes first: a result forwarded before it would find the child still recorded running.
@@ -1080,25 +1112,14 @@ export async function runAgentTask(input: {
 							if (!finishWorktree) await retainTaskOutput(child, text, context.ref, lease);
 							rememberTranscriptOutput(lease, context.ref, settledReply?.deref());
 						}
+						if (prepared) return prepared;
 						const bytes = Buffer.from(text);
-						context.reportActivity({
-							reportId: "terminal-output",
-							change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
-						});
-						return prepared ?? terminalTaskResult(child, context.ref, bytes.length, released, cause);
+						reportOutput(bytes);
+						return terminalTaskResult(child, context.ref, bytes.length, released, cause);
 					} catch (error) {
 						elapsedSpan.endedAt ??= Date.now();
 						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
-						let swept: Promise<void> | undefined;
-						if (finishWorktree) {
-							finishingWorktreeTasks.add(context.ref.taskId);
-							const journal = Promise.withResolvers<void>();
-							swept = finishWorktree("error", Promise.allSettled([executionCleanup, journal.promise]));
-							Promise.resolve(context.markFinishing?.({ rejected: error }, swept)).then(
-								journal.resolve,
-								journal.resolve,
-							);
-						}
+						const swept = finishDirectory("error", { rejected: error });
 						if (!ownerClosed()) recordChild("terminal", "error");
 						else if (input.recordChild?.ownerEndedForGood?.()) {
 							forgetRunMembership(runId, index);
@@ -1117,11 +1138,16 @@ export async function runAgentTask(input: {
 			},
 			schedule,
 			managed && !managed.named
-				? async (taskId, cause, journal) => {
+				? async (taskId, cause, journal, handoff) => {
 						const status =
 							cause === "quit" ? "quit" : cause === "pause" ? "paused" : cause === "user" ? "killed" : cause;
 						if (cause !== "user") parkRunWorktree(runId, index);
-						const swept = finishWorktree?.(status, journal);
+						const control = takeSubagentChildStop(taskId);
+						const drained = Promise.resolve()
+							.then(() => Promise.all([journal, input.recordChild?.flushed?.()]))
+							.then(handoff);
+						const swept = finishWorktree?.(status, drained);
+						if (control) recordChildTask(taskId, "terminal", control);
 						if (cause === "user") {
 							queuedChildren.delete(taskId);
 							forgetRunMembership(runId, index);

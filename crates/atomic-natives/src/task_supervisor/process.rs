@@ -431,6 +431,7 @@ impl Actor {
 			record: record.clone(),
 			claimed: true,
 			finishing: false,
+			directory_tail: false,
 			activities: VecDeque::new(),
 			terminal: None,
 			settlement: None,

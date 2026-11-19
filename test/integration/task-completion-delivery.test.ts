@@ -141,6 +141,49 @@ test("a finishing task journals its notice before cleanup but admits it only onc
 	}
 });
 
+test("a session reopened before the old child's directory handoff finishes receives its saved notice (#5600)", async () => {
+	const session = SessionManager.inMemory();
+	const release = Promise.withResolvers<void>();
+	const receipt = {
+		taskId: "task-1" as import("../../packages/coding-agent/src/core/tasks/contracts.js").TaskId,
+		completionId: randomUUID(),
+		result: { kind: "failed" as const, code: "fixture", message: "original failure" },
+		cursor: {
+			generation: "1",
+			sequence: "7",
+		} as import("../../packages/coding-agent/src/core/tasks/contracts.js").Cursor,
+	};
+	const owner = "owner-1" as import("../../packages/coding-agent/src/core/tasks/contracts.js").OwnerId;
+	const old = new TaskCompletionOutbox(
+		session,
+		() => false,
+		async () => {
+			throw new Error("closed owner delivered a notice");
+		},
+	);
+	await old.saveFinishing(owner, receipt, release.promise);
+	const delivered: string[] = [];
+	const reopened = new TaskCompletionOutbox(
+		session,
+		() => true,
+		async (envelope) => {
+			delivered.push(envelope.completionId);
+		},
+	);
+	await reopened.flushRestored();
+	assert.deepEqual(delivered, []);
+	release.resolve();
+	await vi.waitFor(() => assert.deepEqual(delivered, [receipt.completionId]));
+	old.record(owner, receipt, "agent");
+	await old.flush();
+	await reopened.flushRestored();
+	assert.equal(
+		session.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "task-completion-ack")
+			.length,
+		1,
+	);
+});
+
 // PR #2906: restored terminal intents must not wait for another task to settle.
 test("restored completion intents wait for resume recovery, then deliver without a new settlement (#3760)", async () => {
 	const session = SessionManager.inMemory();

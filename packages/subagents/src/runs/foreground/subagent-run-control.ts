@@ -328,7 +328,7 @@ async function stopHostChild(
 	if (!outcome) await waitForSettlement(host, taskId);
 	if (queued) {
 		takeSubagentChildStop(taskId);
-		await recordSubagentChildStatus(deps.pi, record, status);
+		if (!finishing) await recordSubagentChildStatus(deps.pi, record, status);
 	}
 	return { neverStarted: queued, outcome };
 }

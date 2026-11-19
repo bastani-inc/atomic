@@ -109,7 +109,12 @@ export class AgentTaskHost {
 		operation: C.OperationId,
 		runner: AgentTaskRunnerFactory,
 		schedule?: (dispatch: () => Promise<void>) => void,
-		cleanupQueued?: (taskId: C.TaskId, cause: C.CancelCause, intent: Promise<void> | undefined) => Promise<void>,
+		cleanupQueued?: (
+			taskId: C.TaskId,
+			cause: C.CancelCause,
+			intent: Promise<void> | undefined,
+			handoff: () => void,
+		) => Promise<void>,
 	): Promise<C.Result<{ taskId: C.TaskId; lease: TaskLease }, C.StartFailure>> {
 		const started = await runners.run({ factory: runner }, () =>
 			this.supervisor.startAgentTask(this.owner, intent, operation, schedule, cleanupQueued),

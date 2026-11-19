@@ -3878,6 +3878,34 @@ test("a filter helper can use finishing without waiting for the child's complete
 	}
 });
 
+test("closing the owner during Git leaves the child finishing without holding the session open (#5600)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("close-during-capture", done);
+	const [a] = await launchWorktreeRun(h, ["close-during-capture"]);
+	assert.ok(a?.taskId);
+	await h.waitForLatest(a.childId, (record) => !!record.childSessionId);
+	const filter = holdGitFilter(h.cwd, "*.slow");
+	writeFileSync(join(a.cwd, "result.slow"), "keep this answer\n");
+	const terminal = settled(h, a.taskId);
+	done.resolve();
+	await filter.started();
+	const closing = h.host.close("session-close");
+	try {
+		const closed = await answeredWithin(closing);
+		assert.ok(closed?.ok, "the owner's session closes while Git is still waiting");
+		const finishing = closed.value.tasks.find((task) => task.taskId === a.taskId);
+		assert.equal(finishing?.decision, "already-finishing");
+		assert.notEqual(finishing?.execution.kind, "settled");
+		assert.ok(existsSync(a.cwd));
+	} finally {
+		filter.release();
+		await Promise.all([closing, terminal]);
+	}
+	assert.equal(existsSync(a.cwd), false);
+});
+
 function rejectChildInput(h: Harness, prepare?: (cwd: string) => void) {
 	const refused = Promise.withResolvers<{ childId: string; error: Error; span: RunSyncOptions["elapsedSpan"] }>();
 	const storage = vi.spyOn(artifactStorage, "getArtifactsDir").mockResolvedValue(join(h.cwd, "artifacts"));
@@ -6038,7 +6066,7 @@ test("status reports a failed child-record append to its owner, not another owne
 const RESUME_ANSWER_MS = 5_000;
 
 /** `call`'s result, or undefined when it has not answered within {@link RESUME_ANSWER_MS}. */
-async function answeredWithin(call: Promise<SubagentToolResult>): Promise<SubagentToolResult | undefined> {
+async function answeredWithin<T>(call: Promise<T>): Promise<T | undefined> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([

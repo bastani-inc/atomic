@@ -117,6 +117,8 @@ export declare class TaskSupervisor {
    * not a terminal event: watchers and waits receive the final cursor only after cleanup.
    */
   markRunnerFinishing(runner: RunnerLease, result: TaskResult): {ok:true,value:SettlementReceipt}|{ok:false,error:TaskFailure}
+  /** The runner released its owned resources; only the batch's directory work still delays publication. */
+  handoffRunnerDirectory(runner: RunnerLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   taskReference(task: TaskLease): {ok:true,value:NativeTaskRef}|{ok:false,error:TaskFailure}
   /** Read-only identity of a Unix command's process group. It grants no signal authority. */
   taskProcessGroup(task: TaskLease): {ok:true,value:number|null}|{ok:false,error:TaskFailure}
