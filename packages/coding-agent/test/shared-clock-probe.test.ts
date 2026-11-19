@@ -462,22 +462,26 @@ test("a probe whose delete was refused is not deleted by name later, so a new fi
 	}
 });
 
-test("stepping the reader's wall clock during cleanup does not age a fresh remote marker (#5674)", async () => {
-	const directory = mkdtempSync(join(tmpdir(), "clock-step-"));
-	try {
-		const time = Date.now.bind(Date);
-		let step = 0;
-		vi.spyOn(Date, "now").mockImplementation(() => time() + step);
-		io.afterList = () => {
-			step = 180_000;
-		};
-		const now = await sharedClockNow(directory);
-		assert.equal(step, 180_000);
-		assert.ok(Math.abs(now - io.stamp) < 10_000, `filesystem time jumped by ${now - io.stamp} ms`);
-	} finally {
-		rmSync(directory, { recursive: true, force: true });
-	}
-});
+test.each([180_000, -45_000])(
+	"stepping the reader's wall clock %i ms during cleanup does not move the filesystem's time (#5674)",
+	async (shift) => {
+		const directory = mkdtempSync(join(tmpdir(), "clock-step-"));
+		try {
+			const time = Date.now.bind(Date);
+			let step = 0;
+			vi.spyOn(Date, "now").mockImplementation(() => time() + step);
+			io.afterList = () => {
+				step = shift;
+			};
+			const now = await sharedClockNow(directory);
+			assert.equal(step, shift);
+			// A marker's age must neither jump by the step nor lag behind main's reading by it.
+			assert.ok(Math.abs(now - io.stamp) < 10_000, `filesystem time jumped by ${now - io.stamp} ms`);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
 
 test("stepping the reader's wall clock back during a reading does not let its sweep remove a fresh probe (#5674)", async () => {
 	io.withoutDeleteOnClose = true;

@@ -86,14 +86,15 @@ function ordinaryReading(directory: string, fallback?: number, retry = true): Pr
 			const finish = (offset?: number, sinceSample?: number) =>
 				fs.unlink(probe, () => {
 					if (offset === undefined || sinceSample === undefined) return resolve(fallback ?? 0);
-					// The filesystem's time is its stamp advanced by the time elapsed since the stat was delivered, through
-					// cleanup too, never from before the probe was created. It never runs past the wall-clock estimate,
-					// which follows a civil clock stepped back during cleanup.
-					const now = relative
+					// The filesystem's time is its stamp advanced by the elapsed time since the stat was delivered, cleanup
+					// included, never from before the probe was created, and a civil clock step is not elapsed time. The
+					// sweep goes by the earlier of that and the wall-clock estimate, so it removes no probe that either
+					// estimate finds young.
+					const sweepNow = relative
 						? () => Date.now() + offset
 						: () => Math.min(Date.now() + offset, elapsedClock() + sinceSample);
-					removeLeftoverProbes(directory, now).then(() => {
-						resolve(relative ? offset : now());
+					removeLeftoverProbes(directory, sweepNow).then(() => {
+						resolve(relative ? offset : elapsedClock() + sinceSample);
 					}, reject);
 				});
 			fs.close(fd, (error) => {
