@@ -76,6 +76,8 @@ export interface TuiMouseEventResult {
 	 * second press there makes the click part of a double- or triple-click, which selects text, and cancels it.
 	 */
 	whenSingleClick?: () => void;
+	/** Resolves once an immediate click's keyboard-focus changes have reached this host. */
+	inputReady?: Promise<void>;
 	/** Release anything reserved for `whenSingleClick` if the renderer cancels it instead. */
 	onSingleClickCancel?: () => void;
 }
@@ -847,6 +849,7 @@ export abstract class TuiBase extends Container implements TUI {
 					this.clearOverlayFocusRestoreFor(entry);
 					this.retargetOverlayPreFocus(entry);
 					this.overlayStack.splice(index, 1);
+					this.getPointerFocus();
 					// Restore focus if this overlay had focus
 					if (this.focusedComponent === component) {
 						const topVisible = this.getTopmostVisibleOverlay();
@@ -859,6 +862,8 @@ export abstract class TuiBase extends Container implements TUI {
 			setHidden: (hidden: boolean) => {
 				if (entry.hidden === hidden) return;
 				entry.hidden = hidden;
+				// A focused child can keep keyboard focus. Record the change of modal owner even without a paint.
+				this.getPointerFocus();
 				// Update focus when hiding/showing
 				if (hidden) {
 					this.clearOverlayFocusRestoreFor(entry);
@@ -929,6 +934,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.clearOverlayFocusRestoreFor(overlay);
 		this.retargetOverlayPreFocus(overlay);
 		this.overlayStack.pop();
+		this.getPointerFocus();
 		if (this.focusedComponent === overlay.component) {
 			// Find topmost visible overlay, or fall back to preFocus
 			const topVisible = this.getTopmostVisibleOverlay();
@@ -1078,7 +1084,7 @@ export abstract class TuiBase extends Container implements TUI {
 		process.on("exit", this.exitRestoreHandler);
 		this.beforeTerminalStart();
 		this.terminal.start(
-			(data) => this.handleTerminalInput(data),
+			(data) => this.receiveTerminalInput(data),
 			() => this.requestRender(),
 		);
 		this.afterTerminalStart();
@@ -1240,6 +1246,11 @@ export abstract class TuiBase extends Container implements TUI {
 				this.scheduleRender();
 			}
 		}, delay);
+	}
+
+	/** Receives a physical terminal report, before input listeners or keyboard focus are consulted. */
+	protected receiveTerminalInput(data: string): void {
+		this.handleTerminalInput(data);
 	}
 
 	private handleTerminalInput(data: string): void {

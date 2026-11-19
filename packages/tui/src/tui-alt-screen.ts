@@ -1162,6 +1162,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			: before;
 	}
 
+	/** A host can wait for an immediate row action's focus handoff before routing the next physical key. */
+	protected afterComponentClick(_inputReady: Promise<void> | undefined, _target: Component): void {}
+
 	private applyMouseDispatchResult(
 		event: TuiMouseEvent,
 		result: TuiMouseDispatchResult,
@@ -1176,6 +1179,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (this.mousePressFocus === focus) this.mousePressFocus = this.focusAfterClaim(focus, focusTarget);
 		}
 		if (result.capture) this.mouseCapture = result.target;
+		if (event.type === "click") this.afterComponentClick(result.inputReady, result.target.component);
 		return (
 			result.render ??
 			(focusChanged ||

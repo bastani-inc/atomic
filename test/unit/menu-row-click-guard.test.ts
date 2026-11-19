@@ -13,6 +13,8 @@ import { parse } from "@babel/parser";
 import { type Node, type TraversalAncestors, traverse } from "@babel/types";
 import { test } from "vitest";
 import { repositoryRoot } from "../../vitest.base.js";
+import { ColorList } from "../fixtures/clickable-color-list.js";
+import { makeClickScreen } from "../helpers/fullscreen-clicks.js";
 
 /** The keys and key actions that choose or open the selected row of a list. */
 const CHOOSE_KEYS = new Set(["enter", "return", "tui.select.confirm", "app.list.open"]);
@@ -203,7 +205,8 @@ interface ParsedFile {
 	/** Each imported name, by the local name the file gives it. */
 	readonly imports: ReadonlyMap<string, { readonly source: string; readonly imported: string }>;
 	/** Components that construct their own shared rows. */
-	readonly sharedRows: ReadonlySet<Shape>;
+	readonly sharedRows: ReadonlyMap<Shape, readonly string[]>;
+	readonly registrations: ReadonlyMap<Shape, readonly string[]>;
 	readonly dispatchesMouse: ReadonlySet<Shape>;
 	/** What handles a choosing key: a component, or `undefined` for the file's own functions. */
 	readonly choosers: ReadonlySet<Shape | undefined>;
@@ -321,7 +324,8 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 	}
 	// Local names given to a choosing key, such as `const KEYBIND_CONFIRM = "tui.select.confirm"`.
 	const aliases = new Set<string>();
-	const sharedRows = new Set<Shape>();
+	const sharedRows = new Map<Shape, string[]>();
+	const registrations = new Map<Shape, string[]>();
 	const dispatchesMouse = new Set<Shape>();
 	traverse(program, (node) => {
 		if (node.type === "VariableDeclarator" && node.id.type === "Identifier" && node.init?.type === "StringLiteral") {
@@ -370,8 +374,43 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 		) {
 			const name = calleeName(node.callee);
 			const draws = node.type === "NewExpression" && name !== undefined && SHARED_ROWS.has(name);
+			const receiver = node.callee.type === "MemberExpression" ? node.callee.object : undefined;
+			const registers = receiver && (name === "add" || name === "addFrom" || name === "collect");
+			const forwardsClick =
+				name === "handleMouse" ||
+				name === "dispatchMouseEvent" ||
+				(name === "click" && receiver?.type === "Identifier" && receiver.name === "focus") ||
+				(name === "sendEngineCommand" &&
+					node.arguments.some(
+						(arg) =>
+							arg.type === "ObjectExpression" &&
+							arg.properties.some(
+								(prop) =>
+									prop.type === "ObjectProperty" &&
+									keyName(prop.key) === "type" &&
+									prop.value.type === "StringLiteral" &&
+									prop.value.value === "engine_custom_click",
+							),
+					)) ||
+				(name === "call" &&
+					receiver?.type === "Identifier" &&
+					ancestors.some(
+						({ node: scope }) =>
+							scope.type === "BlockStatement" &&
+							scope.body.some(
+								(statement) =>
+									statement.type === "VariableDeclaration" &&
+									statement.declarations.some(
+										(decl) =>
+											decl.id.type === "Identifier" &&
+											decl.id.name === receiver.name &&
+											decl.init &&
+											calleeName(decl.init) === "handleMouse",
+									),
+							),
+					));
 			const dispatches =
-				(name === "handleMouse" || name === "dispatchMouseEvent") &&
+				forwardsClick &&
 				ancestors.some(
 					({ node: parent }) =>
 						(parent.type === "ClassMethod" ||
@@ -383,6 +422,7 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 			if (
 				!dispatches &&
 				!draws &&
+				!registers &&
 				!(
 					name &&
 					MATCHING_CALL.test(name) &&
@@ -395,11 +435,32 @@ function parseFile({ path, text }: SourceFile): ParsedFile {
 			for (let index = ancestors.length - 1; index >= 0 && owner === undefined; index--)
 				owner = shapeOf.get(ancestors[index]!.node);
 			if (dispatches && owner) dispatchesMouse.add(owner);
-			else if (draws && owner) sharedRows.add(owner);
-			else if (!draws && !dispatches) choosers.add(owner);
+			else if (draws && owner) {
+				const member = name === "ClickableRow" ? "<row>" : nameFromAncestors(ancestors, node);
+				sharedRows.set(owner, [...(sharedRows.get(owner) ?? []), member]);
+			} else if (registers && owner) {
+				let member = calleeName(receiver);
+				if (receiver.type === "Identifier") {
+					const method = ancestors.findLast(
+						({ node }) => node.type === "ClassMethod" || node.type === "ObjectMethod",
+					);
+					if (method)
+						traverse(method.node, (binding) => {
+							if (
+								binding.type === "VariableDeclarator" &&
+								binding.id.type === "Identifier" &&
+								binding.id.name === receiver.name &&
+								binding.init?.type === "MemberExpression" &&
+								binding.init.object.type === "ThisExpression"
+							)
+								member = keyName(binding.init.property);
+						});
+				}
+				if (member) registrations.set(owner, [...(registrations.get(owner) ?? []), member]);
+			} else if (!draws && !dispatches && !registers) choosers.add(owner);
 		}
 	});
-	return { shapes, imports, sharedRows, dispatchesMouse, choosers };
+	return { shapes, imports, sharedRows, registrations, dispatchesMouse, choosers };
 }
 
 /** The file a relative import of `source` from `file` names, among `known` files. */
@@ -457,13 +518,26 @@ function clickInventory(files: readonly SourceFile[], routes: Readonly<Record<st
 			.flatMap((base) => lineage(base, new Set([...seen, shape]))),
 	];
 	const handlesMouse = (shape: Shape) => lineage(shape).some((ancestor) => ancestor.members.has("handleMouse"));
+	const forwardsMouse = (shape: Shape) => {
+		const handler = lineage(shape).find((ancestor) => ancestor.members.has("handleMouse"));
+		return handler !== undefined && parsed.get(handler.file)?.dispatchesMouse.has(handler);
+	};
 	const drawsSharedRows = (shape: Shape) => {
 		const ancestors = lineage(shape);
 		const handler = ancestors.find((ancestor) => ancestor.members.has("handleMouse"));
 		return (
 			handler &&
 			parsed.get(handler.file)?.dispatchesMouse.has(handler) &&
-			ancestors.some((ancestor) => parsed.get(ancestor.file)?.sharedRows.has(ancestor))
+			ancestors.some((ancestor) =>
+				parsed
+					.get(ancestor.file)
+					?.sharedRows.get(ancestor)
+					?.some(
+						(member) =>
+							member === "<row>" ||
+							ancestors.some((base) => parsed.get(base.file)?.registrations.get(base)?.includes(member)),
+					),
+			)
 		);
 	};
 	const shapeNamed = (name: string): Shape | undefined => {
@@ -507,7 +581,7 @@ function clickInventory(files: readonly SourceFile[], routes: Readonly<Record<st
 		const shapes = name.includes("#") ? [] : (parsed.get(name)?.shapes ?? []);
 		if ((shape !== undefined && drawsSharedRows(shape)) || shapes.some(drawsSharedRows))
 			broken.push(`${name}: draws clickable rows; remove it`);
-		if (route.route === "forwards" && !(shape === undefined ? shapes : [shape]).some(handlesMouse))
+		if (route.route === "forwards" && !(shape === undefined ? shapes : [shape]).some(forwardsMouse))
 			broken.push(`${name}: forwards no click to ${route.to}`);
 		if (route.route === "drawn-by") {
 			const drawing = shapeNamed(route.component);
@@ -612,7 +686,11 @@ for (const { form, input, check } of CHOOSING_CHECKS) {
 
 		const clickable = source
 			.replace("import {", "import { ClickableRows, type TuiMouseEvent, type TuiMouseEventResult,")
-			.replace("\tprivate selected = 0;", `\tprivate selected = 0;${CLICKABLE_MEMBERS}`);
+			.replace("\tprivate selected = 0;", `\tprivate selected = 0;${CLICKABLE_MEMBERS}`)
+			.replace(
+				'return ["Pick a color",',
+				'this.rows.clear(); ["red", "blue"].forEach((value, i) => this.rows.add(i + 1, i, value)); return ["Pick a color",',
+			);
 		const withClicks = clickInventory([{ path: "pkg/color-list.ts", text: clickable }], {});
 		assert.deepEqual(withClicks.choosers, ["pkg/color-list.ts#ColorList"]);
 		assert.deepEqual(withClicks.missing, []);
@@ -623,7 +701,7 @@ test("a keyboard-only list in a file that draws another list's clickable rows is
 	const source = `import { ClickableRows, matchesKey, type TuiMouseEvent } from "@bastani/atomic-tui";
 export class ClickableList {
 	private readonly rows = new ClickableRows<number>();
-	render(): string[] { return []; }
+	render(): string[] { this.rows.add(0, 0, "red"); return ["red"]; }
 	handleInput(data: string): void { if (matchesKey(data, "enter")) this.rows.clear(); }
 	handleMouse(event: TuiMouseEvent) { return this.rows.handleMouse(event, { activate: () => {} }); }
 }
@@ -641,6 +719,41 @@ test("another component's shared rows do not cover a keyboard-only list with an 
 	assert.deepEqual(clickInventory([{ path: "pkg/list.ts", text }], {}).missing, [
 		"pkg/list.ts#ColorList: takes clicks, but draws no ClickableRows",
 	]);
+});
+
+test("a list needs to register the rows it paints for a click (#5642)", async () => {
+	const path = "test/fixtures/clickable-color-list.ts";
+	const text = readFileSync(join(repositoryRoot, path), "utf8");
+	const ui = makeClickScreen();
+	try {
+		const list = new ColorList();
+		ui.dock(list);
+		await ui.click("blue");
+		assert.deepEqual(list.chosen, ["blue"]);
+		assert.deepEqual(clickInventory([{ path, text }], {}).missing, []);
+		const unregistered = text.replace("this.rows.add(index, color, color);", "");
+		assert.deepEqual(clickInventory([{ path, text: unregistered }], {}).missing, [
+			`${path}#ColorList: takes clicks, but draws no ClickableRows`,
+		]);
+	} finally {
+		ui.tui.stop();
+	}
+});
+
+test("a listed wrapper must actually forward clicks, not merely declare a mouse handler (#5642)", () => {
+	const path = "pkg/wrapper.ts";
+	const routes = { [`${path}#Pane`]: forwards("its list") };
+	const text = `class Pane {
+		render() { return this.list.render(); }
+		handleInput(data) { return this.list.handleInput(data); }
+		handleMouse(event) { return this.list.handleMouse(event); }
+	}`;
+	assert.deepEqual(clickInventory([{ path, text }], routes).broken, []);
+	assert.deepEqual(
+		clickInventory([{ path, text: text.replace("return this.list.handleMouse(event)", "return undefined") }], routes)
+			.broken,
+		[`${path}#Pane: forwards no click to its list`],
+	);
 });
 
 test("constructing shared rows without routing mouse input to them still reports a keyboard-only list", () => {
@@ -671,7 +784,7 @@ export abstract class ClickableBase {
 				text: `import { matchesKey } from "@bastani/atomic-tui";
 import { ClickableBase } from "./base.js";
 export class List extends ClickableBase {
-	render(): string[] { return []; }
+	render(): string[] { this.rows.add(0, 0, "red"); return ["red"]; }
 	handleInput(key: string): void { if (matchesKey(key, "enter")) this.rows.clear(); }
 }`,
 			},
