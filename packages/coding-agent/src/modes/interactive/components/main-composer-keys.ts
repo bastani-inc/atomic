@@ -20,13 +20,15 @@ export interface MainComposerKeyState {
 	readonly needsInput?: number;
 	/** Running background shells, which /tasks lists. */
 	readonly shells?: number;
+	/** Running background searches, which /tasks lists. */
+	readonly searches?: number;
 	/** The chat's subagents in /tasks, listed in the panel or not. */
 	readonly subagents?: number;
 	readonly working: boolean;
 }
 
 export type MainComposerHintSource =
-	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "subagents">
+	| Pick<MainComposerKeyState, "agentRows" | "agents" | "needsInput" | "shells" | "searches" | "subagents">
 	| (AgentPanelSession & object)
 	| (() => AgentPanelCounts);
 
@@ -48,6 +50,7 @@ function resolveAgentCounts(
 				agents: source.agents ?? source.agentRows,
 				needsInput: source.needsInput ?? 0,
 				shells: source.shells ?? 0,
+				searches: source.searches ?? 0,
 				subagents: source.subagents ?? 0,
 			};
 		}
@@ -88,7 +91,7 @@ export function mainComposerHints(keybindings: NavKeybindings | undefined, state
 	const total = finiteCount(counts.total);
 	const parts = panelHintParts(
 		{ total, agents: finiteCount(counts.agents ?? total), needsInput: finiteCount(counts.needsInput) },
-		finiteCount(counts.shells ?? 0),
+		{ shells: finiteCount(counts.shells ?? 0), searches: finiteCount(counts.searches ?? 0) },
 		finiteCount(counts.subagents ?? 0),
 		focusKey !== "",
 	);

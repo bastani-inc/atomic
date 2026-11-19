@@ -302,7 +302,8 @@ export class AgentPanelModel {
 		for (const row of rows) {
 			const state = row.state;
 			states.set(row, state);
-			if (isActivePanelState(state)) active = true;
+			// A running search is a tool call's work, not something the panel waits on.
+			if (row.kind !== "search" && isActivePanelState(state)) active = true;
 		}
 		/** Resting subagent rows that left: their clocks still follow them, so a resumed one keeps its time. */
 		const hidden: AgentPanelRow[] = [];

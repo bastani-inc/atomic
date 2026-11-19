@@ -30,6 +30,7 @@ import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
 import { matchLinesInWorker } from "./history-regex-worker.js";
+import { historySearchScope } from "./history-search-scope.ts";
 import {
 	type BudgetStop,
 	cutTextToUtf8Bytes,
@@ -185,6 +186,7 @@ function closeDiscovery(discovery: ParkedDiscovery): void {
 }
 
 const parkedDiscoveries = new WeakMap<SessionStore, Map<string, ParkedDiscovery>>();
+const searchDiscoveries = new WeakMap<object, typeof parkedDiscoveries>();
 
 interface ParkedRunListing {
 	readonly runs: Promise<readonly WorkflowRunSummary[]>;
@@ -1188,8 +1190,8 @@ async function searchRunLinesBounded(
 
 export function createHistoryRouter(sources: HistorySources): InternalResourceRouter {
 	const limits: HistoryBudget = { ...DEFAULT_HISTORY_BUDGET, ...sources.budget };
-	const newBudget = (signal: AbortSignal | undefined, noteBytes?: number) =>
-		new HistoryCallBudget(limits, signal, noteBytes);
+	const newBudget = (signal: AbortSignal | undefined, noteBytes?: number, timeMs?: number) =>
+		new HistoryCallBudget(timeMs === undefined ? limits : { ...limits, timeMs }, signal, noteBytes);
 	const noteBytes = (
 		url: string,
 		target: HistoryTarget,
@@ -1266,17 +1268,26 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const store = requireStore();
 		const scope = projectScope(target);
 		const keyOf = (cursor: string) => JSON.stringify([scope.cwd ?? null, cursor, pin ?? null]);
-		let parkedHere = parkedDiscoveries.get(store);
+		const chain = historySearchScope.getStore();
+		const firstRequest = chain !== undefined && !searchDiscoveries.has(chain);
+		let cache = parkedDiscoveries;
+		if (chain) {
+			cache = searchDiscoveries.get(chain) ?? new WeakMap();
+			searchDiscoveries.set(chain, cache);
+		}
+		let parkedHere = cache.get(store);
 		if (!parkedHere) {
 			parkedHere = new Map<string, ParkedDiscovery>();
-			parkedDiscoveries.set(store, parkedHere);
+			cache.set(store, parkedHere);
 		}
 		const byKey = parkedHere;
 		const requestKey = target.cursor === undefined ? undefined : keyOf(cursorText(target.cursor));
-		let parked = requestKey === undefined ? undefined : byKey.get(requestKey);
+		// The first URL can have come from an ordinary read. Subsequent stops belong to this chain.
+		const source = firstRequest ? parkedDiscoveries.get(store) : byKey;
+		let parked = requestKey === undefined ? undefined : source?.get(requestKey);
 		if (parked && requestKey !== undefined) {
 			clearTimeout(parked.timer);
-			byKey.delete(requestKey);
+			source!.delete(requestKey);
 		}
 		if (!parked) {
 			const controller = new AbortController();
@@ -2255,9 +2266,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const { url, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			const target = parseTarget(url);
 			const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
+			const timeMs =
+				request.timeBudgetMs !== undefined && Number.isFinite(request.timeBudgetMs) && request.timeBudgetMs > 0
+					? request.timeBudgetMs
+					: undefined;
+			const callLimits: HistoryBudget = timeMs === undefined ? limits : { ...limits, timeMs };
 			const budget = newBudget(
 				request.signal,
 				noteBytes(url, target, request.ranges, target.id === undefined ? 2 : 1, multiline),
+				timeMs,
 			);
 			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
@@ -2290,7 +2307,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							request,
 							prefilter,
 							new HistoryCallBudget(
-								{ ...limits, bytes: limits.bytes - workflowBytes, rows: sessionRows },
+								{ ...callLimits, bytes: limits.bytes - workflowBytes, rows: sessionRows },
 								request.signal,
 								domainNoteBytes,
 							),
@@ -2302,7 +2319,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							request,
 							prefilter,
 							new HistoryCallBudget(
-								{ ...limits, bytes: workflowBytes, rows: workflowRows },
+								{ ...callLimits, bytes: workflowBytes, rows: workflowRows },
 								request.signal,
 								domainNoteBytes,
 							),

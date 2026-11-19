@@ -4,6 +4,7 @@ import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { formatSize } from "../tools/truncate.ts";
 import { ranOnModelLine } from "./completion.js";
 import type { TaskRecord } from "./contracts.js";
+import { isShellLikeTask, taskKindNoun } from "./task-kind.js";
 
 export const TASK_HEARTBEAT_MESSAGE_TYPE = "task-heartbeat";
 /** Same default cadence as workflow heartbeats; `tasks.heartbeatMs` overrides it. */
@@ -27,6 +28,8 @@ export type TaskHeartbeatTask = {
 	kind: TaskRecord["kind"];
 	title: string;
 	agentName?: string;
+	/** The tool a `tool` task runs (`search`). */
+	toolName?: string;
 	model?: string;
 	/** The level `model` runs at, when the task reports one. */
 	thinking?: string;
@@ -51,7 +54,7 @@ export type TaskHeartbeatDetails = {
 	scheduledAt: number;
 	tasks: TaskHeartbeatTask[];
 	/** Further due tasks, named without detail. */
-	more: Array<{ taskId: string; kind: TaskRecord["kind"]; title: string }>;
+	more: Array<{ taskId: string; kind: TaskRecord["kind"]; toolName?: string; title: string }>;
 	/** How many due tasks the notice does not describe in full, including those in `more`. */
 	moreCount: number;
 };
@@ -89,8 +92,8 @@ function formatCount(count: number, noun: string): string {
 	return `${value} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-export function taskHeartbeatKindLabel(kind: TaskRecord["kind"]): string {
-	return kind === "agent" ? "subagent" : "shell";
+export function taskHeartbeatKindLabel(kind: TaskRecord["kind"], toolName?: string): string {
+	return taskKindNoun({ kind, ...(toolName === undefined ? {} : { toolName }) });
 }
 
 /** One compact status line for a task in a heartbeat notice. */
@@ -98,7 +101,7 @@ export function formatTaskHeartbeatStatus(task: TaskHeartbeatTask): string {
 	const parts: string[] = [];
 	if (task.agentName !== undefined) parts.push(`agent ${task.agentName}`);
 	parts.push(`elapsed ${formatTaskHeartbeatDuration(task.elapsedMs)}`);
-	if (task.kind === "command") {
+	if (isShellLikeTask(task.kind)) {
 		if (task.output) parts.push(`${formatSize(task.output.bytes)} output`);
 		parts.push(
 			task.lastActivityAgoMs === undefined
@@ -139,12 +142,20 @@ export const TASK_HEARTBEAT_GUIDANCE =
 	'message, or pause it and resume it with a message), or stop it (`kill({ id })` for a shell, `subagent({ action: "quit", id })` ' +
 	"for a subagent). Do not relaunch a duplicate of a task that is still running.";
 
+/** The guidance of a heartbeat that names a background search: a search is waited on and stopped like a shell. */
+export const TASK_HEARTBEAT_SEARCH_GUIDANCE =
+	"This is a periodic check, not a failure signal. For each task, judge whether it is still making progress or is " +
+	"runaway, stale, or stuck. If it is progressing, continue your current work and let it run. Otherwise inspect it " +
+	"(/tasks, or the shell, search or subagent `wait` action with its task ID), steer it (for a subagent, send it an Intercom " +
+	'message, or pause it and resume it with a message), or stop it (`kill({ id })` for a shell or search, `subagent({ action: "quit", id })` ' +
+	"for a subagent). Do not relaunch a duplicate of a task that is still running.";
+
 /** Model-facing heartbeat text. The details stay the structured record of what was raised. */
 export function formatTaskHeartbeat(details: TaskHeartbeatDetails): string {
 	const lines: string[] = [];
 	for (const task of details.tasks) {
 		lines.push(
-			`♥ Task heartbeat (${taskHeartbeatKindLabel(task.kind)} ${task.taskId}: ${task.title}) — still running after ${formatTaskHeartbeatDuration(task.elapsedMs)}, on a ${formatCadence(task.intervalMs)} cadence.`,
+			`♥ Task heartbeat (${taskHeartbeatKindLabel(task.kind, task.toolName)} ${task.taskId}: ${task.title}) — still running after ${formatTaskHeartbeatDuration(task.elapsedMs)}, on a ${formatCadence(task.intervalMs)} cadence.`,
 			`Status: ${formatTaskHeartbeatStatus(task)}`,
 		);
 		if (task.output?.tail.length)
@@ -154,12 +165,15 @@ export function formatTaskHeartbeat(details: TaskHeartbeatDetails): string {
 			);
 	}
 	if (details.moreCount > 0) {
-		const named = details.more.map((task) => `${taskHeartbeatKindLabel(task.kind)} ${task.taskId} (${task.title})`);
+		const named = details.more.map(
+			(task) => `${taskHeartbeatKindLabel(task.kind, task.toolName)} ${task.taskId} (${task.title})`,
+		);
 		const unnamed = details.moreCount - details.more.length;
 		lines.push(
 			`Also still running: ${named.join("; ")}${unnamed > 0 ? `; and ${unnamed} more` : ""}. Inspect them with /tasks.`,
 		);
 	}
-	lines.push("", TASK_HEARTBEAT_GUIDANCE);
+	const namesTool = [...details.tasks, ...details.more].some((task) => task.kind === "tool");
+	lines.push("", namesTool ? TASK_HEARTBEAT_SEARCH_GUIDANCE : TASK_HEARTBEAT_GUIDANCE);
 	return lines.join("\n");
 }

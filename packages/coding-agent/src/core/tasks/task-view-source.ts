@@ -5,7 +5,7 @@ import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
-import { taskOutputText } from "./command-output.js";
+import { taskOutputHeadText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { bindTaskClockSource } from "./live-elapsed.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
@@ -32,6 +32,8 @@ export interface TaskOutputView {
 	readonly text: string;
 	/** Some of the requested bytes are no longer retained. */
 	readonly omitted: boolean;
+	/** More output follows the page that was read. */
+	readonly more?: boolean;
 }
 
 /** One page of an agent task's transcript, oldest first. */
@@ -272,7 +274,14 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				maximumBytes: range.maximumBytes,
 			});
 			return page.ok
-				? { ok: true, value: { text: taskOutputText(page.value), omitted: page.value.omittedRanges.length > 0 } }
+				? {
+						ok: true,
+						value: {
+							text: taskOutputHeadText(page.value),
+							omitted: page.value.omittedRanges.length > 0,
+							...(page.value.nextOffset === undefined ? {} : { more: true }),
+						},
+					}
 				: { ok: false, error: { message: page.error.message } };
 		},
 		taskDetailText(id) {

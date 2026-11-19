@@ -99,7 +99,29 @@ export type CommandIntent = {
 	 */
 	readonly launchedBy?: string;
 };
-export type TaskIntent = AgentIntent | CommandIntent;
+/**
+ * In-process work a tool call runs past its foreground observation, such as a `search` of `history://`. It is neither
+ * an agent (no session, transcript or model) nor a process (no pid, stdin or terminal): it runs in the owner's process
+ * as a task like a background shell, and its output is what the tool prints.
+ */
+export type ToolIntent = {
+	kind: "tool";
+	/** The tool whose call this task runs, for example `search`. */
+	tool: string;
+	/** What the task does, as /tasks and its notices name it, for example `search needle in history://sessions`. */
+	label: string;
+	cwd?: string;
+	parentTaskId?: TaskId;
+	/** Heartbeat cadence for this task in milliseconds; `0` disables. Omitted uses the owner default. */
+	readonly heartbeatMs?: number;
+	/** The execution bound the work stops at, as cancelled with cause `execution-timeout`; its notice names it. */
+	readonly executionTimeoutMs?: number;
+	/** The session that launched the call in an owner it shares, as for {@link CommandIntent.launchedBy}. */
+	readonly launchedBy?: string;
+};
+export type TaskIntent = AgentIntent | CommandIntent | ToolIntent;
+/** The kinds of task an owner runs: a subagent, a shell command, or a tool call's in-process work. */
+export type TaskKind = TaskIntent["kind"];
 export type TaskWaitConfiguration =
 	| { kind: "automatic"; commandBudgetMs?: number; agentBudgetMs?: number }
 	| { kind: "until-settled" };
@@ -195,9 +217,11 @@ export type TaskRecord = {
 	readonly launchedBy?: string;
 	launchGroupId?: string;
 	launchOrdinal: number;
-	kind: "agent" | "command";
+	kind: TaskKind;
 	title: string;
 	agentName?: string;
+	/** The tool whose call a `tool` task runs, for example `search`. */
+	toolName?: string;
 	/** Resolved execution settings, retained after completion: the model it ran on last. */
 	model?: string;
 	thinking?: string;

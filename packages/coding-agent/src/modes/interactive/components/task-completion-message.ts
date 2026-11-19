@@ -72,9 +72,11 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		title: notice.title,
 		preview: notice.preview,
 		taskId: notice.taskId,
-		...("taskKind" in notice && (notice.taskKind === "agent" || notice.taskKind === "command")
+		...("taskKind" in notice &&
+		(notice.taskKind === "agent" || notice.taskKind === "command" || notice.taskKind === "tool")
 			? { taskKind: notice.taskKind }
 			: {}),
+		...("toolName" in notice && typeof notice.toolName === "string" ? { toolName: notice.toolName } : {}),
 		...("agentName" in notice && typeof notice.agentName === "string" ? { agentName: notice.agentName } : {}),
 		status: notice.status,
 		...("model" in notice && typeof notice.model === "string" ? { model: notice.model } : {}),

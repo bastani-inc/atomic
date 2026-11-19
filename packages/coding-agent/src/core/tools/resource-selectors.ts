@@ -46,6 +46,12 @@ export interface InternalSearchRequest {
 	contextAfter: number;
 	ranges?: readonly { readonly start: number; readonly end: number }[];
 	signal?: AbortSignal;
+	/**
+	 * How long this one call may search before it stops with a `continue with` URL, in milliseconds. Omitted, the
+	 * resource's own default applies (`history://`: 3 seconds). A search that runs as a background task passes the
+	 * slice it gives each step of its continuation chain.
+	 */
+	timeBudgetMs?: number;
 }
 export interface InternalReadSelection {
 	ranges?: readonly { readonly start: number; readonly end?: number }[];
@@ -754,7 +760,7 @@ export async function searchInternalSelector(
 	context?: InternalResourceContext,
 	contextBefore = 1,
 	contextAfter = 3,
-	scope: Pick<InternalSearchRequest, "ranges" | "signal"> = {},
+	scope: Pick<InternalSearchRequest, "ranges" | "signal" | "timeBudgetMs"> = {},
 ): Promise<string> {
 	const searched = await routerFromContext(context)?.search?.(value, {
 		pattern,

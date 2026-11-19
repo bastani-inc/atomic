@@ -108,6 +108,7 @@ describe("the panel below the composer prunes subagents once they are terminal",
 			agents: 0,
 			needsInput: 0,
 			shells: 0,
+			searches: 0,
 			subagents: 0,
 		});
 		assert.deepEqual(panel.hint(), ["? keys"]);
@@ -195,7 +196,14 @@ describe("native subagent tasks", () => {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			fixture.store.drain();
 			assert.deepEqual(agentPanelRows(session), []);
-			assert.deepEqual(agentPanelCounts(session), { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 3 });
+			assert.deepEqual(agentPanelCounts(session), {
+				total: 0,
+				agents: 0,
+				needsInput: 0,
+				shells: 0,
+				searches: 0,
+				subagents: 3,
+			});
 			assert.deepEqual(mainComposerHintSegments(keybindings, session), ["/tasks to see subagents", "? keys"]);
 			assert.equal(running !== undefined, true);
 		} finally {
