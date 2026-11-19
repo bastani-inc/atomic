@@ -37,7 +37,7 @@
 			"!**/binaries/**/*",
 			"!**/*.generated.ts",
 			"!**/models.generated.ts",
-			"!packages/workflows/skills/**/*",
+			"!packages/subagents/skills/**/*",
 			"!packages/coding-agent/test/fixtures/**/*",
 			"!test/unit/fixtures/**/*",
 			"!packages/ai",

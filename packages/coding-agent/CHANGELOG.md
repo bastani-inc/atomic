@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The `subagents` builtin now ships the 11 general-purpose skills previously bundled with `workflows`. Default `/skill:` names and contents are unchanged. SDK hosts that disable `subagents` also disable those skills; to keep the skills without allowing delegation, leave `subagents` enabled and set `excludedTools: ["subagent"]`.
+
 ### Added
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).

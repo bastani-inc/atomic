@@ -171,13 +171,8 @@ export async function replyLiveEvent(input: LiveReplyInput): Promise<ScriptResul
 export const LIVE_POLL_VERB = "live-poll";
 
 /**
- * Absolute path to the impeccable engine launcher bundled with this package.
- *
- * Always the copy that ships inside this package — `packages/workflows/skills`
- * in the repository, `dist/builtin/workflows/skills` once bundled — which sits
- * one level up from this module in both layouts, so `import.meta.url` finds it
- * without the host naming a path. The launcher runs the engine binary next to
- * it, or downloads and checksum-verifies the platform build on first use.
+ * Absolute path to the bundled impeccable engine launcher. The subagents and
+ * workflows packages are siblings in source, npm installs and binary archives.
  *
  * A project-vendored copy is deliberately NOT consulted. The workflow drives
  * this protocol directly: it depends on the `live-poll` verb's CLI surface, its
@@ -187,7 +182,7 @@ export const LIVE_POLL_VERB = "live-poll";
  */
 export function liveLauncherPath(platform: NodeJS.Platform = process.platform): string {
 	const launcher = platform === "win32" ? "impeccable.cmd" : "impeccable";
-	return fileURLToPath(new URL(`../skills/impeccable/scripts/${launcher}`, import.meta.url));
+	return fileURLToPath(new URL(`../../subagents/skills/impeccable/scripts/${launcher}`, import.meta.url));
 }
 
 export type ScriptResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
