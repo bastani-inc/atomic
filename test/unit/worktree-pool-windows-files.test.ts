@@ -205,9 +205,13 @@ test.runIf(process.platform === "win32").each(["Node", "Bun"])(
 	},
 );
 
+// Printed by the Bun script below, instead of testing the pool, when this account can still reopen a file for writing
+// through the deny entry (for example, a token with backup and restore privileges enabled).
+const REOPEN_NOT_DENIED = "reopen-not-denied";
+
 test.runIf(process.platform === "win32")(
 	"Bun can admit and release a slot when existing files cannot be reopened for writing (#5636)",
-	async () => {
+	async (context) => {
 		const script = `
 		import assert from 'node:assert/strict';
 		import { execFileSync } from 'node:child_process';
@@ -220,6 +224,9 @@ test.runIf(process.platform === "win32")(
 		const storeDir = process.env.POOL_STORE;
 		const dir = join(storeDir, 'pool', repositoryIdOf(remotes));
 		mkdirSync(dir, {recursive:true});
+		// Windows PowerShell can't load Get-Acl's module from a PowerShell 7 parent's PSModulePath, as on CI's pwsh steps.
+		const powershellEnv = {...process.env, POOL_DIR:dir};
+		for (const key of Object.keys(powershellEnv)) if (key.toLowerCase() === 'psmodulepath') delete powershellEnv[key];
 		execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ${JSON.stringify(`
 			$ErrorActionPreference = 'Stop'
 			$acl = Get-Acl -LiteralPath $env:POOL_DIR
@@ -227,10 +234,12 @@ test.runIf(process.platform === "win32")(
 			$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'WriteData','ObjectInherit','InheritOnly','Deny')
 			$acl.AddAccessRule($rule)
 			Set-Acl -LiteralPath $env:POOL_DIR -AclObject $acl
-		`)}], {env:{...process.env, POOL_DIR:dir}});
+		`)}], {env:powershellEnv});
 		const control = join(dir, 'control');
 		writeFileSync(control, 'created');
-		assert.throws(() => writeFileSync(control, 'reopened'), {code:'EPERM'});
+		let reopened = false;
+		try { writeFileSync(control, 'reopened'); reopened = true; } catch (error) { assert.equal(error.code, 'EPERM'); }
+		if (reopened) { console.log(${JSON.stringify(REOPEN_NOT_DENIED)}); process.exit(0); }
 		const state = {snapshotId:null, head:'a'.repeat(40), tree:'b'.repeat(40)};
 		const owner = {kind:'session', id:'slot-owner'};
 		const lease = await admitPooledWorktree({storeDir, remotes, lastState:state, envHash:'env'}, owner);
@@ -238,7 +247,12 @@ test.runIf(process.platform === "win32")(
 		assert.deepEqual(JSON.parse(readFileSync(join(dir,'0.json'),'utf8')).holder, owner);
 		assert.equal(await releaseRestoredWorktree(lease,state), true);
 	`;
-		await run(bunExecutable(), ["-e", script], { env: { ...process.env, POOL_STORE: root } });
+		const { stdout } = await run(bunExecutable(), ["-e", script], { env: { ...process.env, POOL_STORE: root } });
+		if (stdout.trim() === REOPEN_NOT_DENIED) {
+			context.skip(
+				"this account reopened a file for writing despite an inherited WriteData deny entry, so the refused reopen can't be created here",
+			);
+		}
 	},
 );
 
