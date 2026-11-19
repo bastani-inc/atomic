@@ -1197,13 +1197,13 @@ export class SessionManager {
 	}
 
 	/** Project the current leaf and its compaction boundary. Transcript rows keep the content shown before model-only edits. */
-	buildSessionProjection(purpose: "model" | "transcript" = "model"): SessionProjection {
+	buildSessionProjection(purpose: "model" | "transcript" = "model", leafId = this.leafId): SessionProjection {
 		return buildSessionProjection(
 			this.getEntries(),
-			this.leafId,
+			leafId,
 			this.byId,
 			this.sessionId,
-			this.activeBranch(),
+			leafId === this.leafId ? this.activeBranch() : leafId === null ? undefined : this.getBranch(leafId),
 			purpose,
 		);
 	}

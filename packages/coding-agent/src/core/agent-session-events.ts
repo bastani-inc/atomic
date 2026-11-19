@@ -182,10 +182,16 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
 			: false;
 
-	const processing = this._agentEventQueue.then(
-		() => this._processAgentEvent(event),
-		() => this._processAgentEvent(event),
-	);
+	const process = () => {
+		if (event.type !== "message_end") return this._processAgentEvent(event);
+		// While this serialized save is in flight, snapshot the admitted tail on top of the preceding leaf.
+		// The store can already hold the new row before its append promise returns.
+		this._transcriptAppend = { message: event.message, previousLeaf: this.sessionManager.getLeafId() };
+		return this._processAgentEvent(event).finally(() => {
+			this._transcriptAppend = undefined;
+		});
+	};
+	const processing = this._agentEventQueue.then(process, process);
 	this._agentEventQueue = processing;
 	if (event.type === "message_end") this._messagesAwaitingPersistence.set(event.message, processing);
 

@@ -427,11 +427,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 		},
 
 		__residentMessages() {
-			return (
-				controller.agentSession()?.sessionManager.buildSessionProjection("transcript").messages ??
-				controller.currentSession?.messages ??
-				adapterMessages
-			);
+			return controller.agentSession()?.transcriptMessages ?? controller.currentSession?.messages ?? adapterMessages;
 		},
 
 		get isStreaming() {

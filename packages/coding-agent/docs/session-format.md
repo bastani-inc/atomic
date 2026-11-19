@@ -535,7 +535,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `branchWithSummary(entryId, summary, details?, fromHook?)` - Branch with context summary
 
 ### Instance Methods - Context & Info
-- `buildSessionProjection()` - Get the context-edited projection: source entries with their model-visible messages, plus thinkingLevel and model
+- `buildSessionProjection()` - Get the context-edited projection: source entries with their model-visible messages, plus thinkingLevel and model. Use `buildSessionProjection("transcript")` for saved chat rows: it keeps the original content of entries changed or omitted for the model. For a live session, `session.transcriptMessages` also includes admitted messages whose save is in progress.
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
 - `buildContextEntries()` - Active branch entries after the latest compaction boundary
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)

@@ -135,6 +135,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly compactionReason?: import("./agent-session-types.js").CompactionReason;
 	readonly compactionStartedAt?: number;
 	readonly messages: AgentMessage[];
+	/** The settled chat rows, including admitted messages whose save is still in flight. */
+	readonly transcriptMessages: AgentMessage[];
 	readonly steeringMode: "all" | "one-at-a-time";
 	readonly followUpMode: "all" | "one-at-a-time";
 	readonly sessionFile: string | undefined;
@@ -477,6 +479,7 @@ export interface AgentSessionPublicSurface
 		| "compactionReason"
 		| "compactionStartedAt"
 		| "messages"
+		| "transcriptMessages"
 		| "steeringMode"
 		| "followUpMode"
 		| "sessionFile"
@@ -654,6 +657,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;
 	readonly _messagesAwaitingPersistence: WeakMap<object, Promise<void>>;
+	_transcriptAppend: { message: AgentMessage; previousLeaf: string | null } | undefined;
 	readonly _messagesWithFailedPersistence: WeakSet<object>;
 	_persistenceFailure: string | undefined;
 	_turnStopReason: string | undefined;
