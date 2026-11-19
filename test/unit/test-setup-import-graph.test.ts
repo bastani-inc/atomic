@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { test } from "vitest";
@@ -11,23 +11,15 @@ import { runtimeRequestsOf } from "./module-graph-walker.js";
 /**
  * Isolated test files each evaluate the setup's runtime graph. Vite can share
  * transforms, but an eager host-barrel import still instantiates that graph in
- * every worker, even for tests that never use workflows. Follow Vitest aliases
+ * every worker. Follow Vitest aliases
  * as well as relative imports: the old regex missed the @bastani/atomic edge.
  *
  * The budget counts eager imports and re-exports. A dynamic `import()` runs only when its code path does, never while
  * the setup loads, and the storage provider uses them to reach the extension loader and the host package when it
  * loads an adapter module. Following those edges would count the whole host, which no ceiling can hold.
  */
-const SETUP_FILE = "test/setup-workflow-durability.ts";
-// Only imports erased by the configured emit and dynamic imports are excluded. The count includes the storage
-// module's leaf `write-ahead-log.ts`, which imports nothing, the snapshot blob tables (`worktree-snapshot/blob-store.ts`),
-// and the journal store's catalog and adoption modules, which the storage entry exports for SDK callers, with their
-// leaves `cleanup.ts` and `file-identity.ts` (#4325), and the SQL dialect, fenced-path registry and migration runner
-// the storage entry exports for adapters and stores (`dialect.ts`, `fenced-paths.ts`, `migrations.ts`; #4793), and the
-// durable backend's attempt identity leaf `attempt-identity.ts`, whose own imports are type-only (#4874), and the
-// asynchronous existence check the journal catalog and storage provider share (`utils/path-exists.ts`), which imports
-// only `node:fs/promises`.
-const MAX_REACHABLE_MODULES = 49;
+const SETUP_FILE = "test/helpers/checkout-snapshot-isolation.ts";
+const MAX_REACHABLE_MODULES = 12;
 
 function runtimeImports(file: string, eagerOnly = false): string[] {
 	try {
@@ -78,35 +70,14 @@ test("the vitest setup file's import graph stays small", () => {
 	);
 });
 
-test("the setup file does not import the workflow-artifacts hub", () => {
-	const source = readFileSync(join(repositoryRoot, SETUP_FILE), "utf8");
-	assert.ok(
-		!source.includes("shared/workflow-artifacts.js"),
-		`${SETUP_FILE} imports shared/workflow-artifacts.js, which reaches ~50 modules including ` +
-			"@bastani/atomic, to read a string constant. Import shared/workflow-artifact-env.js instead.",
-	);
-});
-
-test("the workflow-artifact-env leaf has no relative imports", () => {
-	const leaf = "packages/workflows/src/shared/workflow-artifact-env.ts";
-	assert.deepEqual(runtimeImports(join(repositoryRoot, leaf)), [], `${leaf} must stay dependency-free`);
-});
-
-test("the leaf and the hub agree on the constants", async () => {
-	const leaf = await import("../../packages/workflows/src/shared/workflow-artifact-env.js");
-	const hub = await import("../../packages/workflows/src/shared/workflow-artifacts.js");
-	assert.equal(hub.ENV_WORKFLOW_ARTIFACT_DIR, leaf.ENV_WORKFLOW_ARTIFACT_DIR);
-	assert.equal(hub.WORKFLOW_ARTIFACT_RETENTION_MS, leaf.WORKFLOW_ARTIFACT_RETENTION_MS);
-});
-
 test("the setup graph resolves the same host alias and relative source paths as Vitest", () => {
 	const importer = join(repositoryRoot, SETUP_FILE);
 	assert.equal(resolveImport(importer, "@bastani/atomic"), atomicSrcIndex);
 	assert.equal(resolveImport(importer, "node:fs"), undefined);
 	assert.equal(resolveImport(importer, "vitest"), undefined);
 	assert.equal(
-		resolveImport(importer, "../packages/workflows/src/durable/backend.js"),
-		join(repositoryRoot, "packages/workflows/src/durable/backend.ts"),
+		resolveImport(importer, "./temporary-agent-dir.js"),
+		join(repositoryRoot, "test/helpers/temporary-agent-dir.ts"),
 	);
 });
 

@@ -30,7 +30,6 @@ const { resolveSessionStore } = await import("../../packages/coding-agent/src/co
 const { defaultSessionDatabasePath, resetStorageHomeCacheForTests } = await import(
 	"../../packages/coding-agent/src/core/storage/file-identity.js"
 );
-const { selectRunJournal } = await import("../../packages/workflows/src/durable/journal/resolution.js");
 
 let root: string;
 let project: string;
@@ -84,15 +83,8 @@ test("storage home stays stable across an in-flight asynchronous session-store o
 	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
 
 	assert.equal(defaultSessionDatabasePath(child), initialSessionPath);
-	assert.deepEqual(selectRunJournal({ agentDir: child, settings: {} }), {
-		kind: "sharded",
-		dir: join(child, "workflows", "journal"),
-	});
 	resetStorageHomeCacheForTests();
-	assert.deepEqual(selectRunJournal({ agentDir: child, settings: {} }), {
-		kind: "sharded",
-		dir: join(child, "workflows", "journal"),
-	});
+	assert.equal(defaultSessionDatabasePath(child), initialSessionPath);
 	assert.equal(opened, false);
 	release();
 

@@ -23,7 +23,7 @@ function skill(filePath: string, source: "user" | "builtin", body: string): Skil
 		baseDir: join(filePath, ".."),
 		disableModelInvocation: false,
 		sourceInfo: createSyntheticSourceInfo(filePath, {
-			source: source === "builtin" ? "/packages/workflows" : "local",
+			source: source === "builtin" ? "/packages/subagents" : "local",
 			scope: source === "builtin" ? "temporary" : "user",
 			origin: source === "builtin" ? "package" : "top-level",
 			configurationOrigin: source === "builtin" ? "bundled" : "atomic",

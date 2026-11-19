@@ -38,9 +38,6 @@ test("a block whose every stack runs in another change's area belongs to that ch
 	);
 	assert.equal(blockOwner(block(["capture file:///x/dist/core/worktree-snapshot/capture.js:1"]), areas), "#5345");
 	for (const frame of [
-		"holdsNothingSync (file:///repo/packages/workflows/src/workers/ship-shard.ts:704:5)",
-		"onlyConnectionSync (file:///pkg/dist/builtin/workflows/src/workers/ship-shard.js:712:5)",
-		"shardOwnerSync (file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:86828:5)",
 		"statement (file:///pkg/dist/core/storage/node-sqlite.js:1164:5)",
 		"databaseNow (file:///pkg/dist/core/storage/node-sqlite.js:45:5)",
 	]) {

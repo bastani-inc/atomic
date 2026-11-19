@@ -4,10 +4,7 @@ import { type TSchema, Type } from "typebox";
 import { test, vi } from "vitest";
 import type { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import {
-	formatStructuredOutputCorrectionPrompt,
-	isStructuredOutputContractFailure,
-} from "../../packages/workflows/src/runs/foreground/stage-runner-structured-output.js";
+
 import {
 	decisionChatModel,
 	decisionMessage,
@@ -243,15 +240,4 @@ test("model attempts keep the value-free rejection detail of an exhausted candid
 	assert.match(attempt?.error ?? "", /\/files: expected array, got string/);
 	assert.doesNotMatch(JSON.stringify(result.modelAttempts), new RegExp(REJECTED_SECRET));
 	assert.match(result.fallback?.reason ?? "", /\/files: expected array, got string/);
-});
-
-test("workflow corrective prompt carries the rejection detail and treats both messages as contract failures (#3802)", () => {
-	const mismatch = `${ISSUE_MESSAGE_PREFIX} Failing paths: /files: expected array, got string; /summary: required. Structured output repair exhausted after 4 attempts.`;
-	const notJson =
-		"Invalid structured output: tool call arguments were not valid JSON. Parsing failed: an unexpected character was found. Structured output repair exhausted after 4 attempts.";
-
-	for (const message of [mismatch, notJson]) {
-		assert.equal(isStructuredOutputContractFailure(message), true, message);
-		assert.ok(formatStructuredOutputCorrectionPrompt(message, 1).includes(message));
-	}
 });

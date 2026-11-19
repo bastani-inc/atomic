@@ -20,15 +20,6 @@ import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
-import {
-	createStore,
-	deriveGraphTheme,
-	makeHandle,
-	makeTestTui,
-	StageChatView,
-	setupRun,
-	submitStageChatText,
-} from "./stage-chat-view-helpers.js";
 
 const flush = async () => {
 	for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -415,63 +406,6 @@ test("a click in a chat's open task transcript reaches the blocks of that transc
 		assert.ok(expanded(), screen().join("\n"));
 	} finally {
 		host.dispose();
-		await fixture.dispose();
-		setKeybindings(keys);
-	}
-});
-
-test("a click in a stage chat's open task transcript reaches the blocks of that transcript, and Ctrl+O resets them", async () => {
-	const keys = getKeybindings();
-	const keybindings = new KeybindingsManager();
-	setKeybindings(keybindings);
-	const fixture = taskFixture();
-	const source = ownerTaskViewSource(fixture.store);
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a");
-	const { handle } = makeHandle();
-	const view = new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "test-wf",
-		// A stage on a local worker lists the tasks of its session there.
-		handle: {
-			...handle,
-			placement: { kind: "local-worker", workId: "work", generation: 1 },
-			taskSource: () => source,
-		},
-		onDetach: () => {},
-		onClose: () => {},
-		piTui: makeTestTui(50),
-		piKeybindings: keybindings,
-	});
-	try {
-		await fixture.start("Child");
-		fixture.runners[0]!.context.bindTranscript(Object.assign(await childSession(), { subscribe: () => () => {} }));
-		submitStageChatText(view, "/tasks");
-		await flush();
-		view.handleInput("\r");
-		await flush();
-		view.handleInput("\r");
-		await flush();
-		const screen = () => view.render(100).map((line) => stripVTControlCharacters(line));
-		const expanded = () => screen().some((line) => line.trimEnd().endsWith("child line 1"));
-		const header = screen().findIndex((line) => line.includes("child-cmd"));
-		assert.notEqual(header, -1, screen().join("\n"));
-		assert.ok(!expanded(), screen().join("\n"));
-		assert.equal(
-			settled(view.handleMouse(click(screen()[header]!.indexOf("child-cmd"), header, 100, 50)))?.handled,
-			true,
-		);
-		assert.ok(expanded(), screen().join("\n"));
-
-		// Ctrl+O twice sets every block of the task's transcript again, the one the click expanded included.
-		view.handleInput("\x0f");
-		view.handleInput("\x0f");
-		assert.ok(!expanded(), screen().join("\n"));
-	} finally {
-		view.dispose();
 		await fixture.dispose();
 		setKeybindings(keys);
 	}

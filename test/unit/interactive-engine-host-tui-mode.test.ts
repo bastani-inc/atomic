@@ -10,7 +10,7 @@ import {
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { initTheme, refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import {
 	type InteractiveEngineMessage,
@@ -23,8 +23,6 @@ import {
 	type RemoteComponentRuntime,
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
-import { createStore } from "../../packages/workflows/src/shared/store.ts";
-import { buildGraphOverlayAdapter, type OverlayUISurface } from "../../packages/workflows/src/tui/overlay-adapter.ts";
 
 const WIDTH = 60;
 
@@ -144,42 +142,6 @@ test("the terminal advertises the stage palette supported by its display (#5596)
 		if (saved) Object.defineProperty(process.stdout, "getColorDepth", saved);
 		else Reflect.deleteProperty(process.stdout, "getColorDepth");
 		vi.unstubAllEnvs();
-	}
-});
-
-test("an isolated workflow stage pulses in the display terminal's palette, not the engine pipe's (#5596)", async () => {
-	initTheme("catppuccin-mocha", false);
-	refreshColorEnvironment({});
-	for (const [colorDepth, foreground] of [
-		[4, "\x1b[93m"],
-		[8, "\x1b[38;5;223m"],
-	] as const) {
-		const bridge = connectHostAndEngine({ fullscreen: true, colorDepth });
-		const store = createStore();
-		store.recordRunStart({
-			id: "live",
-			name: "review",
-			inputs: {},
-			status: "running",
-			startedAt: 0,
-			toolNodes: [],
-			stages: [{ id: "build", name: "Build", status: "running", parentIds: [], toolEvents: [] }],
-		});
-		const adapter = buildGraphOverlayAdapter(
-			{ ui: { custom: bridge.engineUi.custom as unknown as OverlayUISurface["custom"] } },
-			store,
-		);
-		try {
-			adapter.open("live");
-			await flush();
-			const proxy = bridge.proxies[0];
-			await bridge.paint(proxy);
-			const card = proxy!.render(WIDTH).find((line) => line.includes("Build") && line.includes("╭"));
-			assert.ok(card?.includes(`${foreground}╭`), `depth ${colorDepth}: ${JSON.stringify(card)}`);
-		} finally {
-			adapter.close();
-			bridge.dispose();
-		}
 	}
 });
 
