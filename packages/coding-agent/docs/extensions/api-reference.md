@@ -311,7 +311,7 @@ pi.on("session_start", (_event, ctx) => {
 
 ## ExtensionToolContext
 
-Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools` and `executeTool(name, args, options?)`. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
+Tool `execute` callbacks receive an `ExtensionToolContext`, which extends `ExtensionContext` with `tools`, `executeTool(name, args, options?)`, and `parentToolCallId` for nested invocations. Event and command contexts do not provide these tool-only methods. See [structured results and nested tools](/extensions/authoring#structured-results-and-nested-tools) for permissions, cancellation, result hooks, and exclusive-call requirements.
 
 ## ExtensionCommandContext
 
@@ -850,7 +850,7 @@ mode and would not execute if sent via `prompt`.
 
 ### pi.registerMessageRenderer(customType, renderer)
 
-Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` for it, as Ctrl+O does, when that changes what the renderer draws. See [Custom UI](/extensions/ui#custom-ui).
+Register a custom TUI renderer for messages with your `customType`. The renderer options contain `expanded` and the current numeric `outputPad`, so custom output can align with built-in messages. The same options are provided in normal and isolated-engine rendering. A click on the message in fullscreen mode toggles `expanded` when that changes what the renderer draws, unless its in-process component handles the click itself. See [Custom UI](/extensions/ui#custom-ui).
 
 ### pi.registerMarkdownTransformer(transformer)
 

@@ -47,6 +47,7 @@ export async function prepareRpcClientBootstrap(
 	const bootstrap = await writeInteractiveEngineBootstrapAsync({
 		hostPid: process.pid,
 		guardFile: guardianFile,
+		projectResourceWithdrawals: true,
 		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
 		...(trustDecisions ? { trustDecisions } : {}),
 	});
