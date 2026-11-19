@@ -20,6 +20,7 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 ```
 
 - **Each row shows** the status, the agent's name (a workflow's name for a run), what it works on, and how long it has run. Agents and workflow runs also show the tokens they have used. A workflow row shows stage progress; a waiting row shows its question instead.
+- The task title in the panel and in an attached chat header stops at a whole character. A shortened title ends in `…`.
 - **Status glyphs:**
   - `∀` running
   - `◆` needs input, with its question when it waits on one
