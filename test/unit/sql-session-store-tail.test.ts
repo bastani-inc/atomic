@@ -247,6 +247,74 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		}
 	});
 
+	it("yields between chunk pages and does not publish an index for an intervening replacement (#5590)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(5);
+		const old = entries[0]!;
+		assert.ok(old.type === "message" && old.message.role === "user");
+		old.message.content = "x".repeat(3 * 1024 * 1024);
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const get = db.get.bind(db);
+			let replacement: Promise<void> | undefined;
+			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const row = await get<T>(sql, ...args);
+				if (row?.data instanceof Uint8Array && !replacement)
+					replacement = new Promise((resolve) => setImmediate(resolve)).then(async () => {
+						await store.replace(header.id, header, [entry(1, { id: "replacement" })], {
+							expectSeq: entries.length,
+						});
+					});
+				return row;
+			};
+			try {
+				assert.equal((await store.readResume(header.id)).lastEntryId, "replacement");
+			} finally {
+				await replacement;
+				await store.close();
+			}
+		});
+	});
+
+	it("reopens an interrupted old-index rebuild at its last completed page (#5590)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(520);
+		const interrupted = entries[512]!;
+		assert.ok(interrupted.type === "message" && interrupted.message.role === "user");
+		interrupted.message.content = "x".repeat(3 * 1024 * 1024);
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const get = db.get.bind(db);
+			let chunks = 0;
+			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const row = await get<T>(sql, ...args);
+				if (row?.data instanceof Uint8Array && ++chunks === 2) throw new Error("interrupted chunk read");
+				return row;
+			};
+			await assert.rejects(() => store.readResume(header.id), /interrupted chunk read/);
+			assert.equal(await hasResumeIndex(db), false);
+			await store.close();
+		});
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const all = db.all.bind(db);
+			let reread = false;
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				reread ||= rows.some((row) => row.entry_id === "e1");
+				return rows;
+			};
+			assert.equal((await store.readResume(header.id)).lastSeq, entries.length);
+			assert.equal(reread, false, "already folded the first page before interruption");
+			assert.equal(await hasResumeIndex(db), true);
+			await store.close();
+		});
+	});
+
 	it("rebuilds the index after an earlier build appends without it (#5249)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(40);
