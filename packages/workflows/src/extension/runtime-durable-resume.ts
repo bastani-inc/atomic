@@ -29,6 +29,7 @@ import type { StageControlRegistry } from "../runs/foreground/stage-control-regi
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { WorkflowBudget } from "../shared/budget.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
@@ -114,6 +115,7 @@ export interface DurableResumeRuntimeDeps {
 	readonly registry: WorkflowRegistry;
 	readonly store: Store;
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly stageUiBroker?: StageUiBroker;
 	readonly toolControlRegistry?: ToolControlRegistry;
 	readonly adapters?: StageAdapters;
 	readonly runtimeCwd: string;
@@ -387,6 +389,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						durableBackend: backend,
 						store: deps.store,
 						stageControlRegistry: deps.stageControlRegistry,
+						stageUiBroker: deps.stageUiBroker,
 						adapters: deps.adapters,
 						sessionStore: deps.adapters?.sessionStore,
 						cwd: handle?.workflowCwd ?? handle?.invocationCwd ?? deps.runtimeCwd,

@@ -493,6 +493,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			registry,
 			store: activeStore,
 			stageControlRegistry,
+			stageUiBroker,
 			toolControlRegistry,
 			adapters,
 			runtimeCwd,

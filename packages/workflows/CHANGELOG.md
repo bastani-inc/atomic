@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Restoring a blocked workflow keeps it blocked in the agent panel without briefly showing it as running. A new block gets its own notice even if it happens in the same millisecond as the previous block ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
 - On Windows, a Git command or worktree setup hook that a workflow stops for its timeout or output size has its process tree terminated once. Atomic no longer terminates it again when the command's exit arrives, or when its timeout comes after an output overflow ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 - Resuming a failed workflow releases the stage session it replaces. Open chat panes follow the resumed stage in the same conversation. If a chat turn is still running on that stage, wait for it to finish or press Esc in its chat, then resume again ([#5559](https://github.com/bastani-inc/atomic/issues/5559)).
+- After resuming a workflow with a different stage registry, clearing the old registry no longer removes the resumed stage’s question or redirects its chat to an earlier attempt. Inspecting the completed run also keeps questions in its open stage chat answerable ([#5577](https://github.com/bastani-inc/atomic/issues/5577)).
 
 ## [0.9.89] - 2026-11-18
 

@@ -1411,6 +1411,8 @@ async function executeRun(
 		runId,
 		{
 			registry: stageRegistry,
+			store: activeStore,
+			stageUiBroker,
 			adapters: opts.adapters,
 			cwd: workflowInvocationCwd,
 			defaultSessionDir: opts.defaultSessionDir,
