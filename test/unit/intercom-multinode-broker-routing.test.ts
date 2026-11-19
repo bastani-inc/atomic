@@ -59,6 +59,7 @@ import {
 	SEND_RESPONSE_TIMEOUT_MS,
 } from "../../packages/intercom/retry-policy.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { databaseAnswer, STALL_PAST_BOUND_MS, stallEventLoop } from "../helpers/event-loop-stall.js";
 import {
 	type OpenSharedStoreFixture,
 	registerKnownSessionStoreConformance,
@@ -973,6 +974,82 @@ test("a same-id retry of a message delivered across nodes is not delivered again
 	});
 	assert.equal(outcomes[1]?.type, "delivered");
 	assert.deepEqual(messageFrames(back, sent.id), []);
+});
+
+test("a same-id retry of a message delivered across nodes is not delivered again when its broker stalls while it looks the retry up (#5607)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const sent = message();
+	a!.send(sender, "recipient", sent);
+	await waitFor(() => messageFrames(recipient, sent.id)[0]);
+	b!.router.received(recipient, sent.id);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+	b!.leave(recipient);
+	const back = await a!.connect("recipient", {
+		returnAddress: recipient.registrationReturnAddress!,
+		id: recipient.info.id,
+	});
+	// The outbox answers the retry's lookup at once, but broker a does not run for longer than the lookup may wait.
+	const outbox = a!.opened.state.outbox;
+	const read = outbox.read.bind(outbox);
+	let stalled = false;
+	Object.assign(outbox, {
+		read: async (id: string) => {
+			if (id === sent.id && !stalled) {
+				stalled = true;
+				setTimeout(() => stallEventLoop(LOCAL_RETRY_LOOKUP_BOUND_MS + STALL_PAST_BOUND_MS), 0);
+				await databaseAnswer();
+			}
+			return read(id);
+		},
+	});
+
+	a!.send(sender, "recipient", sent);
+
+	const outcomes = await waitFor(() => {
+		const all = framesOf(sender).filter(
+			(frame) => (frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === sent.id,
+		);
+		return all.length >= 2 ? all : undefined;
+	});
+	assert.equal(stalled, true);
+	assert.equal(outcomes[1]?.type, "delivered");
+	assert.deepEqual(messageFrames(back, sent.id), [], "the broker's own stall is not the database's time");
+});
+
+test("a reply whose ask's route only the shared state has is delivered when its broker stalls while it looks the route up (#5607)", async () => {
+	const [a] = await cluster(1);
+	const asker = await a!.connect("asker");
+	const replier = await a!.connect("replier");
+	// The ask moved to the shared state while its peers were away; both are back on this broker.
+	const ask = { senderSessionId: asker.info.id, targetSessionId: replier.info.id, messageId: randomUUID() };
+	const pendingAsks = a!.opened.state.pendingAsks;
+	assert.equal((await pendingAsks.record(ask)).status, "recorded");
+	// The shared state answers the route's lookup at once, but broker a does not run for longer than the lookup may wait.
+	const matchesReply = pendingAsks.matchesReply.bind(pendingAsks);
+	let stalled = false;
+	Object.assign(pendingAsks, {
+		matchesReply: async (route: Parameters<typeof matchesReply>[0]) => {
+			if (route.replyTo === ask.messageId && !stalled) {
+				stalled = true;
+				setTimeout(() => stallEventLoop(PRESENCE_REGISTRATION_BOUND_MS + STALL_PAST_BOUND_MS), 0);
+				await databaseAnswer();
+			}
+			return matchesReply(route);
+		},
+	});
+
+	const reply = message({ replyTo: ask.messageId, content: { text: "answer" } });
+	a!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+
+	const frame = await waitFor(() => messageFrames(asker, reply.id)[0] ?? reasonOf(outcomeOf(replier, reply.id)));
+	assert.equal(stalled, true);
+	assert.deepEqual(
+		frame,
+		{ type: "message", from: replier.info, message: reply },
+		"the broker's own stall is not the database's time",
+	);
 });
 
 test("a local send is delivered at once when the shared database stops answering its retry lookup, and only once", async () => {

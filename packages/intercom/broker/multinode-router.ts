@@ -144,12 +144,45 @@ export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
 /**
  * The longest a registration that asks for its id back waits for the shared database to bind it, before the presence
  * wait: both together stay within the client's 10 s. Past it the session gets a fresh id, never an unchecked one.
+ * #5607: counted in this broker's running time (`runningTimeBound`), so a stall of its own is not taken for the
+ * database not answering.
  */
 export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
+/** #5607: how often a `runningTimeBound` counts this broker's running time. */
+const RUNNING_TIME_TICK_MS = 100;
+/** #5607: a tick that comes this much later than the one before ran after a delay of this broker's event loop. */
+const RUNNING_TIME_LATE_MS = 2 * RUNNING_TIME_TICK_MS;
+
+/**
+ * #5607: calls `expire` once this broker has run for `ms`, unless the returned cancel runs first. A bound on the shared
+ * database's answer must not count the time this broker itself did not run (a starved host, a suspended process): an
+ * answer that arrived meanwhile is read only after the timers that came due, so a wall-clock bound would expire on it
+ * first. Here a delay counts as one tick, and the first tick after a delay never ends the bound: the answers that
+ * arrived meanwhile are read before the next tick. A database that does not answer still ends the bound after `ms` of
+ * the broker running, and a broker that keeps running late ends it on its second late tick in a row.
+ */
+function runningTimeBound(ms: number, expire: () => void): () => void {
+	let remaining = Math.ceil(ms / RUNNING_TIME_TICK_MS);
+	let previous = performance.now();
+	let previousLate = false;
+	const ticks = setInterval(() => {
+		const now = performance.now();
+		const late = now - previous > RUNNING_TIME_LATE_MS;
+		const afterDelay = late && !previousLate;
+		previous = now;
+		previousLate = late;
+		remaining--;
+		if (remaining > 0 || afterDelay) return;
+		clearInterval(ticks);
+		expire();
+	}, RUNNING_TIME_TICK_MS);
+	ticks.unref?.();
+	return () => clearInterval(ticks);
+}
 /**
  * The longest a send to a local recipient waits for the shared outbox to say whether it is a retry of a cross-node
  * send. Local delivery does not depend on the shared database (spec §8): past this bound the send is delivered
- * locally, with the local accepted-delivery cache as its duplicate protection.
+ * locally, with the local accepted-delivery cache as its duplicate protection. #5607: in this broker's running time.
  */
 export const LOCAL_RETRY_LOOKUP_BOUND_MS = 300;
 /**
@@ -603,22 +636,21 @@ export class MultiNodeRouter {
 	 */
 	async claimSessionId(sessionId: string, returnAddress: string): Promise<boolean> {
 		if (this.closed) return false;
-		let bound: ReturnType<typeof setTimeout> | undefined;
+		let cancelBound: (() => void) | undefined;
 		try {
 			return await Promise.race([
 				this.state.knownSessions
 					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
 					.then((result) => result.status === "bound"),
 				new Promise<boolean>((resolve) => {
-					bound = setTimeout(() => resolve(false), SESSION_ID_CLAIM_BOUND_MS);
-					bound.unref?.();
+					cancelBound = runningTimeBound(SESSION_ID_CLAIM_BOUND_MS, () => resolve(false));
 				}),
 			]);
 		} catch (error) {
 			this.report(error);
 			return false;
 		} finally {
-			clearTimeout(bound);
+			cancelBound?.();
 		}
 	}
 
@@ -1782,11 +1814,11 @@ export class MultiNodeRouter {
 		const adopted = this.adoptSharedRoute(request, target, late);
 		// A reply that must answer an open ask can only be authorized by the shared state when this broker's routes do not
 		// authorize it, so it waits for that state longer than a send the local path delivers anyway.
+		// #5607: in this broker's running time, so a stall of its own does not send the reply down the local path's refusal.
 		const boundMs = request.requirePendingReply ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
-		let bound: ReturnType<typeof setTimeout> | undefined;
+		let cancelBound: (() => void) | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), boundMs);
-			bound.unref?.();
+			cancelBound = runningTimeBound(boundMs, () => resolve("expired"));
 		});
 		try {
 			if ((await Promise.race([adopted, expired])) === "expired") {
@@ -1797,7 +1829,7 @@ export class MultiNodeRouter {
 		} catch (error) {
 			this.report(error);
 		} finally {
-			clearTimeout(bound);
+			cancelBound?.();
 		}
 	}
 
@@ -2044,10 +2076,9 @@ export class MultiNodeRouter {
 			this.report(error);
 			return undefined;
 		});
-		let bound: ReturnType<typeof setTimeout> | undefined;
+		let cancelBound: (() => void) | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			bound = setTimeout(() => resolve("expired"), LOCAL_RETRY_LOOKUP_BOUND_MS);
-			bound.unref?.();
+			cancelBound = runningTimeBound(LOCAL_RETRY_LOOKUP_BOUND_MS, () => resolve("expired"));
 		});
 		try {
 			const existing = await Promise.race([lookup, expired]);
@@ -2072,7 +2103,7 @@ export class MultiNodeRouter {
 			if (await this.routeUnreachable(request, target)) return;
 			request.notFound();
 		} finally {
-			clearTimeout(bound);
+			cancelBound?.();
 		}
 	}
 

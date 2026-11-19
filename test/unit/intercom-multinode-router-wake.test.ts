@@ -45,6 +45,7 @@ import {
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import { databaseAnswer, STALL_PAST_BOUND_MS, stallEventLoop } from "../helpers/event-loop-stall.js";
 import {
 	openMemoryHeldSendFixture,
 	openMemoryKnownSessionFixture,
@@ -2006,6 +2007,79 @@ describe("an Intercom id bound to the return address that registered it", () => 
 
 		await node.router.close();
 		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a closed router grants nothing");
+	});
+
+	test("a broker that stalls while the database confirms a returning session's id still grants it the id (#5607)", async () => {
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			await databaseAnswer();
+			return bind(...args);
+		});
+
+		const claim = node.router.claimSessionId(id, "return-1");
+		// The database answers at once, but this broker does not run for longer than the claim may wait.
+		stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS);
+
+		assert.equal(await claim, true, "the broker's own stall is not the database's time");
+	});
+
+	test("a broker that stalls just before the claim's bound passes still reads the database's confirmation (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		const knownSessions = node.state.knownSessions;
+		const bind = knownSessions.bind.bind(knownSessions);
+		let answer!: () => void;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			await answered;
+			return bind(...args);
+		});
+
+		const claim = node.router.claimSessionId(id, "return-1");
+		let granted: boolean | undefined;
+		void claim.then((result) => {
+			granted = result;
+		});
+		// The database is slow for all but the last moment of the bound, while this broker runs.
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 100);
+		assert.equal(granted, undefined);
+		// Then this broker stalls, and the database answers meanwhile. Once the broker runs again, the timers that came due
+		// run first, and only then is the answer read.
+		stallEventLoop(STALL_PAST_BOUND_MS);
+		await vi.advanceTimersByTimeAsync(100);
+		answer();
+
+		assert.equal(await claim, true, "what the database answered during the stall is read before the bound passes");
+	});
+
+	test("a database that does not answer still ends the claim of a broker that keeps running late, with a fresh id (#5607)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		vi.spyOn(node.state.knownSessions, "bind").mockReturnValueOnce(new Promise(() => {}));
+
+		const claim = node.router.claimSessionId(id, "return-1");
+		let granted: boolean | undefined;
+		void claim.then((result) => {
+			granted = result;
+		});
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS - 100);
+		// From here every tick of the broker comes late: it is slow, not stalled once, and the claim must not wait for good.
+		for (let tick = 0; tick < 2 && granted === undefined; tick++) {
+			stallEventLoop(STALL_PAST_BOUND_MS / 5);
+			await vi.advanceTimersByTimeAsync(100);
+		}
+
+		assert.equal(granted, false, "the claim ends on the second late tick in a row");
 	});
 
 	test("a presence taken under an id bound to another return address is not routed to by that id", async () => {
