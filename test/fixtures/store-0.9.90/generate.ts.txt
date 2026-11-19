@@ -163,6 +163,9 @@ async function populate(database: SqliteDatabase, connect: () => Promise<SqliteD
 		await journal.close();
 		await sessions.close();
 	}
+	// The next open of the journal, as any later session or run makes: the snapshot index then also covers the pool's
+	// tables, which did not exist when the first one installed it.
+	await (await SqlRunJournal.open(database, {})).close();
 }
 
 const literal = (value: unknown): string => {

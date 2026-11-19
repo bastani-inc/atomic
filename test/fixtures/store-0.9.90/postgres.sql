@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict zOUXBgiT81uKMPCjcuczfgcIp56tQlU4AXMiBlFSgmxdzhwWzbBA5G83fEtw69l
+\restrict HaFy1p85ohT4yvk3y9eVM95tldMvHtrkbIVIcfgmsCcThEqpiq5l7atPbDo6gZ1
 
 -- Dumped from database version 16.16 (Debian 16.16-1.pgdg13+1)
 -- Dumped by pg_dump version 16.16 (Debian 16.16-1.pgdg13+1)
@@ -165,6 +165,33 @@ CREATE FUNCTION atomic.wf_runs_pool_fence_abort_fn() RETURNS trigger
 
 
 --
+-- Name: wf_runs_pool_root_snapshot_snapshot_carried_delete_fn(); Type: FUNCTION; Schema: atomic; Owner: -
+--
+
+CREATE FUNCTION atomic.wf_runs_pool_root_snapshot_snapshot_carried_delete_fn() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'root:' || OLD.root; RETURN NULL; END $$;
+
+
+--
+-- Name: wf_runs_pool_root_snapshot_snapshot_carried_insert_fn(); Type: FUNCTION; Schema: atomic; Owner: -
+--
+
+CREATE FUNCTION atomic.wf_runs_pool_root_snapshot_snapshot_carried_insert_fn() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$ BEGIN INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, (link.value ->> 'patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN ((NEW.snapshot) IS JSON) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, jsonb_path_query((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb, '$."chain"[*]') AS link(value) WHERE jsonb_typeof(link.value -> 'patch') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = (link.value ->> 'patch')) ON CONFLICT DO NOTHING; INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{bundle,blob}') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN ((NEW.snapshot) IS JSON) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE jsonb_typeof((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #> '{bundle,blob}') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{bundle,blob}')) ON CONFLICT DO NOTHING; RETURN NULL; END $_$;
+
+
+--
+-- Name: wf_runs_pool_root_snapshot_snapshot_carried_update_fn(); Type: FUNCTION; Schema: atomic; Owner: -
+--
+
+CREATE FUNCTION atomic.wf_runs_pool_root_snapshot_snapshot_carried_update_fn() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$ BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'root:' || OLD.root; INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, (link.value ->> 'patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN ((NEW.snapshot) IS JSON) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, jsonb_path_query((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb, '$."chain"[*]') AS link(value) WHERE jsonb_typeof(link.value -> 'patch') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = (link.value ->> 'patch')) ON CONFLICT DO NOTHING; INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{bundle,blob}') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN ((NEW.snapshot) IS JSON) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE jsonb_typeof((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #> '{bundle,blob}') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{bundle,blob}')) ON CONFLICT DO NOTHING; RETURN NULL; END $_$;
+
+
+--
 -- Name: wf_runs_pool_usage_totals_delete_fn(); Type: FUNCTION; Schema: atomic; Owner: -
 --
 
@@ -225,6 +252,33 @@ CREATE FUNCTION atomic.wf_runs_snapshot_state_insert_fn() RETURNS trigger
 CREATE FUNCTION atomic.wf_runs_snapshot_state_status_fn() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ BEGIN UPDATE snapshot_run_state SET retained = (NEW.status NOT IN ('completed', 'cancelled'))::int WHERE run_id = NEW.run_id AND seq = -1; RETURN NULL; END $$;
+
+
+--
+-- Name: wf_runs_work_snapshot_carried_delete_fn(); Type: FUNCTION; Schema: atomic; Owner: -
+--
+
+CREATE FUNCTION atomic.wf_runs_work_snapshot_carried_delete_fn() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$ BEGIN IF (strpos(OLD.descriptor, '"workspaceSnapshot"') > 0) THEN DELETE FROM snapshot_carried_refs WHERE owner = 'work:' || OLD.id; END IF; RETURN NULL; END $$;
+
+
+--
+-- Name: wf_runs_work_snapshot_carried_insert_fn(); Type: FUNCTION; Schema: atomic; Owner: -
+--
+
+CREATE FUNCTION atomic.wf_runs_work_snapshot_carried_insert_fn() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$ BEGIN IF (strpos(NEW.descriptor, '"workspaceSnapshot"') > 0) THEN INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, (link.value ->> 'patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN ((NEW.descriptor) IS JSON) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, jsonb_path_query((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb, '$."execution"."workspaceSnapshot"."chain"[*]') AS link(value) WHERE jsonb_typeof(link.value -> 'patch') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = (link.value ->> 'patch')) ON CONFLICT DO NOTHING; INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{execution,workspaceSnapshot,bundle,blob}') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN ((NEW.descriptor) IS JSON) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE jsonb_typeof((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #> '{execution,workspaceSnapshot,bundle,blob}') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{execution,workspaceSnapshot,bundle,blob}')) ON CONFLICT DO NOTHING; END IF; RETURN NULL; END $_$;
+
+
+--
+-- Name: wf_runs_work_snapshot_carried_update_fn(); Type: FUNCTION; Schema: atomic; Owner: -
+--
+
+CREATE FUNCTION atomic.wf_runs_work_snapshot_carried_update_fn() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$ BEGIN IF (strpos(OLD.descriptor, '"workspaceSnapshot"') > 0 OR strpos(NEW.descriptor, '"workspaceSnapshot"') > 0) THEN DELETE FROM snapshot_carried_refs WHERE owner = 'work:' || OLD.id; INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, (link.value ->> 'patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN ((NEW.descriptor) IS JSON) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, jsonb_path_query((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb, '$."execution"."workspaceSnapshot"."chain"[*]') AS link(value) WHERE jsonb_typeof(link.value -> 'patch') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = (link.value ->> 'patch')) ON CONFLICT DO NOTHING; INSERT INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{execution,workspaceSnapshot,bundle,blob}') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN ((NEW.descriptor) IS JSON) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE jsonb_typeof((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #> '{execution,workspaceSnapshot,bundle,blob}') = 'string' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = ((CASE WHEN strpos(r.snapshot, '\u') = 0 OR pg_input_is_valid(r.snapshot, 'jsonb') THEN r.snapshot ELSE regexp_replace(r.snapshot, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb #>> '{execution,workspaceSnapshot,bundle,blob}')) ON CONFLICT DO NOTHING; END IF; RETURN NULL; END $_$;
 
 
 SET default_tablespace = '';
@@ -1815,35 +1869,35 @@ ALTER TABLE atomic.wf_runs_work ALTER COLUMN row_order ADD GENERATED ALWAYS AS I
 -- Data for Name: atomic_migrations; Type: TABLE DATA; Schema: atomic; Owner: -
 --
 
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('sessions', 1, 1795109038815);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('sessions', 2, 1795109038819);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 1, 1795109038824);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 2, 1795109038826);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 1, 1795109038864);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 2, 1795109038869);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 3, 1795109038875);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 4, 1795109038876);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 5, 1795109038879);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('session-search', 1, 1795109038889);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-leases', 1, 1795109038895);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-outbox', 1, 1795109038899);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-outbox-indexes', 1, 1795109038908);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-held-sends', 1, 1795109038912);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-restoring-reservations', 1, 1795109038918);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-restoring-reservation-indexes', 1, 1795109038930);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-pending-asks', 1, 1795109038936);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-settled-asks', 1, 1795109038948);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-released-asks', 1, 1795109038954);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-sent-messages', 1, 1795109038957);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-known-sessions', 1, 1795109038964);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-wakeups', 1, 1795109038978);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:pool-queue', 1, 1795109039051);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:pool-ship', 1, 1795109039057);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:pool-usage', 1, 1795109039062);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:shared-pool', 2, 1795109039083);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:fleet', 1, 1795109039092);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:rate-buckets', 4, 1795109039107);
-INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:resource-admission', 1, 1795109039122);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('sessions', 1, 1795109735530);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('sessions', 2, 1795109735535);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 1, 1795109735539);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 2, 1795109735541);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 1, 1795109735584);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 2, 1795109735590);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 3, 1795109735598);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 4, 1795109735600);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 5, 1795109735603);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('session-search', 1, 1795109735617);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-leases', 1, 1795109735623);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-outbox', 1, 1795109735631);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-outbox-indexes', 1, 1795109735641);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-held-sends', 1, 1795109735648);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-restoring-reservations', 1, 1795109735655);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-restoring-reservation-indexes', 1, 1795109735667);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-pending-asks', 1, 1795109735672);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-settled-asks', 1, 1795109735690);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-released-asks', 1, 1795109735694);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-sent-messages', 1, 1795109735702);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-known-sessions', 1, 1795109735710);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:intercom-wakeups', 1, 1795109735727);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:pool-queue', 1, 1795109735808);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:pool-ship', 1, 1795109735816);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:pool-usage', 1, 1795109735822);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:shared-pool', 2, 1795109735852);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:fleet', 1, 1795109735858);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:rate-buckets', 4, 1795109735873);
+INSERT INTO atomic.atomic_migrations (domain, version, applied_at) VALUES ('schema:resource-admission', 1, 1795109735889);
 
 
 --
@@ -1990,8 +2044,8 @@ INSERT INTO atomic.session_search_texts (session_id, seq, text_json) VALUES ('le
 -- Data for Name: session_sessions; Type: TABLE DATA; Schema: atomic; Owner: -
 --
 
-INSERT INTO atomic.session_sessions (id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision, row_order) OVERRIDING SYSTEM VALUE VALUES ('legacy-session-1', '/repo', '2026-11-01T09:30:00.000Z', '{"type":"session","version":4,"id":"legacy-session-1","createdAt":"2026-11-01T09:30:00.000Z","cwd":"/repo"}', 0, 2, '2026-09-21T14:13:20.000Z', 1, '"hello from 0.9.90"', NULL, 0, NULL, NULL, '{"messageCount":1,"firstMessage":"hello from 0.9.90","hasName":false,"latestMessageTime":1790000000000,"resume":{"version":5,"epoch":"e2be363a-a544-4c08-b7d2-54fc7a70375e","latest":{},"fields":{},"firstChildren":{},"admissions":[],"delivered":[],"deliveryOps":[],"settled":[],"pending":{},"parks":{},"intents":[],"acks":[],"models":[],"assistants":[],"seq":2,"lastId":"w1","leafSeq":2,"jumps":[],"compactions":[],"state":"2","universal":[2],"lastStateSeq":2,"totals":{"assistant":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"toolResult":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"summaries":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"userMessages":1,"assistantMessages":0,"toolResults":0,"totalMessages":1,"toolCalls":0}},"epoch":"e2be363a-a544-4c08-b7d2-54fc7a70375e"}', '8fd6cf5cbaec08be727aba1a6b232822', 1);
-INSERT INTO atomic.session_sessions (id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision, row_order) OVERRIDING SYSTEM VALUE VALUES ('legacy-stage-session', '/repo', '2026-11-01T09:31:00.000Z', '{"type":"session","version":4,"id":"legacy-stage-session","createdAt":"2026-11-01T09:31:00.000Z","cwd":"/repo","internal":true,"workflow":{"runId":"legacy-run-1","stageId":"stage-build","stageName":"build"}}', 1, 1, '2026-09-21T14:14:20.000Z', 1, '"stage prompt"', NULL, 0, NULL, NULL, '{"messageCount":1,"firstMessage":"stage prompt","hasName":false,"latestMessageTime":1790000060000,"resume":{"version":5,"epoch":"53bc9ca9-9368-42dc-9b7d-62b4cf8c9357","latest":{},"fields":{},"firstChildren":{},"admissions":[],"delivered":[],"deliveryOps":[],"settled":[],"pending":{},"parks":{},"intents":[],"acks":[],"models":[],"assistants":[],"seq":1,"lastId":"s1","leafSeq":1,"jumps":[],"compactions":[],"state":"","universal":[],"lastStateSeq":0,"totals":{"assistant":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"toolResult":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"summaries":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"userMessages":1,"assistantMessages":0,"toolResults":0,"totalMessages":1,"toolCalls":0}},"epoch":"53bc9ca9-9368-42dc-9b7d-62b4cf8c9357"}', 'ef47f71c60c9cb5a7b30e22bb638a1c1', 2);
+INSERT INTO atomic.session_sessions (id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision, row_order) OVERRIDING SYSTEM VALUE VALUES ('legacy-session-1', '/repo', '2026-11-01T09:30:00.000Z', '{"type":"session","version":4,"id":"legacy-session-1","createdAt":"2026-11-01T09:30:00.000Z","cwd":"/repo"}', 0, 2, '2026-09-21T14:13:20.000Z', 1, '"hello from 0.9.90"', NULL, 0, NULL, NULL, '{"messageCount":1,"firstMessage":"hello from 0.9.90","hasName":false,"latestMessageTime":1790000000000,"resume":{"version":5,"epoch":"879ae66d-d8c0-41fb-bf22-9f6b80a008d3","latest":{},"fields":{},"firstChildren":{},"admissions":[],"delivered":[],"deliveryOps":[],"settled":[],"pending":{},"parks":{},"intents":[],"acks":[],"models":[],"assistants":[],"seq":2,"lastId":"w1","leafSeq":2,"jumps":[],"compactions":[],"state":"2","universal":[2],"lastStateSeq":2,"totals":{"assistant":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"toolResult":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"summaries":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"userMessages":1,"assistantMessages":0,"toolResults":0,"totalMessages":1,"toolCalls":0}},"epoch":"879ae66d-d8c0-41fb-bf22-9f6b80a008d3"}', 'c7cb28b5132e74d5958f0b8327aa27fd', 1);
+INSERT INTO atomic.session_sessions (id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision, row_order) OVERRIDING SYSTEM VALUE VALUES ('legacy-stage-session', '/repo', '2026-11-01T09:31:00.000Z', '{"type":"session","version":4,"id":"legacy-stage-session","createdAt":"2026-11-01T09:31:00.000Z","cwd":"/repo","internal":true,"workflow":{"runId":"legacy-run-1","stageId":"stage-build","stageName":"build"}}', 1, 1, '2026-09-21T14:14:20.000Z', 1, '"stage prompt"', NULL, 0, NULL, NULL, '{"messageCount":1,"firstMessage":"stage prompt","hasName":false,"latestMessageTime":1790000060000,"resume":{"version":5,"epoch":"41da01ff-30fe-4125-914d-82ba26d35bb6","latest":{},"fields":{},"firstChildren":{},"admissions":[],"delivered":[],"deliveryOps":[],"settled":[],"pending":{},"parks":{},"intents":[],"acks":[],"models":[],"assistants":[],"seq":1,"lastId":"s1","leafSeq":1,"jumps":[],"compactions":[],"state":"","universal":[],"lastStateSeq":0,"totals":{"assistant":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"toolResult":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"summaries":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0},"userMessages":1,"assistantMessages":0,"toolResults":0,"totalMessages":1,"toolCalls":0}},"epoch":"41da01ff-30fe-4125-914d-82ba26d35bb6"}', '97de0ecfb80c3bc4170b28e72c78e229', 2);
 
 
 --
@@ -2004,9 +2058,9 @@ INSERT INTO atomic.session_sessions (id, cwd, created_at, header_json, internal,
 -- Data for Name: snapshot_blobs; Type: TABLE DATA; Schema: atomic; Owner: -
 --
 
-INSERT INTO atomic.snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES ('3254f7ba750c24f9188363dcf05df7f3067d74f8a0b82f26a3b34669fcfc032b', 17, '\x6c65676163792072756e2070617463680a', 1795109039, 0);
-INSERT INTO atomic.snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES ('bd4bdfed482f4b0642c2529f61e4703fec533c93d3d9826a3b9f99540aed0856', 18, '\x6c65676163792072756e2062756e646c650a', 1795109039, 0);
-INSERT INTO atomic.snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES ('cc4bc80df52ef1f22d5a81e65554a62484abf6e1bc51bf16e60121b660c3222d', 21, '\x6c65676163792073657373696f6e2070617463680a', 1795109039, 0);
+INSERT INTO atomic.snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES ('3254f7ba750c24f9188363dcf05df7f3067d74f8a0b82f26a3b34669fcfc032b', 17, '\x6c65676163792072756e2070617463680a', 1795109735, 0);
+INSERT INTO atomic.snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES ('bd4bdfed482f4b0642c2529f61e4703fec533c93d3d9826a3b9f99540aed0856', 18, '\x6c65676163792072756e2062756e646c650a', 1795109735, 0);
+INSERT INTO atomic.snapshot_blobs (hash, bytes, data, created_at, chunks) VALUES ('cc4bc80df52ef1f22d5a81e65554a62484abf6e1bc51bf16e60121b660c3222d', 21, '\x6c65676163792073657373696f6e2070617463680a', 1795109735, 0);
 
 
 --
@@ -2031,6 +2085,8 @@ INSERT INTO atomic.snapshot_index_sources (source, watermark, backfilled_through
 INSERT INTO atomic.snapshot_index_sources (source, watermark, backfilled_through) VALUES ('session-entries@degraded-pins', 1, 1);
 INSERT INTO atomic.snapshot_index_sources (source, watermark, backfilled_through) VALUES ('journal-events', 0, 0);
 INSERT INTO atomic.snapshot_index_sources (source, watermark, backfilled_through) VALUES ('journal-runs', 0, 0);
+INSERT INTO atomic.snapshot_index_sources (source, watermark, backfilled_through) VALUES ('journal-pool-work', 0, 0);
+INSERT INTO atomic.snapshot_index_sources (source, watermark, backfilled_through) VALUES ('journal-pool-root-snapshot', 0, 0);
 
 
 --
@@ -2081,9 +2137,9 @@ INSERT INTO atomic.snapshot_session_refs (session_id, seq, root, snapshot_id, pr
 -- Data for Name: wf_events; Type: TABLE DATA; Schema: atomic; Owner: -
 --
 
-INSERT INTO atomic.wf_events (run_id, seq, epoch, key, type, payload, at, row_order, chunks) OVERRIDING SYSTEM VALUE VALUES ('legacy-run-1', 1, 1, NULL, 'RunStarted', '{"workflowId":"legacy-run-1"}', 1795109039212, 1, 0);
-INSERT INTO atomic.wf_events (run_id, seq, epoch, key, type, payload, at, row_order, chunks) OVERRIDING SYSTEM VALUE VALUES ('legacy-run-1', 2, 1, '["CheckpointRecorded","tool","build"]', 'CheckpointRecorded', '{"kind":"tool","name":"build","output":"ok","completedAt":1790000000500,"worktreeSnapshots":[{"version":1,"id":"snap-run","root":"/repo","remotes":["https://example.com/acme/app.git"],"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tree":"cccccccccccccccccccccccccccccccccccccccc","chain":[{"snapshot":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parent":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","patch":"3254f7ba750c24f9188363dcf05df7f3067d74f8a0b82f26a3b34669fcfc032b"}],"bundle":{"blob":"bd4bdfed482f4b0642c2529f61e4703fec533c93d3d9826a3b9f99540aed0856","commits":["dddddddddddddddddddddddddddddddddddddddd"]},"omitted":[],"createdAt":1790000000000}]}', 1795109039214, 2, 0);
-INSERT INTO atomic.wf_events (run_id, seq, epoch, key, type, payload, at, row_order, chunks) OVERRIDING SYSTEM VALUE VALUES ('legacy-run-1', 3, 1, NULL, 'StatusChanged', '{"workflowId":"legacy-run-1","status":"paused","completedCheckpoints":1,"pendingPrompts":0}', 1795109039216, 3, 0);
+INSERT INTO atomic.wf_events (run_id, seq, epoch, key, type, payload, at, row_order, chunks) OVERRIDING SYSTEM VALUE VALUES ('legacy-run-1', 1, 1, NULL, 'RunStarted', '{"workflowId":"legacy-run-1"}', 1795109735994, 1, 0);
+INSERT INTO atomic.wf_events (run_id, seq, epoch, key, type, payload, at, row_order, chunks) OVERRIDING SYSTEM VALUE VALUES ('legacy-run-1', 2, 1, '["CheckpointRecorded","tool","build"]', 'CheckpointRecorded', '{"kind":"tool","name":"build","output":"ok","completedAt":1790000000500,"worktreeSnapshots":[{"version":1,"id":"snap-run","root":"/repo","remotes":["https://example.com/acme/app.git"],"branch":"main","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tree":"cccccccccccccccccccccccccccccccccccccccc","chain":[{"snapshot":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parent":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","patch":"3254f7ba750c24f9188363dcf05df7f3067d74f8a0b82f26a3b34669fcfc032b"}],"bundle":{"blob":"bd4bdfed482f4b0642c2529f61e4703fec533c93d3d9826a3b9f99540aed0856","commits":["dddddddddddddddddddddddddddddddddddddddd"]},"omitted":[],"createdAt":1790000000000}]}', 1795109735997, 2, 0);
+INSERT INTO atomic.wf_events (run_id, seq, epoch, key, type, payload, at, row_order, chunks) OVERRIDING SYSTEM VALUE VALUES ('legacy-run-1', 3, 1, NULL, 'StatusChanged', '{"workflowId":"legacy-run-1","status":"paused","completedCheckpoints":1,"pendingPrompts":0}', 1795109735999, 3, 0);
 
 
 --
@@ -2097,7 +2153,7 @@ INSERT INTO atomic.wf_lease_builds (run_id, holder_id, epoch, schema_version) VA
 -- Data for Name: wf_leases; Type: TABLE DATA; Schema: atomic; Owner: -
 --
 
-INSERT INTO atomic.wf_leases (run_id, holder_id, epoch, renewed_at) VALUES ('legacy-run-1', NULL, 1, 1795109039210);
+INSERT INTO atomic.wf_leases (run_id, holder_id, epoch, renewed_at) VALUES ('legacy-run-1', NULL, 1, 1795109735992);
 
 
 --
@@ -2111,16 +2167,16 @@ INSERT INTO atomic.wf_meta (schema_version) VALUES (2);
 -- Data for Name: wf_ps_atomic_migrations; Type: TABLE DATA; Schema: atomic; Owner: -
 --
 
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('sessions', 1, 1795109039135);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('sessions', 2, 1795109039139);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 1, 1795109039143);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 2, 1795109039144);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 1, 1795109039183);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 2, 1795109039188);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 3, 1795109039194);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 4, 1795109039196);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 5, 1795109039198);
-INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('session-search', 1, 1795109039206);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('sessions', 1, 1795109735906);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('sessions', 2, 1795109735911);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 1, 1795109735913);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('session-presence', 2, 1795109735915);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 1, 1795109735961);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 2, 1795109735965);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 3, 1795109735973);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 4, 1795109735975);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('snapshot-blobs', 5, 1795109735978);
+INSERT INTO atomic.wf_ps_atomic_migrations (domain, version, applied_at) VALUES ('session-search', 1, 1795109735987);
 
 
 --
@@ -2374,7 +2430,7 @@ INSERT INTO atomic.wf_runs_pool_meta (version) VALUES (3);
 -- Data for Name: wf_runs_resource_owners; Type: TABLE DATA; Schema: atomic; Owner: -
 --
 
-INSERT INTO atomic.wf_runs_resource_owners (id, host, pid, expires_at, boot) VALUES ('f9132015-add8-4c2c-b411-adb6893b170a', 'devbox', 670197, 1795109069122, 'b7d303ab-0bb8-4c5a-a7b5-f4aa25d76c1f');
+INSERT INTO atomic.wf_runs_resource_owners (id, host, pid, expires_at, boot) VALUES ('9643d0a6-23e1-44ed-b249-a2565f9ce589', 'devbox', 704775, 1795109765890, 'b7d303ab-0bb8-4c5a-a7b5-f4aa25d76c1f');
 
 
 --
@@ -3884,6 +3940,27 @@ CREATE TRIGGER wf_runs_pool_fence_abort BEFORE INSERT ON atomic.wf_runs_pool_fen
 
 
 --
+-- Name: wf_runs_pool_root_snapshot wf_runs_pool_root_snapshot_snapshot_carried_delete; Type: TRIGGER; Schema: atomic; Owner: -
+--
+
+CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_delete AFTER DELETE ON atomic.wf_runs_pool_root_snapshot FOR EACH ROW EXECUTE FUNCTION atomic.wf_runs_pool_root_snapshot_snapshot_carried_delete_fn();
+
+
+--
+-- Name: wf_runs_pool_root_snapshot wf_runs_pool_root_snapshot_snapshot_carried_insert; Type: TRIGGER; Schema: atomic; Owner: -
+--
+
+CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_insert AFTER INSERT ON atomic.wf_runs_pool_root_snapshot FOR EACH ROW EXECUTE FUNCTION atomic.wf_runs_pool_root_snapshot_snapshot_carried_insert_fn();
+
+
+--
+-- Name: wf_runs_pool_root_snapshot wf_runs_pool_root_snapshot_snapshot_carried_update; Type: TRIGGER; Schema: atomic; Owner: -
+--
+
+CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_update AFTER UPDATE OF snapshot ON atomic.wf_runs_pool_root_snapshot FOR EACH ROW EXECUTE FUNCTION atomic.wf_runs_pool_root_snapshot_snapshot_carried_update_fn();
+
+
+--
 -- Name: wf_runs_pool_usage wf_runs_pool_usage_totals_delete; Type: TRIGGER; Schema: atomic; Owner: -
 --
 
@@ -3930,6 +4007,27 @@ CREATE TRIGGER wf_runs_snapshot_state_insert AFTER INSERT ON atomic.wf_runs FOR 
 --
 
 CREATE TRIGGER wf_runs_snapshot_state_status AFTER UPDATE OF status ON atomic.wf_runs FOR EACH ROW EXECUTE FUNCTION atomic.wf_runs_snapshot_state_status_fn();
+
+
+--
+-- Name: wf_runs_work wf_runs_work_snapshot_carried_delete; Type: TRIGGER; Schema: atomic; Owner: -
+--
+
+CREATE TRIGGER wf_runs_work_snapshot_carried_delete AFTER DELETE ON atomic.wf_runs_work FOR EACH ROW EXECUTE FUNCTION atomic.wf_runs_work_snapshot_carried_delete_fn();
+
+
+--
+-- Name: wf_runs_work wf_runs_work_snapshot_carried_insert; Type: TRIGGER; Schema: atomic; Owner: -
+--
+
+CREATE TRIGGER wf_runs_work_snapshot_carried_insert AFTER INSERT ON atomic.wf_runs_work FOR EACH ROW EXECUTE FUNCTION atomic.wf_runs_work_snapshot_carried_insert_fn();
+
+
+--
+-- Name: wf_runs_work wf_runs_work_snapshot_carried_update; Type: TRIGGER; Schema: atomic; Owner: -
+--
+
+CREATE TRIGGER wf_runs_work_snapshot_carried_update AFTER UPDATE OF descriptor ON atomic.wf_runs_work FOR EACH ROW EXECUTE FUNCTION atomic.wf_runs_work_snapshot_carried_update_fn();
 
 
 --
@@ -4072,5 +4170,5 @@ ALTER TABLE ONLY atomic.wf_runs_work
 -- PostgreSQL database dump complete
 --
 
-\unrestrict zOUXBgiT81uKMPCjcuczfgcIp56tQlU4AXMiBlFSgmxdzhwWzbBA5G83fEtw69l
+\unrestrict HaFy1p85ohT4yvk3y9eVM95tldMvHtrkbIVIcfgmsCcThEqpiq5l7atPbDo6gZ1
 
