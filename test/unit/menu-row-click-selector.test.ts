@@ -10,6 +10,7 @@ import { ExtensionSelectorComponent } from "../../packages/coding-agent/src/mode
 import {
 	FramedSelector,
 	PLAIN_SELECTOR_STYLE,
+	Selector,
 	type SelectorItem,
 } from "../../packages/coding-agent/src/modes/interactive/components/selector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -84,6 +85,36 @@ test("a click on No in a confirm dialog answers no, and Yes answers yes", async 
 		await ui.click(new RegExp(`\\b${answer}\\s*$`), answer);
 		assert.deepEqual(answers, [expected]);
 		ui.tui.stop();
+	}
+});
+
+test("a refresh after a click leaves the replacement picker item clickable (#5532)", () => {
+	for (const paintBeforeRefresh of [false, true]) {
+		const ui = makeClickScreen();
+		const chosen: string[] = [];
+		const picker = new Selector({
+			title: "Live choices",
+			items: items(["Alpha"]),
+			style: PLAIN_SELECTOR_STYLE,
+			closeOnSelect: false,
+			onSelect: (item) => chosen.push(item.id),
+		});
+		try {
+			ui.dock(picker);
+			const click = (label: string, offset: number) => {
+				const row = ui.rowOf(label);
+				const cell = `${ui.columnOf(row, label) + offset + 1};${row + 1}`;
+				ui.terminal.input(`\x1b[<0;${cell}M`);
+				ui.terminal.input(`\x1b[<0;${cell}m`);
+			};
+			click("Alpha", 1);
+			if (paintBeforeRefresh) ui.tui.renderNow();
+			picker.setItems(items(["Bravo"]));
+			click("Bravo", 2);
+			assert.deepEqual(chosen, ["Alpha", "Bravo"]);
+		} finally {
+			ui.tui.stop();
+		}
 	}
 });
 

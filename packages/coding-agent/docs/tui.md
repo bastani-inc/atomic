@@ -541,7 +541,7 @@ pi.registerCommand("pick", {
 
 ### Pattern 1c: Clickable rows in your own list
 
-`Selector`, `SelectList` and `SettingsList` run a row on one click already. For a list you draw yourself, use `ClickableRows` from `@bastani/atomic-tui`. Record each row while rendering, and forward `handleMouse` and `paintedRowKey` to the recorded rows, including through any wrapper. A single left click runs the row, dragging selects text, and a double or triple click does not run the row again. Pass a `scroll` action to let the wheel move the selection.
+`Selector`, `SelectList` and `SettingsList` run a row on one click already. For a list you draw yourself, use `ClickableRows` from `@bastani/atomic-tui`. Record each row while rendering, and forward `handleMouse` and `paintedRowKey` to the recorded rows, including through any wrapper. A single left click runs the row, dragging selects text, and a double or triple click does not run the row again. Pass a `scroll` action to let the wheel move the selection. If your inline component declines the wheel, the transcript scrolls instead. Naming a row for clicks does not claim its wheel events.
 
 Call the same action from your click and keyboard handlers. If you forward terminal input instead, `keyInput(key)` encodes a key returned by `getKeybindings().getKeys(action)`, including modified function keys.
 

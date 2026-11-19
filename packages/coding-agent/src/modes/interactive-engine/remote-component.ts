@@ -51,7 +51,7 @@ export const REMOTE_INPUT_REPLY_TIMEOUT_MS = 250;
 
 interface PendingInput {
 	resolve: (handled: boolean | undefined) => void;
-	timer: ReturnType<typeof setTimeout>;
+	timer: ReturnType<typeof setTimeout> | undefined;
 	/** The frame requested with the key: a handled key answers once that frame is here, so one paint shows it. */
 	readonly frameRequestId: number | undefined;
 }
@@ -202,19 +202,32 @@ class RemoteComponent implements Component {
 		if (!this.paintedRowKeys?.[row]) return undefined;
 		const button = event.wheelDelta < 0 ? 64 : 65;
 		// The host's own input path paints a key once the engine answers it; this turn did not come through there.
-		void this.handleInput(`\x1b[<${button};${Math.max(0, Math.floor(event.x)) + 1};${row + 1}M`).then((handled) => {
-			if (handled === true) this.requestRender();
-		});
+		void this.sendInput(`\x1b[<${button};${Math.max(0, Math.floor(event.x)) + 1};${row + 1}M`, "wheel").then(
+			(handled) => {
+				if (this.disposed) return;
+				if (handled === true) this.requestRender();
+				else event.onWheelUnhandled?.();
+			},
+		);
 		return { handled: true };
 	}
 
 	handleInput(data: string): Promise<boolean | undefined> {
+		return this.sendInput(data, "key");
+	}
+
+	private sendInput(data: string, kind: "key" | "wheel"): Promise<boolean | undefined> {
 		if (this.disposed) return Promise.resolve(undefined);
 		const requestId = ++this.inputRequestId;
 		const frameRequestId = this.width > 0 ? this.requestId + 1 : undefined;
 		const result = new Promise<boolean | undefined>((resolve) => {
-			const timer = setTimeout(() => this.resolveInput(requestId, false), REMOTE_INPUT_REPLY_TIMEOUT_MS);
-			timer.unref?.();
+			// Keys block routing until answered. A forwarded wheel does not: wait for its actual reply or disposal,
+			// so a slow list cannot handle the turn after the host has already scrolled the transcript.
+			const timer =
+				kind === "key"
+					? setTimeout(() => this.resolveInput(requestId, false), REMOTE_INPUT_REPLY_TIMEOUT_MS)
+					: undefined;
+			timer?.unref?.();
 			this.pendingInputs.set(requestId, { resolve, timer, frameRequestId });
 		});
 		try {

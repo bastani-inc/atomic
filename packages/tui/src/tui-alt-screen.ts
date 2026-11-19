@@ -145,7 +145,7 @@ interface ClickTarget {
 	 * component acted on, such as one that expanded a block, takes what the next paint draws there instead.
 	 */
 	drawn: readonly unknown[];
-	/** Whether a component acted on the click, so the next paint shows what the click itself drew. */
+	/** Whether a key hint ran, so the next paint shows what its key did. */
 	awaitingPaint: boolean;
 }
 
@@ -987,6 +987,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				wheelEvent.direction * ((wheelEvent.button & 8) !== 0 ? lines * ALT_WHEEL_SCROLL_MULTIPLIER : lines);
 			const event = this.createMouseEvent("wheel", wheelEvent.button, wheelEvent.x, wheelEvent.y, { wheelDelta });
 			const focus = this.getPointerFocus();
+			event.onWheelUnhandled = () => {
+				if (!this.stopped && this.getPointerFocus() === focus) this.routeWheel(wheelEvent, wheelDelta);
+			};
 			const overlay = this.dispatchMouseToOverlay(event);
 			const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
 			if (result) {
@@ -1863,9 +1866,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					const render = this.applyMouseDispatchResult(clickEvent, result, clickFocus);
 					this.clearTextSelection();
 					this.waitForSingleClick(result, click, clickFocus);
-					// Only an immediate action has changed what the next frame draws here.
-					click.awaitingPaint = result.whenSingleClick === undefined;
-					if (render) this.requestRender();
+					if (render && !result.whenSingleClick) {
+						// Remember the immediate action's own paint (e.g. opening a submenu), not a later list refresh.
+						this.renderNow();
+						click.drawn = this.pointerFrame(click.col, click.row).drawn;
+					} else if (render) this.requestRender();
 					return;
 				}
 			}

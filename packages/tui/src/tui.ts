@@ -48,6 +48,8 @@ export interface TuiMouseEvent {
 	ctrl: boolean;
 	/** Logical lines. Negative values scroll up. */
 	wheelDelta?: number;
+	/** Continue normal viewport scrolling if a forwarded wheel event is declined after dispatch returns. */
+	onWheelUnhandled?: () => void;
 	/** Consecutive click count when type is click. */
 	clickCount?: number;
 }
