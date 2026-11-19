@@ -105,25 +105,19 @@ export function installSavedChatHistory(
 }
 
 /** The context the chat last drew: its boundary and the last saved sequence in it. */
-const shownContexts = new WeakMap<
-	InteractiveModeBase,
-	{ manager: SessionManager; id: string; boundary: string | undefined; through: number }
->();
+const shownContexts = new WeakMap<InteractiveModeBase, { id: string; boundary: string | undefined; through: number }>();
 export function noteShownContext(mode: InteractiveModeBase, context: readonly SessionEntry[]): void {
-	const manager = mode.sessionManager;
-	// Only a fullscreen chat keeps a parked reader's rows: nothing else needs to know what it drew.
-	if (
-		mode.ui.mode !== "fullscreen" ||
-		!mode.transcriptScrollView ||
-		!(mode.chatContainer instanceof StartupChatContainer)
-	) {
+	const manager: SessionManager | undefined = mode.sessionManager;
+	const id = manager?.getSessionId?.();
+	if (!manager || id === undefined) {
 		shownContexts.delete(mode);
 		return;
 	}
-	let through = 0;
-	for (const entry of context) through = Math.max(through, manager.getEntrySeq?.(entry.id) ?? 0);
+	// The drawn context ends at its leaf, the latest saved entry it shows.
+	const last = context.at(-1);
+	const through = (last && manager.getEntrySeq?.(last.id)) ?? 0;
 	const boundary = context[0]?.type === "compaction" ? context[0].id : undefined;
-	shownContexts.set(mode, { manager, id: manager.getSessionId(), boundary, through });
+	shownContexts.set(mode, { id, boundary, through });
 }
 
 /** What the next drawing of a context does with the rows a parked reader sees. */
@@ -156,7 +150,7 @@ export function parkViewport(mode: InteractiveModeBase, context: readonly Sessio
 		!(chat instanceof StartupChatContainer) ||
 		boundary?.type !== "compaction" ||
 		!shown ||
-		shown.manager !== manager ||
+		// An engine's host reopens its view of the same session: the conversation, not the object, must match.
 		shown.id !== manager.getSessionId() ||
 		shown.boundary === boundary.id
 	)

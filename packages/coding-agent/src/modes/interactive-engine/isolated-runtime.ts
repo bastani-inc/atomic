@@ -142,8 +142,17 @@ export function engineAgentPanelCounts(
 	};
 }
 
+/** How long host listeners wait for the session view after a compaction before they get its events anyway. */
+const COMPACTION_VIEW_HOLD_MS = 3_000;
+
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
+	/** The host session's listeners, which get the engine's events through one ordered subscription. */
+	private readonly hostListeners = new Set<(event: JsonAgentSessionEvent) => void>();
+	private hostEventsSubscribed = false;
+	/** Events held, in order, from a compaction's end until the session view shows its boundary. */
+	private compactionHold: { readonly events: JsonAgentSessionEvent[]; readonly timer: NodeJS.Timeout } | undefined;
+	private compactionHoldReported = false;
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
@@ -1013,7 +1022,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			queuedMessagesPaused: { configurable: true, get: () => this.queuePause.isPaused },
 			subscribe: {
 				configurable: true,
-				value: (listener: (event: JsonAgentSessionEvent) => void) => this.client.onEvent(listener),
+				value: (listener: (event: JsonAgentSessionEvent) => void) => this.subscribeHost(listener),
 			},
 			prompt: {
 				configurable: true,
@@ -1328,6 +1337,69 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (epoch === this.thinkingEpoch) {
 			session.agent.state.thinkingLevel = result.level;
 		}
+	}
+
+	private subscribeHost(listener: (event: JsonAgentSessionEvent) => void): () => void {
+		if (!this.hostEventsSubscribed) {
+			this.hostEventsSubscribed = true;
+			this.client.onEvent((event) => this.deliverHostEvent(event));
+		}
+		this.hostListeners.add(listener);
+		return () => {
+			this.hostListeners.delete(listener);
+		};
+	}
+
+	/**
+	 * The host's chat redraws from its session view when a compaction ends, and that view reads the store only when
+	 * asked. Hold the compaction's end, and every event after it in order, until the view shows the new boundary, or
+	 * for at most a few seconds. Events before and outside a compaction pass straight through.
+	 */
+	private deliverHostEvent(event: JsonAgentSessionEvent): void {
+		const held = this.compactionHold;
+		if (held) {
+			held.events.push(event);
+			return;
+		}
+		if (event.type !== "compaction_end" || !event.result || event.aborted) {
+			for (const listener of [...this.hostListeners]) listener(event);
+			return;
+		}
+		const hold = {
+			events: [event],
+			timer: setTimeout(() => {
+				this.reportCompactionHold("the session view took too long to refresh");
+				release();
+			}, COMPACTION_VIEW_HOLD_MS),
+		};
+		hold.timer.unref?.();
+		this.compactionHold = hold;
+		const release = (): void => {
+			if (this.compactionHold !== hold) return;
+			clearTimeout(hold.timer);
+			this.compactionHold = undefined;
+			const [end, ...later] = hold.events;
+			for (const listener of [...this.hostListeners]) listener(end!);
+			// A later compaction's end holds the events after it in turn.
+			for (const next of later) this.deliverHostEvent(next);
+		};
+		void this.refreshSessionView().then(release, (error: unknown) => {
+			this.reportCompactionHold(error instanceof Error ? error.message : String(error));
+			release();
+		});
+	}
+
+	/** Once per runtime, as an internal diagnostic: the chat still redraws, from the view it has. */
+	private reportCompactionHold(reason: string): void {
+		if (this.compactionHoldReported) return;
+		this.compactionHoldReported = true;
+		this.health.publish({
+			activity: undefined,
+			elapsedMs: COMPACTION_VIEW_HOLD_MS,
+			level: "blocking",
+			source: "stderr",
+			message: `Interactive engine: a compaction was shown before the session view refreshed (${reason})`,
+		});
 	}
 
 	private dispatchBestEffort(label: string, operation: Promise<unknown>): void {
