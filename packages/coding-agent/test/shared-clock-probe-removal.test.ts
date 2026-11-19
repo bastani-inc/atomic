@@ -9,7 +9,7 @@ import { lockShared, sharedClockOffset } from "../src/core/worktree-snapshot/sha
 
 vi.mock("node:fs/promises", async (original) => {
 	const actual = await original<typeof fsPromises>();
-	return { ...actual, unlink: vi.fn(actual.unlink) };
+	return { ...actual, stat: vi.fn(actual.stat), unlink: vi.fn(actual.unlink) };
 });
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -22,6 +22,7 @@ beforeEach(() => {
 afterEach(() => {
 	Object.defineProperty(process, "platform", platform);
 	vi.mocked(fsPromises.unlink).mockReset();
+	vi.mocked(fsPromises.stat).mockReset();
 	rmSync(directory, { recursive: true, force: true });
 });
 
@@ -55,6 +56,23 @@ test("a clock probe whose delete Windows keeps refusing is removed by the next p
 	await sharedClockOffset(directory);
 
 	assert.deepEqual(probes(), []);
+});
+
+test("a clock reading whose probe delete Windows refuses still returns the filesystem clock's offset (#5605)", async () => {
+	const ahead = 60 * 60_000;
+	const { stat } = await vi.importActual<typeof fsPromises>("node:fs/promises");
+	// The filesystem stamps probes an hour ahead of this process's clock, as on a share whose clock is off.
+	vi.mocked(fsPromises.stat).mockImplementation((async (path: string) => {
+		const stats = await stat(path);
+		if (!/\.clock-[0-9a-f]{16}\.probe$/.test(String(path))) return stats;
+		return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { mtimeMs: stats.mtimeMs + ahead });
+	}) as typeof fsPromises.stat);
+	await refuseProbeDeletes(() => true);
+
+	const offset = await sharedClockOffset(directory);
+
+	assert.ok(Math.abs(offset - ahead) < 60_000, `offset ${offset}`);
+	assert.equal(probes().length, 1);
 });
 
 /** A lock not refreshed for this long is stale: another process may take it. */
