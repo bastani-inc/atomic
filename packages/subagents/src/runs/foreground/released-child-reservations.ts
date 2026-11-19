@@ -1,7 +1,13 @@
 import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { ConfirmedRelease, ReleaseObservation } from "../../../../intercom/broker/released-child-receipts.js";
 import type { IntercomEventBus, RunSyncOptions } from "../../shared/types.js";
-import { type HoldNoticeEpisode, holdNoticeEpisode, newerRelease, observeRelease } from "./released-child-receipts.js";
+import {
+	checkBeforeRetirement,
+	type HoldNoticeEpisode,
+	holdNoticeEpisode,
+	newerRelease,
+	observeRelease,
+} from "./released-child-receipts.js";
 import { childReleaseKey, reservationRecordLookup, subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import { subagentChildRequestEvents } from "./subagent-child-owner.js";
 import {
@@ -204,6 +210,7 @@ interface ReservationOwner {
 	readonly sessionId: string;
 	readonly repairs: WeakMap<object, ConfirmedRelease>;
 	readonly notices: Map<string, HoldNoticeEpisode>;
+	checks?: Set<() => void>;
 }
 const reservationOwners = new WeakMap<IntercomEventBus, ReservationOwner>();
 
@@ -213,11 +220,16 @@ export function bindReleasedChildReservationOwner(
 	sessionId: string,
 	notices: Map<string, HoldNoticeEpisode>,
 ): () => void {
+	const retire = (binding: ReservationOwner) => {
+		if (reservationOwners.get(events) === binding) reservationOwners.delete(events);
+		// With no answer yet, preserve the native refusal while the original owner can still receive it.
+		for (const cancel of binding.checks ?? []) cancel();
+	};
+	const previous = reservationOwners.get(events);
+	if (previous) retire(previous);
 	const owner: ReservationOwner = { sessionId, repairs: new WeakMap(), notices };
 	reservationOwners.set(events, owner);
-	return () => {
-		if (reservationOwners.get(events) === owner) reservationOwners.delete(events);
-	};
+	return () => retire(owner);
 }
 
 /** The child of `frame` the broker refused the whole frame for, when the refusal names one of them. */
@@ -395,16 +407,20 @@ export function acknowledgeReleasedChildWake(
 					// Decide which episode this refusal belonged to now, not a network round trip later.
 					const episode = holdNoticeEpisode(owner.notices, childName, taskId);
 					episode.checks++;
-					const finish = (current: boolean) => {
-						try {
-							if (!current) report({ sessionId: owner.sessionId, episode });
-						} finally {
-							episode.checks--;
-							if (!episode.checks && !episode.told && owner.notices.get(childName) === episode)
-								owner.notices.delete(childName);
-						}
-					};
-					return verify(childName, repair.stamp).then(finish, () => finish(false));
+					owner.checks ??= new Set();
+					return checkBeforeRetirement(
+						owner.checks,
+						(signal) => verify(childName, repair.stamp, signal),
+						(current) => {
+							try {
+								if (!current) report({ sessionId: owner.sessionId, episode });
+							} finally {
+								episode.checks--;
+								if (!episode.checks && !episode.told && owner.notices.get(childName) === episode)
+									owner.notices.delete(childName);
+							}
+						},
+					);
 				}
 			}
 		}

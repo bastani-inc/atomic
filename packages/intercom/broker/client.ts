@@ -1871,10 +1871,25 @@ export class IntercomClient extends EventEmitter {
   private liveReleaseVerifier(): WeakRef<VerifyRelease> {
     if (!this.verifyRelease) {
       const socket = this.socket;
-      this.verifyRelease = (childName, { broker, order }) =>
-        socket !== null && this.socket === socket && !socket.destroyed && !this.disconnecting
-          ? this.restoringRecipientRequest({ type: "verify_released_child", childName, broker, order }, undefined, true)
-          : Promise.resolve(false);
+      this.verifyRelease = (childName, { broker, order }, signal) => {
+        if (signal.aborted || socket === null || this.socket !== socket || socket.destroyed || this.disconnecting) return Promise.resolve(false);
+        const requestId = randomUUID();
+        return new Promise<boolean>((resolve) => {
+          const finish = (current = false) => {
+            this.pendingRestoringRecipientRequests.delete(requestId);
+            clearTimeout(timeout);
+            signal.removeEventListener("abort", cancel);
+            resolve(current);
+          };
+          const cancel = () => finish(false);
+          // A diagnostic must not keep an owner waiting, ping the broker, or tear down a working connection.
+          const timeout = setTimeout(cancel, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
+          signal.addEventListener("abort", cancel, { once: true });
+          this.pendingRestoringRecipientRequests.set(requestId, { verify: true, resolve: finish, reject: cancel });
+          try { writeMessage(socket, { type: "verify_released_child", childName, broker, order, requestId }); }
+          catch { cancel(); }
+        });
+      };
     }
     return new WeakRef(this.verifyRelease);
   }
@@ -2051,8 +2066,8 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
-  /** An ordinary ACK returns publication status. A read-only release check requires an explicit positive answer. */
-  private restoringRecipientRequest(frame: Record<string, unknown>, observe?: ObserveReleaseReply, verify = false): Promise<boolean> {
+  /** Resolves false when the broker reserved with `published: false` (#5352), true for every other success. */
+  private restoringRecipientRequest(frame: Record<string, unknown>, observe?: ObserveReleaseReply): Promise<boolean> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -2063,11 +2078,10 @@ export class IntercomClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!this.pendingRestoringRecipientRequests.delete(requestId)) return;
-        if (verify) resolve(false);
-        else void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
+        void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
       }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
       this.pendingRestoringRecipientRequests.set(requestId, {
-        observe, verify,
+        observe,
         resolve: (published = true) => { clearTimeout(timeout); resolve(published); },
         reject: (error) => { clearTimeout(timeout); reject(error); },
       });

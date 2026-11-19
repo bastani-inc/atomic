@@ -583,7 +583,8 @@ async function reservingOwner(label: string) {
 		{ appendEntry: async (customType, data) => void (await sessionManager.appendCustomEntry(customType, data)) },
 		ctx,
 	);
-	const bind = () => bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	const bind = (context = ctx) =>
+		bindReleasedChildWakes({} as SubagentChildRestoreDeps, context, events, new AgentWakeDispatcher());
 	let stop = bind();
 	brokerFixture.onCleanup(() => stop());
 	const record = (
@@ -622,9 +623,16 @@ async function reservingOwner(label: string) {
 			return client;
 		},
 		reconnect,
-		rebind() {
+		rebind(differentSession = false) {
 			stop();
-			stop = bind();
+			stop = bind(
+				differentSession
+					? {
+							...ctx,
+							sessionManager: SessionManager.inMemory(repoRoot) as unknown as ExtensionContext["sessionManager"],
+						}
+					: ctx,
+			);
 		},
 		events,
 		notices,
@@ -922,7 +930,7 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-test.each(["recovery", "owner reload"] as const)(
+test.each(["recovery", "owner reload", "owner switch"] as const)(
 	"a delayed reservation check cannot silence a lost hold or the next failure after %s (#5641)",
 	async (duringCheck) => {
 		const owner = await reservingOwner(`recovery-while-checking-${duringCheck}`);
@@ -948,6 +956,20 @@ test.each(["recovery", "owner reload"] as const)(
 		try {
 			hold.release();
 			const check = await verification.promise;
+			if (duringCheck === "owner switch") {
+				await owner.client.dropReleasedChildren([name]);
+				owner.rebind(true);
+				await started;
+				assert.deepEqual(
+					owner.notices.map(namedIn),
+					[name],
+					"a check that outlives its owner reports to the departing session",
+				);
+				check();
+				await owner.client.listSessions();
+				assert.deepEqual(owner.notices.map(namedIn), [name]);
+				return;
+			}
 			if (duringCheck === "owner reload") {
 				const recovered = Promise.withResolvers<void>();
 				owner.events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => recovered.resolve());

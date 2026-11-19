@@ -29,6 +29,37 @@ export function holdNoticeEpisode(
 	return episode;
 }
 
+/** The response and owner retirement race to settle the same check. A reporting error belongs to the original
+ * confirmation, not the teardown that interrupted it. Retirement drops the local waiter and ignores a late reply. */
+export function checkBeforeRetirement(
+	checks: Set<() => void>,
+	verify: (signal: AbortSignal) => Promise<boolean>,
+	decide: (current: boolean) => void,
+): Promise<void> {
+	const controller = new AbortController();
+	const settled = Promise.withResolvers<void>();
+	const finish = (current: boolean) => {
+		if (!checks.delete(retire)) return;
+		try {
+			decide(current);
+			settled.resolve();
+		} catch (error) {
+			settled.reject(error);
+		}
+	};
+	const retire = () => {
+		controller.abort();
+		finish(false);
+	};
+	checks.add(retire);
+	try {
+		void verify(controller.signal).then(finish, () => finish(false));
+	} catch {
+		finish(false);
+	}
+	return settled.promise;
+}
+
 /** A stamp orders operations only within the same broker lifetime and authenticated owner registration. */
 export function newerRelease(refusal: ReleaseStamp, repair: ReleaseStamp): boolean {
 	return (

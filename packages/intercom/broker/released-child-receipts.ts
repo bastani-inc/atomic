@@ -5,7 +5,7 @@ export interface ReleaseStamp {
 	readonly owner: string;
 	readonly registration: string;
 }
-export type VerifyRelease = (childName: string, stamp: ReleaseStamp) => Promise<boolean>;
+export type VerifyRelease = (childName: string, stamp: ReleaseStamp, signal: AbortSignal) => Promise<boolean>;
 export interface ConfirmedRelease {
 	readonly stamp: ReleaseStamp;
 	readonly verify: WeakRef<VerifyRelease>;
