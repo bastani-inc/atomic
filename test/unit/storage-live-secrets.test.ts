@@ -77,7 +77,7 @@ test("adapters without liveSecrets keep every secret in options (#4793)", async 
 		module: "unused",
 		secrets: { token: inMemorySecret("value") },
 	} as const;
-	const context = adapterOpenContext(selection, { agentDir: "/unused", domain: "journal" });
+	const context = adapterOpenContext(selection, { agentDir: "/unused", domain: "sessions" });
 	assert.deepEqual(await resolveAdapterOptions(selection, context), { token: "value" });
 	assert.deepEqual(await resolveAdapterOptions(selection, context, ["token"]), {});
 	assert.equal(await context.secret?.("token"), "value");
@@ -124,7 +124,7 @@ test("context.secret re-reads environment references and names missing ones (#47
 	}
 });
 
-test("store hooks of an adapter receive the live-secret context and the prefix (#4793)", async () => {
+test("store hooks of an adapter receive the live-secret context and the prefix, and an earlier openRunJournal hook is never called (#4793)", async () => {
 	const home = makeTempDirectory("storage-live-secret-hooks-");
 	const agentDir = join(home, "agent");
 	const seen: { hook: string; options: unknown; prefix?: string; secret: string }[] = [];
@@ -154,17 +154,12 @@ test("store hooks of an adapter receive the live-secret context and the prefix (
 		secrets: { password: inMemorySecret("pw") },
 		prefix: "team_",
 	} as const;
-	const unused = () => {
-		throw new Error("the adapter's own hooks open these stores");
-	};
-	const provider = new StorageProvider({ memory: unused, sql: unused });
+	const provider = new StorageProvider();
 	try {
 		const sessions = await provider.openSessionStore(selection, { agentDir, domain: "sessions" });
-		const journal = await provider.openRunJournal(selection, { agentDir, domain: "journal" });
-		await Promise.all([sessions.close(), journal.close()]);
+		await sessions.close();
 		assert.deepEqual(seen, [
 			{ hook: "sessions", options: { url: "postgres://example" }, prefix: "team_", secret: "pw" },
-			{ hook: "journal", options: { url: "postgres://example" }, prefix: "team_", secret: "pw" },
 		]);
 	} finally {
 		Reflect.deleteProperty(globalThis, PROBE);
@@ -172,8 +167,8 @@ test("store hooks of an adapter receive the live-secret context and the prefix (
 	}
 });
 
-test("a journal through an adapter with only openDatabase gets the database and the live-secret context (#4793)", async () => {
-	const home = makeTempDirectory("storage-live-secret-journal-");
+test("a session store through an adapter with only openDatabase gets the database and the live-secret context (#4793)", async () => {
+	const home = makeTempDirectory("storage-live-secret-database-");
 	const agentDir = join(home, "agent");
 	const probe: LiveSecretProbe = {};
 	Reflect.set(globalThis, PROBE, probe);
@@ -193,26 +188,16 @@ test("a journal through an adapter with only openDatabase gets the database and 
 			"",
 		].join("\n"),
 	);
-	probe.database = await openNodeSqliteDatabase(join(home, "journal.sqlite"));
-	const journals: SqliteDatabase[] = [];
-	const provider = new StorageProvider({
-		memory: () => {
-			throw new Error("not a memory journal");
-		},
-		sql: async (database) => {
-			journals.push(database);
-			return { close: async () => {}, createRun: async () => {} } as never;
-		},
-	});
+	probe.database = await openNodeSqliteDatabase(join(home, "sessions.sqlite"));
 	try {
-		const journal = await provider.openRunJournal(
+		const sessions = await new StorageProvider().openSessionStore(
 			{ kind: "adapter", module: "./adapter.ts", secrets: { password: inMemorySecret("pw") } },
-			{ agentDir, domain: "journal" },
+			{ agentDir, domain: "sessions" },
 		);
-		assert.equal(journals.length, 1);
+		assert.equal(sessions.descriptor.location, probe.database.descriptor.location);
 		assert.deepEqual(probe.options, {});
 		assert.equal(await probe.context?.secret?.("password"), "pw");
-		await journal.close();
+		await sessions.close();
 	} finally {
 		Reflect.deleteProperty(globalThis, PROBE);
 		await probe.database?.close();

@@ -33,7 +33,7 @@ bun add -g @bastani/atomic
 
 Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
-Atomic saves sessions locally by default. You do not need a database server to get started. See [Storage](/storage) to change where sessions are saved.
+Sessions are kept in a local SQLite database by default, `~/.atomic/workflows/journal.sqlite`. No database server or separate database installation is needed, and Atomic manages the file itself. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
 Keep a standalone archive's complete directory, including `node_modules`, libraries, and licenses. Package managers select the runtime for your platform automatically.
 

@@ -65,7 +65,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 					{ url: roleUrl.href, auth: "gcp-iam", maxConnections: 2 },
 					{
 						agentDir: "/nonexistent",
-						domain: "journal",
+						domain: "sessions",
 						secret: () => Promise.reject(new Error("cloud auth read the password secret")),
 					},
 				);
@@ -97,7 +97,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 				roleUrl.username = role;
 				const database = await adapter.openDatabase(
 					{ url: roleUrl.href, auth: "azure-entra", maxConnections: 1 },
-					{ agentDir: "/nonexistent", domain: "journal" },
+					{ agentDir: "/nonexistent", domain: "sessions" },
 				);
 				try {
 					assert.deepEqual(await database.get("SELECT current_user AS who"), { who: role });
@@ -148,7 +148,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 				roleUrl.username = role;
 				const database = await adapter.openDatabase(
 					{ url: roleUrl.href, auth: "azure-entra" },
-					{ agentDir, domain: "journal" },
+					{ agentDir, domain: "sessions" },
 				);
 				try {
 					assert.deepEqual(await database.get("SELECT current_user AS who"), { who: role });
@@ -170,7 +170,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 				Promise.reject(new Error("Could not load the default credentials")),
 			);
 			const error = await adapter
-				.openDatabase({ url, auth: "gcp-iam" }, { agentDir: "/nonexistent", domain: "journal" })
+				.openDatabase({ url, auth: "gcp-iam" }, { agentDir: "/nonexistent", domain: "sessions" })
 				.then(
 					(database) => database.close().then(() => assert.fail("expected the open to fail")),
 					(caught: Error) => caught,
