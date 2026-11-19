@@ -11,7 +11,7 @@ The headline intervals use monotonic `process.hrtime.bigint()` marks:
 The raw record also retains `launchToProviderFirstByteMs`, the contiguous process-launch-to-provider-byte interval that includes typing and echo wait. Do not substitute that diagnostic for `spawnToDispatchMs`.
 `screen.ts` feeds ordered ConPTY output into `@xterm/headless` at 120 columns by 40 rows. A coherent frame must show the exact installed version, an editor line beginning with `❯ `, and the cursor in that editor. Completion also requires the final three-line manifesto and two identical qualifying frames at least 80 ms apart. The older `time-to-first-frame` product mark is not used.
 
-`collector.ts` uses a raw `net.Server`, timestamps and persists every socket attempt from its first byte even when HTTP parsing never completes, validates the per-run nonce and the complete required tool set, then returns a fixed OpenAI-compatible streaming response. Collection closes only after the product exits, and exactly one complete attempt is rechecked after close so a late duplicate cannot pass. Every successful sample runs `/workflow list` after the timed request and requires a bundled workflow name on screen.
+`collector.ts` uses a raw `net.Server`, timestamps and persists every socket attempt from its first byte even when HTTP parsing never completes, validates the per-run nonce and the complete required tool set, then returns a fixed OpenAI-compatible streaming response. Collection closes only after the product exits, and exactly one complete attempt is rechecked after close so a late duplicate cannot pass.
 
 ## Prepare artifacts
 

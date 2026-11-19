@@ -18,7 +18,7 @@ import {
 import { buildInteractiveEngineArgs } from "../../packages/coding-agent/src/modes/interactive-engine/engine-args.js";
 import { restartCliArgs } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.js";
 import { resolvePath } from "../../packages/coding-agent/src/utils/paths.js";
-import { resolveRunJournal, selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+
 import { makeTempDirectory, moduleDir, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const SESSION_DIR_ENV = "ATOMIC_CODING_AGENT_SESSION_DIR";
@@ -113,51 +113,7 @@ test("session storage follows SDK, session flags, --storage, session variables, 
 	assert.deepEqual(select(), { kind: "sqlite", path: join(agentDir, "settings-sessions.sqlite") });
 });
 
-test("the workflow journal follows SDK journal, --storage, journal variables, ATOMIC_STORAGE, then settings (#3783)", () => {
-	const settings = {
-		workflows: { journal: { path: "settings-journal.sqlite" } },
-		storage: { path: "settings-shared.sqlite" },
-	};
-	vi.stubEnv(STORAGE_ENV, JSON.stringify({ path: "shared-env.sqlite" }));
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({ memory: true }));
-	storageFlag({ path: "cli.sqlite", prefix: "cli_" });
-	assert.deepEqual(selectRunJournal({ journal: { path: "sdk.sqlite" }, settings }), {
-		kind: "sqlite",
-		path: "sdk.sqlite",
-	});
-	assert.deepEqual(selectRunJournal({ settings }), {
-		kind: "sqlite",
-		path: join(agentDir, "cli.sqlite"),
-		prefix: "cli_",
-	});
-	setCliStorageSelection(undefined);
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "memory" });
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({}));
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "sharded", dir: join(agentDir, "workflows", "journal") });
-	assert.deepEqual(selectProcessStorage("journal", agentDir), {
-		selection: { kind: "sharded", dir: join(agentDir, "workflows", "journal") },
-		source: "env",
-		field: WORKFLOWS_JOURNAL_ENV,
-	});
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({ prefix: "env_" }));
-	assert.deepEqual(selectRunJournal({ settings }), {
-		kind: "sqlite",
-		path: join(agentDir, "workflows", "journal.sqlite"),
-		prefix: "env_",
-	});
-	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, "");
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: join(agentDir, "shared-env.sqlite") });
-	vi.stubEnv(WORKFLOW_JOURNAL_PATH_ENV, "legacy.sqlite");
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: "legacy.sqlite" });
-	vi.stubEnv(WORKFLOW_JOURNAL_PATH_ENV, "");
-	vi.stubEnv(STORAGE_ENV, "");
-	assert.deepEqual(selectRunJournal({ settings }), {
-		kind: "sqlite",
-		path: join(agentDir, "settings-journal.sqlite"),
-	});
-});
-
-test("session flags beat --storage for sessions while --storage still selects the journal (#3783)", () => {
+test("session flags beat --storage for sessions (#3783)", () => {
 	vi.stubEnv(SESSION_DIR_ENV, "legacy-sessions");
 	const parsed = parseArgs(["--session-dir", "flag-sessions", "--storage", JSON.stringify({ path: "cli.sqlite" })]);
 	setCliStorageSelection(parsed.storage, project);
@@ -165,7 +121,6 @@ test("session flags beat --storage for sessions while --storage still selects th
 		kind: "jsonl",
 		dir: join(project, "flag-sessions"),
 	});
-	assert.deepEqual(selectRunJournal(), { kind: "sqlite", path: join(agentDir, "cli.sqlite") });
 });
 
 test("--storage and --storage-file are exclusive, need a value, and read files relative to the working directory (#3783)", async () => {
@@ -180,7 +135,7 @@ test("--storage and --storage-file are exclusive, need a value, and read files r
 	assert.deepEqual(parseArgs(["--storage", "{}"]).storage, { flag: "--storage", value: "{}" });
 	await writeFileEnsuringDir(join(project, "selection.json"), JSON.stringify({ path: "from-file.sqlite" }));
 	setCliStorageSelection(parseArgs(["--storage-file", "selection.json"]).storage, project);
-	assert.deepEqual(selectRunJournal(), { kind: "sqlite", path: join(agentDir, "from-file.sqlite") });
+
 	assert.deepEqual(selectSessionStorage(project, { agentDir }), {
 		kind: "sqlite",
 		path: join(agentDir, "from-file.sqlite"),
@@ -204,7 +159,6 @@ test("invalid JSON and invalid selections name their variable or flag without ec
 	const cases: Array<[string, () => object]> = [
 		[STORAGE_ENV, () => selectSessionStorage(project, { agentDir })],
 		[SESSIONS_STORAGE_ENV, () => selectSessionStorage(project, { agentDir })],
-		[WORKFLOWS_JOURNAL_ENV, () => selectRunJournal()],
 	];
 	for (const [name, select] of cases) {
 		for (const [text, reason] of [
@@ -226,7 +180,7 @@ test("invalid JSON and invalid selections name their variable or flag without ec
 	assertConfigError(() => selectSessionStorage(project, { agentDir }), "env", STORAGE_ENV, "invalid-selection");
 	vi.stubEnv(STORAGE_ENV, "");
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({ dir: "runs" }));
-	assertConfigError(() => selectRunJournal(), "env", WORKFLOWS_JOURNAL_ENV, "invalid-selection");
+
 	for (const [text, reason] of [
 		[malformed, "invalid-json"],
 		[misspelled, "invalid-selection"],
@@ -261,7 +215,6 @@ test("a set storage variable outranked by another selection still fails when inv
 		["sessions", () => selectProcessStorage("sessions", agentDir, project) ?? {}],
 		["journal", () => selectProcessStorage("journal", agentDir, project) ?? {}],
 		["SDK sessions", () => selectSessionStorage(project, { agentDir })],
-		["workflow journal", () => selectRunJournal()],
 	];
 	const scenarios: Array<[string, Record<string, string>, boolean]> = [
 		[STORAGE_ENV, {}, true],
@@ -300,7 +253,6 @@ test("an invalid storage prefix names its variable or flag, even when another se
 	const selections: Array<[string, () => object]> = [
 		["sessions", () => selectProcessStorage("sessions", agentDir, project) ?? {}],
 		["journal", () => selectProcessStorage("journal", agentDir, project) ?? {}],
-		["workflow journal", () => selectRunJournal()],
 	];
 	for (const prefix of ["bad-prefix", "sqlite_reserved"]) {
 		vi.stubEnv(STORAGE_ENV, JSON.stringify({ path: "store.sqlite", prefix }));
@@ -336,12 +288,7 @@ test("explicit overrides of one domain conflict instead of one silently winning 
 	);
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({ memory: true }));
 	vi.stubEnv(WORKFLOW_JOURNAL_PATH_ENV, join(root, "legacy.sqlite"));
-	assertConfigError(
-		() => selectRunJournal(),
-		"env",
-		`${WORKFLOWS_JOURNAL_ENV}, ${WORKFLOW_JOURNAL_PATH_ENV}`,
-		"conflicting-overrides",
-	);
+
 	vi.stubEnv(SESSIONS_STORAGE_ENV, "");
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, "");
 	storageFlag({ memory: true });
@@ -351,17 +298,11 @@ test("explicit overrides of one domain conflict instead of one silently winning 
 		`--storage, ${SESSION_DIR_ENV}`,
 		"conflicting-overrides",
 	);
-	assertConfigError(
-		() => selectRunJournal(),
-		"cli",
-		`--storage, ${WORKFLOW_JOURNAL_PATH_ENV}`,
-		"conflicting-overrides",
-	);
+
 	assert.deepEqual(selectSessionStorage(project, { agentDir, sessionDir: "flag" }), {
 		kind: "jsonl",
 		dir: join(project, "flag"),
 	});
-	assert.deepEqual(selectRunJournal({ journal: { memory: true } }), { kind: "memory" });
 });
 
 test("process adapter selections resolve { env } and { file } secrets and never report their values (#3783)", async () => {
@@ -373,9 +314,10 @@ test("process adapter selections resolve { env } and { file } secrets and never 
 	vi.stubEnv(SESSIONS_STORAGE_ENV, adapter(join(root, "sessions.sqlite"), { token: { env: "ISSUE_3783_TOKEN" } }));
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, adapter(join(root, "journal.sqlite"), { password: { file: "password.txt" } }));
 	const sessions = await resolveSessionStore(project, { agentDir });
-	const journal = await resolveRunJournal();
+	vi.stubEnv(SESSIONS_STORAGE_ENV, adapter(join(root, "file-secret.sqlite"), { password: { file: "password.txt" } }));
+	const withFile = await resolveSessionStore(project, { agentDir });
 	await sessions.close();
-	await journal.close();
+	await withFile.close();
 	await writeFileEnsuringDir(
 		join(project, "selection.json"),
 		adapter(join(root, "cli.sqlite"), { token: { env: "ISSUE_3783_TOKEN" } }),
@@ -383,14 +325,16 @@ test("process adapter selections resolve { env } and { file } secrets and never 
 	setCliStorageSelection({ flag: "--storage-file", value: "selection.json" }, project);
 	await (await resolveSessionStore(project, { agentDir })).close();
 	const probes: Record<string, string> = {};
-	for (const name of ["sessions", "journal", "cli"]) {
+	for (const name of ["sessions", "file-secret", "cli"]) {
 		const database = await openNodeSqliteDatabase(join(root, `${name}.sqlite`));
 		const row = await database.get("SELECT options, domain FROM adapter_probe");
 		await database.close();
 		probes[name] = `${row?.domain}:${row?.options}`;
 	}
 	assert.ok(probes.sessions?.startsWith("sessions:") && probes.sessions.includes(`"token":"${envSecret}"`));
-	assert.ok(probes.journal?.startsWith("journal:") && probes.journal.includes(`"password":"${fileSecret}"`));
+	assert.ok(
+		probes["file-secret"]?.startsWith("sessions:") && probes["file-secret"].includes(`"password":"${fileSecret}"`),
+	);
 	assert.ok(probes.cli?.startsWith("sessions:") && probes.cli.includes(`"token":"${envSecret}"`));
 
 	setCliStorageSelection(undefined);
@@ -403,7 +347,7 @@ test("process adapter selections resolve { env } and { file } secrets and never 
 			missing: { env: "ISSUE_3783_UNSET" },
 		}),
 	);
-	for (const open of [() => resolveSessionStore(project, { agentDir }), () => resolveRunJournal()]) {
+	for (const open of [() => resolveSessionStore(project, { agentDir })]) {
 		const error = await assertConfigRejection(open, "env", STORAGE_ENV, "secret-env-missing");
 		assert.equal(error.message.includes(envSecret), false);
 	}

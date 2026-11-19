@@ -5,8 +5,6 @@ import { redactUrlCredentials } from "../../packages/coding-agent/src/core/error
 import { configuredSecretRedactor } from "../../packages/coding-agent/src/core/storage/sqlite-facade.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
 import { redactCredentialShapes } from "../../packages/coding-agent/src/utils/credential-redaction.ts";
-import { redactSensitiveText } from "../../packages/workflows/src/shared/workflow-failures-signals.ts";
-import { redactSecrets as redactCliSecrets } from "../../packages/workflows/src/workers/provisioners/cli.ts";
 
 /** A linear scan of this input takes milliseconds; a quadratic one takes minutes. */
 const ADVERSARIAL_LENGTH = 200_000;
@@ -168,7 +166,7 @@ function randomDocument(random: () => number): string {
 }
 
 describe("credential shape redaction (#4833)", () => {
-	const redactors = [redactCredentialShapes, redactSensitiveText];
+	const redactors = [redactCredentialShapes];
 
 	test("redacts JSON-quoted credential fields, password included (#4833)", () => {
 		for (const redact of redactors) {
@@ -246,7 +244,7 @@ describe("credential shape redaction (#4833)", () => {
 const PLAIN_SECRET = "Zq9vR2mXw7LpT4kN";
 
 describe("credential shape coverage", () => {
-	const redactors = [redactCredentialShapes, redactSensitiveText];
+	const redactors = [redactCredentialShapes];
 
 	function assertGone(text: string): string {
 		for (const redact of redactors) {
@@ -650,7 +648,7 @@ describe("credential redaction in more contexts", () => {
 			"\ncookie: x;".repeat(MEBIBYTE / 11),
 			`'cookie: ${"x; ".repeat(MEBIBYTE / 3)}`,
 		]) {
-			for (const redact of [redactCredentialShapes, redactSensitiveText]) {
+			for (const redact of [redactCredentialShapes]) {
 				const started = performance.now();
 				redact(input);
 				const elapsed = performance.now() - started;
@@ -1020,7 +1018,7 @@ describe("credential redaction, fourth pass", () => {
 			repeat("-u 1:2 "),
 		];
 		for (const input of inputs) {
-			for (const redact of [redactCredentialShapes, redactSensitiveText]) {
+			for (const redact of [redactCredentialShapes]) {
 				const started = performance.now();
 				redact(input);
 				const elapsed = performance.now() - started;
@@ -1116,7 +1114,6 @@ describe("capitalised credential values", () => {
 		];
 		for (const [input, expected] of cases) {
 			assert.equal(redactCredentialShapes(input), expected, input);
-			assert.equal(redactSensitiveText(input), expected, input);
 		}
 	});
 
@@ -1174,7 +1171,6 @@ describe("type annotations need a code context", () => {
 		];
 		for (const [input, expected] of cases) {
 			assert.equal(redactCredentialShapes(input), expected, input);
-			assert.equal(redactSensitiveText(input), expected, input);
 		}
 	});
 
@@ -1240,7 +1236,6 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 		];
 		for (const [input, expected] of cases) {
 			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
-			assert.ok(!redactSensitiveText(input).includes(S), JSON.stringify(input));
 		}
 	});
 
@@ -1276,7 +1271,6 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 		assert.equal(redactCredentialShapes("token: Bearer\nnext line"), "token: [redacted]\nnext line");
 		assert.equal(redactCredentialShapes("Authorization: Bearer\nabc"), "Authorization: [redacted]\nabc");
 		assert.equal(redactCredentialShapes("password=\nPORT=8080"), "password=\nPORT=8080");
-		assert.equal(redactCliSecrets("-> Token:\n    token", [], {}), "-> Token:\n    token");
 		// Only a value alone on the next line, indented deeper, belongs to a name that ends its line, as in YAML.
 		assert.equal(redactCredentialShapes(`token:\n${S}`), `token:\n${S}`);
 		assert.equal(redactCredentialShapes(`  token:\n  ${S}`), `  token:\n  ${S}`);
@@ -1321,8 +1315,6 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 		];
 		for (const [input, expected] of cases)
 			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
-		assert.equal(redactCliSecrets("Bearer abc", [], {}), "Bearer [redacted]");
-		assert.equal(redactCliSecrets("Bearer\nabc", [], {}), "Bearer\nabc");
 	});
 
 	test("a line too long to read is redacted while the lines around it stay (#5142)", () => {

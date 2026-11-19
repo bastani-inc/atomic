@@ -1,10 +1,6 @@
 /**
  * Truncation that actually releases the untruncated source.
  *
- * This local web-access copy mirrors the original helper in
- * `packages/workflows/src/shared/flat-string.ts`; web-access is a standalone package and
- * cannot import that workflows module.
- *
  * V8 does not copy characters for `String.prototype.slice`. For a flat parent of
  * 13 characters or more it allocates a **SlicedString**, which is a length, an
  * offset, and a pointer to the parent. Template interpolation then wraps that in

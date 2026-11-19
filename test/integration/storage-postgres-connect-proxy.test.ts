@@ -13,11 +13,7 @@ import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/sto
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { WakeUpHint } from "../../packages/intercom/broker/wake-up-bus.js";
 import { openPostgresDatabase, type PostgresDatabaseOptions } from "../../packages/storage-postgres/postgres.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+
 import { type ConnectProxy, closedPort, startConnectProxy } from "../helpers/http-connect-proxy.js";
 import {
 	type PostgresScope,
@@ -320,7 +316,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 		}
 	}
 
-	test("sessions, the workflow journal and Intercom work through HTTPS_PROXY, with TLS verified end to end (#5473)", async () => {
+	test("sessions and Intercom work through HTTPS_PROXY, with TLS verified end to end (#5473)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			await withEnvironment({ HTTPS_PROXY: proxy.url }, async () => {
 				const from = proxy.tunnels.length;
@@ -348,29 +344,6 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 						],
 					);
 					assert.equal((await (await SqlSessionStore.open(await through())).load("session")).entries.length, 1);
-
-					// The workflow journal.
-					const definition = workflow({
-						name: "tunnelled-run",
-						description: "",
-						inputs: {},
-						outputs: {},
-						async run(ctx) {
-							assert.equal(await ctx.tool("step", {}, async () => "done"), "done");
-							return {};
-						},
-					});
-					const backend = await JournalDurableBackend.open(await SqlRunJournal.open(await through()));
-					try {
-						const outcome = await run(
-							definition,
-							{},
-							{ runId: "tunnelled-run", cwd: "/project", store: createStore(), durableBackend: backend },
-						);
-						assert.equal(outcome.status, "completed", JSON.stringify(outcome));
-					} finally {
-						await backend.close();
-					}
 
 					// Intercom: a waiting host is woken by a notification its LISTEN session receives through the tunnel.
 					const publisher = await openDatabaseWakeUpBus({

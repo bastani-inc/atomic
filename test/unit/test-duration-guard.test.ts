@@ -274,12 +274,16 @@ test("repository declarations resolve to their real budgets", async () => {
 	assert.equal(notification.size, 0, "no test may restate the suite default as an explicit lower budget");
 });
 
-test("the real sequential workflow reload declaration keeps its explicit timeout budget", () => {
-	const file = "test/unit/workflow-run-state-real-reload.test.ts";
-	const name =
-		"user-global agent launch keeps its real publish watcher through resource and installed full reload (#3864)";
+test("a real resource loader declaration keeps its explicit timeout budget", () => {
+	const file = "test/unit/coding-agent-builtin-workflows.test.ts";
+	const name = "loads builtin pi package resources";
 	const scored = evaluateDurations(
-		report([{ file, tests: [{ title: name, status: "passed", duration: 21_611 }] }]),
+		report([
+			{
+				file,
+				tests: [{ scopes: ["coding-agent builtin resources"], title: name, status: "passed", duration: 21_611 }],
+			},
+		]),
 		30_000,
 		root,
 	);
@@ -1320,47 +1324,9 @@ test("array reads that are out of range, fractional or dynamic stay unresolved",
 	assert.equal(budgets.size, 9);
 });
 
-// #4051 on main: every test budgets through `testBudget(coldStarts)`, which caps
-// `poolTestBudgetMs` from test/helpers/pool-budget.ts at 600 s.
-test("the pooled resume suites are scored against their testBudget budgets", () => {
-	const expected = new Map([
-		["resuming a crashed pooled root replays children leased by the dead incarnation (#3890)", 600_000],
-		["a root stall longer than the work lease does not fence a live worker (#3888)", 315_000],
-		["repeated root stalls do not keep a stopped worker's child from being replaced (#3888)", 390_000],
-		[
-			"resuming a quit root hands its in-flight children to workers only once the root re-enqueues them (#3979)",
-			465_000,
-		],
-		["a child resumed many times keeps its full retry budget in each incarnation (#3979)", 600_000],
-		["a worker whose attempt is fenced ends it without crashing or consuming an attempt (#3979)", 240_000],
-	]);
-	const titles = [...expected.keys()];
-	const files = [
-		{ file: "test/integration/workflow-local-pool-resume.test.ts", titles: titles.slice(0, 1) },
-		{ file: "test/integration/workflow-local-pool-resume-stall.test.ts", titles: titles.slice(1, 3) },
-		{ file: "test/integration/workflow-local-pool-resume-quit.test.ts", titles: titles.slice(3) },
-	];
-	const scored = evaluateDurations(
-		report(
-			files.map(({ file, titles }) => ({
-				file,
-				tests: titles.map((title) => ({ title, status: "passed", duration: 60_000 })),
-			})),
-		),
-		30_000,
-		root,
-	);
-	assert.deepEqual(new Map(scored.samples.map((sample) => [sample.name, sample.timeoutMs])), expected);
-	assert.deepEqual(scored.unresolved, []);
-	assert.deepEqual(scored.warnings, []);
-});
-
 test("intercom reconnect recovery is scored against its declared budgets", () => {
 	const file = "test/integration/intercom-reconnect-recovery.test.ts";
-	const titles = [
-		"a failed background reconnect still recovers the session with no intercom tool call",
-		"a running workflow stage regains list visibility and both route aliases after broker churn",
-	];
+	const titles = ["a failed background reconnect still recovers the session with no intercom tool call"];
 	const scored = evaluateDurations(
 		report([{ file, tests: titles.map((title) => ({ title, status: "passed", duration: 10_000 })) }]),
 		30_000,

@@ -5,11 +5,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
-import { createMemoryTestBackend as createInMemoryTestBackend } from "../../../test/helpers/workflow-journal.js";
-import { workflow } from "../../workflows/src/authoring/workflow.js";
-import { makeMcpPort } from "../../workflows/src/extension/workflow-ports.js";
-import { run } from "../../workflows/src/runs/foreground/executor.js";
-import { createStore } from "../../workflows/src/shared/store.js";
+
 import { ENV_AGENT_DIR } from "../src/config.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -857,68 +853,5 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		await runtimeHost.session.dispose();
 		expect(await emit()).toEqual({ extension: 0, host: 1 });
-	});
-
-	it("keeps a running workflow's MCP scope calls harmless after reload", async () => {
-		const eventBus = createEventBus();
-		let scopeEventCount = 0;
-		eventBus.on("mcp.scope.set", () => {
-			scopeEventCount += 1;
-		});
-		let mcpPort: ReturnType<typeof makeMcpPort>;
-		const { runtimeHost } = await createRuntimeHost(
-			(pi) => {
-				mcpPort ??= makeMcpPort({ events: pi.events });
-			},
-			{ eventBus },
-		);
-		const staleMcpPort = mcpPort;
-		if (!staleMcpPort) throw new Error("Expected a workflow MCP port");
-
-		const firstPromptStarted = Promise.withResolvers<void>();
-		const releaseFirstPrompt = Promise.withResolvers<void>();
-		let promptCalls = 0;
-		const definition = workflow({
-			name: "stale-mcp-scope",
-			description: "keeps a stage's scope events safe across reload",
-			inputs: {},
-			outputs: {},
-			run: async (ctx) => {
-				await ctx.stage("restricted-before", { mcp: { allow: ["github"] } }).prompt("before reload");
-				await ctx.stage("restricted-after", { mcp: { allow: ["github"] } }).prompt("after reload");
-				return {};
-			},
-		});
-		const execution = run(
-			definition,
-			{},
-			{
-				store: createStore(),
-				durableBackend: await createInMemoryTestBackend(),
-				mcp: staleMcpPort,
-				adapters: {
-					prompt: {
-						prompt: async () => {
-							promptCalls += 1;
-							if (promptCalls === 1) {
-								firstPromptStarted.resolve();
-								await releaseFirstPrompt.promise;
-							}
-							return "ok";
-						},
-					},
-				},
-			},
-		);
-
-		await firstPromptStarted.promise;
-		expect(scopeEventCount).toBe(1);
-		await runtimeHost.session.reload();
-		releaseFirstPrompt.resolve();
-		const result = await execution;
-
-		expect(result.status).toBe("completed");
-		expect(promptCalls).toBe(2);
-		expect(scopeEventCount).toBe(1);
 	});
 });

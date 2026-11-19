@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
@@ -12,9 +12,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
-import { RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
-import { resolveWorkflowSnapshotFrontier } from "../../packages/workflows/src/durable/worktree-snapshots.js";
-import { closeSnapshotJournals, openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
+
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -22,7 +20,6 @@ beforeEach(() => {
 	sandbox = new GitSandbox();
 });
 afterEach(async () => {
-	await closeSnapshotJournals();
 	sandbox.dispose();
 });
 
@@ -69,31 +66,6 @@ describe("verification of a recorded file that the policy or caps now leave out 
 		const snapshot = captured(await captureWorktreeSnapshot(clone)).snapshot;
 		sandbox.write(join(clone, ".env"), "SECRET=2\n");
 		assert.equal((await verifyWorktree(snapshot, clone)).tree, snapshot.tree);
-	});
-
-	test("a resumed workflow restores instead of continuing on a checkout whose recorded file grew past the cap", async () => {
-		const { clone } = await sandbox.remoteWithClone();
-		const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
-		const { journal } = fixture;
-		await journal.createRun({ runId: "run", name: "run", cwd: clone, status: "running", createdAt: 1 });
-		const acquired = await journal.acquire("run", "holder");
-		if (acquired.status !== "acquired") throw new Error("lease not acquired");
-		sandbox.write(join(clone, "data.json"), "x".repeat(500));
-		const snapshot = captured(
-			await captureWorktreeSnapshot(clone, { settings: capped, blobs: journal.snapshotBlobs }),
-		).snapshot;
-		await journal.append(acquired.lease, {
-			type: RUN_EVENT_TYPES.checkpointRecorded,
-			payload: { kind: "tool", checkpointId: "T1", worktreeSnapshots: [snapshot] },
-		} as unknown as RunEvent);
-		sandbox.write(join(clone, "data.json"), "y".repeat(3000));
-		const mappings = await resolveWorkflowSnapshotFrontier(journal, "run", {
-			settings: capped,
-			storeDir: sandbox.path("host"),
-		});
-		assert.equal(mappings.length, 1);
-		assert.equal(mappings[0]!.from, clone);
-		assert.equal(readFileSync(join(mappings[0]!.to, "data.json"), "utf8"), "x".repeat(500));
 	});
 });
 

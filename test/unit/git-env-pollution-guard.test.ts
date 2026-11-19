@@ -5,8 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
-import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
-import { cleanupWorktrees, createWorktrees } from "../../packages/workflows/src/runs/shared/worktree-setup.js";
+import { cleanupWorktrees, createWorktrees, runGitChecked } from "../../packages/subagents/src/runs/shared/worktree.js";
 
 /**
  * Regression guard for the 2026-07-20 core.worktree pollution incident.
@@ -69,7 +68,7 @@ test("full worktree lifecycle stays scrubbed and only writes shared core.hooksPa
 		.trim()
 		.split("\n")
 		.filter(Boolean);
-	const setup = await createWorktrees(fixtureDir, "hostile/nested", 1, { symlinkDirectories: [] });
+	const setup = await createWorktrees(fixtureDir, "hostile/nested", 1);
 	const worktree = setup.worktrees[0]!;
 	assert.equal(worktree.path, join(fixtureDir, ".atomic", "worktrees", "hostile+nested-0"));
 	assert.equal((await runGitChecked(worktree.path, ["branch", "--show-current"])).trim(), "worktree-hostile+nested-0");

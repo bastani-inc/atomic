@@ -1009,7 +1009,10 @@ async function main() {
 						suite === "smoke"
 							? runSmoke({ ...context, replica, azure: /** @type {AzureRun} */ (azure) })
 							: suite === "multi-node-resume"
-								? runMultiNodeResume(context)
+								? runMultiNodeResume({
+										...context,
+										legacyWorkflows: capabilities?.workflows.includes("resolveRunJournal") === true,
+									})
 								: runReleased(context),
 				).catch((error) => {
 					report.suites.push({
