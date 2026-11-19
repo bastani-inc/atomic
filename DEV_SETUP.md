@@ -341,7 +341,7 @@ Atomic uses a **versionless release-base** flow: `main` and supported workstream
     The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. A non-main base must be protected with the repository's required CI checks before it is used.
 3. The tag push starts `.github/workflows/publish.yml` directly. It validates the tag identity, rebuilds all native bindings and release archives, stages a verified draft GitHub Release, publishes npm packages through OIDC, and undrafts the GitHub Release only after npm succeeds. Configure npm trusted publishers with workflow filename `publish.yml` and environment `npm-publish`.
 
-To run the full guarded automation (release-notes PR + cut-release + publish monitoring), use the `publish-release` Atomic workflow instead of the manual steps above.
+For the guarded release-notes PR, tag cut and publish monitoring, use the repository's [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`) instead of the manual steps above.
 
 Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. CI uses trusted publishing without a static npm credential.
 

@@ -242,24 +242,16 @@ The selected base is never advanced by the version stamp. The script resolves it
 
 ### Agent publishing requests
 
-If a user asks to publish a release or prerelease, route the request through the repository-local `publish-release` Atomic workflow:
+When asked to publish a release or prerelease, follow the repository-local [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`). Ask for a missing version; infer release versus prerelease from a valid version and clarify ambiguity. Default the release base to `main`. Require non-main bases to be protected with the repository's required CI checks.
 
-1. Ask for the version only when it was not supplied. Stable releases use `MAJOR.MINOR.PATCH`; prereleases use `MAJOR.MINOR.PATCH-alpha.REVISION` with revision starting at 1.
-2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid. Use the requested `base_ref`, defaulting to the short branch name `main` when omitted.
-3. For non-main bases, require the branch to be protected with the repository's required CI checks before using it as the selected release base.
-4. Launch one `publish-release` workflow run with `target_version`, `release_kind`, and `base_ref`. Do not duplicate its Git, PR, tag, or publishing actions inline.
-5. A durable preflight first requires a clean worktree, then either proves that no release branch or PR exists and allows changelog preparation, or reuses one exact changelog-only commit and matching open PR. Commit inspection exhausts every GitHub file page and checks both sides of renamed paths. Conflicting worktree, base, files, commit, branch, local/remote SHA, or PR identity stops the run; the workflow never resets or force-pushes reuse state.
-6. The workflow discovers exact required contexts and app identities from branch protection and active rulesets. Only the classic unprotected-branch status-check lookup may be absent; ruleset lookup errors fail closed. Configured checks that have not materialized remain pending. An empty configured set, identity drift, failed check, GitHub/auth error, abort, or the 45-minute bound stops the run; only all exact checks passing or the exact PR being admin-merged proceeds.
-7. After the gate passes, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
-8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. That tag push automatically starts `publish.yml`; the workflow does not manually dispatch normal publication.
-9. A durable gate polls for the exact `bastani-inc/atomic` push run at `.github/workflows/publish.yml`, matching tag and release SHA. A delayed run stays pending; identity drift, command/auth failure, a non-success conclusion, abort, or the 60-minute bound stops the run.
+Use the skill's read-only gates in `scripts/release/publish-release.ts`; do not substitute a green PR badge, bypass a gate or repeat a push after losing its response. The skill requires a clean checkout, prepares or reuses one exact changelog-only PR, gates its verified head for up to 45 minutes, and only then merges, fast-forwards the versionless base and cuts the detached tag. The tag starts `publish.yml`. Wait up to 60 minutes for its exact push run; never reset, force-push, move a tag or dispatch a duplicate publication.
 
 ## Docs
 
 - ALWAYS keep the user-facing docs in `packages/coding-agent/docs` up-to-date with the latest changes after you make changes. Prefer to keep other docs up-to-date as well, but the coding-agent docs are the most important since they are user-facing and often consulted by users and other agents.
 - `packages/coding-agent/docs` is user-facing documentation. Explain how to use, configure, and troubleshoot Atomic. Do not include internal implementation details, test infrastructure, debugging histories, verification evidence, or maintainer-only design notes. Keep those in repository-level docs or PR descriptions. Keep user guides concise and focused on what users need to know.
 - Update user guides only when a change affects how users use, configure, or troubleshoot Atomic. An internal optimization does not require a guide edit merely to say that something is faster, uses less CPU, or needs no configuration. If there is no actionable user guidance, leave the guide unchanged. Put user-visible performance improvements in the package changelog and measurements or implementation rationale in repository-level notes or the PR description.
-- To update docs, prefer using your `release-docs` workflow to thoroughly update all relevant docs with the latest changes. If you need to make a quick fix or update, you can also edit the markdown files directly, but make sure to keep them comprehensive and up-to-date.
+- For a thorough refresh, use the repository-local [release-docs skill](.agents/skills/release-docs/SKILL.md) (`/skill:release-docs`) on a clean feature branch. For a focused fix you can edit the relevant Markdown directly.
 
 ## Changelog
 
@@ -290,7 +282,7 @@ Use these sections under `## [Unreleased]`:
   subsections. It must stand alone: the GitHub release page shows only that section.
 - A release section opens with a human-readable summary: the prose between the
   `## [x.y.z]` heading and its first `###` section. Write it when preparing the
-  release (the `publish-release` workflow does this), never under `## [Unreleased]`.
+  release (see the `publish-release` skill), never under `## [Unreleased]`.
   Write one summary per release, in `packages/coding-agent/CHANGELOG.md` only, covering
   every package; never repeat a change across packages' summaries, and keep it brief.
   Use one theme-title sentence, then one short bullet per change grouped by theme, each

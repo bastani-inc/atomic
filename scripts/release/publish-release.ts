@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
+import { canonicalReleaseBaseRef } from "../release-base.js";
 
 export type ReleaseKind = "release" | "prerelease";
 
@@ -31,7 +33,6 @@ export const REQUIRED_CHECK_POLL_INTERVAL_MS = 30_000;
 export const REQUIRED_CHECK_TIMEOUT_MS = 45 * 60_000;
 export const PUBLISH_POLL_INTERVAL_MS = 30_000;
 export const PUBLISH_TIMEOUT_MS = 60 * 60_000;
-export const RELEASE_TOOL_TIMEOUT_BUFFER_MS = 60_000;
 
 export type PullRequestIdentity = {
 	readonly url: string;
@@ -40,7 +41,7 @@ export type PullRequestIdentity = {
 };
 
 export type PreparationInspection =
-	| { readonly mode: "prepare"; readonly summary: string }
+	| { readonly mode: "prepare"; readonly baseSha: string; readonly summary: string }
 	| {
 			readonly mode: "reuse";
 			readonly summary: string;
@@ -87,6 +88,7 @@ export function evaluatePreparationReuse(
 	if (state.remoteSha === undefined && state.pullRequests.length === 0) {
 		return {
 			mode: "prepare",
+			baseSha: state.baseSha,
 			summary: `No existing ${release.branch} branch or open PR; prepare from ${state.baseSha}.`,
 		};
 	}
@@ -386,11 +388,7 @@ export async function pollPublish(input: {
 export type ReleaseCommandResult = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
 export type ReleaseCommandTransport = {
-	readonly run: (
-		argv: readonly string[],
-		cwd: string,
-		signal: AbortSignal,
-	) => Promise<ReleaseCommandResult>;
+	readonly run: (argv: readonly string[], cwd: string, signal: AbortSignal) => Promise<ReleaseCommandResult>;
 };
 
 class ReleaseCommandError extends Error {
@@ -415,7 +413,12 @@ async function systemRunCommand(
 	const [command, ...args] = argv;
 	if (command === undefined) throw new Error("release command must not be empty");
 	return await new Promise<ReleaseCommandResult>((resolve, reject) => {
-		const child = spawn(command, args, { cwd, signal, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(command, args, {
+			cwd,
+			signal,
+			env: createGitEnvironment(),
+			stdio: ["ignore", "pipe", "pipe"],
+		});
 		let stdout = "";
 		let stderr = "";
 		child.stdout.setEncoding("utf8");
@@ -556,6 +559,13 @@ async function inspectPreparation(input: {
 		input.cwd,
 		input.signal,
 	);
+	if (worktreeStatus !== "") throw new Error(`release checkout is not clean: ${worktreeStatus}`);
+	if (
+		input.baseRef !== "main" &&
+		(await configuredChecks(input.transport, input.baseRef, input.cwd, input.signal)).length === 0
+	) {
+		throw new Error(`Required-check protection for ${input.baseRef} is empty.`);
+	}
 	const remoteBranch = await checkedCommand(
 		input.transport,
 		["git", "ls-remote", "--heads", "origin", `refs/heads/${input.release.branch}`],
@@ -800,4 +810,68 @@ export function createReleaseBoundary(cwd: string, options: ReleaseBoundaryOptio
 				...(options.publishIntervalMs === undefined ? {} : { intervalMs: options.publishIntervalMs }),
 			}),
 	};
+}
+
+const usage = `Usage: bun run scripts/release/publish-release.ts
+  inspect-preparation <release|prerelease> <version> [base]
+  wait-required-checks <release|prerelease> <version> <base> <pr-url> <head-sha>
+  wait-publish-run <release|prerelease> <version> <release-sha>`;
+
+function fullSha(value: string): string {
+	if (!/^[0-9a-f]{40}$/u.test(value)) throw new Error("Expected a full lowercase commit SHA.");
+	return value;
+}
+
+async function runGate(args: string[], interrupted: AbortSignal): Promise<PreparationInspection | GateResult> {
+	const [command, kind, version, ...rest] = args;
+	if ((kind !== "release" && kind !== "prerelease") || !version) throw new Error(usage);
+	const release = validateReleaseRequest(kind, version);
+	const cwd = process.cwd();
+	const boundary = createReleaseBoundary(cwd);
+	// Bound the Git/GitHub calls themselves, not just the sleeps between inspections.
+	const deadline = (ms: number) => AbortSignal.any([interrupted, AbortSignal.timeout(ms)]);
+	if (command === "wait-publish-run" && rest.length === 1) {
+		return boundary.waitForPublish({ release, releaseSha: fullSha(rest[0]), signal: deadline(PUBLISH_TIMEOUT_MS) });
+	}
+	const baseRef = rest[0] || "main";
+	canonicalReleaseBaseRef(baseRef);
+	if (command === "inspect-preparation" && rest.length <= 1) {
+		return boundary.inspectPreparation({ cwd, release, baseRef, signal: deadline(2 * 60_000) });
+	}
+	if (command === "wait-required-checks" && rest.length === 3) {
+		const url = rest[1];
+		const number = Number(url.split("/").at(-1));
+		if (
+			!Number.isSafeInteger(number) ||
+			number < 1 ||
+			url !== `https://github.com/${RELEASE_REPOSITORY}/pull/${number}`
+		) {
+			throw new Error(`Expected an exact ${RELEASE_REPOSITORY} PR URL.`);
+		}
+		return boundary.waitForRequiredChecks({
+			release,
+			baseRef,
+			pullRequest: { url, number, headSha: fullSha(rest[2]) },
+			signal: deadline(REQUIRED_CHECK_TIMEOUT_MS),
+		});
+	}
+	throw new Error(usage);
+}
+
+if (import.meta.main) {
+	const controller = new AbortController();
+	const interrupt = () => controller.abort(new Error("Release gate interrupted"));
+	process.once("SIGINT", interrupt);
+	process.once("SIGTERM", interrupt);
+	try {
+		const result = await runGate(process.argv.slice(2), controller.signal);
+		console.log(JSON.stringify(result));
+		if ("status" in result && result.status !== "passed") process.exitCode = 1;
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
+	} finally {
+		process.off("SIGINT", interrupt);
+		process.off("SIGTERM", interrupt);
+	}
 }
