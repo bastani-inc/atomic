@@ -26,8 +26,8 @@ function cursorScope(sessionId: string, epoch: string): string {
 }
 
 /** Start a portable iteration over the captured generation without reading its first page yet. */
-export function firstHistoryCursor(sessionId: string, epoch: string, throughSeq: number): string {
-	return `${cursorScope(sessionId, epoch)}.1.${throughSeq}`;
+export function firstHistoryCursor(sessionId: string, epoch: string, throughSeq: number, fromSeq = 1): string {
+	return `${cursorScope(sessionId, epoch)}.${fromSeq}.${throughSeq}`;
 }
 
 /** The retained suffix of an append-order task transcript remembers its preceding saved prefix. */

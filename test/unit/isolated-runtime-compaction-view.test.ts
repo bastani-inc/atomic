@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
+import { renderEngineDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/engine-diagnostic-view.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
 import type { RpcEvent } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
@@ -33,8 +34,9 @@ function engineClient() {
 	};
 }
 
-async function hostOf(harness: Harness) {
+async function hostOf(harness: Harness, getEntries?: () => Promise<unknown>) {
 	const engine = engineClient();
+	if (getEntries) Object.assign(engine.client, { getEntries });
 	const local = new AgentSessionRuntime(
 		harness.session,
 		{
@@ -58,13 +60,14 @@ async function hostOf(harness: Harness) {
 	);
 	// The host's view of the engine's session: the test decides when its refresh from the store settles.
 	const refreshes: PromiseWithResolvers<void>[] = [];
-	Object.assign(runtime, {
-		refreshSessionView: () => {
-			const refresh = Promise.withResolvers<void>();
-			refreshes.push(refresh);
-			return refresh.promise;
-		},
-	});
+	if (!getEntries)
+		Object.assign(runtime, {
+			refreshSessionView: () => {
+				const refresh = Promise.withResolvers<void>();
+				refreshes.push(refresh);
+				return refresh.promise;
+			},
+		});
 	const seen: string[] = [];
 	runtime.session.subscribe((event) => {
 		seen.push(
@@ -73,7 +76,7 @@ async function hostOf(harness: Harness) {
 				: event.type,
 		);
 	});
-	return { emit: engine.emit, refreshes, seen, session: runtime.session };
+	return { emit: engine.emit, refreshes, seen, session: runtime.session, runtime };
 }
 
 const user = (content: string) =>
@@ -146,16 +149,87 @@ test("an engine host shows a compaction's end after a bounded wait when its view
 	try {
 		vi.useFakeTimers();
 		const host = await hostOf(harness);
+		const visible: string[] = [];
+		host.runtime.onDiagnostic((d) =>
+			renderEngineDiagnostic(d, {
+				stopWorkingLoader: () => visible.push("stop"),
+				showError: (m) => visible.push(m),
+				showStatus: (m) => visible.push(m),
+			}),
+		);
 		host.emit(compactionEnd(true));
 		host.emit(user("after"));
 		assert.deepEqual(host.seen, []);
 		vi.advanceTimersByTime(5_000);
 		assert.deepEqual(host.seen, ["compaction_end", "message_start:after"]);
+		assert.deepEqual(visible, [], "a slow internal view read adds no status to the conversation");
 	} finally {
 		vi.useRealTimers();
 		await harness.cleanup();
 	}
 });
+
+test.each([false, true])(
+	"a compaction refresh overlapping a turn-end refresh shows the new boundary (newer read first: %s, #5593)",
+	async (newerFirst) => {
+		const harness = await createHarness();
+		try {
+			const reads: PromiseWithResolvers<unknown>[] = [];
+			const host = await hostOf(harness, () => {
+				const r = Promise.withResolvers<unknown>();
+				reads.push(r);
+				return r.promise;
+			});
+			let shown: string[] | undefined;
+			host.session.subscribe((e) => {
+				if (e.type === "compaction_end") shown = host.session.sessionManager.getEntries().map((i) => i.type);
+			});
+			const timestamp = "2026-01-01T00:00:00.000Z";
+			const entry = {
+				type: "message",
+				id: "u1",
+				parentId: null,
+				timestamp,
+				message: { role: "user", content: "old", timestamp: 0 },
+			};
+			const boundary = {
+				type: "compaction",
+				id: "c1",
+				parentId: "u1",
+				timestamp,
+				summary: "new",
+				firstKeptEntryId: "u1",
+				tokensBefore: 10,
+			};
+			host.emit({ type: "agent_end", messages: [] } as RpcEvent);
+			await vi.waitFor(() => assert.ok(reads[0]));
+			host.emit(compactionEnd(true));
+			await new Promise<void>((r) => setImmediate(r));
+			const old = { entries: [entry], leafId: "u1" },
+				fresh = { entries: [entry, boundary], leafId: "c1" };
+			if (newerFirst && reads[1]) {
+				reads[1].resolve(fresh);
+				await vi.waitFor(() => assert.ok(shown));
+				reads[0]!.resolve(old);
+			} else {
+				reads[0]!.resolve(old);
+				await vi.waitFor(() => assert.ok(reads[1]));
+				await new Promise<void>((r) => setImmediate(r));
+				reads[1]!.resolve(fresh);
+			}
+			await vi.waitFor(() => assert.ok(shown));
+			await new Promise<void>((r) => setImmediate(r));
+			assert.deepEqual(shown, ["message", "compaction"], "the listener receives the clear from its refreshed view");
+			assert.deepEqual(
+				host.session.sessionManager.getEntries().map((i) => i.type),
+				shown,
+				"a late read never restores the old view",
+			);
+		} finally {
+			await harness.cleanup();
+		}
+	},
+);
 
 test("a compaction that changed nothing is shown at once on an engine host (#5593)", async () => {
 	const harness = await createHarness();

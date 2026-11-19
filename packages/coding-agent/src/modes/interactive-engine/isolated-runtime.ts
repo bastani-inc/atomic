@@ -11,6 +11,7 @@ import type {
 	PromptOptions,
 	SessionRecoveryReport,
 } from "../../core/agent-session-types.js";
+import { reportDebugAsync } from "../../core/debug.ts";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { ExtensionError, HostSessionPickerRow } from "../../core/extensions/index.js";
@@ -20,7 +21,12 @@ import { mergeSessionTrustDecisions, type SessionTrustDecisions } from "../../co
 import { type SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
 import { retryStatusUpdate, type SessionRetryStatus } from "../../core/session-retry-status.js";
-import type { OversizedSessionEntry } from "../../core/storage/session/types.js";
+import type { MemorySessionStore } from "../../core/storage/session/memory-session-store.js";
+import {
+	type OversizedSessionEntry,
+	SESSION_HISTORY_SCAN_ENTRIES,
+	type SessionHistoryPage,
+} from "../../core/storage/session/types.js";
 import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
@@ -161,6 +167,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
 	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
+	/** Only committed bytes, independent of host-local mutations. Never shared across engine session generations. */
+	private privateMirror?: {
+		id: string;
+		epoch: string;
+		lastSeq: number;
+		generation?: number;
+		store: MemorySessionStore;
+	};
+	private privateRefresh?: Promise<void>;
+	private refreshSerial = 0;
+	private lastInstalledRefresh = 0;
+	private readonly refreshedManagers = new WeakMap<SessionManager, object>();
 	/** Host sessions bound with an extension error listener. Engine errors that arrive before one is bound wait for it. */
 	private readonly errorReportingSessions = new WeakSet<AgentSession>();
 	private readonly heldExtensionErrors: ExtensionError[] = [];
@@ -416,10 +434,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async deleteWorkflowFromPicker(runId: string): Promise<void> {
 		await this.client.requestInternal<void>({ type: "delete_workflow_from_picker", runId });
 	}
-	async initializeFromEngine(generation = this.client.getGeneration?.()): Promise<void> {
+	async initializeFromEngine(
+		generation = this.client.getGeneration?.(),
+		preview?: (lines: string[]) => void,
+	): Promise<void> {
 		const run = this.initializationTail
-			? this.initializationTail.then(() => this.initializeFromEngineGeneration(generation))
-			: this.initializeFromEngineGeneration(generation);
+			? this.initializationTail.then(() => this.initializeFromEngineGeneration(generation, preview))
+			: this.initializeFromEngineGeneration(generation, preview);
 		const tail = run.catch(() => {});
 		this.initializationTail = tail;
 		void tail.then(() => {
@@ -490,7 +511,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return state;
 	}
 
-	private async initializeFromEngineGeneration(generation: number | undefined): Promise<void> {
+	private async initializeFromEngineGeneration(
+		generation: number | undefined,
+		preview?: (lines: string[]) => void,
+	): Promise<void> {
 		if (this.disposed || (generation !== undefined && !this.isCurrentResourceGeneration(generation))) return;
 		try {
 			this.sessionStats.reset();
@@ -571,7 +595,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				: undefined;
 			this.queuePause.synchronize(state.queuedMessagesPaused === true);
 			this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
-			await this.refreshSessionView();
+			await this.refreshSessionView(undefined, preview);
 			this.sessionStats.refresh();
 			this.engineCallbackActive = false;
 			this.health.clearUnresponsive();
@@ -995,6 +1019,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.disposed = true;
 		this.discardHeldHostEvents();
 		this.hostListeners.clear();
+		this.privateMirror = undefined;
 		this.stopSharingDebugSetting();
 		this.disposePromise = (async () => {
 			// A quit the user asked for must reach the engine before it is stopped: the stop
@@ -1452,13 +1477,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private reportCompactionHold(reason: string): void {
 		if (this.compactionHoldReported) return;
 		this.compactionHoldReported = true;
-		this.health.publish({
-			activity: undefined,
-			elapsedMs: COMPACTION_VIEW_HOLD_MS,
-			level: "blocking",
-			source: "stderr",
-			message: `Interactive engine: a compaction was shown before the session view refreshed (${reason})`,
-		});
+		// The compaction itself succeeded. A slow mirror is useful in a debug log, not as a persistent chat row.
+		void reportDebugAsync("engine", "compaction-view-refresh", { reason });
 	}
 
 	private dispatchBestEffort(label: string, operation: Promise<unknown>): void {
@@ -1607,9 +1627,42 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return state;
 	}
 
-	private async refreshSessionView(valid: () => boolean = () => true): Promise<void> {
+	private async refreshSessionView(valid?: () => boolean, preview?: (lines: string[]) => void): Promise<void> {
+		const session = super.session,
+			generation = this.client.getGeneration?.();
+		const current = () =>
+			!this.disposed &&
+			session === super.session &&
+			generation === this.client.getGeneration?.() &&
+			(valid?.() ?? true);
+		if (session.sessionManager.isPersisted()) {
+			this.privateMirror = undefined;
+			return this.refreshCurrentView(current);
+		}
+		// Serialize only the unsaved mirror: a late page must not publish over another refresh.
+		const run = () => (current() ? this.refreshCurrentView(current, preview) : Promise.resolve());
+		const pending = this.privateRefresh ? this.privateRefresh.then(run) : run();
+		const settled = pending.catch(() => {});
+		this.privateRefresh = settled;
+		try {
+			await pending;
+		} finally {
+			if (this.privateRefresh === settled) this.privateRefresh = undefined;
+		}
+	}
+
+	private async refreshCurrentView(valid: () => boolean, preview?: (lines: string[]) => void): Promise<void> {
 		const session = super.session;
 		const currentManager = session.sessionManager;
+		const serial = ++this.refreshSerial,
+			lineage = this.refreshedManagers.get(currentManager) ?? {};
+		this.refreshedManagers.set(currentManager, lineage);
+		// Another refresh of this same view may install its manager while this one is reading.
+		// Do not mistake it for a session switch, or let an older read overwrite a newer completed read.
+		const current = () =>
+			valid() &&
+			serial >= this.lastInstalledRefresh &&
+			this.refreshedManagers.get(session.sessionManager) === lineage;
 		const unchanged =
 			currentManager.isPersisted() &&
 			typeof currentManager.refreshFromStore === "function" &&
@@ -1623,8 +1676,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						currentManager.getCwd(),
 						{ history: "tail" },
 					)
-				: await this.openUnpersistedSessionView(currentManager);
-		if (!valid() || this.disposed || session !== super.session || currentManager !== session.sessionManager) return;
+				: await this.openUnpersistedSessionView(currentManager, current, preview);
+		if (!current()) return;
+		this.lastInstalledRefresh = serial;
+		this.refreshedManagers.set(refreshed, lineage);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;
@@ -1635,17 +1690,122 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 * in the engine's memory, so its view is rebuilt from the engine's entries and leaf, under the engine's session id
 	 * (#4703).
 	 */
-	private async openUnpersistedSessionView(current: SessionManager): Promise<SessionManager> {
-		const { entries, leafId, privateArchive } = await this.client.getEntries({ windowOnly: true });
+	private async openUnpersistedSessionView(
+		current: SessionManager,
+		valid: () => boolean,
+		preview?: (lines: string[]) => void,
+	): Promise<SessionManager> {
+		const generation = this.client.getGeneration?.();
+		const previous = this.privateMirror?.generation === generation ? this.privateMirror : undefined;
+		let committed: typeof this.privateMirror;
+		const { entries, leafId, privateArchive } = await this.client.getEntries({
+			windowOnly: true,
+			mirror: { epoch: previous?.epoch, lastSeq: previous?.lastSeq ?? 0, preview: preview !== undefined },
+		});
+		if (!valid()) return current;
+		if (privateArchive?.preview?.length) preview?.(privateArchive.preview);
 		const header = current.getHeader();
 		const id = privateArchive?.sessionId ?? this.remoteSessionId ?? header?.id;
 		const headers = header ? [{ ...header, id: id ?? header.id }] : [];
 		const cwd = current.getCwd();
 		let view: SessionManager;
 		if (!privateArchive) {
+			this.privateMirror = undefined;
 			view = await SessionManager.inMemory(cwd, undefined, [...headers, ...entries]);
+		} else if (
+			privateArchive.epoch !== undefined &&
+			privateArchive.lastSeq !== undefined &&
+			privateArchive.fromSeq !== undefined
+		) {
+			const { sessionId, epoch, lastSeq, fromSeq } = privateArchive;
+			const fresh = async () => {
+				const seed = await SessionManager.inMemory(cwd, { id: sessionId }, headers);
+				return seed.getSessionStore() as MemorySessionStore;
+			};
+			const canExtend = previous?.id === sessionId && previous.epoch === epoch && previous.lastSeq + 1 === fromSeq;
+			if (!canExtend && fromSeq !== 1) throw new Error("Incomplete unsaved engine history");
+			const archive = canExtend ? previous.store.copyPrivateMirror(sessionId) : await fresh();
+			let at = fromSeq;
+			const appendPage = async (
+				target: MemorySessionStore,
+				page: SessionHistoryPage,
+				start: number,
+				chunks: (item: OversizedSessionEntry) => AsyncIterable<Uint8Array>,
+				overrides?: ReadonlyMap<number, SessionEntry>,
+			) => {
+				let pos = start,
+					batch: SessionEntry[] = [];
+				const flush = async () => {
+					if (batch.length) {
+						await target.append(sessionId, batch, { expectSeq: pos - 1 - batch.length });
+						batch = [];
+					}
+				};
+				for (const item of page.items) {
+					if (item.seq !== pos || item.seq > lastSeq) throw new Error("Incomplete unsaved engine history");
+					const entry = overrides?.get(pos) ?? ("entry" in item ? item.entry : undefined);
+					if (entry) batch.push(entry);
+					else if (!("entry" in item)) {
+						await flush();
+						await target.appendPrivateMirrorChunks(sessionId, pos, item.bytes, chunks(item));
+					}
+					pos++;
+				}
+				await flush();
+				return pos;
+			};
+			let page = privateArchive.firstPage;
+			const bootstrap = fromSeq === 1 && !canExtend;
+			let decoded: SessionEntry[] | undefined = bootstrap && privateArchive.completeWindow ? [] : undefined;
+			let cursor: string | undefined = privateArchive.cursor;
+			while (at <= lastSeq) {
+				if (!bootstrap && !cursor) throw new Error("Incomplete unsaved engine history");
+				if (!valid()) return current;
+				page ??= await this.client.getHistoryPage({
+					...(bootstrap ? { privateCut: { sessionId, epoch, lastSeq, fromSeq: at } } : { cursor }),
+					pageEntries: SESSION_HISTORY_SCAN_ENTRIES,
+				});
+				if (page.privateBytes) {
+					const bytes = page.privateBytes;
+					if (bytes.seq !== at || bytes.lengths.length > lastSeq - at + 1)
+						throw new Error("Incomplete unsaved engine history");
+					const parsed = archive.appendPrivateMirrorBytes(sessionId, bytes);
+					decoded?.push(...parsed);
+					at += parsed.length;
+				} else {
+					if (!page.items.length) throw new Error("Incomplete unsaved engine history");
+					decoded = undefined;
+					at = await appendPage(archive, page, at, (item) => this.unsavedChunks(item));
+				}
+				cursor = page.nextCursor;
+				page = undefined;
+			}
+			if (privateArchive.summary) archive.setPrivateMirrorSummary(sessionId, privateArchive.summary);
+			const rows = new Map(privateArchive.seqs.map((seq, index) => [seq, entries[index]!]));
+			const changes = privateArchive.overridesOnly ? rows : archive.privateMirrorOverrides(sessionId, rows);
+			let local = archive.copyPrivateMirror(sessionId, true);
+			const complete = await SessionManager.openLinearPrivateMirror(local, sessionId, cwd, changes, decoded);
+			if (!complete && changes.size) {
+				// Only needed when an extension has directly edited a resident object after it was stored.
+				// Rebuild the private view from local bytes, never by bootstrapping from the engine again.
+				const { readSessionHistory, readSessionHistoryChunks } = await import(
+					"../../core/storage/session/history-pages.js"
+				);
+				local = await fresh();
+				let position = 1;
+				for await (const p of readSessionHistory(archive, sessionId, { pageEntries: SESSION_HISTORY_SCAN_ENTRIES }))
+					position = await appendPage(
+						local,
+						p,
+						position,
+						(item) => readSessionHistoryChunks(archive, item),
+						changes,
+					);
+			}
+			view = complete ?? (await SessionManager.open(local, sessionId, cwd));
+			committed = { id: sessionId, epoch, lastSeq, generation, store: archive };
 		} else {
-			// The engine's unsaved archive disappears if the engine dies. Keep a separate private, writable
+			// Older engines do not negotiate an incremental mirror. The engine's unsaved archive disappears if the engine dies. Keep a separate private, writable
 			// host backend as before; never proxy host-local writes or spill private SDK data to disk.
 			const seed = await SessionManager.inMemory(cwd, { id: privateArchive.sessionId }, headers);
 			const store = seed.getSessionStore();
@@ -1673,22 +1833,27 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 		if (leafId === null) await view.resetLeaf();
 		else if (leafId !== view.getLeafId()) await view.branch(leafId);
+		if (valid()) this.privateMirror = committed;
 		return view;
 	}
 
-	private async readUnsavedEntry(ref: OversizedSessionEntry): Promise<SessionEntry> {
-		const decoder = new TextDecoder("utf-8", { fatal: true });
-		let json = "";
+	private async *unsavedChunks(ref: OversizedSessionEntry): AsyncGenerator<Uint8Array> {
 		for (let offset = 0; offset < ref.bytes; ) {
 			const result = await this.client.getHistoryChunk(ref, offset);
 			const chunk = Buffer.from(result.data, "base64");
 			const end = offset + chunk.length;
 			if (end <= offset || end > ref.bytes || (result.nextOffset ?? ref.bytes) !== end)
 				throw new Error("Incomplete unsaved engine entry");
-			json += decoder.decode(chunk, { stream: end < ref.bytes });
+			yield chunk;
 			offset = end;
 		}
-		return JSON.parse(json) as SessionEntry;
+	}
+
+	private async readUnsavedEntry(ref: OversizedSessionEntry): Promise<SessionEntry> {
+		const decoder = new TextDecoder("utf-8", { fatal: true });
+		let json = "";
+		for await (const part of this.unsavedChunks(ref)) json += decoder.decode(part, { stream: true });
+		return JSON.parse(json + decoder.decode()) as SessionEntry;
 	}
 
 	private observeEvent(event: RpcEvent): void {

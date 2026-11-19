@@ -82,6 +82,18 @@ const STUB_ENTRY: SessionEntry = {
 	customType: "",
 };
 
+export interface PrivateMirrorCut {
+	sessionId: string;
+	epoch: string;
+	lastSeq: number;
+	fromSeq: number;
+}
+export interface PrivateMirrorPage {
+	seq: number;
+	lengths: number[];
+	data: string;
+}
+
 interface StoredSession {
 	header: Uint8Array;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
@@ -98,7 +110,7 @@ interface StoredSession {
 	spilledChecksum: number;
 	/** The release writing its entries to its file now; a load, a delete or another release waits for it. */
 	spilling: Promise<void> | undefined;
-	readonly starts: number[];
+	starts: number[];
 	totalBytes: number;
 	index: SessionResumeIndex;
 	blocks: number[];
@@ -300,6 +312,16 @@ export class MemorySessionStore implements SessionStore {
 		if (entries.length === 0) return { lastSeq: record.lastSeq };
 		const index = this.appendedIndex(record, entries);
 		const encoded = this.encodeEntries(entries);
+		this.appendEncoded(record, encoded);
+		record.index = index;
+		record.summaryState = applySessionSummaryEntries(record.summaryState, entries).state;
+		return { lastSeq: record.lastSeq };
+	}
+
+	private appendEncoded(record: StoredSession, encoded: { bytes: Uint8Array; lengths: readonly number[] }) {
+		// Two private mirror snapshots share their immutable offset prefix. A divergent writer copies
+		// offsets only, never historical bodies; a linear sequence of refreshes just extends the prefix.
+		if (record.starts.length !== record.lastSeq) record.starts = record.starts.slice(0, record.lastSeq);
 		this.addChunk(record.entries, encoded.bytes);
 		let position = record.totalBytes === 0 ? 0 : record.totalBytes + 1;
 		for (const length of encoded.lengths) {
@@ -307,10 +329,241 @@ export class MemorySessionStore implements SessionStore {
 			position += length + 1;
 		}
 		record.totalBytes = position - 1;
-		record.lastSeq += entries.length;
-		record.index = index;
-		record.summaryState = applySessionSummaryEntries(record.summaryState, entries).state;
-		return { lastSeq: record.lastSeq };
+		record.lastSeq += encoded.lengths.length;
+	}
+
+	/** @internal Snapshot of the unsaved host's private bytes, writable after an engine disconnect.
+	 * The encoded chunks and append-only offset prefix are immutable at the captured cut. */
+	copyPrivateMirror(id: string, independent = false): MemorySessionStore {
+		const record = this.privateMirrorRecord(id);
+		const copy = markPrivateMemorySessionStore(new MemorySessionStore(this.cwdMatcher));
+		copy.records.set(id, {
+			...record,
+			index: independent ? { ...record.index, epoch: crypto.randomUUID() } : record.index,
+			entries: [...record.entries],
+		});
+		return copy;
+	}
+
+	/** @internal A never-branched, uncompacted session's entire history IS its displayed window.
+	 * Decode that window just once rather than deriving two sets of positions for identical ranges.
+	 * When applying direct SDK edits, keep unchanged pages' bytes; only edited pages are re-encoded. */
+	async readPrivateLinearWindow(id: string, overrides: ReadonlyMap<number, SessionEntry>, decoded?: SessionEntry[]) {
+		const record = this.privateMirrorRecord(id);
+		if (
+			record.index.compactions.length ||
+			record.index.jumps.length ||
+			record.index.needsBranchRebuild ||
+			record.index.leafSeq !== record.lastSeq
+		)
+			return undefined;
+		const held = this.held(record),
+			entries: SessionEntry[] = !overrides.size && decoded?.length === record.lastSeq ? decoded : [],
+			chunks: Uint8Array[] = [],
+			starts: number[] = [];
+		let totalBytes = 0;
+		for (let first = entries.length + 1; first <= held.lastSeq; ) {
+			let last = first;
+			const start = record.starts[first - 1]!;
+			while (
+				last < held.lastSeq &&
+				last - first < 4095 &&
+				this.spanOf(held, last + 1, last + 1)[1] - start <= SCAN_WINDOW_BYTES
+			)
+				last++;
+			const end = this.spanOf(held, last, last)[1],
+				raw = heldSlice(held.chunks, start, end),
+				page = parseEntries(raw);
+			let changed = false;
+			for (let seq = first; seq <= last; seq++) {
+				const replacement = overrides.get(seq);
+				if (!replacement) continue;
+				const original = page[seq - first]!;
+				// Changing the topology or entry kind needs the ordinary resume planner.
+				if (
+					replacement.id !== original.id ||
+					replacement.parentId !== original.parentId ||
+					replacement.type !== original.type ||
+					replacement.type === "compaction" ||
+					replacement.type === "custom"
+				)
+					return undefined;
+				page[seq - first] = replacement;
+				changed = true;
+			}
+			if (overrides.size) {
+				if (changed) {
+					validateSessionEntries(page);
+					const encoded = this.encodeEntries(page);
+					chunks.push(encoded.bytes);
+					for (const length of encoded.lengths) {
+						starts.push(totalBytes);
+						totalBytes += length + 1;
+					}
+				} else {
+					chunks.push(raw);
+					const delta = totalBytes - start;
+					for (let seq = first; seq <= last; seq++) starts.push(record.starts[seq - 1]! + delta);
+					totalBytes += raw.length + 1;
+				}
+			}
+			entries.push(...page);
+			first = last + 1;
+			if (first <= held.lastSeq) await nextTurn();
+		}
+		if (overrides.size) {
+			record.entries = chunks;
+			record.starts = starts;
+			record.totalBytes = Math.max(0, totalBytes - 1);
+			record.index = foldSessionResume(undefined, entries);
+			record.summaryState = applySessionSummaryEntries(undefined, entries).state;
+		}
+		const i = record.index;
+		return {
+			snapshot: { header: decodeHeader(record), entries, lastSeq: i.seq, epoch: i.epoch },
+			recovery: {
+				workflowStarts: i.workflowStarts,
+				admissionDigests: i.admissions,
+				intercomDeliveredIds: i.delivered,
+				deliveryOpIds: i.deliveryOps,
+			},
+		};
+	}
+
+	private privateMirrorRecord(id: string) {
+		const r = this.stored(id);
+		if (!r) throw new SessionNotFoundError(id);
+		if (this.spill || !isPrivateMemorySessionStore(this)) throw new TypeError("Expected a private in-memory mirror");
+		return r;
+	}
+
+	/** @internal Mutable SDK objects can differ from their committed bytes. Only those exceptional
+	 * rows need to be reapplied to the independent host snapshot; the canonical archive stays intact. */
+	privateMirrorOverrides(id: string, rows: ReadonlyMap<number, SessionEntry>) {
+		return this.changedMirrorRows(this.privateMirrorRecord(id), rows);
+	}
+
+	/** @internal When the engine still owns the captured in-memory cut, only live overrides need
+	 * cross the pipe; every unchanged row is already in the incremental private archive. */
+	liveMirrorOverrides(id: string, epoch: string, lastSeq: number, rows: Iterable<readonly [number, SessionEntry]>) {
+		const r = this.stored(id);
+		return r?.index.epoch === epoch && r.lastSeq === lastSeq && !r.spilling && !r.directory
+			? this.changedMirrorRows(r, rows)
+			: undefined;
+	}
+
+	private changedMirrorRows(record: StoredSession, rows: Iterable<readonly [number, SessionEntry]>) {
+		const held = this.held(record);
+		const changed = new Map<number, SessionEntry>();
+		for (const [seq, entry] of rows) {
+			const [start, end] = this.spanOf(held, seq, seq);
+			const committed = heldSlice(held.chunks, start, end),
+				current = Buffer.from(JSON.stringify(entry));
+			if (!current.equals(committed)) changed.set(seq, entry);
+		}
+		return changed;
+	}
+
+	/** @internal A fresh private mirror transports the existing encoded bytes, not a decoded array
+	 * re-serialized through the RPC pipe. An oversized singleton stays on the ordinary chunk reader. */
+	readMirrorBytes(cut: PrivateMirrorCut): PrivateMirrorPage | undefined {
+		const r = this.stored(cut.sessionId),
+			from = cut.fromSeq;
+		if (
+			!r ||
+			r.spilling ||
+			r.directory ||
+			r.index.epoch !== cut.epoch ||
+			cut.lastSeq > r.lastSeq ||
+			!Number.isSafeInteger(from) ||
+			from < 1 ||
+			from > cut.lastSeq
+		)
+			return undefined;
+		const held = this.held(r),
+			start = r.starts[from - 1]!;
+		const lengths: number[] = [];
+		let end = start;
+		for (let seq = from; seq <= cut.lastSeq && lengths.length < 4096; seq++) {
+			const stop = this.spanOf(held, seq, seq)[1];
+			if (stop - start > SCAN_WINDOW_BYTES) break;
+			lengths.push(stop - r.starts[seq - 1]!);
+			end = stop;
+		}
+		if (!lengths.length) return undefined;
+		const bytes = heldSlice(held.chunks, start, end);
+		return {
+			seq: from,
+			lengths,
+			data: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+		};
+	}
+
+	/** @internal The staged store owns each page as one immutable buffer. The decoded objects are
+	 * needed to fold its index; only a caller with a complete *current window* may reuse them. */
+	appendPrivateMirrorBytes(id: string, p: PrivateMirrorPage) {
+		const r = this.privateMirrorRecord(id),
+			bytes = Buffer.from(p.data, "base64");
+		if (
+			p.seq !== r.lastSeq + 1 ||
+			!p.lengths.length ||
+			p.lengths.length > 4096 ||
+			bytes.length > SCAN_WINDOW_BYTES ||
+			p.lengths.some((n) => !Number.isSafeInteger(n) || n < 1) ||
+			p.lengths.reduce((a, b) => a + b, p.lengths.length - 1) !== bytes.length
+		)
+			throw new Error("Incomplete unsaved engine history");
+		const page = parseEntries(bytes);
+		if (page.length !== p.lengths.length) throw new Error("Incomplete unsaved engine history");
+		const index = this.appendedIndex(r, page);
+		if (r.starts.length !== r.lastSeq) r.starts = r.starts.slice(0, r.lastSeq);
+		r.entries.push(bytes);
+		let pos = r.lastSeq ? r.totalBytes + 1 : 0;
+		for (const n of p.lengths) {
+			r.starts.push(pos);
+			pos += n + 1;
+		}
+		r.totalBytes = pos - 1;
+		r.lastSeq += page.length;
+		r.index = index;
+		r.summaryState = applySessionSummaryEntries(r.summaryState, page).state;
+		return page;
+	}
+
+	/** @internal The host already has to own these encoded bytes. Decode only the metadata that
+	 * drives its resume index, not a second, giant JavaScript representation of an archived row. */
+	async appendPrivateMirrorChunks(id: string, seq: number, size: number, chunks: AsyncIterable<Uint8Array>) {
+		const record = this.privateMirrorRecord(id);
+		if (record.lastSeq + 1 !== seq) throw new SessionConflictError(id, seq - 1, record.lastSeq);
+		const bytes = new Uint8Array(size),
+			{ entryProjector } = await import("./jsonl-entry-projection.js");
+		const project = entryProjector();
+		let at = 0;
+		for await (const chunk of chunks) {
+			if (!chunk.length || at + chunk.length > size) throw new RangeError("Incomplete private mirror entry");
+			bytes.set(chunk, at);
+			at += chunk.length;
+			project.feed(chunk);
+		}
+		const result = project.finish();
+		if (at !== size || !result) throw new Error("Incomplete private mirror entry");
+		const entry = result.entry;
+		const index = this.appendedIndex(record, [entry]);
+		this.appendEncoded(record, { bytes, lengths: [size] });
+		record.index = result.toolCalls
+			? { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + result.toolCalls } }
+			: index;
+		record.summaryState = applySessionSummaryEntries(record.summaryState, [entry]).state;
+	}
+
+	/** @internal The native per-session catalog summary includes text from giant archived messages.
+	 * Transfer its bounded metadata instead of parsing those message bodies on the host. */
+	mirrorSummary(id: string, epoch: string, lastSeq: number) {
+		const r = this.stored(id);
+		return r?.index.epoch === epoch && r.lastSeq === lastSeq ? r.summaryState : undefined;
+	}
+	setPrivateMirrorSummary(id: string, summary: SessionSummaryState) {
+		this.privateMirrorRecord(id).summaryState = summary;
 	}
 
 	private appendedIndex(record: StoredSession, entries: readonly SessionEntry[]): SessionResumeIndex {
