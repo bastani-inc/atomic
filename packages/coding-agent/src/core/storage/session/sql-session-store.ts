@@ -822,6 +822,12 @@ export class SqlSessionStore implements SessionStore {
 			saveSummary: (tx, header, lastSeq, summary, index) =>
 				this.saveSummary(tx, header.id, { header, entries: [], lastSeq }, summary, index),
 			create: (header, entries) => this.create(header, entries),
+			sourceStoredEntryChunks: (source) => {
+				const store = nativeForkReader(source, "entry");
+				return store instanceof SqlSessionStore && store.readEntryChunk === SqlSessionStore.prototype.readEntryChunk
+					? (reference, index) => store.readStoredEntryChunk(reference, index)
+					: undefined;
+			},
 			rebuildResume: async (sessionId) => {
 				await this.prepareResume(sessionId);
 			},
@@ -840,6 +846,34 @@ export class SqlSessionStore implements SessionStore {
 					: undefined;
 			},
 		};
+	}
+
+	/**
+	 * The stored chunk row `index` of the entry `reference` names, whole, in its generation; undefined when the entry is
+	 * stored whole. One read where `readEntryChunk` would take one per 64 KiB of it (#5594).
+	 */
+	private async readStoredEntryChunk(
+		reference: OversizedSessionEntry,
+		index: number,
+	): Promise<Uint8Array | undefined> {
+		this.assertOpen();
+		return this.transaction(async (tx) => {
+			const { sessionId, epoch, seq } = reference;
+			const head = await this.historyHead(tx, sessionId);
+			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
+			const row = await tx.get<SqliteRow & { chunks: number; data: Uint8Array | null }>(
+				`SELECT e.chunks, c.data FROM ${this.tables.entries} e LEFT JOIN ${this.tables.entryChunks} c
+					ON c.session_id = e.session_id AND c.seq = e.seq AND c.idx = ? WHERE e.session_id = ? AND e.seq = ?`,
+				index,
+				sessionId,
+				seq,
+			);
+			if (!row) throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
+			if (Number(row.chunks) === 0) return undefined;
+			if (row.data == null)
+				throw new StorageUnavailableError(this.descriptor, new Error(`Missing chunk of session entry ${seq}`));
+			return row.data;
+		}, SESSION_TRANSACTION);
 	}
 
 	/** How many chunks the entry `reference` names is stored in, 0 when it is stored whole, in its generation. */
