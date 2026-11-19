@@ -1168,11 +1168,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		focus?: PointerFocus,
 	): boolean {
 		const focusTarget = this.resolveMouseFocusTarget(result.focusTarget ?? result.target.component);
-		const focusChanged =
-			result.focus === true &&
-			(!focus || this.getPointerFocus() === focus) &&
-			this.getFocusedComponent() !== focusTarget;
-		if (focusChanged) {
+		const focusRequested = result.focus === true && (!focus || this.getPointerFocus() === focus);
+		const focusChanged = focusRequested && this.getFocusedComponent() !== focusTarget;
+		if (focusRequested) {
+			// Requesting the current component again can complete an overlay's pending unfocus({ target }).
 			this.setFocus(focusTarget);
 			// A captured control can claim focus on release rather than on press.
 			if (focus && this.mousePressFocus === focus) this.mousePressFocus = this.focusAfterClaim(focus, focusTarget);
