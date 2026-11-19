@@ -69,7 +69,7 @@ export {
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
 export { type ParsedSlashCommand, parseSlashCommand } from "./core/slash-commands.js";
 export * from "./core/storage/index.js";
-// Outside the storage barrel: workflow durability setup imports that barrel in every test worker.
+// Process-level storage selection is separate from the storage adapter entry point.
 export {
 	type ProcessStorageChoice,
 	processSharedStorageSelection,

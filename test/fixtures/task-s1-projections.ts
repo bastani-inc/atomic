@@ -32,7 +32,7 @@ async function attentionProjection() {
 		const recovery = value(h.actor.watchOwnerTasks(h.nativeOwner, () => {}));
 		value(h.actor.reportTaskActivity(h.runner, { reportId: "evict", change: { kind: "action", tool: "", text: "x".repeat(128 * 1024) } }));
 		h.watch.drain();
-		const attention: C.Attention = { kind: "input-needed", requestId: "", prompt: " \n ", route: { sessionId: "", promptId: "", stageAttemptId: "" } };
+		const attention: C.Attention = { kind: "input-needed", requestId: "", prompt: " \n ", route: { sessionId: "", promptId: "" } };
 		const failure: C.Cleanup = { kind: "failed", resources: [{ resource: "", code: "", message: " \n " }, { resource: "", code: "", message: " \n " }] };
 		function consistent(expected: C.Attention) {
 			h.watch.drain();
