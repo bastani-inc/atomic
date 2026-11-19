@@ -22,9 +22,14 @@ export interface TaskResumer {
 	isStopped?(taskId: TaskId): boolean;
 }
 
-const resumers = new WeakMap<object, TaskResumer>();
-/** Every bound resumer, so a task can be asked about without its owner. */
-const boundResumers = new Set<TaskResumer>();
+// An extension and its host can load separate SDK modules. Both must see the same owner binding, or a panel stop
+// misses the extension's resumable quit and falls back to permanent cancellation.
+const TASK_RESUMERS = Symbol.for("atomic-coding-agent/task-resumers@1");
+const registry = globalThis as {
+	[TASK_RESUMERS]?: { resumers: WeakMap<object, TaskResumer>; boundResumers: Set<TaskResumer> };
+};
+registry[TASK_RESUMERS] ??= { resumers: new WeakMap(), boundResumers: new Set() };
+const { resumers, boundResumers } = registry[TASK_RESUMERS];
 
 /** Registers how the tasks of `owner` (a task supervisor) resume; returns the unregister. */
 export function bindTaskResumer(owner: object, resumer: TaskResumer): () => void {
