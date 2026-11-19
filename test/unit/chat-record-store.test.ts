@@ -106,15 +106,23 @@ test("a foreground session append shares the paused diagnostic writer instead of
 		const manager = await SessionManager.create(store, process.cwd());
 		const scope = manager.chatRecordScope();
 		assert.ok(scope);
-		const run = db.run.bind(db);
-		db.run = (sql, ...params) =>
-			sql.trimStart().startsWith("INSERT INTO session_chat_v1")
-				? db.transaction(async (tx) => {
-						entered.resolve();
-						await gate.promise;
-						return tx.run(sql, ...params);
-					})
-				: run(sql, ...params);
+		// The diagnostic's own transaction pauses on the writer, before its INSERT.
+		const transaction = db.transaction.bind(db);
+		db.transaction = ((body, options) =>
+			transaction(
+				(tx) =>
+					body({
+						...tx,
+						run: async (sql, ...params) => {
+							if (sql.trimStart().startsWith("INSERT INTO session_chat_v1")) {
+								entered.resolve();
+								await gate.promise;
+							}
+							return tx.run(sql, ...params);
+						},
+					}),
+				options,
+			)) as typeof db.transaction;
 		const note = scope.store.append(scope.owner, "", { kind: "line", level: "error", text: "first" });
 		await entered.promise;
 		const user = manager.appendMessage({ role: "user", content: "second", timestamp: 2 });
@@ -359,14 +367,22 @@ test("a diagnostic is saved when another writer creates the diagnostics table at
 		const scope = manager.chatRecordScope();
 		assert.ok(scope);
 		// As PostgreSQL reports two first diagnostics racing to create the table: the other one wins.
-		const exec = db.exec.bind(db);
+		const transaction = db.transaction.bind(db);
 		let raced = false;
-		db.exec = async (sql) => {
-			if (raced || !sql.includes("CREATE TABLE IF NOT EXISTS session_chat_v1")) return exec(sql);
-			raced = true;
-			await exec(sql);
-			throw new Error('duplicate key value violates unique constraint "pg_class_relname_nsp_index"');
-		};
+		db.transaction = ((body, options) =>
+			transaction(
+				(tx) =>
+					body({
+						...tx,
+						exec: async (sql) => {
+							if (raced || !sql.includes("CREATE TABLE IF NOT EXISTS session_chat_v1")) return tx.exec(sql);
+							raced = true;
+							await tx.exec(sql);
+							throw new Error('duplicate key value violates unique constraint "pg_class_relname_nsp_index"');
+						},
+					}),
+				options,
+			)) as typeof db.transaction;
 		await scope.store.append(scope.owner, anchor, { kind: "line", level: "error", text: "Error: first" });
 		assert.equal(raced, true);
 		assert.equal((await scope.store.read(scope.owner, [anchor])).length, 1);

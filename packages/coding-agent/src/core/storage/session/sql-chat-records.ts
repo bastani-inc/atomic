@@ -1,4 +1,4 @@
-import type { SqliteDatabase, SqliteValue } from "../database.js";
+import type { SqliteDatabase, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf } from "../dialect.js";
 import {
 	type AnchoredChatRecord,
@@ -34,6 +34,14 @@ const ORDER_BATCH = 128;
 const lineKey = (anchor: string) => `L${anchor}`;
 const orderKey = (promptId: string) => `O${promptId}`;
 
+/**
+ * Each write runs in a transaction of its own, as every session write does, on the session writer's connection and
+ * in its order. A statement outside a transaction would wait for another process's write lock in node:sqlite's busy
+ * handler, which blocks the event loop for up to the busy timeout (#5682); a transaction waits for the lock without
+ * blocking it. A transient failure runs the write again, as one statement outside a transaction would.
+ */
+const SIDE_WRITE: SqliteTransactionOptions = { retryTransientFailures: true };
+
 /** A new physical table per format version; the main sessions schema (and all its old readers) stay unchanged. */
 export function sqlChatRecords(
 	database: SqliteDatabase,
@@ -45,10 +53,12 @@ export function sqlChatRecords(
 	let initialized: Promise<void> | undefined;
 	function initialize(): Promise<void> {
 		const create = () =>
-			database.exec(`CREATE TABLE IF NOT EXISTS ${table} (
-			position ${dialect.types.serialKey}, session_id TEXT NOT NULL REFERENCES ${sessions}(id) ON DELETE CASCADE,
-			epoch TEXT NOT NULL, anchor TEXT NOT NULL, data TEXT NOT NULL);
-			CREATE INDEX IF NOT EXISTS ${index} ON ${table}(session_id, epoch, anchor, position);`);
+			database.transaction(async (tx) => {
+				await tx.exec(`CREATE TABLE IF NOT EXISTS ${table} (
+				position ${dialect.types.serialKey}, session_id TEXT NOT NULL REFERENCES ${sessions}(id) ON DELETE CASCADE,
+				epoch TEXT NOT NULL, anchor TEXT NOT NULL, data TEXT NOT NULL)`);
+				await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(session_id, epoch, anchor, position)`);
+			}, SIDE_WRITE);
 		// PostgreSQL fails one of two first diagnostics creating the table together; it then exists for the retry.
 		initialized ??= create()
 			.catch(() => create())
@@ -70,11 +80,15 @@ export function sqlChatRecords(
 				rows.push([orderKey(record.promptId), encodeChatOrder({ anchor, promptId: record.promptId })]);
 			// Use the session writer's own connection and serialization. A replacement with the same public ID
 			// cannot accept a delayed record from the old session. No revision or last-modified column is touched.
-			await database.run(
-				`INSERT INTO ${table} (session_id,epoch,anchor,data) ${rows
-					.map(() => `SELECT id,?,?,? FROM ${sessions} WHERE id=? AND ${current}=?`)
-					.join(" UNION ALL ")}`,
-				...rows.flatMap(([key, data]) => [owner.epoch, key, data, owner.id, owner.epoch]),
+			await database.transaction(
+				(tx) =>
+					tx.run(
+						`INSERT INTO ${table} (session_id,epoch,anchor,data) ${rows
+							.map(() => `SELECT id,?,?,? FROM ${sessions} WHERE id=? AND ${current}=?`)
+							.join(" UNION ALL ")}`,
+						...rows.flatMap(([key, data]) => [owner.epoch, key, data, owner.id, owner.epoch]),
+					),
+				SIDE_WRITE,
 			);
 		},
 		async has(owner) {

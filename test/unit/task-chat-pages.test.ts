@@ -415,6 +415,7 @@ test("a saved line read after a live reply arrived stays with its own row, above
 	const db = await openNodeSqliteDatabase(":memory:");
 	const store = await SqlSessionStore.open(db);
 	const records = store.chatRecords;
+	assert.ok(records);
 	const gate = Promise.withResolvers<void>();
 	// Only the reader waits; the session's own writes are untouched.
 	Object.defineProperty(store, "chatRecords", {
