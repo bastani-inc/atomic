@@ -36,6 +36,9 @@ import {
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import {
 	RUN_EVENT_TYPES,
+	readCatalogPages,
+	responseRefused,
+	retryCatalogRead,
 	storedJournalPayload,
 	withJournalPayloads,
 	writeJournalPayloadChunks,
@@ -252,6 +255,7 @@ async function openExportSource(
 	t: Tables,
 	shardId: number | undefined,
 	open?: () => Promise<SqliteDatabase>,
+	selectedRunId?: string,
 ): Promise<ExportSource | UnreadableSource> {
 	if (open === undefined && !existsSync(path))
 		return { path, reason: "the journal file no longer exists", oldFormat: false };
@@ -272,7 +276,20 @@ async function openExportSource(
 			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}
-		const runs = await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} ORDER BY run_id`);
+		const sql = `SELECT * FROM ${t.runs}`;
+		const ordinary = () => database.all<JournalRunTableRow>(`${sql} ORDER BY run_id`);
+		const runs =
+			open === undefined
+				? await ordinary()
+				: await retryCatalogRead(
+						database,
+						ordinary,
+						(tx, limit) =>
+							selectedRunId === undefined
+								? readCatalogPages<JournalRunTableRow>(tx, sql, [], "run_id", limit)
+								: tx.all<JournalRunTableRow>(`${sql} WHERE run_id = ?`, selectedRunId),
+						selectedRunId === undefined ? 4096 : 1,
+					);
 		return {
 			path,
 			database,
@@ -458,6 +475,7 @@ export async function exportWorkflowRuns(
 						t,
 						undefined,
 						storage.kind === "database" ? storage.open : undefined,
+						options.runs?.length === 1 ? options.runs[0] : undefined,
 					);
 					if ("database" in opened) single = opened;
 					// A named database that cannot be read fails the export: an empty export would pass for a backup.
@@ -507,27 +525,23 @@ export async function exportWorkflowRuns(
 			const written: string[] = [];
 			const unchanged: string[] = [];
 			for (const { source, run: listedRun } of selected) {
-				const readEvents = async (executor: SqliteExecutor) =>
-					withJournalPayloads(
-						executor,
-						t.eventChunks,
-						await executor.all<JournalEventTableRow>(
-							`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
-							listedRun.run_id,
-						),
-					);
+				const readEvents = (executor: SqliteExecutor, limit?: number) =>
+					transferEvents(executor, t, listedRun.run_id, limit);
+				const readRun = async (tx: SqliteExecutor, limit?: number) => ({
+					run:
+						(await tx.get<JournalRunTableRow>(`SELECT * FROM ${t.runs} WHERE run_id = ?`, listedRun.run_id)) ??
+						listedRun,
+					events: await readEvents(tx, limit),
+				});
 				// A source without a read snapshot reads each run's row and events together, in one transaction, so a
 				// run that finishes meanwhile is exported with the status its events reach.
 				const { run, events } = source.snapshot
 					? { run: listedRun, events: await readEvents(source.database) }
-					: await source.database.transaction(async (tx) => ({
-							run:
-								(await tx.get<JournalRunTableRow>(
-									`SELECT * FROM ${t.runs} WHERE run_id = ?`,
-									listedRun.run_id,
-								)) ?? listedRun,
-							events: await readEvents(tx),
-						}));
+					: await retryCatalogRead(
+							source.database,
+							() => source.database.transaction((tx) => readRun(tx)),
+							readRun,
+						);
 				const outcome = await writeLinesAtomically(
 					transferFile(directory, run.run_id),
 					exportLines(run, events, source.path),
@@ -705,20 +719,26 @@ interface StoredRun {
 	readonly lease?: JournalLeaseTableRow & { readonly age_ms: number };
 }
 
+async function transferEvents(executor: SqliteExecutor, t: Tables, runId: string, limit?: number) {
+	const sql = `SELECT * FROM ${t.events} WHERE run_id = ?`;
+	const rows =
+		limit === undefined
+			? await executor.all<JournalEventTableRow>(`${sql} ORDER BY seq`, runId)
+			: await readCatalogPages<JournalEventTableRow>(executor, sql, [runId], "seq", limit);
+	return withJournalPayloads(executor, t.eventChunks, rows);
+}
+
 async function readStoredRun(
 	executor: SqliteExecutor,
 	t: Tables,
 	runId: string,
 	dialect: StorageDialect,
+	limit?: number,
 ): Promise<StoredRun | undefined> {
 	if (!(await hasTables(executor, t, dialect))) return undefined;
 	const run = await executor.get<JournalRunTableRow>(`SELECT * FROM ${t.runs} WHERE run_id = ?`, runId);
 	if (run === undefined) return undefined;
-	const events = await withJournalPayloads(
-		executor,
-		t.eventChunks,
-		await executor.all<JournalEventTableRow>(`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`, runId),
-	);
+	const events = await transferEvents(executor, t, runId, limit);
 	const lease = (await hasTable(executor, t.leases, dialect))
 		? await executor.get<JournalLeaseTableRow & { age_ms: number }>(
 				`SELECT *, ${dialect.greatest("0", `${dialect.nowMs} - renewed_at`)} AS age_ms FROM ${t.leases} WHERE run_id = ?`,
@@ -947,7 +967,9 @@ export async function planWorkflowRunImport(
 						if (path !== undefined && (storage.kind === "database" || existsSync(path))) {
 							try {
 								const database = await files.read(path);
-								stored = await readStoredRun(database, t, run.header.runId, dialectOf(database));
+								const read = (executor: SqliteExecutor, limit?: number) =>
+									readStoredRun(executor, t, run.header.runId, dialectOf(database), limit);
+								stored = await retryCatalogRead(database, () => read(database), read);
 							} catch (error) {
 								throw unreadableShard(run, path, error as Error);
 							}
@@ -1023,11 +1045,19 @@ export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promi
 				throw unreadableShard(group.runs[0]!.run, group.path, error as Error);
 			}
 		}
+		let comparing = true;
+		let pageRows: number | undefined;
 		const lockAll = async (index: number): Promise<void> => {
 			if (index === ordered.length) {
 				for (const group of ordered)
 					for (const run of group.runs) {
-						const now = await readStoredRun(group.tx!, t, run.run.header.runId, dialectOf(group.database!));
+						const now = await readStoredRun(
+							group.tx!,
+							t,
+							run.run.header.runId,
+							dialectOf(group.database!),
+							pageRows,
+						);
 						if (fingerprint(now) !== fingerprint(run.stored))
 							throw new StorageTransferError({
 								path: run.run.file,
@@ -1037,6 +1067,7 @@ export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promi
 							});
 						importAction(run.run, now, group.path);
 					}
+				comparing = false;
 				for (const group of ordered) {
 					await ensureRunJournalSchema(group.tx!, prefix, dialectOf(group.database!));
 					for (const run of group.runs)
@@ -1051,7 +1082,15 @@ export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promi
 			}, TRANSFER_TRANSACTION);
 			committed.push(group);
 		};
-		await lockAll(0);
+		for (;;) {
+			try {
+				await lockAll(0);
+				break;
+			} catch (error) {
+				if (!comparing || !responseRefused(error) || pageRows === 1) throw error;
+				pageRows = pageRows === undefined ? 256 : Math.max(1, Math.floor(pageRows / 2));
+			}
+		}
 		if (catalog !== undefined) {
 			for (const group of ordered)
 				for (const run of group.runs) {

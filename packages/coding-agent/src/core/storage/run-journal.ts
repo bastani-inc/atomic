@@ -1,7 +1,67 @@
 import type { SnapshotBlobStore } from "../worktree-snapshot/types.ts";
-import type { SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "./database.js";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "./database.js";
 import type { StorageDialect } from "./dialect.js";
-import { StorageError } from "./errors.js";
+import { StorageError, StoragePayloadTooLargeError } from "./errors.js";
+
+function catalogTurn(): Promise<void> {
+	return new Promise((resolve) =>
+		typeof setImmediate === "function" ? setImmediate(resolve) : setTimeout(resolve, 0),
+	);
+}
+
+export function responseRefused(error: unknown): boolean {
+	return error instanceof StoragePayloadTooLargeError && error.kind === "response";
+}
+
+/** A refusal can close the server's transaction. Never reuse its rows, cursor or connection transaction. */
+export async function retryCatalogRead<T>(
+	db: SqliteDatabase,
+	ordinary: () => Promise<T>,
+	paged: (tx: SqliteExecutor, limit: number) => Promise<T>,
+	pageRows = 256,
+	check?: () => void,
+): Promise<T> {
+	try {
+		return await ordinary();
+	} catch (error) {
+		if (!responseRefused(error)) throw error;
+	}
+	for (let limit = pageRows; ; limit = Math.max(1, Math.floor(limit / 2))) {
+		await catalogTurn();
+		check?.();
+		try {
+			return await db.transaction((tx) => paged(tx, limit), { readOnly: true, retryTransientFailures: true });
+		} catch (error) {
+			if (!responseRefused(error) || limit === 1) throw error;
+		}
+	}
+}
+
+/** Collect pages in the fallback transaction. A short page is the last; a full page advances strictly past its last key. */
+export async function readCatalogPages<Row extends SqliteRow>(
+	tx: SqliteExecutor,
+	sql: string,
+	params: readonly SqliteValue[],
+	key: string,
+	limit: number,
+	check?: () => void,
+): Promise<Row[]> {
+	const rows: Row[] = [];
+	for (let after: SqliteValue | undefined; ; ) {
+		check?.();
+		const page = await tx.all<Row>(
+			`SELECT * FROM (${sql}) AS catalog ${after === undefined ? "" : `WHERE ${key} > ?`} ORDER BY ${key} LIMIT ?`,
+			...params,
+			...(after === undefined ? [] : [after]),
+			limit,
+		);
+		check?.();
+		for (const row of page) rows.push(row);
+		if (page.length < limit) return rows;
+		after = page.at(-1)![key];
+		await catalogTurn();
+	}
+}
 
 /**
  * The schema version of a SQL run journal's `meta` table that this Atomic reads and writes. Version 2 stores a large
@@ -121,7 +181,8 @@ export interface RunJournalSeedEvent {
 export interface RunJournal {
 	createRun(header: RunHeader): Promise<"created" | "exists">;
 	getRun(runId: string): Promise<RunSummary | undefined>;
-	listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]>;
+	/** Lists in run-id order; SQL journals check cancellation between size-bounded pages. */
+	listRuns(filter?: { cwd?: string }, options?: { signal?: AbortSignal }): Promise<readonly RunSummary[]>;
 	acquire(runId: string, holderId: string): Promise<LeaseOutcome>;
 	takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome>;
 	takeoverExpired(runId: string, holderId: string, staleAfterMs: number): Promise<LeaseOutcome>;

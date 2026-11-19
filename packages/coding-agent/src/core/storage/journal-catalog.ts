@@ -273,7 +273,8 @@ export class JournalCatalog {
 		};
 	}
 
-	async shards(): Promise<readonly JournalShardRecord[]> {
+	async shards(options?: { signal?: AbortSignal }): Promise<readonly JournalShardRecord[]> {
+		options?.signal?.throwIfAborted();
 		const rows = await this.read((db) => db.all<ShardRow>("SELECT * FROM catalog_shards ORDER BY id"));
 		return rows.map((row) => this.shardRecord(row));
 	}
@@ -319,10 +320,15 @@ export class JournalCatalog {
 	}
 
 	/** Which shard owns each catalogued run. */
-	async owners(): Promise<ReadonlyMap<string, number>> {
+	async owners(options?: { signal?: AbortSignal }): Promise<ReadonlyMap<string, number>> {
+		options?.signal?.throwIfAborted();
 		const rows = await this.read((db) =>
 			db.all<SqliteRow & { run_id: string; shard: number }>("SELECT run_id, shard FROM catalog_runs"),
 		);
+		if (options?.signal) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			options.signal.throwIfAborted();
+		}
 		return new Map(rows.map((row) => [row.run_id, Number(row.shard)]));
 	}
 

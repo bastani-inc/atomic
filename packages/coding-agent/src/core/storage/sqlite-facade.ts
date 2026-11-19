@@ -793,7 +793,9 @@ class DriverDatabase implements SqliteDatabase {
 			...(options?.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
 			...(options?.readOnly === true ? { readOnly: true } : {}),
 		};
-		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
+		const replayableRead = begin.readOnly === true && replay;
+		const run = () =>
+			this.retrying((attempt) => this.runTransaction(callback, attempt, begin, replayableRead), replay);
 		if (concurrency.kind === "serial" || this.driver.concurrentTransactions !== true) return this.queue.push(run);
 		const result = run();
 		const settled = result.then(
@@ -809,6 +811,7 @@ class DriverDatabase implements SqliteDatabase {
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		attempt: Attempt,
 		begin: SqliteDriverTransactionOptions,
+		replayableRead: boolean,
 	): Promise<T> {
 		const connection = await this.call(() => this.driver.beginTransaction(begin), attempt);
 		const pipelined = this.driver.pipelinedTransactions === true;
@@ -827,7 +830,8 @@ class DriverDatabase implements SqliteDatabase {
 		// callback met before it. A committed transaction never runs again either.
 		const commit = () => {
 			attempt.transient = undefined;
-			return this.call(() => connection.commit(), attempt, true);
+			// A lost acknowledgment of a read-only commit cannot have applied a write.
+			return this.call(() => connection.commit(), attempt, !replayableRead);
 		};
 		try {
 			let committing: Promise<void> | undefined;

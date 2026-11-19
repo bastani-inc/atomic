@@ -285,11 +285,10 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 						names.has(TABLES.runs) ? `AND run_id NOT IN (SELECT run_id FROM ${TABLES.runs})` : "",
 						names.has(LEGACY_DELETED) ? `AND run_id NOT IN (SELECT run_id FROM ${LEGACY_DELETED})` : "",
 					].join(" ");
-					rows.push(
-						...(await database.all<RunRows[number]>(
-							`SELECT run_id, name, cwd, status, header_json FROM ${LEGACY_RUNS} WHERE 1 = 1 ${converted} ORDER BY run_id`,
-						)),
+					const legacy = await database.all<RunRows[number]>(
+						`SELECT run_id, name, cwd, status, header_json FROM ${LEGACY_RUNS} WHERE 1 = 1 ${converted} ORDER BY run_id`,
 					);
+					for (const row of legacy) rows.push(row);
 				}
 				const references = new Set<string>();
 				for (const row of rows) {

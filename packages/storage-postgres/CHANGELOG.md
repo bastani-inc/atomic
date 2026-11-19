@@ -13,6 +13,7 @@
 - Wake-ups no longer turn off for the rest of the process when the check of the listening connection had to open a new pool connection that took longer than 2 seconds, as through a slow proxy or while a cloud identity issues its first token. The check now waits for its notification only once it was sent ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 - Proxy tunnels no longer fail when the proxy sends an informational reply such as `103 Early Hints` before the final `200`. The 16 KiB header limit and 8-second timeout cover all replies together, not the database traffic that follows ([#5565](https://github.com/bastani-inc/atomic/issues/5565))
 - A proxy whose connection ends right after a CR byte of its answer is again reported as closed, which the open retries, instead of as an answer that is not HTTP, which it never retries. A CR inside a header field that no LF follows is read as a space again, so the answer's final status decides, as before informational replies were supported. A CR in a status line is still refused, and a CR where `HTTP/` should start an answer is now refused at once instead of after the 8-second deadline ([#5670](https://github.com/bastani-inc/atomic/issues/5670))
+- Paged workflow run listings keep one consistent read view while other connections continue writing, rather than mixing rows from different commits ([#5537](https://github.com/bastani-inc/atomic/issues/5537)).
 
 ## [0.9.88] - 2026-11-16
 
