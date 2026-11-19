@@ -323,6 +323,45 @@ describe("durable prefix resume namespace and stage scope", () => {
 		assert.match("message" in result && result.message ? result.message : "", /completed, not resumable/);
 	});
 
+	test("workflow tool recognizes a stored failed root by prefix even when it cannot resume (#5569)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		await backend.commitWorkflowRegistration({
+			workflowId: root,
+			name: "no-retry",
+			inputs: {},
+			createdAt: 1,
+			status: "failed",
+			resumable: false,
+		});
+		const result = await workflowResumeAction(
+			{ action: "resume", runId: root.slice(0, 8) },
+			toolResumeDeps(createExtensionRuntime({ store })),
+		);
+		assert.ok(result.action === "resume");
+		assert.deepEqual([result.runId, result.status, result.code], [root, "noop", "not_resumable"]);
+		assert.equal(backend.getWorkflow(root)?.status, "failed");
+	});
+
+	test("workflow tool does not call an incomplete stored run missing (#5569)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		await backend.journal.createRun({
+			runId: root,
+			name: "incomplete",
+			cwd: tempDir,
+			createdAt: 1,
+			status: "failed",
+		});
+		const result = await workflowResumeAction(
+			{ action: "resume", runId: root },
+			toolResumeDeps(createExtensionRuntime({ store })),
+		);
+		assert.ok(result.action === "resume");
+		assert.equal(result.code, "not_resumable");
+		assert.match(result.message, /no valid journal state/);
+	});
+
 	test("workflow tool reports a missing exact id without loading the catalog", async () => {
 		const runtime = {
 			durableBackend: currentStoreBackend,
