@@ -9,7 +9,7 @@ description: "Direct messaging between Atomic sessions, on one machine or across
 
 Atomic bundles `@bastani/intercom` for direct 1:1 messaging between sessions on the same machine, or on several machines that share a storage database. Send context, findings, or requests yourself, or let agents coordinate. No separate install is needed.
 
-The extension registers commands and tools at startup. Connections are lazy: a session connects when you or the model invoke Intercom. Workflow stages and admitted subagent children connect at session start so they are listable and steerable immediately.
+The extension registers commands and tools at startup. Connections are lazy: a session connects when you or the model invoke Intercom. Admitted subagent children connect at session start so they are listable and steerable immediately.
 
 **Key capabilities:**
 - **Session messaging** - `send`, `ask` (never blocks; the reply arrives as a message), `reply`, `pending`, `cancel`, `list`, `groups`, and `status` via the `intercom` tool
@@ -19,7 +19,7 @@ The extension registers commands and tools at startup. Connections are lazy: a s
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
-- **Run notifications** - Workflows and subagents deliver run results and control notices to a parent session over Intercom
+- **Run notifications** - Subagents deliver run results and control notices to a parent session over Intercom
 - **Bundled skill** - `/skill:intercom` provides planner-worker, group, and escalation-handling patterns
 
 **Example use cases:**
@@ -45,8 +45,7 @@ Intercom coordinates several Atomic sessions on one machine, or across machines 
 - [How Connection Works](/intercom/operations#how-connection-works)
 - [The intercom Tool](/intercom/reference#the-intercom-tool)
   - [Actions](/intercom/reference#actions)
-  - [Targeting Sessions and Pending Workflow Stages](/intercom/reference#targeting-sessions-and-pending-workflow-stages)
-  - [Deferred delivery to pending stages](/intercom/reference#deferred-delivery-to-pending-stages)
+  - [Targeting Sessions](/intercom/reference#targeting-sessions)
   - [send vs ask vs reply](/intercom/reference#send-vs-ask-vs-reply)
   - [Attachments](/intercom/reference#attachments)
 - [Coordination Patterns](#coordination-patterns)
@@ -55,11 +54,11 @@ Intercom coordinates several Atomic sessions on one machine, or across machines 
   - [The Three Reasons](#the-three-reasons)
   - [What the Supervisor Sees](#what-the-supervisor-sees)
   - [Structured Interview Replies](#structured-interview-replies)
-- [Workflow and Subagent Notifications](/intercom/operations#workflow-and-subagent-notifications)
-  - [Workflow Delivery Modes](/intercom/operations#workflow-delivery-modes)
+- [Subagent Notifications](/intercom/operations#subagent-notifications)
   - [Subagent Control Notices](/intercom/operations#subagent-control-notices)
   - [Delivery Ordering](/intercom/operations#delivery-ordering)
 - [Running Intercom across machines](/intercom/operations#running-intercom-across-machines)
+- [Mixed versions](#mixed-versions)
 - [Configuration](/intercom/reference#configuration)
 - [Keyboard Shortcuts](/intercom/operations#keyboard-shortcuts)
 - [How It Works](/intercom/operations#how-it-works)
@@ -88,7 +87,7 @@ The agent can list sessions and send messages using the `intercom` tool. Tool ca
 intercom({ action: "list" })
 // → **Current session** (groups: default):
 // → - `20d43841-1111-4222-8333-123456789abc` [self, idle] ~/projects/api (claude-sonnet-4) name: executor
-// → **Other visible sessions and workflow stages:**
+// → **Other visible sessions:**
 // → - `6332faab-1111-4222-8333-123456789abc` [same cwd, thinking] ~/projects/api (claude-sonnet-4) name: research
 
 // Send a message
@@ -146,7 +145,7 @@ See auth.ts:142-156.
 
 The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients never need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. The recipient saves each message to its session as soon as it arrives, and the sender sees `delivered` only after that save. If the recipient closes or crashes before it shows a saved message, resuming that session with `atomic --session <id>` or `/resume` shows the message then, once, in arrival order, if its sender is still connected. A message from a sender that is gone is added once, in full, to the session history without starting a turn, and the recovery notice says the sender is gone. A reply already returned inline to an `ask`, or a message the recipient refused, is not shown again when the session reopens. If Intercom cannot be reached when the session reopens, or the sender is a background subagent that was relaunched but has not reconnected yet, the message is deferred: it starts no turn, the notice says so, and the next reopen of the session decides again. Sessions started with `--no-session` are not saved, so their messages are not recovered. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Atomic session history.
 
-Working subagents and live workflow stages handle incoming `send` and `ask` messages in the same task and session, according to the sender's `delivery` option:
+Working subagents handle incoming `send` and `ask` messages in the same task and session, according to the sender's `delivery` option:
 
 | `delivery` | When a busy recipient gets it | Use it for |
 |---|---|---|
@@ -158,9 +157,9 @@ The sender chooses `delivery` for each message; override the default by urgency.
 
 For example, `intercom({ action: "send", to: "worker", message: "Stop; the spec changed", delivery: "interrupt" })` stops the worker's current tool call. With `"interrupt"`, tools that ignore cancellation finish first, and completed side effects are not undone or replayed.
 
-This works for every child. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Messages from one sender always reach the recipient in the order they arrived, whichever way each is admitted: at once, after the recipient goes idle, on resume, or relayed by a closed workflow stage. A message admitted at once is written after any earlier message from the same sender that was still waiting for the recipient to go idle. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children or closed stages take precedence over later input. Use an exact child name or full session ID from `intercom list`, not a workflow-stage path.
+This works for every child. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Messages from one sender always reach the recipient in the order they arrived, whichever way each is admitted: at once, after the recipient goes idle, or on resume. A message admitted at once is written after any earlier message from the same sender that was still waiting for the recipient to go idle. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children take precedence over later input. Use an exact child name or full session ID from `intercom list`.
 
-A busy non-interactive recipient that is neither an admitted subagent nor a workflow stage can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
+A busy non-interactive recipient that is not an admitted subagent can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
 
 Atomic enables ordinary `intercom` by default, but it respects tool allowlists, exclusions and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when needed. SDK hosts can disable the entire package with `builtins: { intercom: false }`; reload does not restore it. `contact_supervisor` remains subagent-only. Registration is lightweight; broker connection and heavy initialization remain lazy until an Intercom surface is used.
 
@@ -180,13 +179,9 @@ Moved to [Intercom reference](/intercom/reference#the-intercom-tool).
 
 Moved to [Intercom reference](/intercom/reference#actions).
 
-### Targeting Sessions and Pending Workflow Stages
+### Targeting Sessions
 
-Moved to [Intercom reference](/intercom/reference#targeting-sessions-and-pending-workflow-stages).
-
-### Deferred delivery to pending stages
-
-Moved to [Intercom reference](/intercom/reference#deferred-delivery-to-pending-stages).
+Moved to [Intercom reference](/intercom/reference#targeting-sessions).
 
 ### Groups
 
@@ -243,11 +238,11 @@ intercom({
 
 | **Broadcast** | Sibling uses `send` to a group pattern | One agent shares a confirmed finding with every live sibling at once. |
 
-Peer-to-peer (swarm) is the default. There are no limits on communication between agents; it is encouraged whenever you need to. Subagents launched together and workflow stages in one invocation share an Intercom group, so they list each other and message directly to debate, connect, learn, and self-organize. The supervisor is not a message relay: routing through it adds latency, drops detail, and fills its context. `contact_supervisor` is only for supervisor decisions. See [Peer coordination](/subagents#peer-coordination) for an example.
+Peer-to-peer (swarm) is the default. There are no limits on communication between agents; it is encouraged whenever you need to. Subagents launched together share an Intercom group, so they list each other and message directly to debate, connect, learn, and self-organize. The supervisor is not a message relay: routing through it adds latency, drops detail, and fills its context. `contact_supervisor` is only for supervisor decisions. See [Peer coordination](/subagents#peer-coordination) for an example.
 
-Swarm size scales with the task. For very complex work, or when you ask for heavy parallelism, hundreds or thousands of agents can self-organize into teams (named groups, per-stage subagent sets, child workflows) and coordinate peer-to-peer like an organization. Intercom groups have no member limit. See [Scaling a swarm](/subagents#scaling-a-swarm) for the settings that bound swarm size.
+Swarm size scales with the task. For very complex work, or when you ask for heavy parallelism, hundreds or thousands of agents can self-organize into teams (named groups, nested subagent sets) and coordinate peer-to-peer like an organization. Intercom groups have no member limit. See [Scaling a swarm](/subagents#scaling-a-swarm) for the settings that bound swarm size.
 
-The bundled `intercom` skill (`/skill:intercom`) has copy-paste ready patterns for planner-worker delegation, status checks, natural replies, broadcasting to multiple workers, attachments, handling subagent escalations on the orchestrator side, and peer coordination between subagents and workflow stages.
+The bundled `intercom` skill (`/skill:intercom`) has copy-paste ready patterns for planner-worker delegation, status checks, natural replies, broadcasting to multiple workers, attachments, handling subagent escalations on the orchestrator side, and peer coordination between subagents.
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
 
@@ -358,13 +353,9 @@ In parallel, questions arrive without reordering or rewriting. The supervisor ca
 
 The parallel child's tool result preserves the raw reply text and includes `details.structuredReply` when the answer matches the expected question IDs and options. A single-child claimed handoff instead carries the structured questions into its fresh task context and does not create an Intercom reply.
 
-## Workflow and Subagent Notifications
+## Subagent Notifications
 
-Moved to [Intercom operations](/intercom/operations#workflow-and-subagent-notifications).
-
-### Workflow Delivery Modes
-
-Moved to [Intercom operations](/intercom/operations#workflow-delivery-modes).
+Moved to [Intercom operations](/intercom/operations#subagent-notifications).
 
 ### Subagent Control Notices
 
@@ -373,6 +364,12 @@ Moved to [Intercom operations](/intercom/operations#subagent-control-notices).
 ### Delivery Ordering
 
 Moved to [Intercom operations](/intercom/operations#delivery-ordering).
+
+## Mixed versions
+
+Atomic 0.10.0 removed workflows, and with them workflow stage targets (`workflow:<rootRunId>/...`), stage routes and workflow invocation groups. The Intercom protocol range is unchanged, so sessions of 0.9.x and 0.10.0 keep exchanging sends, asks and replies through whichever broker is running.
+
+0.9.x workflows keep running while a 0.10.0 broker is running, and it never closes a 0.9.x session's connection over a workflow request. It acknowledges a run's stage routes without creating them, so the run starts its stages. A started stage is an ordinary session in its run's `workflow:<runId>` group, reached by its ID or name from that group; join it to reach the stage. Messages sent to a stage that has not started are not queued for it: a `workflow:<rootRunId>/...` target gets the answer any unknown name gets, `Session not found`. A `workflow:` group is an ordinary group on a 0.10.0 broker. A 0.10.0 session on a 0.9.x broker sends no workflow request, and answers a `workflow:` target itself, as an unknown name. See [Mixed versions and workflows](/intercom/operations#mixed-versions-and-workflows) for every request and its answer.
 
 ## Configuration
 
@@ -405,6 +402,6 @@ Moved to [Intercom operations](/intercom/operations#limitations).
 ## Related Docs
 
 - [Subagents](/subagents) for delegated child runs, supervisor coordination, and result delivery.
-- [Workflows](/workflows) for multi-stage automation and run notifications.
+- [Orchestration](/orchestration) for multi-step tasks and child completion notices.
 - [Skills](/skills) for reusable instructions like `/skill:intercom`.
 - [Usage](/usage) for environment variables and the bundled-extension overview.

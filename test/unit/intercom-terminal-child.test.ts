@@ -91,10 +91,6 @@ test("terminal transition before socket acknowledgement cannot strand a newly re
 		f.write,
 		new SupervisorChannelCache(),
 		f.pending,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
 		(_socket, _message, callback) => {
 			acknowledge = callback;
 		},
@@ -171,10 +167,6 @@ test("disconnect before socket acknowledgement cannot create a stranded ask rout
 		f.write,
 		new SupervisorChannelCache(),
 		f.pending,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
 		(_socket, _message, callback) => {
 			acknowledge = callback;
 		},

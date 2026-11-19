@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
-# Terminal evidence for issue #4521 — one scroll stack and one set of keys for the main chat, an attached
-# workflow stage chat and a /tasks subagent transcript.
+# Terminal evidence for issue #4521 — one scroll stack and one set of keys for the main chat and a /tasks subagent transcript.
 #
 # Usage: bash scripts/e2e/issue-4521-evidence.sh <artifact-dir> [columns] [rows]
 #
 # Drives the real interactive CLI (the default isolated engine) in a private tmux server, against an offline
-# model registered by test/integration/fixtures/issue-4521-transcript-provider.ts, and a one-stage workflow
-# (issue-4521-transcript-workflow.ts). Each surface shows a thinking block, a tool call with sixty lines of
+# model registered by test/integration/fixtures/issue-4521-transcript-provider.ts. Each surface shows a thinking block, a tool call with sixty lines of
 # output and a long reply. The settings pin `fullscreenScrollbar: "always"` and `fullscreenWheelScrollLines: 3`
 # so the scrollbar and the wheel step are deterministic.
 #
@@ -33,8 +31,7 @@ mkdir -p "$ARTIFACTS"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/issue-4521-evidence-XXXXXX")"
 PROJECT="$WORKDIR/project"
 AGENT="$WORKDIR/agent"
-mkdir -p "$PROJECT/.atomic/workflows" "$AGENT/extensions"
-cp "$FIXTURES/issue-4521-transcript-workflow.ts" "$PROJECT/.atomic/workflows/"
+mkdir -p "$PROJECT" "$AGENT/extensions"
 cp "$FIXTURES/issue-4521-transcript-provider.ts" "$AGENT/extensions/"
 git -C "$PROJECT" init -q
 cat >"$AGENT/settings.json" <<'JSON'
@@ -113,7 +110,7 @@ WHEEL_UP=$'\e[<64;10;10M'
 WHEEL_DOWN=$'\e[<65;10;10M'
 ALT_WHEEL_UP=$'\e[<72;10;10M'
 
-# Scroll checks shared by the main chat and the stage chat. <prefix> names the long reply's numbered lines on that
+# Main chat scroll checks. <prefix> names the long reply's numbered lines on that
 # surface; distances are measured in those lines, from the middle of the reply.
 scroll_checks() {
 	local surface="$1" prefix="$2" last="$3" first="$4"
@@ -182,37 +179,7 @@ check "main: ctrl+o expands tool output" shows "MAIN-TOOL-001"
 key C-o
 key C-End
 
-# 2. A workflow stage chat.
-type_line "/workflow issue-4521-transcript-stage"
-await "started in background" 120
-key F2
-await "viewer" 60
-save "graph"
-key Enter
-await "STAGE-LINE-150" 90
-sleep 4
-save "stage-latest"
-scroll_checks stage STAGE-LINE '$ true' "STAGE_TASK_4521"
-key C-Home
-check "stage: thinking shown" shows "STAGE-THINKING"
-key C-t
-save "stage-ctrl-t"
-check "stage: ctrl+t hides thinking" hides "STAGE-THINKING"
-key C-t
-key C-o
-save "stage-ctrl-o"
-check "stage: ctrl+o expands tool output" shows "STAGE-TOOL-001"
-key C-o
-key C-End
-key C-Up
-save "stage-prompt-jump"
-check "stage: ctrl+up jumps to the previous prompt" shows "STAGE_TASK_4521"
-key C-End
-key C-x
-key C-x
-await "transcript-model •" 30
-
-# 3. A subagent's /tasks transcript.
+# 2. A subagent's /tasks transcript.
 type_line "launch-child"
 await "MAIN-LAUNCHED" 60
 await "CHILD-TOOL-060" 1

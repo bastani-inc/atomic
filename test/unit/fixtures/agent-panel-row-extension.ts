@@ -52,7 +52,7 @@ export default function agentPanelRowExtension(api: ExtensionAPI): void {
 		},
 	});
 	api.registerAgentPanelSource({
-		items: () => [{ id: "fixture:run", kind: "workflow", state: "running", name: "review", task: "stage one" }],
+		items: () => [{ id: "fixture:run", kind: "agent", state: "running", name: "review", task: "stage one" }],
 		subscribe: () => () => {},
 	});
 }

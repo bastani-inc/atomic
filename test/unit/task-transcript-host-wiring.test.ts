@@ -9,12 +9,8 @@ import {
 	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { parseInteractiveEngineCommand } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
-import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
-import { runStageTaskAction } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
-import type { PooledTaskReply } from "../../packages/workflows/src/workers/stage-watch-types.js";
-import { taskFixture } from "../helpers/task-projection.js";
 
-const TASK = "task-1" as TaskId;
+import { taskFixture } from "../helpers/task-projection.js";
 
 const usage = {
 	input: 0,
@@ -199,56 +195,4 @@ test("render requests accept a wheel step of exactly one line (#4521)", () => {
 		assert.ok(parsed?.type === "engine_custom_render");
 		assert.equal(parsed.renderSettings?.fullscreenWheelScrollLines, lines);
 	}
-});
-
-test("a pooled stage task names the task in a refusal or a missing reply (#4521)", async () => {
-	const refusal = new Error("paused");
-	const refused = await failureOf(
-		new PooledStageTaskSource(
-			async () => {
-				throw refusal;
-			},
-			() => true,
-		).sendTaskMessage(TASK, "hi"),
-	);
-	assert.ok(refused instanceof TaskMessageError);
-	assert.equal(refused.taskId, TASK);
-	assert.equal(refused.toJSON().fields.taskId, TASK);
-	assert.match(refused.message, /task-1/);
-	const missing = await failureOf(new PooledStageTaskSource(async () => undefined).sendTaskMessage(TASK, "hi"));
-	assert.ok(missing instanceof TaskMessageError);
-	assert.equal(missing.taskId, TASK);
-	assert.match(missing.message, /task-1/);
-});
-
-test("a pooled stage task reports an unrefused worker failure as unconfirmed (#4521)", async () => {
-	const unretried = await failureOf(
-		new PooledStageTaskSource(async () => {
-			throw new Error("closed");
-		}).sendTaskMessage(TASK, "hi"),
-	);
-	assert.ok(unretried instanceof TaskMessageError);
-	assert.equal(unretried.code, "delivery-unconfirmed");
-});
-
-test("the worker names the task when messages are unsupported or the failure is untyped (#4521)", async () => {
-	const unsupported = (await runStageTaskAction({} as TaskViewSource, TASK, {
-		kind: "message",
-		text: "hi",
-	})) as Extract<PooledTaskReply, { kind: "message" }>;
-	assert.equal(unsupported.error?.code, "messages-unsupported");
-	assert.equal(unsupported.error?.fields.taskId, TASK);
-	const crash = new Error("relay crashed");
-	const untyped = (await runStageTaskAction(
-		{
-			sendTaskMessage: async () => {
-				throw crash;
-			},
-		} as unknown as TaskViewSource,
-		TASK,
-		{ kind: "message", text: "hi" },
-	)) as Extract<PooledTaskReply, { kind: "message" }>;
-	assert.equal(untyped.error?.code, "delivery-unconfirmed");
-	assert.equal(untyped.error?.fields.taskId, TASK);
-	assert.deepEqual(untyped.error?.cause, { name: "Error", message: "relay crashed" });
 });

@@ -27,7 +27,7 @@ function extensionTool(name: string): ToolDefinition {
 	};
 }
 
-const ORCHESTRATION_TOOLS = ["subagent", "workflow"] as const;
+const EXTENSION_TOOLS = ["subagent", "deploy"] as const;
 
 async function resume(
 	sessionManager: SessionManager | undefined,
@@ -35,7 +35,7 @@ async function resume(
 ): Promise<Harness> {
 	const harness = await createHarness({
 		sessionManager,
-		customTools: (options.tools ?? ORCHESTRATION_TOOLS).map(extensionTool),
+		customTools: (options.tools ?? EXTENSION_TOOLS).map(extensionTool),
 		excludedToolNames: options.excludedToolNames,
 		allowedToolNames: options.allowedToolNames,
 		initialActiveToolNames: options.allowedToolNames,
@@ -65,20 +65,20 @@ test("a turn that ran while extension and built-in tools were unregistered does 
 	await runTurn(before);
 	assert.ok(before.session.getActiveToolNames().includes("todo"));
 
-	// The extensions that register subagent and workflow did not load, and todo was unavailable, when this turn ran.
+	// The extensions that register subagent and deploy did not load, and todo was unavailable, when this turn ran.
 	const degraded = await resume(before.sessionManager, { tools: [] });
 	degraded.session.agent.state.tools = degraded.session.agent.state.tools.filter((tool) => tool.name !== "todo");
 	await runTurn(degraded);
 	const removal = degraded.session.messages.findLast((message) => message.role === "system");
 	assert.deepEqual(removal?.role === "system" ? removal.toolsRemoved?.map((tool) => tool.name).sort() : [], [
+		"deploy",
 		"subagent",
 		"todo",
-		"workflow",
 	]);
 
 	const after = await resume(degraded.sessionManager);
 	const active = after.session.getActiveToolNames();
-	for (const name of [...ORCHESTRATION_TOOLS, "todo"]) assert.ok(active.includes(name), `${name} is active`);
+	for (const name of [...EXTENSION_TOOLS, "todo"]) assert.ok(active.includes(name), `${name} is active`);
 	assert.deepEqual(deactivationEntries(after.sessionManager), []);
 });
 
@@ -86,15 +86,15 @@ test("tools deactivated on purpose stay inactive after resume (#4660)", async ()
 	const before = await resume(undefined);
 	await runTurn(before);
 	before.session.setActiveToolsByName(
-		before.session.getActiveToolNames().filter((name) => name !== "workflow" && name !== "todo"),
+		before.session.getActiveToolNames().filter((name) => name !== "deploy" && name !== "todo"),
 	);
 	await runTurn(before);
-	assert.deepEqual(deactivationEntries(before.sessionManager), [["todo", "workflow"]]);
+	assert.deepEqual(deactivationEntries(before.sessionManager), [["deploy", "todo"]]);
 
 	const after = await resume(before.sessionManager);
 	const active = after.session.getActiveToolNames();
 	assert.ok(active.includes("subagent"));
-	assert.ok(!active.includes("workflow"));
+	assert.ok(!active.includes("deploy"));
 	assert.ok(!active.includes("todo"));
 });
 
@@ -102,7 +102,7 @@ test("a deactivation is not recorded when the tool is active again before the ne
 	const before = await resume(undefined);
 	await runTurn(before);
 	const active = before.session.getActiveToolNames();
-	before.session.setActiveToolsByName(active.filter((name) => name !== "workflow"));
+	before.session.setActiveToolsByName(active.filter((name) => name !== "deploy"));
 	before.session.setActiveToolsByName(active);
 	await runTurn(before);
 	assert.deepEqual(deactivationEntries(before.sessionManager), []);
@@ -112,17 +112,17 @@ test("a tool re-added after an explicit deactivation heals when a later removal 
 	const before = await resume(undefined);
 	await runTurn(before);
 	const active = before.session.getActiveToolNames();
-	before.session.setActiveToolsByName(active.filter((name) => name !== "workflow"));
+	before.session.setActiveToolsByName(active.filter((name) => name !== "deploy"));
 	await runTurn(before);
 	before.session.setActiveToolsByName(active);
 	await runTurn(before);
 
 	const degraded = await resume(before.sessionManager, { tools: ["subagent"] });
-	assert.ok(!degraded.session.getActiveToolNames().includes("workflow"));
+	assert.ok(!degraded.session.getActiveToolNames().includes("deploy"));
 	await runTurn(degraded);
 
 	const after = await resume(degraded.sessionManager);
-	assert.ok(after.session.getActiveToolNames().includes("workflow"));
+	assert.ok(after.session.getActiveToolNames().includes("deploy"));
 });
 
 test("a removed built-in tool outside the default selection is not re-activated on resume (#4660)", async () => {
@@ -138,14 +138,14 @@ test("a removed built-in tool outside the default selection is not re-activated 
 });
 
 test("startup names tools the history records as active when nothing registered them (#4660)", async () => {
-	const before = await resume(undefined, { tools: [...ORCHESTRATION_TOOLS, "mcp__docs__search"] });
+	const before = await resume(undefined, { tools: [...EXTENSION_TOOLS, "mcp__docs__search"] });
 	await runTurn(before);
 
 	const after = await resume(before.sessionManager, { tools: [] });
 	const missing = after.session.getToolStatus().missing;
 	assert.deepEqual(
 		missing.map((tool) => tool.name),
-		["subagent", "workflow"],
+		["subagent", "deploy"],
 	);
 	assert.match(missing[0]?.reason ?? "", /active in this session's history/);
 
@@ -156,10 +156,10 @@ test("startup names tools the history records as active when nothing registered 
 		showWarning: (message) => warnings.push(message),
 	});
 	assert.deepEqual(warnings, [
-		"Tools this session was using aren't available right now: subagent, workflow. /tools shows why; /reload retries once that is fixed.",
+		"Tools this session was using aren't available right now: subagent, deploy. /tools shows why; /reload retries once that is fixed.",
 	]);
 
-	const healthy = await resume(before.sessionManager, { tools: [...ORCHESTRATION_TOOLS, "mcp__docs__search"] });
+	const healthy = await resume(before.sessionManager, { tools: [...EXTENSION_TOOLS, "mcp__docs__search"] });
 	const quiet: string[] = [];
 	await showUnavailableToolsNotice({
 		session: healthy.session,
@@ -169,16 +169,44 @@ test("startup names tools the history records as active when nothing registered 
 	assert.deepEqual(quiet, []);
 });
 
+test("resuming a session that used the retired workflow tool names only tools that are really missing", async () => {
+	const before = await resume(undefined, { tools: ["subagent", "workflow"] });
+	await runTurn(before);
+
+	const noticesFor = async (harness: Harness): Promise<string[]> => {
+		const warnings: string[] = [];
+		await reportUnavailableTools({
+			session: harness.session,
+			startupNoticesContainer: undefined as never,
+			showWarning: (message) => warnings.push(message),
+		});
+		return warnings;
+	};
+
+	const current = await resume(before.sessionManager, { tools: ["subagent"] });
+	assert.deepEqual(current.session.getToolStatus().missing, []);
+	assert.deepEqual(await noticesFor(current), []);
+
+	const extensionLost = await resume(before.sessionManager, { tools: [] });
+	assert.deepEqual(
+		extensionLost.session.getToolStatus().missing.map((tool) => tool.name),
+		["subagent"],
+	);
+	assert.deepEqual(await noticesFor(extensionLost), [
+		"A tool this session was using isn't available right now: subagent. /tools shows why; /reload retries once that is fixed.",
+	]);
+});
+
 test("a malformed or foreign deactivation entry does not keep a tool off (#4660)", async () => {
 	const before = await resume(undefined);
 	await runTurn(before);
 	const degraded = await resume(before.sessionManager, { tools: ["subagent"] });
 	await runTurn(degraded);
-	await degraded.sessionManager.appendCustomEntry(TOOL_DEACTIVATION_ENTRY_TYPE, { tools: "workflow" });
-	await degraded.sessionManager.appendCustomEntry("another.extension", { tools: ["workflow"] });
+	await degraded.sessionManager.appendCustomEntry(TOOL_DEACTIVATION_ENTRY_TYPE, { tools: "deploy" });
+	await degraded.sessionManager.appendCustomEntry("another.extension", { tools: ["deploy"] });
 
 	const after = await resume(degraded.sessionManager);
-	assert.ok(after.session.getActiveToolNames().includes("workflow"));
+	assert.ok(after.session.getActiveToolNames().includes("deploy"));
 });
 
 test("a resume with --tools or --no-tools names nothing as unavailable and shows no notice (#4660)", async () => {
@@ -205,7 +233,7 @@ test("a --tools modifier that removes a tool does not report it unavailable (#46
 
 	(after.session as unknown as { _defaultToolModifiers: string[] })._defaultToolModifiers = ["-subagent"];
 	const missing = after.session.getToolStatus().missing.map((tool) => tool.name);
-	assert.deepEqual(missing, ["workflow"]);
+	assert.deepEqual(missing, ["deploy"]);
 });
 
 test("a tool status that cannot be read leaves the notice out without failing (#4660)", async () => {
@@ -227,7 +255,7 @@ test("a tool status that cannot be read leaves the notice out without failing (#
 test("a turn still completes and the tools still come back when recording a deactivation fails (#4660)", async () => {
 	const before = await resume(undefined);
 	await runTurn(before);
-	before.session.setActiveToolsByName(before.session.getActiveToolNames().filter((name) => name !== "workflow"));
+	before.session.setActiveToolsByName(before.session.getActiveToolNames().filter((name) => name !== "deploy"));
 	const append = before.sessionManager.appendCustomEntry.bind(before.sessionManager);
 	before.sessionManager.appendCustomEntry = async (customType, data) => {
 		if (customType === TOOL_DEACTIVATION_ENTRY_TYPE) throw new Error("disk full");
@@ -238,7 +266,7 @@ test("a turn still completes and the tools still come back when recording a deac
 
 	assert.deepEqual(deactivationEntries(before.sessionManager), []);
 	const after = await resume(before.sessionManager);
-	assert.ok(after.session.getActiveToolNames().includes("workflow"));
+	assert.ok(after.session.getActiveToolNames().includes("deploy"));
 	assert.ok(after.session.getActiveToolNames().includes("subagent"));
 });
 
@@ -246,14 +274,14 @@ test("a tool turned off and on again in one session is not recorded as deactivat
 	const before = await resume(undefined);
 	await runTurn(before);
 	const active = before.session.getActiveToolNames();
-	before.session.setActiveToolsByName(active.filter((name) => name !== "workflow"));
+	before.session.setActiveToolsByName(active.filter((name) => name !== "deploy"));
 	before.session.setActiveToolsByName(active);
-	before.session.agent.state.tools = before.session.agent.state.tools.filter((tool) => tool.name !== "workflow");
+	before.session.agent.state.tools = before.session.agent.state.tools.filter((tool) => tool.name !== "deploy");
 	await runTurn(before);
 
 	assert.deepEqual(deactivationEntries(before.sessionManager), []);
 	const after = await resume(before.sessionManager);
-	assert.ok(after.session.getActiveToolNames().includes("workflow"));
+	assert.ok(after.session.getActiveToolNames().includes("deploy"));
 });
 
 test("a resume with --no-extensions does not report the tools the extensions would have registered (#4660)", async () => {
@@ -272,7 +300,7 @@ test("a resume with --no-extensions does not report the tools the extensions wou
 	const withExtensionsLost = await resume(before.sessionManager, { tools: [] });
 	assert.deepEqual(
 		withExtensionsLost.session.getToolStatus().missing.map((tool) => tool.name),
-		["subagent", "workflow"],
+		["subagent", "deploy"],
 	);
 });
 
@@ -280,19 +308,19 @@ for (const restriction of [
 	{
 		name: "--tools",
 		options: { allowedToolNames: ["read", "bash"] },
-		off: ["todo", "subagent", "workflow"],
+		off: ["todo", "subagent", "deploy"],
 		on: ["read", "bash"],
 	},
 	{
 		name: "--no-tools",
 		options: { allowedToolNames: [] as string[] },
-		off: ["read", "todo", "subagent", "workflow"],
+		off: ["read", "todo", "subagent", "deploy"],
 		on: [],
 	},
 	{
 		name: "--exclude-tools",
-		options: { excludedToolNames: ["workflow"] },
-		off: ["workflow"],
+		options: { excludedToolNames: ["deploy"] },
+		off: ["deploy"],
 		on: ["read", "todo", "subagent"],
 	},
 ]) {
@@ -321,5 +349,5 @@ test("a tool a --tools restriction left out comes back with --tools +name (#4660
 
 	const again = await resume(later.sessionManager);
 	assert.ok(again.session.getActiveToolNames().includes("subagent"));
-	assert.ok(!again.session.getActiveToolNames().includes("workflow"));
+	assert.ok(!again.session.getActiveToolNames().includes("deploy"));
 });

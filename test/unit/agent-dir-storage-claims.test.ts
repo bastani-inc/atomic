@@ -121,7 +121,7 @@ test("validating unused process storage does not publish or settle an agent's ho
 	vi.stubEnv("ATOMIC_SESSIONS_STORAGE", "{}");
 	for (const [index, operation] of [
 		validateProcessStorage,
-		(agent: string) => selectProcessStorage("journal", agent),
+		(agent: string) => selectProcessStorage("shared", agent),
 	].entries()) {
 		const parent = join(root, `validation-${index}`);
 		const agent = join(parent, "agent");

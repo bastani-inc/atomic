@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { describe, it, vi } from "vitest";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
-import type { WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 
@@ -77,7 +76,6 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 				const completeRouter = createHistoryRouter({
 					cwd: PROJECT,
 					sessionStore: () => store,
-					workflows: () => undefined,
 				});
 				const url = count === 1 ? "history://sessions" : "history://sessions?offset=1";
 				const complete = (await completeRouter.search!(url, request("needle"))) ?? "";
@@ -86,7 +84,6 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 					const router = createHistoryRouter({
 						cwd: PROJECT,
 						sessionStore: () => store,
-						workflows: () => undefined,
 						budget: { bytes },
 					});
 					const output = (await router.search!(url, request("needle"))) ?? "";
@@ -109,57 +106,6 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		}
 	});
 
-	it("workflow searches fall back to the short skipped-entry clause when only the short clause fits (#5250)", async () => {
-		const id = "x.dot.";
-		const store = new MemorySessionStore();
-		await addSession(store, id, BASE, [`${RUNAWAY}!`, "safe-tail"]);
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () => [],
-			listProjectRuns: async () => [
-				{
-					runId: "run-a",
-					name: "flow",
-					status: "completed",
-					startedAt: BASE,
-					elapsedMs: 1,
-					activeStages: [],
-					awaitingInput: [],
-					awaitingInputCount: 0,
-				},
-			],
-			getRun: async (runId) => ({
-				runId,
-				name: "flow",
-				status: "completed",
-				startedAt: BASE,
-				endedAt: BASE + 1,
-				inputs: {},
-				stages: [{ id: "one", name: "one", status: "completed", sessionId: id }],
-			}),
-		};
-		for (const [url, bytes] of [
-			["history://workflows/run-a", 180],
-			["history://workflows", 240],
-		] as const) {
-			const router = createHistoryRouter({
-				cwd: PROJECT,
-				sessionStore: () => store,
-				workflows: () => workflows,
-				budget: { bytes },
-			});
-			const first = (await router.search!(url, request("(?=a)(a+)+b|safe-tail"))) ?? "";
-			assert.ok(Buffer.byteLength(first) <= bytes, `${url}: ${Buffer.byteLength(first)} > ${bytes}\n${first}`);
-			assert.match(first, /; entry 1 in history:\/\/sessions\/x\.dot\. not searched; continue with /);
-			assert.doesNotMatch(first, /ran past the time budget on it/);
-			const next = continuation(first);
-			assert.ok(next, first);
-			const second = (await router.search!(next, request("(?=a)(a+)+b|safe-tail"))) ?? "";
-			assert.ok(Buffer.byteLength(second) <= bytes, `${next}: ${Buffer.byteLength(second)} > ${bytes}\n${second}`);
-			assert.ok(second.split("\n").includes("history://sessions/x.dot.:2: safe-tail"), second);
-		}
-		await store.close();
-	});
-
 	it("a session search that exhausts its row budget between sessions reports the row stop reason (#5250)", async () => {
 		const store = new MemorySessionStore();
 		await addSession(store, "s1", BASE + 2_000, ["unreadable first"]);
@@ -169,7 +115,6 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		const router = createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => failingStore,
-			workflows: () => undefined,
 			budget: { rows: 4 },
 		});
 		const first = (await router.search!("history://sessions", request("needle"))) ?? "";
@@ -195,7 +140,6 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		const router = createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => failingStore,
-			workflows: () => undefined,
 			budget: { bytes: 500 },
 		});
 		const first = (await router.search!("history://sessions", request("needle"))) ?? "";
@@ -219,7 +163,6 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		const checkpointRouter = createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => failOnSessions(checkpointStore, new Set(["c1"])),
-			workflows: () => undefined,
 			budget: { bytes: 500 },
 		});
 		const trimmedCheckpoint = (await checkpointRouter.search!("history://sessions", request("needle"))) ?? "";
@@ -242,7 +185,6 @@ describe("history:// stop and skipped-entry notes under tight budgets (#5250)", 
 		const router = createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => store,
-			workflows: () => undefined,
 			budget: { bytes: 500 },
 		});
 		const output = (await router.search!("history://sessions?session=vanished&cursor=1", request("needle"))) ?? "";

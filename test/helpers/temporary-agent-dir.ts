@@ -1,22 +1,19 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll } from "vitest";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
 
 const AGENT_DIR_ENV = "ATOMIC_CODING_AGENT_DIR";
 /** The compatibility alias Atomic reads when `ATOMIC_CODING_AGENT_DIR` is unset. */
 const LEGACY_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 
 /**
- * A new agent directory, `.atomic/agent` under a fresh `agent-home-*` directory inside the run's workflow-artifact
+ * A new agent directory, `.atomic/agent` under a fresh `agent-home-*` directory inside the run's sandbox
  * directory. It exists, as an installed agent directory does: extension loads only cache below an existing one (#4728). The orchestrator removes that directory once every test process has exited: code under test may hold a
  * store it opened there until its process ends, and Windows cannot delete a database file that is still open.
  */
 export function temporaryAgentDir(runDirectory: string | undefined): string {
 	if (runDirectory === undefined) {
-		throw new Error(
-			`${ENV_WORKFLOW_ARTIFACT_DIR} is unset: load test/setup-workflow-durability.ts before this helper`,
-		);
+		throw new Error("ATOMIC_TEST_RUN_DIR is unset: load test/global-setup-test-directory.ts before this helper");
 	}
 	const agentDir = join(mkdtempSync(join(runDirectory, "agent-home-")), ".atomic", "agent");
 	mkdirSync(agentDir, { recursive: true });
@@ -44,7 +41,7 @@ export function replaceEnvironmentVariable(name: string, value: string): () => v
  * `vi.stubEnv`, or a child's own environment). Returns the agent directory.
  */
 export function installTemporaryAgentDirDefault(env: NodeJS.ProcessEnv = process.env): string {
-	const agentDir = temporaryAgentDir(env[ENV_WORKFLOW_ARTIFACT_DIR]);
+	const agentDir = temporaryAgentDir(env.ATOMIC_TEST_RUN_DIR);
 	env[AGENT_DIR_ENV] = agentDir;
 	delete env[LEGACY_AGENT_DIR_ENV];
 	return agentDir;
@@ -56,7 +53,7 @@ export function installTemporaryAgentDirDefault(env: NodeJS.ProcessEnv = process
  * instead of the user's. `ATOMIC_CODING_AGENT_DIR` is restored after the file's last test. Returns the agent directory.
  */
 export function useTemporaryAgentDir(): string {
-	const agentDir = temporaryAgentDir(process.env[ENV_WORKFLOW_ARTIFACT_DIR]);
+	const agentDir = temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR);
 	afterAll(replaceEnvironmentVariable(AGENT_DIR_ENV, agentDir));
 	return agentDir;
 }

@@ -6,7 +6,7 @@ import { ranOnModelLine } from "./completion.js";
 import type { TaskRecord } from "./contracts.js";
 
 export const TASK_HEARTBEAT_MESSAGE_TYPE = "task-heartbeat";
-/** Same default cadence as workflow heartbeats; `tasks.heartbeatMs` overrides it. */
+/** Default task heartbeat cadence; `tasks.heartbeatMs` overrides it. */
 export const DEFAULT_TASK_HEARTBEAT_MS: number = SETTINGS_DEFAULTS.tasks.heartbeatMs;
 /** Shortest cadence a caller may choose; shorter checks would crowd the owner's chat. */
 export const MIN_TASK_HEARTBEAT_MS = 60_000;

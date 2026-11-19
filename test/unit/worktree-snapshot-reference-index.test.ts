@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
-import type {
-	SqliteDatabase,
-	SqliteRow,
-	SqliteStatement,
-} from "../../packages/coding-agent/src/core/storage/database.ts";
+
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
 	SqlSnapshotBlobStore,
@@ -16,10 +12,9 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import type { Lease, RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
-import { serializeJson } from "../../packages/workflows/src/durable/journal/values.js";
 import { countingDatabase } from "../helpers/counting-database.js";
+import type { LegacyRunKey as Lease, LegacyEvent as RunEvent } from "../helpers/legacy-snapshot-rows.js";
+import { LegacySnapshotRows } from "../helpers/legacy-snapshot-rows.js";
 import {
 	ageBlobs,
 	checkpointEvent,
@@ -46,23 +41,6 @@ afterEach(async () => {
 });
 
 /** A database whose writes of several statements go out as one `batch`, as libSQL's do. */
-function batching(database: SqliteDatabase): SqliteDatabase {
-	return {
-		descriptor: database.descriptor,
-		exec: (sql) => database.exec(sql),
-		run: (sql, ...params) => database.run(sql, ...params),
-		get: (sql, ...params) => database.get(sql, ...params),
-		all: (sql, ...params) => database.all(sql, ...params),
-		transaction: (callback, options) => database.transaction(callback, options),
-		close: () => database.close(),
-		batch: (statements: readonly SqliteStatement[]) =>
-			database.transaction(async (transaction) => {
-				const rows: SqliteRow[][] = [];
-				for (const statement of statements) rows.push(await transaction.all(statement.sql, ...statement.params));
-				return rows;
-			}),
-	};
-}
 
 /** A deterministic generator, so a failing seed reproduces. */
 function random(seed: number) {
@@ -94,8 +72,6 @@ const STATUSES: readonly RunStatusPayload[] = [
 	{ status: "blocked", rootWorkflowId: null },
 ];
 
-type AppendPath = "append" | "appendMany" | "batch" | "raw";
-
 /**
  * `restores` adds entries written when a snapshot was restored into a new worktree, which merge roots into one
  * checkout; `dangling` adds entries whose parent was never written, which make their session keep every snapshot, so
@@ -104,18 +80,14 @@ type AppendPath = "append" | "appendMany" | "batch" | "raw";
 async function writeRandomHistory(seed: number, { restores = false, dangling = false } = {}) {
 	const rng = random(seed);
 	const database = await openNodeSqliteDatabase(join(directory, `parity-${seed}.sqlite`));
-	const batchDatabase = batching(await openNodeSqliteDatabase(join(directory, `parity-${seed}.sqlite`)));
 	const { SqlSessionStore } = await import(
 		"../../packages/coding-agent/src/core/storage/session/sql-session-store.ts"
 	);
 	const sessions = await SqlSessionStore.open(database);
-	const journal = await SqlRunJournal.open(database);
-	const batchJournal = await SqlRunJournal.open(batchDatabase);
+	const journal = await LegacySnapshotRows.open(database);
 	closers.push(async () => {
-		await batchJournal.close();
-		await journal.close();
 		await sessions.close();
-		await batchDatabase.close();
+
 		await database.close();
 	});
 	const blobs = Array.from({ length: 40 }, (_, index) => textBlob(`blob-${seed}-${index}`));
@@ -127,37 +99,9 @@ async function writeRandomHistory(seed: number, { restores = false, dangling = f
 			Array.from({ length: 1 + rng.int(3) }, () => (rng.chance(0.2) ? null : hash())),
 			{ root, ...(rng.chance(0.3) ? { bundle: hash() } : {}) },
 		);
-	const paths: Record<AppendPath, number> = { append: 0, appendMany: 0, batch: 0, raw: 0 };
 
 	async function appendEvents(lease: Lease, events: readonly RunEvent[]): Promise<void> {
-		const path = rng.pick<AppendPath>(["append", "appendMany", "batch", "raw"]);
-		paths[path]++;
-		if (path === "append") for (const event of events) await journal.append(lease, event);
-		else if (path === "appendMany" || path === "batch") {
-			const target = path === "batch" ? batchJournal : journal;
-			const results = await target.appendMany(
-				lease,
-				events.map((event) => ({ event, context: <T>(read: () => T) => read() })),
-			);
-			for (const result of results) assert.equal(result.status, "fulfilled");
-		} else {
-			for (const event of events) {
-				const row = await database.get<SqliteRow & { seq: number }>(
-					"SELECT COALESCE(MAX(seq), 0) AS seq FROM wf_events WHERE run_id = ?",
-					lease.runId,
-				);
-				await database.run(
-					"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-					lease.runId,
-					Number(row!.seq) + 1,
-					lease.epoch,
-					null,
-					event.type,
-					serializeJson(event.payload),
-					Date.now(),
-				);
-			}
-		}
+		for (const event of events) await journal.append(lease, event);
 	}
 
 	const runs = Array.from({ length: 6 + rng.int(6) }, (_, index) => `run-${index}`);
@@ -243,14 +187,14 @@ async function writeRandomHistory(seed: number, { restores = false, dangling = f
 		}
 		if (rng.chance(0.2)) await sessions.delete(sessionId);
 	}
-	return { database, sessions, journal, blobs, paths };
+	return { database, sessions, journal, blobs };
 }
 
 describe("the reference index keeps exactly what a full scan of every journal and session retains (#4355)", () => {
 	test.each(Array.from({ length: 24 }, (_, index) => index + 1))(
-		"random history %i, written through single appends, savepoint and batched appendMany, raw inserts, and every session write",
+		"random history %i, with legacy run rows and every session write",
 		async (seed) => {
-			const { database, sessions, journal, blobs, paths } = await writeRandomHistory(seed, { restores: true });
+			const { database, sessions, journal, blobs } = await writeRandomHistory(seed, { restores: true });
 			const expected = await fullScanRetainedHashes(journal, sessions);
 			await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
 
@@ -265,7 +209,6 @@ describe("the reference index keeps exactly what a full scan of every journal an
 					.filter((hash, index, all) => !expected.has(hash) && all.indexOf(hash) === index)
 					.sort(),
 			);
-			assert.ok(Object.values(paths).reduce((sum, count) => sum + count, 0) > 0);
 		},
 	);
 
@@ -303,27 +246,25 @@ describe("the reference index keeps exactly what a full scan of every journal an
 		},
 	);
 
-	test("across the seeds every write path was exercised and both kept and collected blobs occurred", async () => {
-		const totals: Record<AppendPath, number> = { append: 0, appendMany: 0, batch: 0, raw: 0 };
+	test("across the seeds both kept and collected blobs occurred", async () => {
 		let kept = 0;
 		let collected = 0;
 		for (const seed of [1, 2, 3, 4]) {
-			const { database, sessions, journal, paths } = await writeRandomHistory(seed);
-			for (const path of Object.keys(totals) as AppendPath[]) totals[path] += paths[path];
+			const { database, sessions, journal } = await writeRandomHistory(seed);
+
 			kept += (await fullScanRetainedHashes(journal, sessions)).size;
 			await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
 			collected += (await collectSnapshotGarbage(journal.snapshotBlobs)).deleted.length;
 		}
-		for (const [path, count] of Object.entries(totals)) assert.ok(count > 0, `${path} was never used`);
+
 		assert.ok(kept > 0 && collected > 0, `kept ${kept}, collected ${collected}`);
 	});
 });
 
 test("a checkpoint payload SQLite cannot parse is stored and references nothing, so a write never fails on the index", async () => {
 	const database = await openNodeSqliteDatabase(join(directory, "malformed.sqlite"));
-	const journal = await SqlRunJournal.open(database);
+	const journal = await LegacySnapshotRows.open(database);
 	closers.push(async () => {
-		await journal.close();
 		await database.close();
 	});
 	const lease = await startRun(journal, "run-1");
@@ -352,10 +293,9 @@ test("reopening a session store and run journal finds their index triggers and c
 	for (let attempt = 0; attempt < 2; attempt++) {
 		const counted = countingDatabase(await openNodeSqliteDatabase(path));
 		const sessions = await SqlSessionStore.open(counted.wrapped);
-		const journal = await SqlRunJournal.open(counted.wrapped);
+		await LegacySnapshotRows.open(counted.wrapped);
 		opens.push(counted.statements.filter((statement) => statement.sql.includes("CREATE TRIGGER")).length);
 		closers.push(async () => {
-			await journal.close();
 			await sessions.close();
 			await counted.wrapped.close();
 		});

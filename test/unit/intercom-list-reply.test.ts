@@ -3,7 +3,7 @@ import { test } from "vitest";
 import { replyToList, type SessionsReply } from "../../packages/intercom/broker/list-reply.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 
-const GROUP = "workflow:5d3a5f1e-0000-4000-8000-000000000001";
+const GROUP = "peeked-group";
 
 function session(id: string, group: string): SessionInfo {
 	return { id, group, cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 } as SessionInfo;
@@ -27,8 +27,6 @@ test("a group joined while the remote read is pending is not reported as restric
 		localSessions: () => directory(requester, peer),
 		remoteSessions: () => new Promise((resolve) => (releaseRemote = resolve)),
 		canInspectSelectedGroup: () => joined,
-		workflowStages: () => [],
-		workflowFutureStages: () => [],
 		write: (reply) => replies.push(reply),
 	});
 	joined = true;
@@ -55,8 +53,6 @@ test("a peek that stays refused after the remote read is reported as restricted 
 		localSessions: () => directory(requester, session("peer", GROUP)),
 		remoteSessions: () => Promise.resolve(directory(session("remote-peer", GROUP))),
 		canInspectSelectedGroup: () => false,
-		workflowStages: () => [],
-		workflowFutureStages: () => [],
 		write: (reply) => replies.push(reply),
 	});
 	await Promise.resolve();

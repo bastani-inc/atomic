@@ -44,7 +44,6 @@ function mount(
 		canDelete?: boolean;
 		keybindings?: KeybindingsManager;
 		deleteSession?: (id: string) => Promise<void>;
-		deleteWorkflow?: (runId: string) => Promise<void>;
 		currentSession?: { id: string; directory: string };
 		loader?: () => Promise<SessionInfo[]>;
 		onCancel?: () => void;
@@ -65,7 +64,6 @@ function mount(
 			initialSessions: sessions,
 			...(options.rename ? { renameSession: async () => {} } : {}),
 			...(options.deleteSession ? { deleteSession: options.deleteSession } : {}),
-			...(options.deleteWorkflow ? { deleteWorkflow: options.deleteWorkflow } : {}),
 			...(options.variant ? { variant: options.variant } : {}),
 			...(options.title ? { title: options.title } : {}),
 			...(options.canDelete !== undefined ? { canDelete: options.canDelete } : {}),
@@ -78,7 +76,7 @@ function frame(selector: SessionSelectorComponent, width = 160): string[] {
 	return selector.render(width).map(strip);
 }
 
-describe("resume picker: one two-line design for sessions and workflow runs (#5224)", () => {
+describe("resume picker: two-line session and extension picker rows (#5224)", () => {
 	beforeAll(() => {
 		initTheme("dark");
 	});
@@ -130,7 +128,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		assert.match(lines[titleIndex + 1]!, /^\s+2h ago · 42 messages · OAuth loop\s*$/);
 	});
 
-	it("uses a row's own title and detail line when it has them (workflow runs)", () => {
+	it("uses a row's own title and detail line when it has them", () => {
 		const lines = frame(
 			mount(
 				[
@@ -181,7 +179,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		}
 	});
 
-	it("drops scope, name-filter and path keys from a workflow-run picker", () => {
+	it("drops scope, name-filter and path keys from a extension run picker", () => {
 		const hint = frame(
 			mount([makeSession({ id: "a", title: "x", detail: "paused" }), makeSession({ id: "b" })], {
 				variant: "runs",
@@ -242,7 +240,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		selector.dispose();
 	});
 
-	it("keeps a workflow row locked if refresh changes its catalog kind during deletion (#5256)", async () => {
+	it("keeps a run row locked if refresh changes its path during deletion (#5256)", async () => {
 		const original = makeSession({ id: "run-a", path: "workflow-durable:run-a" });
 		const resumed: string[] = [];
 		let release!: () => void;
@@ -256,7 +254,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		try {
 			selector.handleInput("\x04");
 			selector.getSessionList().setSessions([{ ...original, path: "workflow-completed:run-a" }], true);
-			assert.ok(frame(selector).some((line) => line.includes("Delete this workflow run?")));
+			assert.ok(frame(selector).some((line) => line.includes("Delete this run?")));
 			selector.handleInput("\r");
 			selector.getSessionList().setSessions([{ ...original, path: "workflow-live:run-a" }], true);
 			const rendered = frame(selector);
@@ -368,7 +366,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		);
 		const runs = frame(mount([], { variant: "runs" }));
 		assert.ok(
-			runs.some((line) => line.includes("No workflow runs to resume")),
+			runs.some((line) => line.includes("No runs to resume")),
 			runs.join("\n"),
 		);
 	});
@@ -401,7 +399,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		});
 	}
 
-	it("mixed picker titles Resume, groups Sessions first then Workflow runs with counts, sorts each group newest-first, and crosses groups with arrows (#5256)", () => {
+	it("/resume shows the sessions count, sorts newest-first, and follows arrow selection (#5256)", () => {
 		const now = Date.now();
 		const olderSession = makeSession({
 			id: "s-old",
@@ -416,26 +414,8 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 			firstMessage: "newer session prompt",
 			modified: new Date(now - HOUR),
 		});
-		const olderWorkflow = makeSession({
-			id: "wf-old",
-			path: "workflow-durable:wf-old",
-			resumeKind: "workflow",
-			title: "goal · older workflow",
-			detail: "paused · stage 1/3 · 4h ago",
-			modified: new Date(now - 4 * HOUR),
-			messageCount: 0,
-		});
-		const newerWorkflow = makeSession({
-			id: "wf-new",
-			path: "workflow-durable:wf-new",
-			resumeKind: "workflow",
-			title: "ralph · newer workflow",
-			detail: "paused · stage 2/5 · 30m ago",
-			modified: new Date(now - 30 * 60_000),
-			messageCount: 0,
-		});
 		const chosen: string[] = [];
-		const selector = mount([olderWorkflow, olderSession, newerWorkflow, newerSession], {
+		const selector = mount([olderSession, newerSession], {
 			variant: "mixed",
 			onSelect: (row) => chosen.push(row.id),
 		});
@@ -447,13 +427,8 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		const sessionsGroupIndex = lines.findIndex((line) => line.trim() === "Sessions (2)");
 		const newSessionIndex = lines.findIndex((line) => line.includes("newer session prompt"));
 		const oldSessionIndex = lines.findIndex((line) => line.includes("older session prompt"));
-		const workflowsGroupIndex = lines.findIndex((line) => line.trim() === "Workflow runs (2)");
-		const newWorkflowIndex = lines.findIndex((line) => line.includes("ralph · newer workflow"));
-		const oldWorkflowIndex = lines.findIndex((line) => line.includes("goal · older workflow"));
 		assert.ok(sessionsGroupIndex >= 0, lines.join("\n"));
 		assert.ok(sessionsGroupIndex < newSessionIndex && newSessionIndex < oldSessionIndex, lines.join("\n"));
-		assert.ok(oldSessionIndex < workflowsGroupIndex && workflowsGroupIndex < newWorkflowIndex, lines.join("\n"));
-		assert.ok(newWorkflowIndex < oldWorkflowIndex, lines.join("\n"));
 		assert.ok(
 			!lines[newSessionIndex]!.includes("└─") && !lines[newSessionIndex]!.includes("├─"),
 			lines[newSessionIndex],
@@ -461,13 +436,8 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 
 		selector.handleInput("\x1b[B");
 		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-old");
-		selector.handleInput("\x1b[B");
-		assert.equal(selector.getSessionList().getSelectedSessionId(), "wf-new");
-		selector.handleInput("\x1b[A");
-		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-old");
-		selector.handleInput("\x1b[B");
 		selector.handleInput("\r");
-		assert.deepEqual(chosen, ["wf-new"]);
+		assert.deepEqual(chosen, ["s-old"]);
 		selector.dispose();
 
 		const sessionsOnly = frame(mount([newerSession], { variant: "mixed" }), 160);
@@ -476,14 +446,9 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 			sessionsOnly.join("\n"),
 		);
 		assert.ok(!sessionsOnly.some((line) => line.includes("Workflow runs")), sessionsOnly.join("\n"));
-
-		const workflowsOnly = frame(mount([newerWorkflow], { variant: "mixed" }), 160);
-		const zeroSessionsIndex = workflowsOnly.findIndex((line) => line.trim() === "Sessions (0)");
-		const oneWorkflowIndex = workflowsOnly.findIndex((line) => line.trim() === "Workflow runs (1)");
-		assert.ok(zeroSessionsIndex >= 0 && zeroSessionsIndex < oneWorkflowIndex, workflowsOnly.join("\n"));
 	});
 
-	it("mixed search filters both groups newest-first, and named filter keeps workflow rows (#5256)", () => {
+	it("/resume filters sessions newest-first and honors the named filter (#5256)", () => {
 		const now = Date.now();
 		const s1 = makeSession({
 			id: "s1",
@@ -499,31 +464,18 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 			allMessagesText: "deploy pipeline beta",
 			modified: new Date(now - HOUR),
 		});
-		const wf1 = makeSession({
-			id: "wf1",
-			path: "workflow-durable:wf1",
-			resumeKind: "workflow",
-			title: "deploy · release check",
-			detail: "paused · stage 1/2",
-			modified: new Date(now - 30 * 60_000),
-		});
-		const selector = mount([s1, s2, wf1], { variant: "mixed" });
+		const selector = mount([s1, s2], { variant: "mixed" });
 		for (const ch of "deploy") selector.handleInput(ch);
 		const searched = frame(selector, 160);
 		const s2At = searched.findIndex((line) => line.includes("deploy pipeline beta"));
 		const s1At = searched.findIndex((line) => line.includes("alpha"));
-		const wfAt = searched.findIndex((line) => line.includes("deploy · release check"));
-		assert.ok(s2At >= 0 && s2At < s1At && s1At < wfAt, searched.join("\n"));
+		assert.ok(s2At >= 0 && s2At < s1At, searched.join("\n"));
 
 		selector.handleInput("\x1b");
 		selector.handleInput("\x0e");
 		const namedLines = frame(selector, 160);
 		assert.ok(
 			namedLines.some((line) => line.trim() === "Sessions (1)"),
-			namedLines.join("\n"),
-		);
-		assert.ok(
-			namedLines.some((line) => line.trim() === "Workflow runs (1)"),
 			namedLines.join("\n"),
 		);
 		assert.ok(!namedLines.some((line) => line.includes("deploy pipeline beta")), namedLines.join("\n"));
@@ -533,29 +485,10 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 	it("mixed hints order core keys then live extras at 160 cols, collapse to core + ? keys at 80 cols, and open the ? help overlay (#5256)", () => {
 		const modified = new Date(Date.now() - 2 * HOUR);
 		const sessionRow = makeSession({ id: "s1", path: "/work/project/s1.jsonl", modified });
-		const activeWorkflow = makeSession({
-			id: "s1",
-			path: "workflow-live:s1",
-			cwd: "Live",
-			modified,
-			resumeKind: "workflow",
-			canDelete: false,
-			title: "demo · active workflow",
-			detail: "paused · stage 1/2",
-		});
-		const inactiveWorkflow = makeSession({
-			id: "wf-del",
-			path: "workflow-durable:wf-del",
-			cwd: "Durable",
-			modified,
-			resumeKind: "workflow",
-			canDelete: true,
-			title: "demo · durable workflow",
-			detail: "failed · stage 2/2",
-		});
+		const other = makeSession({ id: "s2", modified });
 		let cancelled = 0;
 		const remapped = new KeybindingsManager({ "app.session.rename": "ctrl+e" });
-		const selector = mount([sessionRow, activeWorkflow, inactiveWorkflow], {
+		const selector = mount([sessionRow, other], {
 			variant: "mixed",
 			rename: true,
 			keybindings: remapped,
@@ -591,30 +524,6 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		assert.equal(frame(selector, 24).at(-2)!.trim(), "enter delete");
 		selector.handleInput("\x1b");
 
-		selector.handleInput("\x1b[B");
-		const activeWfHint = frame(selector, 160).at(-2)!.trim();
-		assert.ok(!activeWfHint.includes("rename"), activeWfHint);
-		assert.ok(!activeWfHint.includes("delete"), activeWfHint);
-		assert.ok(activeWfHint.includes("tab scope"), activeWfHint);
-		assert.ok(activeWfHint.includes("named"), activeWfHint);
-		assert.ok(!activeWfHint.includes("path"), activeWfHint);
-		assert.ok(activeWfHint.includes("ctrl+s sort"), activeWfHint);
-		assert.ok(activeWfHint.includes("? keys"), activeWfHint);
-
-		selector.handleInput(" ");
-		const wfPreview = frame(selector, 160).join("\n");
-		assert.ok(wfPreview.includes("s1"), wfPreview);
-		assert.ok(!wfPreview.includes("workflow-live:s1"), wfPreview);
-		assert.ok(!wfPreview.includes("Live"), wfPreview);
-		selector.handleInput(" ");
-
-		selector.handleInput("\x1b[B");
-		const durableWfHint = frame(selector, 160).at(-2)!.trim();
-		assert.ok(durableWfHint.includes("ctrl+d delete"), durableWfHint);
-		assert.ok(!durableWfHint.includes("rename"), durableWfHint);
-
-		selector.handleInput("\x1b[A");
-		selector.handleInput("\x1b[A");
 		selector.handleInput("?");
 		const helpLines = frame(selector, 80);
 		assert.ok(
@@ -668,17 +577,14 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 			allMessagesText: "ship why now check",
 			modified: new Date(now - 3 * HOUR),
 		});
-		const ukWorkflow = makeSession({
-			id: "wf-colour",
-			path: "workflow-durable:wf-colour",
-			resumeKind: "workflow",
+		const ukSession = makeSession({
+			id: "s-colour",
 			title: "audit · colour tokens",
-			detail: "paused · stage 1/2",
-			modified: new Date(now - 30 * 60_000),
+			modified: new Date(now - 4 * HOUR),
 		});
 		let cancelled = 0;
 		const selectedIds: string[] = [];
-		const selector = mount([usSession, questionSession, plainSession, ukWorkflow], {
+		const selector = mount([usSession, questionSession, plainSession, ukSession], {
 			variant: "mixed",
 			onCancel: () => cancelled++,
 			onSelect: (row) => selectedIds.push(row.id),
@@ -760,96 +666,6 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		selector.dispose();
 	});
 
-	it("mixed workflow deletion routes to deleteWorkflow, isolates pending/deleted ids from sessions, and refreshSessions preserves state (#5256)", async () => {
-		let rows: SessionInfo[] = [
-			makeSession({ id: "shared-id", path: "/work/project/shared-id.jsonl", firstMessage: "session row" }),
-			makeSession({
-				id: "shared-id",
-				path: "workflow-durable:shared-id",
-				resumeKind: "workflow",
-				canDelete: true,
-				title: "ralph · workflow row",
-				detail: "paused · stage 1/2",
-			}),
-		];
-		const deletedWorkflows: string[] = [];
-		const deletedSessions: string[] = [];
-		const resumed: string[] = [];
-		let releaseWfDelete!: () => void;
-		const wfDeletion = new Promise<void>((resolve) => {
-			releaseWfDelete = resolve;
-		});
-		const selector = mount(rows, {
-			variant: "mixed",
-			currentSession: { id: "shared-id", directory: "/work/project" },
-			loader: async () => rows,
-			deleteSession: async (id) => {
-				deletedSessions.push(id);
-			},
-			deleteWorkflow: async (runId) => {
-				deletedWorkflows.push(runId);
-				await wfDeletion;
-			},
-			onSelect: (row) => resumed.push(`${row.resumeKind ?? "session"}:${row.id}`),
-		});
-
-		selector.handleInput("\x1b[B");
-		assert.ok(frame(selector, 160).at(-2)!.includes("ctrl+d delete"));
-		selector.handleInput("\x04");
-		assert.ok(
-			frame(selector, 160).some((line) => line.includes("Delete this workflow run?")),
-			frame(selector, 160).join("\n"),
-		);
-		selector.handleInput("\r");
-		assert.deepEqual(deletedWorkflows, ["shared-id"]);
-		assert.deepEqual(deletedSessions, []);
-
-		selector.handleInput("\x1b[A");
-		selector.handleInput("\r");
-		assert.deepEqual(resumed, ["session:shared-id"]);
-
-		releaseWfDelete();
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		rows = [rows[0]!, { ...rows[1]!, path: "workflow-completed:shared-id", detail: "completed · 1m ago" }];
-		await selector.refreshSessions();
-		const afterRefresh = frame(selector, 160);
-		assert.ok(
-			afterRefresh.some((line) => line.includes("session row")),
-			afterRefresh.join("\n"),
-		);
-		assert.ok(!afterRefresh.some((line) => line.includes("ralph · workflow row")), afterRefresh.join("\n"));
-		selector.dispose();
-	});
-
-	it("handles Ctrl+N and Tab on workflow rows so named-only filter or folder scope never traps the picker (#5256)", () => {
-		const unnamedSession = makeSession({ id: "s-unnamed", path: "/work/project/s-unnamed.jsonl" });
-		const wfRow = makeSession({
-			id: "wf-paused",
-			path: "workflow-durable:wf-paused",
-			resumeKind: "workflow",
-			title: "ralph · paused workflow",
-			detail: "paused · stage 1/2",
-		});
-		const selector = mount([unnamedSession, wfRow], { variant: "mixed", rename: true });
-		try {
-			selector.handleInput("\x0e");
-			assert.equal(selector.getSessionList().getSelectedSessionId(), "wf-paused");
-			assert.match(frame(selector, 120).join("\n"), /named only/);
-			selector.handleInput("\x0e");
-			assert.doesNotMatch(frame(selector, 120).join("\n"), /named only/);
-			assert.match(frame(selector, 120).join("\n"), /Sessions \(1\)/);
-
-			selector.handleInput("\x1b[B");
-			assert.equal(selector.getSessionList().getSelectedSessionId(), "wf-paused");
-			selector.handleInput("\t");
-			assert.match(frame(selector, 120).join("\n"), /all folders/);
-			selector.handleInput("\t");
-			assert.match(frame(selector, 120).join("\n"), /this folder/);
-		} finally {
-			selector.dispose();
-		}
-	});
-
 	it("keeps mixed hint live-key predicates accurate for current session, canDelete=false, deleting state, search, and single row (#5256)", () => {
 		const activeSession = makeSession({ id: "cur", path: "/work/project/cur.jsonl" });
 		const secondSession = makeSession({
@@ -925,64 +741,12 @@ describe("mixed resume shortcut priority (#5256)", () => {
 		}
 	});
 
-	it("keeps a workflow row selected when the named-session filter changes (#5256)", () => {
-		const rows = [
-			makeSession({ id: "unnamed" }),
-			makeSession({ id: "named", name: "Named session" }),
-			makeSession({ id: "run-a", resumeKind: "workflow", title: "First workflow" }),
-			makeSession({ id: "run-b", resumeKind: "workflow", title: "Selected workflow" }),
-		];
-		const picker = mount(rows, { variant: "mixed" });
-		try {
-			for (let index = 0; index < 3; index++) picker.handleInput("\x1b[B");
-			assert.match(frame(picker).join("\n"), /❯ Selected workflow/);
-			for (let index = 0; index < 2; index++) {
-				picker.handleInput("\x0e");
-				assert.match(frame(picker).join("\n"), /❯ Selected workflow/);
-			}
-		} finally {
-			picker.dispose();
-		}
-	});
-
-	it("does not reload saved sessions after deleting a workflow row (#5256)", async () => {
-		const session = makeSession({ id: "session" });
-		const run = makeSession({ id: "workflow", resumeKind: "workflow" });
-		let loads = 0;
-		let deletes = 0;
-		const picker = mount([session, run], {
-			variant: "mixed",
-			loader: async () => {
-				loads++;
-				return deletes ? [session] : [session, run];
-			},
-			deleteWorkflow: async () => {
-				deletes++;
-			},
-		});
-		try {
-			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.equal(loads, 1);
-			picker.handleInput("\x1b[B");
-			picker.handleInput("\x04");
-			picker.handleInput("\r");
-			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.equal(deletes, 1);
-			assert.equal(loads, 1);
-			picker.updateWorkflowSessions([]);
-			assert.doesNotMatch(frame(picker).join("\n"), /first-workflow/);
-			assert.match(frame(picker).join("\n"), /first-session/);
-		} finally {
-			picker.dispose();
-		}
-	});
-
 	it("acts on the painted row after a refresh moves the selection, and keeps a surviving row selected (#5256)", () => {
 		const session = makeSession({ id: "session" });
-		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });
-		const runB = makeSession({ id: "run-b", resumeKind: "workflow", title: "Run B" });
-		const runC = makeSession({ id: "run-c", resumeKind: "workflow", title: "Run C" });
-		const runD = makeSession({ id: "run-d", resumeKind: "workflow", title: "Run D" });
+		const runA = makeSession({ id: "run-a", title: "Run A" });
+		const runB = makeSession({ id: "run-b", title: "Run B" });
+		const runC = makeSession({ id: "run-c", title: "Run C" });
+		const runD = makeSession({ id: "run-d", title: "Run D" });
 		const selected: string[] = [];
 		const picker = mount([session, runA, runB, runC], {
 			variant: "mixed",
@@ -990,9 +754,9 @@ describe("mixed resume shortcut priority (#5256)", () => {
 		});
 		try {
 			while (!/❯ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
-			picker.updateWorkflowSessions([runD, runA, runB, runC]);
+			picker.getSessionList().setSessions([runD, runA, runB, runC], false);
 			assert.match(frame(picker).join("\n"), /❯ Run B/);
-			picker.updateWorkflowSessions([runD, runA, runC]);
+			picker.getSessionList().setSessions([runD, runA, runC], false);
 			for (const key of ["\r", "\x1b[C"]) picker.handleInput(key);
 			assert.deepEqual(selected, [], "Enter and → wait for the moved selection to be painted");
 			const painted = frame(picker)
@@ -1007,11 +771,10 @@ describe("mixed resume shortcut priority (#5256)", () => {
 	});
 
 	it("keeps the painted run selected when a refresh adds a newer run above it, without a key press (#5256)", async () => {
-		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });
-		const runB = makeSession({ id: "run-b", resumeKind: "workflow", title: "Run B" });
+		const runA = makeSession({ id: "run-a", title: "Run A" });
+		const runB = makeSession({ id: "run-b", title: "Run B" });
 		const runNew = makeSession({
 			id: "run-new",
-			resumeKind: "workflow",
 			title: "Run New",
 			modified: new Date(FIXTURE_NOW - HOUR),
 		});
@@ -1033,7 +796,7 @@ describe("mixed resume shortcut priority (#5256)", () => {
 
 	it("keeps the painted run selected in the other scope after a refresh replaced the folder list's selection (#5256)", async () => {
 		const run = (id: string, title: string, hoursAgo: number) =>
-			makeSession({ id, resumeKind: "workflow", title, modified: new Date(FIXTURE_NOW - hoursAgo * HOUR) });
+			makeSession({ id, title, modified: new Date(FIXTURE_NOW - hoursAgo * HOUR) });
 		const runA = run("run-a", "Run A", 2);
 		const runB = run("run-b", "Run B", 2);
 		const runC = run("run-c", "Run C", 2);
@@ -1053,11 +816,11 @@ describe("mixed resume shortcut priority (#5256)", () => {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.match(frame(picker).join("\n"), /❯ Run A/);
 			void picker.refreshSessions();
-			picker.updateWorkflowSessions([runB]);
+			picker.getSessionList().setSessions([runB], false);
 			picker.handleInput("\t");
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.match(frame(picker).join("\n"), /❯ Run C/);
-			picker.updateWorkflowSessions([runD, runC]);
+			picker.getSessionList().setSessions([runD, runC], true);
 			assert.match(frame(picker).join("\n"), /❯ Run C/, "the run the reader saw stays selected");
 		} finally {
 			pendingRefresh.resolve([runA]);
@@ -1067,28 +830,28 @@ describe("mixed resume shortcut priority (#5256)", () => {
 
 	it("cancels a delete confirmation whose run vanishes in a refresh instead of resuming another run (#5256)", async () => {
 		const session = makeSession({ id: "session" });
-		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });
-		const runB = makeSession({ id: "run-b", resumeKind: "workflow", title: "Run B" });
-		const runC = makeSession({ id: "run-c", resumeKind: "workflow", title: "Run C" });
+		const runA = makeSession({ id: "run-a", title: "Run A" });
+		const runB = makeSession({ id: "run-b", title: "Run B" });
+		const runC = makeSession({ id: "run-c", title: "Run C" });
 		const selected: string[] = [];
 		const deleted: string[] = [];
 		const picker = mount([session, runA, runB, runC], {
 			variant: "mixed",
 			onSelect: (row) => selected.push(row.id),
-			deleteWorkflow: async (runId) => {
+			deleteSession: async (runId) => {
 				deleted.push(runId);
 			},
 		});
 		try {
 			while (!/❯ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
 			picker.handleInput("\x04");
-			assert.match(frame(picker).join("\n"), /Delete this workflow run\?/);
-			picker.updateWorkflowSessions([runA, runC]);
+			assert.match(frame(picker).join("\n"), /Delete this session\?/);
+			picker.getSessionList().setSessions([runA, runC], false);
 			picker.handleInput("\r");
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.deepEqual(selected, [], "no other run resumes");
 			assert.deepEqual(deleted, [], "no other run is deleted");
-			assert.doesNotMatch(frame(picker).join("\n"), /Delete this workflow run\?/);
+			assert.doesNotMatch(frame(picker).join("\n"), /Delete this session\?/);
 		} finally {
 			picker.dispose();
 		}
@@ -1163,8 +926,6 @@ describe("resume deletion completion after closing (#5256)", () => {
 		async (outcome) => {
 			const row = makeSession({
 				id: "closed-delete",
-				resumeKind: "workflow",
-				path: "workflow-durable:closed-delete",
 			});
 			const gate = Promise.withResolvers<void>();
 			let loads = 0;
@@ -1185,7 +946,7 @@ describe("resume deletion completion after closing (#5256)", () => {
 					initialSessions: [row],
 					variant: "mixed",
 					keybindings: new KeybindingsManager(),
-					deleteWorkflow: async () => {
+					deleteSession: async () => {
 						try {
 							await gate.promise;
 						} finally {
@@ -1206,25 +967,14 @@ describe("resume deletion completion after closing (#5256)", () => {
 		},
 	);
 
-	it("hides delete in a mixed picker with canDelete disabled on non-current sessions and workflow runs (#5256)", () => {
+	it("hides delete in a mixed picker with canDelete disabled on non-current sessions (#5256)", () => {
 		const picker = mount(
-			[
-				makeSession({ id: "s1", firstMessage: "alpha" }),
-				makeSession({ id: "s2", firstMessage: "beta" }),
-				makeSession({
-					id: "wf-1",
-					path: "workflow-durable:wf-1",
-					resumeKind: "workflow",
-					title: "deploy · release",
-					detail: "paused · stage 1/2",
-				}),
-			],
+			[makeSession({ id: "s1", firstMessage: "alpha" }), makeSession({ id: "s2", firstMessage: "beta" })],
 			{
 				variant: "mixed",
 				rename: true,
 				canDelete: false,
 				deleteSession: async () => {},
-				deleteWorkflow: async () => {},
 				currentSession: { id: "current-other", directory: "/work/project" },
 			},
 		);
@@ -1232,11 +982,6 @@ describe("resume deletion completion after closing (#5256)", () => {
 			assert.equal(picker.getSessionList().getSelectedSessionId(), "s1");
 			const sessionHint = frame(picker, 300).at(-2)!;
 			assert.doesNotMatch(sessionHint, /delete/);
-			picker.handleInput("\x1b[B");
-			picker.handleInput("\x1b[B");
-			assert.equal(picker.getSessionList().getSelectedSessionId(), "wf-1");
-			const workflowHint = frame(picker, 300).at(-2)!;
-			assert.doesNotMatch(workflowHint, /delete/);
 		} finally {
 			picker.dispose();
 		}

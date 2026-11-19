@@ -194,7 +194,6 @@ setInterval(() => {
 		ownedPids.add(replacementPid);
 		assert.notEqual(replacementPid, child.pid);
 		const after = await connect("after-stall");
-		await after.registerPendingStageRouteAcknowledged("watchdog-run", "workflow:watchdog-run", "watchdog-capability");
 		assert.deepEqual(
 			(await after.listSessions()).map(({ name }) => name),
 			["after-stall"],

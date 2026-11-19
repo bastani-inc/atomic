@@ -3,15 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findMostRecentSession, type SessionHeader, SessionManager } from "../../src/core/session-manager.ts";
-import { WORKFLOW_SESSION_METADATA_ENV } from "../../src/core/session-manager-classification.ts";
 import { isInternalHeader, readSessionHeader } from "../../src/core/session-manager-storage.ts";
-import { applyInheritedWorkflowSessionClassification } from "../../src/main-session.ts";
-
-/**
- * Regression tests for issue #1504: workflow-created (internal) sessions must
- * be excluded from the standard `/resume` history while remaining resumable
- * via the workflow-specific resume path and via explicit file/session access.
- */
 
 function writeSessionFile(dir: string, header: SessionHeader, lines: string[] = []): string {
 	const path = join(dir, `${header.createdAt.replace(/[:.]/g, "-")}_${header.id}.jsonl`);
@@ -36,61 +28,6 @@ function workflowHeader(id: string, cwd: string, mtimeAgo = 0): SessionHeader {
 		workflow: { runId: "run-1", stageId: "stage-x", stageName: "build" },
 	};
 }
-
-describe("internal session marking", () => {
-	it("createSessionHeader stores internal/workflow metadata via NewSessionOptions", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
-		try {
-			const cwd = dir;
-			const session = await SessionManager.create(cwd, dir, {
-				internal: true,
-				workflow: { runId: "r1", stageId: "s1", stageName: "build" },
-			});
-			const header = session.getHeader();
-			expect(header?.internal).toBe(true);
-			expect(header?.workflow).toEqual({ runId: "r1", stageId: "s1", stageName: "build" });
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it.each([
-		{ internal: true },
-		{ internal: true, workflow: { runId: "r", stageId: "", stageName: "n" } },
-		{ internal: "yes", workflow: { runId: "r", stageId: "s", stageName: "n" } },
-	] as const)("normalizes malformed creation options without hiding the session", (marker) => {
-		const session = SessionManager.inMemory("/project", marker as never);
-		expect(session.getHeader()).not.toHaveProperty("internal");
-		expect(session.getHeader()).not.toHaveProperty("workflow");
-	});
-
-	it("markSessionInternal stamps a fresh marker on an unmarked persisted session", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
-		try {
-			const session = await SessionManager.create(dir, dir);
-			expect(session.getHeader()?.internal).toBeUndefined();
-			await session.markSessionInternal({ runId: "r", stageId: "s", stageName: "n" });
-			expect(session.getHeader()?.internal).toBe(true);
-			expect(session.getHeader()?.workflow).toEqual({ runId: "r", stageId: "s", stageName: "n" });
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("markSessionInternal preserves an existing full marker", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
-		try {
-			const session = await SessionManager.create(dir, dir, {
-				internal: true,
-				workflow: { runId: "original", stageId: "s", stageName: "n" },
-			});
-			await session.markSessionInternal({ runId: "should-not-overwrite", stageId: "x", stageName: "y" });
-			expect(session.getHeader()?.workflow).toEqual({ runId: "original", stageId: "s", stageName: "n" });
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-});
 
 describe("findMostRecentSession excludes internal by default", () => {
 	let dir: string;
@@ -147,14 +84,13 @@ describe("SessionManager.list excludes internal by default", () => {
 		expect(sessions.map((s) => s.id)).toEqual(["user-2"]);
 	});
 
-	it("includes internal sessions with includeInternal option and surfaces workflow linkage", async () => {
+	it("includes internal sessions with includeInternal option", async () => {
 		writeSessionFile(dir, workflowHeader("wf-5", cwd), [
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"workflow","timestamp":1}}',
 		]);
 		const sessions = await SessionManager.list(cwd, dir, undefined, { includeInternal: true });
 		expect(sessions).toHaveLength(1);
 		expect(sessions[0]?.internal).toBe(true);
-		expect(sessions[0]?.workflow).toEqual({ runId: "run-1", stageId: "stage-x", stageName: "build" });
 	});
 
 	it("SessionManager.listAll also excludes internal by default", async () => {
@@ -250,45 +186,6 @@ describe("malformed internal session markers remain visible", () => {
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"fork","timestamp":1}}',
 		]);
 		expect((await SessionManager.list(cwd, dir)).map((session) => session.id)).toEqual(["user-fork"]);
-	});
-
-	it("repairs malformed persisted markers when valid ownership is supplied", async () => {
-		const path = writeSessionFile(dir, { ...userHeader("repair", cwd), internal: true } as SessionHeader);
-		const session = await SessionManager.open(path, dir);
-		await session.markSessionInternal({ runId: "r", stageId: "s", stageName: "n" });
-		expect(readSessionHeader(path)).toMatchObject({
-			internal: true,
-			workflow: { runId: "r", stageId: "s", stageName: "n" },
-		});
-	});
-
-	it("classifies and persists a fresh workflow subagent session from inherited metadata", async () => {
-		const path = join(dir, "fresh-subagent.jsonl");
-		const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
-		const session = await SessionManager.open(path, dir, cwd);
-		applyInheritedWorkflowSessionClassification(session, {
-			[WORKFLOW_SESSION_METADATA_ENV]: JSON.stringify(workflow),
-		});
-		await session.appendMessage({ role: "user", content: "task", timestamp: Date.now() });
-		await session.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "done" }],
-			api: "openai-responses",
-			provider: "openai",
-			model: "gpt-5.4",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		});
-
-		expect(readSessionHeader(path)).toMatchObject({ internal: true, workflow });
 	});
 });
 

@@ -69,8 +69,7 @@ InteractiveModeBase.prototype.buildRemoteSlashCommands = function (
 	// the child catalog only contributes commands the host is genuinely missing.
 	const takenNames = new Set<string>(localCommands.map((command) => command.name));
 	const skillCommandsEnabled = this.settingsManager.getEnableSkillCommands();
-	// Reuse bundled argument-completion providers (e.g. /workflow subcommands and
-	// input schemas) for their matching child commands; RPC cannot serialize the
+	// Reuse bundled argument-completion providers for their matching child commands; RPC cannot serialize the
 	// completion callbacks themselves.
 	const bundledArgumentCompletions = new Map(
 		BUNDLED_EXTENSION_SLASH_COMMANDS.map((command) => [command.name, command.getArgumentCompletions] as const),
@@ -215,8 +214,7 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 	}
 
 	// In the isolated interactive host (isolateInteractiveHost) the host session
-	// loads no extensions, so extension slash commands (/workflow, /workflows,
-	// /run, /mcp, …) exist only in the engine child. Merge the child's command
+	// loads no extensions, so extension slash commands (such as /mcp) exist only in the engine child. Merge the child's command
 	// catalog — fetched asynchronously after engine bind — so autocomplete lists
 	// them. Built-in names stay reserved and anything already present locally
 	// (built-ins, prompt templates, skills the host also loaded) is deduped, so

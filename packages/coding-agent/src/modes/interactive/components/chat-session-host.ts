@@ -1,5 +1,7 @@
 import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
+import { chatReceipt } from "../../../core/chat-receipts.js";
+import { hostNoticeForEvent } from "../../../core/host-notices.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
@@ -7,8 +9,11 @@ import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
+import { type TaskChatPage, taskChatPage } from "../../../core/tasks/task-chat-records.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { chatRecordsChanged, discardChatMount } from "../chat-reader-records.js";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
+import { bindNextChatGroups } from "./chat-message-renderer.ts";
 import {
 	abortChatSessionBash,
 	abortChatSessionCompaction,
@@ -47,7 +52,6 @@ import {
 	transcriptEntryName,
 } from "./chat-session-host-rendering.ts";
 import {
-	clearChatSessionBusyForTerminalWorkflowStage,
 	disposeChatSession,
 	isChatSessionBashRunning,
 	isChatSessionStreaming,
@@ -70,6 +74,7 @@ import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-u
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { type RetryWaitEvent, retryWaitFromEvent } from "./retry-status-line.ts";
 import { isSingleLeftClick } from "./single-click.ts";
+import { TaskChatDecoration } from "./task-chat-decoration.js";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import { pagedNotices } from "./task-transcript-notices.ts";
@@ -106,6 +111,16 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		transcriptRows: Number.POSITIVE_INFINITY,
 	};
 	private historyHydrated = false;
+	private taskDecorations?: TaskChatDecoration;
+	private taskPageCapture(page: TaskChatPage | undefined) {
+		if (!page) return undefined;
+		this.taskDecorations ??= new TaskChatDecoration();
+		const decorations = this.taskDecorations;
+		this.state.transcriptComponent.onVisibleEntry = (entry) => decorations.observe(entry);
+		return decorations.capture(this, page, this.state.liveChat, this.state.transcript, () =>
+			this.state.requestRender?.(),
+		);
+	}
 	private readonly taskTranscriptEnvironment: () => TaskTranscriptEnvironment;
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>) {
@@ -207,6 +222,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const previousCount = countableTranscriptLength(this.state);
 		const notices = pagedNotices.get(this);
 		if (notices?.card) this.state.assistantCard = notices.card;
+		bindNextChatGroups(this.state.liveChat, this.taskPageCapture(taskChatPage(this)));
 		this.state.liveChat.prependMessages(messages);
 		if (firstUser.seenUser || this.state.firstUserEntry === undefined) {
 			syncFirstUserEntry(this.state);
@@ -225,6 +241,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.firstUserEntryExactText = firstUser.exactText;
 		const notices = pagedNotices.get(this);
 		if (notices) pagedNotices.set(this.state.transcript, notices);
+		this.taskDecorations?.clear();
+		bindNextChatGroups(this.state.liveChat, this.taskPageCapture(taskChatPage(this)));
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
 		syncFirstUserEntry(this.state);
 		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
@@ -279,7 +297,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * Shows a saved conversation. A call in `inFlightToolCallIds` has no result yet because its stage waits for one,
+	 * Shows a saved conversation. A call in `inFlightToolCallIds` has no result yet because its agent waits for one,
 	 * so it shows as pending, not as interrupted, and the call's own end replaces it with the result.
 	 */
 	async loadSession(
@@ -340,7 +358,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 				: undefined;
 		}
 		const store = session ? getOwnerTaskStore(session) : undefined;
-		// A session in another process (a workflow stage on a local worker) has no store here; the host
+		// A session in another process has no store here; the host
 		// supplies a source that reads its tasks there.
 		const source = store ? ownerTaskViewSource(store) : this.state.getTaskSource?.();
 		if (store === this.taskStore && source === this.taskSource) return;
@@ -365,6 +383,19 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.unsubscribeTasks = source.subscribe(update);
 		update();
 	}
+	/** A task chat shows reader-only outcomes as rows. Other hosts keep their event/status contract. */
+	applyTaskAgentEvent(event: AgentSessionEvent): void {
+		this.applyAgentEvent(event);
+		const receipt = chatReceipt(event);
+		if (!receipt) return;
+		chatRecordsChanged(this, receipt);
+		this.taskDecorations?.live.add(receipt.id);
+		const line = hostNoticeForEvent(event, this.state.manualCompactionTakeoverPending ? "manual" : undefined);
+		if (!line || this.state.disposed) return;
+		if (event.type === "agent_continue_error" || event.type === "compaction_end") this.state.statusMessage = "";
+		this.state.liveChat.appendTaskLine(line);
+		this.state.requestRender?.();
+	}
 	applyAgentEvent(event: AgentSessionEvent): boolean {
 		this.refreshTaskStore();
 		return applyChatSessionAgentEvent(this.state, event);
@@ -386,7 +417,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 * a retry lifecycle this re-attached host is not inside, and no event exists
 	 * to clear it after the summary finishes. An absent paintable reason is a
 	 * no-op unless this host is actively showing a compaction label, so unrelated
-	 * workflow delivery busy state is preserved.
+	 * prompt delivery busy state is preserved.
 	 */
 	hydrateCompactionStatus(reason: CompactionReason | undefined, startedAt?: number): void {
 		const compactionReason = reason === "branchSummary" ? undefined : reason;
@@ -731,10 +762,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		syncChatSessionAnimationTick(this.state);
 	}
 
-	clearBusyForTerminalWorkflowStage(): void {
-		clearChatSessionBusyForTerminalWorkflowStage(this.state);
-	}
-
 	snapshotInterruptedTurn(): ChatSessionInterruptedTurnSnapshot | undefined {
 		const snapshot = chatSessionWorkingMeta(this.state);
 		const now = Date.now();
@@ -783,8 +810,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * Start Working for an accepted prompt delivered outside this host — a
-	 * workflow definition auto-sending to its own retained stage. Returns the
+	 * Start Working for an accepted prompt delivered outside this host. Returns the
 	 * lifecycle token to hand back to `settleExternalPromptLifecycle`.
 	 */
 	beginExternalPromptLifecycle(): number | undefined {
@@ -840,6 +866,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.taskInspector?.dispose();
 		this.unsubscribeTasks?.();
 		this.unsubscribeTaskBinding?.();
+		discardChatMount(this);
+		this.taskDecorations?.clear();
 		disposeChatSession(this.state);
 	}
 

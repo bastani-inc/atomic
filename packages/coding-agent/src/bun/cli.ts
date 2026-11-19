@@ -18,10 +18,7 @@ restoreSandboxEnv();
 export async function loadHostModule(specifier: AppHostModuleSpecifier): Promise<object> {
 	if (specifier === "@bastani/atomic") return import("../index.ts");
 	if (specifier === "@bastani/atomic/storage") return import("../core/storage/index.js");
-	const { getVirtualModules } = await import("../core/extensions/loader-host-modules.js");
-	const module = (await getVirtualModules())[specifier];
-	if (!module) throw new Error(`Host module is unavailable: ${specifier}`);
-	return module;
+	throw new Error(`Host module is unavailable: ${specifier}`);
 }
 
 // No top-level await: the compiled binary is built with --bytecode (CJS),

@@ -1,4 +1,3 @@
-import { isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
 import type { HostedSessionAssignment, HostedSessionRefusal, SessionInfo } from "../types.js";
 import { isSessionRegistration } from "./client-message-validation.js";
 import type { JsonWireValue } from "./framing.js";
@@ -10,8 +9,15 @@ export interface ParsedHostedSession {
 	readonly key: string;
 	readonly session: Omit<SessionInfo, "id">;
 	readonly returnAddress?: string;
-	readonly liveRoute?: { readonly runId: string; readonly stageKeys: readonly string[]; readonly capability: string };
+	/** A 0.9.x host asked for the item's live workflow-stage route, which this version refuses (see below). */
+	readonly liveRoute?: true;
 }
+
+/**
+ * The code a 0.9.x host's item that asked for a live workflow-stage route is assigned with: the session is hosted, and
+ * the route refused, since this version has no workflow route for it to join (`legacy-workflow-frames.ts`).
+ */
+export const LEGACY_LIVE_ROUTE_REFUSAL = "owner_missing";
 
 export type HostedSessionFrameValidation =
 	| { readonly ok: true; readonly sessions: readonly ParsedHostedSession[] }
@@ -29,18 +35,9 @@ export const isWireObject = (value: JsonWireValue | undefined): value is WireObj
 const isNonEmptyString = (value: JsonWireValue | undefined): value is string =>
 	typeof value === "string" && value.trim().length > 0;
 
-function parseLiveRoute(value: JsonWireValue | undefined): ParsedHostedSession["liveRoute"] | false {
-	if (!isWireObject(value)) return false;
-	const { runId, stageKeys, capability } = value;
-	if (!isNonEmptyString(runId) || !isNonEmptyString(capability) || !Array.isArray(stageKeys)) return false;
-	if (stageKeys.length < 1 || stageKeys.length > 2 || !stageKeys.every(isNonEmptyString)) return false;
-	return { runId, stageKeys: stageKeys as string[], capability };
-}
-
 /**
  * Validate one `host_sessions` frame as a whole, before anything is hosted: 1 to 500 items under distinct keys, each a
- * named agent registration with an optional return address and live workflow-stage route. The first invalid item
- * refuses the frame.
+ * named agent registration with an optional return address. The first invalid item refuses the frame.
  */
 export function validateHostSessionsFrame(sessions: JsonWireValue | undefined): HostedSessionFrameValidation {
 	if (!Array.isArray(sessions) || sessions.length === 0 || sessions.length > HOSTED_SESSION_FRAME_MAX) {
@@ -70,13 +67,11 @@ export function validateHostSessionsFrame(sessions: JsonWireValue | undefined): 
 			return invalid;
 		}
 		if (returnAddress !== undefined && !isNonEmptyString(returnAddress)) return invalid;
-		const liveRoute = item.liveRoute === undefined ? undefined : parseLiveRoute(item.liveRoute);
-		if (liveRoute === false) return invalid;
 		parsed.push({
 			key,
 			session,
 			...(returnAddress === undefined ? {} : { returnAddress }),
-			...(liveRoute === undefined ? {} : { liveRoute }),
+			...(item.liveRoute === undefined ? {} : { liveRoute: true as const }),
 		});
 	}
 	return { ok: true, sessions: parsed };
@@ -101,13 +96,8 @@ export function readHostedSessionAssignments(value: JsonWireValue | undefined): 
 	const assignments: HostedSessionAssignment[] = [];
 	for (const item of value) {
 		if (!isWireObject(item) || typeof item.key !== "string" || !isNonEmptyString(item.sessionId)) return undefined;
-		const { liveRouteRefusal } = item;
-		if (liveRouteRefusal !== undefined && !isLiveWorkflowStageRouteRefusalCode(liveRouteRefusal)) return undefined;
-		assignments.push({
-			key: item.key,
-			sessionId: item.sessionId,
-			...(liveRouteRefusal === undefined ? {} : { liveRouteRefusal }),
-		});
+		// A 0.9.x broker adds `liveRouteRefusal` for a workflow route this version never asks for; it is not read.
+		assignments.push({ key: item.key, sessionId: item.sessionId });
 	}
 	return assignments;
 }

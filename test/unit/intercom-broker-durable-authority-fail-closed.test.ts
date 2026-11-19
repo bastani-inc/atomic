@@ -78,10 +78,8 @@ afterAll(async () => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-test("corrupt durable authority refuses pending-stage notification delivery", async () => {
-	const runId = "86ec77fc-a8a0-4ecf-96f5-0ff8813c1cc8";
-	const group = `workflow:${runId}`;
-	const capability = "corrupt-authority-capability";
+test("corrupt durable authority refuses delivery", async () => {
+	const group = "corrupt-authority";
 	const owner = new IntercomClient("corrupt-authority-owner");
 	const recipient = new IntercomClient("corrupt-authority-recipient");
 	clients.push(owner, recipient);
@@ -96,29 +94,22 @@ test("corrupt durable authority refuses pending-stage notification delivery", as
 	};
 	await owner.connect({ ...registration, name: "owner" });
 	await recipient.connect({ ...registration, name: "recipient" });
-	owner.registerPendingStageRoute(runId, group, capability);
-	await owner.listSessions();
 
 	let received = 0;
-	recipient.on("pending_stage_notification", (request) => {
+	recipient.on("message", () => {
 		received += 1;
-		recipient.respondPendingStageNotification(request.requestId, true);
 	});
-	const result = await owner.sendPendingStageNotification(
-		runId,
-		capability,
-		recipient.sessionId ?? "missing",
-		"recipient",
-		{ text: "must not bypass corrupt authority", messageId: "corrupt-authority-notification" },
-		"corrupt-authority-recipient",
-	);
+	const result = await owner.send("recipient", {
+		text: "must not bypass corrupt authority",
+		messageId: "corrupt-authority-message",
+	});
 
 	assert.equal(result.delivered, false);
 	assert.match(result.reason ?? "", /authority is invalid/);
 	assert.equal(received, 0);
 });
 
-test("full durable authority refuses a pending-stage notification before delivery", async () => {
+test("full durable authority refuses a send before delivery", async () => {
 	for (const client of clients.splice(0)) await client.disconnect();
 	await stopBroker();
 	const authorityPath = getBrokerDeliveredMessagesPath(agentDir);
@@ -137,9 +128,7 @@ test("full durable authority refuses a pending-stage notification before deliver
 	database.close();
 	await startBroker();
 
-	const runId = "99fd5a83-eb09-42bd-ae60-d9d828f9a91d";
-	const group = `workflow:${runId}`;
-	const capability = "full-authority-capability";
+	const group = "full-authority";
 	const owner = new IntercomClient("full-authority-owner");
 	const recipient = new IntercomClient("full-authority-recipient");
 	clients.push(owner, recipient);
@@ -154,22 +143,15 @@ test("full durable authority refuses a pending-stage notification before deliver
 	};
 	await owner.connect({ ...registration, name: "owner" });
 	await recipient.connect({ ...registration, name: "recipient" });
-	owner.registerPendingStageRoute(runId, group, capability);
-	await owner.listSessions();
 
 	let received = 0;
-	recipient.on("pending_stage_notification", (request) => {
+	recipient.on("message", () => {
 		received += 1;
-		recipient.respondPendingStageNotification(request.requestId, true);
 	});
-	const result = await owner.sendPendingStageNotification(
-		runId,
-		capability,
-		recipient.sessionId ?? "missing",
-		"recipient",
-		{ text: "must not bypass full authority", messageId: "full-authority-notification" },
-		"full-authority-recipient",
-	);
+	const result = await owner.send("recipient", {
+		text: "must not bypass full authority",
+		messageId: "full-authority-message",
+	});
 
 	assert.equal(result.delivered, false);
 	assert.match(result.reason ?? "", /capacity is full/);

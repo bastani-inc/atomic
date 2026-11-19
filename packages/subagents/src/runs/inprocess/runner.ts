@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import type { BigIntStats } from "node:fs";
+import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -23,8 +24,8 @@ import {
 	getSkillCatalog,
 	isPathInside,
 	isSessionStartTimeoutError,
-	type PackageSource,
 	type SessionEntry,
+	type SessionHeader,
 	SessionManager,
 	type SessionStartError,
 	type SessionStats,
@@ -112,21 +113,16 @@ export interface ParentContext {
 	readonly depth: number;
 	readonly sessionId?: string;
 	readonly intercomGroup?: string;
-	readonly workflowStageSubagentGuard?: boolean;
-	readonly orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
 	readonly getChildSessionOptions?: (options: CreateAgentSessionOptions) => CreateAgentSessionOptions;
 	readonly resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
 }
 
 /**
  * What a run's control keeps of the session that launched it: who it is, never the session itself. A control outlives
- * its launching session, as a workflow stage's runs outlive the stage, so it must not hold the closures and snapshots of
+ * its launching session, so it must not hold the closures and snapshots of
  * {@link ParentContext} that reach that session's history, extensions and tools. Each admission brings its own parent.
  */
-export type ParentIdentity = Pick<
-	ParentContext,
-	"path" | "depth" | "sessionId" | "intercomGroup" | "workflowStageSubagentGuard"
->;
+export type ParentIdentity = Pick<ParentContext, "path" | "depth" | "sessionId" | "intercomGroup">;
 
 function parentIdentity(parent: ParentContext): ParentIdentity {
 	return {
@@ -134,9 +130,6 @@ function parentIdentity(parent: ParentContext): ParentIdentity {
 		depth: parent.depth,
 		...(parent.sessionId === undefined ? {} : { sessionId: parent.sessionId }),
 		...(parent.intercomGroup === undefined ? {} : { intercomGroup: parent.intercomGroup }),
-		...(parent.workflowStageSubagentGuard === undefined
-			? {}
-			: { workflowStageSubagentGuard: parent.workflowStageSubagentGuard }),
 	};
 }
 
@@ -213,7 +206,7 @@ export interface ChildSpec {
 	/**
 	 * Fallback model candidates (full ids, optional `:thinking` suffix) handed to
 	 * the SDK session so child fallback uses the exact classification and
-	 * candidate-advancement behavior main chat and workflow stages share.
+	 * candidate-advancement behavior of a top-level session.
 	 */
 	readonly fallbackModels?: readonly string[];
 	readonly isFallbackModelAllowed?: CreateAgentSessionOptions["isFallbackModelAllowed"];
@@ -590,34 +583,6 @@ function waitForExecutionCapacity(
 	});
 }
 
-function workflowMetadataFromContext(
-	context: CreateAgentSessionOptions["orchestrationContext"] | undefined,
-): { runId: string; stageId: string; stageName: string } | undefined {
-	if (context?.kind !== "workflow-stage") return undefined;
-	return {
-		runId: context.workflowRunId,
-		stageId: context.workflowStageId,
-		stageName: context.workflowStageName,
-	};
-}
-
-/**
- * In-process children keep bundled package resources, but never load the
- * workflows extension itself. Every subagent child is a separate AgentSession;
- * letting it adopt the process-shared workflow singletons rebinds the parent
- * session's store facade and strands the parent's panel and control surfaces.
- * Workflow-stage children already forbid the workflow tool explicitly, and
- * ordinary subagent children must not gain an indirect orchestration door either.
- */
-export function inProcessChildBuiltinPackagePaths(
-	_context: CreateAgentSessionOptions["orchestrationContext"] | undefined,
-	builtins?: CreateAgentSessionOptions["builtins"],
-): PackageSource[] {
-	return getBuiltinPackagePaths(builtins).map((source) =>
-		basename(source) === "workflows" ? { source, extensions: [] } : source,
-	);
-}
-
 /**
  * Resource-loading options for a real (non-test) in-process child session.
  * Omitting `builtinPackagePaths` leaves a child with no bundled extension at
@@ -629,7 +594,6 @@ export function inProcessChildResourceLoaderOptions(input: {
 	readonly agentDir: string;
 	readonly settingsManager: SettingsManager;
 	readonly agent: Pick<AgentConfig, "systemPrompt" | "systemPromptMode">;
-	readonly orchestrationContext: CreateAgentSessionOptions["orchestrationContext"] | undefined;
 	readonly builtins?: CreateAgentSessionOptions["builtins"];
 	readonly resourceLoaderInheritanceSnapshot?: import("@bastani/atomic").DefaultResourceLoaderInheritanceSnapshot;
 }): ConstructorParameters<typeof DefaultResourceLoader>[0] {
@@ -639,7 +603,7 @@ export function inProcessChildResourceLoaderOptions(input: {
 		agentDir: input.agentDir,
 		settingsManager: input.settingsManager,
 		resourceLoaderInheritanceSnapshot: input.resourceLoaderInheritanceSnapshot,
-		builtinPackagePaths: inProcessChildBuiltinPackagePaths(input.orchestrationContext, input.builtins),
+		builtinPackagePaths: getBuiltinPackagePaths(input.builtins),
 		...(agentPrompt && input.agent.systemPromptMode === "append"
 			? { appendSystemPrompt: [agentPrompt] }
 			: agentPrompt
@@ -1035,10 +999,22 @@ async function historyUnavailable(sessionFile: string | undefined, cause?: unkno
  * file's directory, which every child of a run saving there shares, so a task view reading a finished child's history
  * would make them wait. The file is append-only JSON lines; a last line its writer has not finished is left out.
  */
-async function readSessionFileEntries(file: string, sessionId: string): Promise<SessionEntry[]> {
+async function readSessionFileEntries(
+	file: string,
+	sessionId: string,
+	capture?: (header: SessionHeader, stats: BigIntStats) => void,
+): Promise<SessionEntry[]> {
 	let text: string;
+	let stats: BigIntStats | undefined;
 	try {
-		text = await readFile(file, "utf8");
+		if (capture) {
+			const handle = await open(file, "r");
+			try {
+				[text, stats] = await Promise.all([handle.readFile("utf8"), handle.stat({ bigint: true })]);
+			} finally {
+				await handle.close();
+			}
+		} else text = await readFile(file, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(await historyUnavailable(file));
 		throw error;
@@ -1047,6 +1023,7 @@ async function readSessionFileEntries(file: string, sessionId: string): Promise<
 	const header = JSON.parse(lines[0] ?? "") as { type?: string; id?: string };
 	if (header.type !== "session" || header.id !== sessionId)
 		throw new Error(`History unavailable: its session file now belongs to another session (${file}).`);
+	if (stats && capture) capture(header as SessionHeader, stats);
 	const entries: SessionEntry[] = [];
 	for (const [index, line] of lines.slice(1).entries()) {
 		if (!line.trim()) continue;
@@ -1096,12 +1073,12 @@ function withArchivedPages(
 			);
 		});
 	if (file === undefined) return source;
-	return withTaskTranscriptArchive(source, async (project) => {
+	return withTaskTranscriptArchive(source, async (project, _load, capture) => {
 		let records: SessionEntry[];
 		let entries: SessionEntry[];
 		try {
 			// Release the file before projecting the page: a writer may need to rename over it on Windows.
-			records = await readSessionFileEntries(file, sessionId);
+			records = await readSessionFileEntries(file, sessionId, capture ? await capture(file, sessionId) : undefined);
 			entries = withUnsavedAnswer(records, unsaved);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -2155,7 +2132,6 @@ export class SubagentControlRuntime {
 				);
 			});
 		try {
-			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
 			const canReopenFromStore =
 				admitted.sessionManager instanceof SessionManager &&
 				typeof admitted.sessionManager.getSessionStore === "function" &&
@@ -2172,11 +2148,7 @@ export class SubagentControlRuntime {
 								openOptions,
 							)
 						: Promise.resolve(admitted.sessionManager)
-					: SessionManager.create(
-							admitted.policy.cwd,
-							admitted.sessionDir,
-							workflow ? { internal: true, workflow } : { internal: true },
-						),
+					: SessionManager.create(admitted.policy.cwd, admitted.sessionDir),
 			);
 			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
@@ -2249,7 +2221,6 @@ export class SubagentControlRuntime {
 						agent: admitted.spec.agent,
 						builtins: inherited.builtins,
 						resourceLoaderInheritanceSnapshot: admitted.spec.parent?.resourceLoaderInheritanceSnapshot,
-						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 					}),
 				);
 				// Its resources load while its session opens: neither waits on the other.
@@ -2280,7 +2251,6 @@ export class SubagentControlRuntime {
 				stopHeldPromptAttention = watchHeldPromptAttention(childSession.sessionId, (report) =>
 					taskHooks.reportActivity(report),
 				);
-			if (workflow) await beforeStartDeadline(sessionManager.markSessionInternal(workflow));
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
 			let created: { session: AgentSession };
@@ -2338,7 +2308,6 @@ export class SubagentControlRuntime {
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
-						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 						sessionManager,
 						...promptBehavior,
 						systemPromptTransform,

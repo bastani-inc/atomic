@@ -61,7 +61,7 @@ test("a released reply is acknowledged only after its result is saved once (#432
 });
 
 test("a reply to a permanently ended child is refused without appending (#4326)", async () => {
-	for (const terminalStatus of ["killed", "gone", "stage-closed"]) {
+	for (const terminalStatus of ["killed", "gone"]) {
 		const sessionManager = SessionManager.inMemory("/repo");
 		let appends = 0;
 		const pi = {

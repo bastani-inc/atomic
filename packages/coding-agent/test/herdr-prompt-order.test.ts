@@ -20,8 +20,7 @@ function deferred<T>() {
 test("a slow prompt observer cannot leave Herdr blocked after the user answers", async () => {
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
-	const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-	publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 	const observerEntered = deferred<void>();
 	const observer = deferred<void>();
 	const answer = deferred<boolean>();
@@ -77,9 +76,7 @@ test("a slow prompt observer cannot leave Herdr blocked after the user answers",
 test("the shipped /agents browser is navigation, not a user-decision wait", async () => {
 	const fake = await fakeHerdr();
 	const runtime = createExtensionRuntime();
-	runtime.workflowActivityHub
-		.registerWorkflowActivityPublisher()
-		.publishSnapshot({ availability: "ready", roots: [] });
+
 	const herdr = await loadExtensionFromFactory(
 		createHerdrExtension({ env: fake.env, enabled: () => true }),
 		fake.dir,

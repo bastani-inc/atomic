@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { createCodemodeExtension } from "../../packages/coding-agent/src/extensions/codemode/index.js";
+import { completionNoticeFromDetails } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import registerSubagentExtension, { readSubagentChildRecords } from "../../packages/subagents/src/extension/index.js";
 
@@ -230,6 +231,69 @@ test("a script deadline ends its wait, not the child it admitted", async () => {
 						),
 				),
 			{ timeout: 10000 },
+		);
+	} finally {
+		release.resolve();
+		await h.cleanup();
+	}
+});
+
+test("a finished child's notice and its wait results name the call that resumes it", async () => {
+	release = Promise.withResolvers<void>();
+	const h = await createHarness({
+		extensionFactories: [createCodemodeExtension(), registerSubagentExtension],
+		initialActiveToolNames: ["codemode", "subagent"],
+	});
+	try {
+		const launched = await run(
+			h,
+			`return (await tools.subagent({agent:'worker',task:'answer once',context:'fresh',progress:false})).tasks[0]`,
+		);
+		const child = JSON.parse(launched.split("\n").at(-1)!);
+		assert.ok(child.childId && child.intercomTarget, launched);
+		const call = `subagent({ action: "resume", id: "${child.childId}", message: "…" })`;
+		release.resolve();
+		const notice = await vi.waitFor(
+			() => {
+				const entry = h.sessionManager
+					.getEntries()
+					.find(
+						(e) =>
+							e.type === "custom_message" &&
+							e.customType === "task-completion" &&
+							getMessageText(e).includes("completed: answer once"),
+					);
+				assert.ok(entry?.type === "custom_message");
+				return entry;
+			},
+			{ timeout: 10000 },
+		);
+		const text = getMessageText(notice);
+		assert.ok(text.includes(`Resume it with ${call} to continue it with a follow-up.`), text);
+		assert.ok(text.includes(`Once resumed, it takes Intercom messages again as ${child.intercomTarget}.`), text);
+		assert.equal(completionNoticeFromDetails(notice.details)?.resumeId, child.childId);
+
+		const waited = await run(h, `return await tools.subagent({action:'wait',id:${JSON.stringify(child.taskId)}})`);
+		const settled = JSON.parse(waited.split("\n").at(-1)!);
+		assert.equal(settled.outcome, "settled");
+		assert.equal(settled.childId, child.childId);
+		assert.deepEqual(settled.resumeCall, { action: "resume", id: child.childId });
+
+		// The model's own wait names the same call in the settled output's header.
+		h.setResponses([
+			fauxAssistantMessage(fauxToolCall("subagent", { action: "wait", id: child.taskId }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("Done"),
+		]);
+		await h.session.prompt("Wait for it");
+		const direct = h.session.messages.findLast((m) => m.role === "toolResult" && m.toolName === "subagent");
+		assert(direct?.role === "toolResult");
+		assert.match(
+			getMessageText(direct),
+			new RegExp(
+				`\\nOutput of ${child.taskId} \\(completed, \\d+ bytes\\): Resume it with ${call.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} to continue it with a follow-up\\.\\n`,
+			),
 		);
 	} finally {
 		release.resolve();

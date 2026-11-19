@@ -11,7 +11,6 @@ import {
 	TaskHeartbeatMonitor,
 } from "../../packages/coding-agent/src/core/tasks/heartbeat.js";
 import { executeSupervisedCommand } from "../../packages/coding-agent/src/core/tools/bash-pty-native.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 
 const MINUTE = 60_000;
 
@@ -508,46 +507,3 @@ test.runIf(process.platform !== "win32")(
 		await target.host.waitForTask(taskId);
 	},
 );
-
-test("a workflow stage's tasks heartbeat through its current session after replacement, and stop when the stage pauses", async () => {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"], shouldAdvanceTime: true });
-	const boundary = new WorkflowStageAdmissionBoundary();
-	boundary.bindTaskIdentity(randomUUID(), "run", "stage");
-	const sessionDelivery = () => {
-		const delivered: TaskHeartbeatMessage[] = [];
-		const delivery: TaskHeartbeatDelivery = {
-			defaultIntervalMs: () => MINUTE,
-			hasUnreadHeartbeat: () => false,
-			async deliver(message) {
-				delivered.push(message);
-			},
-		};
-		return { delivered, delivery };
-	};
-	const original = sessionDelivery();
-	const replacement = sessionDelivery();
-	try {
-		const host = boundary.bindAgentTaskHost({ authorizeLaunch() {}, heartbeat: original.delivery });
-		const cleanup = deferred<Cleanup>();
-		const started = await host.startAgentTask(
-			{ kind: "agent", agent: "worker", task: "Stage-owned work" },
-			randomUUID() as OperationId,
-			() => ({ result: new Promise<TaskResult>(() => {}), cleanup: cleanup.promise }),
-		);
-		assert.ok(started.ok);
-		assert.equal(boundary.bindAgentTaskHost({ authorizeLaunch() {}, heartbeat: replacement.delivery }), host);
-
-		await vi.advanceTimersByTimeAsync(MINUTE + 1000);
-		await vi.waitFor(() => assert.equal(replacement.delivered.length, 1), { timeout: 5000 });
-		assert.equal(original.delivered.length, 0, "one monitor per owner, delivering to the current session");
-
-		const pausing = host.pauseTasks();
-		cleanup.resolve({ kind: "reaped" });
-		await pausing;
-		await vi.advanceTimersByTimeAsync(3 * MINUTE);
-		assert.equal(replacement.delivered.length, 1, "paused stage tasks do not heartbeat");
-	} finally {
-		vi.useRealTimers();
-		await boundary.close();
-	}
-});

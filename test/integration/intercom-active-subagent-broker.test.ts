@@ -10,13 +10,11 @@ import { afterAll, beforeAll, test, vi } from "vitest";
 import type {
 	ExtensionContext,
 	ExtensionFactory,
-	OrchestrationContext,
 	ToolDefinition,
 } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { noOpUIContext } from "../../packages/coding-agent/src/core/extensions/runner-ui.js";
 import type { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { ModelSingleResponse } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { INTERCOM_DETACH_REQUEST_EVENT } from "../../packages/intercom/foreground-detach-handoff.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS } from "../../packages/intercom/intercom-utils.js";
 import type { Attachment } from "../../packages/intercom/types.js";
@@ -92,7 +90,6 @@ afterAll(() => brokerFixture.cleanup());
 
 interface EndpointOptions {
 	ui?: boolean;
-	orchestrationContext?: OrchestrationContext;
 	extensionFactory?: ExtensionFactory;
 }
 
@@ -101,7 +98,6 @@ async function endpoint(name: string, child = false, tools: AgentTool[] = [], op
 	let context!: ExtensionContext;
 	const harness = await createHarness({
 		tools,
-		orchestrationContext: options.orchestrationContext,
 		fauxProvider: { provider: `faux-${name}` },
 		// UI-capable parents must not spend the scripted conversation replies on summaries.
 		settings: { sessionSummary: { enabled: false } },
@@ -431,25 +427,12 @@ function ownerSnapshot(parent: Awaited<ReturnType<typeof observingParent>>) {
 	}
 }
 
-for (const scope of ["interactive", "headless", "workflow-stage"] as const) {
+for (const scope of ["interactive", "headless"] as const) {
 	for (const mode of ["wait"] as const) {
 		for (const action of ["send", "ask"] as const) {
 			test(`public parent ${action} releases ${scope} ${mode} subagent observation before its held child settles`, async () => {
-				const boundary = scope === "workflow-stage" ? new WorkflowStageAdmissionBoundary() : undefined;
 				const parent = await observingParent(`parent-${scope}-${mode}-${action}`, mode, {
 					ui: scope === "interactive",
-					...(boundary
-						? {
-								orchestrationContext: {
-									kind: "workflow-stage" as const,
-									workflowRunId: "detach-run",
-									workflowStageId: `${mode}-${action}`,
-									workflowStageName: "waiting-parent",
-									constraints: { disableWorkflowTool: true },
-									messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
-								},
-							}
-						: {}),
 				});
 				const peer = await endpoint(`peer-${scope}-${mode}-${action}`);
 				const contexts: string[][] = [];
@@ -536,7 +519,6 @@ for (const scope of ["interactive", "headless", "workflow-stage"] as const) {
 					parent.release();
 					await turn;
 					await parent.host.close("session-close");
-					await boundary?.close();
 					await Promise.all([peer.close(), parent.close()]);
 				}
 			});

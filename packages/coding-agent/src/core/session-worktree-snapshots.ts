@@ -1044,7 +1044,7 @@ export interface ResumeSessionWorktreeOptions {
 	 * repository that holds only its recorded state, reset to the snapshot with its ignored files kept, and restores
 	 * into a new slot when none can be claimed. A recorded checkout in a slot another session owns is restored the same
 	 * way. The session holds the pooled worktrees it owns, compared or restored, until it closes. Without it, restores go
-	 * to new paths outside the pool, as for workflow runs.
+	 * to new paths outside the pool.
 	 */
 	readonly pool?: { readonly maxIdlePerRepository: number };
 }

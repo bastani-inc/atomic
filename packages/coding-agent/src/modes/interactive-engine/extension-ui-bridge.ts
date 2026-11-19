@@ -1,10 +1,9 @@
 import { type KeyId, matchesKey } from "@bastani/atomic-tui";
-import type { AgentSession, ClearedQueue } from "../../core/agent-session.js";
+import type { ClearedQueue } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
-import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { RpcAutocompleteItem, RpcResourceExtension, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
@@ -43,7 +42,6 @@ export function attachInteractiveEngineHost(
 	tuiRendererLifecycle: TuiRendererLifecycle,
 	setShortcutHandler?: (handler: (data: string) => boolean) => undefined | (() => void),
 	keybindings?: KeybindingsManager,
-	onWorkflowActivity?: (frame: WorkflowActivityFrame) => void,
 	onUIPrompt?: (event: UIPromptStartEvent | UIPromptEndEvent | undefined) => void,
 ): () => void {
 	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
@@ -55,9 +53,6 @@ export function attachInteractiveEngineHost(
 		else if (message.type === "engine_agent_panel_state") ui.requestRender();
 	});
 	const disposePromptGeneration = runtime.onGenerationEnded(() => onUIPrompt?.(undefined));
-	const disposeWorkflowActivity = onWorkflowActivity
-		? observeEngineWorkflowActivity(runtime, onWorkflowActivity)
-		: () => {};
 	// Generation-owned: RPC dialogs mount real host components and must not
 	// outlive, or answer through, a replacement engine child.
 	const dialogs = new EngineDialogHostController(runtime, ui);
@@ -103,7 +98,6 @@ export function attachInteractiveEngineHost(
 		disposed = true;
 		disposeShortcutHandler?.();
 		disposeKeybindings();
-		disposeWorkflowActivity();
 		disposeUIPrompts();
 		disposePromptGeneration();
 		onUIPrompt?.(undefined);
@@ -114,41 +108,6 @@ export function attachInteractiveEngineHost(
 		dialogs.dispose();
 		disposeDiagnostic();
 	};
-}
-
-const unavailableWorkflowActivity: WorkflowActivityFrame = {
-	kind: "snapshot",
-	cursor: { epoch: "", revision: 0 },
-	availability: "unavailable",
-};
-
-/** The engine child owns the workflow runs; a dead generation's runs are gone with it. */
-function observeEngineWorkflowActivity(
-	runtime: IsolatedInteractiveRuntime,
-	observer: (frame: WorkflowActivityFrame) => void,
-): () => void {
-	// The runtime replays the engine's current snapshot: the engine published it at bind time, which can
-	// be long before this observer attaches.
-	const disposeMessages = runtime.onWorkflowActivity(observer);
-	const disposeEnded = runtime.onGenerationEnded(() => observer(unavailableWorkflowActivity));
-	return () => {
-		disposeMessages();
-		disposeEnded();
-	};
-}
-
-/**
- * Observe workflow activity of a session whose extensions run in this process. An isolated host
- * receives it from its engine child instead (see `attachInteractiveEngineHost`).
- */
-export function observeLocalWorkflowActivity(
-	runtime: AgentSessionRuntime,
-	session: AgentSession,
-	observer: (frame: WorkflowActivityFrame) => void,
-): () => void {
-	if (runtime instanceof IsolatedInteractiveRuntime) return () => {};
-	const subscription = session.workflows.observe(observer);
-	return () => subscription.dispose();
 }
 
 /** Route host-owned trust waits to the runner that actually owns the subscribers. */

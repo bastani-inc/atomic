@@ -14,8 +14,7 @@ import {
 	scheduleSnapshotCollection,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.ts";
-import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { textBlob } from "../helpers/snapshot-reference-index.js";
 
@@ -30,7 +29,7 @@ afterEach(() => {
 	removeTempDirectory(root);
 });
 
-const provider = () => new StorageProvider({ memory: () => new MemoryRunJournal(), sql: SqlRunJournal.open });
+const provider = () => new StorageProvider();
 
 /** A session store the provider opened, with `count` unreferenced blobs old enough to collect. */
 async function sessionStoreWithOrphans(count: number): Promise<SqlSessionStore> {
@@ -130,9 +129,9 @@ test("a collection running on one database does not delay closing another (#4355
 
 test("a database another store still uses is not closed by one store's close, collection or not (#4355)", async () => {
 	const selection = { kind: "sqlite", path: join(root, "shared.sqlite") } as const;
-	const [sessions, journal] = await Promise.all([
+	const [sessions, second] = await Promise.all([
 		provider().openSessionStore(selection, { agentDir: root, domain: "sessions" }) as Promise<SqlSessionStore>,
-		provider().openRunJournal({ ...selection, prefix: "journal_" }, { agentDir: root, domain: "journal" }),
+		provider().openSessionStore({ ...selection, prefix: "second_" }, { agentDir: root, domain: "sessions" }),
 	]);
 	const database = databaseOf(sessions);
 	const collection = scheduleSnapshotCollection(sessions.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
@@ -142,7 +141,7 @@ test("a database another store still uses is not closed by one store's close, co
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	assert.deepEqual(await database.get("SELECT 1 AS alive"), { alive: 1 });
-	await journal.close();
+	await second.close();
 });
 
 test("a storage error closing the database after collection rejects close with that error (#4355)", async () => {

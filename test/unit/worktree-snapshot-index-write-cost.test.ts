@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import { snapshotBlobHashes } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
-import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
+import type { LegacyRunKey as Lease } from "../helpers/legacy-snapshot-rows.js";
 import {
 	checkpointEvent,
 	dropSnapshotIndex,

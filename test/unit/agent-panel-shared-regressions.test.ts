@@ -1,19 +1,17 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, matchesKey, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
 	dismissedAgentPanelItems,
-	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
 	AgentPanelFocus,
-	AgentPanelModel,
 	type AgentPanelRow,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";
@@ -22,19 +20,9 @@ import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive
 import { getEditorTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { bindAgentPanel, showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
-import factory from "../../packages/workflows/src/extension/extension-factory.js";
-import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
-import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
-import { workflowPanelSource } from "../../packages/workflows/src/extension/workflow-panel-source.js";
-import { store } from "../../packages/workflows/src/shared/store.js";
-import type { StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
-import { injectStageLabelIntoEditorTopRule } from "../../packages/workflows/src/tui/stage-chat-view-footer-status.js";
-import { testRunId } from "../helpers/run-id.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { makeTestTui } from "../support/fake-tui.js";
 
-const runIds = new Set<string>();
 let previousKeys: ReturnType<typeof getKeybindings>;
 
 beforeEach(() => {
@@ -44,8 +32,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const runId of runIds) store.removeRun(runId);
-	runIds.clear();
 	setKeybindings(previousKeys);
 	vi.restoreAllMocks();
 });
@@ -54,16 +40,8 @@ async function flush(): Promise<void> {
 	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-function makeStage(id: string, status: StageSnapshot["status"], parentIds: string[] = []): StageSnapshot {
-	return { id, name: id, status, parentIds, toolEvents: [] } as StageSnapshot;
-}
-
-function makeToolNode(id: string, status: ToolNodeSnapshot["status"]): ToolNodeSnapshot {
-	return { kind: "tool", id, name: id, argsHash: id, ordinal: 0, parentIds: [], status, attachable: false };
-}
-
 function makePanelRun(id: string, state: AgentPanelItem["state"]): AgentPanelItem {
-	return { id, kind: "workflow", state, name: id.slice(4), task: "stage build", elapsedMs: 1_000 };
+	return { id, kind: "agent", state, name: id.slice(4), task: "stage build", elapsedMs: 1_000 };
 }
 
 function createPanelHarness(initial: AgentPanelItem[]) {
@@ -148,46 +126,6 @@ test("focused panel single x does not dismiss a row painted as running that fini
 	assert.equal(dismissedAgentPanelItems(harness.session).has("run:deploy"), false);
 });
 
-test("a quit workflow run nobody keeps leaves the panel and is dismissable with x (#5224)", () => {
-	const runId = testRunId("quit-row");
-	runIds.add(runId);
-	store.recordRunStart({
-		id: runId,
-		name: "ralph",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [makeStage("impl", "running")],
-		startedAt: Date.now(),
-	});
-	store.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
-	const item = panelItemsFromSnapshot(store.runs()).find((row) => row.id === `run:${runId}`)!;
-	assert.ok(item);
-
-	const model = new AgentPanelModel(() => 0);
-	assert.ok(
-		model.rows([item], () => true).some((row) => row.id === item.id),
-		"listed while it is kept",
-	);
-	const stillThere = model.rows([item]).some((row) => row.id === item.id);
-
-	const calls: string[] = [];
-	const focus = new AgentPanelFocus(new KeybindingsManager(), {
-		open: (row) => calls.push(`open ${row.id}`),
-		stop: (row) => calls.push(`stop ${row.id}`),
-		dismiss: (row) => calls.push(`dismiss ${row.id}`),
-		close: () => calls.push("close"),
-	});
-	focus.update([item]);
-	focus.enter();
-	focus.notePainted([item]);
-	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
-	press("x");
-	press("x");
-	assert.equal(stillThere, false);
-	assert.ok(calls.includes(`dismiss ${item.id}`));
-});
-
 test("focused panel clamps scroll when main is selected (#5224)", () => {
 	const focus = new AgentPanelFocus({ matches: () => false }, { open() {}, stop() {}, dismiss() {}, close() {} });
 	const rows = (count: number): AgentPanelRow[] =>
@@ -207,81 +145,6 @@ test("focused panel clamps scroll when main is selected (#5224)", () => {
 	focus.update(rows(12));
 	assert.equal(focus.selectedId, "main");
 	assert.equal(focus.scroll, 0);
-});
-
-test("running workflow delegating to a tool-only child workflow keeps its stage progress incomplete (#5224)", () => {
-	const rootId = testRunId("toolonly-root");
-	runIds.add(rootId);
-	store.recordRunStart({
-		id: rootId,
-		name: "root",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		startedAt: Date.now(),
-		stages: [
-			makeStage("plan", "completed"),
-			{
-				...makeStage("delegate", "running", ["plan"]),
-				workflowChildRun: { alias: "child", workflow: "child-wf", runId: `${rootId}-child` },
-			} as StageSnapshot,
-		],
-	});
-	const before = panelItemsFromSnapshot(store.runs()).find((item) => item.id === `run:${rootId}`);
-	assert.deepEqual(before?.progress, { done: 1, total: 2 });
-
-	runIds.add(`${rootId}-child`);
-	store.recordRunStart({
-		id: `${rootId}-child`,
-		name: "child-wf",
-		inputs: {},
-		status: "running",
-		parentRunId: rootId,
-		parentStageId: "delegate",
-		rootRunId: rootId,
-		toolNodes: [makeToolNode("fetch", "running")],
-		stages: [],
-		startedAt: Date.now(),
-	});
-	const item = panelItemsFromSnapshot(store.runs()).find((candidate) => candidate.id === `run:${rootId}`);
-	assert.equal(item?.state, "running");
-	assert.deepEqual(item?.progress, { done: 1, total: 2 });
-});
-
-test("opening a finished workflow run without custom UI returns false and does not mark it viewed (#5224)", () => {
-	let registered: Parameters<NonNullable<ExtensionAPI["registerAgentPanelSource"]>>[0] | undefined;
-	const pi = {
-		events: { on() {}, emit() {} },
-		on() {},
-		registerTool() {},
-		registerCommand() {},
-		registerMessageRenderer() {},
-		registerShortcut() {},
-		registerAgentPanelSource(source: NonNullable<typeof registered>) {
-			registered = source;
-			return { dispose() {} };
-		},
-	} as unknown as ExtensionAPI;
-	factory(pi);
-	assert.ok(registered);
-	const hub = new AgentPanelSourceHub();
-	hub.register(registered as never);
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-
-	const runId = testRunId("open-no-ui");
-	runIds.add(runId);
-	store.recordRunStart({
-		id: runId,
-		name: "done-run",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [makeStage("s1", "completed")],
-		startedAt: Date.now(),
-	});
-	store.recordRunEnd(runId, "completed");
-	const opened = openAgentPanelItem(session, `run:${runId}`);
-	assert.equal(opened, false);
 });
 
 test("attached composer keeps its accent rules and label when the draft overflows below with ↓ N more (#5224)", () => {
@@ -306,24 +169,6 @@ test("attached composer strips control sequences from the label on a scrolled �
 	const [top] = applyAttachedComposer(style, hostileLabel, undefined, [scrolled, "❯ x", "─".repeat(60)]);
 	assert.equal(/[\x00-\x1f]/.test(top!.replace(/\x1b\[[0-9;]*m/g, "")), false);
 	assert.equal(visibleWidth(top!), 60);
-
-	const ctx = {
-		theme: { accent: "#5fafff", text: "#d0d0d0", dim: "#808080" },
-		chatHost: { hasInputText: () => true },
-	} as never;
-	const stage = {
-		id: "s1",
-		name: "review\x1b]0;pwned\x07 a.ts",
-		status: "running",
-		startedAt: Date.now() - 5_000,
-	} as never;
-	const [scrolledStageTop] = injectStageLabelIntoEditorTopRule(
-		ctx,
-		(stage as { name: string }).name,
-		[scrolled, "❯ x", "─".repeat(60)],
-		stage,
-	);
-	assert.equal(/\x1b\]|\x07/.test(scrolledStageTop!), false);
 });
 
 test("focused panel retains no clocks for extension rows that have left the source (#5224)", async () => {
@@ -402,34 +247,9 @@ test("after an extension row stops, the focused panel and /tasks show the same f
 	}
 });
 
-test("workflowPanelSource memoizes items across repeated reads and task store metrics refreshes do not re-read unchanged extension sources (#4009, #5224)", async () => {
-	const runId = testRunId("memo-source");
-	runIds.add(runId);
-	let stageReads = 0;
-	const s1 = makeStage("s1", "running");
-	Object.defineProperty(s1, "status", {
-		enumerable: true,
-		get() {
-			stageReads++;
-			return "running";
-		},
-	});
-	store.recordRunStart({
-		id: runId,
-		name: "memo-wf",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [s1],
-		startedAt: 1_000,
-	});
-	const wfSource = workflowPanelSource(captureWorkflowOwnerResources(), {
-		open: () => {},
-		quit: async () => ({ status: "stopped", runId, message: "stopped" }) as never,
-	});
+test("task store metrics refreshes do not re-read unchanged extension sources (#4009, #5224)", async () => {
 	let extReads = 0;
 	const hub = new AgentPanelSourceHub();
-	hub.register(wfSource);
 	hub.register({
 		items: () => {
 			extReads++;
@@ -446,14 +266,6 @@ test("workflowPanelSource memoizes items across repeated reads and task store me
 	try {
 		await fixture.start("Background worker");
 		dispose = bindAgentPanel(session, { setWidget() {}, requestRender() {} });
-		const wfReadsBefore = stageReads;
-		wfSource.items();
-		const wfReadsAfterFirst = stageReads;
-		wfSource.items();
-		wfSource.items();
-		assert.equal(stageReads, wfReadsAfterFirst);
-		assert.ok(wfReadsAfterFirst >= wfReadsBefore);
-
 		const extReadsBeforeStream = extReads;
 		for (let i = 0; i < 10; i++) {
 			taskValue(

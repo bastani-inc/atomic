@@ -1,4 +1,4 @@
-import type { ExtensionContext, SessionStore } from "@bastani/atomic";
+import type { ExtensionContext } from "@bastani/atomic";
 import { INTERCOM_CONNECTED_EVENT } from "../../intercom/own-intercom-session.js";
 import {
 	requestSupervisorAuthorization,
@@ -22,19 +22,11 @@ import { readPreviousIntercomId, reopenChildSession } from "./subagent-child-ses
 export const SUBAGENT_RESERVE_RESTORING_CHILD_EVENT = "subagent:reserve-restoring-child";
 /** Ends that hold; with `gone` (the reason) held and later senders are told the child did not survive the restart. */
 export const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restoring-child";
-/**
- * Workflows asks Subagents to keep the background subagents of an interrupted run's stages addressable while the run
- * waits for `/workflow resume` (#3760). The answer is the hold to end when the run is taken over or finishes.
- */
-export const WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT = "atomic:workflow-dormant-run-subagent-hold";
-
 export interface SubagentReserveRestoringChildRequest {
 	readonly capability: string;
 	readonly group?: string;
 	/** The child's Atomic session id and the Intercom id it had before the restart. */
 	readonly aliases: readonly string[];
-	/** Only keeps the child addressable until the supervisor that restores it reserves it and takes the hold over. */
-	readonly dormant?: boolean;
 	/** The child is starting: each send waits this long for it to register. */
 	readonly holdMs?: number;
 	completion?: Promise<void>;
@@ -46,24 +38,6 @@ export interface SubagentReleaseRestoringChildRequest {
 	/** Told to the senders held now when the child is coming back elsewhere; later sends are routed normally. */
 	readonly refusal?: string;
 	completion?: Promise<void>;
-}
-
-export interface WorkflowDormantRunSubagentHold {
-	/** Settles once every hold is in place. */
-	readonly ready: Promise<void>;
-	/** End every hold. With `refusal` the senders held now are told that reason, otherwise they are routed normally. */
-	release(refusal?: string): Promise<void>;
-}
-
-export interface WorkflowDormantRunSubagentHoldRequest {
-	readonly runId: string;
-	/** The run's invocation group, for children whose record names none. */
-	readonly group: string;
-	/** Sessions of the run's stages that will run again; their `subagent-child` records name the children. */
-	readonly stageSessionIds: readonly string[];
-	/** The launching session, whose store holds the stage sessions; defaults to the one the extension last saw start. */
-	readonly context?: Pick<ExtensionContext, "sessionManager">;
-	completion?: Promise<WorkflowDormantRunSubagentHold>;
 }
 
 /**
@@ -105,7 +79,6 @@ export async function holdChildTargets(
 	record: Pick<SubagentChildRecord, "intercomTarget" | "childSessionId">,
 	group: string | undefined,
 	options: {
-		readonly dormant?: boolean;
 		/**
 		 * The child is starting: each send waits up to this long for it to register, instead of the broker's short hold,
 		 * and the hold is made again whenever this session reconnects to Intercom, until it ends.
@@ -127,7 +100,6 @@ export async function holdChildTargets(
 			capability,
 			aliases: all ? [...known] : aliases,
 			...(group ? { group } : {}),
-			...(options.dormant === true ? { dormant: true } : {}),
 			...(holdMs === undefined ? {} : { holdMs }),
 		};
 		return emitIntercomRequest(events, SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, request);
@@ -178,14 +150,13 @@ async function holdChildTargetsWhenReady(
 	events: IntercomEventBus,
 	record: SubagentChildRecord,
 	group: string | undefined,
-	options: { readonly dormant?: boolean },
 	isWanted: () => boolean,
 ): Promise<ChildTargetHold | undefined> {
 	for (const delay of HOLD_RETRY_DELAYS_MS) {
 		await pause(delay);
 		if (!isWanted()) return undefined;
 		try {
-			return await holdChildTargets(events, record, group, options);
+			return await holdChildTargets(events, record, group);
 		} catch {
 			// Intercom has not finished starting this session yet.
 		}
@@ -262,7 +233,6 @@ export async function holdRunningSubagentChildren(events: IntercomEventBus, ctx:
 					events,
 					record,
 					record.intercomGroup ?? inheritedIntercomGroup(ctx),
-					{},
 					() => early.wanted,
 				),
 			};
@@ -307,73 +277,6 @@ export function releasePausedChildHold(key: string): void {
 export function releaseEarlyChildHolds(ownerSessionId: string): void {
 	const prefix = `${ownerSessionId}\u0000`;
 	for (const [key, early] of [...earlyHolds]) if (key.startsWith(prefix)) endEarlyHold(key, early);
-}
-
-/**
- * Keep the background subagents of an interrupted workflow run's stages addressable until `/workflow resume`
- * restores them (#3760). The launching session is the only one running while the run is down. For each stage that
- * will run again it reads the `subagent-child` records its session holds, read-only from this session's store, and
- * holds the targets of every child that had not settled. A stage whose records cannot be read is skipped. The
- * hold is dormant: the restarted stage's own restoration reserves the same child with its fresh capability and takes
- * it over, with the sends held so far.
- */
-export function holdDormantRunSubagentChildren(
-	events: IntercomEventBus,
-	ctx: Pick<ExtensionContext, "sessionManager">,
-	request: Pick<WorkflowDormantRunSubagentHoldRequest, "group" | "stageSessionIds">,
-): WorkflowDormantRunSubagentHold {
-	const holds: ChildTargetHold[] = [];
-	let released = false;
-	let refusal: string | undefined;
-	const holdStage = async (store: SessionStore, stageSessionId: string): Promise<void> => {
-		let records: SubagentChildRecord[];
-		try {
-			const snapshot = await store.load(stageSessionId);
-			records = [...readSubagentChildRecords(snapshot.entries, stageSessionId).values()].filter(
-				(record) => isRestorableSubagentChild(record) && record.intercomTarget,
-			);
-		} catch {
-			return;
-		}
-		await Promise.all(
-			records.map(async (record) => {
-				const hold = await holdChildTargetsWhenReady(
-					events,
-					record,
-					record.intercomGroup ?? request.group,
-					{ dormant: true },
-					() => !released,
-				).catch(() => undefined);
-				if (hold === undefined) return;
-				if (released) {
-					await hold.release(refusal);
-					return;
-				}
-				holds.push(hold);
-				await holdPreviousIntercomId(ctx, record, hold);
-			}),
-		);
-	};
-	const ready = (async () => {
-		let store: SessionStore;
-		try {
-			store = ctx.sessionManager.getSessionStore();
-		} catch {
-			return;
-		}
-		await Promise.all(
-			[...new Set(request.stageSessionIds)].map((stageSessionId) => holdStage(store, stageSessionId)),
-		);
-	})().catch(() => undefined);
-	return {
-		ready,
-		async release(reason) {
-			released = true;
-			refusal = reason;
-			await Promise.all(holds.splice(0).map((hold) => hold.release(reason)));
-			await ready;
-		},
-	};
 }
 
 /** Holds made before a child's restoration took them over; counted by tests and the benchmark. */

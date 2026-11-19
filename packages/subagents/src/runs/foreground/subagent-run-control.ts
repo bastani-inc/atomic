@@ -1,7 +1,6 @@
 import type { AgentTaskHost, ExtensionContext, TaskId } from "@bastani/atomic";
 import {
 	isSubagentChildSession,
-	isWorkflowStageOrchestrationContext,
 	type ResumeInFlight,
 	type SubagentRunControlAction,
 	type SubagentRunControlChild,
@@ -60,8 +59,6 @@ import {
 	requestSubagentChildStop,
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildOwner,
 	type SubagentChildRecord,
 	type SubagentChildStopStatus,
@@ -78,27 +75,18 @@ import {
 } from "./subagent-child-restore.js";
 import { isFinishingWorktreeTask, isQueuedSubagentChild, stopQueuedSubagentChild } from "./task-execution.js";
 
-/** The prompt a resumed child runs when `resume` carries no message, as a resumed workflow stage receives. */
+/** The prompt a resumed child runs when `resume` carries no message. */
 export const SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT =
 	"Continue where you left off. If a pause interrupted a command or step you were running, redo or continue that step as needed. If you believe you are finished with your original task (or a redefined task if the user told you), stop.";
 
-/** Settled children that can never be resumed: cancelled for good, ended with their workflow stage, or reported gone (#3760). */
+/** Settled children that can never be resumed: cancelled for good or reported gone (#3760). */
 const NON_RESUMABLE_STATUSES: ReadonlyMap<string, string> = new Map([
 	["killed", "it was cancelled for good (an owner or batch cancellation, or the removed kill action)"],
-	[
-		SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-		"its workflow stage ended (the stage finished, or its run ended or was cancelled)",
-	],
 	[SUBAGENT_CHILD_GONE_STATUS, "it did not survive a restart and was reported gone"],
 ]);
 
 /** Children stopped part-way through a turn: resume continues that turn, after any steer message. */
-const INTERRUPTED_STATUSES: ReadonlySet<string> = new Set([
-	"paused",
-	"quit",
-	"interrupted",
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
-]);
+const INTERRUPTED_STATUSES: ReadonlySet<string> = new Set(["paused", "quit", "interrupted"]);
 
 export interface SubagentRunControlRequest {
 	readonly action: SubagentRunControlAction;
@@ -463,11 +451,10 @@ function isReleased(record: Pick<SubagentChildRecord, "state" | "terminalStatus"
 	return record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS;
 }
 
-/** How a settled child already stands for pause and quit: a child its workflow stage's pause stopped counts as paused. */
+/** How a settled child already stands for pause and quit. */
 function stoppedAs(record: Pick<SubagentChildRecord, "state" | "terminalStatus">): SubagentChildStopStatus | undefined {
 	if (record.state !== "terminal") return undefined;
-	if (record.terminalStatus === "paused" || record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS)
-		return "paused";
+	if (record.terminalStatus === "paused") return "paused";
 	return record.terminalStatus === "quit" ? "quit" : undefined;
 }
 
@@ -657,7 +644,7 @@ async function stopChildren(
 		lines.push(
 			action === "pause"
 				? `Paused ${label(record)} · awaiting resume. Its queued messages are held until resume; resume it with { action: "resume", id: "${record.childId}", message? }.`
-				: `Quit ${label(record)}: paused · awaiting resume, as a quit workflow run is. It stays resumable with { action: "resume", id: "${record.childId}", message? }.`,
+				: `Quit ${label(record)}: paused · awaiting resume. It stays resumable with { action: "resume", id: "${record.childId}", message? }.`,
 		);
 	};
 	for (const [index, target] of targets.entries()) {
@@ -975,14 +962,9 @@ function releasedLine(record: StatusFacts): string {
 	return `${label(record)} released · waiting${calls ? ` on ${calls}` : ""}; it holds nothing and is not paused: it wakes by itself when that finishes or a message reaches it, and needs no resume. To wake it sooner, resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
 }
 
-/** How `status` shows a child pause or quit stopped: paused and awaiting resume, as a quit workflow run shows. */
+/** How `status` shows a child pause or quit stopped: paused and awaiting resume. */
 function awaitingResumeLine(record: StatusFacts): string {
-	const how =
-		record.terminalStatus === "quit"
-			? "quit · paused · awaiting resume"
-			: record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS
-				? "paused with its workflow stage · awaiting resume"
-				: "paused · awaiting resume";
+	const how = record.terminalStatus === "quit" ? "quit · paused · awaiting resume" : "paused · awaiting resume";
 	return `${label(record)} ${how}. Resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
 }
 
@@ -1064,7 +1046,7 @@ export function controlSubagentChildren(
 /**
  * Recovery, when a session is opened at startup or by resume, of the paused and quit children it launched, as
  * `resumeInFlight` selects: `ask` confirms once and lists them, `auto` resumes them, and each resumes through the
- * `resume` action. Workflow-stage children are never touched.
+ * `resume` action.
  * It never throws: a failure is reported as a warning, and `isCurrent` ends it once the session it began in is gone.
  */
 export async function resumeAwaitingSubagentChildren(
@@ -1074,7 +1056,7 @@ export async function resumeAwaitingSubagentChildren(
 	isCurrent: () => boolean,
 ): Promise<void> {
 	if (mode === "never" || ctx.isPresentationOnly === true) return;
-	if (isSubagentChildSession(ctx) || isWorkflowStageOrchestrationContext(ctx)) return;
+	if (isSubagentChildSession(ctx)) return;
 	if (mode === "ask" && (ctx.hasUI === false || typeof ctx.ui?.confirm !== "function")) return;
 	const notify = (message: string, type: "info" | "warning"): void => {
 		try {
@@ -1084,9 +1066,7 @@ export async function resumeAwaitingSubagentChildren(
 		}
 	};
 	try {
-		const awaiting = [...ownedRecords(ctx).values()].filter(
-			(record) => record.owner.kind === "session" && stoppedAs(record),
-		);
+		const awaiting = [...ownedRecords(ctx).values()].filter(stoppedAs);
 		if (awaiting.length === 0) return;
 		if (
 			mode === "ask" &&

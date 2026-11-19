@@ -11,7 +11,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
-import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
+import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	createBranchSummaryEntry,
 	createCompactionEntry,
@@ -57,7 +57,6 @@ import type {
 	SessionOpenOptions,
 	SessionProjection,
 	SessionTreeNode,
-	SessionWorkflowMetadata,
 	UsageEntry,
 	WorktreeRestoreHostWarning,
 } from "./session-manager-types.ts";
@@ -85,6 +84,7 @@ import {
 	type StorageFailureCause,
 	StorageRollbackError,
 } from "./storage/errors.js";
+import { type ChatRecordOwner, chatEpoch, type SessionChatRecords } from "./storage/session/chat-records.js";
 import { ChildCatalog } from "./storage/session/child-catalog.js";
 import { validateSessionEntryStructure } from "./storage/session/entry-structure.js";
 import {
@@ -265,6 +265,7 @@ export class SessionManager {
 
 	private entrySeqs = new Map<string, number>();
 	private historyEpoch: string | undefined;
+	private chatEpoch: string | undefined;
 	private lastEntryId: string | null = null;
 	private recoveryState: SessionRecoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 	private admissionKeys = new SessionKeyDigests();
@@ -386,6 +387,7 @@ export class SessionManager {
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
 		this.archiveOnlyEpoch = false;
+		this.chatEpoch = chatEpoch(header);
 		this.recoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
 		this.admissionKeys = new SessionKeyDigests();
 		this.workflowStarts = {};
@@ -505,6 +507,18 @@ export class SessionManager {
 			this.leafId = parent;
 		}
 		return true;
+	}
+
+	/** @internal The display reader's authority. A missing generation or unsupported adapter fails closed. */
+	chatRecordScope(): { store: SessionChatRecords; owner: ChatRecordOwner } | undefined {
+		const epoch = this.historyEpoch ?? this.chatEpoch;
+		if (!epoch || this.deletedFromStore || isProxy(this.store)) return undefined;
+		try {
+			const store = this.store.chatRecords;
+			return store ? { store, owner: { id: this.sessionId, epoch, file: this.sessionFile } } : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	getEntrySeq(id: string): number | undefined {
@@ -696,14 +710,7 @@ export class SessionManager {
 		if (options?.id !== undefined) assertValidSessionId(options.id);
 		this.sessionId = options?.id ?? createSessionId();
 		this.fileEntries = [
-			createSessionHeader(
-				this.sessionId,
-				this.cwd,
-				new Date().toISOString(),
-				options?.parentSession,
-				options?.internal,
-				options?.workflow,
-			),
+			createSessionHeader(this.sessionId, this.cwd, new Date().toISOString(), options?.parentSession),
 		];
 		this.lastSeq = 0;
 		this.childArchive = new ChildCatalog();
@@ -769,8 +776,6 @@ export class SessionManager {
 				this.cwd,
 				new Date().toISOString(),
 				options?.parentSession,
-				options?.internal,
-				options?.workflow,
 			);
 			const record = this.recordHeader(header);
 			const store = await this.storeForNewSession();
@@ -789,24 +794,6 @@ export class SessionManager {
 			this.labelTimestampsById.clear();
 			this.restore({ header: record, entries: [], lastSeq: result.lastSeq, epoch: result.epoch }, location);
 			return this.sessionFile;
-		});
-	}
-
-	markSessionInternal(workflow?: SessionWorkflowMetadata): Promise<void> {
-		return this.runMutation(async () => {
-			const previous = this.getHeader()!;
-			if (classifiedWorkflowMetadata(previous)) return;
-			const validWorkflow = validSessionWorkflowMetadata(workflow);
-			if (!validWorkflow) return;
-			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
-			const { updateStoredHeader } = await import("./storage/session/snapshot-history.js");
-			const result = await updateStoredHeader(this.store, this.recordHeader(header), {
-				expectSeq: this.lastSeq,
-				...(this.archiveOnlyEpoch || this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-			});
-			this.lastSeq = result.lastSeq;
-			this.historyEpoch = result.epoch;
-			this.fileEntries[0] = header;
 		});
 	}
 
@@ -2179,7 +2166,6 @@ export class SessionManager {
 				leafId,
 				cwd: manager.cwd,
 				parentSessionId: sessionId,
-				workflow: classifiedWorkflowMetadata(source.header),
 				path: source.entries,
 				labelsById: labels.labelsById,
 				labelTimestampsById: labels.labelTimestampsById,
@@ -2196,7 +2182,6 @@ export class SessionManager {
 				leafId,
 				cwd: this.cwd,
 				parentSessionId: this.sessionId,
-				workflow: classifiedWorkflowMetadata(this.getHeader()),
 				path: this.getBranch(leafId),
 				labelsById: this.labelsById,
 				labelTimestampsById: this.labelTimestampsById,

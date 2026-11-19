@@ -18,15 +18,12 @@ export interface BrokerHostModulePlugin {
  * A Bun runtime plugin that resolves `@bastani/atomic` and `@bastani/atomic/storage` to the app bundle's own modules.
  * The bundle loads on the first such import, which only a broker with multi-node routing makes.
  */
-export function createBrokerHostModulePlugin(
-	loadApp: () => Promise<AppHostModules>,
-	specifiers: readonly AppHostModuleSpecifier[] = BROKER_HOST_MODULE_SPECIFIERS,
-): BrokerHostModulePlugin {
+export function createBrokerHostModulePlugin(loadApp: () => Promise<AppHostModules>): BrokerHostModulePlugin {
 	let app: Promise<AppHostModules> | undefined;
 	return {
 		name: "atomic-broker-host-modules",
 		setup(build) {
-			for (const specifier of specifiers) {
+			for (const specifier of BROKER_HOST_MODULE_SPECIFIERS) {
 				build.module(specifier, async () => {
 					app ??= loadApp();
 					return { exports: await (await app).loadHostModule(specifier), loader: "object" };
@@ -37,10 +34,7 @@ export function createBrokerHostModulePlugin(
 }
 
 /** Lets the standalone binary's broker import Atomic's host modules from the app bundle at `appPath`. */
-export function installBrokerHostModules(
-	appPath: string,
-	specifiers: readonly AppHostModuleSpecifier[] = BROKER_HOST_MODULE_SPECIFIERS,
-): void {
+export function installBrokerHostModules(appPath: string): void {
 	const bun = (globalThis as typeof globalThis & { Bun?: { plugin(plugin: BrokerHostModulePlugin): void } }).Bun;
 	bun?.plugin(
 		createBrokerHostModulePlugin(async () => {
@@ -49,7 +43,7 @@ export function installBrokerHostModules(
 				default?: AppHostModules;
 			};
 			return typeof app.loadHostModule === "function" ? (app as AppHostModules) : app.default!;
-		}, specifiers),
+		}),
 	);
 }
 

@@ -14,7 +14,7 @@ interface ResumeWaiter extends PromiseWithResolvers<SubagentChildRestoreOutcome>
 	refuse(taskId: string): void;
 }
 
-// A workflow stage keeps its owner across /reload. A replacement handler must join its in-flight wake, not race it.
+// A session keeps its owner across /reload. A replacement handler must join its in-flight wake, not race it.
 function newResumeState() {
 	return {
 		dispatchers: new Map<string, { readonly dispatcher: AgentWakeDispatcher }>(),

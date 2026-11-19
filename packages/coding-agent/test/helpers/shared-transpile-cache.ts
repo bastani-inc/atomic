@@ -1,12 +1,11 @@
 import { mkdirSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../../workflows/src/shared/workflow-artifact-env.js";
 import { getExtensionTranspileCacheDir } from "../../src/config.ts";
 
 /**
- * The agent directory that owns the run's shared extension transpile cache, under the run's workflow-artifact
+ * The agent directory that owns the run's shared extension transpile cache, under the run's temporary
  * directory, which the orchestrator creates before the workers start and removes after they exit
- * (`test/global-setup-workflow-artifacts.ts`). `test/global-setup-warm-transpile-cache.ts` fills its cache once with a
+ * (`test/global-setup-test-directory.ts`). `test/global-setup-warm-transpile-cache.ts` fills its cache once with a
  * real load of the builtin packages; `linkSharedTranspileCache` points tests at it.
  */
 export function sharedTranspileAgentDir(runDirectory: string): string {
@@ -14,8 +13,8 @@ export function sharedTranspileAgentDir(runDirectory: string): string {
 }
 
 function sharedCacheDir(): string {
-	const runDirectory = process.env[ENV_WORKFLOW_ARTIFACT_DIR];
-	if (runDirectory === undefined) throw new Error(`${ENV_WORKFLOW_ARTIFACT_DIR} is unset`);
+	const runDirectory = process.env.ATOMIC_TEST_RUN_DIR;
+	if (runDirectory === undefined) throw new Error("ATOMIC_TEST_RUN_DIR is unset");
 	const dir = getExtensionTranspileCacheDir(sharedTranspileAgentDir(runDirectory));
 	mkdirSync(dir, { recursive: true });
 	return dir;

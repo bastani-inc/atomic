@@ -5,7 +5,6 @@ import { join } from "node:path";
 export const PROVIDER = "viewlat";
 export const MODEL = "viewlat-model";
 export const SUBAGENT_NAME = "vl-streamer";
-export const WORKFLOW_NAME = "viewlat-load";
 
 export interface BenchDirectories {
 	readonly root: string;
@@ -18,7 +17,6 @@ export function createDirectories(root: string): BenchDirectories {
 	const agentDir = join(root, "home", ".atomic", "agent");
 	const project = join(root, "project");
 	mkdirSync(join(agentDir, "agents"), { recursive: true });
-	mkdirSync(join(agentDir, "workflows"), { recursive: true });
 	mkdirSync(project, { recursive: true });
 	const readPath = join(project, "NOTES.md");
 	writeFileSync(readPath, "# Notes\n\nA short file every streaming agent reads between its turns.\n");
@@ -91,29 +89,6 @@ export function writeAgentConfiguration(dirs: BenchDirectories, port: number): v
 			"",
 		].join("\n"),
 	);
-}
-
-export function writeLoadWorkflow(dirs: BenchDirectories, stages: number, forkFromSessionId: string): void {
-	const source = `import { workflow } from "@bastani/atomic/workflows";
-
-export default workflow({
-	name: ${JSON.stringify(WORKFLOW_NAME)},
-	description: "Parallel stages that stream without end, each forked from the long seeded session.",
-	inputs: {},
-	outputs: {},
-	run: async (ctx) => {
-		await Promise.all(
-			Array.from({ length: ${stages} }, (_, index) =>
-				ctx
-					.stage(\`stream-\${index}\`, { context: "fork", forkFromSessionId: ${JSON.stringify(forkFromSessionId)} })
-					.prompt(\`VL-STREAM s\${index}\`),
-			),
-		);
-		return {};
-	},
-});
-`;
-	writeFileSync(join(dirs.agentDir, "workflows", `${WORKFLOW_NAME}.ts`), source);
 }
 
 /** Seeds the long transcript through the built package and returns its session id. */

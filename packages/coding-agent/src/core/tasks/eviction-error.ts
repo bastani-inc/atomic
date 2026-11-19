@@ -1,5 +1,5 @@
 /**
- * How many finished tasks one task owner (a session or a workflow stage) keeps listed and readable. The native task
+ * How many finished tasks one task owner (a session) keeps listed and readable. The native task
  * supervisor evicts the oldest finished tasks beyond it, in the order they finished (#4385).
  */
 export const FINISHED_TASK_RETENTION = 256;
@@ -19,7 +19,7 @@ const TASK_EVICTED_ERROR_NAME = "TaskEvictedError";
 const TASK_EVICTED_ERROR_CODE: TaskEvictedErrorCode = "task_evicted";
 
 function evictionHint(retainedFinishedTasks: number): string {
-	return `Only the ${retainedFinishedTasks} most recently finished tasks of a session or workflow stage are kept. Its result stays where the conversation reported it and a subagent's transcript stays in its own saved session, but a shell command's full output is no longer available`;
+	return `Only the ${retainedFinishedTasks} most recently finished tasks of a session are kept. Its result stays where the conversation reported it and a subagent's transcript stays in its own saved session, but a shell command's full output is no longer available`;
 }
 
 /**

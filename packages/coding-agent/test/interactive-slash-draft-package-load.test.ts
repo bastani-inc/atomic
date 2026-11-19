@@ -19,8 +19,6 @@ import type { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const extensionPackagePath = join(testDir, "fixtures", "slash-autosend-extension-package");
-const workflowPackagePath = join(testDir, "fixtures", "slash-autosend-workflow-package");
-const fixturePackagePaths = [extensionPackagePath, workflowPackagePath] as const;
 const startupCaptureCwd = mkdtempSync(join(tmpdir(), "atomic-slash-autosend-capture-"));
 
 afterAll(() => {
@@ -93,7 +91,7 @@ function fixturePackageCapture(projectTrustOverride: true | undefined): EarlyInp
 			session: undefined,
 		},
 		sessionCwd: startupCaptureCwd,
-		resolvedExtensionPathCount: fixturePackagePaths.length,
+		resolvedExtensionPathCount: 1,
 		resolvedResourcePathCount: 0,
 		deprecationWarningCount: 0,
 	});
@@ -242,7 +240,7 @@ describe("interactive slash drafts while package commands become available", () 
 	] as const) {
 		describe(approval, () => {
 			for (const draft of ["/", "/foo"]) {
-				test(`keeps ${JSON.stringify(draft)} unsent when package and workflow loading finishes`, async () => {
+				test(`keeps ${JSON.stringify(draft)} unsent when extension package loading finishes`, async () => {
 					const observed = await observeDraftAfterEvent(draft, projectTrustOverride, async (probe) => {
 						const context = asDeferredStartupContext(probe);
 						await interactivePrototype.completeDeferredStartup.call(context);

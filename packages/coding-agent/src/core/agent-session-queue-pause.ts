@@ -1,4 +1,3 @@
-import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
 import type { SessionAbortOptions } from "./agent-session-types.js";
@@ -30,11 +29,6 @@ export function composePauseAbortBoundaries(
 
 /** Synchronously hold raw queue entries before pausing and aborting an active turn. */
 export function pauseQueuedMessages(this: AgentSession): void {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) {
-		owner.pauseQueuedMessages();
-		return;
-	}
 	if (this._queuedMessagesPaused) return;
 	this._queuedMessagesPaused = true;
 	this._queuedMessagesPauseAbortBoundary = undefined;
@@ -43,8 +37,6 @@ export function pauseQueuedMessages(this: AgentSession): void {
 
 /** Release a pause hold without starting a turn; report whether raw work was released. */
 export async function resumeQueuedMessages(this: AgentSession, beforeRelease?: () => void): Promise<boolean> {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.resumeQueuedMessages(beforeRelease);
 	if (!this._queuedMessagesPaused) return false;
 	const abortBoundary = this._queuedMessagesPauseAbortBoundary;
 	if (abortBoundary !== undefined) {
@@ -81,8 +73,6 @@ export function abort(this: AgentSession, options?: SessionAbortOptions): Promis
 	// Establish the hold before aborting, as the TUI does, so dispose can save a queued protected notice (#5166).
 	if (options?.pauseQueuedMessages) this.pauseQueuedMessages();
 	this._extensionRunner.cancelHostInput();
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.abort();
 	return abortCurrentGeneration.call(this);
 }
 
@@ -114,12 +104,8 @@ export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 		// Cancellation is terminal for a child. Hold even deliveries whose
 		// protocol-safe persistence is still pending so they cannot restart it.
 		this._subagentMessageAdmission.seal();
-	}
-	const ownsStageDeliveries = resolveWorkflowStageDeliveryTarget(this) === this;
-	if ((this._subagentMessageAdmission || this._workflowStageAdmission) && ownsStageDeliveries) {
 		// Unlike a priority interrupt's native abort, an explicit stop must also
 		// block deferred input from starting a turn after preflight or settlement.
-		// A stage's generation remains host-owned; only explicit resume releases it.
 		this.pauseQueuedMessages();
 	}
 	abortTurnRetries.call(this);

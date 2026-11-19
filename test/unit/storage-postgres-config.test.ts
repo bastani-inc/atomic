@@ -58,7 +58,7 @@ test("Postgres refuses a listen URL that holds a password or is not a Postgres U
 		() =>
 			adapter.openDatabase(
 				{ url, listenUrl: "postgres://atomic@127.0.0.1:1/atomic?password=fixture-secret" },
-				{ agentDir: "/nonexistent", domain: "journal" },
+				{ agentDir: "/nonexistent", domain: "sessions" },
 			),
 		"listenUrl",
 		"credential-in-url",
@@ -144,7 +144,7 @@ test("Postgres refuses a proxy with a socket factory, a socket factory that is n
 	);
 	// A value that is not a string, as settings could hold one.
 	await assertRefused(
-		() => adapter.openDatabase({ url, proxy: 3128 }, { agentDir: "/nonexistent", domain: "journal" }),
+		() => adapter.openDatabase({ url, proxy: 3128 }, { agentDir: "/nonexistent", domain: "sessions" }),
 		"proxy",
 		"unsupported-proxy",
 	);
@@ -153,7 +153,7 @@ test("Postgres refuses a proxy with a socket factory, a socket factory that is n
 test("the Postgres adapter requires a URL option (#4793)", async () => {
 	for (const url of [undefined, "", 5])
 		await assertRefused(
-			() => adapter.openDatabase(url === undefined ? {} : { url }, { agentDir: "/nonexistent", domain: "journal" }),
+			() => adapter.openDatabase(url === undefined ? {} : { url }, { agentDir: "/nonexistent", domain: "sessions" }),
 			"url",
 			"unsupported-url",
 		);
@@ -164,14 +164,14 @@ test("Atomic loads the installed Postgres package by name as a storage adapter (
 	try {
 		const packageRoot = resolve(moduleDir(import.meta.url), "../../packages/storage-postgres");
 		await writeFileEnsuringDir(join(agentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
-		const loaded = await loadStorageAdapter("@bastani/atomic-storage-postgres", { agentDir, domain: "journal" });
+		const loaded = await loadStorageAdapter("@bastani/atomic-storage-postgres", { agentDir, domain: "sessions" });
 		assert.deepEqual(loaded.liveSecrets, ["password"]);
 		assert.ok(loaded.openDatabase);
 		await assertRefused(
 			() =>
 				loaded.openDatabase?.(
 					{ url: "postgres://atomic:fixture-secret@127.0.0.1:1/atomic" },
-					{ agentDir, domain: "journal" },
+					{ agentDir, domain: "sessions" },
 				) ?? Promise.resolve(),
 			"url",
 			"credential-in-url",
@@ -333,7 +333,7 @@ test("a ? anywhere inside a dollar-quoted string never changes the parameter cou
 });
 
 test("the Postgres adapter checks the options settings give it before connecting (#4793)", async () => {
-	const context = { agentDir: "/nonexistent", domain: "journal" } as const;
+	const context = { agentDir: "/nonexistent", domain: "sessions" } as const;
 	const url = "postgres://atomic@127.0.0.1:1/atomic";
 	await assertRefused(
 		() => adapter.openDatabase({ url, maxConnections: 0 }, context),

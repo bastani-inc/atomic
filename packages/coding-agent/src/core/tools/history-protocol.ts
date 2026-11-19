@@ -1,13 +1,10 @@
 /**
- * history:// resolution: the session and workflow history of the current project, read through the configured
- * `SessionStore` and the registered workflow run control rather than through any backend's own files.
+ * history:// reads the session history of the current project through its configured SessionStore.
  *
  *   history://                     what is available
  *   history://sessions             recent sessions, newest first
  *   history://sessions/<id>        one session: its transcript, or an outline when it is too long to read whole
  *   history://sessions/<id>:N-M    entries N to M of one session
- *   history://workflows            recent workflow runs, newest first
- *   history://workflows/<runId>    one run: inputs, stages with their sessions, result
  *
  * Query parameters: `limit=N` (at most 200) and `offset=N` page a listing or a multi-record search, so every record is
  * reachable; `project=all|<path>` on sessions widens the scope beyond the current project; `cursor=` continues a read
@@ -19,28 +16,18 @@
 
 import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
 import { resolvePath } from "../../utils/paths.ts";
-import type {
-	WorkflowRunControl,
-	WorkflowRunDetail,
-	WorkflowRunJsonObject,
-	WorkflowRunJsonValue,
-	WorkflowRunSummary,
-} from "../extensions/workflow-run-control.js";
 import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
-import { matchLinesInWorker } from "./history-regex-worker.js";
 import {
 	compareCreated,
 	compareFrozen,
 	HistorySearchPositions,
-	runPosition,
 	sessionPosition,
-	storedRunStart,
 	unpackIds,
 	withoutSearchPosition,
 } from "./history-search-position.js";
-import { clockText, clockValue, expandSearchUrl, frozenClocks, searchPosition } from "./history-search-wire.js";
+import { expandSearchUrl, frozenClocks, searchPosition } from "./history-search-wire.js";
 import {
 	type BudgetStop,
 	cutTextToUtf8Bytes,
@@ -50,9 +37,7 @@ import {
 	HistoryCallBudget,
 	isHistoryDeadlineError,
 	lineBytes,
-	MATCH_SPAN_CHARS,
 	MULTILINE_WINDOW_NOTE,
-	matchMultilineWindow,
 	mergeSeqRanges,
 	oneLine,
 	outlineSession,
@@ -68,10 +53,9 @@ import {
 	selectRegexEngine,
 	stopText,
 } from "./history-session.js";
-import { entryLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.js";
+import { entryLines, timestamp, transcriptHeaderLines } from "./history-transcript.js";
 import { mergeReadRanges, splitReadLineSelector } from "./read-selectors.ts";
 import {
-	formatSearchTextLine,
 	historyNoteWindows,
 	type InternalReadSelection,
 	type InternalResourceRouter,
@@ -79,7 +63,6 @@ import {
 	normalizeSearchPattern,
 } from "./resource-selectors.ts";
 import { splitLineRangeSelector } from "./search-line-ranges.ts";
-import { loadNativeSearchBinding } from "./search-native.ts";
 
 export type { HistoryBudget } from "./history-session.js";
 
@@ -88,17 +71,9 @@ function charged(budget: HistoryCallBudget, line: string): string {
 	return line;
 }
 
-/** The part of a workflow run control that history:// reads; it can list and read runs, never manage them. */
-export type WorkflowRunHistory = Pick<WorkflowRunControl, "listRuns" | "listProjectRuns" | "getRun">;
-
-/**
- * Where a session reads its project's history: the project's sessions and its workflow runs. A workflow stage or a
- * subagent gets the history of the session that launched it, since neither holds the project's run control and a
- * subagent keeps its own transcript apart from the project's sessions.
- */
+/** Subagents inherit their launching session's project store but keep a separate transcript. */
 export interface ProjectHistory {
 	readonly sessionStore: () => SessionStore | undefined;
-	readonly workflows: () => WorkflowRunHistory | undefined;
 }
 
 export interface HistorySources {
@@ -109,7 +84,6 @@ export interface HistorySources {
 	readonly sessionStore: () => SessionStore | undefined;
 	/** The store that holds the project's other sessions, when it is not the current session's. */
 	readonly projectSessionStore?: () => SessionStore | undefined;
-	readonly workflows: () => WorkflowRunHistory | undefined;
 	readonly budget?: Partial<HistoryBudget>;
 }
 
@@ -119,23 +93,20 @@ const LABEL_LIMIT = 120;
 const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
 const DISCOVERY_TTL_MS = 60_000;
 const MAX_PARKED_DISCOVERIES = 16;
-const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
+const QUERY_KEYS: Readonly<Record<"sessions" | "root", readonly string[]>> = {
 	sessions: ["limit", "offset", "project", "cursor", "session", "after"],
-	workflows: ["limit", "offset", "cursor", "run"],
 	root: ["limit", "offset", "project", "cursor"],
 };
 const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$/;
 
-type Domain = "sessions" | "workflows";
 interface HistoryTarget {
-	readonly domain?: Domain;
+	readonly domain?: "sessions";
 	readonly id?: string;
 	readonly limit: number;
 	readonly offset: number;
 	/** `undefined` selects the current project, `"all"` every project, anything else is a project directory. */
 	readonly project?: string;
 	readonly session?: string;
-	readonly run?: string;
 	readonly after?: SessionKey;
 	readonly order?: string;
 	readonly cursor?: HistoryCursor;
@@ -199,26 +170,16 @@ function closeDiscovery(discovery: ParkedDiscovery): void {
 
 const parkedDiscoveries = new WeakMap<SessionStore, Map<string, ParkedDiscovery>>();
 
-interface ParkedRunListing {
-	readonly runs: Promise<readonly WorkflowRunSummary[]>;
-	readonly startedAt: number;
-	readonly timer: ReturnType<typeof setTimeout>;
-}
-
-const parkedRunListings = new WeakMap<WorkflowRunHistory, ParkedRunListing>();
-
 const HISTORY_URL = /^history:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?$/;
 
 export const HISTORY_HELP = [
-	"history:// reads and searches this project's past sessions and workflow runs, whatever storage backs them.",
+	"history:// reads and searches this project's past sessions, whatever storage backs them.",
 	"  history://sessions                  recent sessions, newest first (?limit=N up to 200, ?offset=N to page)",
 	"  history://sessions/<id>             one session's transcript, or an outline of a long one",
 	"  history://sessions/<id>:N-M         entries N to M of one session",
-	"  history://workflows                 recent workflow runs, newest first (?limit=N, ?offset=N)",
-	"  history://workflows/<runId>[:N-M]   one run: inputs, stages with their sessions, result",
-	'Search any of them with the search tool, e.g. paths "history://sessions" or "history://" (both); a session match',
+	'Search any of them with the search tool, e.g. paths "history://sessions" or "history://"; a session match',
 	"is labelled with its URL and entry number, which reads back with :N-N, and context lines may cross neighbouring",
-	"entries. A search of workflow runs also searches their stages' transcripts. A search covers one page of records",
+	"entries. A search covers one page of records",
 	"(25 by default) and shows at most 10 matches per session; a read or search that stops early says what it covered",
 	"and the ?cursor= URL that continues it.",
 	"Sessions of other projects appear only with ?project=all or ?project=<dir>; use that only when the user asks.",
@@ -228,9 +189,9 @@ function parseTarget(url: string): HistoryTarget {
 	const match = HISTORY_URL.exec(url);
 	if (!match) throw new Error(`Invalid history URL: ${url}`);
 	const [, domainText = "", idText, queryText] = match;
-	if (domainText !== "" && domainText !== "sessions" && domainText !== "workflows")
-		throw new Error(`Unknown history resource: ${domainText}; use history://sessions or history://workflows`);
-	const domain: Domain | undefined = domainText === "" ? undefined : domainText;
+	if (domainText !== "" && domainText !== "sessions")
+		throw new Error(`Unknown history resource: ${domainText}; use history://sessions`);
+	const domain = domainText === "" ? undefined : domainText;
 	if (domain === undefined && idText) throw new Error(`Unknown history resource: ${idText}`);
 	const params = new URLSearchParams(queryText ?? "");
 	const allowed = QUERY_KEYS[domain ?? "root"];
@@ -248,8 +209,6 @@ function parseTarget(url: string): HistoryTarget {
 	if (project === "") throw new Error("history project must be 'all' or a directory");
 	const session = params.get("session") ?? undefined;
 	if (session === "") throw new Error("history session must be a session id");
-	const run = params.get("run") ?? undefined;
-	if (run === "") throw new Error("history run must be a workflow run id");
 	const afterText = params.get("after");
 	const afterMatch = afterText === null ? undefined : SESSION_KEY.exec(afterText);
 	const afterId = afterMatch?.[3] ?? session;
@@ -269,7 +228,6 @@ function parseTarget(url: string): HistoryTarget {
 		order: searchPosition(params.get("order"), domain),
 		...(project === undefined ? {} : { project }),
 		...(session === undefined ? {} : { session }),
-		...(run === undefined ? {} : { run }),
 		...(afterMatch && afterId !== undefined
 			? { after: { activeMs: Number(afterMatch[1]), createdMs: Number(afterMatch[2]), id: afterId } }
 			: {}),
@@ -313,7 +271,6 @@ function sessionUrl(id: string, target: HistoryTarget, cursor?: string, ranges?:
 }
 
 function pageUrl(
-	domain: Domain,
 	target: HistoryTarget,
 	offset: number,
 	cursor?: string,
@@ -324,12 +281,12 @@ function pageUrl(
 	const params = new URLSearchParams();
 	if (offset > 0) params.set("offset", String(offset));
 	if (target.limit !== DEFAULT_LIMIT) params.set("limit", String(target.limit));
-	if (domain === "sessions" && target.project !== undefined) params.set("project", target.project);
-	if (pinned !== undefined) params.set(domain === "sessions" ? "session" : "run", pinned);
+	if (target.project !== undefined) params.set("project", target.project);
+	if (pinned !== undefined) params.set("session", pinned);
 	if (cursor !== undefined) params.set("cursor", cursor);
 	if (after !== undefined) params.set("after", sessionKeyText(after, pinned));
 	const query = params.toString();
-	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
+	return `history://sessions${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
 }
 
 function skippedClauses(seq: number | undefined, where = ""): readonly string[] {
@@ -348,10 +305,6 @@ function linesBytes(lines: readonly string[]): number {
 function fittingLine(make: (clause: string) => string, clauses: readonly string[], room: number): string {
 	const lines = clauses.map(make);
 	return lines.find((line) => lineBytes(line) <= room) ?? lines[0]!;
-}
-
-function runPinBytes(runId: string): number {
-	return lineBytes(` in history://workflows/${runId}`) + lineBytes(`&${new URLSearchParams({ run: runId })}`);
 }
 
 function exactLineSuffix(selection: InternalReadSelection): string {
@@ -541,197 +494,6 @@ async function selectLines(
 	return out.join("\n");
 }
 
-const RUN_TEXT_WINDOW = 64 * 1024;
-const RUN_NATIVE_NODES = 256;
-const TEXT_PACE_EVERY = 256;
-const MAX_PARKED_RUN_STREAMS = 16;
-
-interface PaceBox {
-	budget: HistoryCallBudget;
-}
-
-interface ParkedRunStream {
-	readonly pacer: PaceBox;
-	readonly iterator: AsyncIterator<string>;
-	readonly buffer: string[];
-	readonly baseLine: number;
-	readonly totalRead: number;
-	readonly eof: boolean;
-	readonly timer: ReturnType<typeof setTimeout>;
-}
-
-type RunJsonValue = WorkflowRunJsonValue | undefined;
-
-function isHighSurrogate(code: number): boolean {
-	return code >= 0xd800 && code <= 0xdbff;
-}
-
-function* jsonStringPieces(text: string): Generator<string> {
-	if (text.length <= RUN_TEXT_WINDOW) {
-		yield JSON.stringify(text);
-		return;
-	}
-	yield '"';
-	for (let from = 0; from < text.length; ) {
-		let to = Math.min(text.length, from + RUN_TEXT_WINDOW);
-		if (to < text.length && isHighSurrogate(text.charCodeAt(to - 1))) to--;
-		yield JSON.stringify(text.slice(from, to)).slice(1, -1);
-		from = to;
-	}
-	yield '"';
-}
-
-function isJsonArray(value: object): value is readonly RunJsonValue[] {
-	return Array.isArray(value);
-}
-
-function isPlainJson(value: object): boolean {
-	if (isJsonArray(value)) return true;
-	const prototype: object | null = Object.getPrototypeOf(value);
-	return (
-		(prototype === Object.prototype || prototype === null) &&
-		typeof (value as { readonly toJSON?: (key: string) => RunJsonValue }).toJSON !== "function"
-	);
-}
-
-function smallJson(value: RunJsonValue): boolean {
-	const pending: RunJsonValue[] = [value];
-	let nodes = 0;
-	let chars = 0;
-	while (pending.length > 0) {
-		const next = pending.pop();
-		if (++nodes > RUN_NATIVE_NODES) return false;
-		if (typeof next === "string") {
-			chars += next.length;
-			if (chars > RUN_TEXT_WINDOW) return false;
-		} else if (next !== null && typeof next === "object") {
-			if (!isPlainJson(next)) return false;
-			const children: readonly RunJsonValue[] = isJsonArray(next) ? next : Object.values(next);
-			if (children.length > RUN_NATIVE_NODES) return false;
-			for (const child of children) pending.push(child);
-		}
-	}
-	return true;
-}
-
-type JsonFrame =
-	| { readonly kind: "array"; readonly value: readonly RunJsonValue[]; index: number }
-	| {
-			readonly kind: "object";
-			readonly value: WorkflowRunJsonObject;
-			readonly keys: readonly string[];
-			index: number;
-			wrote: boolean;
-	  };
-
-function* jsonPieces(root: RunJsonValue): Generator<string> {
-	const stack: JsonFrame[] = [];
-	const ancestors = new Set<object>();
-	let buffer = "";
-	let next: { readonly value: RunJsonValue; readonly item: boolean } | undefined = { value: root, item: false };
-	for (;;) {
-		if (next !== undefined) {
-			const { value, item } = next;
-			next = undefined;
-			if (typeof value === "string" && value.length > RUN_TEXT_WINDOW) {
-				if (buffer !== "") yield buffer;
-				buffer = "";
-				yield* jsonStringPieces(value);
-			} else if (value === null || typeof value !== "object" || smallJson(value) || !isPlainJson(value)) {
-				buffer += JSON.stringify(value) ?? (item ? "null" : "undefined");
-			} else {
-				if (ancestors.has(value)) throw new TypeError("Converting circular structure to JSON");
-				ancestors.add(value);
-				if (isJsonArray(value)) {
-					buffer += "[";
-					stack.push({ kind: "array", value, index: 0 });
-				} else {
-					buffer += "{";
-					stack.push({ kind: "object", value, keys: Object.keys(value), index: 0, wrote: false });
-				}
-			}
-		}
-		if (buffer.length >= RUN_TEXT_WINDOW) {
-			yield buffer;
-			buffer = "";
-		}
-		const frame = stack.at(-1);
-		if (frame === undefined) break;
-		if (frame.kind === "array") {
-			if (frame.index < frame.value.length) {
-				if (frame.index > 0) buffer += ",";
-				next = { value: frame.value[frame.index], item: true };
-				frame.index++;
-				continue;
-			}
-			buffer += "]";
-		} else {
-			while (frame.index < frame.keys.length && next === undefined) {
-				const key = frame.keys[frame.index]!;
-				frame.index++;
-				const value = frame.value[key];
-				if (value === undefined || typeof value === "function" || typeof value === "symbol") continue;
-				buffer += `${frame.wrote ? "," : ""}${JSON.stringify(key)}:`;
-				frame.wrote = true;
-				next = { value, item: true };
-			}
-			if (next !== undefined) continue;
-			buffer += "}";
-		}
-		ancestors.delete(frame.value);
-		stack.pop();
-	}
-	if (buffer !== "") yield buffer;
-}
-
-async function* wrappedPieces(pieces: Iterable<string>, pacer: PaceBox): AsyncGenerator<string> {
-	let pending = "";
-	for (const piece of pieces) {
-		pending += piece;
-		while (pending.length > RUN_TEXT_WINDOW) {
-			const parts = wrapLine(pending.slice(0, RUN_TEXT_WINDOW));
-			parts.pop();
-			let used = 0;
-			for (const part of parts) {
-				used += part.length;
-				yield part;
-			}
-			pending = pending.slice(used);
-			await pacer.budget.pace();
-		}
-	}
-	yield* wrapLine(pending);
-}
-
-function* segmentPieces(text: string, from: number, end: { at: number }): Generator<string> {
-	for (let scan = from; scan < text.length; scan += RUN_TEXT_WINDOW) {
-		const window = text.slice(scan, Math.min(text.length, scan + RUN_TEXT_WINDOW));
-		const newline = window.indexOf("\n");
-		if (newline !== -1) {
-			end.at = scan + newline;
-			yield window.slice(0, newline);
-			return;
-		}
-		yield window;
-	}
-	end.at = -1;
-}
-
-async function* textLineStream(text: string, pacer: PaceBox): AsyncGenerator<string> {
-	const end = { at: -1 };
-	for (let from = 0, segments = 1; ; segments++) {
-		yield* wrappedPieces(segmentPieces(text, from, end), pacer);
-		if (end.at === -1) return;
-		from = end.at + 1;
-		if (segments % TEXT_PACE_EVERY === 0) await pacer.budget.pace();
-	}
-}
-
-function* prefixedPieces(prefix: string, pieces: Iterable<string>): Generator<string> {
-	yield prefix;
-	yield* pieces;
-}
-
 function normalizeInlineReadSelection(
 	url: string,
 	selection: InternalReadSelection,
@@ -759,445 +521,6 @@ function normalizeInlineSearchRequest(
 	const split = splitLineRangeSelector(url);
 	if (split.lineRanges === undefined) return { url, request };
 	return { url: split.path, request: { ...request, ranges: split.lineRanges } };
-}
-
-const NATIVE_BATCH_CHARS = 64 * 1024;
-
-interface RunSearchStart {
-	readonly fromLine: number;
-	readonly emittedThrough: number;
-}
-
-function formatStageZeroCursor(fromLine: number, emittedThrough: number): string {
-	return emittedThrough > 0 ? `0.${fromLine}.${emittedThrough}` : `0.${fromLine}`;
-}
-
-async function evaluateRunLineBatch(
-	lines: readonly string[],
-	normalized: { readonly pattern: string; readonly flags: string },
-	ignoreCase: boolean,
-	literal: boolean,
-	engine: "literal" | "native-only" | "both",
-	budget: HistoryCallBudget,
-): Promise<readonly number[] | "timedOut"> {
-	if (!literal) {
-		const joined = lines.join("\n");
-		const safeText = engine === "native-only" ? joined.replaceAll("\0", "\ufffd") : joined;
-		if (!safeText.includes("\0")) {
-			try {
-				const native = loadNativeSearchBinding()?.search?.(safeText, {
-					pattern: normalized.pattern,
-					ignoreCase,
-					multiline: false,
-					contextBefore: 0,
-					contextAfter: 0,
-				});
-				if (native && !native.error) {
-					return native.matches.map((match) => match.lineNumber - 1);
-				}
-			} catch {}
-		}
-		if (engine === "native-only") return [];
-	}
-	const workerResult = await matchLinesInWorker(
-		lines,
-		normalized.pattern,
-		normalized.flags,
-		ignoreCase,
-		literal,
-		budget.remainingMs(),
-		budget.signal,
-	);
-	if (workerResult.timedOut) return "timedOut";
-	return workerResult.matchedIndices;
-}
-
-async function searchRunLinesBounded(
-	runId: string,
-	label: string,
-	createSource: (pacer: PaceBox) => AsyncIterable<string>,
-	parkedStreams: Map<string, ParkedRunStream>,
-	request: InternalSearchRequest,
-	start: RunSearchStart,
-	hasMoreStages: boolean,
-	alreadyEmitted: boolean,
-	onWindowCut: () => void,
-	budget: HistoryCallBudget,
-): Promise<{
-	readonly lines: string[];
-	readonly stopped?: { readonly reason: BudgetStop; readonly cursor: string };
-}> {
-	const normalized = normalizeSearchPattern(request.pattern, request.ignoreCase);
-	const ignoreCase = normalized.flags.includes("i");
-	const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
-	const engine = selectRegexEngine(normalized, request.literal, multiline);
-	const shown =
-		engine === "native-only" && !request.literal && !multiline
-			? (line: string) => line.replaceAll("\0", "\ufffd")
-			: (line: string) => line;
-
-	const ranges = request.ranges && request.ranges.length > 0 ? mergeSeqRanges(request.ranges) : undefined;
-	const maxRangeEnd = ranges?.at(-1)?.end;
-	const inRange = (line: number): boolean =>
-		ranges === undefined || ranges.some((range) => line >= range.start && line <= range.end);
-	const nextSelectedLine = (from: number): number | undefined => {
-		if (ranges === undefined) return from;
-		for (const range of ranges) if (range.end >= from) return Math.max(from, range.start);
-		return undefined;
-	};
-
-	const parkKey = (cursor: string): string =>
-		JSON.stringify([
-			runId,
-			cursor,
-			request.pattern,
-			request.ignoreCase,
-			request.literal,
-			request.contextBefore,
-			request.contextAfter,
-			ranges ?? null,
-		]);
-	const startKey = parkKey(formatStageZeroCursor(start.fromLine, start.emittedThrough));
-	const resumed = start.fromLine > 1 || start.emittedThrough > 0 ? parkedStreams.get(startKey) : undefined;
-	if (resumed) {
-		clearTimeout(resumed.timer);
-		parkedStreams.delete(startKey);
-	}
-
-	const pacer: PaceBox = resumed ? resumed.pacer : { budget };
-	pacer.budget = budget;
-	const iterator = resumed ? resumed.iterator : createSource(pacer)[Symbol.asyncIterator]();
-	const buffer = resumed ? resumed.buffer : [];
-	let baseLine = resumed ? resumed.baseLine : 1;
-	let totalRead = resumed ? resumed.totalRead : 0;
-	let eof = resumed ? resumed.eof : false;
-	const initialTotalRead = totalRead;
-	let parked = false;
-
-	const dropParked = (key: string, closeIterator: boolean): void => {
-		const existing = parkedStreams.get(key);
-		if (!existing) return;
-		clearTimeout(existing.timer);
-		parkedStreams.delete(key);
-		if (closeIterator && existing.iterator !== iterator) void existing.iterator.return?.();
-	};
-
-	const parkAt = (cursor: string): void => {
-		if (eof || !cursor.startsWith("0.")) return;
-		const key = parkKey(cursor);
-		dropParked(key, true);
-		while (parkedStreams.size >= MAX_PARKED_RUN_STREAMS) {
-			const oldestKey = parkedStreams.keys().next().value;
-			if (oldestKey === undefined) break;
-			dropParked(oldestKey, true);
-		}
-		const timer = setTimeout(() => {
-			const expired = parkedStreams.get(key);
-			if (!expired) return;
-			parkedStreams.delete(key);
-			void expired.iterator.return?.();
-		}, DISCOVERY_TTL_MS);
-		timer.unref?.();
-		parkedStreams.set(key, {
-			pacer,
-			iterator,
-			buffer,
-			baseLine,
-			totalRead,
-			eof,
-			timer,
-		});
-		parked = true;
-	};
-
-	const stopWith = (
-		reason: BudgetStop,
-		cursor: string,
-	): { readonly lines: string[]; readonly stopped: { readonly reason: BudgetStop; readonly cursor: string } } => {
-		parkAt(cursor);
-		return { lines, stopped: { reason, cursor } };
-	};
-
-	const lineAt = (line: number): string => buffer[line - baseLine] ?? "";
-	const sliceLines = (from: number, to: number): string[] =>
-		buffer.slice(Math.max(0, from - baseLine), Math.max(0, to - baseLine + 1));
-
-	const pullOne = async (): Promise<boolean> => {
-		if (eof) return false;
-		const next = await iterator.next();
-		if (next.done) {
-			eof = true;
-			return false;
-		}
-		totalRead++;
-		buffer.push(next.value);
-		if (totalRead % LINE_PACE_EVERY === 0) await budget.pace();
-		return true;
-	};
-
-	const ensureLine = async (targetLine: number): Promise<boolean> => {
-		while (!eof && totalRead < targetLine) {
-			await pullOne();
-		}
-		return totalRead >= targetLine;
-	};
-
-	const pendingSpans: { start: number; end: number }[] = [];
-	const pushSpan = (startLine: number, endLine: number): void => {
-		const prev = pendingSpans.at(-1);
-		if (prev && prev.start === startLine) {
-			prev.end = Math.max(prev.end, endLine);
-		} else if (!prev || startLine > prev.start) {
-			pendingSpans.push({ start: startLine, end: endLine });
-		}
-	};
-
-	const trimBefore = (currentSliceStart: number): void => {
-		const earliestMatch = pendingSpans[0]?.start ?? currentSliceStart;
-		let keepFrom = Math.max(1, earliestMatch - request.contextBefore);
-		if (multiline) {
-			let lookbehindLine = currentSliceStart;
-			let chars = 0;
-			while (lookbehindLine > baseLine && chars < MATCH_SPAN_CHARS) {
-				lookbehindLine--;
-				chars += lineAt(lookbehindLine).length + 1;
-			}
-			keepFrom = Math.min(keepFrom, lookbehindLine);
-		}
-		if (keepFrom > baseLine) {
-			const drop = Math.min(buffer.length, keepFrom - baseLine);
-			if (drop >= 64) {
-				buffer.splice(0, drop);
-				baseLine += drop;
-			}
-		}
-	};
-
-	const lines: string[] = [];
-	let emittedThrough = start.emittedThrough;
-	let hasEmitted = alreadyEmitted;
-	let scannedThrough = start.fromLine - 1;
-
-	const advanceToLineBounded = async (targetLine: number): Promise<BudgetStop | undefined> => {
-		while (!eof && totalRead < targetLine) {
-			if (totalRead - initialTotalRead >= LINE_PACE_EVERY && budget.remainingMs() <= 0) {
-				return "time";
-			}
-			await pullOne();
-			trimBefore(Math.min(targetLine, totalRead + 1));
-		}
-		return undefined;
-	};
-
-	const flushReadySpans = async (
-		flushAll: boolean,
-	): Promise<{ readonly reason: BudgetStop; readonly cursor: string } | undefined> => {
-		while (pendingSpans.length > 0) {
-			const span = pendingSpans[0]!;
-			const neededThrough = span.end + request.contextAfter;
-			if (!flushAll && !eof && scannedThrough < neededThrough) break;
-			await ensureLine(neededThrough);
-			const nextSpan = pendingSpans[1];
-			if (nextSpan !== undefined && nextSpan.start <= neededThrough) {
-				nextSpan.end = Math.max(nextSpan.end, span.end);
-			}
-			const beforeStart = Math.max(1, span.start - request.contextBefore, emittedThrough + 1);
-			const afterEnd =
-				nextSpan !== undefined
-					? Math.min(totalRead, neededThrough, nextSpan.start - 1)
-					: Math.min(totalRead, neededThrough);
-			const unitRows: { readonly line: number; readonly text: string; readonly isMatch: boolean }[] = [];
-			for (let line = beforeStart; line < span.start; line++) {
-				unitRows.push({
-					line,
-					text: formatSearchTextLine(label, line, shown(lineAt(line)), false),
-					isMatch: false,
-				});
-			}
-			if (span.start > emittedThrough) {
-				unitRows.push({
-					line: span.start,
-					text: formatSearchTextLine(label, span.start, shown(lineAt(span.start)), true),
-					isMatch: true,
-				});
-			}
-			for (let line = Math.max(span.start + 1, emittedThrough + 1); line <= afterEnd; line++) {
-				unitRows.push({
-					line,
-					text: formatSearchTextLine(label, line, shown(lineAt(line)), false),
-					isMatch: false,
-				});
-			}
-			const unitBytes = unitRows.reduce((sum, row) => sum + lineBytes(row.text), 0);
-			if (budget.fits(unitBytes)) {
-				for (const row of unitRows) {
-					lines.push(row.text);
-					budget.spend(lineBytes(row.text));
-					emittedThrough = Math.max(emittedThrough, row.line);
-					hasEmitted = true;
-				}
-				pendingSpans.shift();
-				continue;
-			}
-			if (hasEmitted) {
-				return { reason: "byte", cursor: formatStageZeroCursor(span.start, emittedThrough) };
-			}
-			const matchRow =
-				unitRows.find((row) => row.isMatch)?.text ??
-				formatSearchTextLine(label, span.start, shown(lineAt(span.start)), true);
-			const matchBytes = lineBytes(matchRow);
-			if (budget.fits(matchBytes)) {
-				lines.push(matchRow);
-				budget.spend(matchBytes);
-				emittedThrough = Math.max(emittedThrough, span.start);
-				hasEmitted = true;
-				for (const row of unitRows) {
-					if (row.line <= span.start) continue;
-					if (!budget.fits(lineBytes(row.text))) break;
-					lines.push(row.text);
-					budget.spend(lineBytes(row.text));
-					emittedThrough = Math.max(emittedThrough, row.line);
-				}
-				pendingSpans.shift();
-			} else {
-				const cut = cutTextToUtf8Bytes(matchRow, Math.max(32, budget.bytesAvailable()));
-				lines.push(cut);
-				budget.spend(lineBytes(cut));
-				emittedThrough = Math.max(emittedThrough, span.start);
-				hasEmitted = true;
-				pendingSpans.shift();
-			}
-			if (pendingSpans.length > 0) {
-				return { reason: "byte", cursor: formatStageZeroCursor(pendingSpans[0]!.start, emittedThrough) };
-			}
-			const moreLinesInRange = nextSelectedLine(span.start + 1) !== undefined && (await ensureLine(span.start + 1));
-			if (moreLinesInRange) {
-				return { reason: "byte", cursor: formatStageZeroCursor(span.start + 1, emittedThrough) };
-			}
-			if (hasMoreStages) {
-				return { reason: "byte", cursor: "1.1" };
-			}
-			return undefined;
-		}
-		return undefined;
-	};
-
-	try {
-		let sliceStart = Math.max(1, start.fromLine);
-		const skipStop = await advanceToLineBounded(sliceStart);
-		if (skipStop !== undefined) {
-			return stopWith(skipStop, formatStageZeroCursor(sliceStart, emittedThrough));
-		}
-		let progressed = false;
-		for (;;) {
-			const nextStart = nextSelectedLine(sliceStart);
-			if (nextStart === undefined) {
-				scannedThrough = Number.POSITIVE_INFINITY;
-				break;
-			}
-			if (nextStart > sliceStart) {
-				sliceStart = nextStart;
-				const gapStop = await advanceToLineBounded(sliceStart);
-				if (gapStop !== undefined) {
-					const resumeLine = pendingSpans[0]?.start ?? Math.max(start.fromLine, totalRead + 1);
-					return stopWith(gapStop, formatStageZeroCursor(resumeLine, emittedThrough));
-				}
-			}
-			if (!(await ensureLine(sliceStart))) {
-				scannedThrough = totalRead;
-				break;
-			}
-			if (budget.remainingMs() <= 0 && (progressed || totalRead - initialTotalRead >= LINE_PACE_EVERY)) {
-				const resumeLine = pendingSpans[0]?.start ?? sliceStart;
-				return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
-			}
-
-			let sliceEnd = sliceStart;
-			let ownedChars = lineAt(sliceStart).length + 1;
-			const batchLimitLine = maxRangeEnd ?? Number.POSITIVE_INFINITY;
-			while (sliceEnd < batchLimitLine && budget.remainingMs() > 0 && (await ensureLine(sliceEnd + 1))) {
-				const nextLen = lineAt(sliceEnd + 1).length + 1;
-				if (ownedChars + nextLen > NATIVE_BATCH_CHARS) break;
-				sliceEnd++;
-				ownedChars += nextLen;
-			}
-
-			if (multiline) {
-				let first = sliceStart;
-				let leftChars = 0;
-				while (first > baseLine && leftChars < MATCH_SPAN_CHARS) {
-					first--;
-					leftChars += lineAt(first).length + 1;
-				}
-				let last = sliceEnd;
-				let aheadChars = 0;
-				while (aheadChars < MATCH_SPAN_CHARS && (await ensureLine(last + 1))) {
-					last++;
-					aheadChars += lineAt(last).length + 1;
-				}
-				const cut = await ensureLine(last + 1);
-				if (cut) onWindowCut();
-				const windowLines = sliceLines(first, last);
-				const spans = await matchMultilineWindow(
-					{
-						text: windowLines.join("\n"),
-						lineCount: windowLines.length,
-						ownedFrom: leftChars,
-						ownedTo: leftChars + ownedChars,
-						cut,
-						entryStart: first === 1 ? 0 : -1,
-					},
-					normalized,
-					ignoreCase,
-					request.literal,
-					engine,
-					budget,
-				);
-				if (spans === "timedOut") {
-					const resumeLine = pendingSpans[0]?.start ?? sliceStart;
-					return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
-				}
-				for (const span of spans) {
-					const startLine = first + span.startLine;
-					if (startLine < sliceStart || startLine > sliceEnd || !inRange(startLine)) continue;
-					pushSpan(startLine, first + span.endLine);
-				}
-			} else {
-				const batchLines = sliceLines(sliceStart, sliceEnd);
-				const hits = await evaluateRunLineBatch(
-					batchLines,
-					normalized,
-					ignoreCase,
-					request.literal,
-					engine,
-					budget,
-				);
-				if (hits === "timedOut") {
-					const resumeLine = pendingSpans[0]?.start ?? sliceStart;
-					return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
-				}
-				for (const index of hits) {
-					const startLine = sliceStart + index;
-					if (!inRange(startLine)) continue;
-					pushSpan(startLine, startLine);
-				}
-			}
-
-			scannedThrough = sliceEnd;
-			progressed = true;
-			sliceStart = sliceEnd + 1;
-			const stopped = await flushReadySpans(false);
-			if (stopped !== undefined) return stopWith(stopped.reason, stopped.cursor);
-			trimBefore(sliceStart);
-			await budget.pace();
-		}
-
-		const stopped = await flushReadySpans(true);
-		if (stopped !== undefined) return stopWith(stopped.reason, stopped.cursor);
-		return { lines };
-	} finally {
-		if (!parked) await iterator.return?.();
-	}
 }
 
 export function createHistoryRouter(sources: HistorySources): InternalResourceRouter {
@@ -1237,7 +560,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			"[History response cannot fit its byte budget; retry the same URL with a larger byte budget or a shorter URL.]";
 		return Buffer.byteLength(diagnostic, "utf8") <= limits.bytes ? diagnostic : limits.bytes >= 1 ? "!" : "";
 	};
-	const parkedRunStreams = new Map<string, ParkedRunStream>();
 
 	const projectScope = (target: HistoryTarget): { cwd?: string } =>
 		target.project === "all"
@@ -1251,13 +573,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const store = id !== undefined && id === sources.currentSessionId ? sources.sessionStore() : projectStore();
 		if (!store) throw new Error("Session history is unavailable: this session has no session store.");
 		return store;
-	};
-
-	const requireWorkflows = (): WorkflowRunHistory => {
-		const control = sources.workflows();
-		if (!control)
-			throw new Error("Workflow history is unavailable: no workflow run control is registered for this session.");
-		return control;
 	};
 
 	const placeOf = (id: string, store: SessionStore, target: HistoryTarget): SessionPlace => ({
@@ -1363,46 +678,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		return { sessions: items.map((item) => item.summary), keys: items.map((item) => item.key), compare };
 	}
 
-	async function recentRuns(budget: HistoryCallBudget, wanted?: string, fresh = false): Promise<WorkflowRunSummary[]> {
-		const control = requireWorkflows();
-		const parked = fresh ? undefined : parkedRunListings.get(control);
-		if (parked) {
-			clearTimeout(parked.timer);
-			parkedRunListings.delete(control);
-		}
-		const adopted =
-			parked !== undefined && performance.now() - parked.startedAt < DISCOVERY_TTL_MS ? parked : undefined;
-		const listing = adopted?.runs ?? control.listProjectRuns?.() ?? control.listRuns({ includeDurable: true });
-		const startedAt = adopted?.startedAt ?? performance.now();
-		let runs: readonly WorkflowRunSummary[];
-		try {
-			runs = await budget.race(listing);
-		} catch (error) {
-			const current = parkedRunListings.get(control);
-			if (isHistoryDeadlineError(error) && (current === undefined || current.startedAt > startedAt)) {
-				clearTimeout(current?.timer);
-				const timer = setTimeout(() => {
-					if (parkedRunListings.get(control)?.runs === listing) parkedRunListings.delete(control);
-				}, DISCOVERY_TTL_MS);
-				timer.unref?.();
-				parkedRunListings.set(control, { runs: listing, startedAt, timer });
-			}
-			throw error;
-		}
-		if (adopted && wanted !== undefined && !runs.some((run) => run.runId.startsWith(wanted)))
-			return recentRuns(budget, undefined, true);
-		return [...runs].sort((a, b) => b.startedAt - a.startedAt);
-	}
-
-	async function belongsToProjectRun(runId: string, budget: HistoryCallBudget): Promise<boolean> {
-		try {
-			return (await recentRuns(budget, runId)).some((run) => run.runId === runId);
-		} catch (error) {
-			if (budget.signal?.aborted || isHistoryDeadlineError(error)) throw error;
-			return false;
-		}
-	}
-
 	async function authorizedSession(
 		target: HistoryTarget,
 		budget: HistoryCallBudget,
@@ -1413,9 +688,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (id === sources.currentSessionId) return { id, header };
 		const { cwd } = projectScope(target);
 		if (cwd === undefined || (await createSessionCwdMatcherAsync(cwd)(header.cwd))) return { id, header };
-		// A stage session can run in its own directory or worktree; the project's run vouches for it.
-		if (target.project === undefined && header.workflow && (await belongsToProjectRun(header.workflow.runId, budget)))
-			return { id, header };
 		throw new Error(
 			`Session ${id} belongs to another project. History is limited to the current project unless the user asks for other projects.`,
 		);
@@ -1431,7 +703,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const discovered = await discoverSessions(target, budget);
 		if (discovered.stopped !== undefined) {
 			const suffix = positionCursor(target) === undefined ? lineSuffix(selection) : exactLineSuffix(selection);
-			const contUrl = `${pageUrl("sessions", target, target.offset, discovered.stopped.cursor)}${suffix}`;
+			const contUrl = `${pageUrl(target, target.offset, discovered.stopped.cursor)}${suffix}`;
 			return {
 				text: `# sessions in ${scope}\n[scanned ${discovered.stopped.scanned} sessions so far; ${stopText(discovered.stopped.reason)}; continue with ${contUrl}]`,
 				preselected: true,
@@ -1442,7 +714,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const next = target.offset + shown.length;
 		return {
 			text: [
-				`# sessions ${windowText(sessions.length, target.offset, shown.length)} in ${scope}, newest first${next < sessions.length ? `; next page: ${pageUrl("sessions", target, next)}` : ""}`,
+				`# sessions ${windowText(sessions.length, target.offset, shown.length)} in ${scope}, newest first${next < sessions.length ? `; next page: ${pageUrl(target, next)}` : ""}`,
 				...shown.map((summary) =>
 					[
 						sessionUrl(summary.id, target),
@@ -1450,80 +722,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						`${summary.estimated ? "at least " : ""}${summary.messageCount} messages`,
 						...(summary.estimated ? ["metadata may be incomplete"] : []),
 						...(summary.id === sources.currentSessionId ? ["current session"] : []),
-						...(summary.workflow
-							? [`workflow stage ${summary.workflow.stageName} (run ${summary.workflow.runId})`]
-							: []),
 						...(target.project === undefined ? [] : [summary.cwd]),
 						sessionLabel(summary),
 					].join(" | "),
 				),
 			].join("\n"),
 		};
-	}
-
-	async function listWorkflows(target: HistoryTarget, budget: HistoryCallBudget): Promise<string> {
-		const runs = await recentRuns(budget);
-		const shown = runs.slice(target.offset, target.offset + budget.rowAllowance(target.limit));
-		budget.takeRows(shown.length);
-		const next = target.offset + shown.length;
-		return [
-			`# workflow runs ${windowText(runs.length, target.offset, shown.length)} in this project, newest first${next < runs.length ? `; next page: ${pageUrl("workflows", target, next)}` : ""}`,
-			...shown.map((run) =>
-				[
-					`history://workflows/${run.runId}`,
-					timestamp(run.startedAt),
-					run.status,
-					run.name,
-					...(run.identity && run.identity !== run.name ? [oneLine(run.identity, LABEL_LIMIT)] : []),
-					...(run.summary ? [oneLine(run.summary, LABEL_LIMIT)] : []),
-				].join(" | "),
-			),
-		].join("\n");
-	}
-
-	async function* runLines(detail: WorkflowRunDetail, pacer: PaceBox): AsyncGenerator<string> {
-		yield `# workflow run ${detail.runId}`;
-		yield `name: ${detail.name}`;
-		yield `status: ${detail.status}`;
-		yield `started: ${timestamp(detail.startedAt)}`;
-		if (detail.endedAt !== undefined) yield `ended: ${timestamp(detail.endedAt)}`;
-		if (detail.identity) yield* textLineStream(`label: ${detail.identity}`, pacer);
-		if (detail.summary) yield* textLineStream(`summary: ${detail.summary}`, pacer);
-		yield* wrappedPieces(prefixedPieces("inputs: ", jsonPieces(detail.inputs)), pacer);
-		yield "stages:";
-		for (const [index, stage] of detail.stages.entries()) {
-			yield [
-				`- ${stage.name} [${stage.status}]`,
-				...(stage.sessionId ? [`transcript history://sessions/${stage.sessionId}`] : []),
-			].join(" ");
-			if (stage.error) yield* textLineStream(`  error: ${stage.error}`, pacer);
-			if ((index + 1) % TEXT_PACE_EVERY === 0) await pacer.budget.pace();
-		}
-		if (detail.result !== undefined)
-			yield* wrappedPieces(prefixedPieces("result: ", jsonPieces(detail.result)), pacer);
-		if (detail.error) yield* textLineStream(`error: ${detail.error}`, pacer);
-	}
-
-	async function authorizedRunId(id: string, budget: HistoryCallBudget): Promise<string> {
-		const runs = await recentRuns(budget, id);
-		const exact = runs.find((run) => run.runId === id);
-		if (exact) return exact.runId;
-		const prefixed = runs.filter((run) => run.runId.startsWith(id));
-		if (prefixed.length === 1) return prefixed[0]!.runId;
-		throw new Error(
-			prefixed.length > 1
-				? `Workflow run id is ambiguous: ${id}`
-				: `Workflow run not found in this project's history: ${id}`,
-		);
-	}
-
-	async function readRun(id: string, budget: HistoryCallBudget): Promise<AsyncIterable<string>> {
-		const runId = await authorizedRunId(id, budget);
-		budget.holdProgressFloor();
-		const detail = await budget.race(requireWorkflows().getRun(runId));
-		budget.markProgress();
-		budget.takeRows(1);
-		return runLines(detail, { budget });
 	}
 
 	async function readSession(
@@ -1533,7 +737,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 	): Promise<string> {
 		const { id, header } = await authorizedSession(target, budget);
 		const place = placeOf(id, requireStore(id), target);
-		const headerLines = transcriptHeaderLines(header, target.project === undefined);
+		const headerLines = transcriptHeaderLines(header);
 		const cursor: SeqCursor | undefined =
 			target.cursor === undefined
 				? undefined
@@ -1580,7 +784,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	/** The first line of a windowed search, labelled so the search tool keeps it beside matches. */
 	function coverage(
-		domain: Domain,
 		target: HistoryTarget,
 		total: number,
 		shown: number,
@@ -1592,13 +795,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const end = target.offset + shown;
 		if (target.offset === 0 && end >= total && unreadable === 0) return [];
 		return [
-			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end, undefined, ranges, nextPin, after)}` : ""}]`,
+			`${pageUrl(target, target.offset)}:0: [searched sessions ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(target, end, undefined, ranges, nextPin, after)}` : ""}]`,
 		];
 	}
 
 	function stoppedCoverage(
-		domain: Domain,
-		label: string,
 		target: HistoryTarget,
 		total: number,
 		searched: number,
@@ -1607,7 +808,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		continuation: string | undefined,
 		where: string,
 	): string {
-		return `${pageUrl(domain, target, target.offset)}:0: [searched ${label} ${windowText(total, target.offset, searched)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}; ${stopText(reason)}${where}${continuation === undefined ? "" : `; continue with ${continuation}`}]`;
+		return `${pageUrl(target, target.offset)}:0: [searched sessions ${windowText(total, target.offset, searched)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}; ${stopText(reason)}${where}${continuation === undefined ? "" : `; continue with ${continuation}`}]`;
 	}
 
 	async function searchOneSession(
@@ -1725,23 +926,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const pin = positionCursor(target) === undefined ? undefined : target.session;
 		const discovered = await discoverSessions(target, budget, pin, target.order);
 		if (discovered.stopped !== undefined) {
-			const contUrl = pageUrl(
-				"sessions",
-				target,
-				target.offset,
-				discovered.stopped.cursor,
-				request.ranges,
-				pin,
-				target.after,
-			);
+			const contUrl = pageUrl(target, target.offset, discovered.stopped.cursor, request.ranges, pin, target.after);
 			const lines = [
 				charged(
 					budget,
-					`${pageUrl("sessions", target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
+					`${pageUrl(target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
 				),
 			];
 			return () => {
-				if (target.order) positions?.offer(lines[0], "sessions", () => target.order);
+				if (target.order) positions?.offer(lines[0], () => target.order);
 				return lines;
 			};
 		}
@@ -1778,7 +971,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const out: string[] = [];
 		const notes: string[] = pinnedGone
 			? [
-					`${pageUrl("sessions", scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
+					`${pageUrl(scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
 				]
 			: [];
 		for (const note of notes) budget.spend(lineBytes(note));
@@ -1804,50 +997,29 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			clause = "",
 		) =>
 			stoppedCoverage(
-				"sessions",
-				"sessions",
 				scope,
 				candidates.length,
 				index + 1,
 				unreadableBefore,
 				reason,
-				pageUrl(
-					"sessions",
-					scope,
-					scope.offset + index,
-					formatSearchCursor(next),
-					request.ranges,
-					id,
-					positionOf(index),
-				),
+				pageUrl(scope, scope.offset + index, formatSearchCursor(next), request.ranges, id, positionOf(index)),
 				` at entry ${next.seq}${totalText(lastSeq)} in ${sessionUrl(id, target)}${clause}`,
 			);
 		const nextSessionFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string =>
 			stoppedCoverage(
-				"sessions",
-				"sessions",
 				scope,
 				candidates.length,
 				index + 1,
 				unreadableAfter,
 				reason,
 				scope.offset + index + 1 < candidates.length
-					? pageUrl(
-							"sessions",
-							scope,
-							scope.offset + index + 1,
-							undefined,
-							request.ranges,
-							undefined,
-							positionOf(index),
-						)
+					? pageUrl(scope, scope.offset + index + 1, undefined, request.ranges, undefined, positionOf(index))
 					: undefined,
 				"",
 			);
 		const afterFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string[] =>
 			index + 1 >= window.length
 				? coverage(
-						"sessions",
 						scope,
 						candidates.length,
 						window.length,
@@ -1927,22 +1099,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					});
 					ending = () => [
 						stoppedCoverage(
-							"sessions",
-							"sessions",
 							scope,
 							candidates.length,
 							index + 1,
 							unreadableBefore,
 							"time",
-							pageUrl(
-								"sessions",
-								scope,
-								scope.offset + index,
-								cursor,
-								request.ranges,
-								summary.id,
-								positionOf(index),
-							),
+							pageUrl(scope, scope.offset + index, cursor, request.ranges, summary.id, positionOf(index)),
 							` in ${sessionUrl(summary.id, target)}`,
 						),
 					];
@@ -1957,7 +1119,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		function fixedLines(): string[] {
 			return [...notes, ...(windowCut ? [windowNoteLine] : [])];
 		}
-		const windowNoteLine = `${pageUrl("sessions", scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`;
+		const windowNoteLine = `${pageUrl(scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`;
 		const checkpointFooter = (session: (typeof searched)[number], next: SearchResume, cut = false): string[] => {
 			const lastSeq = session.result?.lastSeq ?? 0;
 			if (!pastEnd(next, lastSeq))
@@ -2003,323 +1165,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (!positions || (!target.order && (target.after || target.session))) return fitPage;
 		return (room) => {
 			const lines = fitPage(room);
-			positions.offer(
-				lines[0],
-				"sessions",
-				(available) => target.order ?? sessionPosition(candidateKeys, available),
-			);
+			positions.offer(lines[0], (available) => target.order ?? sessionPosition(candidateKeys, available));
 			return lines;
 		};
-	}
-
-	/**
-	 * Matches in one run and in its stages' transcripts. Stage sessions are internal, so session listings and session
-	 * searches leave them out; the run reaches them. A stage that never saved a session has nothing to search.
-	 */
-	async function searchRun(
-		runId: string,
-		request: InternalSearchRequest,
-		prefilter: LiteralQuery | undefined,
-		start:
-			| { readonly stage: number; readonly seq: number; readonly matchIndex: number; readonly lineOffset: number }
-			| undefined,
-		budget: HistoryCallBudget,
-		alreadyEmitted = false,
-		firstRecord = true,
-	): Promise<{
-		readonly lines: string[];
-		readonly unreadable: number;
-		readonly stopped?: {
-			readonly reason: BudgetStop;
-			readonly cursor: string;
-			readonly skipped?: readonly string[];
-		};
-	}> {
-		if (firstRecord) budget.holdProgressFloor();
-		const detail = await budget.race(requireWorkflows().getRun(runId));
-		budget.takeRows(1);
-		const lines: string[] = [];
-		let windowNote: string | undefined;
-		const withNote = (found: readonly string[]) => (windowNote === undefined ? [...found] : [windowNote, ...found]);
-		const noteWindowCut = () => {
-			windowNote ??= charged(budget, `history://workflows/${runId}:0: [${MULTILINE_WINDOW_NOTE}]`);
-		};
-		if (start === undefined || start.stage === 0) {
-			if (firstRecord) budget.markProgress();
-			const own = await searchRunLinesBounded(
-				runId,
-				`history://workflows/${runId}`,
-				(pacer) => runLines(detail, pacer),
-				parkedRunStreams,
-				request,
-				{
-					fromLine: Math.max(1, start?.seq ?? 1),
-					emittedThrough: start?.matchIndex ?? 0,
-				},
-				detail.stages.length > 0,
-				alreadyEmitted,
-				noteWindowCut,
-				budget,
-			);
-			lines.push(...own.lines);
-			if (own.stopped !== undefined) {
-				return { lines: withNote(lines), unreadable: 0, stopped: own.stopped };
-			}
-		}
-		const store = projectStore();
-		let unreadable = 0;
-		for (const [index, stage] of detail.stages.entries()) {
-			const stageNumber = index + 1;
-			if (start !== undefined && stageNumber < start.stage) continue;
-			if (!store || !stage.sessionId) continue;
-			const spent = budget.spent();
-			if (spent && (alreadyEmitted || lines.length > 0 || stageNumber > (start?.stage ?? 1)))
-				return { lines: withNote(lines), unreadable, stopped: { reason: spent, cursor: `${stageNumber}.1` } };
-			const resumesHere = start !== undefined && stageNumber === start.stage;
-			const from = {
-				seq: resumesHere ? Math.max(1, start.seq) : 1,
-				matchIndex: resumesHere ? start.matchIndex : 0,
-				lineOffset: resumesHere ? start.lineOffset : 0,
-			};
-			try {
-				if (!(await budget.race(store.readHeader(stage.sessionId)))) continue;
-				budget.takeRows(1);
-				const result = await searchSession({
-					place: placeOf(stage.sessionId, store, { limit: DEFAULT_LIMIT, offset: 0 }),
-					label: `history://sessions/${stage.sessionId}`,
-					request: { ...request, ranges: undefined },
-					prefilter,
-					fromSeq: from.seq,
-					fromMatchIndex: from.matchIndex,
-					fromLineOffset: from.lineOffset,
-					ranges: undefined,
-					budget,
-					emittedBefore: alreadyEmitted || lines.length > 0,
-				});
-				lines.push(...result.lines);
-				if (result.windowCut) noteWindowCut();
-				if (result.stopped) {
-					const cursor = `${stageNumber}.${formatSearchCursor(result.stopped.resume)}`;
-					return {
-						lines: withNote(lines),
-						unreadable,
-						stopped: {
-							reason: result.stopped.reason,
-							cursor,
-							skipped: skippedClauses(result.skipped, ` in history://sessions/${stage.sessionId}`),
-						},
-					};
-				}
-			} catch (error) {
-				if (budget.signal?.aborted) throw error;
-				if (isHistoryDeadlineError(error))
-					return {
-						lines: withNote(lines),
-						unreadable,
-						stopped: { reason: "time", cursor: `${stageNumber}.${formatSearchCursor(from)}` },
-					};
-				unreadable++;
-			}
-		}
-		return { lines: withNote(lines), unreadable };
-	}
-
-	async function searchWorkflows(
-		target: HistoryTarget,
-		request: InternalSearchRequest,
-		prefilter: LiteralQuery | undefined,
-		budget: HistoryCallBudget,
-		positions?: HistorySearchPositions,
-	): Promise<string[]> {
-		requireWorkflows();
-		const start =
-			target.cursor === undefined
-				? undefined
-				: {
-						stage: target.cursor.first,
-						seq: target.cursor.second,
-						matchIndex: target.cursor.third,
-						lineOffset: target.cursor.fourth,
-					};
-		if (target.id !== undefined) {
-			const runId = await authorizedRunId(target.id, budget);
-			const { lines, unreadable, stopped } = await searchRun(runId, request, prefilter, start, budget);
-			const unreadableNotes =
-				unreadable > 0
-					? [charged(budget, `history://workflows/${runId}:0: [${unreadable} stage transcripts unreadable]`)]
-					: [];
-			const stopLines = stopped
-				? [
-						charged(
-							budget,
-							fittingLine(
-								(clause) =>
-									`history://workflows/${runId}:0: [${stopText(stopped.reason)}${clause}; continue with history://workflows/${runId}?cursor=${stopped.cursor}${request.ranges ? `:${rangeText(request.ranges)}` : ""}]`,
-								stopped.skipped ?? [""],
-								limits.bytes - linesBytes([...unreadableNotes, ...lines]),
-							),
-						),
-					]
-				: [];
-			return [...unreadableNotes, ...stopLines, ...lines];
-		}
-		const runs = await recentRuns(budget);
-		const [clock, prior] = target.order?.split("~") ?? [];
-		const fence = clockValue(clock);
-		const predecessors = prior ? new Set(unpackIds(prior)) : undefined;
-		let previous = -1;
-		const pinnedAt =
-			target.run === undefined
-				? -1
-				: runs.findIndex((run, i) => {
-						const id = run.runId;
-						if (id === target.run) return true;
-						if (predecessors?.has(id)) previous = i;
-						return false;
-					});
-		const pinnedGone = target.run !== undefined && pinnedAt === -1;
-		let offset = pinnedAt === -1 ? target.offset : pinnedAt;
-		if (pinnedGone && previous >= 0) {
-			offset = previous + 1;
-		} else if (pinnedGone && fence !== undefined) {
-			// The pin and every known predecessor disappeared. Only an unbroken chain from the start can use
-			// this time fence: no unaccounted-for earlier member of a tie may reappear. A lazy source uses offset.
-			for (let i = 0; i < runs.length; i++) {
-				const time = storedRunStart(runs[i]!);
-				if (time === undefined) break;
-				if (time <= fence) {
-					offset = i;
-					break;
-				}
-				if (i + 1 === runs.length) offset = runs.length;
-			}
-		}
-		const scope: HistoryTarget = { ...target, offset };
-		const resume = pinnedGone ? undefined : start;
-		const resumeCursor = resume === undefined || target.cursor === undefined ? undefined : cursorText(target.cursor);
-		const window = runs.slice(scope.offset, scope.offset + scope.limit);
-		const nextRun = runs[scope.offset + window.length];
-		// Reserving bytes is not a snapshot: a live provider may replace a listed row during a detail read.
-		budget.spend(Math.max(0, ...[...window, ...(nextRun ? [nextRun] : [])].map((run) => runPinBytes(run.runId))));
-		let visited: string[] | undefined = positions && (target.order || !target.run) ? [] : undefined;
-		const notes = pinnedGone
-			? [
-					charged(
-						budget,
-						`${pageUrl("workflows", scope, scope.offset)}:0: [run ${target.run} is no longer listed, so the search could not resume in it; it continued with the runs after it]`,
-					),
-				]
-			: [];
-		const out: string[] = [];
-		let unreadable = 0;
-		const withPosition = (lines: string[], next: WorkflowRunSummary | undefined, complete: number) => {
-			if (!positions || !next || (!target.order && target.run)) return lines;
-			positions.offer(lines[0], "workflows", (room, scalarOnly) => {
-				const time = storedRunStart(next);
-				const previousTime = complete > 0 ? storedRunStart(window[complete - 1]!) : undefined;
-				// No completed run is in the new time cohort. Its start time alone locates the boundary, even
-				// if the next run disappears. Equal times keep the provider's order and may need predecessors.
-				if (
-					time !== undefined &&
-					((previousTime !== undefined && previousTime > time) ||
-						(!complete && !prior && (scope.offset === 0 || fence === time)))
-				)
-					return clockText(time);
-				return scalarOnly || !visited
-					? undefined
-					: runPosition(
-							prior,
-							visited,
-							complete,
-							time,
-							clock === undefined ? target.offset === 0 : clock !== "p",
-							room,
-						);
-			});
-			return lines;
-		};
-		const stoppedAt = (
-			index: number,
-			searched: number,
-			reason: BudgetStop,
-			inRun: boolean,
-			cursor?: string,
-			skipped: readonly string[] = [""],
-		): string[] => {
-			const run = window[index]!;
-			return withPosition(
-				[
-					charged(
-						budget,
-						fittingLine(
-							(clause) =>
-								stoppedCoverage(
-									"workflows",
-									"workflow runs",
-									scope,
-									runs.length,
-									searched,
-									unreadable,
-									reason,
-									pageUrl("workflows", scope, scope.offset + index, cursor, request.ranges, run.runId),
-									`${inRun ? ` in history://workflows/${run.runId}` : ""}${clause}`,
-								),
-							skipped,
-							limits.bytes - linesBytes([...notes, ...out]),
-						),
-					),
-					...notes,
-					...out,
-				],
-				run,
-				index,
-			);
-		};
-		for (const [index, run] of window.entries()) {
-			const spent = budget.spent();
-			if (spent && index > 0) return stoppedAt(index, index, spent, false);
-			try {
-				const id = run.runId;
-				visited?.push(id);
-				const found = await searchRun(
-					id,
-					request,
-					prefilter,
-					index === 0 ? resume : undefined,
-					budget,
-					out.length > 0,
-					index === 0,
-				);
-				out.push(...found.lines);
-				unreadable += found.unreadable;
-				if (found.stopped)
-					return stoppedAt(
-						index,
-						index + 1,
-						found.stopped.reason,
-						true,
-						found.stopped.cursor,
-						found.stopped.skipped,
-					);
-			} catch (error) {
-				if (budget.signal?.aborted) throw error;
-				if (isHistoryDeadlineError(error))
-					return stoppedAt(index, index, "time", true, index === 0 ? resumeCursor : undefined);
-				if (visited?.length === index) visited = undefined; // The ID getter itself failed.
-				unreadable++;
-			}
-		}
-		return withPosition(
-			[
-				...coverage("workflows", scope, runs.length, window.length, unreadable, request.ranges, nextRun?.runId).map(
-					(line) => charged(budget, line),
-				),
-				...notes,
-				...out,
-			],
-			nextRun,
-			window.length,
-		);
 	}
 
 	async function readSelected(rawUrl: string, rawSelection: InternalReadSelection): Promise<string | undefined> {
@@ -2338,18 +1186,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				? { line: target.cursor.first, char: target.cursor.second }
 				: undefined;
 		try {
-			if (target.domain === "sessions" && target.id !== undefined)
-				return bounded(await readSession(target, selection, budget));
-			if (target.domain === "sessions") {
-				const listed = await listSessions(target, lineSelection, budget);
-				if (listed.preselected) return bounded(listed.text);
-				return bounded(await selectLines(url, listed.text.split("\n"), lineSelection, lineCursor, budget));
-			}
-			const lines =
-				target.id === undefined
-					? (await listWorkflows(target, budget)).split("\n")
-					: await readRun(target.id, budget);
-			return bounded(await selectLines(url, lines, lineSelection, lineCursor, budget));
+			if (target.id !== undefined) return bounded(await readSession(target, selection, budget));
+			const listed = await listSessions(target, lineSelection, budget);
+			if (listed.preselected) return bounded(listed.text);
+			return bounded(await selectLines(url, listed.text.split("\n"), lineSelection, lineCursor, budget));
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
 				const retry =
@@ -2371,8 +1211,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (!rawUrl.startsWith("history://")) return undefined;
 			const { url: input, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			// Don't expand a search position on a cancelled call. Plain URLs retain their original validation order.
-			if (/^history:\/\/(?:sessions\/?\?(?:[^&]*&)*(?:o|order)=|workflows\/?\?(?:[^&]*&)*(?:p|order)=)/.test(input))
-				request.signal?.throwIfAborted();
+			if (/^history:\/\/sessions\/?\?(?:[^&]*&)*(?:o|order)=/.test(input)) request.signal?.throwIfAborted();
 			const expanded = expandSearchUrl(input);
 			const plain = parseTarget(expanded?.url ?? input);
 			const target = expanded ? { ...plain, order: searchPosition(expanded.state, plain.domain) } : plain;
@@ -2386,92 +1225,29 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			const positions =
-				target.id === undefined
-					? new HistorySearchPositions(target.domain ? 0 : target.limit + 1, historyNoteWindows.get(rawRequest))
-					: undefined;
+				target.id === undefined ? new HistorySearchPositions(historyNoteWindows.get(rawRequest)) : undefined;
 			const render = (lines: string[]) => bounded(positions ? positions.render(lines) : lines.join("\n"));
 			try {
-				if (target.domain === "sessions")
-					return render((await searchSessions(target, request, prefilter, budget, positions))(limits.bytes));
-				if (target.domain === "workflows")
-					return render(await searchWorkflows(target, request, prefilter, budget, positions));
+				if (!target.domain && limits.rows === 0) {
+					request.signal?.throwIfAborted();
+					const cursor = target.cursor === undefined ? undefined : cursorText(target.cursor);
+					return render([
+						`history://sessions:0: [sessions not searched: ${stopText("row")}; continue with ${pageUrl(target, target.offset, cursor, request.ranges)}]`,
+					]);
+				}
+				const page = await searchSessions(target, request, prefilter, budget, positions);
+				request.signal?.throwIfAborted();
+				return render(page(limits.bytes));
 			} catch (error) {
 				if (isHistoryDeadlineError(error)) {
 					const ranges =
 						request.ranges !== undefined && request.ranges.length > 0 ? `:${rangeText(request.ranges)}` : "";
 					const note = `${url}:0: [the time budget ran out waiting for the store; continue with ${url}${ranges}]`;
-					if (target.domain && target.order) positions?.offer(note, target.domain, () => target.order);
+					if (target.domain && target.order) positions?.offer(note, () => target.order);
 					return render([note]);
 				}
 				throw error;
 			}
-			const domainNoteBytes = noteBytes(url, target, request.ranges, 2, multiline);
-			const sessionRows = Math.ceil(limits.rows / 2);
-			const workflowRows = limits.rows - sessionRows;
-			const workflowBytes = workflowRows > 0 ? Math.floor(limits.bytes / 2) : 0;
-			const notSearched = (domain: Domain, label: string): string[] => [
-				`history://${domain}:0: [${label} not searched: ${stopText("row")}; continue with ${pageUrl(domain, target, target.offset, target.cursor === undefined ? undefined : cursorText(target.cursor), request.ranges)}]`,
-			];
-			const [sessions, workflows] = await Promise.allSettled([
-				sessionRows > 0
-					? searchSessions(
-							target,
-							request,
-							prefilter,
-							new HistoryCallBudget(
-								{ ...limits, bytes: limits.bytes - workflowBytes, rows: sessionRows },
-								request.signal,
-								domainNoteBytes,
-							),
-							positions,
-						)
-					: Promise.resolve(() => notSearched("sessions", "sessions")),
-				workflowRows > 0
-					? searchWorkflows(
-							target,
-							request,
-							prefilter,
-							new HistoryCallBudget(
-								{ ...limits, bytes: workflowBytes, rows: workflowRows },
-								request.signal,
-								domainNoteBytes,
-							),
-							positions,
-						)
-					: Promise.resolve(notSearched("workflows", "workflow runs")),
-			]);
-			request.signal?.throwIfAborted();
-			if (
-				sessions.status === "rejected" &&
-				workflows.status === "rejected" &&
-				!isHistoryDeadlineError(sessions.reason) &&
-				!isHistoryDeadlineError(workflows.reason)
-			)
-				throw sessions.reason;
-			// Line 0 carries notes about the search itself, so a source that failed is named even beside matches.
-			const results = (
-				domain: Domain,
-				label: string,
-				settled: PromiseSettledResult<string[] | ((room: number) => string[])>,
-			): string[] => {
-				if (isHistoryDeadlineError(settled.status === "rejected" ? settled.reason : undefined)) {
-					const cursor = target.cursor === undefined ? undefined : cursorText(target.cursor);
-					return [
-						`history://${domain}:0: [${label} not searched: ${stopText("time")} waiting for the store; continue with ${pageUrl(domain, target, target.offset, cursor, request.ranges)}]`,
-					];
-				}
-				const reason = settled.status === "rejected" ? settled.reason : undefined;
-				return [
-					`history://${domain}:0: [${label} not searched: ${reason instanceof Error ? reason.message : String(reason)}]`,
-				];
-			};
-			const workflowLines =
-				workflows.status === "fulfilled" ? workflows.value : results("workflows", "workflow runs", workflows);
-			const sessionLines =
-				sessions.status === "fulfilled"
-					? sessions.value(limits.bytes - linesBytes(workflowLines))
-					: results("sessions", "sessions", sessions);
-			return render([...sessionLines, ...workflowLines]);
 		},
 	};
 }

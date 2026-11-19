@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { _runAgentPrompt, prompt } from "../../packages/coding-agent/src/core/agent-session-prompt.js";
+import { _runAgentPrompt } from "../../packages/coding-agent/src/core/agent-session-prompt.js";
+
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 
 describe("AgentSession prompt-start handshake", () => {
 	test("reports prompt ownership only after agent.prompt is invoked and before the turn settles", async () => {
@@ -105,52 +107,35 @@ describe("AgentSession prompt-start handshake", () => {
 	});
 });
 
-describe("AgentSession workflow delivery authorization", () => {
-	test("authorizes before async input handling and never rejects an already handled message", async () => {
-		const handlerStarted = Promise.withResolvers<void>();
-		const finishHandler = Promise.withResolvers<void>();
-		let terminal = false;
-		let sideEffects = 0;
-		const delivered: string[] = [];
-		const session = {
-			_pendingCustomMessages: [],
-			_pendingToolNames: new Set<string>(),
-			_flushPendingCustomMessages() {},
-			isStreaming: false,
-			abortSessionSummary: () => {},
-			promptTemplates: [],
-			_extensionRunner: {
-				hasHandlers: (event: string) => event === "input",
-				async emitInput() {
+test("an async extension input handler reports its preflight disposition once, after handling the prompt", async () => {
+	const handlerStarted = Promise.withResolvers<void>();
+	const finishHandler = Promise.withResolvers<void>();
+	const events: string[] = [];
+	const harness = await createHarness({
+		extensionFactories: [
+			(pi) => {
+				pi.on("input", async () => {
+					events.push("handler started");
 					handlerStarted.resolve();
 					await finishHandler.promise;
-					sideEffects += 1;
-					return { action: "handled" as const };
-				},
+					events.push("handler finished");
+					return { action: "handled" };
+				});
 			},
-		};
-		const options = {
-			__workflowDelivery: {
-				beforeDelivery() {
-					if (terminal) throw new DOMException("workflow exited", "AbortError");
-				},
-				delivered(action: string) {
-					delivered.push(action);
-				},
-			},
-		};
-
-		const accepted = prompt.call(session as never, "accepted", options as never);
-		await handlerStarted.promise;
-		terminal = true;
-		finishHandler.resolve();
-
-		await accepted;
-		assert.equal(sideEffects, 1);
-		assert.deepEqual(delivered, ["handled"]);
-
-		await assert.rejects(prompt.call(session as never, "retry", options as never), /workflow exited/);
-		assert.equal(sideEffects, 1);
-		assert.deepEqual(delivered, ["handled"]);
+		],
 	});
+	try {
+		const accepted = harness.session.prompt("handle this locally", {
+			preflightResult: (success, disposition) => events.push(`${success}:${disposition}`),
+		});
+		await handlerStarted.promise;
+		assert.deepEqual(events, ["handler started"]);
+		finishHandler.resolve();
+		await accepted;
+		assert.deepEqual(events, ["handler started", "handler finished", "true:handled"]);
+		assert.equal(harness.eventsOfType("agent_start").length, 0);
+	} finally {
+		finishHandler.resolve();
+		await harness.cleanup();
+	}
 });

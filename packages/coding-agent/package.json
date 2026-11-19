@@ -38,10 +38,6 @@
       "types": "./dist/rpc-entry.d.ts",
       "import": "./dist/rpc-entry.js",
       "default": "./dist/rpc-entry.js"
-    },
-    "./hooks": {
-      "types": "./dist/core/hooks/index.d.ts",
-      "import": "./dist/core/hooks/index.js"
     }
   },
   "files": [

@@ -76,7 +76,7 @@ See [SDK](/sdk) and [Custom providers](/custom-provider).
 
 - **0.8.14 is the stable promotion of the 0.8.14 prerelease.** It keeps the upstream Pi sync, bundled workflow documentation refresh, and bundled subagent guidance updates from the prerelease.
 - **Synced with upstream Pi patches.** Atomic's coding-agent fork is now aligned with upstream Pi patches since v0.75.4 and bundles Pi libraries at 0.75.5.
-- **Bundled workflow docs are current.** The docs now cover current workflow inspection and control actions such as `stages`, `stage`, `transcript`, `send`, `pause`, and `reload`. See [Workflows](/workflows).
+- **Bundled workflow docs are current.** The docs now cover current workflow inspection and control actions such as `stages`, `stage`, `transcript`, `send`, `pause`, and `reload`. For current versions, see [Migrating workflows](/orchestration/migrating-workflows).
 - **Bundled subagent guidance is easier to find.** Atomic now documents how to use bundled subagents for delegation, background work, nested fanout boundaries, model fallbacks, and custom agent guardrails. See [Subagents](/subagents).
 
 ## Fixes
@@ -94,7 +94,7 @@ See [SDK](/sdk) and [Custom providers](/custom-provider).
 
 ## Fixes
 
-- **Packaged workflow discovery loads reliably.** Package-authored workflow resources load through `jiti`, so SDK imports such as `@bastani/workflows` resolve consistently from the Bun-packaged binary. See [Workflows](/workflows).
+- **Packaged workflow discovery loads reliably.** Package-authored workflow resources load through `jiti`, so SDK imports such as `@bastani/workflows` resolve consistently from the Bun-packaged binary. For current versions, see [Migrating workflows](/orchestration/migrating-workflows).
 - **Workflow diagnostics are preserved.** Invalid default exports and supported SDK import diagnostics remain visible when workflows are discovered from packaged resources.
 - **Async subagent widget spacing is stable.** Background subagent widgets preserve spacing before the prompt box. See [Subagents](/subagents).
 
@@ -105,7 +105,7 @@ See [SDK](/sdk) and [Custom providers](/custom-provider).
 ## New features
 
 - **Configurable HTTP idle timeout.** Tune how long Atomic keeps idle HTTP connections open, with presets from 30 seconds through 30 minutes and an option to disable the timeout. See [Settings](/settings).
-- **Workflow documentation and navigation.** Atomic added the Workflows docs page so users can discover built-in workflows, authoring patterns, package setup, and run control from the docs site. See [Workflows](/workflows).
+- **Workflow documentation and navigation.** Atomic added the Workflows docs page so users can discover built-in workflows, authoring patterns, package setup, and run control from the docs site. For current versions, see [Orchestration](/orchestration).
 
 ## Updates
 
@@ -117,7 +117,7 @@ See [SDK](/sdk) and [Custom providers](/custom-provider).
 
 - **Better Windows self-update behavior.** Package-manager installs now handle native dependency cleanup, quarantine cases, and unavailable updates more clearly. See [Windows](/windows).
 - **Smoother subagent rendering.** Live subagent result rendering, async render updates, transient child-error recovery, and live widget animations are more stable. See [Subagents](/subagents).
-- **Workflow stages settle cleanly.** Completed stages detach from run-control tracking, and the empty workflow graph waiting state is centered. See [Workflows](/workflows).
+- **Workflow stages settle cleanly.** Completed stages detach from run-control tracking, and the empty workflow graph waiting state is centered. For current versions, see [Orchestration](/orchestration).
 - **Consistent duration display.** Elapsed times across bash, subagent, and workflow output are shown as whole seconds and never go negative.
 
 </Update>

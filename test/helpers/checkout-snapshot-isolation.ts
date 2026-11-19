@@ -27,7 +27,7 @@ beforeEach(() => {
 
 /**
  * Every test file runs with an agent directory of its own (#4473): `ATOMIC_CODING_AGENT_DIR` points at a new
- * directory under the run's workflow-artifact directory before the file's modules load, and child processes that
+ * directory under the run's temporary directory before the file's modules load, and child processes that
  * inherit the environment use it too. A test opts out only by setting or unsetting the variable itself.
  *
  * No test opens a SQLite database under the real home directory's `.atomic` root (#4445), or reads the agent

@@ -86,8 +86,8 @@ interface Reservation {
 	group: string;
 	/**
 	 * Made by a session that is only keeping the child addressable until the session that will really restore it
-	 * is back, such as the launching session of an interrupted workflow run. The restoring supervisor of the
-	 * same child and group takes it over with its held sends.
+	 * is back, such as the owner of a released child. The restoring supervisor of the same child and group takes it
+	 * over with its held sends.
 	 */
 	dormant: boolean;
 	/** The child is released, not being restored: the first send held tells its owner to wake it (#4326). */
@@ -209,9 +209,8 @@ const removeFromIndex = <Key, Value>(index: Map<Key, Set<Value>>, key: Key, valu
  * owner's host session until it is back (#4639; see {@link dropOwner}).
  *
  * A reservation can start before the restore does: a resumed session reserves its recorded children at session
- * start, and the launching session of an interrupted workflow run reserves the children of the run's stages while
- * the run waits for `/workflow resume`. The restoring supervisor's own reservation of the same child then takes
- * the earlier one over, so a send is held from the first moment until the child is back, without a gap.
+ * start. The restoring supervisor's own reservation of the same child then takes the earlier one over, so a send is
+ * held from the first moment until the child is back, without a gap.
  *
  * Targets, child names and owners are indexed, so admitting a send, reserving and dropping an owner cost what
  * they touch, not the number of reservations.
@@ -223,9 +222,9 @@ export class RestoringRecipients {
 	private readonly byOwner = new Map<string, Set<Reservation>>();
 	private readonly withHeld = new Set<Reservation>();
 	/**
-	 * #4639: released-child reservations whose owner's connection closed, as a suspended workflow stage's does, oldest
-	 * first, each with the owner's host session (its return address). An orphan goes on holding sends, waking nobody,
-	 * until a session of that host session takes it over.
+	 * #4639: released-child reservations whose owner's connection closed, oldest first, each with the owner's host
+	 * session (its return address). An orphan goes on holding sends, waking nobody, until a session of that host session
+	 * takes it over.
 	 */
 	private readonly orphans = new Map<Reservation, string>();
 	private heldTotal = 0;
@@ -531,20 +530,6 @@ export class RestoringRecipients {
 			if (this.orphans.size <= this.orphansMax) break;
 			this.forget(oldest);
 			released.push(...this.take(oldest));
-		}
-		return released;
-	}
-
-	/**
-	 * #4639: the run whose stages kept these orphaned released children ended: forget every orphaned reservation in a
-	 * group `inGroup` accepts, and return its held sends for ordinary routing.
-	 */
-	dropOrphans(inGroup: (group: string) => boolean): HeldSend[] {
-		const released: HeldSend[] = [];
-		for (const reservation of [...this.orphans.keys()]) {
-			if (!inGroup(reservation.group)) continue;
-			this.forget(reservation);
-			released.push(...this.take(reservation));
 		}
 		return released;
 	}

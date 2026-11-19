@@ -5,7 +5,6 @@ import type { ReleaseWhenIdleOptions } from "./agent-session-release.ts";
 import type { ExtensionBindings } from "./agent-session-types.js";
 import type {
 	LoadExtensionsResult,
-	OrchestrationContext,
 	SessionStartEvent,
 	SubagentChildPolicy,
 	ToolDefinition,
@@ -15,12 +14,16 @@ import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import type { RunJournalOption, StorageSelection } from "./storage/provider.js";
-import type { RunJournal } from "./storage/run-journal.js";
+import type { SqliteDatabase } from "./storage/database.js";
+import type { AdapterOptions, SecretRef, StorageSelection } from "./storage/provider.js";
 import type { SessionStore } from "./storage/session/types.js";
 
 /** A `createAgentSession({ storage })` selection: a database path, a caller-owned database, memory, or an adapter. */
-export type SessionStorageOption = Exclude<RunJournalOption, RunJournal>;
+export type SessionStorageOption =
+	| { path: string; prefix?: string }
+	| { database: SqliteDatabase; prefix?: string }
+	| { memory: true }
+	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string };
 
 export type AtomicBuiltin = "subagents" | "mcp" | "web-access" | "intercom";
 
@@ -38,16 +41,9 @@ export interface CreateAgentSessionOptions {
 	/** Global config directory. Default: ~/.atomic/agent */
 	agentDir?: string;
 	/**
-	 * Workflow journal for this session's `workflow` tool: a file path, a caller-owned database, process-local
-	 * memory, a storage adapter, or a supplied journal. Overrides process-level selections (`ATOMIC_WORKFLOWS_JOURNAL`,
-	 * `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`), the session's `workflows.journal` settings, and the default
-	 * journal file. The caller closes a database or journal it supplies.
-	 */
-	journal?: RunJournalOption;
-	/**
-	 * Storage for this session's sessions and its `workflow` tool's journal, in the form of the top-level `storage`
-	 * setting, for example the selection `teamProfileSelection()` returns. Outranks process-level selections and
-	 * settings; `sessionStore` and `journal` outrank it for their domain. Intercom keeps the process's selection.
+	 * Storage for this session's sessions, in the form of the top-level `storage` setting, for example the selection
+	 * `teamProfileSelection()` returns. Outranks process-level selections and settings; `sessionStore` and
+	 * `sessionManager` outrank it. Intercom keeps the process's selection.
 	 */
 	storage?: SessionStorageOption;
 
@@ -123,15 +119,12 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Host bindings installed before extension startup. Rebinding does not replay startup. */
 	extensionBindings?: ExtensionBindings;
-	/** Session-scoped orchestration policy exposed to extension/tool handlers. */
-	orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child. */
 	subagentPolicy?: SubagentChildPolicy;
 	/**
 	 * The session's Intercom home group and the other groups it may reach. `group` replaces the group from
-	 * `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project; the session keeps its workflow extension. The session
-	 * lists, sends to and asks only sessions in `group`, `reachable`, or subgroups under `group`, and the workflow stages
-	 * it starts. It joins only `group` and `reachable` and can't leave `group`. Reach is one way. The broker enforces it. Change
+	 * `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project. The session
+	 * lists, sends to and asks only sessions in `group`, `reachable`, or subgroups under `group`. It joins only `group` and `reachable` and can't leave `group`. Reach is one way. The broker enforces it. Change
 	 * `reachable` later with `session.intercom.setReachable(groups)`. Invalid values throw `IntercomPolicyError`.
 	 */
 	intercom?: import("./intercom-policy.ts").IntercomSessionOptions;
@@ -143,7 +136,7 @@ export interface CreateAgentSessionOptions {
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
 	/**
 	 * Internal: the launching session's project history. Supplied by the parent's child-session options, so
-	 * `history://` in a workflow stage or a subagent reads the project's sessions and workflow runs.
+	 * `history://` in a subagent reads the project's sessions.
 	 */
 	inheritedHistory?: import("./tools/history-protocol.ts").ProjectHistory;
 	/**
@@ -157,7 +150,7 @@ export interface CreateAgentSessionOptions {
 	/**
 	 * Receives the usage of every model call this session makes, and of every call its own child sessions report.
 	 * A parent's child session options set it, so the parent emits `child_session_usage` for each call a subagent
-	 * child makes and a workflow stage charges its subagents' spend (#5053).
+	 * child makes.
 	 */
 	parentUsageSink?: (usage: import("@bastani/atomic-ai/compat").Usage) => void;
 	/**

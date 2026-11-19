@@ -37,7 +37,7 @@ test.each(["current", "migrated"])(
 				// Rows migrated from before write revisions keep the empty default until the next write.
 				if (version !== "current") await db.run("UPDATE session_sessions SET revision = '' WHERE id = ?", "sample");
 				const base = "history://sessions/sample";
-				const router = createHistoryRouter({ cwd, sessionStore: () => store, workflows: () => undefined });
+				const router = createHistoryRouter({ cwd, sessionStore: () => store });
 				const search = createSearchToolDefinition(cwd);
 				async function manual(paths: string) {
 					const page = await search.execute("manual", { pattern: "needle", paths }, undefined, undefined, {

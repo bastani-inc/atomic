@@ -75,7 +75,6 @@ const SELF_VALIDATED_SETTINGS: ReadonlySet<string> = new Set([
 	"compactionModel",
 	"storage",
 	"sessions",
-	"workflows",
 	"snapshots",
 	"httpIdleTimeoutMs",
 	"websocketConnectTimeoutMs",

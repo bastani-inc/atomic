@@ -27,12 +27,10 @@ import type {
 	ExtensionContext,
 	ExtensionMode,
 	ExtensionUIContext,
-	OrchestrationContext,
 	SubagentChildPolicy,
 } from "./types.ts";
 export interface ExtensionContextSource {
-	observeWorkflowActivity: ExtensionContext["observeWorkflowActivity"];
-	/** Where history:// reads the project's sessions and workflow runs. */
+	/** Where history:// reads the project's sessions. */
 	getProjectHistory(): ProjectHistory;
 	getChildSessionOptions?: ExtensionContext["getChildSessionOptions"];
 	getExtensionPaths?(): string[];
@@ -49,7 +47,6 @@ export interface ExtensionContextSource {
 	getModel(): Model<Api> | undefined;
 	getScopedModels(): readonly ScopedModel[];
 	getThinkingLevel(): ThinkingLevel | undefined;
-	getOrchestrationContext(): OrchestrationContext | undefined;
 	getSubagentPolicy(): SubagentChildPolicy | undefined;
 	getIntercomPolicy?(): import("../intercom-policy.ts").IntercomPolicyView | undefined;
 	isIdle(): boolean;
@@ -59,11 +56,6 @@ export interface ExtensionContextSource {
 	abort(): void;
 	hasPendingMessages(): boolean;
 	isSessionSummaryEnabled?(): boolean;
-	generateWorkflowSummary?(
-		text: string,
-		signal: AbortSignal,
-		options?: { terminal?: boolean },
-	): Promise<string | undefined>;
 	shutdown(): void;
 	getContextUsage(): ContextUsage | undefined;
 	compact(options?: CompactOptions): void;
@@ -250,11 +242,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 			source.assertActive();
 			return source.getMode();
 		},
-		observeWorkflowActivity: (observer) => {
-			source.assertActive();
-			source.assertAction?.();
-			return source.observeWorkflowActivity(observer);
-		},
 		get hasHumanInput() {
 			source.assertActive();
 			return source.hasHumanInput?.() ?? source.hasUI();
@@ -304,7 +291,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				currentSessionId: manager.getSessionId(),
 				sessionStore: () => manager.getSessionStore(),
 				projectSessionStore: () => source.getProjectHistory().sessionStore(),
-				workflows: () => source.getProjectHistory().workflows(),
 			});
 			const sessionRouters = composeInternalRouters(
 				createToolOutputRouter({
@@ -320,10 +306,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				createArtifactRouter(() => [artifactsDir]),
 				sessionRouters,
 			);
-		},
-		get orchestrationContext() {
-			source.assertActive();
-			return source.getOrchestrationContext();
 		},
 		get subagentPolicy() {
 			source.assertActive();
@@ -357,10 +339,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 		isSessionSummaryEnabled: () => {
 			source.assertActive();
 			return source.isSessionSummaryEnabled?.() ?? false;
-		},
-		generateWorkflowSummary: (text, signal, options) => {
-			source.assertActive();
-			return source.generateWorkflowSummary?.(text, signal, options) ?? Promise.resolve(undefined);
 		},
 		shutdown: () => {
 			source.assertActive();

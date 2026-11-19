@@ -3,10 +3,12 @@ import {
 	type AgentTaskHost,
 	type AgentWakeDispatcher,
 	agentWakeDispatcher,
+	finishedSubagentResumeText,
 	type OperationId,
 	ranOnModelLine,
 	sessionStartStepText,
 	spanElapsedMs,
+	subagentResumeId,
 	withTaskTranscriptArchive,
 } from "@bastani/atomic";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
@@ -68,8 +70,6 @@ import {
 	observeChildRecordFailure,
 	pendingMessagesOfResult,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildLaunch,
 	type SubagentChildPendingMessages,
 	type SubagentChildRecordInput,
@@ -128,7 +128,7 @@ export function subagentTaskResultLabel(result: TaskResult): string {
 	// A released child is not paused: it wakes by itself when what it waits on finishes (#5031).
 	if (result.kind === "cancelled" && result.released)
 		return `released · waiting on ${result.released.waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ")}`;
-	// A quit or paused child awaits resume, as a quit workflow run does.
+	// A quit or paused child awaits resume.
 	if (result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit"))
 		return "paused · awaiting resume";
 	return result.kind;
@@ -195,6 +195,7 @@ function settledOutputSection(
 	output: OutputExcerpt,
 	ranOn: string | undefined,
 	worktreeNote?: string,
+	resume?: string,
 ): string {
 	const truncated =
 		output.shown < output.total
@@ -202,7 +203,7 @@ function settledOutputSection(
 			: "";
 	// Keep the observation in the header, not in the answer a replayed card extracts from this section.
 	const lines = [
-		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${worktreeNote ? ` ${worktreeNote}` : ""}`,
+		`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):${worktreeNote ? ` ${worktreeNote}` : ""}${resume ? ` ${resume}` : ""}`,
 	];
 	if (ranOn) lines.push(ranOn);
 	if (output.requestedPath) lines.push(`Requested output: ${output.requestedPath}`);
@@ -300,11 +301,21 @@ export async function settledTaskOutputText(
 			const note = tree && (await observeChildWorktreeAtReply(tree.runId, tree.index, undefined, signal));
 			if (!output) return note ? `${entry.taskId}: ${note}` : undefined;
 			const label = subagentTaskResultLabel(entry.result);
+			// A subagent that completed or failed keeps its session: its header names the call that continues it. Output
+			// kept without its task record is a subagent's; the task id then resolves for resume.
+			const agent = record ? record.kind === "agent" : Boolean(kept);
+			const resume =
+				agent && entry.result.kind !== "cancelled"
+					? finishedSubagentResumeText(subagentResumeId(entry.taskId, record))
+					: undefined;
 			return "unavailable" in output
-				? [`Output of ${entry.taskId} (${label}) is unavailable: ${output.unavailable}`, note]
+				? [
+						`Output of ${entry.taskId} (${label}) is unavailable: ${output.unavailable}${resume ? ` ${resume}` : ""}`,
+						note,
+					]
 						.filter(Boolean)
 						.join("\n")
-				: settledOutputSection(entry.taskId, label, output, ranOnModelLine(record), note);
+				: settledOutputSection(entry.taskId, label, output, ranOnModelLine(record), note, resume);
 		}),
 	);
 	const present = sections.filter((section): section is string => section !== undefined);
@@ -679,12 +690,6 @@ export async function runAgentTask(input: {
 	const settleSkipped = async (taskId: TaskId) => {
 		const queued = queuedChildren.get(taskId);
 		if (queued?.stopped !== false) return;
-		if (input.recordChild?.ownerEndedForGood?.()) {
-			queuedChildren.delete(taskId);
-			forgetRunMembership(runId, index);
-			recordChildTask(taskId, "terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
-			return;
-		}
 		// Mark it stopped before its dispatch's hold is released, so its worktree is kept if it has unsaved work.
 		parkRunWorktree(runId, index);
 		const observed = await input.host.waitForTask(taskId);
@@ -966,40 +971,24 @@ export async function runAgentTask(input: {
 							});
 						const stopped = takeSubagentChildStop(context.ref.taskId);
 						const stoppedByControl = stopped !== undefined && child.status === "interrupted";
-						// The only resumable pause run control did not request is the owner's workflow stage pausing.
-						const stoppedByStagePause =
-							!stoppedByControl &&
-							child.status === "interrupted" &&
-							context.signal.aborted &&
-							context.signal.reason === "pause";
-						const endedForGood = ownerClosed() && input.recordChild?.ownerEndedForGood?.() === true;
 						// Released while it waits (#4326): resumable, woken by a tool result, a message or resume.
-						const released = child.released !== undefined && !stoppedByControl && !endedForGood;
+						const released = child.released !== undefined && !stoppedByControl;
 						// Run control marked it stopped before it stopped it; a child that ended otherwise is not stopped.
 						if (stopped !== undefined && !stoppedByControl) unparkRunWorktree(runId, index);
 						// A child that stays restorable is marked stopped before its dispatch's hold is released.
-						if (released || stoppedByStagePause || (ownerClosed() && !endedForGood))
-							parkRunWorktree(runId, index);
-						if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
+						if (released || ownerClosed()) parkRunWorktree(runId, index);
+						if (child.status === "killed") forgetRunMembership(runId, index);
 						if (released) forgetChildSchedule(runId, index);
 						let worktreeOutput: string | undefined;
 						const settled = released || !ownerClosed();
-						const status = released
-							? SUBAGENT_CHILD_RELEASED_STATUS
-							: stoppedByControl
-								? stopped
-								: stoppedByStagePause
-									? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
-									: child.status;
+						const status = released ? SUBAGENT_CHILD_RELEASED_STATUS : stoppedByControl ? stopped : child.status;
 						const cause = stoppedByControl
 							? stopped === "quit"
 								? "quit"
 								: "pause"
-							: stoppedByStagePause
-								? "pause"
-								: input.options.interruptSignal?.aborted
-									? "parent-handoff"
-									: "owner-close";
+							: input.options.interruptSignal?.aborted
+								? "parent-handoff"
+								: "owner-close";
 						let swept: Promise<void> | undefined;
 						let prepared: TaskResult | undefined;
 						if (finishWorktree) {
@@ -1028,13 +1017,8 @@ export async function runAgentTask(input: {
 								child.released.intercomId,
 							);
 						} else if (settled) {
-							recordChild(
-								"terminal",
-								status,
-								stoppedByControl || stoppedByStagePause ? pendingMessagesOfResult(child) : undefined,
-							);
-						} else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
-						else if (child.pendingMessages?.length)
+							recordChild("terminal", status, stoppedByControl ? pendingMessagesOfResult(child) : undefined);
+						} else if (child.pendingMessages?.length)
 							recordChild("running", undefined, pendingMessagesOfResult(child));
 						if (swept) {
 							await swept;
@@ -1065,16 +1049,10 @@ export async function runAgentTask(input: {
 								);
 						}
 						if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
-						else if (settled && (stoppedByControl || stoppedByStagePause))
+						else if (settled && stoppedByControl)
 							void clearDelivered(wokenWith.filter((toolCallId) => !answeredByTurn.has(toolCallId)));
 						input.onTerminal?.(child);
-						if (
-							ownerSessionId !== undefined &&
-							settled &&
-							!stoppedByControl &&
-							!stoppedByStagePause &&
-							child.status !== "killed"
-						)
+						if (ownerSessionId !== undefined && settled && !stoppedByControl && child.status !== "killed")
 							wakeForResultsHeldDuringRun(
 								input.wakeDispatcher ?? agentWakeDispatcher(),
 								ownerSessionId,
@@ -1096,10 +1074,6 @@ export async function runAgentTask(input: {
 						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
 						const swept = finishDirectory("error", { rejected: error });
 						if (!ownerClosed()) recordChild("terminal", "error");
-						else if (input.recordChild?.ownerEndedForGood?.()) {
-							forgetRunMembership(runId, index);
-							recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
-						}
 						if (swept) await swept;
 						throw error;
 					} finally {

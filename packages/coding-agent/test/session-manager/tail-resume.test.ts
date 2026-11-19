@@ -665,19 +665,6 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		expect(shape(forFork)).toContainEqual([firstPreTail, "again"]);
 	});
 
-	it("updates a session header without reading or rewriting its old entries (#5249, #5554)", async () => {
-		const store = await sqlStore();
-		const { id } = await compactedSession(store);
-		const before = (await store.load(id)).entries;
-		const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
-		const held = tail.getEntryCount();
-		await tail.markSessionInternal({ runId: "run", stageId: "stage", stageName: "stage" });
-		expect(tail.getEntryCount()).toBe(held);
-		const after = await store.load(id);
-		expect(after.entries).toEqual(before);
-		expect(after.header.internal).toBe(true);
-	});
-
 	it("appends after a tail resume and reopens to the same session (#5249)", async () => {
 		const store = await sqlStore();
 		const { id } = await compactedSession(store);

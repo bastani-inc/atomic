@@ -1,19 +1,12 @@
 import { createLabelEntry, createSessionHeader } from "./session-manager-entries.ts";
 import { SessionEntryError } from "./session-manager-errors.js";
-import type {
-	FileEntry,
-	LabelEntry,
-	SessionEntry,
-	SessionHeader,
-	SessionWorkflowMetadata,
-} from "./session-manager-types.ts";
+import type { FileEntry, LabelEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
 import { createSessionId } from "./session-manager-validation.ts";
 
 export interface BranchedSessionStateInput {
 	leafId: string;
 	cwd: string;
 	parentSessionId: string;
-	workflow?: SessionWorkflowMetadata;
 	path: SessionEntry[];
 	labelsById: ReadonlyMap<string, string>;
 	labelTimestampsById: ReadonlyMap<string, string>;
@@ -88,14 +81,7 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 	}
 	const newSessionId = createSessionId();
 	const timestamp = new Date().toISOString();
-	const header: SessionHeader = createSessionHeader(
-		newSessionId,
-		input.cwd,
-		timestamp,
-		input.parentSessionId,
-		input.workflow !== undefined,
-		input.workflow,
-	);
+	const header: SessionHeader = createSessionHeader(newSessionId, input.cwd, timestamp, input.parentSessionId);
 
 	// Collect labels for entries in the path
 	const pathEntryIds = new Set(pathWithoutLabels.map((entry) => entry.id));

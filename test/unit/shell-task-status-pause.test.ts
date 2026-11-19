@@ -25,9 +25,13 @@ test("a wait on a shell its execution timeout stopped names the timeout's length
 	assert.match(tail, /Task task-7 was cancelled \(timed out after 1 second\)\./);
 });
 
+test("a stored legacy stage close reads as a session close", () => {
+	const saved = JSON.parse('{"kind":"cancelled","cause":"owner-close","ownerClose":"stage-close"}');
+	assert.equal(taskResultStatus(saved).detail, "session closed");
+});
+
 test.each([
 	["session-close", "session closed"],
-	["stage-close", "workflow stage closed"],
 	["app-shutdown", "Atomic shut down"],
 ] as const)("a wait on a shell its owner's %s cancelled names that close (#4639)", (ownerClose, reason) => {
 	const result = { kind: "cancelled", cause: "owner-close", ownerClose } as const;

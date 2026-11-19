@@ -21,7 +21,7 @@ const REAL_VITEST_PROCESS_TIMEOUT_MS = 90_000;
 const DESCENDANT_PROCESS_TIMEOUT_MS = 10_000;
 
 for (const [label, root, projectCount] of [
-	["repository projects", repositoryRoot, 5],
+	["repository projects", repositoryRoot, 4],
 	["coding-agent projects", join(repositoryRoot, "packages/coding-agent"), 1],
 ] as const) {
 	test(
@@ -96,7 +96,7 @@ for (const runtime of ${JSON.stringify([process.execPath, bunExecutable()])}) {
 						timeout: REAL_VITEST_PROCESS_TIMEOUT_MS,
 						env: {
 							...process.env,
-							ATOMIC_WORKFLOW_ARTIFACT_DIR: artifacts,
+							ATOMIC_TEST_RUN_DIR: artifacts,
 							HERDR_ENV: "1",
 							// Never point a regression, including its RED run, at a real binary or pane.
 							HERDR_BIN_PATH: join(directory, "nonexistent-herdr"),

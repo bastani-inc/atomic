@@ -1,6 +1,6 @@
 /**
  * Warnings already shown in this process and where to show them, shared with the host's deprecation warnings: each
- * removed option is named once however many packages, calls or stages still pass it, and while the interactive UI owns
+ * removed option is named once however many packages or calls still pass it, and while the interactive UI owns
  * the terminal it renders the warning instead of the text being written over it.
  */
 const EMITTED_KEY = "__atomicDeprecationWarnings";

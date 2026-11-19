@@ -6,7 +6,6 @@ import {
 	type IntercomRecipientGoneError,
 	SUBAGENT_ENDED_OUTCOMES,
 	type SubagentEndedOutcome,
-	StageRecipientReleasedError,
 	SubagentRecipientDisconnectedError,
 	subagentRecipientEnded,
 } from "./recipient-gone-errors.js";
@@ -28,7 +27,7 @@ export const DEPARTED_CHILD_HOLD_MS = RESTORING_RECIPIENT_HOLD_MS;
 export const DEPARTED_CHILDREN_PER_OWNER_MAX = 1_024;
 /**
  * The most subagents kept for owners that disconnected, across the broker; the oldest is forgotten first (#4639). An
- * owner's host session, a workflow stage's, comes back for them.
+ * owner's host session comes back for them.
  */
 export const DEPARTED_ORPHANS_MAX = 4_096;
 /** The most sends held for one subagent; later ones are refused as for a subagent that did not come back. */
@@ -41,10 +40,7 @@ export interface DepartingChild {
 	readonly group: string;
 	/** Its Intercom id and Atomic session id, when known. */
 	readonly aliases: readonly string[];
-	/**
-	 * Set when the owner's connection is already gone: the owner's host session, whose next session takes the subagent
-	 * over, as a reopened workflow stage's does.
-	 */
+	/** Set when the owner's connection is already gone: the owner's host session, whose next session takes the subagent over. */
 	readonly ownerHostSession?: string;
 }
 
@@ -120,7 +116,6 @@ export function validateEndedChildrenFrame(
 
 type Verdict =
 	| { readonly kind: "ended"; readonly outcome: SubagentEndedOutcome; readonly childId?: string }
-	| { readonly kind: "stage_released" }
 	| { readonly kind: "disconnected" };
 
 /** The verdict of a subagent nobody said anything about before its wait ended. */
@@ -247,25 +242,6 @@ export class DepartedChildren {
 		return { refused, evicted };
 	}
 
-	/**
-	 * #4642: a released workflow stage's hosted peer left: its host connection removed it or closed. Sends to its name,
-	 * id or return address are refused at once with a {@link StageRecipientReleasedError}, until it is hosted again.
-	 */
-	markStageReleased(
-		ownerSessionId: string,
-		child: Omit<EndedChildMark, "outcome" | "childId">,
-	): { readonly refused: HeldSendRefusal[]; readonly evicted: HeldSend[] } {
-		const entry = this.entry(ownerSessionId, child.childName, child.group, child.aliases);
-		this.disarm(entry.departure);
-		entry.departure.verdict = { kind: "stage_released" };
-		return { refused: this.refuseHeld(entry.departure, entry.departure.verdict), evicted: entry.evicted };
-	}
-
-	/** Whether `target`, to a sender that may reach it, names a released stage whose hosted peer is gone (#4642). */
-	isReleasedStage(target: string, sender: HoldSender): boolean {
-		return this.visible(target, sender)?.verdict?.kind === "stage_released";
-	}
-
 	/** Decide a send that found no live recipient. `canHold` is false for a client that cannot wait for a verdict. */
 	admit(
 		target: string,
@@ -299,7 +275,7 @@ export class DepartedChildren {
 
 	/**
 	 * The owner disconnected. With its host session, its subagents are kept, answers and held sends included, until a
-	 * session of that host session takes them over ({@link adoptOrphans}), as a reopened workflow stage does, or they
+	 * session of that host session takes them over ({@link adoptOrphans}), or they
 	 * are forgotten as the oldest beyond {@link DEPARTED_ORPHANS_MAX}. Without one nobody can say why they ended: they
 	 * are forgotten, and their held sends returned for ordinary routing.
 	 */
@@ -339,15 +315,6 @@ export class DepartedChildren {
 		const owned = this.byOwner.get(ownerSessionId);
 		while (owned !== undefined && owned.size > this.perOwnerMax)
 			released.push(...this.forget(owned.values().next().value as Departure));
-		return released;
-	}
-
-	/** The run whose stages kept these subagents ended: forget those in a group `inGroup` accepts; returns their held sends. */
-	dropOrphans(inGroup: (group: string) => boolean): HeldSend[] {
-		const released: HeldSend[] = [];
-		for (const departure of [...this.orphans.keys()]) {
-			if (inGroup(departure.group)) released.push(...this.forget(departure));
-		}
 		return released;
 	}
 
@@ -424,8 +391,6 @@ export class DepartedChildren {
 	}
 
 	private errorFor(departure: Departure, verdict: Verdict, target: string): IntercomRecipientGoneError {
-		if (verdict.kind === "stage_released")
-			return new StageRecipientReleasedError({ target, childName: departure.childName });
 		if (verdict.kind !== "ended") return this.disconnectedError(departure, target);
 		return subagentRecipientEnded(verdict.outcome, {
 			target,

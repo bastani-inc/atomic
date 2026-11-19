@@ -68,6 +68,37 @@ describe("settings notices are shown once", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
+	it("removed workflow settings are as silent as unknown settings and record no notice", async () => {
+		const projectPath = join(cwd, ".atomic", "settings.json");
+		mkdirSync(join(cwd, ".atomic"));
+		const noticeRecord = join(agentDir, "shown-notices.json");
+		// The same files with the removed names, then with names Atomic never had, each in a fresh process.
+		const run = async (workflows: string, showUnknownTargetWarnings: string) => {
+			writeFileSync(globalPath(), JSON.stringify({ [workflows]: ["./recipes"] }));
+			writeFileSync(
+				projectPath,
+				JSON.stringify({ [workflows]: { paths: ["flow.ts"] }, intercom: { [showUnknownTargetWarnings]: true } }),
+			);
+			rmSync(noticeRecord, { force: true });
+			const manager = start();
+			manager.setProjectTrusted(true);
+			await manager.reload();
+			const settings = JSON.stringify(manager.getSettings());
+			const shown = warn.mock.calls.map((call) => String(call[0]));
+			nextProcess();
+			return { settings, shown, record: existsSync(noticeRecord) ? readFileSync(noticeRecord, "utf8") : undefined };
+		};
+		const unknown = await run("neverASetting", "neverAnIntercomSetting");
+		const removed = await run("workflows", "showUnknownTargetWarnings");
+		assert.deepEqual(removed, {
+			...unknown,
+			settings: unknown.settings
+				.replaceAll("neverASetting", "workflows")
+				.replaceAll("neverAnIntercomSetting", "showUnknownTargetWarnings"),
+		});
+		assert.deepEqual(removed.shown, []);
+	});
+
 	it("gives one modelRouting notice when another process holds the file at startup and the migration then removes it", () => {
 		writeFileSync(globalPath(), JSON.stringify({ theme: "dark", modelRouting: ROUTING }));
 		const release = lockfile.lockSync(globalPath(), { realpath: false, stale: 60_000 });
