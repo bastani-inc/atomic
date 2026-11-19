@@ -11,6 +11,8 @@ name: skill-creator
 
 A skill for creating new skills and iteratively improving them.
 
+To convert an Atomic workflow file into a skill, follow the [workflow-files recipe](../workflow-files/SKILL.md).
+
 At a high level, the process of creating a skill goes like this:
 
 - Decide what you want the skill to do and roughly how it should do it

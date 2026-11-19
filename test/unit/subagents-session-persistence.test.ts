@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
-import type { SessionHeader } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
-
-const workflow = { runId: "run-1", stageId: "stage-1", stageName: "build" };
 
 function agentConfig(): AgentConfig {
 	return {
@@ -24,37 +21,32 @@ function agentConfig(): AgentConfig {
 	};
 }
 
-function readHeader(path: string): SessionHeader {
-	return JSON.parse(readFileSync(path, "utf8").split("\n")[0]!) as SessionHeader;
-}
-
-describe("workflow subagent persisted session classification", () => {
-	test("foreground fresh child persists classification through the real executor handoff", async () => {
-		const root = mkdtempSync(join(tmpdir(), "workflow-subagent-persist-"));
+describe("persisted subagent sessions", () => {
+	test("a fresh child can be looked up in its own session directory", async () => {
+		const root = mkdtempSync(join(tmpdir(), "internal-subagent-persist-"));
 		try {
 			const result = await runSingleInProcess(root, agentConfig(), "fresh child", {
 				cwd: root,
 				runId: "foreground-fresh",
 				sessionDir: join(root, "custom-sessions"),
-				workflowStageSubagentGuard: true,
-				workflowSessionMetadata: workflow,
 				testSession: { output: "done" },
 			});
 			assert.equal(result.status, "ok");
 			assert.ok(result.sessionFile);
-			assert.deepEqual(readHeader(result.sessionFile).workflow, workflow);
-			assert.equal(readHeader(result.sessionFile).internal, true);
-			assert.deepEqual(await SessionManager.list(root, dirname(result.sessionFile)), []);
+			assert.deepEqual(
+				(await SessionManager.list(root, dirname(result.sessionFile))).map((session) => session.id),
+				[result.stats?.sessionId],
+			);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	test("same-cwd fork child stays classified through fork resolver and foreground executor", async () => {
-		const root = mkdtempSync(join(tmpdir(), "workflow-subagent-fork-"));
+	test("a forked child can be looked up alongside its parent under its own session id", async () => {
+		const root = mkdtempSync(join(tmpdir(), "internal-subagent-fork-"));
 		try {
 			const sessionDir = join(root, "fork-sessions");
-			const parent = await SessionManager.create(root, sessionDir, { internal: true, workflow });
+			const parent = await SessionManager.create(root, sessionDir);
 			const leafId = await parent.appendMessage({ role: "user", content: "parent task", timestamp: Date.now() });
 			assert.ok(parent.getSessionFile());
 			assert.equal(parent.getLeafId(), leafId);
@@ -64,16 +56,16 @@ describe("workflow subagent persisted session classification", () => {
 				cwd: root,
 				runId: "foreground-fork",
 				sessionManager: fork,
-				workflowStageSubagentGuard: true,
 				testSession: { output: "done" },
 			});
 			assert.equal(result.status, "ok");
 			assert.ok(result.stats);
 			assert.equal(result.stats.sessionId, fork.getSessionId());
 			assert.ok(result.sessionFile);
-			assert.equal(readHeader(result.sessionFile).internal, true);
-			assert.deepEqual(readHeader(result.sessionFile).workflow, workflow);
-			assert.deepEqual(await SessionManager.list(root, sessionDir), []);
+			assert.deepEqual(
+				(await SessionManager.list(root, sessionDir)).map((session) => session.id).sort(),
+				[parent.getSessionId(), fork.getSessionId()].sort(),
+			);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

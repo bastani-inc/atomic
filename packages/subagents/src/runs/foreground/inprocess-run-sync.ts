@@ -74,20 +74,6 @@ function usageFromStats(stats: AttemptOutcome["stats"]): Usage {
 	};
 }
 
-function workflowOrchestrationContext(options: RunSyncOptions): ParentContext["orchestrationContext"] | undefined {
-	const workflow = options.workflowSessionMetadata;
-	if (!workflow) return undefined;
-	return {
-		kind: "workflow-stage",
-		workflowRunId: workflow.runId,
-		workflowStageId: workflow.stageId,
-		workflowStageName: workflow.stageName,
-		constraints: {
-			disableWorkflowTool: true,
-		},
-		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
-	};
-}
 function progressFor(
 	agent: AgentConfig,
 	task: string,
@@ -383,7 +369,6 @@ async function launchSingleInProcess(
 	const requestedThinking =
 		THINKING_LEVELS.find((level) => level === requestedSuffix) ??
 		(launchModel ? options.resolveCandidateModel?.(launchModel)?.unknownEffort : undefined);
-	const orchestrationContext = workflowOrchestrationContext(options);
 	const outputSnapshot = options.outputPath ? await captureSingleOutputSnapshot(options.outputPath) : undefined;
 
 	const parent: ParentContext = {
@@ -392,10 +377,6 @@ async function launchSingleInProcess(
 		getChildSessionOptions: options.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: options.resourceLoaderInheritanceSnapshot,
 		...(options.intercomGroup ? { intercomGroup: options.intercomGroup } : {}),
-		...(options.workflowStageSubagentGuard === undefined
-			? {}
-			: { workflowStageSubagentGuard: options.workflowStageSubagentGuard }),
-		...(orchestrationContext ? { orchestrationContext } : {}),
 	};
 	const sessionRoot = options.sessionDir ?? join(options.artifactsDir ?? cwd, ".atomic", "subagents");
 	const control = getOrCreateSubagentControl(
