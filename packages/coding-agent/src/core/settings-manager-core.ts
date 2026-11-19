@@ -480,25 +480,6 @@ export class SettingsManager {
 			);
 			delete settings.modelRouting;
 		}
-		// Leave legacy definitions and path settings on disk. They can still be located and read as text.
-		const source = path === undefined ? "" : `${path}: `;
-		if ("workflows" in settings) {
-			warn(
-				`${source}Ignored removed setting "workflows": workflows were removed in 0.10.0; ask to convert an old workflow to a skill that uses codemode and subagents (see docs/orchestration/migrating-workflows.md). Your workflow files were not changed.`,
-				{
-					once: about(settings.workflows),
-				},
-			);
-			delete settings.workflows;
-		}
-		if (isPlainObject(settings.intercom) && "showUnknownTargetWarnings" in settings.intercom) {
-			warn(
-				`${source}Ignored removed setting "intercom.showUnknownTargetWarnings": Intercom no longer sends to workflow stages.`,
-				{ once: about(settings.intercom.showUnknownTargetWarnings) },
-			);
-			delete settings.intercom.showUnknownTargetWarnings;
-			if (Object.keys(settings.intercom).length === 0) delete settings.intercom;
-		}
 		settings = normalizeAzureSettings(settings as Settings) as Record<string, unknown>;
 		// Migrate queueMode -> steeringMode
 		if ("queueMode" in settings && !("steeringMode" in settings)) {

@@ -47,7 +47,7 @@ Atomic accepts environment variables for configuration, provider credentials, an
 
 ## Retired workflow variables
 
-Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, and `ATOMIC_WORKFLOW_ARTIFACT_DIR` when upgrading from 0.9.x. They no longer select a journal or artifact directory. If any are set, Atomic names them in one startup warning without printing their values. Your existing files are not changed. `ATOMIC_WORKFLOW_DEBUG` and `ATOMIC_DEBUG_POOLED_WATCH` are ignored; use `ATOMIC_DEBUG=1` for current diagnostics.
+Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, and `ATOMIC_WORKFLOW_ARTIFACT_DIR` when upgrading from 0.9.x. They no longer select a journal or artifact directory, and Atomic ignores them like any other variable it does not read. Your existing files are not changed. `ATOMIC_WORKFLOW_DEBUG` and `ATOMIC_DEBUG_POOLED_WATCH` are ignored; use `ATOMIC_DEBUG=1` for current diagnostics.
 
 ## Session storage
 

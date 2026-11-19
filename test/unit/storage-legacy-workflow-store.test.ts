@@ -238,20 +238,39 @@ describe("a 0.9.90 store with workflow runs", () => {
 		}
 	});
 
-	test("the storage commands and options that went with workflows are refused, saying they were removed", async () => {
-		for (const args of [
-			["adopt", join(agentDir, "workflows", "journal.sqlite")],
-			["consolidate"],
-			["export", join(root, "out"), "--workflows"],
-			["export", join(root, "out"), "--run", LEGACY_STORE.runId],
-			["export", join(root, "out"), "--unfinished"],
-			["import", join(root, "out"), "--workflows"],
-		]) {
-			const result = await storage(args);
-			assert.equal(result.code, 1, args.join(" "));
-			assert.match(result.err, /was removed in 0\.10\.0 with workflows/, args.join(" "));
+	test("the storage commands and options that went with workflows fail exactly like unknown ones", async () => {
+		const before = await dumpSessionDatabase();
+		const files = workflowFiles.map(digest);
+		const out = join(root, "out");
+		const journal = join(agentDir, "workflows", "journal.sqlite");
+		// Each removed name, and an arbitrary name Atomic never had, in the same place of the same arguments.
+		const cases: [removed: string, args: (name: string) => string[]][] = [
+			["adopt", (name) => [name, journal]],
+			["adopt", (name) => [name, journal, "--no-discover"]],
+			["adopt", (name) => [name]],
+			["consolidate", (name) => [name]],
+			["consolidate", (name) => [name, "--json"]],
+			["--workflows", (name) => ["export", out, name]],
+			["--workflows", (name) => ["export", name]],
+			["--workflows", (name) => ["import", out, name]],
+			["--run", (name) => ["export", out, name, LEGACY_STORE.runId]],
+			["--run", (name) => ["export", out, "--limit", "2", name]],
+			["--unfinished", (name) => ["export", out, name]],
+		];
+		for (const [removed, args] of cases) {
+			const unknown = removed.startsWith("-") ? "--never-an-option" : "never-a-command";
+			const expected = await storage(args(unknown));
+			const actual = await storage(args(removed));
+			const label = args(removed).join(" ");
+			assert.equal(expected.code, 1, label);
+			assert.equal(actual.code, expected.code, label);
+			assert.equal(actual.out, expected.out.replaceAll(unknown, removed), label);
+			assert.equal(actual.err, expected.err.replaceAll(unknown, removed), label);
 		}
-		const sessionsOnly = await storage(["export", join(root, "out"), "--sessions"]);
+		assert.equal(await dumpSessionDatabase(), before);
+		assert.deepEqual(workflowFiles.map(digest), files);
+		assert.deepEqual(readdirSync(root).sort(), ["agent", "project"]);
+		const sessionsOnly = await storage(["export", out, "--sessions"]);
 		assert.equal(sessionsOnly.code, 0, sessionsOnly.err);
 		assert.match(sessionsOnly.out, /Exported 2 sessions/);
 	});
