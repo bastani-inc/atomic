@@ -1,3 +1,4 @@
+import { clickableKeyTextHint } from "./nav-keys.ts";
 import { formatTokenSegment } from "./token-segment.ts";
 
 export interface WorkingRunSnapshot {
@@ -258,6 +259,6 @@ export function compactionMeta(startedAt: number, cancelKey: string | undefined,
 	return {
 		elapsedMs: Math.max(0, now - startedAt),
 		tokens: 0,
-		...(cancelKey ? { note: `${cancelKey} to cancel` } : {}),
+		...(cancelKey ? { note: clickableKeyTextHint(cancelKey, " to cancel") } : {}),
 	};
 }

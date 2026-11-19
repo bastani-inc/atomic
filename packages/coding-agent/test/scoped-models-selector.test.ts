@@ -5,7 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.js";
 import { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { stripAnsi } from "./helpers/visible-text.js";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const REORDER_UP = useWindowsKeybindings() ? "\x1bq" : "\x1b[1;3A";

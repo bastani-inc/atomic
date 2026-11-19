@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { keyHint, keyHintIfBound, keyText } from "../src/modes/interactive/components/keybinding-hints.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { stripAnsi } from "./helpers/visible-text.js";
 
 const previousKeybindings = getKeybindings();
 
