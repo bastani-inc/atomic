@@ -9,7 +9,16 @@ const scopes = new WeakMap<SessionStore, () => NativeScope | undefined>();
 export function registerForkScope(store: SessionStore, scope: () => NativeScope | undefined) {
 	scopes.set(store, scope);
 }
-export function inheritForkScope(store: SessionStore, inner: SessionStore) {
+const archiveReaders = new WeakMap<SessionStore, (field: "blob" | "entry") => SessionStore | undefined>();
+export function nativeForkReader(store: SessionStore, field: "blob" | "entry"): SessionStore {
+	return archiveReaders.get(store)?.(field) ?? store;
+}
+export function inheritForkScope(
+	store: SessionStore,
+	inner: SessionStore,
+	read: (field: "blob" | "entry") => SessionStore | undefined,
+) {
+	archiveReaders.set(store, read);
 	const scope = scopes.get(inner);
 	if (scope) scopes.set(store, scope);
 }
