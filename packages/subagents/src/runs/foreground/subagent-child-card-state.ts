@@ -95,6 +95,52 @@ processIndex[INDEX] ??= newChildIndex();
 const { entries, unsavedRecords, pendingWrites, readers, childIdsByTaskId, watchers, invalidators, collectedCards } =
 	processIndex[INDEX];
 
+// A saved record can be replaced while its task remains released. Keep an interested wake's identity across
+// those writes, without retaining its receipt or keeping a per-name table of abandoned confirmations.
+const RELEASE_KEYS = Symbol.for("@bastani/subagents/child-release-keys@1");
+const releaseState = globalThis as { [RELEASE_KEYS]?: WeakMap<SubagentChildIndexEntry, WeakRef<object>> };
+releaseState[RELEASE_KEYS] ??= new WeakMap();
+const releaseKeys = releaseState[RELEASE_KEYS];
+export function childReleaseKey(
+	childId: string,
+	owner: string,
+	target: string,
+	taskId: string,
+	create: boolean,
+): object | undefined {
+	const entry = entries.get(childId);
+	if (
+		!entry ||
+		entry.ownerSessionId !== owner ||
+		entry.intercomTarget !== target ||
+		entry.taskId !== taskId ||
+		entry.state !== "terminal" ||
+		entry.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS
+	)
+		return undefined;
+	let key = releaseKeys.get(entry)?.deref();
+	if (!key && create) {
+		key = {};
+		releaseKeys.set(entry, new WeakRef(key));
+	}
+	return key;
+}
+function indexEntry(entry: SubagentChildIndexEntry): void {
+	if (entry.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS && entry.state === "terminal") {
+		const previous = entries.get(entry.childId);
+		if (
+			previous &&
+			previous.ownerSessionId === entry.ownerSessionId &&
+			previous.taskId === entry.taskId &&
+			previous.intercomTarget === entry.intercomTarget
+		) {
+			const key = releaseKeys.get(previous);
+			if (key) releaseKeys.set(entry, key);
+		}
+	}
+	entries.set(entry.childId, entry);
+}
+
 export { pendingWrites as pendingSubagentChildWrites };
 export interface SubagentChildToolCallEntry {
 	readonly id: string;
@@ -273,7 +319,7 @@ export function observeSubagentChildRecord(
 	const complete = saved !== undefined && hasEveryKeyOf(record, merged);
 	if (complete) unsavedRecords.delete(record.childId);
 	else unsavedRecords.set(record.childId, merged);
-	entries.set(record.childId, projectionOf(merged, copied, complete ? saved : undefined));
+	indexEntry(projectionOf(merged, copied, complete ? saved : undefined));
 	notify(record.childId);
 	indexTaskId(merged);
 	return merged;
@@ -314,7 +360,7 @@ export function settleSubagentChildRecord(record: SubagentChildRecord): void {
 	const saved = findAppendedSubagentChildRecord(record);
 	if (saved === undefined) return;
 	unsavedRecords.delete(record.childId);
-	entries.set(record.childId, projectionOf(record, false, saved));
+	indexEntry(projectionOf(record, false, saved));
 }
 
 /** Whether `record` is the latest record of its child and is not saved as one entry yet. */

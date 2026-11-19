@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Reconnecting to Intercom no longer leaves a false reservation warning for a released subagent when the broker can confirm it still holds sends for that release. Checking the hold does not extend it or send another wake ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
+
 ## [0.9.90] - 2026-11-19
 
 ### Added

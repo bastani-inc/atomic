@@ -7,6 +7,7 @@ import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
+import { findLegacyWorkflowFiles } from "./legacy-workflow-files.js";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
@@ -269,6 +270,7 @@ export async function prepareDefaultResourceLoaderReload(
 			state.extensionSkillSourceInfos = new Map();
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();
+			state.legacyWorkflowFiles = undefined;
 			state.workflowResources = [];
 			state.mcpServerContributions = [];
 			state.resourceMetadataByPath = new Map();
@@ -354,6 +356,16 @@ export async function prepareDefaultResourceLoaderReload(
 		const cliEnabledSkills = getEnabledPaths(cliExtensionPaths.skills, metadataByPath);
 		const cliEnabledPrompts = getEnabledPaths(cliExtensionPaths.prompts, metadataByPath);
 		const cliEnabledThemes = getEnabledPaths(cliExtensionPaths.themes, metadataByPath);
+		state.legacyWorkflowFiles = findLegacyWorkflowFiles(
+			{
+				cwd: state.cwd,
+				agentDir: state.agentDir,
+				projectTrusted: state.settingsManager.isProjectTrusted(),
+				trustedBorrowedSources: state.trustedBorrowedProjectLocalSources,
+			},
+			resolvedPaths.workflows,
+			cliExtensionPaths.workflows,
+		);
 		const workflowResources = collectWorkflowResources(resolvedPaths, cliExtensionPaths, builtinPackagePaths);
 		state.workflowResources = workflowResources;
 		state.mcpServerContributions = collectMcpServerContributions(
