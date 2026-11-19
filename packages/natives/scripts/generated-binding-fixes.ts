@@ -14,10 +14,10 @@ export function fixGeneratedBinding(loader: string, declarations: string) {
 		declarations = declarations.replace(marker, `${marker} | undefined`);
 	}
 	// A clock sample may use an already-loaded binding, but must never trigger package resolution or installation.
-	const loadedTemporaryFiles = `if (process.platform === 'win32' && module.exports.readWindowsClockProbe && module.exports.removeWindowsHardLink) {
+	const loadedTemporaryFiles = `if (process.platform === 'win32' && module.exports.readWindowsClockProbe && module.exports.windowsClockTick && module.exports.pinWindowsFile) {
   try {
     // Permission-managed hosts must perform their own filesystem checks.
-    if (!process.permission) process[Symbol.for('@bastani/atomic/windows-temporary@3')] = new WeakRef(module.exports)
+    if (!process.permission) process[Symbol.for('@bastani/atomic/windows-temporary@4')] = new WeakRef(module.exports)
   } catch { /* Optional on restricted hosts. */ }
 }`;
 	if (!loader.includes(loadedTemporaryFiles)) loader = `${loader.trimEnd()}\n\n${loadedTemporaryFiles}\n`;

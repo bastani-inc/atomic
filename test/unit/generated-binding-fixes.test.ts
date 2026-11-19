@@ -36,7 +36,8 @@ test("a Windows host can load native bindings without allowing new process prope
 			writeFile() {}
 		},
 		readWindowsClockProbe() {},
-		removeWindowsHardLink() {},
+		pinWindowsFile() {},
+		windowsClockTick() {},
 	};
 	const module = { exports: {} };
 	vm.runInNewContext(loader, {
@@ -57,7 +58,7 @@ test("a Windows host can load native bindings without allowing new process prope
 
 test("a permission-managed host uses its own filesystem operations for clock readings (#5605)", async () => {
 	const { loader } = await artifacts();
-	const binding = { readWindowsClockProbe() {}, removeWindowsHardLink() {} };
+	const binding = { readWindowsClockProbe() {}, pinWindowsFile() {}, windowsClockTick() {} };
 	const host = {
 		env: { NAPI_RS_NATIVE_LIBRARY_PATH: "test-override" },
 		platform: "win32",

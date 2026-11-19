@@ -171,6 +171,13 @@ export declare class WaitLease {
   get waitId(): string
 }
 
+/** An identity retained across publication. Keeping the handle open prevents file-ID reuse. */
+export declare class WindowsFileIdentity {
+  close(): void
+  /** Dispose the open temporary link only if both names identify the file pinned before publication. */
+  removeHardLink(temporary: string, published: string): Promise<boolean>
+}
+
 export declare class WindowsTemporaryFile {
   /** Dispose the reserved name, not a file which may since have appeared at the same path. */
   close(): Promise<undefined>
@@ -731,6 +738,9 @@ export interface OwnerSnapshot {
  */
 export declare function pendingStdinInput(): number | null
 
+/** Pin a record before publishing it, without requesting data or deletion access or excluding scanners. */
+export declare function pinWindowsFile(path: string): Promise<WindowsFileIdentity | undefined | null>
+
 /**
  * When running process `pid` was created, as the decimal count of 100-nanosecond intervals since 1601-01-01 UTC (the
  * Windows process creation time), or `null` where that cannot be read: on other platforms, for a process that is gone
@@ -772,9 +782,6 @@ export declare function readWindowsClockProbe(path: string): Promise<WindowsCloc
 
 /** Removes a regular file older than `beforeMs` using the handle whose last-write time was checked. */
 export declare function removeWindowsFileOlderThan(path: string, beforeMs: number): Promise<undefined>
-
-/** Retry a refused temporary-link removal only if both open names still identify the published file. */
-export declare function removeWindowsHardLink(temporary: string, published: string): Promise<boolean>
 
 /**
  * Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,
@@ -965,9 +972,12 @@ export interface WindowsAccessRule {
 
 export interface WindowsClockReading {
   mtimeMs: number
-  createdInMs: number
+  sampledAtMs: number
   pending?: WindowsTemporaryFile
 }
+
+/** Monotonic milliseconds in the same time base as a Windows probe's sampledAtMs. */
+export declare function windowsClockTick(): number
 
 export declare function windowsDirectorySecurity(path: string): WindowsDirectorySecurity | null
 

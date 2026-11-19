@@ -559,6 +559,7 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 	const data = JSON.stringify(record);
 	let created = false;
 	let published = false;
+	let original: import("@bastani/atomic-natives").WindowsFileIdentity | null | undefined;
 	try {
 		// Let the runtime apply its actual umask at creation and write through the handle granted there.
 		try {
@@ -569,6 +570,8 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 			created = code !== "EEXIST" && syscall !== "open";
 			throw error;
 		}
+		const binding = windowsTemporaryFiles();
+		if (binding) original = await binding.pinWindowsFile(toNamespacedPath(temporary)).catch(() => null);
 		try {
 			await link(temporary, file);
 			published = true;
@@ -578,19 +581,21 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 			throw error;
 		}
 	} finally {
-		if (created || !windows) {
-			await rm(temporary, { force: true }).catch(async (error: NodeJS.ErrnoException) => {
-				if (windows && published && (error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY")) {
-					// Never retry a pathname unlink. Both open handles must identify the published file.
-					if (
-						await windowsTemporaryFiles()
-							?.removeWindowsHardLink(toNamespacedPath(temporary), toNamespacedPath(file))
-							.catch(() => false)
-					)
-						return;
-				}
+		try {
+			if (created || !windows) await rm(temporary, { force: true });
+		} catch (error) {
+			const { code } = error as NodeJS.ErrnoException;
+			const refused = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+			if (
+				!published ||
+				!refused ||
+				!original ||
+				!(await original.removeHardLink(toNamespacedPath(temporary), toNamespacedPath(file)).catch(() => false))
+			) {
 				reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
-			});
+			}
+		} finally {
+			original?.close();
 		}
 	}
 }

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import {
 	closeSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
@@ -883,9 +884,9 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		},
 	);
 
-	test.runIf(process.platform === "win32")(
-		"retrying a refused removal preserves a replacement at the temporary slot name (#5636)",
-		async () => {
+	test.runIf(process.platform === "win32").each([false, true])(
+		"retrying a refused removal preserves a replacement at the temporary slot name (restored hard links: %s) (#5636)",
+		async (restoreBoth) => {
 			const storeDir = sandbox.path("store-replaced-link");
 			const remotes = ["https://example.com/acme/repo.git"];
 			const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
@@ -894,7 +895,15 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 			lockRefusals.onRemove = async (path) => {
 				if (replaced || !path.startsWith(`${file}.`) || !path.endsWith(".tmp")) return;
 				rmSync(path);
-				writeFileSync(path, "a different file");
+				if (restoreBoth) {
+					// Simulate restoring the record and its hard link. Even identical bytes do not prove ownership.
+					const bytes = readFileSync(file);
+					rmSync(file);
+					writeFileSync(file, bytes);
+					linkSync(file, path);
+				} else {
+					writeFileSync(path, "a different file");
+				}
 				replaced = path;
 				throw Object.assign(new Error("temporary removal refused"), { code: "EPERM" });
 			};
@@ -902,7 +911,7 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 			const lease = await admitPooledWorktree({ storeDir, remotes, lastState: state, envHash: "env" }, owner);
 			try {
 				assert.ok(replaced);
-				assert.equal(readFileSync(replaced, "utf8"), "a different file");
+				assert.equal(readFileSync(replaced, "utf8"), restoreBoth ? readFileSync(file, "utf8") : "a different file");
 				assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).holder, owner);
 			} finally {
 				await releaseRestoredWorktree(lease, state);

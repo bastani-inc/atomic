@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
-import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
-import { sharedClockNow, sharedClockOffset } from "../src/core/worktree-snapshot/shared-clock.js";
+import { lockShared, sharedClockNow, sharedClockOffset } from "../src/core/worktree-snapshot/shared-clock.js";
 
 const names = vi.hoisted(() => [] as Buffer[]);
 vi.mock("node:crypto", async (original) => {
@@ -17,6 +27,8 @@ const io = vi.hoisted(() => ({
 	afterList: undefined as (() => void) | undefined,
 	refuseDelete: false,
 	withoutDeleteOnClose: false,
+	beforeOpen: undefined as (() => void) | undefined,
+	nativeTick: undefined as (() => number) | undefined,
 	onStat: undefined as ((path: string) => void) | undefined,
 	refusalClock: undefined as { now: number; stamp: number } | undefined,
 	stamp: 0,
@@ -27,6 +39,7 @@ vi.mock("node:fs", async (original) => {
 		...fs,
 		open: (path: string, flags: string, callback: (err: NodeJS.ErrnoException | null, fd: number) => void) => {
 			io.calls.push("open");
+			io.beforeOpen?.();
 			if (io.refusalClock) io.refusalClock.stamp = io.refusalClock.now;
 			fs.open(path, flags, callback);
 		},
@@ -81,7 +94,7 @@ vi.mock("node:fs/promises", async (original) => {
 	};
 });
 
-const loadedKey = Symbol.for("@bastani/atomic/windows-temporary@3");
+const loadedKey = Symbol.for("@bastani/atomic/windows-temporary@4");
 let originalRegistration: PropertyDescriptor | undefined;
 beforeAll(() => {
 	if (process.platform !== "win32") return;
@@ -96,12 +109,15 @@ beforeAll(() => {
 				: {
 						deref: () => ({
 							...binding,
+							windowsClockTick: () => io.refusalClock?.now ?? io.nativeTick?.() ?? binding.windowsClockTick(),
 							readWindowsClockProbe: async (path: string) => {
 								io.calls.push("sample");
+								io.beforeOpen?.();
 								const clock = io.refusalClock;
 								if (!clock) {
 									const reading = await binding.readWindowsClockProbe(path);
 									if (reading) {
+										if (io.nativeTick) reading.sampledAtMs = io.nativeTick();
 										io.stamp = reading.mtimeMs;
 										io.onStat?.(path);
 									}
@@ -110,7 +126,7 @@ beforeAll(() => {
 								clock.stamp = clock.now;
 								return {
 									mtimeMs: clock.stamp,
-									createdInMs: 0,
+									sampledAtMs: clock.now,
 									pending: {
 										close: async () => {
 											clock.now += 150;
@@ -132,6 +148,8 @@ afterEach(() => {
 	io.refuseDelete = false;
 	io.withoutDeleteOnClose = false;
 	io.refusalClock = undefined;
+	io.beforeOpen = undefined;
+	io.nativeTick = undefined;
 	io.onStat = undefined;
 	names.length = 0;
 	vi.restoreAllMocks();
@@ -232,10 +250,77 @@ test("without delete-on-close a reading stays accurate and performs just its ori
 	}
 });
 
+test("an invalid directory returns the local clock fallback (#5674)", async () => {
+	io.withoutDeleteOnClose = true;
+	vi.spyOn(Date, "now").mockReturnValue(123_456);
+	assert.equal(await sharedClockOffset("ok\0bad"), 0);
+	assert.equal(await sharedClockNow("ok\0bad"), 123_456);
+});
+
+test("a civil clock correction before a failed probe is delivered does not move its fallback (#5674)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-fallback-step-"));
+	try {
+		let time = 10_000;
+		vi.spyOn(Date, "now").mockImplementation(() => time);
+		io.beforeOpen = () => {
+			time += 180_000;
+		};
+		assert.equal(await sharedClockNow(join(directory, "missing")), 10_000);
+		assert.equal(time, 190_000);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("probe queue time is not added to the filesystem timestamp (#5050, #5674)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-queued-"));
+	try {
+		let elapsed = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+		io.beforeOpen = () => {
+			elapsed += 7_000;
+		};
+		const now = await sharedClockNow(directory);
+		assert.equal(elapsed, 7_000);
+		assert.ok(Math.abs(now - io.stamp) < 100, `waiting to create the file added ${now - io.stamp} ms`);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test.runIf(process.platform === "win32")("a paused contender cannot take a renewed lock (#5050)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-paused-lock-"));
+	const slot = join(directory, "slot");
+	let release: (() => Promise<void>) | undefined;
+	try {
+		mkdirSync(`${slot}.lock`);
+		let elapsed = 0;
+		const end = Date.now();
+		vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+		vi.spyOn(Date, "now").mockImplementation(() => end - 7_000 + elapsed);
+		io.beforeOpen = () => {
+			elapsed = 7_000;
+			// The owner refreshed while the contender was descheduled before entering the worker.
+			utimesSync(`${slot}.lock`, new Date(end), new Date(end));
+		};
+		await assert.rejects(
+			async () => {
+				release = await lockShared(slot, { realpath: false, stale: 5_000, retries: 0 });
+			},
+			{ code: "ELOCKED" },
+		);
+		assert.equal(elapsed, 7_000);
+	} finally {
+		await release?.();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("filesystem time includes time spent sweeping probes after the measurement (#5674)", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "clock-time-"));
 	try {
 		let time = Date.now();
+		io.nativeTick = () => time;
 		vi.spyOn(Date, "now").mockImplementation(() => time);
 		vi.spyOn(performance, "now").mockImplementation(() => time);
 		io.afterList = () => {

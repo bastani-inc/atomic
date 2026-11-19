@@ -80,30 +80,75 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 	})
 }
 
-/// Retry a refused temporary-link removal only if both open names still identify the published file.
+/// An identity retained across publication. Keeping the handle open prevents file-ID reuse.
 #[napi]
-pub fn remove_windows_hard_link(
-	temporary: String,
-	published: String,
-) -> crate::task::Promise<bool> {
-	crate::task::blocking("temporary-hard-link", (), move |_| {
+pub struct WindowsFileIdentity {
+	file: Option<File>,
+	#[cfg(windows)]
+	id: (u64, [u8; 16]),
+}
+
+/// Pin a record before publishing it, without requesting data or deletion access or excluding scanners.
+#[napi]
+pub fn pin_windows_file(path: String) -> crate::task::Promise<Option<WindowsFileIdentity>> {
+	crate::task::blocking("pin-temporary-file", (), move |_| {
 		#[cfg(windows)]
 		{
-			use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES};
-			let Ok(link) = open_name(&temporary, DELETE | FILE_READ_ATTRIBUTES, true) else {
-				return Ok(false);
-			};
-			let Ok(record) = open_name(&published, FILE_READ_ATTRIBUTES, true) else {
-				return Ok(false);
-			};
-			Ok(same_file(&link, &record) && dispose_name(&link, false).is_ok())
+			use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
+			Ok(open_name(&path, FILE_READ_ATTRIBUTES, true).ok().and_then(|file| {
+				let id = file_id(&file)?;
+				Some(WindowsFileIdentity { file: Some(file), id })
+			}))
 		}
 		#[cfg(not(windows))]
 		{
-			let _ = (temporary, published);
-			Ok(false)
+			let _ = path;
+			Ok(None)
 		}
 	})
+}
+
+#[napi]
+impl WindowsFileIdentity {
+	#[napi]
+	pub fn close(&mut self) {
+		self.file.take();
+	}
+
+	/// Dispose the open temporary link only if both names identify the file pinned before publication.
+	#[napi]
+	pub fn remove_hard_link(
+		&mut self,
+		temporary: String,
+		published: String,
+	) -> crate::task::Promise<bool> {
+		let original = self.file.take();
+		#[cfg(windows)]
+		let id = self.id;
+		crate::task::blocking("temporary-hard-link", (), move |_| {
+			#[cfg(windows)]
+			{
+				use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES};
+				let Some(_original) = original else {
+					return Ok(false);
+				};
+				let Ok(link) = open_name(&temporary, DELETE | FILE_READ_ATTRIBUTES, true) else {
+					return Ok(false);
+				};
+				let Ok(record) = open_name(&published, FILE_READ_ATTRIBUTES, true) else {
+					return Ok(false);
+				};
+				Ok(file_id(&link) == Some(id)
+					&& file_id(&record) == Some(id)
+					&& dispose_name(&link, false).is_ok())
+			}
+			#[cfg(not(windows))]
+			{
+				let _ = (original, temporary, published);
+				Ok(false)
+			}
+		})
+	}
 }
 
 #[napi]
@@ -116,7 +161,7 @@ pub struct WindowsTemporaryFile {
 #[napi(object, object_from_js = false)]
 pub struct WindowsClockReading {
 	pub mtime_ms: f64,
-	pub created_in_ms: f64,
+	pub sampled_at_ms: f64,
 	pub pending: Option<WindowsTemporaryFile>,
 }
 
@@ -148,19 +193,26 @@ impl WindowsTemporaryFile {
 	}
 }
 
+/// Monotonic milliseconds in the same time base as a Windows probe's sampledAtMs.
+#[napi]
+pub fn windows_clock_tick() -> f64 {
+	use std::{sync::OnceLock, time::Instant};
+	static ORIGIN: OnceLock<Instant> = OnceLock::new();
+	ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
 /// Create with the host's current mask and reserve the name before sampling, in one filesystem-worker turn.
 /// Null means that the host's libuv operations are unavailable; no create has been attempted.
 #[napi]
 pub fn read_windows_clock_probe(path: String) -> crate::task::Promise<Option<WindowsClockReading>> {
-	#[cfg(windows)]
-	let started = std::time::Instant::now();
 	crate::task::blocking("temporary-clock-probe", (), move |_| {
 		#[cfg(windows)]
 		{
 			let Some(mut created) = host_fs::Creator::open(&path)? else {
 				return Ok(None);
 			};
-			let created_in_ms = started.elapsed().as_secs_f64() * 1000.0;
+			// The filesystem stamped the new file at creation, not when JavaScript queued the request.
+			let sampled_at_ms = windows_clock_tick();
 			let sample = created
 				.with_file(|creator| {
 					let Some(id) = file_id(creator) else {
@@ -189,7 +241,7 @@ pub fn read_windows_clock_probe(path: String) -> crate::task::Promise<Option<Win
 			if ordinary {
 				created.ordinary_unlink();
 			}
-			Ok(Some(WindowsClockReading { mtime_ms, created_in_ms, pending }))
+			Ok(Some(WindowsClockReading { mtime_ms, sampled_at_ms, pending }))
 		}
 		#[cfg(not(windows))]
 		{
