@@ -11,9 +11,9 @@ Edit directly or use `/settings` for common options. Choosing a model or thinkin
 
 For editor completion and validation, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/settings.schema.json"` to `settings.json`. Atomic preserves `$schema` and settings it does not recognize, such as extension settings, when it saves. If you save `settings.json` in an editor while Atomic is saving it, Atomic merges its change into your save instead of replacing it.
 
-Atomic checks the type of each setting when it loads a settings file. A value of the wrong type, such as a string where a list belongs (`"extensions": "./my-ext.ts"` instead of `["./my-ext.ts"]`), is ignored: Atomic behaves as if it were not set, so the other settings file or the default applies. A list entry of the wrong type, such as a number in `fallbackModels` or in the legacy `skills.customDirectories` form, is dropped and the rest of the list is kept. Each settings file is checked on its own, so a wrong-typed value in an `.atomic` file lets the value in the matching `.pi` file apply. Each ignored value is reported once as a warning that names the file and the key, and again if it comes back after being fixed, for example `Invalid settings file ~/.atomic/agent/settings.json: "extensions" must be array of string; ignoring it.` Atomic never rewrites the file; fix the value to clear the warning. Values of the right type that break a narrower rule, such as an out-of-range number, are reported by the feature that uses them, as described for each setting below. So are wrong-typed values of settings that check their own values and stop the request instead of switching to something else: `decisionModel`, `storage`, `sessions`, `workflows`, `snapshots`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs` and `streamDeadlineMs`.
+Atomic checks the type of each setting when it loads a settings file. A value of the wrong type, such as a string where a list belongs (`"extensions": "./my-ext.ts"` instead of `["./my-ext.ts"]`), is ignored: Atomic behaves as if it were not set, so the other settings file or the default applies. A list entry of the wrong type, such as a number in `fallbackModels` or in the legacy `skills.customDirectories` form, is dropped and the rest of the list is kept. Each settings file is checked on its own, so a wrong-typed value in an `.atomic` file lets the value in the matching `.pi` file apply. Each ignored value is reported once as a warning that names the file and the key, and again if it comes back after being fixed, for example `Invalid settings file ~/.atomic/agent/settings.json: "extensions" must be array of string; ignoring it.` Atomic never rewrites the file; fix the value to clear the warning. Values of the right type that break a narrower rule, such as an out-of-range number, are reported by the feature that uses them, as described for each setting below. So are wrong-typed values of settings that check their own values and stop the request instead of switching to something else: `decisionModel`, `storage`, `sessions`, `snapshots`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs` and `streamDeadlineMs`.
 
-Saving an Atomic setting applies only the changed fields to the corresponding `.atomic` file; it does not copy untouched fallback fields out of `.pi`. Within an object setting such as `modelThinkingLevels` or `workflows`, only the changed key is written, so keys another running Atomic process saved are kept. To intentionally override an inherited array such as `packages`, set it in `.atomic`, including an explicit empty array (`"packages": []`) when the inherited list should be disabled.
+Saving an Atomic setting applies only the changed fields to the corresponding `.atomic` file; it does not copy untouched fallback fields out of `.pi`. Within an object setting such as `modelThinkingLevels`, only the changed key is written, so keys another running Atomic process saved are kept. To intentionally override an inherited array such as `packages`, set it in `.atomic`, including an explicit empty array (`"packages": []`) when the inherited list should be disabled.
 
 ## On this page and its guide
 
@@ -59,7 +59,7 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 |---------|------|---------|-------------|
 | `defaultProvider` | string | - | Startup provider, saved automatically when you switch models interactively |
 | `defaultModel` | string | - | Startup model ID, saved automatically when you switch models interactively |
-| `decisionModel` | string | `""` | The model every decision uses: `structured_output` calls that name no model, workflow stage predictions, readiness after a steer, and `decide()`. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change the chat model. See [decisionModel](#decisionmodel). |
+| `decisionModel` | string | `""` | The model every decision uses: `structured_output` calls that name no model and `decide()`. An exact `provider/model` selects a registered chat or classifier model. `auto` and empty use the current chat model. Does not change the chat model. See [decisionModel](#decisionmodel). |
 | `defaultThinkingLevel` | string | - | Startup thinking level, saved automatically on interactive model/thinking changes: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`; clamped to the active model's supported levels |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; updated automatically on interactive model/thinking changes, or configured from `/settings` → Default thinking level per model |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
@@ -80,7 +80,7 @@ If it remains unsupported, Atomic does not silently switch providers:
 
 Normal automatic selection of an available authenticated model remains enabled if the provider is supported but its saved model is unknown or lacks configured authentication. It also remains enabled when either field is omitted. Valid extension-provider defaults can resolve after deferred extension loading. Update an unsupported pair or choose a model with `/model`.
 
-Subagents and workflow stages with `model: "auto"` run this default model when it has credentials, at the effort the agent or stage sets, otherwise at its `modelThinkingLevels` entry, then `defaultThinkingLevel`, then `medium`. Without a usable default model they run the launching session's model. See [Automatic model selection](/subagents/reference#automatic-model-selection).
+Subagents with `model: "auto"` run this default model when it has credentials, at the effort the subagent sets, otherwise at its `modelThinkingLevels` entry, then `defaultThinkingLevel`, then `medium`. Without a usable default model they run the launching session's model. See [Automatic model selection](/subagents/reference#automatic-model-selection).
 
 #### decisionModel
 
@@ -95,11 +95,9 @@ The former `modelRouting` setting was removed with automatic model routing; `"au
 The decision model is used by:
 
 - the `structured_output` tool when the call names no `model` (a classifier answers when the result schema is a finite Choice; otherwise the call's `fallbackModels` and then the current chat model answer);
-- [readiness after a steer](/workflows/operations#readiness-after-a-steer) in workflow stages, when `workflows.autoAdvanceAfterSteer` is on;
-- [predicted stage names](/workflows/operations#intercom-delivery-to-pending-workflow-stages) in workflows whose stage names the launch scan cannot read, and judgments of Intercom sends to paths outside a run's known stages;
-- [`decide()`](/sdk/structured-decisions#decide), which extensions and workflows call to make their own decisions.
+- [`decide()`](/sdk/structured-decisions#decide), which extensions call to make their own decisions.
 
-A classifier answers with probabilities; a chat model's answer has none. Readiness after a steer and predicted stage names need probabilities, so they only work with a classifier `decisionModel`, such as `typesafe/jev-latest`.
+A classifier answers with probabilities; a chat model's answer has none.
 
 Use `/settings` → **Decision model** to change the effective selection. If the project already defines `decisionModel`, the picker edits that project override; otherwise it saves the global default in `~/.atomic/agent/settings.json`. The picker identifies which scope it will save. Choose **Automatic** to save `""` in that scope. `""` and `auto` both use the current chat model; saved classifier credentials do not change that choice. To pin a decision model, choose an exact ID from the current registry, such as `typesafe/jev-latest`, or a chat model by provider/model ID. A classifier is not a chat model and does not appear in `/model`. Run `/reload` or restart Atomic to apply the saved choice to an already-running isolated engine.
 
@@ -109,7 +107,7 @@ A failed explicit classifier decision switches to the current chat model when on
 
 Classifier fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Turn on [debug mode](#debug-mode) to write them to the debug log.
 
-This setting selects the model that makes each decision listed above. It does not select a subagent's or workflow stage's execution model, and it does not change the selected chat model. An SDK `generateStructuredOutput()` call starts on it only when you pass `settings` and no `model`; otherwise the call uses only the models it names. The decision provider may be any registered classifier or chat model, never an image-generation model. The decision model's provider receives the decision context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
+This setting selects the model that makes each decision listed above. It does not select a subagent's execution model, and it does not change the selected chat model. An SDK `generateStructuredOutput()` call starts on it only when you pass `settings` and no `model`; otherwise the call uses only the models it names. The decision provider may be any registered classifier or chat model, never an image-generation model. The decision model's provider receives the decision context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
 
 #### thinkingBudgets
 
@@ -130,13 +128,11 @@ This setting selects the model that makes each decision listed above. It does no
 
 A model named with `--model` on the command line runs as named. That session falls back only to the models `--fallback-models` names, never to this list, whether user or project. `--fallback-models` replaces this list for one run, and `--no-fallback` turns fallback off for one run. See [CLI model options](/reference/cli#model-options).
 
-If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback. Press Esc during a retry wait or a model switch to stop the pending request. In a subagent chat, send a new message to continue; in a workflow stage chat, Esc pauses the stage, including while it waits for a provider's rate limit to clear.
+If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback. Press Esc during a retry wait or a model switch to stop the pending request. In a subagent chat, send a new message to continue.
 
-A content-filter refusal, such as OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, or a `content_filter` finish reason, also moves to the next fallback, without retrying the model that refused: the same request would be refused again. The refused model is recorded in the fallback history. Set `retry.fallbackOnContentFilter` to `false` to keep such a refusal on the model that gave it. Subagents and workflow stages follow the same setting for their own `fallbackModels`.
+A content-filter refusal, such as OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, or a `content_filter` finish reason, also moves to the next fallback, without retrying the model that refused: the same request would be refused again. The refused model is recorded in the fallback history. Set `retry.fallbackOnContentFilter` to `false` to keep such a refusal on the model that gave it. Subagents follow the same setting for their own `fallbackModels`.
 
 The fallback model and its thinking level remain active for later turns in the same main-chat session. Choose another model explicitly with `/model` or model cycle to change them.
-
-Workflow stages that set their own `model` or `fallbackModels` never use this list; they advance only the chain they declare. See [`fallbackModels`](/workflows/api-reference#fallbackmodels).
 
 A failure that another request to the same model cannot repair — a rejected credential, an unavailable model, a request that model cannot serve — takes that model out of the chain for the rest of the turn at **every** reasoning level, so a candidate that differs only by its `:low`/`:high` suffix is skipped rather than spent. Transient rate-limit and transport failures keep those reasoning variants, because retrying them can succeed.
 
@@ -170,7 +166,7 @@ Fallback attempts are visible as model changes in the session transcript and as 
 
 ### Fast models
 
-Fast inference is not a setting. Where a provider supports it, Atomic publishes a second selectable model whose canonical ID is the base model ID plus `-fast`, and you choose it the same way you choose any other model — in `/model`, as a startup default, in `fallbackModels`, in `enabledModels`, in a workflow stage's `model`, or in a subagent definition. Thinking suffixes work unchanged: `openai-codex/gpt-5.6-sol-fast:medium`.
+Fast inference is not a setting. Where a provider supports it, Atomic publishes a second selectable model whose canonical ID is the base model ID plus `-fast`, and you choose it the same way you choose any other model — in `/model`, as a startup default, in `fallbackModels`, in `enabledModels`, or in a subagent definition. Thinking suffixes work unchanged: `openai-codex/gpt-5.6-sol-fast:medium`.
 
 Normal and fast IDs stay distinct everywhere, so `fallbackModels` can list both and each attempt is recorded separately:
 
@@ -190,10 +186,10 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `theme` | string | `"dark"` | Theme name (`"dark"`, `"light"`, `"system"`, a Catppuccin built-in, or custom). `"system"` derives its palette from the terminal; see [Themes](/themes) |
-| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. Attached workflow chats and `/tasks` transcripts show the same scrollbar, without dragging. |
+| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost transcript column and keeps it visible, and `"hidden"` hides it. The thumb can be dragged when shown. `/tasks` transcripts show the same scrollbar, without dragging. |
 | `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and session resume hint, while `"resume-hint"` restores the terminal's previous screen and prints only the resume hint. Settable from `/settings` |
 | `fullscreenCopyOnSelect` | boolean | `true` | Copy fullscreen text selections automatically on mouse release. When `false`, selection only highlights text. Ctrl+X does not copy; `/copy` copies the last assistant message. Settable from `/settings` |
-| `fullscreenWheelScrollLines` | `"auto"` or number | `"auto"` | Lines per mouse-wheel tick in fullscreen views, including attached workflow chats and `/tasks` transcripts. `"auto"` uses terminal-aware scrolling; numeric values are clamped to 1–100. Settable from `/settings` |
+| `fullscreenWheelScrollLines` | `"auto"` or number | `"auto"` | Lines per mouse-wheel tick in fullscreen views, including `/tasks` transcripts. `"auto"` uses terminal-aware scrolling; numeric values are clamped to 1–100. Settable from `/settings` |
 | `quietStartup` | boolean or `"header"` | `false` | `true` hides the startup header. `"header"` keeps the startup header but hides the model scope line |
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show a one-line update notice after updates instead of the What's New highlights; `/changelog` shows the full changelog |
@@ -212,7 +208,7 @@ See [Providers](/providers#fast-models) for which providers publish fast variant
 | `autocompleteMaxVisible` | number | `5` | Max visible items in the default editor and custom editors installed through `ctx.ui.setEditorComponent()` (3-20) |
 | `showHardwareCursor` | boolean | `false` | Use the terminal cursor instead of Atomic's drawn cursor. Atomic still positions it for IME support |
 
-Interactive sessions use fullscreen, with the transcript above the docked editor and status area. Wheel and trackpad input scrolls the focused workflow graph or stage chat first, then the transcript when the overlay does not consume it. Transcript scrolling, scrollbar dragging, and text selection remain available outside overlays. Overlay selections clear when returning to main chat and are not copied during that transition.
+Interactive sessions use fullscreen, with the transcript above the docked editor and status area. Transcript scrolling, scrollbar dragging, and text selection remain available outside overlays. Overlay selections clear when returning to main chat and are not copied during that transition.
 
 Transient notices stack while visible.
 
@@ -277,20 +273,6 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 }
 ```
 
-### Intercom
-
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `intercom.showUnknownTargetWarnings` | boolean | `false` | Add a note to a queued workflow Intercom send whose target is outside the run's known and predicted stages. Delivery is the same either way |
-
-```json
-{
-  "intercom": {
-    "showUnknownTargetWarnings": true
-  }
-}
-```
-
 ### Compaction
 
 | Setting | Type | Default | Description |
@@ -336,12 +318,12 @@ These compaction settings were removed and are ignored when present; settings st
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `snapshots.enabled` | boolean | `true` | Record worktree snapshots so sessions and workflow runs resume with their repository state |
+| `snapshots.enabled` | boolean | `true` | Record worktree snapshots so sessions resume with their repository state |
 | `snapshots.includeUntracked` | boolean | `true` | Capture untracked files that no ignore rule or deny pattern excludes |
 | `snapshots.maxFileBytes` | number | `5242880` | Largest file a snapshot captures, in bytes |
 | `snapshots.maxSnapshotBytes` | number | `52428800` | Largest total of captured content, and largest unpushed-commit bundle, in bytes |
 | `snapshots.fullEvery` | number | `10` | Restart the patch chain from `HEAD` after this many snapshots |
-| `snapshots.autoCollect` | boolean | `true` | Delete snapshot content nothing retains, in the background of an interactive session, after a session closes, and when a workflow run finishes |
+| `snapshots.autoCollect` | boolean | `true` | Delete snapshot content nothing retains, in the background of an interactive session and after a session closes |
 | `snapshots.collectIntervalSeconds` | number | `3600` | Shortest time between two automatic collections of one database, in seconds |
 | `snapshots.graceSeconds` | number | `3600` | Snapshot content stored or reused less than this many seconds ago is never collected; `0` turns this protection off |
 | `snapshots.pool.maxIdlePerRepository` | number | `2` | Idle restored worktrees kept per repository; a resume that restores another removes the oldest unchanged ones beyond it. See [Restored worktrees](/worktree-snapshots#restored-worktrees) |
@@ -361,7 +343,7 @@ See [Worktree snapshots](/worktree-snapshots).
 | `retry.provider.maxRetries` | number | `0` | Provider/SDK retry attempts. Leave unset/`0` to let Atomic's agent-level retry handle transient failures |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s); also caps how long an agent-level retry waits for a server retry hint |
 
-Agent-level retries use exponential backoff capped by `retry.maxAgentDelayMs`, including the shared main-chat and workflow retry policy and summary calls. When a failed response carries a server retry hint (`Retry-After-Ms` or `Retry-After` header, a Cloudflare 5xx `retry_after` body field, or a Google `RetryInfo.retryDelay` in the error body), Atomic waits as long as the server asks instead, up to `retry.provider.maxRetryDelayMs`. OpenAI, OpenAI-compatible, ChatGPT (Codex), Anthropic, Azure OpenAI, Mistral, Google (Generative AI and Vertex) and Amazon Bedrock providers report these hints. `retry.maxRetries` still limits the number of retries, so with the defaults a hinted outage can take up to about 3 × 60s before the turn fails or switches to a configured `fallbackModels` entry. Cloudflare 520-524 responses and connection resets count as transient errors; non-retryable 4xx and quota errors still stop immediately. This is independent of provider retry limits. Legacy `retry.maxDelayMs` still migrates to `retry.provider.maxRetryDelayMs`, not the agent cap.
+Agent-level retries use exponential backoff capped by `retry.maxAgentDelayMs`, including main-chat retries and summary calls. When a failed response carries a server retry hint (`Retry-After-Ms` or `Retry-After` header, a Cloudflare 5xx `retry_after` body field, or a Google `RetryInfo.retryDelay` in the error body), Atomic waits as long as the server asks instead, up to `retry.provider.maxRetryDelayMs`. OpenAI, OpenAI-compatible, ChatGPT (Codex), Anthropic, Azure OpenAI, Mistral, Google (Generative AI and Vertex) and Amazon Bedrock providers report these hints. `retry.maxRetries` still limits the number of retries, so with the defaults a hinted outage can take up to about 3 × 60s before the turn fails or switches to a configured `fallbackModels` entry. Cloudflare 520-524 responses and connection resets count as transient errors; non-retryable 4xx and quota errors still stop immediately. This is independent of provider retry limits. Legacy `retry.maxDelayMs` still migrates to `retry.provider.maxRetryDelayMs`, not the agent cap.
 
 A GitHub Copilot response that ends early after an attempt that ran 5 minutes or more is a long cut, and repeating it is likely to be cut again. A long cut gets one more retry, and a second one with no successful response in between stops retrying that model: the turn moves to the next `fallbackModels` entry when there is one, and otherwise ends with a message that suggests splitting the work into smaller steps, lowering the thinking effort or setting `fallbackModels`. Cuts after shorter attempts use the `retry.maxRetries` budget as above. Partial output is never replayed; each retry restarts the turn. See [GitHub Copilot errors](/providers#streams-cut-after-a-long-attempt).
 
@@ -393,7 +375,7 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 
 Atomic applies this timeout to the global HTTP dispatcher used by `fetch` and provider SDK HTTP clients. The default is 600,000 ms (10 minutes), which keeps slow long-context requests working while reclaiming stale idle connections. Atomic does not impose a separate fixed connect-phase timeout; connection failures surface through the provider and agent retry/error paths.
 
-The same value is the default wall-clock limit for one [structured decision](/sdk/structured-decisions#cancellation-and-failures): a `structured_output` call, a `generateStructuredOutput()` call, or a `decide()` call. The limit covers every repair attempt, retry, and fallback together, so a model that streams for a long time cannot hold a workflow stage past it. A disabled idle timeout leaves those calls effectively unbounded. Schema-backed workflow stages can set their own limit with [`schemaTimeoutMs`](/workflows/api-reference#schematimeoutms).
+The same value is the default wall-clock limit for one [structured decision](/sdk/structured-decisions#cancellation-and-failures): a `structured_output` call, a `generateStructuredOutput()` call, or a `decide()` call. The limit covers every repair attempt, retry, and fallback together, including time spent streaming. A disabled idle timeout leaves those calls effectively unbounded.
 
 The `/settings` picker offers these presets:
 
@@ -520,7 +502,7 @@ Plain names establish a replacement list before its modifiers apply. A project l
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `tasks.heartbeatMs` | number | `900000` | How often, in milliseconds, a running background shell or subagent sends its chat a [task heartbeat](/background-tasks#task-heartbeats). `0` turns heartbeats off; other values must be at least `60000`. An invalid value uses the default. A tool call's `heartbeatMs` overrides it for that task. |
-| `tasks.heartbeatWakesIdleSession` | boolean | `true` | Whether a [task heartbeat](/background-tasks#task-heartbeats) or [workflow heartbeat](/workflows/api-reference#heartbeatintervalminutes) that arrives while the chat is idle after an interrupt (Esc) starts a turn at once. When `false`, it waits for your next message, as Intercom messages and finished-task notices do. |
+| `tasks.heartbeatWakesIdleSession` | boolean | `true` | Whether a [task heartbeat](/background-tasks#task-heartbeats) that arrives while the chat is idle after an interrupt (Esc) starts a turn at once. When `false`, it waits for your next message, as Intercom messages and finished-task notices do. |
 
 ```json
 { "tasks": { "heartbeatMs": 1800000 } }
@@ -531,21 +513,21 @@ Plain names establish a replacement list before its modifiers apply. A project l
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `sessions.storage` | object | Local SQLite | Session-only storage selection: `{ "path": "..." }`, `{ "dir": "..." }`, `{ "memory": true }`, or `{ "adapter": "...", "options": {}, "secrets": {}, "prefix": "..." }`. |
-| `storage` | object | Local SQLite | Shared selection for sessions and workflow runs. Accepts the same forms except `dir`. |
+| `storage` | object | Local SQLite | Storage selection for sessions when `sessions.storage` is unset. Accepts the same forms except `dir`. |
 
 ```json
 { "sessions": { "storage": { "path": "sessions.sqlite" } } }
 ```
 
-Without configuration, sessions use `~/.atomic/workflows/journal.sqlite` with `session_` table names, and workflow runs use the [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`. If `ATOMIC_CODING_AGENT_DIR` changes the agent directory, both live under `<agentDir>/workflows/` inside that directory, unless that directory adopted an existing store in its parent directory `<parent>` from an earlier build (see [Storage home](/storage#storage-home)). JSONL is opt-in through `dir`, `--session-dir`, or `ATOMIC_CODING_AGENT_SESSION_DIR`. The `sessionDir` setting has been removed; use `sessions.storage.dir` instead.
+Without configuration, sessions use `~/.atomic/workflows/journal.sqlite` with `session_` table names. If `ATOMIC_CODING_AGENT_DIR` changes the agent directory, the database lives under `<agentDir>/workflows/` inside that directory, unless that directory adopted an existing store in its parent directory `<parent>` from an earlier build (see [Storage home](/storage#storage-home)). JSONL is opt-in through `dir`, `--session-dir`, or `ATOMIC_CODING_AGENT_SESSION_DIR`. The `sessionDir` setting has been removed; use `sessions.storage.dir` instead.
 
 Session precedence is SDK `sessionStore`, `--no-session`, `--session-dir` or `--session-store` (mutually exclusive CLI selections), `--storage` or `--storage-file`, `ATOMIC_SESSIONS_STORAGE` or non-empty `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `sessions.storage`, shared `storage`, then the default SQLite file. Empty environment values are ignored. Project selections replace global selections as whole objects, including options, secrets and prefix; fields are never merged. A present empty `sessions.storage` selects the default session database rather than inheriting `storage`. Relative settings paths resolve against the [storage home](/storage#storage-home) (`~/.atomic` by default, `<agentDir>` when `ATOMIC_CODING_AGENT_DIR` is customized, or `<parent>` for the single directory that adopted an existing parent store), and so do relative paths in the JSON selections of `--storage`, `ATOMIC_STORAGE`, and `ATOMIC_SESSIONS_STORAGE`. `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve against the working directory.
 
-To select storage for one process without editing settings, pass the same JSON selection in `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `ATOMIC_WORKFLOWS_JOURNAL`, `--storage`, or `--storage-file`. See [Selecting storage per process](/storage#selecting-storage-per-process).
+To select storage for one process without editing settings, pass the same JSON selection in `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `--storage`, or `--storage-file`. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
 See [Choosing a store](/sessions#choosing-a-store) for CLI selection, prefix rules, and conflicts.
 
-Only the selected setting is validated; invalid lower-precedence settings do not block an explicit override. Every set `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_WORKFLOWS_JOURNAL` is validated even when outranked. Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`, whose `source`, `field`, and `reason` identify the problem. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage) and [Storage errors](/storage#storage-errors).
+Only the selected setting is validated; invalid lower-precedence settings do not block an explicit override. `ATOMIC_STORAGE` and `ATOMIC_SESSIONS_STORAGE` are each validated when set, even when outranked. Memory must be selected explicitly and is lost on exit. Invalid selected configuration raises `StorageConfigError`, whose `source`, `field`, and `reason` identify the problem. If a selected store cannot open, Atomic raises a typed storage error rather than falling back to memory. See [Sessions](/sessions#session-storage) and [Storage errors](/storage#storage-errors).
 
 ### Models
 
@@ -576,7 +558,7 @@ LaTeX rendering supports whitespace and matrix layouts.
 
 ### Resources
 
-These settings define where to load extensions, skills, prompts, themes, and workflows from.
+These settings define where to load extensions, skills, prompts, and themes from.
 
 Paths in `~/.atomic/agent/settings.json` resolve relative to `~/.atomic/agent`. Paths in `.atomic/settings.json` resolve relative to `.atomic`. Absolute paths and `~` are supported.
 
@@ -587,75 +569,13 @@ Paths in `~/.atomic/agent/settings.json` resolve relative to `~/.atomic/agent`. 
 | `skills` | string[] | `[]` | Local skill file paths or directories |
 | `prompts` | string[] | `[]` | Local prompt template paths or directories |
 | `themes` | string[] | `[]` | Local theme file paths or directories |
-| `workflows` | string[] or object | `[]` | Local workflow paths, or `{ "paths": [...] }`; see [Workflow storage](#workflow-storage) |
-| `workflows.autoAdvanceAfterSteer` | boolean | `true` | After you steer a stage that asked you a question, the decision model advances the stage or keeps it open instead of asking "Are you ready to move on to the next stage?". It asks when it is unsure or fails. `false` always asks. Shown in `/settings` as **Auto-advance after steer**. Requires the object form of `workflows`. See [Readiness after a steer](/workflows/operations#readiness-after-a-steer) |
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands |
+
+Old `workflows` settings no longer configure execution. You can leave them in place: Atomic uses the old path entries only to locate files the agent can read as recipes on request. Worker, journal, admission, and auto-advance options have no effect.
 
 Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+path` to force-include an exact path and `-path` to force-exclude an exact path.
 
-#### Workflow storage
-
-Workflow runs use a SQLite journal, by default the [journal store](/storage#the-workflow-journal-store) in `~/.atomic/workflows/journal/`, whose shard files Atomic manages. Set `workflows.journal.path` in `settings.json` to keep runs in one file instead, for isolation:
-
-```json
-{
-  "workflows": {
-    "paths": ["./workflows"],
-    "journal": { "path": "workflows/project.sqlite" }
-  }
-}
-```
-
-`workflows.journal` selects where workflow runs are stored. Sessions, including the sessions of workflow stages, still use `sessions.storage` (default `~/.atomic/workflows/journal.sqlite`), so the `--session-store` path in a resume hint can differ from your journal path. To keep both in one file, set `sessions.storage` to the same path, or set the shared `storage` instead of either. Sessions already saved in the old store stay there; resume them with `--session-store <old path>`.
-
-#### Local worker pools
-
-Local worker pools are disabled unless `workflows.localWorkers` is set. With the option omitted, Atomic creates no worker tables, processes, or polling loops. A worker definition must be importable from its module path and export name. Only first-level `ctx.workflow(...)` child subtrees run in the pool; a root closure stays in the main process, and nested children stay on their assigned worker.
-
-```json
-{
-  "workflows": {
-    "localWorkers": {
-      "count": 4,
-      "definitions": [
-        { "path": "./workflows/research.ts", "exportName": "research" }
-      ]
-    },
-    "admission": {
-      "limits": { "session": 4, "process": 8 },
-      "userLimits": { "session": 8, "process": 16 },
-      "userDatabase": "/Users/alex/.atomic/workflows/user-limits.sqlite",
-      "host": { "maxLoadPerCpu": 2, "minFreeMemoryBytes": 2147483648 }
-    }
-  }
-}
-```
-
-`count` is a positive integer. Paths in the settings object resolve against the invocation working directory. Worker settings and entry-module digests are saved with the root. A resume runs with the current `localWorkers.count`, `admission.limits` and `admission.host`. It refuses other changed settings and worker definitions added or removed, and the error names each change. After you edit a definition's entry module, `/resume` asks `Workflow definition changed since this run started · enter resume with the new definition · esc cancel` before it resumes the run; in the SDK, pass `acceptEntryChanges: true`. Once accepted, completed steps replay from the journal, and the root's unfinished children run the edited module. The entry-module digest does not include imported dependencies, so editing a module the entry imports does not block a resume. A resume may also run under another execution mode than the launch, for example headless after an interactive launch.
-
-`startupTimeoutMs` is how long, in milliseconds, each worker process may take to become ready. When it is unset, the deadline is 30000 ms, scaled up when the pool has more workers than the machine has CPU cores or the machine is already busy: it is 30000 ms times (worker count + 1-minute load average) ÷ CPU cores, at least 30000 ms and at most 600000 ms. Raise it if runs fail with `WorkerStartupTimeoutError` (code `worker_startup_failed`). The pool runs children once any worker is ready and fails only when no worker starts. This value is not saved with the root, so changing it does not block a resume. Each worker's standard error is written to `worker-logs/<root run ID>/<worker ID>.log` in the workflow journal's directory, and worker failure errors name that file in their `logPath`. See [Worker startup and failures](/workflows/operations#worker-startup-and-failures).
-
-`leaseMs` is how long, in milliseconds, a worker that is still running but has stopped responding keeps its child before the child is replayed on another worker. It defaults to `30000` and must be at least `2000`. A worker that exits is replaced immediately, and a worker that is still responding keeps its child even when the pool is briefly too busy to process its heartbeats. Like `startupTimeoutMs`, this value is not saved with the root.
-
-`heartbeatMs` is how often, in milliseconds, each worker sends its heartbeat. One heartbeat renews the child's lease, reports the child's token and cost usage, and reads whether the pool is paused or quitting. It defaults to a quarter of `leaseMs` (7500 ms for the default lease, 15000 ms for a 60000 ms lease), and must be an integer from `100` to half of `leaseMs`. Pause, resume and quit reach workers as soon as you give them, not at the next heartbeat. A shorter interval makes token and cost budgets see worker usage sooner, at the cost of one journal write per worker per heartbeat. A longer one leaves less room for a busy machine to delay heartbeats before the lease runs out. It is not saved with the root. An out-of-range `leaseMs` or `heartbeatMs` refuses each run or resume before it starts, with a `LocalWorkerOptionsError` message that names the setting; listing workflows and status still work (see [Local worker errors](/workflows/api-reference#local-worker-errors)).
-
-`maxLoadPerCpu` keeps an overloaded machine from being given a burst of stages to start. While the 1-minute load average divided by the number of CPU cores is above it, the stages of pooled children start one at a time, at most one every 5 seconds, in the order they asked, instead of all at once while earlier ones are still starting. Running stages, the subagents they start and their tool processes are not held. It defaults to `3`; `0` turns it off. It is not saved with the root, so you can change it before resuming. `admission.host.maxLoadPerCpu` below is a separate gate on every session and process launch.
-
-`maxWorkerRssBytes` replaces a worker that has grown past this many bytes of resident memory with a fresh one. The worker finishes the child it is running, exits between children, and the pool starts a new worker in its place; a running child is never interrupted, and these replacements never count as worker failures. A worker keeps only what its current child needs, so this is a backstop for memory a long-lived worker accumulates anyway. Set it well above a fresh worker's resident memory, which is a few hundred MB: below what a worker uses for one child, every worker is replaced after each child it runs, and the run shows a warning saying so. It is unset by default, which never replaces a worker for its memory, and it is not saved with the root.
-
-`limits` caps agent sessions and managed tool processes for one root. Session permits cover creation through disposal, including fallback and delegated sessions. Process permits last until confirmed cleanup; yielding an observation wait does not free one. Processes outside Atomic's managed tools are not counted. `host` load and memory thresholds gate launches but do not impose hard OS limits: `minFreeMemoryBytes` holds new sessions and tool processes, in every local worker too, while the machine's free memory is below it, but it does not shrink a worker that grew after its sessions started. To bound a pool's memory, combine `localWorkers.count` with `localWorkers.maxWorkerRssBytes`.
-
-`userLimits` counts across runs only when all participating runs use the same canonical local SQLite journal file, so also set `workflows.journal.path` to that file (for the example above, `"journal": { "path": "/Users/alex/.atomic/workflows/user-limits.sqlite" }` in `workflows`); the default journal store keeps each root on its own shard, and a run with `userLimits` on it fails with `WorkflowAdmissionConfigError` (`user-limits-need-one-journal`) before it starts. Set `userDatabase` to that exact path, and pass the admission options to participating non-pooled SDK runs. When the pool's journal is a remote database or another journal that is not a default local SQLite file, omit `userDatabase`: the limit then counts across the pooled roots on this machine that use that journal. This coordinates processes for one local user; it is not a tenant isolation boundary.
-
-`workers` sets shared placement for the roots that the `workflow` tool starts: with `{ "placement": "shared" }` and a journal every machine opens through a storage adapter, such as the libSQL database `atomic team join` selects, worker hosts on other machines (`atomic worker start`) run the roots' pooled children too. It requires `localWorkers`. `claimWindowMs` (default `60000`) is how long work bound to a workspace may wait unclaimed while no live host can restore it. `checkpointShipping` (default `"sync"`) sets how worker hosts record the children's checkpoints; see [Checkpoint shipping](/workflows/operations#checkpoint-shipping). A run whose journal other machines cannot open is refused with `SharedPoolSetupError` before it starts. See [Running workers on many machines](/guides/worker-hosts).
-
-Workers require native process and boot identity and are currently supported only on Linux and macOS. Windows and hosts without those identities refuse activation, even if no process cap is configured. By default workers run on this machine, but the workflow journal can be a local SQLite file or a remote database selected through `workflows.journal` or `storage` (see [Selecting storage per process](/storage#selecting-storage-per-process)): the workers open the same journal, and the pool keeps its work queue and leases in a SQLite file in `workflows/pool/` under the [storage home](/storage#storage-home) (`~/.atomic/workflows/pool/` by default, or `<agentDir>/workflows/pool/` when `ATOMIC_CODING_AGENT_DIR` is customized). Resume a pooled root on the machine where it ran; on another machine it fails with an error naming the original one. A memory journal cannot host workers. To run a root's children on other machines too, set `workers` (above), or start the root with `workers: { placement: "shared" }` in the SDK, on a journal every machine opens through a storage adapter; see [Workers on other hosts](/workflows/operations#workers-on-other-hosts). SDK callers cannot combine the pool with process-bound adapters, UI, persistence, or similar overrides. An unregistered or non-importable child fails; Atomic does not execute it locally as a fallback. Recovery may repeat external effects that occurred after a checkpoint, so use stable idempotency keys for operations that must not be repeated.
-
-Relative settings paths resolve against the [storage home](/storage#storage-home) (`~/.atomic` by default, `<agentDir>` when `ATOMIC_CODING_AGENT_DIR` is customized, or `<parent>` when adopted), not the project directory. Precedence is SDK `RunOpts.journal` (or `createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default journal store. An empty environment variable is ignored. SDK sessions read `workflows.journal` from the settings they were given, so `SettingsManager.inMemory(...)` selects a journal per session. A present empty journal block selects the journal store rather than inheriting shared storage. See [Selecting storage per process](/storage#selecting-storage-per-process).
-
-To keep workflow records only in memory, set `"journal": { "memory": true }`. Do not combine `memory: true` with a non-empty `path`. Memory must be selected explicitly and cannot recover runs after the process exits; an environment path still takes precedence over this setting.
-
-Project `workflows.journal` and `storage` each replace their global selection as a whole, including options, secrets, and prefix. For example, a project can select `{ "memory": true }` over a global path. Invalid selected settings raise `StorageConfigError` instead of trying a lower-precedence selection. Combining `memory: true` with a non-empty `path` is an error.
+#### Storage adapters
 
 To use your own database driver, install an adapter module, for example as an [Atomic package](/storage#adapters-from-atomic-packages), and select it by package name or module path. A package name also selects an adapter from a package directory the process was given with `--extension` or the SDK's `additionalExtensionPaths`, ahead of the packages in settings:
 
@@ -670,9 +590,7 @@ To use your own database driver, install an adapter module, for example as an [A
 }
 ```
 
-The shared `storage` setting supplies defaults for both sessions and the journal. Use `sessions.storage` or `workflows.journal` for a domain-only override. A shared empty selection uses `storage.sqlite` under the [storage home](/storage#storage-home) (`~/.atomic/storage.sqlite` by default, or `<agentDir>/storage.sqlite` when `ATOMIC_CODING_AGENT_DIR` is customized). Atomic bundles no remote driver. Adapter modules execute code, so review them before trusting project settings. Secret references accept `{ "env": "VARIABLE" }` or `{ "file": "token.txt" }`; relative secret files resolve against the [storage home](/storage#storage-home) (falling back to the parent directory when an existing secret file lives there), and their contents are passed as written except for one trailing line ending (`\n` or `\r\n`), which is removed. See [Storage adapters](/storage#selecting-an-adapter).
-
-Changing the journal selects a different run history. Preserve the original file to inspect or resume its runs. The default local file needs no separate server; a remote database requires an adapter, and every host that shares runs must select the same database and prefix. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts). If the selected journal cannot be opened or written, the action fails with a typed storage error rather than selecting memory. Restore access to the store and inspect the retained run before retrying. See [Durable workflows](/workflows/operations#durable-workflows-and-cross-session-resume).
+Use `sessions.storage` to override `storage` for sessions. A shared empty selection uses `storage.sqlite` under the [storage home](/storage#storage-home) (`~/.atomic/storage.sqlite` by default, or `<agentDir>/storage.sqlite` when `ATOMIC_CODING_AGENT_DIR` is customized). Atomic bundles no remote driver. Adapter modules execute code, so review them before trusting project settings. Secret references accept `{ "env": "VARIABLE" }` or `{ "file": "token.txt" }`; relative secret files resolve against the [storage home](/storage#storage-home) (falling back to the parent directory when an existing secret file lives there), and their contents are passed as written except for one trailing line ending (`\n` or `\r\n`), which is removed. See [Storage adapters](/storage#selecting-an-adapter).
 
 #### packages
 
@@ -692,14 +610,13 @@ Object form filters which resources to load:
     {
       "source": "pi-skills",
       "skills": ["brave-search", "transcribe"],
-      "extensions": [],
-      "workflows": []
+      "extensions": []
     }
   ]
 }
 ```
 
-Set `autoload` to `false` on an object-form package entry to start that package with no discovered resources and apply only its explicit `extensions`, `skills`, `prompts`, `themes`, or `workflows` patterns. This is useful when a package contains resources you do not want to load by default.
+Set `autoload` to `false` on an object-form package entry to start that package with no discovered resources and apply only its explicit `extensions`, `skills`, `prompts`, `themes`, or `mcpServers` patterns. This is useful when a package contains resources you do not want to load by default.
 
 See [Atomic packages](/packages) for package management details.
 

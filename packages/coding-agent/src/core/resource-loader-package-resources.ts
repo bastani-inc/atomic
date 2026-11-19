@@ -1,4 +1,4 @@
-import { createExtensionRuntime, type WorkflowResourceProvider } from "./extensions/loader.ts";
+import { createExtensionRuntime, type PackageMcpServerSource } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import type { PathMetadata, ResolvedMcpServer, ResolvedPaths, ResolvedResource } from "./package-manager.ts";
@@ -9,7 +9,7 @@ import type { DefaultResourceLoaderInheritanceSnapshot, ResourceLoaderReloadOpti
 import { createSourceInfo } from "./source-info.ts";
 
 export function emptyResolvedPaths(): ResolvedPaths {
-	return { extensions: [], skills: [], prompts: [], themes: [], workflows: [], mcpServers: [] };
+	return { extensions: [], skills: [], prompts: [], themes: [], legacyWorkflowFiles: [], mcpServers: [] };
 }
 
 export async function resolvePackageResourcePaths(
@@ -58,7 +58,7 @@ function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
 		skills: mark(paths.skills),
 		prompts: mark(paths.prompts),
 		themes: mark(paths.themes),
-		workflows: mark(paths.workflows),
+		legacyWorkflowFiles: mark(paths.legacyWorkflowFiles),
 		mcpServers: mark(paths.mcpServers),
 	};
 }
@@ -74,8 +74,8 @@ export async function resolveTrustedBorrowedProjectLocalSources(
 		includeProjectLocalResources: true,
 	});
 	const resourcesBySource = new Map<string, ResolvedResource[]>();
-	const { extensions, skills, prompts, themes, workflows } = cliExtensionPaths;
-	for (const resources of [extensions, skills, prompts, themes, workflows]) {
+	const { extensions, skills, prompts, themes, legacyWorkflowFiles } = cliExtensionPaths;
+	for (const resources of [extensions, skills, prompts, themes, legacyWorkflowFiles]) {
 		for (const resource of resources) {
 			if (!resource.metadata.borrowedProjectLocal) {
 				continue;
@@ -110,33 +110,13 @@ export function filterBorrowedProjectLocalResources(paths: ResolvedPaths, truste
 		skills: filterResources(paths.skills),
 		prompts: filterResources(paths.prompts),
 		themes: filterResources(paths.themes),
-		workflows: filterResources(paths.workflows),
+		legacyWorkflowFiles: filterResources(paths.legacyWorkflowFiles),
 		mcpServers: filterResources(paths.mcpServers),
 		installFailures: paths.installFailures,
 	};
 }
 
-function enabledWorkflowResources(resources: ResolvedResource[]): ResolvedResource[] {
-	return resources.filter((resource) => resource.enabled);
-}
-
-function enabledPackageWorkflowResources(resources: ResolvedResource[]): ResolvedResource[] {
-	return resources.filter((resource) => resource.enabled && resource.metadata.origin === "package");
-}
-
-export function collectWorkflowResources(
-	resolvedPaths: ResolvedPaths,
-	cliExtensionPaths: ResolvedPaths,
-	builtinPackagePaths: ResolvedPaths,
-): ResolvedResource[] {
-	return [
-		...enabledWorkflowResources(cliExtensionPaths.workflows),
-		...enabledPackageWorkflowResources(resolvedPaths.workflows),
-		...enabledPackageWorkflowResources(builtinPackagePaths.workflows),
-	];
-}
-
-/** Enabled manifest MCP servers in workflow-resource order; the first package declaring a name wins. */
+/** Enabled manifest MCP servers in discovery order; the first package declaring a name wins. */
 export function collectMcpServerContributions(
 	resolvedPaths: ResolvedPaths,
 	cliExtensionPaths: ResolvedPaths,
@@ -159,11 +139,9 @@ export function collectMcpServerContributions(
 	return [...contributions.values()];
 }
 
-export function createWorkflowResourceProvider(loader: DefaultResourceLoader): WorkflowResourceProvider {
+export function createPackageMcpServerSource(loader: DefaultResourceLoader): PackageMcpServerSource {
 	const state = resourceInternals(loader);
 	return {
-		get: () => state.workflowResources,
-		refresh: () => state.refreshWorkflowResources(),
 		getMcpServers: () => state.mcpServerContributions,
 	};
 }

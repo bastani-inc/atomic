@@ -21,7 +21,8 @@ Trusting a project allows Atomic to load trust-gated project inputs, including:
 
 - `.atomic/settings.json` (or legacy `.pi/settings.json`)
 - `.atomic`/`.pi` resources such as extensions, skills, prompt templates, themes, and system prompt files
-- project workflows (`.atomic/workflows` and the workflows named by `.atomic/extensions/workflow/config.json`) and project subagent definitions and agent overrides
+- project subagent definitions and agent overrides
+- paths to legacy workflow files, which the agent may read as text on request; Atomic does not execute them
 - the project MCP server config (`.atomic/mcp.json`) and blueprint builds (`.atomic/blueprint.yaml`)
 - missing project packages configured through project settings
 - project-local extensions and project package-managed extensions
@@ -34,7 +35,7 @@ Atomic loads user/global extensions and explicit CLI `-e` package-level extensio
 
 This check does not change startup before that first report: a saved trust may already have selected project settings, including the `sessions.storage` store used by `--continue`. A handler registered only after the first report does not retroactively hide an already-listed project; its decline still takes effect. Approval reads the current folder resources from disk. Because resource discovery refreshes the combined catalog, a global prompt renamed during the check can also appear under its new name before `/reload`.
 
-If `-e <dir>` discovers resources borrowed from that directory's `.atomic`, legacy `.pi`, or `.agents/skills`, Atomic resolves trust for that source before loading them. Borrowed extensions and workflows can execute code with the Atomic process permissions.
+If `-e <dir>` discovers resources borrowed from that directory's `.atomic`, legacy `.pi`, or `.agents/skills`, Atomic resolves trust for that source before loading them. Borrowed extensions can execute code with the Atomic process permissions.
 
 Non-interactive modes (`-p`, `--mode json`, and `--mode rpc`) do not show a trust prompt. Without an applicable saved trust decision, `defaultProjectTrust: "ask"` and `"never"` ignore such resources, while `"always"` trusts them. Use `--approve`/`-a` or `--no-approve`/`-na` to override project trust for one run.
 

@@ -1,8 +1,9 @@
 import { dirname, join } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
 import { pathsEqual } from "../utils/paths.ts";
+import { legacyWorkflowFilePatterns } from "./package-manager-manifest.ts";
 import { getBaseDirsForScope, getHomeDir } from "./package-manager-paths.ts";
-import { addResource, getTargetMap } from "./package-manager-resource-accumulator.ts";
+import { addResource } from "./package-manager-resource-accumulator.ts";
 import {
 	collectAncestorAgentsSkillDirs,
 	collectAutoExtensionEntries,
@@ -17,10 +18,10 @@ import type {
 	PackageManagerContext,
 	PathMetadata,
 	ResourceAccumulator,
-	ResourceType,
+	ResourceMap,
 } from "./package-manager-types.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import { coLocatesWorkflowStore } from "./storage/file-identity.js";
+import { coLocatesWorkflowStoreAsync } from "./storage/file-identity.js";
 
 const USER_WORKFLOW_STORE_DIRS: ReadonlySet<string> = new Set(["journal", "pool", "runs"]);
 
@@ -33,14 +34,13 @@ export async function collectProjectLocalResources(
 	let found = false;
 	const projectMetadata: PathMetadata = { ...metadata, origin: "top-level", borrowedProjectLocal: true };
 	const addResources = (
-		resourceType: ResourceType,
+		target: ResourceMap,
 		paths: string[],
 		resourceMetadata: PathMetadata,
 		patterns: string[] | undefined,
 	): void => {
 		if (paths.length === 0) return;
 		found = true;
-		const target = getTargetMap(accumulator, resourceType);
 		const enabledPaths =
 			patterns === undefined
 				? new Set(paths)
@@ -52,34 +52,39 @@ export async function collectProjectLocalResources(
 	for (const configDir of getProjectConfigDirs(sourceRoot)) {
 		const configMetadata: PathMetadata = { ...projectMetadata, baseDir: configDir };
 		addResources(
-			"extensions",
+			accumulator.extensions,
 			await collectAutoExtensionEntries(join(configDir, "extensions")),
 			configMetadata,
 			filter?.extensions,
 		);
 		addResources(
-			"skills",
+			accumulator.skills,
 			await collectAutoSkillEntries(join(configDir, "skills"), "pi"),
 			configMetadata,
 			filter?.skills,
 		);
 		addResources(
-			"prompts",
+			accumulator.prompts,
 			await collectAutoPromptEntries(join(configDir, "prompts")),
 			configMetadata,
 			filter?.prompts,
 		);
-		addResources("themes", await collectAutoThemeEntries(join(configDir, "themes")), configMetadata, filter?.themes);
 		addResources(
-			"workflows",
-			await collectResourceFiles(join(configDir, "workflows"), "workflows"),
+			accumulator.themes,
+			await collectAutoThemeEntries(join(configDir, "themes")),
 			configMetadata,
-			filter?.workflows,
+			filter?.themes,
+		);
+		addResources(
+			accumulator.legacyWorkflowFiles,
+			await collectResourceFiles(join(configDir, "workflows"), "legacyWorkflowFiles"),
+			configMetadata,
+			legacyWorkflowFilePatterns(filter),
 		);
 	}
 	const agentsSkillsDir = join(sourceRoot, ".agents", "skills");
 	addResources(
-		"skills",
+		accumulator.skills,
 		await collectAutoSkillEntries(agentsSkillsDir, "agents"),
 		{ ...projectMetadata, baseDir: dirname(agentsSkillsDir) },
 		filter?.skills,
@@ -107,18 +112,14 @@ export async function addAutoDiscoveredResources(
 		skills: (globalSettings.skills ?? []) as string[],
 		prompts: (globalSettings.prompts ?? []) as string[],
 		themes: (globalSettings.themes ?? []) as string[],
-		workflows: Array.isArray(globalSettings.workflows)
-			? globalSettings.workflows
-			: (globalSettings.workflows?.paths ?? []),
+		legacyWorkflowFiles: context.settingsManager.getLegacyWorkflowFilePaths("global"),
 	};
 	const projectOverrides = {
 		extensions: (projectSettings.extensions ?? []) as string[],
 		skills: (projectSettings.skills ?? []) as string[],
 		prompts: (projectSettings.prompts ?? []) as string[],
 		themes: (projectSettings.themes ?? []) as string[],
-		workflows: Array.isArray(projectSettings.workflows)
-			? projectSettings.workflows
-			: (projectSettings.workflows?.paths ?? []),
+		legacyWorkflowFiles: context.settingsManager.getLegacyWorkflowFilePaths("project"),
 	};
 	const userConfigDirs = getBaseDirsForScope(context, "user");
 	const projectConfigDirs = getBaseDirsForScope(context, "project");
@@ -128,13 +129,12 @@ export async function addAutoDiscoveredResources(
 		? (await collectAncestorAgentsSkillDirs(context.cwd)).filter((dir) => !pathsEqual(dir, userAgentsSkillsDir))
 		: [];
 	const addResources = (
-		resourceType: ResourceType,
+		target: ResourceMap,
 		paths: string[],
 		metadata: PathMetadata,
 		overrides: string[],
 		baseDir: string,
 	): void => {
-		const target = getTargetMap(accumulator, resourceType);
 		for (const path of paths) addResource(target, path, metadata, isEnabledByOverrides(path, overrides, baseDir));
 	};
 	if (projectTrusted) {
@@ -145,38 +145,38 @@ export async function addAutoDiscoveredResources(
 				configurationOrigin: index === 0 ? "atomic" : "inherited-pi",
 			};
 			addResources(
-				"extensions",
+				accumulator.extensions,
 				await collectAutoExtensionEntries(join(configDir, "extensions")),
 				metadata,
 				projectOverrides.extensions,
 				configDir,
 			);
 			addResources(
-				"skills",
+				accumulator.skills,
 				await collectAutoSkillEntries(join(configDir, "skills"), "pi"),
 				metadata,
 				projectOverrides.skills,
 				configDir,
 			);
 			addResources(
-				"prompts",
+				accumulator.prompts,
 				await collectAutoPromptEntries(join(configDir, "prompts")),
 				metadata,
 				projectOverrides.prompts,
 				configDir,
 			);
 			addResources(
-				"themes",
+				accumulator.themes,
 				await collectAutoThemeEntries(join(configDir, "themes")),
 				metadata,
 				projectOverrides.themes,
 				configDir,
 			);
 			addResources(
-				"workflows",
-				await collectResourceFiles(join(configDir, "workflows"), "workflows"),
+				accumulator.legacyWorkflowFiles,
+				await collectResourceFiles(join(configDir, "workflows"), "legacyWorkflowFiles"),
 				metadata,
-				projectOverrides.workflows,
+				projectOverrides.legacyWorkflowFiles,
 				configDir,
 			);
 		}
@@ -187,7 +187,7 @@ export async function addAutoDiscoveredResources(
 	for (const [index, agentsSkillsDir] of projectAgentsSkillDirs.entries()) {
 		const agentsBaseDir = dirname(agentsSkillsDir);
 		addResources(
-			"skills",
+			accumulator.skills,
 			projectAgentsSkills[index],
 			{ ...projectMetadata, baseDir: agentsBaseDir },
 			projectOverrides.skills,
@@ -201,51 +201,51 @@ export async function addAutoDiscoveredResources(
 			configurationOrigin: index === 0 ? "atomic" : "inherited-pi",
 		};
 		addResources(
-			"extensions",
+			accumulator.extensions,
 			await collectAutoExtensionEntries(join(configDir, "extensions")),
 			metadata,
 			userOverrides.extensions,
 			configDir,
 		);
 		addResources(
-			"skills",
+			accumulator.skills,
 			await collectAutoSkillEntries(join(configDir, "skills"), "pi"),
 			metadata,
 			userOverrides.skills,
 			configDir,
 		);
 		addResources(
-			"prompts",
+			accumulator.prompts,
 			await collectAutoPromptEntries(join(configDir, "prompts")),
 			metadata,
 			userOverrides.prompts,
 			configDir,
 		);
 		addResources(
-			"themes",
+			accumulator.themes,
 			await collectAutoThemeEntries(join(configDir, "themes")),
 			metadata,
 			userOverrides.themes,
 			configDir,
 		);
 		addResources(
-			"workflows",
+			accumulator.legacyWorkflowFiles,
 			await collectResourceFiles(
 				join(configDir, "workflows"),
-				"workflows",
+				"legacyWorkflowFiles",
 				metadata.configurationOrigin === "atomic" &&
-					coLocatesWorkflowStore(configDir, context.settingsManager.getSettings())
+					(await coLocatesWorkflowStoreAsync(configDir, context.settingsManager.getSettings()))
 					? USER_WORKFLOW_STORE_DIRS
 					: undefined,
 			),
 			metadata,
-			userOverrides.workflows,
+			userOverrides.legacyWorkflowFiles,
 			configDir,
 		);
 	}
 	const userAgentsBaseDir = dirname(userAgentsSkillsDir);
 	addResources(
-		"skills",
+		accumulator.skills,
 		await collectAutoSkillEntries(userAgentsSkillsDir, "agents"),
 		{ ...userMetadata, baseDir: userAgentsBaseDir },
 		userOverrides.skills,

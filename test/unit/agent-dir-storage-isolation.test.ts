@@ -594,7 +594,7 @@ test("legacy worker host-id adoption and storage-home adoption select the same s
 	assert.equal(await poolHostId(b2ClaimedHostId), legacy2);
 });
 
-test("user workflow resource discovery skips top-level journal, pool, and runs store directories (#5242)", async () => {
+test("user recipe discovery skips top-level journal, pool, and runs store directories (#5242)", async () => {
 	const agentDir = join(root, "resource-agent");
 	const workflowsDir = join(agentDir, "workflows");
 	const flowPath = join(workflowsDir, "flow.ts");
@@ -614,7 +614,7 @@ test("user workflow resource discovery skips top-level journal, pool, and runs s
 	});
 	const resolved = await manager.resolve();
 	assert.deepEqual(
-		resolved.workflows.map((entry) => entry.path),
+		resolved.legacyWorkflowFiles.map((entry) => entry.path),
 		[flowPath],
 	);
 });
@@ -868,7 +868,7 @@ test("user workflow resource discovery keeps nested journal, pool, and runs file
 		settingsManager: SettingsManager.inMemory(),
 	});
 	const defaultResolved = await defaultManager.resolve();
-	const defaultPaths = defaultResolved.workflows.map((entry) => entry.path);
+	const defaultPaths = defaultResolved.legacyWorkflowFiles.map((entry) => entry.path);
 	assert.equal(defaultPaths.includes(defaultTop), true);
 	assert.equal(defaultPaths.includes(defaultNested), true);
 	assert.equal(defaultPaths.includes(piNested), true);
@@ -888,7 +888,7 @@ test("user workflow resource discovery keeps nested journal, pool, and runs file
 	});
 	const adoptedResolved = await adoptedManager.resolve();
 	assert.equal(
-		adoptedResolved.workflows.some((entry) => entry.path === adoptedNested),
+		adoptedResolved.legacyWorkflowFiles.some((entry) => entry.path === adoptedNested),
 		true,
 	);
 });
@@ -1157,7 +1157,7 @@ test("user workflow resource discovery preserves nested runs, pool, and journal 
 		settingsManager: SettingsManager.create(project, a1),
 	});
 	const resolved1 = await manager1.resolve();
-	const paths1 = resolved1.workflows.map((entry) => entry.path);
+	const paths1 = resolved1.legacyWorkflowFiles.map((entry) => entry.path);
 	assert.equal(paths1.includes(topFlow), true);
 	assert.equal(paths1.includes(nestedFlow), true);
 	assert.equal(existsSync(join(parent1, "workflows", ".adopted-by")), false);
@@ -1181,7 +1181,7 @@ test("user workflow resource discovery preserves nested runs, pool, and journal 
 	});
 	const resolved2 = await manager2.resolve();
 	assert.equal(
-		resolved2.workflows.some((entry) => entry.path === projFlow),
+		resolved2.legacyWorkflowFiles.some((entry) => entry.path === projFlow),
 		true,
 	);
 	assert.equal(existsSync(join(parent2, "workflows", ".adopted-by")), false);

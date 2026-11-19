@@ -6,7 +6,7 @@ import { stripBom } from "../utils/text.ts";
 import { NestedGitignore } from "./gitignore-rules.ts";
 import { getManifestFromPackageJson } from "./package-manager-manifest.ts";
 import { toPosixPath } from "./package-manager-resource-patterns.ts";
-import { FILE_PATTERNS, type ResourceType } from "./package-manager-types.ts";
+import { FILE_PATTERNS, type FileKind } from "./package-manager-types.ts";
 
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
 const RESOURCE_DISCOVERY_YIELD_AFTER_MS = 8;
@@ -235,7 +235,7 @@ export async function collectAutoExtensionEntries(dir: string): Promise<string[]
 
 export async function collectResourceFiles(
 	dir: string,
-	resourceType: ResourceType,
+	resourceType: FileKind,
 	excludeTopLevel?: ReadonlySet<string>,
 ): Promise<string[]> {
 	if (resourceType === "skills") return collectSkillEntries(dir, "pi");
