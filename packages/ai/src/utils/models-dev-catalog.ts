@@ -583,10 +583,10 @@ export const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS = new Set([
 
 export const GITHUB_COPILOT_CLAUDE_FABLE_MODEL_IDS = ["claude-fable-5", "claude-fable-5-1"] as const;
 
-// GitHub Copilot serves these models, and models.dev's Copilot catalog lists them since they launched
-// (Claude Fable 5.2 on 2026-11-09, Gemini 4 Carbon on 2026-11-10). A build that fetches an older
-// models.dev snapshot would ship without them, so keep their published rows here. A models.dev row with
-// the same ID wins.
+// GitHub Copilot serves these models. models.dev's Copilot catalog lists Claude Fable 5.2 (since 2026-11-09)
+// and Gemini 4 Carbon (since 2026-11-10), but not yet Gemini 4 Neon, generally available in Copilot since
+// 2026-11-18 (checked 2026-11-19). A build that fetches a models.dev snapshot without them would ship without
+// them, so keep their rows here. A models.dev row with the same ID wins.
 export const GITHUB_COPILOT_MODELS_DEV_FALLBACKS: Record<string, ModelsDevModel> = {
 	"claude-fable-5.2": {
 		id: "claude-fable-5.2",
@@ -610,6 +610,20 @@ export const GITHUB_COPILOT_MODELS_DEV_FALLBACKS: Record<string, ModelsDevModel>
 		modalities: { input: ["text", "image", "pdf"], output: ["text"] },
 		limit: { context: 1048576, output: 65536 },
 		cost: { input: 2, output: 10, cache_read: 0.1 },
+	},
+	// The price is GitHub's published Copilot price. GitHub publishes no limits, thinking levels or input
+	// types for the model, so those come from models.dev's Google row for it, with the input types models.dev
+	// lists for Copilot's other Gemini 4 models.
+	"gemini-4-neon": {
+		id: "gemini-4-neon",
+		name: "Gemini 4 Neon",
+		reasoning: true,
+		reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh"] }],
+		tool_call: true,
+		structured_output: true,
+		modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+		limit: { context: 1048576, output: 65536 },
+		cost: { input: 3, output: 15, cache_read: 0.15 },
 	},
 };
 

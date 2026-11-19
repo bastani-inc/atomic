@@ -183,6 +183,7 @@ test("routes GitHub Copilot models by their models.dev SDK metadata, not their I
 		// Fallback rows kept until models.dev lists them; each routes by its own SDK metadata.
 		"claude-fable-5.2": "anthropic-messages",
 		"gemini-4-carbon": "openai-completions",
+		"gemini-4-neon": "openai-completions",
 	});
 });
 

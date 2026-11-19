@@ -7,6 +7,7 @@
 - Agent panel sources can set `runGeneration` on an item, an identity of its latest run, so a stopped or paused row that left the panel and ran again, however briefly, is listed again while other work runs ([#5504](https://github.com/bastani-inc/atomic/issues/5504))
 - A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
 - `AgentTaskHost.waitForTask` takes an optional `AbortSignal` as its fourth argument. Aborting it ends the wait at once with `ObserverCancelled` and leaves the task running.
+- GitHub Copilot: `github-copilot/gemini-4-neon` (Gemini 4 Neon, generally available in Copilot since 2026-11-18) is in the built-in model catalog, also when the catalog is built before models.dev lists it for Copilot. It offers thinking levels `low`, `medium`, `high` and `xhigh`
 
 ### Breaking Changes
 

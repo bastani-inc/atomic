@@ -424,6 +424,80 @@ test("generates the same GitHub Copilot Fable 5.2 and Gemini 4 Carbon rows from 
 	assert.deepEqual(fromFallback["gemini-4-carbon"], fromModelsDev["gemini-4-carbon"]);
 });
 
+/** The row models.dev publishes for Copilot's other Gemini 4 models, with Gemini 4 Neon's values. */
+const COPILOT_GEMINI_4_NEON_MODELS_DEV = {
+	id: "gemini-4-neon",
+	name: "Gemini 4 Neon",
+	tool_call: true,
+	reasoning: true,
+	structured_output: true,
+	temperature: false,
+	release_date: "2026-11-18",
+	reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh"] }],
+	modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+	limit: { context: 1_048_576, output: 65_536 },
+	cost: { input: 3, output: 15, cache_read: 0.15 },
+};
+
+function withCopilotRows(rows: Record<string, object>) {
+	return { ...CATALOG, "github-copilot": { models: { ...CATALOG["github-copilot"].models, ...rows } } };
+}
+
+test("keeps Gemini 4 Neon in the GitHub Copilot catalog when models.dev lags it", () => {
+	const neon = generate()["github-copilot"]["gemini-4-neon"];
+
+	assert.ok(neon, "expected github-copilot/gemini-4-neon to be generated");
+	assert.equal(neon.name, "Gemini 4 Neon");
+	assert.equal(neon.provider, "github-copilot");
+	assert.equal(neon.api, "openai-completions");
+	assert.equal(neon.baseUrl, "https://api.individual.githubcopilot.com");
+	assert.equal(neon.contextWindow, 1_048_576);
+	assert.equal(neon.maxTokens, 65_536);
+	assert.deepEqual(neon.input, ["text", "image"]);
+	assert.deepEqual(neon.cost, { input: 3, output: 15, cacheRead: 0.15, cacheWrite: 0 });
+	assert.equal(neon.compat?.supportsReasoningEffort, true);
+	assert.deepEqual(getSupportedThinkingLevels(neon as unknown as Model<Api>), ["low", "medium", "high", "xhigh"]);
+});
+
+test("generates the same GitHub Copilot Gemini 4 Neon row from the fallback as from models.dev", () => {
+	const fromFallback = generate()["github-copilot"]["gemini-4-neon"];
+	const fromModelsDev = generate(withCopilotRows({ "gemini-4-neon": COPILOT_GEMINI_4_NEON_MODELS_DEV }))[
+		"github-copilot"
+	]["gemini-4-neon"];
+
+	assert.ok(fromModelsDev, "expected the models.dev row to generate github-copilot/gemini-4-neon");
+	assert.deepEqual(fromFallback, fromModelsDev);
+});
+
+test("prefers a models.dev GitHub Copilot Gemini 4 Neon row over the fallback", () => {
+	const published = generate(
+		withCopilotRows({
+			"gemini-4-neon": {
+				...COPILOT_GEMINI_4_NEON_MODELS_DEV,
+				name: "Gemini 4 Neon (models.dev)",
+				reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+				limit: { context: 2_000_000, output: 100_000 },
+				cost: { input: 4, output: 20, cache_read: 0.4 },
+				provider: { npm: "@ai-sdk/openai" },
+			},
+		}),
+	)["github-copilot"]["gemini-4-neon"];
+
+	assert.ok(published, "expected the models.dev row to generate github-copilot/gemini-4-neon");
+	assert.equal(published.name, "Gemini 4 Neon (models.dev)");
+	assert.equal(published.api, "openai-responses");
+	assert.equal(published.contextWindow, 2_000_000);
+	assert.equal(published.maxTokens, 100_000);
+	assert.deepEqual(published.cost, { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 0 });
+	assert.deepEqual(getSupportedThinkingLevels(published as unknown as Model<Api>), ["low", "high"]);
+
+	// A row models.dev marks deprecated also wins: the model leaves the catalog instead of falling back.
+	const deprecated = generate(
+		withCopilotRows({ "gemini-4-neon": { ...COPILOT_GEMINI_4_NEON_MODELS_DEV, status: "deprecated" } }),
+	)["github-copilot"];
+	assert.equal(deprecated["gemini-4-neon"], undefined);
+});
+
 
 test("generates Claude Fable 5.2 as a static Anthropic entry while models.dev lacks it", () => {
 	const catalogs = generate();

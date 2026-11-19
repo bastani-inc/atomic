@@ -146,6 +146,18 @@ const FAMILIES: readonly Family[] = [
 		replay: "reasoning_opaque",
 	},
 	{
+		family: "Gemini (gemini-4-neon)",
+		model: () => catalogModel("gemini-4-neon"),
+		api: "openai-completions",
+		textTurn: GEMINI_TEXT_TURN,
+		textUsage: GEMINI_USAGE.text,
+		toolTurn: GEMINI_PARALLEL_TOOL_TURN,
+		toolUsage: GEMINI_USAGE.tool,
+		toolCallIds: GEMINI_CALL_IDS,
+		toolCity: "Paris",
+		replay: "reasoning_opaque",
+	},
+	{
 		family: "Gemini (gemini-3.8-flash)",
 		model: () => catalogModel("gemini-3.8-flash"),
 		api: "openai-completions",
