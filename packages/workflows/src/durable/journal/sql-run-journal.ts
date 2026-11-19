@@ -5,6 +5,7 @@ import {
 	assertStoredSchemaVersion,
 	dialectOf,
 	type FencedPathId,
+	isStorageResponseRefusal,
 	olderBuildLive,
 	openNodeSqliteDatabase,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
@@ -18,6 +19,7 @@ import {
 	type StorageDescriptor,
 	type StorageDialect,
 	type StorageFailureCause,
+	type StoragePayloadTooLargeError,
 	StorageSchemaVersionError,
 	StorageUnavailableError,
 	type StoredJournalPayload,
@@ -611,10 +613,17 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
-			const rows = await this.database.all<HeaderRow>(
+			const request = this.database.all<HeaderRow>(
 				`SELECT ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`} ORDER BY ${c.runId}`,
 				...(filter?.cwd === undefined ? [] : [filter.cwd]),
 			);
+			let rows: HeaderRow[];
+			try {
+				rows = await request;
+			} catch (error) {
+				if (filter !== undefined || !isStorageResponseRefusal(error) || this.legacy) throw error;
+				return this.listRefusedCatalog(error);
+			}
 			if (rows.length === 0) await this.assertVersion(this.database);
 			assertRowVersion(rows[0]);
 			const legacy = (await this.legacy?.pending(this.database, filter)) ?? [];
@@ -625,6 +634,78 @@ export class SqlRunJournal implements RunJournal {
 				}))
 				.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
+	}
+
+	/** Read the refused, current-format catalog from one new snapshot. Never reopen it or replay a fitting prefix. */
+	private async listRefusedCatalog(refusal: StoragePayloadTooLargeError): Promise<readonly RunSummary[]> {
+		this.assertOpen();
+		const listed = await this.database.transaction(
+			async (tx) => {
+				await this.assertVersion(tx);
+				const keepRefusal = (error: unknown): never => {
+					if (isStorageResponseRefusal(error)) throw refusal;
+					throw error;
+				};
+				const table = this.tables.runs;
+				const bytes = this.dialect.textByteLength;
+				const width = `${bytes(c.headerJson)} + ${bytes(c.status)}`;
+				const widest = await tx
+					.get<{ run_id: string; width: number | bigint }>(
+						`SELECT ${c.runId}, ${width} AS width FROM ${table} ORDER BY ${width} DESC LIMIT 1`,
+					)
+					.catch(keepRefusal);
+				const runs: RunSummary[] = [];
+				if (!widest) return runs;
+				const projection = `${c.headerJson}, ${c.status}, ${this.metaVersion}`;
+				const collect = (row: HeaderRow, key: string) => {
+					const header = JSON.parse(row[c.headerJson]) as RunHeader;
+					if (header.runId !== key) throw refusal;
+					runs.push({ ...header, status: runStatusFromRecord(row[c.status]) });
+				};
+				const point = async (id: string) => {
+					const row = await tx
+						.get<HeaderRow>(`SELECT ${projection} FROM ${table} WHERE ${c.runId} = ?`, id)
+						.catch(keepRefusal);
+					if (!row) throw refusal;
+					collect(row, id);
+				};
+				// Use the original columns for the widest singleton. Even appending its key could put it over the limit.
+				const widestId = widest.run_id;
+				await point(widestId);
+				// Leave room for the physical key (also present in a canonical header) and the response's row framing.
+				const limit = Math.max(1, Math.floor((128 * 1024) / (2 * Number(widest.width) + 128)));
+				for (let after: string | undefined; ; ) {
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					this.assertOpen();
+					const range = `FROM ${table} WHERE ${c.runId} <> ?${after === undefined ? "" : ` AND ${c.runId} > ?`} ORDER BY ${c.runId} LIMIT ?`;
+					const args = after === undefined ? [widestId, limit] : [widestId, after, limit];
+					if (limit === 1) {
+						const next = await tx
+							.get<{ run_id: string }>(`SELECT ${c.runId} ${range}`, ...args)
+							.catch(keepRefusal);
+						if (!next) break;
+						after = next.run_id;
+						await point(after);
+					} else {
+						const page = await tx
+							.all<HeaderRow & { run_id: string }>(
+								`SELECT ${c.runId}, ${c.headerJson}, ${c.status} ${range}`,
+								...args,
+							)
+							.catch(keepRefusal);
+						for (const row of page) {
+							after = row.run_id;
+							collect(row, after);
+						}
+						if (page.length < limit) break;
+					}
+				}
+				return runs;
+			},
+			{ readOnly: true },
+		);
+		await this.assertVersion(this.database);
+		return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 	}
 
 	/**
