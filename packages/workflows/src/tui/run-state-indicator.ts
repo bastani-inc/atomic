@@ -47,9 +47,8 @@ export function isQuitRun(run: RunSnapshot): boolean {
  * including a run that was resumed, pending, or ended without a block).
  *
  * Blocked uses {@link effectiveRunStatus}, so author exits, returned blocked
- * statuses, every recoverable block (a provider outage, an undeliverable
- * queued instruction, a woken stage whose session store stays unreachable)
- * and the resumable `budget_exceeded` stop all count.
+ * statuses, recoverable provider blocks and the resumable `budget_exceeded`
+ * stop all count.
  */
 export function runStateIndicator(run: RunSnapshot): RunStateIndicator | undefined {
 	if (isQuitRun(run)) return indicator("quit");

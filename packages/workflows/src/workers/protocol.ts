@@ -58,22 +58,7 @@ export interface StageReceipts {
  * receipts of the stages of the child's nested workflow runs; the child's own stages carry theirs. The pool stores it
  * whole, so a restarted root still reads them, and the root records them all before the child settles (#4513).
  */
-export type PooledRunResult = RunResult & {
-	readonly nestedStageReceipts?: readonly StageReceipts[];
-	/** What the worker recorded of the child's block, when the child blocked on a recoverable failure (#5534). */
-	readonly block?: PooledRunBlock;
-};
-
-/**
- * A child's block on a recoverable failure as its worker recorded it (#5534): the root records the same block on its
- * copy of the child, which stays resumable and not ended, as a child that ran in the root's process would.
- */
-export interface PooledRunBlock {
-	readonly blockedAt: number;
-	readonly failedStageId?: string;
-	readonly failureMessage?: string;
-	readonly endedAt?: number;
-}
+export type PooledRunResult = RunResult & { readonly nestedStageReceipts?: readonly StageReceipts[] };
 
 export interface WorkerStart {
 	/** The SQLite database holding the pool's tables; absent for a shared pool, opened by its durable selection. */

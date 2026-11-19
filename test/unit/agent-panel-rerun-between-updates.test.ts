@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
@@ -125,43 +124,6 @@ describe("a row that runs again before the panel updates is listed again while w
 		}
 	});
 
-	test("an interrupted subagent resumed elsewhere, seen only when the task list refreshes, is listed again (#5504)", async () => {
-		const fixture = taskFixture();
-		try {
-			await fixture.start("interrupted");
-			await fixture.start("finishes");
-			let sessionRunning = false;
-			fixture.runners[0]!.context.bindTranscript(
-				Object.assign(SessionManager.inMemory(), { subscribe: () => () => {}, isRunning: () => sessionRunning }),
-			);
-			const hub = new AgentPanelSourceHub();
-			const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-			bindOwnerTaskStore(session, fixture.store);
-			const mainTitles = () => new Set(agentPanelRows(session).map((row) => row.task));
-			const interrupted = fixture.store.tasks[0]!.ref.taskId;
-
-			fixture.store.setTurnInterrupted(interrupted, true);
-			await fixture.settle(1);
-			assert.deepEqual(mainTitles(), new Set(), "nothing runs: the interrupted subagent leaves");
-			await fixture.start("new");
-			assert.deepEqual(mainTitles(), new Set(["new"]), "new work does not bring it back");
-
-			// Its session was resumed outside this chat: the task list sees it running on its next refresh only.
-			sessionRunning = true;
-			fixture.runners[0]!.context.reportActivity({
-				reportId: "act-1",
-				change: { kind: "action", tool: "bash", text: "ls" },
-			});
-			fixture.store.drain();
-			// Interrupted again before the panel updates.
-			sessionRunning = false;
-			fixture.store.setTurnInterrupted(interrupted, true);
-			assert.deepEqual(mainTitles(), new Set(["interrupted", "new"]), "it ran again, so it is listed again");
-		} finally {
-			await fixture.dispose();
-		}
-	});
-
 	test("a worker stage footer sees a subagent interrupted again between snapshots (#5567)", async () => {
 		const fixture = taskFixture();
 		try {
@@ -232,28 +194,6 @@ describe("a row that runs again before the panel updates is listed again while w
 		panel.store.recordRunPaused("w", 3_001);
 		panel.changed();
 		assert.deepEqual(new Set(panel.ids()), new Set(["ext:live", "run:w"]), "it ran again, so it is listed again");
-	});
-
-	test("a paused run that left, then runs and pauses again between two updates while nothing runs, stays out when new work starts (#5504)", () => {
-		const panel = workflowPanel();
-		const model = new AgentPanelModel(() => 10_000);
-		const modelIds = () => model.rows(panel.items()).map((row) => row.id);
-		panel.store.recordRunStart(workflowRun("w"));
-		panel.store.recordRunPaused("w", 2_000);
-		panel.changed();
-		assert.deepEqual(panel.ids(), [], "nothing runs: the paused run leaves");
-		assert.deepEqual(modelIds(), []);
-
-		// Resumed and paused again before the panel updates, while nothing else runs: it leaves again.
-		panel.store.recordRunResumed("w", 3_000);
-		panel.store.recordRunPaused("w", 3_001);
-		panel.changed();
-		assert.deepEqual(panel.ids(), []);
-		assert.deepEqual(modelIds(), []);
-
-		panel.setAgentRunning(true);
-		assert.deepEqual(panel.ids(), ["ext:live"], "new work does not bring it back");
-		assert.deepEqual(modelIds(), ["ext:live"]);
 	});
 
 	test("a blocked workflow run that runs and blocks again between two updates (#5504)", () => {

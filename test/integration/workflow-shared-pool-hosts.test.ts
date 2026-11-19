@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { test } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
-import { SESSIONS_DOWN, timesDone } from "../fixtures/pool-blocked-child.js";
 import { REMOTE_QUESTION } from "../fixtures/shared-pool-child.js";
 import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
@@ -31,8 +30,6 @@ const REMOTE_FAILOVER_BUDGET = poolTestBudgetMs(3);
 const FAILOVER_LEASE_MS = 4_000;
 /** The root's pool and one worker host. */
 const TYPED_FAILURE_BUDGET = poolTestBudgetMs(2);
-/** The root's pool, its resume's pool, and one worker host. */
-const BLOCKED_BUDGET = poolTestBudgetMs(3);
 
 type Row = Record<string, unknown>;
 
@@ -517,77 +514,6 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 	TYPED_FAILURE_BUDGET.timeoutMs,
-);
-
-test.skipIf(process.platform === "win32")(
-	"a child blocked on another host reads as blocked on the root's host, and resuming the root once the cause is gone continues it (#5534)",
-	async () => {
-		const s = scenario("shared-pool-blocked", BLOCKED_BUDGET.waitMs);
-		const restored = join(s.directory, "restored");
-		mkdirSync(restored);
-		let hostB: BudgetedProcess | undefined;
-		type View = {
-			name: string;
-			status: string;
-			failureCode: string | null;
-			blocked: boolean;
-			ended: boolean;
-			failedStage: string | null;
-			workers: (string | null)[];
-		};
-		const root = async (mode: "start" | "resume") => {
-			const process_ = spawnWithinBudget(
-				[process.execPath, rootFixture, mode, s.directory, "1", "1", "blocked"],
-				{ cwd: s.directory, stdout: "ignore", env: s.env("A", { SHARED_POOL_BINDING: JSON.stringify(BINDING) }) },
-				s.deadline,
-			);
-			await expectExitedCleanly(process_);
-			return readJson<{
-				status: string;
-				failure?: { code?: string };
-				views: View[];
-				boundaries: { workflow: string; status: string }[];
-			}>(join(s.directory, `outcome-${mode}.json`));
-		};
-		try {
-			// Only host B can restore the child's binding, so the child runs there and blocks there.
-			hostB = startHost(s, "B", 1, { SHARED_POOL_RESTORE: restored });
-			await until("host B", s.deadline, () => existsSync(join(s.directory, "host-ready-B")), [hostB]);
-			const started = await root("start");
-			assert.equal(started.status, "running", JSON.stringify(started));
-			assert.equal(started.failure?.code, "session_unavailable");
-			const views = new Map(started.views.map((view) => [view.name, view]));
-			assert.deepEqual(
-				[views.get("shared-pool-root")?.status, views.get("pool-session-blocked-child")?.status],
-				["blocked", "blocked"],
-				"the root and its copy of the child agree",
-			);
-			const child = views.get("pool-session-blocked-child")!;
-			assert.ok(String(child.workers[0]).startsWith("B/"), `the child ran on ${String(child.workers[0])}`);
-			assert.deepEqual(
-				[child.failureCode, child.blocked, child.ended, child.failedStage],
-				["session_unavailable", true, false, "build"],
-			);
-			assert.deepEqual([timesDone(s.directory, "entries"), timesDone(s.directory, "effects")], [1, 1]);
-
-			rmSync(join(s.directory, SESSIONS_DOWN));
-			const resumed = await root("resume");
-			assert.equal(resumed.status, "completed", JSON.stringify(resumed));
-			assert.deepEqual(
-				resumed.boundaries.filter((boundary) => boundary.workflow === "pool-session-blocked-child"),
-				[{ workflow: "pool-session-blocked-child", status: "completed" }],
-				"the root's journal records the child completed",
-			);
-			assert.equal(timesDone(s.directory, "effects"), 1, "the stage continued from the command's result");
-			assert.equal(timesDone(s.directory, "entries"), 2, "the resume ran the child again");
-			await stopHost(hostB);
-			hostB = undefined;
-		} finally {
-			hostB?.process.kill("SIGKILL");
-			removeTempDirectory(s.directory);
-		}
-	},
-	BLOCKED_BUDGET.timeoutMs,
 );
 
 /** How many Intercom cards from the root's operator that carry `body` the stage's model saw. */

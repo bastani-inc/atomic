@@ -583,7 +583,11 @@ function terminalNoticeKind(run: RunSnapshot): "completed" | "failed" | "blocked
 }
 
 function isActiveRecoverableBlockedRun(run: RunSnapshot): boolean {
-	return run.blockedAt !== undefined && structuredRecoverableWorkflowFailureText(run) !== undefined;
+	return (
+		run.blockedAt !== undefined &&
+		((run.status === "running" && effectiveRunStatus(run) === "blocked") ||
+			structuredRecoverableWorkflowFailureText(run) !== undefined)
+	);
 }
 
 function lifecycleOccurrenceAt(run: RunSnapshot, kind: "completed" | "failed" | "blocked"): number | undefined {

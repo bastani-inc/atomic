@@ -42,17 +42,6 @@ test.each([
 	const jobs = route === "default job tracker" ? currentJobTracker() : createJobTracker();
 	const terminalPublished = Promise.withResolvers<void>();
 	const finishPersistence = Promise.withResolvers<void>();
-	if (route === "listed running ID as save finishes" || route === "listed prefix as save finishes") {
-		// These routes need the journal (not just the session entry) to still list the old running version.
-		const commit = backend.commitWorkflowStatus.bind(backend);
-		vi.spyOn(backend, "commitWorkflowStatus").mockImplementation(async (...args) => {
-			if (args[1] === "failed") {
-				terminalPublished.resolve();
-				await finishPersistence.promise;
-			}
-			return commit(...args);
-		});
-	}
 	let siblings = 0;
 	let attempts = 0;
 	const definition = workflow({

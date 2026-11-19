@@ -50,33 +50,24 @@ export function isWorkflowFailureKind(kind: string): kind is WorkflowFailureKind
 	return WORKFLOW_FAILURE_KINDS.has(kind as WorkflowFailureKind);
 }
 
-/** Every failure code: the type requires each `WorkflowFailureCode` here, so the guard below cannot miss one. */
-const WORKFLOW_FAILURE_CODES: Readonly<Record<WorkflowFailureCode, true>> = {
-	login_required: true,
-	auth_timeout: true,
-	missing_api_key: true,
-	invalid_api_key: true,
-	forbidden_config: true,
-	unknown_model: true,
-	rate_limited: true,
-	quota_limited: true,
-	provider_unavailable: true,
-	pending_stage_delivery_failed: true,
-	session_unavailable: true,
-	worker_lost: true,
-	worker_cleanup_unconfirmed: true,
-	worker_retry_limit: true,
-	worker_startup_failed: true,
-	stale_work_lease: true,
-	intercom_unavailable: true,
-	storage_unavailable: true,
-	process_cleanup_unconfirmed: true,
-	cancelled: true,
-	unknown: true,
-};
-
 export function isWorkflowFailureCode(code: string): code is WorkflowFailureCode {
-	return Object.hasOwn(WORKFLOW_FAILURE_CODES, code);
+	switch (code) {
+		case "login_required":
+		case "auth_timeout":
+		case "missing_api_key":
+		case "invalid_api_key":
+		case "forbidden_config":
+		case "unknown_model":
+		case "rate_limited":
+		case "quota_limited":
+		case "provider_unavailable":
+		case "pending_stage_delivery_failed":
+		case "cancelled":
+		case "unknown":
+			return true;
+		default:
+			return false;
+	}
 }
 
 export function isWorkflowFailureRecoverability(value: string): value is WorkflowFailureRecoverability {

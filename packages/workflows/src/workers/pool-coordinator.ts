@@ -306,22 +306,7 @@ function token(work: PoolWork): PoolWorkToken {
 
 /** Whether a later incarnation of a root runs again a child an earlier one completed with this result. */
 function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
-	return failedOnPoolFault(result) || refusedAtChildStart(result) || blockedRecoverably(result);
-}
-
-/**
- * Whether a child's result is a block on a recoverable failure, whatever its kind (#5534): a provider outage, an
- * undeliverable queued instruction, a woken stage whose session store stayed unreachable. The child did not end, so the
- * root's resume runs it again, and it continues from its records, as a child in the root's process does; within one
- * incarnation of the root the result stands, so nothing retries the child while it is blocked.
- */
-function blockedRecoverably(result: WorkflowSerializableObject): boolean {
-	const failure = result.failure as { readonly disposition?: unknown; readonly recoverability?: unknown } | undefined;
-	return (
-		result.status === "running" &&
-		failure?.disposition === "active_blocked" &&
-		failure.recoverability === "recoverable"
-	);
+	return failedOnPoolFault(result) || refusedAtChildStart(result);
 }
 
 /**
@@ -1847,7 +1832,6 @@ export class PoolCoordinator {
 			// worker's delivery or lease on a busy host, runs again when the resumed root asks for it: the failure was not
 			// the child's, and replaying it would fail the child for good. So does a child its start check refused for a
 			// missing session (#4440): the resume may bring the storage back, and the child checks again before any work.
-			// So does a child blocked on a recoverable failure (#5534): the resume is the one that continues it.
 			if (enqueued.state === "completed" && enqueued.epoch < lease.epoch)
 				enqueued =
 					(await this.whileRootLate(queue, () => queue.reopenCompleted(lease, enqueued.id, rerunsOnRootResume))) ??

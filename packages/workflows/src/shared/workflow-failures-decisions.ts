@@ -295,13 +295,12 @@ export function infrastructureFaultDecision(code: WorkflowInfrastructureFault): 
  * A released stage whose session store stayed unreachable through every reopen attempt (`StageRehydrationError`,
  * code `session-unavailable`). The stage blocks resumably, as for a provider outage, rather than failing the run: it
  * recorded the results it was woken with, and a resume continues its turn from them once the store is back (#4309).
- * Its own code, `session_unavailable`, lets a recorded failure read back as this decision, retryable (#5534). The code
- * is not `storage_unavailable`: that names a fault of a local worker pool, which replays the child it ran.
+ * The code is not `storage_unavailable`: that names a fault of a local worker pool, which replays the child it ran.
  */
 export function stageSessionUnavailableDecision(): WorkflowFailureDecision {
 	return {
 		kind: "unknown",
-		code: "session_unavailable",
+		code: "unknown",
 		retryable: true,
 		resumable: true,
 		recoverability: "recoverable",

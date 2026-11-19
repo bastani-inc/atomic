@@ -224,10 +224,6 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 			.map((checkpoint) => localCheckpoint(checkpoint, workflowId, prefix));
 	}
 
-	resumeObservationKey(_workflowId: string): undefined {
-		return undefined; // Only the root has an independently resumable row.
-	}
-
 	getWorkflow(_workflowId: string): undefined {
 		// Child runs have no independent resumable handle.
 		return undefined;

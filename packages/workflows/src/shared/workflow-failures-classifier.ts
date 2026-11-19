@@ -91,7 +91,6 @@ function decisionOfRecordedCode(
 		case "cancelled":
 			return cancelledDecision();
 		case "pending_stage_delivery_failed":
-		case "session_unavailable":
 		case "worker_lost":
 		case "worker_cleanup_unconfirmed":
 		case "worker_retry_limit":

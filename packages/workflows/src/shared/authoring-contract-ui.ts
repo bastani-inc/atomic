@@ -493,7 +493,6 @@ export interface RunFailureClassification extends WorkflowSerializableObject {
 		| "quota_limited"
 		| "provider_unavailable"
 		| "pending_stage_delivery_failed"
-		| "session_unavailable"
 		| "worker_lost"
 		| "worker_cleanup_unconfirmed"
 		| "worker_retry_limit"

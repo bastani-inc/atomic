@@ -307,8 +307,6 @@ export interface CatalogReadOptions {
 export interface DurableWorkflowBackend {
 	/** Whether state survives the current process. */
 	readonly persistent: boolean;
-	/** Identity of this backend's unfinished row. Older backends retained across a bundle reload do not expose it. */
-	resumeObservationKey?(workflowId: string): object | undefined;
 	/** The root journal used for snapshot blobs and full-sequence frontier reads, when available. */
 	readonly snapshotJournal?: RunJournal;
 	workflowOwnership(
@@ -871,7 +869,7 @@ class JournalProjection {
 					: {}),
 			...(handle.ownerLiveness !== undefined ? { ownerLiveness: handle.ownerLiveness } : {}),
 		};
-		if (existing) this.publishHandle(existing, full);
+		if (existing) existing.handle = full;
 		else
 			this.workflows.set(handle.workflowId, {
 				handle: full,
@@ -888,10 +886,10 @@ class JournalProjection {
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
 		if (!this.workflows.has(handle.workflowId)) this.registerWorkflow(handle, true);
 		const record = this.workflows.get(handle.workflowId)!;
-		this.publishHandle(record, {
+		record.handle = {
 			...handle,
 			completedCheckpoints: Math.max(handle.completedCheckpoints, record.checkpoints.size + record.released),
-		});
+		};
 	}
 
 	async archivePendingStageMessage(workflowId: string, entry: PendingStageMessage): Promise<void> {
@@ -1068,12 +1066,12 @@ class JournalProjection {
 		// A run still `running` that recorded its definition completed in its current attempt is completed: the store
 		// refused its terminal status write (#5133).
 		const completed = rec.handle.status === "running" && completedRunAttempt(checkpoint) === rec.attempt;
-		this.publishHandle(rec, {
+		rec.handle = {
 			...rec.handle,
 			completedCheckpoints: rec.checkpoints.size + rec.released,
 			updatedAt,
 			...(completed ? { status: "completed" as const } : {}),
-		});
+		};
 	}
 
 	/**
@@ -1286,29 +1284,6 @@ class JournalProjection {
 		return checkpoint?.kind === "stage" ? checkpoint : undefined;
 	}
 
-	private publishHandle(row: JournalWorkflowRecord, handle: DurableWorkflowHandle): void {
-		// Pending resumes have only weak references to the unfinished row. Completion retires it, not any other row.
-		if (handle.status === "completed" && row.handle.status !== "completed")
-			this.workflows.set(handle.workflowId, { ...row, handle });
-		else row.handle = handle;
-	}
-
-	resumeObservationKey(workflowId: string): JournalWorkflowRecord | undefined {
-		const row = this.workflows.get(workflowId);
-		return row?.handle.status === "completed" ? undefined : row;
-	}
-
-	/** Keep the same unfinished row across a refresh. Move the rebuilt fields, not the contents of its checkpoint maps. */
-	preserveRefreshedRow(workflowId: string, previous: JournalWorkflowRecord | undefined): void {
-		const rebuilt = this.resumeObservationKey(workflowId);
-		if (!previous || !rebuilt || previous.handle.createdAt !== rebuilt.handle.createdAt) return;
-		for (const field of ["sortedCheckpoints", "noted", "lastNotedKey", "notedByLookup"] as const) {
-			if (previous[field] !== undefined && rebuilt[field] === undefined) delete previous[field];
-		}
-		Object.assign(previous, rebuilt);
-		this.workflows.set(workflowId, previous);
-	}
-
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
 		return this.workflows.get(workflowId)?.handle;
 	}
@@ -1342,7 +1317,7 @@ class JournalProjection {
 	): void {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return;
-		this.publishHandle(rec, {
+		rec.handle = {
 			...rec.handle,
 			error: undefined,
 			exited: undefined,
@@ -1363,7 +1338,7 @@ class JournalProjection {
 			...(pendingPrompts !== undefined ? { pendingPrompts } : {}),
 			...(resumable !== undefined ? { resumable } : {}),
 			...(status === "failed" ? (failure ?? {}) : {}),
-		});
+		};
 	}
 
 	listResumableWorkflows(): readonly ResumableWorkflowEntry[] {

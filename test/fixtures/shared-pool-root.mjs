@@ -17,8 +17,6 @@ const { resumeDurableWorkflow } = await load("../../packages/workflows/src/durab
 const { run } = await load("../../packages/workflows/src/engine/run.ts");
 const { createJobTracker } = await load("../../packages/workflows/src/runs/background/job-tracker.ts");
 const { createStore } = await load("../../packages/workflows/src/shared/store.ts");
-const { effectiveRunStatus } = await load("../../packages/workflows/src/shared/returned-run-status.ts");
-const { parseWorkflowChildResult } = await load("../../packages/workflows/src/durable/workflow-child-result.ts");
 const { createRegistry } = await load("../../packages/workflows/src/workflows/registry.ts");
 const { loadWorkerWorkflow } = await load("../../packages/workflows/src/workers/definitions.ts");
 const { createStageControlRegistry } = await load("../../packages/workflows/src/runs/foreground/stage-control-registry.ts");
@@ -53,14 +51,7 @@ const placementCode = (error) => {
 };
 
 const childPath = fileURLToPath(
-	new URL(
-		scenario === "scale"
-			? "./shared-pool-scale-child.ts"
-			: scenario === "blocked"
-				? "./pool-blocked-child.ts"
-				: "./shared-pool-child.ts",
-		import.meta.url,
-	),
+	new URL(scenario === "scale" ? "./shared-pool-scale-child.ts" : "./shared-pool-child.ts", import.meta.url),
 );
 const exportName =
 	{
@@ -68,7 +59,6 @@ const exportName =
 		distributed: "distributedChild",
 		typed: "typedFailureChild",
 		remote: "remoteStageChild",
-		blocked: "sessionBlockedChild",
 		scale: "scaleChild",
 		sequential: "distributedChild",
 		sessions: "sessionChild",
@@ -100,11 +90,6 @@ const parent = workflow({
 	inputs: {},
 	outputs: {},
 	async run(ctx) {
-		// The blocked scenario (#5534): the child blocks on a recoverable failure, which blocks this root too.
-		if (scenario === "blocked") {
-			await ctx.workflow(child, { inputs: { directory } });
-			return {};
-		}
 		// The sequential scenario (#5103) queues each child once the one before it finished, so idle workers wait for it.
 		const settled = async (start) => {
 			const indexes = Array.from({ length: Number(children) }, (_, index) => index);
@@ -326,12 +311,7 @@ try {
 				: undefined;
 		const result = await execution;
 		const operator = await operating;
-		record = {
-			status: result.status,
-			error: result.error ?? null,
-			...(result.failure === undefined ? {} : { failure: result.failure }),
-			...(operator === undefined ? {} : { operator }),
-		};
+		record = { status: result.status, error: result.error ?? null, ...(operator === undefined ? {} : { operator }) };
 	} else {
 		// The dead host's root lease would expire on its own; the test does not wait for that. Through the journal's own
 		// database, whatever its adapter.
@@ -355,37 +335,7 @@ try {
 		const root = store.runs().find((candidate) => candidate.id === ROOT);
 		record = { status: root?.status, error: root?.error ?? null };
 	}
-	// The blocked scenario (#5534) records how this root's store shows each run.
-	const views =
-		scenario === "blocked"
-			? store.runs().map((run) => ({
-					name: run.name,
-					status: effectiveRunStatus(run),
-					failureCode: run.failureCode ?? null,
-					blocked: run.blockedAt !== undefined,
-					ended: run.endedAt !== undefined,
-					failedStage: run.stages.find((stage) => stage.id === run.failedStageId)?.name ?? null,
-					workers: run.stages.map((stage) => stage.workerExecution?.worker ?? null),
-				}))
-			: undefined;
-	// And the child results this root's journal recorded at its child boundaries.
-	const boundaries =
-		scenario === "blocked"
-			? backend.listCheckpoints(ROOT).flatMap((checkpoint) => {
-					const terminal = checkpoint.kind === "stage" && checkpoint.topology?.boundary?.event === "terminal";
-					const result = terminal ? parseWorkflowChildResult(checkpoint.output) : undefined;
-					return result === undefined ? [] : [{ workflow: result.workflow, status: result.status }];
-				})
-			: undefined;
-	writeFileSync(
-		join(directory, `outcome-${mode}.json`),
-		JSON.stringify({
-			...record,
-			children: outcomes,
-			...(views === undefined ? {} : { views }),
-			...(boundaries === undefined ? {} : { boundaries }),
-		}),
-	);
+	writeFileSync(join(directory, `outcome-${mode}.json`), JSON.stringify({ ...record, children: outcomes }));
 } finally {
 	await backend.close();
 }

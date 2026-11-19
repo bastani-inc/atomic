@@ -118,7 +118,6 @@ export type WorkflowFailureCode =
 	| "quota_limited"
 	| "provider_unavailable"
 	| "pending_stage_delivery_failed"
-	| "session_unavailable"
 	| WorkflowInfrastructureFault
 	| "cancelled"
 	| "unknown";

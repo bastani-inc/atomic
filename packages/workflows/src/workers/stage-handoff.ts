@@ -4,6 +4,7 @@ import type { JournalDurableBackend } from "../durable/journal/journal-backend.j
 import type { PoolWork, SqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import type { Lease } from "../durable/journal/types.js";
 import { parseWorkflowChildResult } from "../durable/workflow-child-result.js";
+import type { RunResult } from "../runs/foreground/executor-types.js";
 import {
 	createWorkflowPendingStageDelivery,
 	type PendingStageDeliveryCommit,
@@ -17,7 +18,6 @@ import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-re
 import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus, isTerminalStageStatus } from "../shared/store-internal.js";
-import type { RunBlockedMetadata } from "../shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import {
 	causedByStaleWorkLease,
@@ -447,7 +447,7 @@ export class PoolStageHandoff {
 
 	private settle(
 		work: Pick<PoolWork, "id" | "childRunId">,
-		result: PooledRunResult,
+		result: RunResult,
 		terminals: ReadonlyMap<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>,
 	): void {
 		for (const id of this.ownedRunIds(work)) {
@@ -471,11 +471,7 @@ export class PoolStageHandoff {
 					}),
 					toolNodes: result.toolNodes,
 				});
-				// A child blocked on a recoverable failure did not end: it stays resumable, blocked as its worker recorded it,
-				// as a child that ran in this process does, so the child reads as blocked wherever its parent does (#5534).
-				const block = recoverableBlockOf(result);
-				if (block === undefined) this.store.recordRunEnd(run.id, result.status, result.result, result.error);
-				else this.store.recordRunBlocked(run.id, block.error, block.metadata);
+				this.store.recordRunEnd(run.id, result.status, result.result, result.error);
 				continue;
 			}
 			const terminal = terminals.get(run.id);
@@ -996,44 +992,6 @@ function byId<T extends { readonly id: string }>(nodes: readonly T[]): ReadonlyM
 
 function hostKey(runId: string | undefined, stageId: string | undefined): string {
 	return JSON.stringify([runId, stageId]);
-}
-
-/**
- * The block a child's result reports, when the child blocked on a recoverable failure (#5534): its classification, and
- * what its worker recorded of the block. A worker that did not send its record leaves the failed stage to be found among
- * the result's stages.
- */
-function recoverableBlockOf(
-	result: PooledRunResult,
-): { readonly error: string; readonly metadata: RunBlockedMetadata } | undefined {
-	const failure = result.failure;
-	if (
-		result.status !== "running" ||
-		failure?.disposition !== "active_blocked" ||
-		failure.recoverability !== "recoverable"
-	)
-		return undefined;
-	const failedStageId =
-		result.block?.failedStageId ??
-		result.stages.find((stage) => stage.failureDisposition === "active_blocked")?.id ??
-		result.stages.find((stage) => stage.status === "failed")?.id;
-	const error = result.error ?? result.block?.failureMessage ?? "Workflow is blocked by a recoverable failure.";
-	return {
-		error,
-		metadata: {
-			failureKind: failure.kind,
-			...(failure.code === undefined ? {} : { failureCode: failure.code }),
-			failureRecoverability: "recoverable",
-			failureDisposition: "active_blocked",
-			failureMessage: result.block?.failureMessage ?? error,
-			...(failedStageId === undefined ? {} : { failedStageId }),
-			resumable: true,
-			...(failure.retryAfterMs === undefined ? {} : { retryAfterMs: failure.retryAfterMs }),
-			...(result.block === undefined ? {} : { blockedAt: result.block.blockedAt }),
-			...(result.block?.endedAt === undefined ? {} : { endedAt: result.block.endedAt }),
-			...(result.result === undefined ? {} : { result: result.result }),
-		},
-	};
 }
 
 /** Every stage receipt a child's result reports: its own stages', then its nested runs' stages' (#4513). */

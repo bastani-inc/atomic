@@ -444,25 +444,12 @@ describe("a paused or blocked workflow run rests like a paused subagent (#5490)"
 		assert.deepEqual(panel.hint(), ["1 needs input", "? keys"]);
 	});
 
-	for (const state of ["stopped", "failed"] as const) {
-		test(`a ${state} run still stays until it is opened, and does not read as resting (#5490)`, () => {
-			const panel = panelSession([run(state)]);
-			assert.deepEqual(panel.ids(), ["run:w"]);
-			assert.deepEqual(modelIds([run(state)]), ["run:w"]);
-			panel.set([{ ...run(state), viewed: true }]);
-			assert.deepEqual(panel.ids(), []);
-		});
-	}
-
-	test("a paused run that left and then asks a question is listed again, needing input (#5490)", () => {
-		const panel = panelSession([run("paused"), agent("a", "running")]);
-		panel.set([run("paused"), agent("a", "done")]);
-		assert.deepEqual(panel.ids(), [], "nothing runs: the paused run leaves");
-
-		const asking = [{ ...run("input"), question: "Ship it?" }, agent("a", "done")];
-		panel.set(asking);
-		assert.deepEqual(panel.ids(), ["run:w"], "a question keeps the panel up");
-		assert.deepEqual(panel.hint(), ["1 needs input", "? keys"]);
+	test("a stopped run still stays until it is opened, and does not read as resting (#5490)", () => {
+		const panel = panelSession([run("stopped")]);
+		assert.deepEqual(panel.ids(), ["run:w"]);
+		assert.deepEqual(modelIds([run("stopped")]), ["run:w"]);
+		panel.set([{ ...run("stopped"), viewed: true }]);
+		assert.deepEqual(panel.ids(), []);
 	});
 });
 
