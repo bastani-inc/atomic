@@ -31,6 +31,43 @@ import {
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
+test("a legacy workflow row is absent from both the panel and /tasks without hiding a neighboring agent", async () => {
+	initTheme("dark");
+	const fixture = taskFixture();
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const agent: AgentPanelItem = {
+		id: "current",
+		kind: "agent",
+		state: "running",
+		name: "reviewer",
+		task: "Current review",
+	};
+	// Simulate data from an extension written for 0.9.x, not a row a new extension should produce.
+	const legacy = { ...agent, id: "old", kind: "workflow", name: "Old workflow" };
+	hub.register({ items: () => [legacy, agent] as AgentPanelItem[], subscribe: () => () => {} });
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	try {
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.id),
+			["current"],
+		);
+		inspector.setBoardSource(agentPanelBoardSource(session));
+		const board = stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n"));
+		assert.match(board, /Tasks {2}1 working/);
+		assert.match(board, /reviewer +Current review/);
+		assert.doesNotMatch(board, /Old workflow/);
+	} finally {
+		inspector.dispose();
+		hub.dispose();
+		await fixture.dispose();
+	}
+});
+
 test("agentPanelBoardSource subscribes to the extension hub only and reads extension items without reading the task store (#5224)", async () => {
 	const fixture = taskFixture();
 	try {
