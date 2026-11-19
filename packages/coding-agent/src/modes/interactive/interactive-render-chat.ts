@@ -1094,12 +1094,17 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		} else {
 			const page = readMountedAnchors(mount, () => layout?.anchors() ?? []);
 			const apply = (data?: ChatPageDecorations) => {
-				if (data && layout) layout.apply(chat, data);
+				const changed = data !== undefined && layout?.apply(chat, data) === true;
 				layout = undefined;
-				this.ui.requestRender();
+				return changed;
 			};
-			if (chat instanceof StartupChatContainer) chat.awaitChatRecords(page, apply, true, CHAT_RECORD_FIRST_PAINT_MS);
-			else void page.then(apply);
+			// The main-screen renderer writes the rows into the one frame it may hold for them; nothing renders again.
+			if (chat instanceof StartupChatContainer)
+				chat.awaitChatRecords(page, apply, this.ui, CHAT_RECORD_FIRST_PAINT_MS);
+			else
+				void page.then((data) => {
+					if (apply(data)) this.ui.requestRender();
+				});
 		}
 	}
 	restoreDeferredEchoes(this, pendingEchoes);
