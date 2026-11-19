@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { getKeybindings, type SettingItem, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, MULTI_CLICK_INTERVAL_MS, type SettingItem, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
@@ -59,6 +59,9 @@ for (const width of [80, 160]) {
 		assert.deepEqual(changes, ["autocompact=false"]);
 
 		await ui.click(/Thinking level/, "Thinking level");
+		// The submenu draws `high` on the cell just clicked, where a second press within the multi-click interval would
+		// make a double-click.
+		await new Promise((resolve) => setTimeout(resolve, MULTI_CLICK_INTERVAL_MS + 50));
 		await ui.click(/\bhigh\b/, "high");
 		assert.deepEqual(changes, ["autocompact=false", "thinking=high"]);
 		ui.tui.stop();
