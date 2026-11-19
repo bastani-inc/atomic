@@ -320,11 +320,11 @@ test("a child sealed at task settlement refuses a racing ask with a child-specif
 });
 
 // Manual 477d: a peer's parent-addressed send was queued until the child settled.
-// Use the public broker handler, native parent event writer, and real subagent
-// foreground observation. A direct incoming-message sender misses the idle queue.
+// Use the public broker handler, native parent event writer, and a real subagent launch the parent's tool call
+// waits on explicitly ("wait") or not at all ("background"). A direct incoming-message sender misses the idle queue.
 async function observingParent(
 	name: string,
-	mode: "foreground" | "wait" | "background" = "foreground",
+	mode: "wait" | "background" = "wait",
 	options: EndpointOptions = {},
 	runChild: typeof runSync = runSync,
 ) {
@@ -340,7 +340,7 @@ async function observingParent(
 	const tool: AgentTool = {
 		name: "subagent",
 		label: "Subagent",
-		description: "Observe a real foreground subagent",
+		description: "Launch a real subagent and wait on it",
 		parameters: Type.Object({}),
 		async execute() {
 			const launched = await runAgentTask({
@@ -360,7 +360,6 @@ async function observingParent(
 				],
 				agent: "held-worker",
 				task: "original child task",
-				wait: mode === "foreground" ? { kind: "foreground", budgetMs: 60_000 } : { kind: "background" },
 				options: { runId: name, intercomSessionName: `${name}-child`, allowIntercomDetach: true, intercomEvents },
 				runtime: {
 					runSync: (cwd, agents, agent, task, runOptions) => {
@@ -433,7 +432,7 @@ function ownerSnapshot(parent: Awaited<ReturnType<typeof observingParent>>) {
 }
 
 for (const scope of ["interactive", "headless", "workflow-stage"] as const) {
-	for (const mode of ["foreground", "wait"] as const) {
+	for (const mode of ["wait"] as const) {
 		for (const action of ["send", "ask"] as const) {
 			test(`public parent ${action} releases ${scope} ${mode} subagent observation before its held child settles`, async () => {
 				const boundary = scope === "workflow-stage" ? new WorkflowStageAdmissionBoundary() : undefined;
@@ -472,7 +471,7 @@ for (const scope of ["interactive", "headless", "workflow-stage"] as const) {
 					respond,
 				]);
 				parent.setResponses(dispatches.steps(5));
-				const turn = parent.session.prompt("Launch a foreground child");
+				const turn = parent.session.prompt("Launch a child and wait for it");
 				const asks = new AbortController();
 				try {
 					await parent.started;
@@ -545,9 +544,9 @@ for (const scope of ["interactive", "headless", "workflow-stage"] as const) {
 	}
 }
 
-test("public foreground child send receives first refusal before the parent's protected event writer", async () => {
+test("a child's send to its parent waiting on it is admitted after the parent's protected event writer, then ends the wait", async () => {
 	const releaseHook = Promise.withResolvers<void>();
-	const parent = await observingParent("handshake-parent", "foreground", {
+	const parent = await observingParent("handshake-parent", "wait", {
 		ui: true,
 		extensionFactory: (pi) => {
 			pi.on("tool_execution_start", () => releaseHook.promise);
@@ -566,16 +565,14 @@ test("public foreground child send receives first refusal before the parent's pr
 		const original = ownerSnapshot(parent).tasks[0].ref;
 		const sent = await child.execute({ action: "send", to: parent.id, message: "CHILD-HANDSHAKE" });
 		assert.notEqual(sent.isError, true);
-		await awaitWithin(parent.observed, () =>
-			assert.ok(parent.observation, "exact child must yield before SDK writer admission"),
-		);
+		assert.equal(incomingCards(parent).length, 0, "the child's message must not bypass protected persistence");
+		releaseHook.resolve();
+		await awaitWithin(parent.observed, () => assert.ok(parent.observation, "the child's message must end the wait"));
 		assert.ok(parent.observation?.kind === "admitted" && parent.observation.observation.kind === "yielded");
 		assert.equal(parent.observation.observation.reason, "intercom-coordination");
-		assert.equal(incomingCards(parent).length, 0, "first refusal must not bypass protected persistence");
 		assert.equal(parent.signal?.aborted, false);
 		assert.deepEqual(ownerSnapshot(parent).tasks[0].ref, original);
 		assert.equal(ownerSnapshot(parent).tasks[0].execution.kind, "running");
-		releaseHook.resolve();
 		await turn;
 		await vi.waitFor(() => assert.equal(incomingCards(parent).length, 1), INNER_WAIT);
 		assert.equal(parent.starts, 1);
@@ -593,7 +590,7 @@ test("public parent input waits for its event writer, then yields only that owne
 	const hookEntered = Promise.withResolvers<void>();
 	const releaseHook = Promise.withResolvers<void>();
 	let hookDone = false;
-	const parent = await observingParent("writer-parent", "foreground", {
+	const parent = await observingParent("writer-parent", "wait", {
 		ui: true,
 		extensionFactory: (pi) => {
 			pi.on("tool_execution_start", async () => {
@@ -607,7 +604,7 @@ test("public parent input waits for its event writer, then yields only that owne
 			});
 		},
 	});
-	const other = await observingParent("other-owner", "foreground", { ui: true });
+	const other = await observingParent("other-owner", "wait", { ui: true });
 	const peer = await endpoint("writer-peer");
 	for (const h of [parent, other])
 		h.setResponses([
@@ -617,7 +614,7 @@ test("public parent input waits for its event writer, then yields only that owne
 	const turn = parent.session.prompt("original parent task");
 	const otherTurn = other.session.prompt("unrelated parent task");
 	try {
-		await Promise.all([parent.started, other.started, hookEntered.promise]);
+		await Promise.all([parent.observing, other.observing, hookEntered.promise]);
 		const sent = await peer.execute({ action: "send", to: parent.id, message: "WRITER-INPUT" });
 		assert.notEqual(sent.isError, true);
 		assert.equal(parent.observation, undefined);
@@ -630,8 +627,8 @@ test("public parent input waits for its event writer, then yields only that owne
 		await turn;
 		assert.equal(hookDone, true);
 		assert.equal(incomingCards(parent).length, 1);
-		assert.equal(other.observation, undefined);
-		assert.equal(ownerSnapshot(other).tasks[0].observation.kind, "foreground");
+		assert.equal(other.observation, undefined, "the other owner's wait goes on");
+		assert.equal(ownerSnapshot(other).tasks[0].execution.kind, "running");
 		assert.equal(parent.signal?.aborted, false);
 		assert.equal(other.signal?.aborted, false);
 		const entries = parent.sessionManager.getEntries();
@@ -653,9 +650,9 @@ test("public parent input waits for its event writer, then yields only that owne
 });
 
 for (const winner of ["admission", "completion"] as const) {
-	test(`public parent input and foreground completion race preserves ${winner} and terminal ordering`, async () => {
+	test(`public parent input and waited-on completion race preserves ${winner} and terminal ordering`, async () => {
 		const releaseWriter = Promise.withResolvers<void>();
-		const parent = await observingParent(`race-${winner}`, "foreground", {
+		const parent = await observingParent(`race-${winner}`, "wait", {
 			ui: true,
 			extensionFactory: (pi) => {
 				pi.on("tool_execution_start", () => releaseWriter.promise);
@@ -679,7 +676,7 @@ for (const winner of ["admission", "completion"] as const) {
 		]);
 		const turn = parent.session.prompt("original racing task");
 		try {
-			await parent.started;
+			await parent.observing;
 			assert.notEqual(
 				(await peer.execute({ action: "send", to: parent.id, message: "RACING-INPUT" })).isError,
 				true,
@@ -822,7 +819,10 @@ for (const ui of [true, false]) {
 				assert.equal(incomingCards(parent).length, 0);
 				assert.equal(parent.signal?.aborted, false);
 				assert.equal(workSignal?.aborted, false);
-				assert.deepEqual(ownerSnapshot(parent).tasks[0].observation, { kind: "background", reason: "explicit" });
+				assert.deepEqual(ownerSnapshot(parent).tasks[0].observation, {
+					kind: "background",
+					reason: "default-background",
+				});
 				busy = false;
 				releaseWork.resolve();
 				await turn;
@@ -892,7 +892,7 @@ test("simultaneous public parent send and child priority interrupt preserve the 
 	// fixture; the parent still uses runAgentTask and its actual owner observation.
 	const parent = await observingParent(
 		"simultaneous-parent",
-		"foreground",
+		"wait",
 		{ ui: true },
 		async (_cwd, _agents, agent, task, options) => {
 			options.taskExecution?.bindTranscript?.(child.sessionManager);
@@ -913,7 +913,7 @@ test("simultaneous public parent send and child priority interrupt preserve the 
 	]);
 	const turn = parent.session.prompt("original parent task");
 	try {
-		await working.promise;
+		await Promise.all([working.promise, parent.observing]);
 		const original = ownerSnapshot(parent).tasks[0].ref;
 		const sent = await Promise.all([
 			peer.execute({ action: "send", to: parent.id, message: "PARENT-ONLY" }),

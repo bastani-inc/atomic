@@ -26,6 +26,7 @@ import { rejectMalformedToolArguments } from "./tools/malformed-tool-arguments.t
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
 import { createSessionHistoryToolDefinition } from "./tools/session-history.ts";
 import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
+import { withToolAbortGrace } from "./tools/tool-abort-grace.ts";
 import { scheduleToolExecution } from "./tools/tool-concurrency.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 
@@ -133,7 +134,8 @@ export function _refreshToolRegistry(
 				),
 		};
 		const guarded = rejectMalformedToolArguments(scoped, () => this.agent.state.messages);
-		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);
+		// Inside the scheduler: a call its interrupted turn stopped waiting for no longer holds back later calls (#5486).
+		const scheduled = scheduleToolExecution(withToolAbortGrace(guarded), this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
 		const detachable = builtInQuestion && !questionsDetach ? undefined : definition?.detachable;
 		return definition !== undefined && (detachable === true || typeof detachable === "function")
@@ -144,6 +146,7 @@ export function _refreshToolRegistry(
 					(id, signal) => runner.createToolContext(id, signal),
 					typeof detachable === "function" ? (params) => detachable(params) : undefined,
 					definition.detachmentRequiresReady === true,
+					abortError,
 				)
 			: scheduled;
 	};

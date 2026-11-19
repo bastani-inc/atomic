@@ -12,10 +12,12 @@ import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
 import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 import { reportDebugAsync as reportDebug } from "./debug.ts";
+import { readableDetachedOutput } from "./detached-tool-output.ts";
 import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
+import { abandonedToolResult, toolAbortGraceMs } from "./tools/tool-abort-grace.ts";
 import {
 	resolveToolConcurrency,
 	type ToolConcurrencyMode,
@@ -106,12 +108,16 @@ function isTopLevelToolCall(session: AgentSession, toolCallId: string): boolean 
 	return false;
 }
 
-function errorToolResult(error: Error | DOMException | string | object): AgentToolResult {
-	const failure = typedFailure(error);
-	return {
-		content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-		details: failure === undefined ? undefined : { error: failure },
-	};
+function errorToolResult(error: unknown): AgentToolResult {
+	try {
+		const failure = typedFailure(error);
+		return {
+			content: [{ type: "text", text: String(error instanceof Error ? error.message : error) }],
+			details: failure === undefined ? undefined : { error: failure },
+		};
+	} catch {
+		return { content: [{ type: "text", text: "Tool call failed with an unprintable error" }], details: undefined };
+	}
 }
 
 /**
@@ -120,7 +126,7 @@ function errorToolResult(error: Error | DOMException | string | object): AgentTo
  * `toJSON()` throws gets the latter too, marked `serialization: "fallback"`. Undefined for an error without a string
  * `code`.
  */
-function typedFailure(error: Error | DOMException | string | object): DetachedCallFailure | undefined {
+function typedFailure(error: unknown): DetachedCallFailure | undefined {
 	if (!(error instanceof Error)) return undefined;
 	const { code } = error as { readonly code?: unknown };
 	if (typeof code !== "string") return undefined;
@@ -308,7 +314,12 @@ function startOperation(
 	facts: DetachedCallFacts,
 	hold: CallHold,
 	start: OperationStart,
-): { readonly call: DetachedToolCall; readonly settled: Promise<AgentToolResult>; readonly signal: AbortSignal } {
+): {
+	readonly detach: () => DetachedToolCall;
+	readonly abort: DetachedToolCall["abort"];
+	readonly settled: Promise<AgentToolResult>;
+	readonly signal: AbortSignal;
+} {
 	return outsideAnySession(() => {
 		const controller = new AbortController();
 		if (start.inlineContext !== undefined) inline.context = start.inlineContext(facts.toolCallId, controller.signal);
@@ -320,15 +331,18 @@ function startOperation(
 			start.when === "now"
 				? new Promise<AgentToolResult>((resolve) => resolve(begin()))
 				: (start.when ?? Promise.resolve()).then(begin);
+		const handOver = observeWork(toolName, facts.toolCallId, settled, hold);
+		const abort = abortWith(controller);
 		return {
 			settled,
 			signal: controller.signal,
-			call: {
+			abort,
+			detach: () => ({
 				toolCallId: facts.toolCallId,
 				toolName,
-				result: settledResult(toolName, facts.toolCallId, settled, hold),
-				abort: abortWith(controller),
-			},
+				result: handOver(),
+				abort,
+			}),
 		};
 	});
 }
@@ -381,26 +395,45 @@ function callContext(inline: InlineSession, facts: DetachedCallFacts): Extension
 	});
 }
 
-/**
- * The call's one reaction to its work settling: it lets the call's hold go and makes the call's result. It is built
- * apart from the call's abort, so it keeps the call's names and hold, not its controller.
- */
-function settledResult(
+type ToolSettlement = { result: AgentToolResult } | { error: unknown };
+
+/** The single settlement reaction both releases the permit and delivers to a host that took the call. */
+function observeWork(
 	toolName: string,
 	toolCallId: string,
 	settled: Promise<AgentToolResult>,
 	hold: CallHold,
-): Promise<DetachedToolResult> {
-	return settled.then(
-		(value): DetachedToolResult => {
-			letGo(hold);
-			return { toolCallId, toolName, result: value, isError: value.isError === true };
-		},
-		(error: Error | DOMException | string | object): DetachedToolResult => {
-			letGo(hold);
-			return { toolCallId, toolName, result: errorToolResult(error), isError: true };
-		},
+): () => Promise<DetachedToolResult> {
+	let handedOver = false;
+	let finishedInline: ToolSettlement | undefined;
+	const finish = (value: ToolSettlement) => {
+		letGo(hold);
+		if (handedOver) return detachedResult(toolName, toolCallId, value);
+		finishedInline = value;
+		return undefined;
+	};
+	const delivery = settled.then(
+		(result) => finish({ result }),
+		(error: unknown) => finish({ error }),
 	);
+	return () => {
+		handedOver = true;
+		const early = finishedInline;
+		if (early !== undefined)
+			return outsideAnySession(() => Promise.resolve(detachedResult(toolName, toolCallId, early)));
+		// finish has not run, and now sees handedOver: delivery itself is the host's result, not a second .then().
+		return delivery as Promise<DetachedToolResult>;
+	};
+}
+
+function detachedResult(toolName: string, toolCallId: string, value: ToolSettlement): DetachedToolResult {
+	if ("error" in value) return { toolCallId, toolName, result: errorToolResult(value.error), isError: true };
+	try {
+		const result = readableDetachedOutput(value.result);
+		return { toolCallId, toolName, result, isError: result.isError === true };
+	} catch {
+		return { toolCallId, toolName, result: errorToolResult("Could not read this tool result"), isError: true };
+	}
 }
 
 function abortWith(controller: AbortController): DetachedToolCall["abort"] {
@@ -409,6 +442,8 @@ function abortWith(controller: AbortController): DetachedToolCall["abort"] {
 
 const INLINE = Symbol("inline");
 const DETACH = Symbol("detach");
+/** The interrupted turn stopped waiting for the call (#5486). */
+const ABANDON = Symbol("abandon");
 
 interface SchedulerPermit {
 	readonly grantedLater: Promise<void> | undefined;
@@ -435,6 +470,29 @@ function takeSchedulerPermit(scheduler: ToolExecutionScheduler, mode: ToolConcur
 	});
 }
 
+/**
+ * Settles once the call has its place in the scheduler or its turn is interrupted, whichever comes first (#5486). The
+ * wait is set up outside every session, and the reaction an interrupt leaves on `granted` keeps nothing of the turn.
+ */
+function placeOrInterrupt(granted: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	if (signal === undefined) return granted;
+	if (signal.aborted) return Promise.resolve();
+	return outsideAnySession(() => grantedOrInterrupted(granted, signal));
+}
+
+function grantedOrInterrupted(granted: Promise<void>, signal: AbortSignal): Promise<void> {
+	const settled = Promise.withResolvers<void>();
+	let watched: AbortSignal | undefined = signal;
+	const settle = (): void => {
+		watched?.removeEventListener("abort", settle);
+		watched = undefined;
+		settled.resolve();
+	};
+	signal.addEventListener("abort", settle, { once: true });
+	void granted.then(settle);
+	return settled.promise;
+}
+
 /** Forget the session's detachable tools before its tools are registered again, so a removed tool is not one. */
 export function forgetDetachableTools(session: AgentSession): void {
 	const state = states.get(session);
@@ -450,7 +508,8 @@ export function forgetDetachableTools(session: AgentSession): void {
  *
  * The call keeps its declared concurrency: it starts once the calls before it in the session's scheduler allow, and
  * it holds its place there until its work settles, also after it detaches, so an exclusive call never overlaps another
- * call of the session. Closing the session gives the place back.
+ * call of the session. Closing the session gives the place back. A call whose turn is interrupted before it gets its
+ * place throws `abortError` (by default "Operation aborted") at once and never runs.
  */
 export function detachableTool(
 	session: AgentSession,
@@ -459,6 +518,7 @@ export function detachableTool(
 	createContext: DetachableContext,
 	detachesCall?: DetachesCall,
 	requiresReady = false,
+	abortError?: () => Error,
 ): AgentTool {
 	const state = detachmentState(session);
 	state.executes.set(tool.name, { execute, context: createContext });
@@ -474,7 +534,13 @@ export function detachableTool(
 				session._toolExecutionScheduler,
 				resolveToolConcurrency(tool.concurrency, params as Record<string, unknown>),
 			);
-			if (permit.grantedLater !== undefined) await permit.grantedLater;
+			if (permit.grantedLater !== undefined) await placeOrInterrupt(permit.grantedLater, signal);
+			if (signal?.aborted) {
+				// Interrupted before it got its place: the call gives the place back and never runs, so it holds back neither
+				// its turn nor any later call (#5486).
+				permit.release();
+				throw abortError?.() ?? new Error("Operation aborted");
+			}
 			const hold = holdCall(state.holds, permit);
 			const inline: InlineSession = { onUpdate, context: undefined };
 			let operation: ReturnType<typeof startOperation>;
@@ -492,36 +558,65 @@ export function detachableTool(
 				letGo(hold);
 				throw error;
 			}
-			const { call, settled, signal: operationSignal } = operation;
-			const forwardAbort = (): void => call.abort(signal?.reason);
-			if (signal?.aborted) forwardAbort();
-			else signal?.addEventListener("abort", forwardAbort, { once: true });
+			const { abort, detach, settled, signal: operationSignal } = operation;
 			// The run waits on this gate alone: it settles at the threshold even while the call goes on, so no reaction
 			// created in the run's context stays on the call once it detaches.
-			const gate = Promise.withResolvers<symbol>();
-			hold.gate = gate.resolve;
+			let gate = Promise.withResolvers<symbol>();
+			const open = (value: symbol): void => gate.resolve(value);
+			hold.gate = open;
+			// An interrupted turn waits for the call only a grace period, as for any tool call (#5486). From the interrupt
+			// on the call no longer detaches: it answers within the grace, or ends aborted and gives its place back.
+			let interrupted = false;
+			let graceMs: number | undefined;
+			let graceTimer: ReturnType<typeof setTimeout> | undefined;
+			const forwardAbort = (): void => {
+				interrupted = true;
+				abort(signal?.reason);
+				graceMs = toolAbortGraceMs();
+				graceTimer = setTimeout(() => open(ABANDON), graceMs);
+				graceTimer.unref?.();
+			};
+			if (signal?.aborted) forwardAbort();
+			else signal?.addEventListener("abort", forwardAbort, { once: true });
 			let ready = !requiresReady;
 			let elapsed = false;
 			if (requiresReady)
 				readinessCallbacks.set(operationSignal, () => {
 					ready = true;
-					if (elapsed) gate.resolve(DETACH);
+					if (elapsed && !interrupted) open(DETACH);
 				});
 			const timer = setTimeout(() => {
 				elapsed = true;
-				if (ready) gate.resolve(DETACH);
+				if (ready && !interrupted) open(DETACH);
 			}, policy.afterMs);
 			try {
-				if ((await gate.promise) === INLINE) return await settled;
+				let opened = await gate.promise;
+				if (opened === DETACH && interrupted) {
+					// The gate opened to detach the call, but the turn was interrupted before this continuation ran, as when the
+					// call marks itself ready and the turn is aborted in the same tick. The call is handed over only here, in the
+					// same step that stops the interrupt from reaching it, so the interrupt wins: the call, which has received the
+					// abort, waits out its grace like any interrupted call (#5486). If its work already settled (letGo ran), it
+					// answers with its own result.
+					gate = Promise.withResolvers<symbol>();
+					opened = hold.gate === undefined ? INLINE : await gate.promise;
+				}
+				if (opened === INLINE) return await settled;
+				if (opened === ABANDON) {
+					const permit = hold.permit;
+					hold.permit = undefined;
+					permit?.release();
+					return abandonedToolResult(tool.name, graceMs ?? toolAbortGraceMs());
+				}
 			} finally {
 				hold.gate = undefined;
 				clearTimeout(timer);
+				clearTimeout(graceTimer);
 				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);
 			}
 			inline.onUpdate = undefined;
 			inline.context = undefined;
-			state.detached.set(toolCallId, call);
+			state.detached.set(toolCallId, detach());
 			return {
 				content: [{ type: "text", text: DETACHED_PLACEHOLDER_TEXT }],
 				details: undefined,
@@ -792,7 +887,7 @@ export function redispatchDetachedToolCalls(this: AgentSession): DetachedToolCal
 		return startOperation(toolCall.name, work.execute, params, inline, facts, holdCall(state.holds, permit), {
 			startingContext: whileOpen(this, work.context),
 			when: permit.grantedLater ?? "now",
-		}).call;
+		}).detach();
 	});
 }
 
@@ -861,9 +956,15 @@ async function finalizedResult(
 	toolCall: ToolCall,
 	reported: DetachedToolResult,
 ): Promise<DetachedToolResult> {
-	// A result handed back across a process boundary may omit its content, as an untyped tool's may.
-	const detached = { ...reported, result: { ...reported.result, content: reported.result.content ?? [] } };
 	try {
+		// SDK hosts can hand back their own values, including one without content from a process boundary.
+		const output = readableDetachedOutput(reported.result);
+		const detached = {
+			toolCallId: reported.toolCallId,
+			toolName: reported.toolName,
+			isError: reported.isError,
+			result: output.content == null ? { ...output, content: [] } : output,
+		};
 		const replacement = await finalizeToolResult(session, {
 			toolCall,
 			args: toolCall.arguments,
@@ -875,7 +976,27 @@ async function finalizedResult(
 		return withReplacement(detached, replacement);
 	} catch (error) {
 		// As the agent loop does when an inline call's finalization throws: the call fails with that error.
-		return { ...detached, result: errorToolResult(error as Error | string | object), isError: true };
+		return { toolCallId: toolCall.id, toolName: toolCall.name, result: errorToolResult(error), isError: true };
+	}
+}
+
+/** Prepare the wire message before emitting or appending it. A bad payload fails the call, not the store or turn. */
+function prepareRecordedAnswer(result: DetachedToolResult): { result: DetachedToolResult; message: ToolResultMessage } {
+	try {
+		// The host keeps its original result (including non-wire extension markers); the store gets only its JSON.
+		const message: ToolResultMessage = JSON.parse(JSON.stringify(resultMessage(result)));
+		return { result, message };
+	} catch {
+		const failed = {
+			toolCallId: result.toolCallId,
+			toolName: result.toolName,
+			isError: true,
+			result: {
+				content: [{ type: "text" as const, text: "Could not record this tool result" }],
+				details: undefined,
+			},
+		};
+		return { result: failed, message: resultMessage(failed) };
 	}
 }
 
@@ -905,8 +1026,9 @@ async function recordAnswers(session: AgentSession, answers: readonly Answer[]):
 	for (const answer of answers) session._reissuedToolCallIds.add(answer.result.toolCallId);
 	try {
 		for (const answer of answers) {
-			const result = await finalizedResult(session, answer.toolCall, answer.result);
-			const message = resultMessage(result);
+			const { result, message } = prepareRecordedAnswer(
+				await finalizedResult(session, answer.toolCall, answer.result),
+			);
 			// Through the session's event pipeline, as the agent loop records a result: hosts see the call end,
 			// and the result is persisted as that call's result.
 			session._handleAgentEvent({

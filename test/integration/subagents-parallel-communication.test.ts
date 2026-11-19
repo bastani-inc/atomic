@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test, vi } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
-import type { TaskId, WaitPolicy } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { registerContactSupervisorTool } from "../../packages/intercom/contact-supervisor-tool.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import type { IntercomExtensionTestOverrides } from "../../packages/intercom/intercom-test-seams.js";
@@ -34,7 +34,12 @@ type Tool = {
 };
 type Inbound = Parameters<NonNullable<IntercomExtensionTestOverrides["captureInboundHandler"]>>[0];
 
-function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktree?: boolean; stage?: boolean } = {}) {
+/** `wait` is what a legacy call still passes: every launch runs in the background whatever it says. */
+function fixture(
+	wait: { kind: "background" } | undefined,
+	owned = true,
+	resources: { worktree?: boolean; stage?: boolean } = {},
+) {
 	const cwd = makeTempDirectory("parallel-communication-");
 	const git = (...args: string[]) => {
 		const result = spawnSyncCollect(["git", "-C", cwd, ...args]);
@@ -360,16 +365,14 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 	};
 }
 
-for (const wait of [undefined, { kind: "background" }, { kind: "foreground", budgetMs: 10000 }] as const) {
+for (const wait of [undefined, { kind: "background" }] as const) {
 	for (const operation of ["ask", "need_decision", "interview_request"] as const) {
 		test(`parallel ${wait?.kind ?? "default"} ${operation} keeps siblings running and resumes the same requester after its correlated reply`, async () => {
 			const current = fixture(wait);
 			try {
 				await current.start();
-				if (wait?.kind !== "foreground") {
-					await current.launch;
-					current.setIdle();
-				}
+				await current.launch;
+				current.setIdle();
 				const child = current.childTool(operation === "ask" ? "intercom" : "supervisor");
 				let returned = false;
 				const execution = child
@@ -425,16 +428,14 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 	}
 }
 
-for (const wait of [undefined, { kind: "background" }, { kind: "foreground", budgetMs: 10000 }] as const) {
+for (const wait of [undefined, { kind: "background" }] as const) {
 	for (const operation of ["send", "progress_update"] as const) {
 		test(`parallel ${wait?.kind ?? "default"} ${operation} never waits for a reply or discards queued siblings`, async () => {
 			const current = fixture(wait);
 			try {
 				await current.start();
-				if (wait?.kind !== "foreground") {
-					await current.launch;
-					current.setIdle();
-				}
+				await current.launch;
+				current.setIdle();
 				const child = current.childTool(operation === "send" ? "intercom" : "supervisor");
 				const result = await child.execute(
 					operation === "send"
@@ -501,22 +502,19 @@ test("parallel parent questions preserve empty text, omitted decision notes and 
 	}
 });
 
-for (const wait of [{ kind: "background" }, { kind: "foreground", budgetMs: 10000 }] as const) {
+for (const wait of [{ kind: "background" }] as const) {
 	for (const replyFirst of [false, true]) {
 		test(`parallel ${wait.kind} targeted cancellation stays isolated when replyFirst=${replyFirst}`, async () => {
 			const current = fixture(wait);
 			try {
 				await current.start();
-				if (wait.kind === "background") {
-					await current.launch;
-					current.setIdle();
-				}
+				await current.launch;
+				current.setIdle();
 				const child = current.childTool("supervisor");
 				const execution = child.execute({ reason: "need_decision", message: "Choose" });
 				await current.until(() => current.surfaced.length >= 1);
 				assert.equal(current.surfaced.length, 1);
 				const question = current.surfaced[0]!.id;
-				// A foreground launch registers its queued sibling with the host on its own schedule.
 				await vi.waitFor(() => assert.equal(current.snapshot().length, 3), STATE_POLL);
 				const ids = current.snapshot().map((task) => task.ref.taskId);
 				if (replyFirst) assert.equal(child.reply(question), true);
@@ -546,10 +544,8 @@ for (const wait of [{ kind: "background" }, { kind: "foreground", budgetMs: 1000
 			const current = fixture(wait);
 			try {
 				await current.start();
-				if (wait.kind === "background") {
-					await current.launch;
-					current.setIdle();
-				}
+				await current.launch;
+				current.setIdle();
 				const child = current.childTool("intercom");
 				const execution = child.execute({ action: "ask", to: "parent-id", message: "Choose" });
 				await current.until(() => current.surfaced.length >= 1);
@@ -620,13 +616,12 @@ for (const replyFirst of [false, true]) {
 	});
 }
 
-test("foreground admission does not execute a queued child cancelled before capacity is available", async () => {
-	const current = fixture({ kind: "foreground", budgetMs: 10000 });
+test("admission does not execute a queued child cancelled before capacity is available", async () => {
+	const current = fixture(undefined);
 	try {
 		await current.start();
-		const child = current.childTool("intercom");
-		assert.equal((await child.execute({ action: "send", to: "parent-id", message: "Update" })).isError, false);
 		await current.launch;
+		current.setIdle();
 		const queued = current.snapshot()[2]!;
 		assert.equal(queued.execution.kind, "queued");
 		assert.equal(current.optionsByIndex.has(2), false, "native admission must not invoke queued child execution");
@@ -645,7 +640,7 @@ test("foreground admission does not execute a queued child cancelled before capa
 	}
 });
 
-for (const wait of [undefined, { kind: "background" }, { kind: "foreground", budgetMs: 10000 }] as const) {
+for (const wait of [undefined, { kind: "background" }] as const) {
 	for (const stop of ["queued", "session-close", "stage-close"] as const) {
 		test(`parallel ${wait?.kind ?? "default"} ${stop} releases yielded worktrees without starting cancelled children`, async () => {
 			const current = fixture(wait, true, { worktree: true, stage: stop === "stage-close" });

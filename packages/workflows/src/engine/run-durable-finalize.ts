@@ -110,6 +110,8 @@ async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput):
 			undefined,
 			input.runSnapshot.resumable,
 			failure,
+			input.runSnapshot.runGeneration,
+			input.runSnapshot.finishSequence,
 		);
 	}
 }

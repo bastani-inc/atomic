@@ -12,7 +12,7 @@ import {
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyText, parenthesizedKeyHint } from "./keybinding-hints.js";
+import { keyTextHint, parenthesizedKeyHint } from "./keybinding-hints.js";
 import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 import { truncateToVisualLines } from "./visual-truncate.ts";
 
@@ -55,7 +55,7 @@ export class BashExecutionComponent extends Container {
 			ui,
 			(spinner) => theme.fg(this.colorKey, spinner),
 			(text) => theme.fg("muted", text),
-			`Running... (${keyText("tui.select.cancel")} Cancel)`, // Plain text for loader
+			`Running... (${keyTextHint("tui.select.cancel", "Cancel")})`, // Styled by the loader
 		);
 
 		// Bottom border

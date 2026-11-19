@@ -16,10 +16,10 @@ import type { NamedWorktree, NamedWorktreeRequest } from "../shared/named-worktr
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
-/** The `subagent` tool call a task of a merged burst came from, so its forked children answer that call as theirs. */
-export const BURST_TASK_LAUNCH_CALL_ID = Symbol("burstTaskLaunchCallId");
-export const BURST_EXECUTION_SCHEDULE = Symbol("burstExecutionSchedule");
-export const TASK_EXECUTION_TICKETS = Symbol("taskExecutionTickets");
+/** The caller's tasks[] index before prepending a mixed call's top-level child, for input diagnostics. */
+export const BURST_TASK_INPUT_INDEX = Symbol("burstTaskInputIndex");
+/** Retain the expanded tasks' actual working directories for call-local output checks if a merged run fails. */
+export const BURST_PREPARED_TASKS = Symbol("burstPreparedTasks");
 /** The named worktree a launch's child runs in, once it exists (#5202). */
 export const NAMED_WORKTREE = Symbol("namedWorktree");
 
@@ -29,8 +29,8 @@ export interface TaskParam {
 	cwd?: string;
 	worktree?: NamedWorktreeRequest;
 	[NAMED_WORKTREE]?: NamedWorktree;
-	[TASK_EXECUTION_TICKETS]?: import("../shared/parallel-utils.js").ExecutionTicket[];
 	count?: number;
+	[BURST_TASK_INPUT_INDEX]?: number;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
 	reads?: string[] | boolean;
@@ -43,14 +43,13 @@ export interface TaskParam {
 
 export type BurstTaskParam = TaskParam & {
 	[BURST_TASK_DISCOVERY_CWD]?: string;
-	[BURST_TASK_LAUNCH_CALL_ID]?: string;
 };
 
 export interface SubagentParamsLike {
-	[BURST_EXECUTION_SCHEDULE]?: import("../shared/parallel-utils.js").ExecutionScheduler;
+	[BURST_PREPARED_TASKS]?: (tasks: TaskParam[]) => void;
 	action?: (typeof SUBAGENT_ACTIONS)[number];
 	id?: string;
-	wait?: import("@bastani/atomic").WaitPolicy;
+	/** `action: "wait"` only: how long to wait for the task. */
 	budgetMs?: number;
 	heartbeatMs?: number;
 	runId?: string;

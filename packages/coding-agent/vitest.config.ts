@@ -64,6 +64,8 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 	test: {
 		name,
 		globals: true,
+		// Drop every mock's records before each test; vi.restoreAllMocks() keeps them for the rest of the file (#5552).
+		clearMocks: true,
 		environment: "node" as const,
 		setupFiles: [
 			"../../test/helpers/provider-rate-limit-isolation.ts",

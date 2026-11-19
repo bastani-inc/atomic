@@ -80,6 +80,53 @@ for (const { lane, key, row, queue } of lanes) {
 	});
 }
 
+test.each(["before", "after"] as const)(
+	"opening a stage chat %s the prompt is saved but before its acknowledgement shows it once (#5613)",
+	async (when) => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const prompt = "Show this prompt while its save is in flight";
+		const fixture = await createStageSkillFixture();
+		const manager = fixture.stage.session.sessionManager;
+		const append = manager.appendMessage.bind(manager);
+		const hold = async () => {
+			entered.resolve();
+			await release.promise;
+		};
+		vi.spyOn(manager, "appendMessage").mockImplementation(async (message) => {
+			if (message.role !== "user") return append(message);
+			if (when === "before") await hold();
+			const id = await append(message);
+			if (when === "after") await hold();
+			return id;
+		});
+		const count = (view: StageChatView) => view.render(120).filter((line) => stripAnsi(line).includes(prompt)).length;
+		const live = fixture.mount();
+		fixture.stage.appendResponses([fauxAssistantMessage("Received.")]);
+		const turn = fixture.handle.prompt(prompt);
+		try {
+			await entered.promise;
+			const notice = "Concurrent stage notice";
+			await fixture.stage.session.sendCustomMessage(
+				{ customType: "notice", content: notice, display: true },
+				{ excludeFromContext: true },
+			);
+			const reopened = fixture.mount();
+			const rows = (view: StageChatView) =>
+				view.render(120).flatMap((line) => [prompt, notice].filter((text) => stripAnsi(line).includes(text)));
+			assert.deepEqual(rows(live), [prompt, notice]);
+			assert.deepEqual(rows(reopened), rows(live));
+			release.resolve();
+			await turn;
+			assert.equal(count(reopened), 1);
+		} finally {
+			release.resolve();
+			await turn;
+			await fixture.cleanup();
+		}
+	},
+);
+
 test("a stage chat keeps a message the stage accepted out of the composer when its turn fails later (#4696)", async () => {
 	const releaseTurn = Promise.withResolvers<void>();
 	const fixture = await createStageSkillFixture();

@@ -18,7 +18,7 @@ import { createHarness, getMessageText } from "../../packages/coding-agent/test/
 import { createIncomingMessageSender } from "../../packages/intercom/incoming-message-delivery.js";
 
 for (const scope of ["session", "workflow-stage"] as const) {
-	for (const mode of ["foreground launch", "explicit wait"] as const) {
+	for (const mode of ["explicit wait"] as const) {
 		test.each(["steer", "prompt", "Intercom ask", "Intercom send"] as const)(
 			`${scope} ${mode} yields for %s while its child keeps running`,
 			async (messageKind) => {
@@ -47,12 +47,8 @@ for (const scope of ["session", "workflow-stage"] as const) {
 							},
 						);
 						assert.ok(started.ok);
-						if (mode === "explicit wait")
-							await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
-						const pending =
-							mode === "explicit wait"
-								? host.waitForTask(started.value.taskId, 60_000)
-								: host.observeAgentLaunch(started.value.taskId, { kind: "foreground", budgetMs: 60_000 });
+						await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
+						const pending = host.waitForTask(started.value.taskId, 60_000);
 						waiting.resolve();
 						observation = await pending;
 						return { content: [{ type: "text", text: JSON.stringify(observation) }], details: {} };
@@ -73,7 +69,7 @@ for (const scope of ["session", "workflow-stage"] as const) {
 					fauxAssistantMessage("Message handled while child runs"),
 					fauxAssistantMessage("Message handled while child runs"),
 				]);
-				const turn = harness.session.prompt("Start a foreground child");
+				const turn = harness.session.prompt("Start a child and wait for it");
 				try {
 					await waiting.promise;
 					const isIntercom = messageKind.startsWith("Intercom");

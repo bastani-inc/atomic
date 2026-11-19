@@ -10,6 +10,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
+import { takeLegacyForegroundWait, withLegacyForegroundWaitNote } from "./legacy-foreground-wait.js";
 import { registerNamedRunWorktrees } from "./run-worktrees.js";
 import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
@@ -17,6 +18,7 @@ import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
 import { toExecutionErrorResult, withForkContext } from "./subagent-executor-input.js";
+import { launchSetupError } from "./subagent-executor-launch-check.js";
 import { runParallelPath } from "./subagent-executor-parallel.js";
 import { resolveSubagentExecutorRuntimeDeps } from "./subagent-executor-runtime.js";
 import { runSinglePath } from "./subagent-executor-single.js";
@@ -103,8 +105,21 @@ async function handleManagementRequest(input: {
 	if (action === "wait") {
 		const observed =
 			ctx.getAgentTaskHost && params.id !== undefined
-				? await ctx.getAgentTaskHost().waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs)
+				? await ctx
+						.getAgentTaskHost()
+						.waitForTask(params.id as import("@bastani/atomic").TaskId, params.budgetMs, undefined, signal)
 				: { ok: false as const, error: { code: "UnknownTask", message: "Task not found in this owner" } };
+		// Esc ends the wait, never the child: it keeps running and reports by its completion notice.
+		if (signal.aborted && !observed.ok && observed.error.code === "ObserverCancelled")
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Stopped waiting for ${params.id}. It keeps running in the background; its completion notice arrives when it finishes.`,
+					},
+				],
+				details: { mode: "management", results: [] },
+			};
 		const settledOutput =
 			observed.ok && observed.value.kind === "settled"
 				? await settledTaskOutputText(ctx.getAgentTaskHost?.(), [
@@ -271,7 +286,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 } {
 	const deps: ResolvedExecutorDeps = { ...rawDeps, runtime: resolveSubagentExecutorRuntimeDeps(rawDeps.runtime) };
 	const execute = async (
-		id: string,
+		_id: string,
 		params: SubagentParamsLike,
 		signal: AbortSignal,
 		onUpdate: ((r: SubagentToolResult) => void) | undefined,
@@ -310,14 +325,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 			},
 		});
 		if (named.error) return named.error;
-		const built = await prepareExecutionContext({
-			params: named.params,
-			ctx,
-			signal,
-			onUpdate,
-			deps,
-			toolCallId: id,
-		});
+		const built = await prepareExecutionContext({ params: named.params, ctx, signal, onUpdate, deps });
 		if (built.error) return built.error;
 		const prepared = built.prepared!;
 		// A named worktree is recorded with its child, like a `worktree: true` one, but never removed (#5202).
@@ -356,18 +364,23 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 
 	const executeWithBurstCollection = createExecutionBurstDispatcher({
 		execute,
-		concurrencyLimit: deps.config.parallel?.concurrency,
 		isActive: () => deps.state.subagentInProgress === true,
 		setActive: (active) => {
 			deps.state.subagentInProgress = active;
 		},
 		duplicateResult: duplicateSubagentCallResult,
+		ownError: (params, ctx, preparedTasks) => launchSetupError(params, ctx, deps, preparedTasks),
 	});
 
 	return {
-		execute: async (id, params, signal, onUpdate, ctx) =>
-			params.action
-				? execute(id, params, signal, onUpdate, ctx)
-				: (invalidHeartbeatResult(params) ?? executeWithBurstCollection(id, params, signal, onUpdate, ctx)),
+		execute: async (id, params, signal, onUpdate, ctx) => {
+			if (params.action) return execute(id, params, signal, onUpdate, ctx);
+			// Under a task host every launch runs in the background; one that still asks to wait in the foreground is
+			// told so. Without one the call still runs its children directly and waits for them, so nothing changed.
+			const legacy = takeLegacyForegroundWait(id, params, ctx);
+			const result = await (invalidHeartbeatResult(legacy.params) ??
+				executeWithBurstCollection(id, legacy.params, signal, onUpdate, ctx, legacy.wait));
+			return legacy.foreground && ctx.getAgentTaskHost ? withLegacyForegroundWaitNote(result) : result;
+		},
 	};
 }

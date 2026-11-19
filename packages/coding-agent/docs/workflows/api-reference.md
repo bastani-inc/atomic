@@ -275,7 +275,7 @@ ctx.chain(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`. Every step takes its place in the run's record when `ctx.chain` is called, so a resumed run replays each step's own result, also when another chain with steps of the same name ran at the same time.
+Runs named task steps in sequence. The first missing task uses `{task}` from chain options; later missing tasks use `{previous}`.
 
 ### `ctx.parallel(steps, options?)`
 
@@ -286,7 +286,7 @@ ctx.parallel(
 ): Promise<WorkflowTaskResult[]>;
 ```
 
-Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches. Every step takes its place in the run's record when `ctx.parallel` is called, so a resumed run replays each step's own result whatever order the steps start in, also when another parallel with steps of the same name ran at the same time.
+Runs named task steps concurrently, subject to `concurrency` and `failFast`. The call snapshots the current graph frontier at fan-out, so every branch uses the same parent set even when queued or allowed to continue after a sibling failure; downstream stages depend on all settled branches.
 
 ### `ctx.workflow(definition, options?)`
 
@@ -726,11 +726,7 @@ readonly forkFromEntryId?: string;
 
 Select a clean session or a forked context, with `forkFromSessionId` naming an explicit session ID in the selected session store. Use the earlier task's `sessionId`, not its transcript file path. IDs are preserved verbatim, including an empty stored ID. Omitting `context` creates a fresh session unless the runtime is reopening durable state; see [Locally Scoped Stage Prompts](/workflows/reliable-design#locally-scoped-stage-prompts) for choosing fresh reviewer context versus coherent implementation context.
 
-`forkFromEntryId` forks at an exact entry instead of the session's latest one. With `context: "fork"` and `forkFromSessionId`, the new session holds the entries on the path from the source session's root to that entry that its context is built from, with their ids, so a stage can retry from just before a bad turn. A forked session never copies more than that: it starts at the source's latest context clear or compaction on that path, with the model and thinking settings recorded before it, and the clear or compaction message still names the session history the earlier conversation is stored in, where the stage can read it. The path is copied as recorded: unlike `/fork` in chat, labels set with `/tree` after that entry are not carried over. It applies to `ctx.stage`, `ctx.task`, `ctx.chain` and `ctx.parallel` steps alike, and is ignored without `forkFromSessionId`. Stage setup fails with `ForkEntryNotFoundError` when the entry is not in the source session; nothing is created. The source session is never changed.
-
-Without `forkFromEntryId`, a stage that forks a stage session open in the run forks at the entry that session was at when the stage was launched; a session with no entries yet gives the stage an empty copy. The run records that point, so a stage that starts later, because it waited for a concurrency slot, the run resumed, or `workflow fork` runs it again from a copy of the source session, copies the same conversation and none of the source's later turns. Stages launched from the same point get identical copies. `ctx.parallel` records one such point for all of its forked steps before it starts any of them, so a step still waiting for a slot when the run stops, or when a failed parallel is run again, forks at the same point as the steps that ran. A stage opens its session only once the run has recorded its point. When the run cannot record it, the stage fails before its session opens, and a parallel fails before it starts any step; running it again forks every step from one point. A source that is not open in the run is copied as stored when the stage starts.
-
-A forked stage's session holds the copied entries unchanged, then one result for each tool call the source's last turn left open, then the stage's own prompt. The copied conversation is what the source itself would send for its next request, so a provider that signs its reasoning accepts it.
+`forkFromEntryId` forks at an exact entry instead of the session's latest one. With `context: "fork"` and `forkFromSessionId`, the new session holds the entries on the path from the source session's root to that entry, with their ids, so a stage can retry from just before a bad turn. The path is copied as recorded: unlike `/fork` in chat, labels set with `/tree` after that entry are not carried over. It applies to `ctx.stage`, `ctx.task`, `ctx.chain` and `ctx.parallel` steps alike, and is ignored without `forkFromSessionId`. Stage setup fails with `ForkEntryNotFoundError` when the entry is not in the source session; nothing is created. The source session is never changed.
 
 ```typescript
 await ctx.task("retry-impl", {
@@ -1271,7 +1267,7 @@ Native session delivery is literal by default. Set `expandPromptTemplates: true`
 
 Native sessions accept strings or text/image content blocks. Non-native fallback adapters accept only strings and reject block arrays; `deliverAs` affects streaming delivery only, and follow-on turns retain the stage MCP scope.
 
-Externally produced Intercom and subagent notices admitted before the generation closes drain through the same session. When a busy stage owns a foreground subagent, exact-owner detach gets first refusal before Intercom enters this boundary; unclaimed traffic then uses normal stage admission. Closing the atomic boundary cancels still-running stage-owned children and suppresses their later findings and completion notices. Ordinary traffic not owned by that stage arriving afterward cannot reopen the completed stage and retains the existing single main-chat route.
+Externally produced Intercom and subagent notices admitted before the generation closes drain through the same session. When a busy stage's own subagent messages it, exact-owner detach gets first refusal before Intercom enters this boundary; unclaimed traffic then uses normal stage admission. Closing the atomic boundary cancels still-running stage-owned children and suppresses their later findings and completion notices. Ordinary traffic not owned by that stage arriving afterward cannot reopen the completed stage and retains the existing single main-chat route.
 
 See [Stage follow-on user messages](/workflows/authoring#stage-follow-on-user-messages) for the full lifecycle and schema-backed example.
 
@@ -2362,6 +2358,8 @@ try {
 ```
 
 `SqlRunJournal.open` leaves ownership of the facade with you. Journal tables use `wf_` names, optionally preceded by your prefix; session tables use a separate namespace in the same database. A new prefix selects an empty journal, not a migration. Bare journal table names from earlier unreleased builds are not read. SQL event and lease timestamps, including expiry checks, use the database clock. Journal storage failures expose `StorageUnavailableError.adapter`, `.location`, and `.cause`; use `.location` rather than `.path`.
+
+`journal.listRuns()` first asks for the catalog in one response. If the server refuses the response size and the journal has no legacy source, it reads the unfiltered catalog in pages from one snapshot on a separate connection. The libSQL server adapter supports this; adapters that cannot open a separate reader return the original refusal instead of delaying live runs. A refused page fails the listing rather than returning a partial result. Filtered lists and lists that include legacy tables use the original queries. Exporting one explicitly selected run from a named database can also recover from a refused catalog; it does not page the run's events.
 
 Custom journals implement this full async interface. The named types are exported from `@bastani/atomic/workflows`:
 

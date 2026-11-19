@@ -229,17 +229,6 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	/** Internal durable resume hook: transcript of a stage checkpointed before #3700, imported when the ID is missing. */
 	resumeFromLegacySessionFile?: string;
 	/**
-	 * Internal: with `context: "fork"` and no `forkFromEntryId`, the source had no entries yet when the stage was
-	 * launched, so the stage's session copies none, whatever the source holds when the stage starts (#5481).
-	 */
-	forkFromEmptySource?: boolean;
-	/**
-	 * Internal: the fork point the run recorded when this forked stage was launched, once the record is durable. The
-	 * stage's session is copied only then, at that point; a record that cannot be written fails the stage before its
-	 * session opens (#5481).
-	 */
-	durableForkPoint?: () => Promise<string | null>;
-	/**
 	 * Internal durable resume hook: the stage's previous process stopped inside the call its first call replays. A
 	 * transcript that already ends on the model's final answer to that call finishes it without another model call.
 	 */
@@ -270,6 +259,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
  * Not exposed to workflow authors — StageContext public API is unchanged.
  */
 export interface StageExecutionMeta {
+	/** The UI registration of this stage handle, retired independently of the workflow's abort signal. */
+	stageUiSignal?: AbortSignal;
 	/** Run ID of the containing workflow execution. */
 	runId: string;
 	/** Runtime-owned home group shared by this top-level workflow invocation. */

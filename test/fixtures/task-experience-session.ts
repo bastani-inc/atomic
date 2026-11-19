@@ -117,7 +117,7 @@ async function startAgent(kind: string): Promise<void> {
 	child.setResponses([fauxAssistantMessage(fauxToolCall("bash", {}), { stopReason: "toolUse" }), fauxAssistantMessage("Fixture complete.")]);
 	const started = value(await host.startAgentTask({ kind: "agent", agent: "worker", task: "Inspect deterministic fixture", description: "t17 Inspect deterministic fixture" }, `${runId}:${commandId}` as OperationId, (runner) => { context = runner; assert.ok(child); runner.bindTranscript(child.session.sessionManager); const result = child.session.prompt("Inspect deterministic fixture").then(() => ({ kind: "completed" as const, output: store!.tasks.find((item) => item.ref.taskId === runner.ref.taskId)!.output })); runner.signal.addEventListener("abort", () => { completion.resolve(); afterYield.resolve(); void child?.session.abort(); }, { once: true }); return { result, cleanup: result.then(() => ({ kind: "reaped" as const })) }; }));
 	task = started.lease; taskId = started.taskId;
-	const observed = await host.observeAgentLaunch(taskId, kind === "explicit" ? { kind: "background" } : { kind: "foreground", budgetMs: kind === "timed" ? 0 : 30_000 }, (yieldWait) => { if (kind === "intercom") value(yieldWait("intercom-coordination")); }); value(observed);
+	const observed = await host.observeAgentLaunch(taskId, kind === "explicit" ? { kind: "background" } : undefined); value(observed);
 	store!.drain(); watched.drain(); const yieldCursor = store!.cursor!;
 	if (kind === "intercom") await session.sendCustomMessage({ customType: "intercom", content: "Peer coordination message", display: true }, { triggerTurn: false });
 	genuineMessages = session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "intercom").length;
@@ -129,7 +129,7 @@ async function command(text: string): Promise<void> {
 	if (text === "/tasks" || text.startsWith("/tasks ")) { commandId = "inspect"; inspecting = true; if (stage) submitStageSkillText(stage, text); else mainHost.openTasks(text.slice(6).trim() || undefined); tui.requestRender(); return; }
 	const parts = text.split(/\s+/); const idIndex = parts.indexOf("--command-id"); commandId = idIndex >= 0 ? parts[idIndex + 1] : `manual-${revision}`; const action = parts[1];
 	commandBusy = true;
-	if (["intercom", "foreground", "explicit", "timed"].includes(action)) await startAgent(action);
+	if (["intercom", "explicit"].includes(action)) await startAgent(action);
 	else if (action === "complete") {
 		assert.ok(task); completion.resolve(); value(await supervisor.waitForTask(task));
 		await until(() => nativeEvents.some((event) => event.payload.kind === "task-settled" && event.taskId === taskId), "terminal");

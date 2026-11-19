@@ -1,5 +1,6 @@
 import { formatModelLabel } from "../../core/model-label.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
+import { supersedeBlockClicks } from "./components/transcript-block-clicks.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
@@ -68,7 +69,9 @@ InteractiveModeBase.prototype.toggleToolOutputExpansion = function (this: Intera
 };
 
 InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveModeBase, expanded: boolean): void {
-	if (expanded === this.toolOutputExpanded) return;
+	supersedeBlockClicks(this.chatContainer);
+	supersedeBlockClicks(this.pendingMessagesContainer);
+	if (this.toolOutputExpanded === expanded) return;
 	this.toolOutputExpanded = expanded;
 	const activeHeader = this.customHeader ?? this.builtInHeader;
 	if (isExpandable(activeHeader)) {

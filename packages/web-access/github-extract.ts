@@ -125,6 +125,7 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 		let settled = false;
 		let exited = false;
 		let stopped = false;
+		let treeTerminated = false;
 		const finish = (failed: boolean) => {
 			if (settled) return;
 			settled = true;
@@ -145,9 +146,9 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			stopped = true;
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (!tree?.terminate()) {
-				killChildProcessTree(child, exited);
-			}
+			// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
+			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
+			if (!treeTerminated) killChildProcessTree(child, exited);
 			if (exited || child.pid === undefined) finish(true);
 		};
 		const onAbort = () => stop();

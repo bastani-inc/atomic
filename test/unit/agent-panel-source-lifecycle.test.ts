@@ -181,30 +181,30 @@ test("a source that returns a pre-change snapshot and notifies inside items() re
 	});
 	const lazySession = { extensionRunner: { getAgentPanelSourceHub: () => lazyHub } };
 	const widget: { component?: { render(width: number): string[] } } = {};
-	const renderWidget = () => widget.component?.render(100) ?? [];
+	let painted = "";
 	const unbindLazy = bindAgentPanel(lazySession, {
 		setWidget(_key, factory) {
 			widget.component = typeof factory === "function" ? factory({ requestRender() {} } as never, theme) : undefined;
 		},
-		requestRender() {},
+		requestRender() {
+			painted = widget.component?.render(100).join("\n") ?? "";
+		},
 		notify() {},
 	});
 	try {
 		assert.equal(widget.component, undefined);
 		pending = true;
 		notifyLazy?.();
-		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		await vi.waitFor(() => assert.match(painted, /generation 1/));
 		assert.equal(generation, 1);
 		assert.equal(agentPanelRows(lazySession)[0]?.task, "generation 1");
-		assert.match(renderWidget().join("\n"), /generation 1/);
 
 		pending = true;
 		generation++;
 		notifyLazy?.();
-		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		await vi.waitFor(() => assert.match(painted, /generation 3/));
 		assert.equal(generation, 3);
 		assert.equal(agentPanelRows(lazySession)[0]?.task, "generation 3");
-		assert.match(renderWidget().join("\n"), /generation 3/);
 		assert.ok(lazyReads <= 6);
 	} finally {
 		unbindLazy();
@@ -257,6 +257,7 @@ test("a source that returns a pre-change snapshot and notifies inside items() re
 	});
 	try {
 		notifyAlways?.();
+		await vi.waitFor(() => assert.ok(alwaysReads >= 2 && throwingReads >= 2));
 		await new Promise<void>((resolve) => setTimeout(resolve, 0));
 		assert.ok(alwaysReads >= 2 && alwaysReads <= 4);
 		assert.ok(throwingReads >= 2 && throwingReads <= 4);

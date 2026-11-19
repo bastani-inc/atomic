@@ -93,18 +93,53 @@ function invoke<T>(run: () => Promise<T>): Promise<T> {
 	}
 }
 
-/** Route a tool's executions through a session scheduler according to its declared concurrency. */
+/**
+ * Route a tool's executions through a session scheduler according to its declared concurrency. A call whose turn is
+ * interrupted before it starts rejects at once and never runs: an earlier call that runs on, such as one that detached
+ * from its run, does not hold the interrupted turn (#5486).
+ */
 export function scheduleToolExecution(
 	tool: AgentTool,
 	scheduler: ToolExecutionScheduler,
 	abortError?: () => Error,
 ): AgentTool {
+	const aborted = (): Error => abortError?.() ?? new Error("Operation aborted");
 	return {
 		...tool,
-		execute: (...args: Parameters<AgentTool["execute"]>) =>
-			scheduler.schedule(resolveToolConcurrency(tool.concurrency, args[1] as Record<string, unknown>), () => {
-				if (args[2]?.aborted) throw abortError?.() ?? new Error("Operation aborted");
-				return tool.execute(...args);
-			}),
+		execute: (...args: Parameters<AgentTool["execute"]>) => {
+			const signal = args[2];
+			let started = false;
+			const scheduled = scheduler.schedule(
+				resolveToolConcurrency(tool.concurrency, args[1] as Record<string, unknown>),
+				() => {
+					if (signal?.aborted) throw aborted();
+					started = true;
+					return tool.execute(...args);
+				},
+			);
+			return signal === undefined || started
+				? scheduled
+				: startedOrInterrupted(scheduled, signal, () => started, aborted);
+		},
 	};
+}
+
+/**
+ * `scheduled`, unless the turn is interrupted while the call still waits for its place: then a rejection at once. The
+ * call keeps its place in line and, once it gets there, throws without running, so the order of later calls holds.
+ */
+function startedOrInterrupted<T>(
+	scheduled: Promise<T>,
+	signal: AbortSignal,
+	started: () => boolean,
+	aborted: () => Error,
+): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const interrupt = (): void => {
+			if (!started()) reject(aborted());
+		};
+		if (signal.aborted) interrupt();
+		else signal.addEventListener("abort", interrupt, { once: true });
+		void scheduled.then(resolve, reject).finally(() => signal.removeEventListener("abort", interrupt));
+	});
 }

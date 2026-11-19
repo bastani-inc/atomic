@@ -132,8 +132,6 @@ async function interruptedChild(name: string, responses: Parameters<typeof fauxA
 					});
 				},
 				onExecution() {},
-				yieldTaskWait() {},
-				isParentObserving: () => false,
 			},
 		}),
 	}).finally(() => {

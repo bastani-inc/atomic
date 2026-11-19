@@ -228,6 +228,59 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			},
 		);
 
+		test("a collection returns to the event loop after every statement of moving a legacy blob, also when another host moved it first (#5530)", async () => {
+			const { database, blobs } = await legacyDatabase([
+				SNAPSHOT_BLOB_CHUNK_BYTES + 1,
+				SNAPSHOT_BLOB_CHUNK_BYTES + 2,
+				SNAPSHOT_BLOB_CHUNK_BYTES + 3,
+			]);
+			const other = await SqlSnapshotBlobStore.open(database);
+			let armed = false;
+			let transactions = 0;
+			// Turns of the event loop between this collection's steps; a connection may also take turns inside a transaction,
+			// while it waits for the write lock, and those are not counted.
+			let turns: number | undefined;
+			// Once this collection has read the bytes of the first blob it moves, another host's collection moves all three:
+			// this one's first chunk transaction finds its blob moved, and its reads of the other two find nothing to move.
+			const read = (async (sql, ...params) => {
+				const row = await database.get(sql, ...params);
+				if (armed && turns === undefined && row?.data instanceof Uint8Array) {
+					await other.collectGarbage({ graceSeconds: 3600 });
+					turns = 0;
+					const tick = () => {
+						if (!armed) return;
+						if (transactions === 0) turns!++;
+						setImmediate(tick);
+					};
+					setImmediate(tick);
+				}
+				return row;
+			}) as SqliteDatabase["get"];
+			const counted = hooked(database, {
+				before: () => {
+					transactions++;
+				},
+				after: async () => {
+					transactions--;
+				},
+			});
+			const store = await SqlSnapshotBlobStore.open({ ...counted, get: read });
+			armed = true;
+			await store.collectGarbage({ graceSeconds: 3600 });
+			armed = false;
+
+			assert.ok(turns !== undefined, "the other host moved the blobs during this collection");
+			// From the other host's collection on, each of these ends with a turn: the read of the first blob's bytes, its
+			// chunk transaction, which finds it moved, and the reads of the other two, which find nothing to move.
+			const statements = blobs.length + 1;
+			assert.ok(
+				turns >= statements,
+				`the event loop ran ${turns} times between the steps of the collection over its last ${statements} statements, which met blobs another host had moved`,
+			);
+			for (const blob of blobs) assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
+			assert.equal((await stateOf(database)).chunked, blobs.length);
+		});
+
 		test.each(["deleted", "stamped"] as const)(
 			"a collection moving one legacy blob to chunks after a later one on the same page was %s finishes (#5327)",
 			async (change) => {

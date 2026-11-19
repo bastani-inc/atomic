@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import {
-	appendForkToolResults,
 	assertSessionBlobStore,
 	type CreateAgentSessionOptions,
 	copySessionBlobs,
@@ -33,20 +32,10 @@ export async function stageSessionStore(
 }
 
 /**
- * The result a forked stage's copy of its source holds for a tool call the source had not answered at the fork point,
- * so the stage's first request answers every tool call of the copied conversation (#5481).
- */
-export const STAGE_FORK_TOOL_RESULT =
-	"This call ran in the session this stage was forked from. Its result went to that session and is not available here.";
-
-/**
- * A new session copied from `sessionId` at its leaf, or with `entryId` at that exact entry, with the tool-output blobs
- * the copied entries reference; with `null`, for a source that had no entries at the fork point, it copies none. It
- * copies what the stage's context is built from: what a resume of the source at that entry loads, so the latest clear or
- * compaction boundary on the branch, what it keeps, everything after it, and the settings kept from before it (#5500).
- * A missing entry throws `ForkEntryNotFoundError`, and a destination that cannot hold the blobs `blobs-unsupported`,
- * before anything is written. The copy is append-only: its entries are the source's, unchanged but for the links that
- * chain them into one branch, followed by one result for each tool call the source's last turn left open (#5481).
+ * A new session copied from `sessionId`: every entry, or with `entryId` the branch from the session's root to
+ * that exact entry, with the tool-output blobs those entries reference. A missing entry throws
+ * `ForkEntryNotFoundError`, and a destination that cannot hold the blobs `blobs-unsupported`, before anything is
+ * written.
  */
 export async function forkStageSession(
 	store: SessionStore,
@@ -54,14 +43,13 @@ export async function forkStageSession(
 	cwd: string,
 	options: NewSessionOptions,
 	destination: SessionStore = store,
-	entryId?: string | null,
+	entryId?: string,
 ): Promise<SessionManager> {
-	// Only what the fork's context is built from is read and copied: a resume of the source at the fork point (#5500).
-	// A source that had no entries at the fork point gives an empty copy (#5481).
-	const branch = entryId === null ? [] : await SessionManager.readForkedBranch(store, sessionId, entryId);
-	if (branch === undefined && typeof entryId === "string")
-		throw new ForkEntryNotFoundError({ sessionId, stageName: options.workflow?.stageName, entryId });
-	const entries = branch ?? [];
+	const source = await store.load(sessionId);
+	const entries =
+		entryId === undefined
+			? source.entries
+			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
 	const hashes = sessionBlobHashes(store, entries);
 	assertSessionBlobStore(destination, id, hashes.length);
@@ -78,9 +66,7 @@ export async function forkStageSession(
 		entries,
 	);
 	await copySessionBlobs(store, sessionId, destination, id, hashes);
-	const forked = await SessionManager.open(destination, id, cwd, { history: "tail" });
-	await appendForkToolResults(forked, () => STAGE_FORK_TOOL_RESULT);
-	return forked;
+	return SessionManager.open(destination, id, cwd, { history: "tail" });
 }
 
 /**

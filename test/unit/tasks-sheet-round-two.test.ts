@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -28,6 +27,7 @@ import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const ESC = "\x1b";
 const ENTER = "\r";
@@ -461,8 +461,9 @@ test("a shell's input page is a /tasks bottom sheet, not a full-screen frame (#5
 	}
 });
 
-test("a finished run dismissed from the /tasks sheet leaves the idle agent panel at once (#5224)", () => {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+test("a finished run dismissed from the /tasks sheet leaves the idle agent panel at once (#5224)", async () => {
+	// No periodic tick: dismissal itself must refresh the panel, including when that refresh is deferred.
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
 	vi.setSystemTime(1_800_000_000_000);
 	const hub = new AgentPanelSourceHub();
 	const item: AgentPanelItem = {
@@ -476,18 +477,19 @@ test("a finished run dismissed from the /tasks sheet leaves the idle agent panel
 	hub.register({ items: () => [item], subscribe: () => () => {} });
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	let widget: { render(width: number): string[] } | undefined;
+	const unmounted = Promise.withResolvers<void>();
 	const dispose = bindAgentPanel(session as never, {
 		setWidget(_key, factory) {
 			widget = typeof factory === "function" ? (factory({} as never, {} as never) as never) : undefined;
+			if (factory === undefined) unmounted.resolve();
 		},
 		requestRender() {},
 	});
 	const shown = () => plain(widget?.render(100) ?? []);
 	try {
-		vi.advanceTimersByTime(100);
 		assert.match(shown(), /release/);
 		agentPanelBoardSource(session as never).dismiss?.("run:old");
-		vi.advanceTimersByTime(100);
+		await unmounted.promise;
 		assert.doesNotMatch(shown(), /release/);
 	} finally {
 		dispose();

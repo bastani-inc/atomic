@@ -74,7 +74,22 @@ export interface ScheduleSnapshotCollectionOptions {
 	 * throws does not change the outcome: its own error becomes a process warning.
 	 */
 	readonly onFailure?: (error: WorkspaceCollectionError) => void;
+	/**
+	 * How long the collection waits before it reads the store, in milliseconds, on a timer that does not keep the
+	 * process alive: a non-negative integer. Default 0. Until it starts, the collection counts as running in this
+	 * process; storage that closes meanwhile ends it `interrupted` without reading anything. Sessions pass
+	 * {@link SNAPSHOT_COLLECTION_SESSION_DELAY_MS} (#5530).
+	 */
+	readonly delayMs?: number;
 }
+
+/**
+ * How long a collection a session starts waits before it reads the store, in milliseconds (#5530): long enough that it
+ * does not compete with the session's own start, or with opening the next session when one closes, and short enough
+ * that it starts while an interactive session is still in use. A process that ends sooner leaves the collection to the
+ * next one; storage that closes cancels the wait at once.
+ */
+export const SNAPSHOT_COLLECTION_SESSION_DELAY_MS = 10_000;
 
 type CollectionSettings = Pick<WorktreeSnapshotSettings, "autoCollect" | "collectIntervalSeconds" | "graceSeconds">;
 
@@ -99,8 +114,9 @@ function skipped(reason: SnapshotCollectionSkipReason): Promise<SnapshotCollecti
  * progress can keep the process alive until cleanup finishes. {@link runningSnapshotCollection} waits for completion.
  *
  * Throws {@link WorkspaceConfigError} before reading the store when a setting is invalid: `autoCollect` not a boolean,
- * `collectIntervalSeconds` not a positive integer, or `graceSeconds` not a non-negative integer. Everything else is an
- * outcome of the returned promise, which never rejects.
+ * `collectIntervalSeconds` not a positive integer, or `graceSeconds` not a non-negative integer, or when
+ * `options.delayMs` is not a non-negative integer. Everything else is an outcome of the returned promise, which never
+ * rejects.
  */
 export function scheduleSnapshotCollection(
 	store: SnapshotBlobStore | undefined,
@@ -108,6 +124,10 @@ export function scheduleSnapshotCollection(
 	options: ScheduleSnapshotCollectionOptions = {},
 ): Promise<SnapshotCollectionOutcome> {
 	const checked = resolveWorktreeSnapshotSettings(settings, "sdk", "settings");
+	const delayMs = options.delayMs ?? 0;
+	if (!Number.isSafeInteger(delayMs) || delayMs < 0) {
+		throw new WorkspaceConfigError("sdk", "delayMs", "a non-negative integer number of milliseconds");
+	}
 	if (!checked.autoCollect) return skipped("disabled");
 	if (!(store instanceof SqlSnapshotBlobStore)) return skipped("unsupported");
 	if (runningSnapshotCollectionOf(store)) return skipped("in-progress");
@@ -123,6 +143,7 @@ export function scheduleSnapshotCollection(
 		pace,
 		controller.signal,
 		options.onFailure ?? ((error) => process.emitWarning(error)),
+		delayMs,
 	);
 	trackSnapshotCollection(store, { outcome: running, pace, abort: (reason) => controller.abort(reason) });
 	void running.then((outcome) => {
@@ -151,11 +172,16 @@ async function collectIfDue(
 	pace: BackgroundCollectionPace,
 	signal: AbortSignal,
 	onFailure: (error: WorkspaceCollectionError) => void,
+	delayMs: number,
 ): Promise<SnapshotCollectionOutcome> {
 	const holder = randomUUID();
 	const deleted: string[] = [];
 	let phase: SnapshotCollectionPhase = "claim";
 	try {
+		if (delayMs > 0) {
+			await pace.wait(delayMs);
+			signal.throwIfAborted();
+		}
 		if (!(await store.claimCollection(settings.collectIntervalSeconds, holder, pace)))
 			return { status: "skipped", reason: "not-due" };
 		phase = "index";

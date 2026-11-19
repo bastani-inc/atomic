@@ -634,6 +634,8 @@ pi.registerTool({
 });
 ```
 
+Stop promptly when `signal` aborts: the user interrupted the turn, or its session is stopping. A call that has not returned 10 seconds after the abort (`ATOMIC_TOOL_ABORT_GRACE_MS`) gets an `Operation aborted` error result so the turn can end, and the next tool call no longer waits for it. Its promise may still settle, but its late return value or error is discarded, not added to the transcript or sent to the model. A call still waiting for an earlier call when the turn is interrupted never starts: it gets `Operation aborted` at once.
+
 ### pi.sendMessage(message, options?)
 
 Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessage(...))` when admission or routing failure must be observed. Atomic's AgentSession runtime returns an admission receipt: it settles after the message is accepted by the local queue or workflow late-message route, without waiting for the resulting model turn to finish.
@@ -975,7 +977,7 @@ Return at most 10,000 rows per source. Atomic ignores additional rows and warns 
 | `queued` | Messages typed to it that it has not taken yet. A non-negative safe integer. |
 | `endedAt` | When a finished item finished, in finite, non-negative epoch milliseconds. |
 | `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. A `done` or `failed` `agent` row leaves the panel as soon as it finishes. A `stopped` or `paused` `agent` row, and a `paused` `workflow` row, stay while another row is active or a background shell runs, and leave once nothing is. |
-| `runGeneration` | Optional opaque identity of the item's latest run. Change it whenever the item runs again (resumed, woken or sent a follow-up). A `stopped` or `paused` row that left the panel is listed again while other work runs once this changes, even if it ran only briefly between two updates. Without it, such a row comes back only after the panel has seen it in another state. |
+| `runGeneration` | Optional opaque identity of the item's latest run. Use a per-item counter rather than a timestamp: two attempts can start in the same millisecond. Advance it whenever the item runs again (resumed, woken or sent a follow-up), not when the source republishes the same attempt. A `stopped` or `paused` row that left the panel is listed again while other work runs once this changes, even if it ran only briefly between two updates. Without it, such a row comes back only after the panel has seen it in another state. |
 
 Atomic strips terminal control sequences from the text fields before drawing them. An item with invalid fields is skipped, and `items()` or `subscribe` throwing is reported as an extension error. The source's other items, and the other sources, are still shown.
 
@@ -1215,6 +1217,7 @@ Registered servers are the lowest-precedence MCP layer. They replace a same-name
 ## Error Handling
 
 - Extension errors are logged, agent continues
+- In the interactive terminal, a `session_start` or `resources_discover` handler that throws, at startup, with `-c`/`--resume`, on `/new`, `/resume`, `/fork` or `/reload`, is shown once with the extension's path and error, and the session keeps working. The extension stays loaded, so its commands, tools and other handlers still run. Print mode (`-p`), standalone RPC mode (`--mode rpc`), SDK sessions and workflow stages instead fail startup with `ExtensionStartupError`, which names each failing extension.
 - `tool_call` errors block the tool (fail-safe)
 - Tool `execute` errors must be signaled by throwing; the thrown error is caught, reported to the LLM with `isError: true`, and execution continues
 

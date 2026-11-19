@@ -8,6 +8,7 @@ import type {
 	Usage,
 	UserMessage,
 } from "@bastani/atomic-ai/compat";
+import type { HostSessionPickerRow } from "./extensions/ui-types.js";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "./storage/session/types.js";
@@ -52,11 +53,6 @@ export interface NewSessionOptions {
 
 export interface SessionOpenOptions {
 	readonly history?: "full" | "tail";
-	/**
-	 * With `history: "tail"`, the entry to open the session at instead of its leaf: the session holds what a resume at
-	 * that entry loads, and continues from it.
-	 */
-	readonly leafId?: string;
 }
 
 export interface SessionEntryBase {
@@ -377,6 +373,7 @@ export interface SessionInfo {
 	/** Synthetic selector rows: the row's dim second line, in place of age · messages · summary. */
 	detail?: string;
 	resumeKind?: "workflow";
+	resumeSelection?: HostSessionPickerRow["resumeSelection"];
 	canDelete?: boolean;
 }
 

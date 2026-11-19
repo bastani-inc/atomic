@@ -305,11 +305,11 @@ export function createChildWorkflowRunner(input: {
 					findWorkflowExitSignal(runtime.signal.reason, runtime.exit.exitScope);
 				if (exit !== undefined) {
 					await boundary.skipForWorkflowExit(exit.reason);
-					await durableInvocation?.recordTerminal("skipped");
+					await durableInvocation?.recordTerminal("skipped", undefined, boundary.startedChildStatus);
 					throw exit;
 				}
 				await boundary.fail(err);
-				await durableInvocation?.recordTerminal("failed");
+				await durableInvocation?.recordTerminal("failed", undefined, boundary.startedChildStatus);
 				throw err;
 			} finally {
 				detachParentAbort?.();

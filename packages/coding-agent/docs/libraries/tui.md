@@ -295,7 +295,7 @@ handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 
 Returning `handled` suppresses renderer-level fallback behavior. `capture` keeps subsequent drag and release events routed to the same component. `focus` requests keyboard focus. The optional `render` flag controls repainting: press, click, drag, and wheel default to rendering; move and release do not. Set `render: true` for a hover state that visibly changed, or `render: false` for a handled no-op. Render requests are coalesced and terminal output remains differential.
 
-A click carries `clickCount` (1, 2 or 3). When a single click should do something a double-click must not, such as expanding a block whose text a double-click would select, return its action as `whenSingleClick` instead of running it: `{ handled: true, whenSingleClick: () => toggle() }`. `TuiAltScreen` runs it once `MULTI_CLICK_INTERVAL_MS` (500 ms) has passed since the press with no second press on the same spot, then repaints. A second press there makes the click part of a double- or triple-click and drops the action. Read the state the action changes when it runs, not when the click arrives: two quick clicks on different rows are two single clicks, and the first one's action may run just before the second's.
+A click carries `clickCount` (1, 2 or 3). When a single click should do something a double-click must not, such as expanding a block whose text a double-click would select, return its action as `whenSingleClick` instead of running it: `{ handled: true, whenSingleClick: () => toggle() }`. `TuiAltScreen` runs it once `MULTI_CLICK_INTERVAL_MS` (500 ms) has passed since the press with no second press on the same spot, then repaints. A second press there cancels the action even if the button stays down past the deadline. The same timing applies when the component handles the press itself. If you reserve resources for a deferred action, return `onSingleClickCancel` alongside `whenSingleClick` to release them when the action is canceled. Keep the clicked item’s identity, not its screen coordinates: an item can move before the action runs. Read the state the action changes when it runs, not when the click arrives: two quick clicks on different rows are two single clicks, and the first one's action may run just before the second's.
 
 Unhandled gestures retain alternate-screen defaults: wheel input scrolls the nearest `ScrollView` and chains unused delta, primary-button drags select text, OSC 8 links open before parent click handlers, and unhandled right-click preserves configured paste behavior. A click is emitted only when press/release completes without a drag.
 
@@ -719,6 +719,8 @@ const provider = new CombinedAutocompleteProvider(
 
 editor.setAutocompleteProvider(provider);
 ```
+
+Replacing the built-in editor's provider normally closes its menu. To keep the current menu and use the new provider for the next lookup, call `editor.setAutocompleteProvider(provider, { preserveSelection: true })`. An open menu keeps the provider that offered its rows. If no menu has opened yet, a still-current lookup can retry with the new provider, preserving whether the user pressed Tab. Extension-provided editors receive the usual single provider argument.
 
 **Features:**
 - Type `/` to see slash commands

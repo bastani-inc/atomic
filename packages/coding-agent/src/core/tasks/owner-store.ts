@@ -17,7 +17,7 @@ import {
 	taskClockRunning,
 	taskClocksFor,
 } from "./live-elapsed.js";
-import { sessionTasks } from "./session-scope.js";
+import { scopedBackgroundTasks, sessionTasks } from "./session-scope.js";
 import {
 	type OwnerLease,
 	type TaskLease,
@@ -25,6 +25,7 @@ import {
 	type TaskSupervisor,
 	taskTranscriptSource,
 } from "./supervisor.js";
+import { bindReleasedTaskOwner } from "./task-resumer.ts";
 
 const interruptedByClock = new WeakMap<TaskElapsedClocks, Set<TaskId>>();
 const resumedTurnsByClock = new WeakMap<TaskElapsedClocks, ReadonlyMap<TaskId, number>>();
@@ -89,7 +90,10 @@ export class OwnerTaskStore {
 	}
 	/** This session's own background tasks. Background membership survives foreground waits and terminal cleanup. */
 	get backgroundTasks(): TaskRecord[] {
-		return this.tasks.filter((task) => this.inBackground(task));
+		return scopedBackgroundTasks(
+			this,
+			this.tasks.filter((task) => this.inBackground(task)),
+		);
 	}
 	/** Every task of the owner, including the shells subagents running in it launched. */
 	get ownerTasks(): TaskRecord[] {
@@ -205,6 +209,7 @@ export class OwnerTaskStore {
 				this.turnInterruptedIds.delete(task.ref.taskId);
 			}
 			if (
+				task.elapsedSpan === undefined &&
 				previous?.execution.kind !== "settled" &&
 				task.execution.kind !== "queued" &&
 				(previous?.execution.kind !== task.execution.kind ||
@@ -229,7 +234,16 @@ export class OwnerTaskStore {
 				previous?.execution.kind === "settled" && task.execution !== previous.execution
 					? { ...task, execution: previous.execution }
 					: task;
-			if (record !== previous) bindTaskClock(record, this.elapsedClocks);
+			if (record !== previous) {
+				bindTaskClock(record, this.elapsedClocks);
+				if (
+					record.execution.kind === "settled" &&
+					record.execution.result.kind === "cancelled" &&
+					record.execution.result.released !== undefined
+				) {
+					bindReleasedTaskOwner(record.ref, this.supervisor);
+				}
+			}
 			this.records.set(task.ref.taskId, record);
 			if (
 				record.kind === "agent" &&
@@ -337,6 +351,7 @@ export function getOwnerTaskSession(target: object): object | undefined {
 }
 export function isTaskTurnInterrupted(task: TaskRecord): boolean {
 	if (task.kind !== "agent" || task.execution.kind !== "running") return false;
+	if (task.turnInterrupted === true) return true;
 	const clocks = taskClockOf(task);
 	return clocks !== undefined && interruptedByClock.get(clocks)?.has(task.ref.taskId) === true;
 }
@@ -345,6 +360,7 @@ export function isTaskTurnInterrupted(task: TaskRecord): boolean {
  * subagent rests from: a turn resumed and interrupted or stopped again rests from a new one, however briefly it ran.
  */
 export function taskResumedTurns(task: TaskRecord): number | undefined {
+	if (task.resumedTurns !== undefined) return task.resumedTurns;
 	const clocks = taskClockOf(task);
 	return clocks === undefined ? undefined : resumedTurnsByClock.get(clocks)?.get(task.ref.taskId);
 }

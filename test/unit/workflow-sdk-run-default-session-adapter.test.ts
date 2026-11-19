@@ -239,7 +239,34 @@ test("a supplied registry owns retained stage sessions until explicitly cleared"
 	}
 });
 
-for (const retention of ["caller-owned registry", "resumable failure", "graceful quit"] as const) {
+test("a standalone run that fails and can be resumed releases its stage sessions before run() returns (#5499)", async () => {
+	const cwd = makeTempDirectory("atomic-sdk-resumable-failure-release-");
+	const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+	try {
+		const outcome = await runOneTaskStage(
+			cwd,
+			(dir) => ({ cwd: dir }),
+			{},
+			() => {
+				throw new Error("resumable failure after a completed task");
+			},
+		);
+		assert.equal(outcome.status, "failed");
+		assert.ok(outcome.sessionId);
+		assert.equal(currentWorkflowStore().run(outcome.runId)?.resumable, true, "an ordinary failure can be resumed");
+		assert.deepEqual(
+			{ registered: stageControlRegistry.has(outcome.runId), nativeCloses: databaseClose.mock.calls.length },
+			{ registered: false, nativeCloses: 1 },
+			"a failed run keeps no stage session open once run() returns",
+		);
+	} finally {
+		await stageControlRegistry.clear();
+		databaseClose.mockRestore();
+		removeTempDirectory(cwd);
+	}
+});
+
+for (const retention of ["caller-owned registry", "graceful quit"] as const) {
 	test(`${retention} keeps completed task sessions open until its owner clears them`, async () => {
 		const cwd = makeTempDirectory("atomic-sdk-retained-failure-store-");
 		const callerOwned = retention === "caller-owned registry";
@@ -254,10 +281,8 @@ for (const retention of ["caller-owned registry", "resumable failure", "graceful
 					if (retention === "graceful quit") {
 						assert.ok(ctx.runId);
 						assert.equal((await quitRun(ctx.runId)).ok, true);
-					} else if (callerOwned) {
-						throw new DurableNestedTopologyError("caller owns the failed task session");
 					} else {
-						throw new Error("resumable failure after a completed task");
+						throw new DurableNestedTopologyError("caller owns the failed task session");
 					}
 				},
 			);

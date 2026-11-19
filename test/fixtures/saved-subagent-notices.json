@@ -1,0 +1,188 @@
+{
+	"pauseOrRelease086": {
+		"title": "Subagent worker paused · awaiting resume: Update docs and changelog",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1"
+	},
+	"quit087": {
+		"title": "Subagent worker quit · paused, awaiting resume: Subagent worker released while waiting on bash (not-a-release)",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1"
+	},
+	"releaseBeforeKind": {
+		"title": "Subagent 审阅 é released while waiting on bash (build:1), intercom (ask-2).",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1"
+	},
+	"release088": {
+		"title": "Subagent worker released while waiting on bash (toolu_1): Update docs and changelog",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1",
+		"taskKind": "agent"
+	},
+	"recordless088": {
+		"title": "Background task released while waiting on a tool call.",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1"
+	},
+	"stopped088": {
+		"title": "Subagent worker killed (non-resumable): Subagent worker released while waiting on bash (toolu_1).",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1",
+		"taskKind": "agent"
+	},
+	"pause088": {
+		"title": "Subagent worker paused · awaiting resume.",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1",
+		"taskKind": "agent"
+	},
+	"quit088": {
+		"title": "Subagent agent quit · paused, awaiting resume.",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1",
+		"taskKind": "agent"
+	},
+	"pause089": {
+		"title": "Subagent worker paused · awaiting resume: Update docs and changelog",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1",
+		"taskKind": "agent",
+		"agentName": "worker",
+		"line": {
+			"status": "paused", "label": "Agent", "outcome": "paused · awaiting resume",
+			"subject": "Update docs and changelog", "elapsedMs": 976000
+		}
+	},
+	"quit089": {
+		"title": "Subagent worker quit · paused, awaiting resume: Update docs and changelog",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1",
+		"taskKind": "agent",
+		"agentName": "worker",
+		"line": {
+			"status": "paused", "label": "Agent", "outcome": "quit · awaiting resume",
+			"subject": "Update docs and changelog", "elapsedMs": 976000
+		}
+	},
+	"punctuated088Details": {
+		"completionId": "completion-1",
+		"ownerId": "owner",
+		"taskId": "worker-1",
+		"terminalSequence": "1",
+		"result": {
+			"kind": "cancelled",
+			"cause": "pause",
+			"released": { "waitingOn": [{ "toolName": "bash", "toolCallId": "ci): part 2" }] }
+		},
+		"display": false,
+		"taskKind": "agent",
+		"notification": {
+			"title": "Subagent docs: reviewer released while waiting on bash (ci): part 2): Review: part 2",
+			"preview": "",
+			"status": "cancelled",
+			"taskId": "worker-1",
+			"taskKind": "agent"
+		}
+	},
+	"nameStartsWithOutcome088Details": {
+		"completionId": "completion-1",
+		"ownerId": "owner",
+		"taskId": "worker-1",
+		"terminalSequence": "1",
+		"result": {
+			"kind": "cancelled",
+			"cause": "pause",
+			"released": { "waitingOn": [{ "toolName": "bash", "toolCallId": "toolu_1" }] }
+		},
+		"display": false,
+		"taskKind": "agent",
+		"notification": {
+			"title": "Subagent released while waiting on bash (toolu_1): reviewer released while waiting on bash (toolu_1): Review docs",
+			"preview": "",
+			"status": "cancelled",
+			"taskId": "worker-1",
+			"taskKind": "agent"
+		}
+	},
+	"firstLine088Details": {
+		"completionId": "completion-1",
+		"ownerId": "owner",
+		"taskId": "worker-1",
+		"terminalSequence": "1",
+		"result": {
+			"kind": "cancelled",
+			"cause": "pause",
+			"released": { "waitingOn": [{ "toolName": "bash", "toolCallId": "ci\nstep" }] }
+		},
+		"display": false,
+		"taskKind": "agent",
+		"notification": {
+			"title": "Subagent worker released while waiting on bash (ci",
+			"preview": "",
+			"status": "cancelled",
+			"taskId": "worker-1",
+			"taskKind": "agent"
+		}
+	},
+	"killed088Details": {
+		"completionId": "completion-1",
+		"ownerId": "owner",
+		"taskId": "worker-1",
+		"terminalSequence": "1",
+		"result": { "kind": "cancelled", "cause": "user" },
+		"display": false,
+		"taskKind": "agent",
+		"notification": {
+			"title": "Subagent docs released while waiting on bash (id): reviewer killed (non-resumable): Review: part 2",
+			"preview": "",
+			"status": "cancelled",
+			"taskId": "worker-1",
+			"taskKind": "agent"
+		}
+	},
+	"releaseOrStop088": {
+		"releasedBody": "Subagent triage stopped: released while waiting on bash (ci): Review docs\nTask: worker-1 · Owner: owner\nStop reason: released\n\nNothing stopped it: it was released while waiting on bash (ci), and it wakes by itself when that finishes and goes on with its task. Nothing needs to be done meanwhile; its next notice reports what it did.",
+		"stoppedBody": "Subagent triage stopped: released while waiting on bash (ci): Review docs\nTask: worker-1 · Owner: owner\nStop reason: shutdown\n\nThis execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+		"detailsWithoutResult": {
+			"completionId": "completion-1",
+			"ownerId": "owner",
+			"taskId": "worker-1",
+			"terminalSequence": "1",
+			"display": false,
+			"taskKind": "agent",
+			"notification": {
+				"title": "Subagent triage stopped: released while waiting on bash (ci): Review docs",
+				"preview": "",
+				"status": "cancelled",
+				"taskId": "worker-1",
+				"taskKind": "agent"
+			}
+		}
+	},
+	"release089": {
+		"title": "Subagent worker released while waiting on bash (toolu_1): Update docs and changelog",
+		"preview": "",
+		"status": "cancelled",
+		"taskId": "worker-1",
+		"taskKind": "agent",
+		"agentName": "worker",
+		"line": {
+			"status": "paused",
+			"label": "Agent",
+			"outcome": "is waiting on bash (toolu_1)",
+			"subject": "Update docs and changelog",
+			"elapsedMs": 976000
+		}
+	}
+}

@@ -47,10 +47,16 @@ export function spawnCollect(
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let child: ChildProcess;
 		let tree: ProcessTreeContainment | undefined;
+		let treeTerminated = false;
 		let detachedPid: number | undefined;
 		const startedAt = Date.now();
+		// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
+		const terminateTree = (): boolean => {
+			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
+			return treeTerminated;
+		};
 		const killTree = () => {
-			if (tree?.terminate()) return;
+			if (terminateTree()) return;
 			killChildProcessTree(child, exited);
 		};
 		const finish = (status: number | null, signal: NodeJS.Signals | null) => {
@@ -78,7 +84,7 @@ export function spawnCollect(
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (tree?.terminate()) {
+			if (terminateTree()) {
 				if (exited || child.pid === undefined) finish(null, "SIGTERM");
 				return;
 			}

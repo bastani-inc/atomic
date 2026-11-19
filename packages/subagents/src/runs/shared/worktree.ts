@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -121,7 +122,8 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 			...(options.env !== undefined ? { env: options.env } : {}),
 			...(options.shell !== undefined ? { shell: options.shell } : {}),
-			...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+			// Setup hooks keep their native timeout. A stalled check's timeout below stops the entire git process tree.
+			...(options.timeout !== undefined && !stalledCheck.getStore() ? { timeout: options.timeout } : {}),
 			stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			windowsHide: true,
@@ -140,6 +142,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 		let settled = false;
 		let exited = false;
 		let stopped = false;
+		let treeTerminated = false;
 		const finish = (status: number | null) => {
 			if (settled) return;
 			settled = true;
@@ -171,9 +174,9 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 			child.stdin?.destroy();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			if (!tree?.terminate()) {
-				killChildProcessTree(child, exited);
-			}
+			// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
+			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
+			if (!treeTerminated) killChildProcessTree(child, exited);
 			if (exited || child.pid === undefined) finish(null);
 		};
 		const timer =
@@ -229,11 +232,22 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 	});
 }
 
+/**
+ * Only a failed resume's read-only check of its own worktree gets this deadline: never a capture, a removal, an initial
+ * checkout, a setup hook or a user's fetch, which run to completion however long they take.
+ */
+const STALLED_CHECK_GIT_TIMEOUT_MS = 10_000;
+const stalledCheck = new AsyncLocalStorage<() => void>();
+
 export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
+	const onStall = stalledCheck.getStore();
 	const result = await spawnCollect("git", ["-C", cwd, ...args], {
-		env: createGitEnvironment(env, createChildProcessEnvironment()),
+		// A bounded check takes no optional lock, so stopping it never leaves an index.lock behind.
+		env: createGitEnvironment(onStall ? { ...env, GIT_OPTIONAL_LOCKS: "0" } : env, createChildProcessEnvironment()),
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
+		...(onStall && { timeout: STALLED_CHECK_GIT_TIMEOUT_MS }),
 	});
+	if (onStall && result.error?.code === "ETIMEDOUT") onStall();
 	return {
 		stdout: result.stdout,
 		stderr: result.stderr,
@@ -691,9 +705,16 @@ export async function recreateWorktree(
 
 /**
  * Whether removing this worktree would lose work: uncommitted or untracked changes other than its synthetic paths, or
- * commits not in the run's base. When git cannot tell, the work is treated as unsaved.
+ * commits not in the run's base. When git cannot tell, the work is treated as unsaved. With `onStall`, a git command
+ * of the check that does not finish within its deadline is stopped with its process tree, and the work is treated as
+ * unsaved.
  */
-export async function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeInfo): Promise<boolean> {
+export async function worktreeHasUnsavedWork(
+	setup: WorktreeSetup,
+	worktree: WorktreeInfo,
+	onStall?: () => void,
+): Promise<boolean> {
+	if (onStall) return stalledCheck.run(onStall, () => worktreeHasUnsavedWork(setup, worktree));
 	if (!(await pathExists(worktree.path))) return false;
 	const status = await runGit(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
 	if (status.status !== 0) return true;

@@ -480,16 +480,14 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 				},
 				getRun: async (runId) => detail(runId, BASE, "run summary"),
 			};
-			const router = createHistoryRouter({
-				cwd: PROJECT,
-				sessionStore: () => store,
-				workflows: () => workflows,
-				budget: { timeMs: SLOW_TIME_MS },
-			});
-			const first = (await router.read!(url)) ?? "";
+			const sources = { cwd: PROJECT, sessionStore: () => store, workflows: () => workflows };
+			const first = (await createHistoryRouter({ ...sources, budget: { timeMs: SLOW_TIME_MS } }).read!(url)) ?? "";
 			assert.match(first, /the time budget ran out waiting for the store/, first);
 			gate.open();
-			const next = (await router.read!(continuation(first)!)) ?? "";
+			// Only the first call's time should run out. The continuation has the default time budget: for a stage session it
+			// resolves both project paths before it takes the listing over, and a loaded machine can take more than 40 ms to
+			// schedule that file-system work (#5621).
+			const next = (await createHistoryRouter(sources).read!(continuation(first)!)) ?? "";
 			assert.match(next, url.includes("workflows") ? /^# workflow run run-b$/m : /stage work/, next);
 		}
 	});
@@ -523,17 +521,20 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 				},
 				getRun: async (runId) => detail(runId, BASE, "run summary"),
 			};
-			const routerWith = (timeMs: number) =>
+			const routerWith = (timeMs?: number) =>
 				createHistoryRouter({
 					cwd: PROJECT,
 					sessionStore: () => store,
 					workflows: () => workflows,
-					budget: { timeMs },
+					...(timeMs === undefined ? {} : { budget: { timeMs } }),
 				});
 			const first = (await routerWith(SLOW_TIME_MS).read!(url)) ?? "";
 			assert.match(first, /the time budget ran out waiting for the store/, first);
 			const checksBefore = projectChecks.settled;
-			const adopting = routerWith(LONG_WAIT_MS).read!(url);
+			// The call that takes the listing over has the default time budget: for a stage session it first resolves both
+			// project paths, which a loaded machine can take over a second to schedule, and it must still be waiting after
+			// the overlapping call below (#5621).
+			const adopting = routerWith().read!(url);
 			// A stage session's read checks its project before it asks for the run listing it takes over.
 			if (url.includes("sessions")) await untilProjectChecked(checksBefore);
 			for (let turn = 0; turn < SETTLE_TURNS; turn++) await new Promise((resolve) => setImmediate(resolve));
@@ -1620,15 +1621,16 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 				},
 				getRun: async (runId) => detail(runId, BASE, "run summary"),
 			};
-			const router = createHistoryRouter({
-				cwd: PROJECT,
-				sessionStore: () => store,
-				workflows: () => workflows,
-				budget: { timeMs: SLOW_TIME_MS },
-			});
-			const call = (url: string) =>
-				mode === "read" ? router.read!(url) : router.search!(url, request("needle in stage worktree"));
-			const first = (await call("history://sessions/stage-s")) ?? "";
+			const call = (url: string, budget?: { readonly timeMs: number }) => {
+				const router = createHistoryRouter({
+					cwd: PROJECT,
+					sessionStore: () => store,
+					workflows: () => workflows,
+					...(budget === undefined ? {} : { budget }),
+				});
+				return mode === "read" ? router.read!(url) : router.search!(url, request("needle in stage worktree"));
+			};
+			const first = (await call("history://sessions/stage-s", { timeMs: SLOW_TIME_MS })) ?? "";
 			assert.match(
 				first,
 				/the time budget ran out waiting for the store; continue with history:\/\/sessions\/stage-s/,
@@ -1637,6 +1639,8 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 			gate.open();
 			const next = continuation(first);
 			assert.equal(next, "history://sessions/stage-s");
+			// Only the first call's time should run out. The continuation has the default time budget: it resolves both project
+			// paths before it takes the listing over, and a loaded machine can take more than 40 ms to schedule that (#5621).
 			const second = (await call(next!)) ?? "";
 			assert.match(second, /needle in stage worktree/, second);
 		}

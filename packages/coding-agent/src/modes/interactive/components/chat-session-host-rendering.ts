@@ -1,19 +1,20 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import {
 	type ChatBoxSession,
 	loadTaskOwnTranscriptHistory,
 	taskTranscriptSource,
 } from "../../../core/tasks/supervisor.js";
+import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
-	renderChatMessageEntry,
+	renderHostedChatEntry,
 } from "./chat-message-renderer.ts";
 import {
 	hasChatSessionTransientModal,
@@ -23,7 +24,12 @@ import {
 	syncChatSessionPromptSearch,
 } from "./chat-session-host-editor.ts";
 import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
-import { type ChatSessionHostState, isChatSessionBusyStatus } from "./chat-session-host-state.ts";
+import {
+	CHAT_SESSION_RETRYING_STATUS,
+	CHAT_SESSION_SWITCHING_MODEL_STATUS,
+	type ChatSessionHostState,
+	isChatSessionBusyStatus,
+} from "./chat-session-host-state.ts";
 import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
@@ -31,8 +37,14 @@ import { FooterComponent, UsageMeterComponent } from "./footer.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
-import { isClickExpandableBlock, sameRows } from "./transcript-block-clicks.ts";
-import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
+import { isClickExpandableBlock, sameRows, withBlockRenderTime } from "./transcript-block-clicks.ts";
+import {
+	AgentTokenMeter,
+	type AgentTokenMeterSnapshot,
+	agentTokenTotal,
+	compactionMeta,
+	type WorkingRunSnapshot,
+} from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -60,6 +72,10 @@ export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLik
 	if (state.statusMessage && !state.compacting && !isChatSessionBusyStatus(state.statusMessage)) {
 		components.push(new Spacer(1));
 		components.push(new Text(state.style.dim(state.statusMessage), 2, 0));
+	}
+	if (state.noticeMessage) {
+		components.push(new Spacer(1));
+		components.push(new Text(state.style.dim(state.noticeMessage), 2, 0));
 	}
 	state.bodyViewport.setVisibleRows(budget);
 	state.bodyViewport.setComponents(components);
@@ -114,6 +130,19 @@ interface TranscriptTokenCache {
 }
 
 const transcriptTokenCaches = new WeakMap<object, TranscriptTokenCache>();
+
+/** Start at the session's settled count; subsequent live messages are counted normally. */
+export function restoreChatSessionTokens<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	snapshot: AgentTokenMeterSnapshot,
+): void {
+	transcriptTokenCaches.set(state, {
+		firstEntry: state.transcript[0],
+		lastSettledEntry: state.transcript.at(-1),
+		settledCount: state.transcript.length,
+		meter: new AgentTokenMeter([], snapshot),
+	});
+}
 
 function readTranscriptTokens<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
@@ -175,18 +204,28 @@ export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLi
 	return snapshot === undefined ? undefined : { ...snapshot, tokens: chatSessionTokenCount(state) };
 }
 
+const publishedWorkingMessages = {
+	working: DEFAULT_WORKING_MESSAGE,
+	retrying: CHAT_SESSION_RETRYING_STATUS,
+	switching: CHAT_SESSION_SWITCHING_MODEL_STATUS,
+} satisfies Record<Exclude<PublishedChatActivity, "idle">, string>;
+
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
+	published?: PublishedChatActivity,
 ): string[] {
 	const palette = state.style.workingIndicatorPalette;
 	const useCallerStyling =
 		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
 	// A retry, a model switch or a resume waits between turns; it is the chat's working line until the work resumes.
-	if (!state.compacting && isChatSessionBusyStatus(state.statusMessage)) {
+	// The worker attempt can retire without sending a final session event to a chat that stayed open.
+	if (published === "idle") return [];
+	const publishedMessage = published && publishedWorkingMessages[published];
+	if (!state.compacting && (publishedMessage || isChatSessionBusyStatus(state.statusMessage))) {
 		return new WorkingStatusComponent({
 			frame: state.workingFrame,
-			message: state.statusMessage,
+			message: publishedMessage ?? state.statusMessage,
 			palette,
 			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
@@ -194,8 +233,9 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 		}).render(width);
 	}
 	if (!isChatSessionStreaming(state)) {
+		// A notice or an error follows the transcript, so the ended turn's row stays beside it, as in the main chat.
 		const worked = state.workedRun;
-		if (worked === undefined || state.workingLifecycleActive || state.compacting || state.statusMessage) return [];
+		if (worked === undefined || state.workingLifecycleActive || state.compacting) return [];
 		return new AtomicWorkedStatusComponent({
 			message: worked.message,
 			snapshot: worked.snapshot,
@@ -274,6 +314,7 @@ export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 
 export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
+	taskSource: () => TaskViewSource | undefined,
 	width: number,
 	navigationActive = false,
 ): string[] {
@@ -282,14 +323,6 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	const session = agentSession ?? state.getChatBoxSession?.();
 	state.footerNavigationActive = navigationActive || agentSession === undefined || hasChatSessionTransientModal(state);
 	if (session && state.footerData) {
-		const taskSource = () => {
-			const currentAgent = state.getAgentSession?.();
-			const currentSession = currentAgent ?? state.getChatBoxSession?.();
-			return (
-				(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
-				(currentSession ? getOwnerTaskStore(currentSession) : undefined)
-			);
-		};
 		state.footer ??= new FooterComponent(
 			session,
 			state.footerData,
@@ -299,12 +332,7 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			() => taskSource()?.backgroundTasks ?? [],
-			undefined,
-			() => {
-				const source = taskSource();
-				return source === undefined ? undefined : taskClocksFor(source);
-			},
+			taskSource,
 		);
 		state.footer.setSession(session);
 		return state.footer.render(width);
@@ -370,6 +398,7 @@ export function expandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 export function dropExpandedOverrides<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
+	state.expansionGeneration++;
 	state.expandedOverrides = new Map();
 	state.expandedEntryOverrides = new WeakMap();
 }
@@ -410,9 +439,10 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)
 				: { ...chatMessageRenderOptions(state, isStreaming), toolOutputExpanded: expanded };
-		const component = renderChatMessageEntry(
+		const component = renderHostedChatEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
+			state.assistantCard,
 		);
 		const echoed = resolveEchoedInitialPrompt(state);
 		if (
@@ -650,7 +680,7 @@ export function entryExpands<TExtraEntry extends ChatTranscriptEntryLike>(
 			disposeRenderer(component);
 		}
 	};
-	return !sameRows(rows(false), rows(true));
+	return withBlockRenderTime(() => !sameRows(rows(false), rows(true)));
 }
 
 /** Whether `entry` is drawn expanded now: as a click last set it, or else as the chat's setting draws it. */

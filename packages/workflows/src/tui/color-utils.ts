@@ -42,6 +42,24 @@ export function hexToAnsi(hex: string): string {
 	return hexColorAnsi(hex, "fg");
 }
 
+/** Pulse a status foreground without introducing a second hue. `t` runs from quiet (0) to full intensity (1). */
+export function pulseForeground(hex: string, peak: string, t: number): string {
+	if (!peak) return "";
+	if (peak.startsWith("\x1b[38;2;")) {
+		const [r, g, b] = parseHex(hex);
+		const max = Math.max(r, g, b);
+		if (max !== 1) {
+			// Black ink on a light canvas fades towards white; all other hues scale towards black.
+			const neutral = max === 0 ? 255 : 0;
+			const intensity = 0.55 + 0.45 * t;
+			const shade = (channel: number) => neutral + (channel - neutral) * intensity;
+			return hexToAnsi(toHex(shade(r), shade(g), shade(b)));
+		}
+	}
+	// Neither an indexed slot nor a one-step RGB channel has a guaranteed dimmer shade of the same hue.
+	return t < 0.5 ? `\x1b[2m${peak}` : peak;
+}
+
 /** The background escape sequence for a hex color, in the same color level as {@link hexToAnsi}. */
 export function hexBg(hex: string): string {
 	return hexColorAnsi(hex, "bg");

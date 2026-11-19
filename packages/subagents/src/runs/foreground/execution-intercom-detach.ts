@@ -12,15 +12,19 @@ interface ExecutionIntercomDetachState {
 	readonly detach: () => void;
 }
 
-/** Registers exact-owner and foreground-group detach listeners for one live child attempt. */
+/**
+ * Registers exact-owner and group detach listeners for one live child attempt. A child no task host runs blocks its
+ * launching call, which a detach releases. A task-hosted child runs in the background, so nothing waits on it: its
+ * acknowledgement only lets its busy parent take the message at once, as it does for its first one.
+ */
 export function registerExecutionIntercomDetach(
 	options: RunSyncOptions,
 	state: ExecutionIntercomDetachState,
 ): () => void {
 	const reservations = new IntercomDetachReservations();
-	let taskWaitYielded = false;
+	let acknowledged = false;
 	const unsubscribe = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-		if (!options.allowIntercomDetach || state.isUnavailable() || taskWaitYielded) return;
+		if (!options.allowIntercomDetach || state.isUnavailable() || acknowledged) return;
 		if (!payload || typeof payload !== "object") return;
 		const event = payload as IntercomDetachRoute;
 		if (
@@ -37,8 +41,7 @@ export function registerExecutionIntercomDetach(
 		}
 		if (event.phase !== "commit" || state.isDetached() || !reservations.commit(event)) return;
 		if (options.taskExecution) {
-			taskWaitYielded = true;
-			options.taskExecution.yieldTaskWait("intercom-coordination");
+			acknowledged = true;
 			options.onIntercomDetachCommit?.();
 		} else {
 			options.onIntercomDetachCommit?.();
@@ -46,15 +49,8 @@ export function registerExecutionIntercomDetach(
 		}
 		options.intercomEvents?.emit?.(INTERCOM_DETACH_RESPONSE_EVENT, { ...event, accepted: true });
 	});
-	const detachSibling = () => {
-		if (options.taskExecution) {
-			if (state.isUnavailable() || taskWaitYielded) return;
-			taskWaitYielded = true;
-			options.taskExecution.yieldTaskWait("intercom-coordination");
-		} else {
-			state.detach();
-		}
-	};
+	// Only a child no task host runs gets a group detach signal: its siblings' launching call blocks on it too.
+	const detachSibling = () => state.detach();
 	options.intercomDetachSignal?.addEventListener("abort", detachSibling, { once: true });
 	if (options.intercomDetachSignal?.aborted) detachSibling();
 

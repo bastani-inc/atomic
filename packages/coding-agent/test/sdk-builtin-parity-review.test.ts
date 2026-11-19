@@ -8,7 +8,8 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { ExtensionAPI, ExtensionFactory } from "../src/index.js";
+import type { ExtensionAPI, InlineExtension } from "../src/index.js";
+import { createTestResourceLoader } from "./utilities.ts";
 
 const builtins = { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } as const;
 function deferred() {
@@ -18,7 +19,7 @@ function deferred() {
 	});
 	return { promise, resolve };
 }
-async function fixture(extensionFactories: ExtensionFactory[] = []) {
+async function fixture(extensionFactories: InlineExtension[] = []) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-review-f-"));
 	const settingsManager = SettingsManager.inMemory();
 	const loader = new DefaultResourceLoader({
@@ -40,6 +41,61 @@ async function fixture(extensionFactories: ExtensionFactory[] = []) {
 	};
 	return { options, loader, remove: () => rmSync(cwd, { recursive: true, force: true }) };
 }
+
+test.each(["spread", "public fields"])(
+	"a custom loader selecting one of two same-named factories replays it per session (%s) (#5501)",
+	async (copy) => {
+		const constructed: string[] = [];
+		const f = await fixture(
+			["removed", "selected"].map((id) => ({
+				name: "filesystem",
+				factory: (pi: ExtensionAPI) => {
+					constructed.push(id);
+					let starts = 0;
+					pi.on("session_start", () => {
+						throw new Error(`${id}:${++starts}`);
+					});
+				},
+			})),
+		);
+		try {
+			const base = f.loader.getExtensions();
+			const [, selected] = base.extensions.filter((ext) => ext.path === "<inline:filesystem>");
+			assert.ok(selected);
+			constructed.length = 0;
+			const errors: string[] = [];
+			const extension =
+				copy === "spread"
+					? { ...selected }
+					: {
+							path: selected.path,
+							resolvedPath: selected.resolvedPath,
+							sourceInfo: selected.sourceInfo,
+							handlers: selected.handlers,
+							tools: selected.tools,
+							commands: new Map(selected.commands),
+							flags: selected.flags,
+							shortcuts: selected.shortcuts,
+							messageRenderers: selected.messageRenderers,
+							entryRenderers: selected.entryRenderers,
+						};
+			const resourceLoader = createTestResourceLoader({ extensionsResult: { ...base, extensions: [extension] } });
+			for (let i = 0; i < 2; i++) {
+				const { session } = await createAgentSession({
+					...f.options,
+					resourceLoader,
+					sessionManager: SessionManager.inMemory(f.options.cwd),
+					extensionBindings: { reportStartupErrors: true, onError: (e) => errors.push(e.error) },
+				});
+				await session.dispose();
+			}
+			assert.deepEqual(errors, ["selected:1", "selected:1"]);
+			assert.deepEqual(constructed, ["selected", "selected"]);
+		} finally {
+			f.remove();
+		}
+	},
+);
 
 // #3105: every public user queue door drains its input hook before retiring its generation.
 for (const method of ["steer", "followUp", "sendUserMessage"] as const) {

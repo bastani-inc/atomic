@@ -302,6 +302,13 @@ export class AtomicWorkedStatusComponent implements Component {
 	invalidate(): void {}
 }
 
+/**
+ * A complete escape sequence, kept whole: a CSI such as a color, or an OSC or APC string ended by BEL or ST, such as a
+ * link or the marker of a clickable key hint. Any other control character is dropped from a border row.
+ */
+const BORDER_LINE_CONTROLS =
+	/(\x1b\[[0-?]*[ -/]*[@-~]|\x1b[\]_][^\x07\x1b]*(?:\x07|\x1b\\))|[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f]/g;
+
 /** Loader-compatible ordinary working surface. Explicit extension indicators delegate to pi-tui unchanged. */
 export class AtomicWorkingLoader implements Component {
 	private readonly ui: TUI;
@@ -345,9 +352,11 @@ export class AtomicWorkingLoader implements Component {
 	}
 
 	private sanitizeBorderLine(line: string): string {
-		// Preserve ANSI escape sequences (including Atomic's animation colors),
-		// while making extension-controlled text safe for a single terminal row.
-		return line.replaceAll("\t", " ").replace(/[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f-\x9f]/g, "");
+		// Preserve ANSI escape sequences whole (including Atomic's animation colors, and the BEL that ends a clickable key
+		// hint's marker), while making extension-controlled text safe for a single terminal row.
+		return line
+			.replaceAll("\t", " ")
+			.replace(BORDER_LINE_CONTROLS, (_control, sequence: string | undefined) => sequence ?? "");
 	}
 
 	private renderSingleBorderLine(width: number): string {

@@ -10,12 +10,15 @@ import {
 import {
 	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
+	observeChildRecordFailure,
 	readSubagentChildRecords,
 	recordSubagentChildHeldToolResults,
+	recordSubagentChildWakeFailure,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	subagentChildRecordFailures,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import { subagentChildrenAwaitingResume } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 
 const RESULT: DetachedToolResult = {
 	toolCallId: "ci-1",
@@ -164,4 +167,75 @@ test("held results are added beside those already held, and only the ids a run t
 	await clearSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", ["ci-1"]);
 	assert.deepEqual(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults, [later]);
 	assert.equal(written(), before + 1);
+});
+
+test("a wake that fails with no reason of its own shows its code and hint once in status (#5551)", async () => {
+	const { ctx, pi, failing, ownerSessionId } = owner();
+	const sink = createSubagentChildRecordSink(pi, ctx);
+	sink.record({
+		...launch,
+		state: "terminal",
+		terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+		waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }],
+	});
+	await sink.flushed?.();
+	// The wake could not hold the result that woke it: the session store refused the write once.
+	failing.enabled = true;
+	const failure = await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]).then(
+		() => assert.fail("the write was refused"),
+		(error: ReleasedChildError) => error,
+	);
+	failing.enabled = false;
+	await recordSubagentChildWakeFailure(pi, ownerSessionId, "run:0", [RESULT], failure);
+
+	const status = subagentChildrenAwaitingResume(ctx).join("\n");
+	assert.equal(status.split("(record-append-failed)").length - 1, 1, status);
+	assert.equal(status.split(failure.hint).length - 1, 1, status);
+});
+
+test("a wake failure that crossed a JSON boundary shows its code and hint once in status, with or without its subject (#5551)", async () => {
+	for (const keepSubject of [true, false]) {
+		const { ctx, pi, failing, ownerSessionId } = owner();
+		const sink = createSubagentChildRecordSink(pi, ctx);
+		sink.record({
+			...launch,
+			state: "terminal",
+			terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+			waitingOn: [{ toolCallId: "ci-1", toolName: "wait_for_ci" }],
+		});
+		await sink.flushed?.();
+		failing.enabled = true;
+		const failure = await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]).then(
+			() => assert.fail("the write was refused"),
+			(error: ReleasedChildError) => error,
+		);
+		failing.enabled = false;
+		// The copy another realm or process sees; an older copy carries no subject of its own.
+		const copy = JSON.parse(JSON.stringify(failure)) as Record<string, unknown>;
+		if (!keepSubject) delete copy.subject;
+		assert.ok(isReleasedChildError(copy));
+		await recordSubagentChildWakeFailure(pi, ownerSessionId, "run:0", [RESULT], copy);
+
+		const status = subagentChildrenAwaitingResume(ctx).join("\n");
+		assert.equal(status.split("(record-append-failed)").length - 1, 1, status);
+		assert.equal(status.split(failure.hint).length - 1, 1, status);
+		assert.ok(status.includes(`Its last wake failed: ${failure.message}`), status);
+	}
+});
+
+test("a failure that knows a subagent only by its Intercom name names it so in status, never as undefined (#5551)", async () => {
+	const { ctx, ownerSessionId } = owner();
+	observeChildRecordFailure(
+		ownerSessionId,
+		new ReleasedChildError("wake-failed", {
+			childName: "subagent-worker-run-1",
+			reason: "its record could not be read",
+		}),
+	);
+
+	const status = subagentChildrenAwaitingResume(ctx).join("\n");
+	assert.equal(
+		status,
+		`Waking subagent subagent-worker-run-1 failed: its record could not be read (wake-failed). Its results are kept: resume it with { action: "resume", id: "subagent-worker-run-1", message? } to try again.`,
+	);
 });

@@ -435,8 +435,9 @@ describe("workflow stage bundled resources", () => {
 				const tool = session.getToolDefinition("subagent");
 				assert.ok(tool, "workflow stages must register the subagent tool");
 				// RFC #2884 §5.2: a task-bound single launch returns an observation DTO, not the legacy
-				// `results[]` execution shape. A foreground wait settles on the in-process child result.
-				const result = await tool.execute(
+				// `results[]` execution shape. Waiting on the launched child settles on the in-process child result.
+				const context = toolContext(session.extensionRunner.createContext());
+				const launched = await tool.execute(
 					"stage-delegation",
 					{
 						agent: "worker",
@@ -444,11 +445,19 @@ describe("workflow stage bundled resources", () => {
 						model: "anthropic/claude-sonnet-4-5",
 						task: "complete this test task",
 						context: "fresh",
-						wait: { kind: "foreground", budgetMs: 60_000 },
 					} as never,
 					undefined,
 					undefined,
-					toolContext(session.extensionRunner.createContext()),
+					context,
+				);
+				const launch = (launched.details as Details).taskResponse;
+				assert.ok(launch?.kind === "admitted", `the stage tool must admit the child: ${JSON.stringify(launched)}`);
+				const result = await tool.execute(
+					"stage-delegation-wait",
+					{ action: "wait", id: launch.observation.taskId, budgetMs: 60_000 } as never,
+					undefined,
+					undefined,
+					context,
 				);
 				const details = result.details as Details;
 				const response = details.taskResponse;

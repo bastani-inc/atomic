@@ -38,6 +38,8 @@ export interface SubagentChildIndexEntry {
 	readonly agent: string;
 	readonly ownerSessionId?: string;
 	readonly state: SubagentChildRecord["state"];
+	readonly elapsedMs?: number;
+	readonly elapsedSpan?: SubagentChildRecord["elapsedSpan"];
 	readonly cwd: string;
 	readonly taskId?: string;
 	readonly terminalStatus?: string;
@@ -67,21 +69,32 @@ const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
 /** How far up from a session's leaf an entry this process just appended is looked for. */
 const APPENDED_ENTRY_SEARCH_DEPTH = 32;
 
-const entries = new Map<string, SubagentChildIndexEntry>();
-/**
- * Latest records the index cannot point at yet: their append is in flight, failed, or was deferred while a reload
- * started extensions, or the session holds only partial records an older Atomic wrote. Each leaves once a complete
- * record of its child is saved and found.
- */
-const unsavedRecords = new Map<string, SubagentChildRecord>();
-/**
- * The open copies of each session that full records are read from, by session id, the preferred first; held weakly, so
- * a closed copy is not kept alive. Another copy of the session stays a reader for when that one is collected (#5252).
- */
-const readers = new Map<string, WeakRef<RecordReader>[]>();
-const childIdsByTaskId = new Map<string, string>();
-const watchers = new Map<string, Set<WeakRef<object>>>();
-const invalidators = new WeakMap<object, () => void>();
+// Tasks and their record writes survive re-evaluation of the extension. Every generation reads the same latest row.
+function newChildIndex() {
+	const watchers = new Map<string, Set<WeakRef<object>>>();
+	return {
+		entries: new Map<string, SubagentChildIndexEntry>(),
+		// A record not yet found as a complete saved entry: pending, deferred, failed or from a partial older record.
+		unsavedRecords: new Map<string, SubagentChildRecord>(),
+		pendingWrites: new WeakSet<SubagentChildRecord>(),
+		// Open copies of a session, preferred first. Do not retain a closed copy (#5252).
+		readers: new Map<string, WeakRef<RecordReader>[]>(),
+		childIdsByTaskId: new Map<string, string>(),
+		watchers,
+		invalidators: new WeakMap<object, () => void>(),
+		collectedCards: new FinalizationRegistry<WatchedCard>(({ key, cards, ref }) => {
+			cards.delete(ref);
+			if (cards.size === 0) watchers.delete(key);
+		}),
+	};
+}
+const INDEX = Symbol.for("@bastani/subagents/child-record-index@1");
+const processIndex = globalThis as { [INDEX]?: ReturnType<typeof newChildIndex> };
+processIndex[INDEX] ??= newChildIndex();
+const { entries, unsavedRecords, pendingWrites, readers, childIdsByTaskId, watchers, invalidators, collectedCards } =
+	processIndex[INDEX];
+
+export { pendingWrites as pendingSubagentChildWrites };
 export interface SubagentChildToolCallEntry {
 	readonly id: string;
 	readonly name: string;
@@ -127,12 +140,6 @@ interface WatchedCard {
 	readonly cards: Set<WeakRef<object>>;
 	readonly ref: WeakRef<object>;
 }
-
-/** A card that is gone stops being watched, and its key goes with its last card. */
-const collectedCards = new FinalizationRegistry<WatchedCard>(({ key, cards, ref }) => {
-	cards.delete(ref);
-	if (cards.size === 0) watchers.delete(key);
-});
 
 function notify(key: string): void {
 	const cards = watchers.get(key);
@@ -187,6 +194,8 @@ function projectionOf(
 		agent: record.agent,
 		...(ownerSessionId === undefined ? {} : { ownerSessionId }),
 		state: record.state,
+		...(record.elapsedMs === undefined ? {} : { elapsedMs: record.elapsedMs }),
+		...(record.elapsedSpan === undefined ? {} : { elapsedSpan: record.elapsedSpan }),
 		cwd: record.cwd,
 		...(record.taskId === undefined ? {} : { taskId: record.taskId }),
 		...(record.terminalStatus === undefined ? {} : { terminalStatus: record.terminalStatus }),
@@ -348,6 +357,9 @@ function observeEntries(sessionEntries: readonly SessionEntry[], sessionId: stri
 		if (acceptsObservation(entries.get(data.childId), copiedInto(data, sessionId))) indexTaskId(record);
 	}
 	for (const { record, latest, entryId } of folded.values()) {
+		// A preserving reload reads the previous durable row while this child's newer observation waits to append.
+		const pending = unsavedRecords.get(record.childId);
+		if (pending !== undefined && pendingWrites.has(pending)) continue;
 		const copied = copiedInto(record, sessionId);
 		if (hasEveryKeyOf(latest, record)) observeSubagentChildRecord(latest, copied, { entryId, sessionId });
 		else observeSubagentChildRecord(record, copied);
@@ -428,6 +440,24 @@ export function subagentChildRecordsOf(ownerSessionId: string): SubagentChildRec
 		if (record !== undefined) records.push(record);
 	}
 	return records;
+}
+
+/** Look up the latest records for one reservation batch: index names once, on demand, but never cache a child's state. */
+export function reservationRecordLookup(ownerSessionId: string): (name: string) => SubagentChildRecord | undefined {
+	let ids: Map<string, string> | undefined;
+	return (name) => {
+		if (ids === undefined) {
+			ids = new Map();
+			for (const entry of entries.values()) {
+				if (entry.ownerSessionId !== ownerSessionId) continue;
+				const target = entry.intercomTarget;
+				if (target !== undefined) ids.set(target, entry.childId);
+			}
+		}
+		const id = ids.get(name);
+		const record = id === undefined ? undefined : readableSubagentChildRecordOf(ownerSessionId, id);
+		return record?.intercomTarget === name ? record : undefined;
+	};
 }
 
 /** Ids of every child of `ownerSessionId` in the index, without reading their records. */

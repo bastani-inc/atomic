@@ -21,7 +21,7 @@ import { RemoteToolExecutionComponent } from "../interactive-engine/remote-rende
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { type AtomicWorkingLoader, DEFAULT_WORKING_MESSAGE } from "./components/atomic-working-status.ts";
-import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
+import { mainComposerFooterHints } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
@@ -426,6 +426,8 @@ export class InteractiveModeBase {
 		theme,
 	});
 	mermaidMarkdownTransformerMode: MermaidRenderingMode | undefined;
+	mermaidTransformerWithheldProject = false;
+	mermaidUserEdit = 0;
 
 	// Skill commands: command name -> skill file path
 	skillCommands = new Map<string, string>();
@@ -480,6 +482,11 @@ export class InteractiveModeBase {
 	// Deferred extension load state (first paint happens before extensions load)
 	deferredStartupPending = false;
 	initialStartupBinding = false;
+	/**
+	 * Extension error rows shown since a reload or session switch reset the extension UI. Finishing the switch or reload
+	 * redraws the transcript, so the errors its extensions reported while starting are shown again after it.
+	 */
+	restartExtensionErrors: Component[] | undefined = undefined;
 	deferredStartupPromise: Promise<void> | undefined = undefined;
 	startupTrustReleased = false;
 
@@ -782,7 +789,7 @@ export class InteractiveModeBase {
 			undefined,
 			() => this.navigationInlineCustomUiDepth > 0,
 			undefined,
-			() => mainComposerHintSegments(this.keybindings),
+			() => mainComposerFooterHints(this.keybindings),
 		);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);

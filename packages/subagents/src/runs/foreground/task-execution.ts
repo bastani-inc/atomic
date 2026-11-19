@@ -6,21 +6,20 @@ import {
 	type OperationId,
 	ranOnModelLine,
 	sessionStartStepText,
-	type WaitPolicy,
+	spanElapsedMs,
+	withTaskTranscriptArchive,
 } from "@bastani/atomic";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import type {
 	Cleanup,
 	ModelParallelResponse,
 	ModelSingleResponse,
-	Result,
+	TaskElapsedSpan,
 	TaskId,
 	TaskRecord,
 	TaskResult,
-	WaitOutcome,
-	YieldError,
-	YieldReason,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
-import type { TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
+import type { TaskLease, TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../agents/agents.js";
 import { sendTaskTranscriptMessage } from "../../intercom/task-message.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
@@ -38,6 +37,7 @@ import {
 } from "../shared/start-progress.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
+import { recordSubagentAdmission } from "./released-child-resume.js";
 import {
 	forwardDetachedResults,
 	routeReleasedChildShellCompletions,
@@ -74,7 +74,12 @@ import {
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
-import { INLINE_TASK_OUTPUT_MAX_BYTES, retainedTaskOutput, retainTaskOutput } from "./task-output-retention.js";
+import {
+	INLINE_TASK_OUTPUT_MAX_BYTES,
+	retainedTaskOutput,
+	retainTaskOutput,
+	wasTaskOutputEvicted,
+} from "./task-output-retention.js";
 
 export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 
@@ -101,10 +106,10 @@ export function subagentTaskResponseText(response: ModelSingleResponse | ModelPa
 	const notStarted = outcomes.filter((outcome) => outcome.kind === "unstarted" && outcome.reason.kind === "rejected");
 	const notices = [
 		...(killed.length ? [`${killed.length} killed. These children cannot be resumed.`] : []),
-		// #4697: one child's setup failure is its own outcome; its siblings ran and report below.
+		// #4697: one child's setup failure is its own outcome; its siblings started and report on their own.
 		...(response.kind === "parallel" && notStarted.length
 			? [
-					`${notStarted.length} of ${outcomes.length} children failed to start${notStarted.length < outcomes.length ? "; the others ran" : ""}. Each slot reports its own outcome.`,
+					`${notStarted.length} of ${outcomes.length} children failed to start${notStarted.length < outcomes.length ? "; the others started" : ""}. Each slot reports its own outcome.`,
 				]
 			: []),
 	];
@@ -162,6 +167,23 @@ function settledOutputSection(
 	return lines.join("\n");
 }
 
+/** A verified copy already owned by the task's transcript. Neither the task nor any output stays alive for this lookup. */
+const transcriptOutputs = new WeakMap<TaskLease, WeakRef<{ text: string }>>();
+
+function rememberTranscriptOutput(
+	lease: WeakRef<TaskLease>,
+	ref: TaskRecord["ref"],
+	reply: AssistantMessage | undefined,
+): void {
+	if (!reply) return;
+	const kept = retainedTaskOutput(ref.ownerId, ref.taskId);
+	if (!kept || kept.totalBytes > INLINE_TASK_OUTPUT_MAX_BYTES) return;
+	const part = reply.content.find((block) => block.type === "text" && block.text === kept.head);
+	if (part?.type !== "text") return;
+	const task = lease.deref();
+	if (task) transcriptOutputs.set(task, new WeakRef(part));
+}
+
 async function readSettledOutput(
 	host: AgentTaskHost,
 	settled: SettledTaskOutput,
@@ -188,12 +210,33 @@ async function readSettledOutput(
 	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
 	const lease = host.resolveTask(settled.taskId);
 	if (!lease.ok) return unavailable(lease.error.message);
+	const head = transcriptOutputs.get(lease.value)?.deref()?.text;
+	const total = Number(output.byteCount);
+	if (
+		head !== undefined &&
+		head.length <= total &&
+		total <= INLINE_TASK_OUTPUT_MAX_BYTES &&
+		Buffer.byteLength(head) === total
+	)
+		return settledOutputSection(settled.taskId, label, { head, shown: total, total }, ranOn);
 	try {
 		const page = await host.ownerBinding.supervisor.readTaskOutput(lease.value, {
 			start: "0",
 			maximumBytes: INLINE_TASK_OUTPUT_MAX_BYTES,
 		});
-		if (!page.ok) return unavailable(page.error.message);
+		if (!page.ok) {
+			if (
+				page.error.code === "OutputUnavailable" &&
+				record?.kind === "agent" &&
+				!(settled.result.kind === "cancelled" && settled.result.released) &&
+				wasTaskOutputEvicted(lease.value)
+			) {
+				return unavailable(
+					`The private copy is no longer in the recent output cache. See the earlier result or open /tasks ${settled.taskId} for the child's transcript.`,
+				);
+			}
+			return unavailable(page.error.message);
+		}
 		const decoder = new TextDecoder();
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
@@ -347,7 +390,7 @@ function taskTranscriptSource(
 	intercomTarget: string | undefined,
 	intercomEvents: IntercomEventBus | undefined,
 ): TaskTranscriptSource {
-	return {
+	const source: TaskTranscriptSource = {
 		getSessionId: () => session.getSessionId(),
 		getEntries: () => session.getEntries(),
 		...(session.loadHistory ? { loadHistory: session.loadHistory.bind(session) } : {}),
@@ -365,6 +408,7 @@ function taskTranscriptSource(
 			? {}
 			: { sendMessage: (text: string) => sendTaskTranscriptMessage(intercomEvents, intercomTarget, text) }),
 	};
+	return withTaskTranscriptArchive(source, session);
 }
 
 type ExecutionSchedule = ExecutionScheduler;
@@ -446,7 +490,11 @@ function wakeForResultsHeldDuringRun(
 		.catch((error: Error) => observeChildRecordFailure(ownerSessionId, wakeFailureOf(error, childId)));
 }
 
-/** Bind the real foreground runner once; only its registered observation may yield. */
+/**
+ * Launch a subagent as a task of `host`. It always runs in the background: the launch returns once the task is admitted
+ * and its observation registered, and the child reports by its completion notice. `subagent({ action: "wait" })` waits
+ * for it explicitly.
+ */
 export async function runAgentTask(input: {
 	host: AgentTaskHost;
 	cwd: string;
@@ -455,11 +503,9 @@ export async function runAgentTask(input: {
 	task: string;
 	intentTask?: string;
 	options: RunSyncOptions;
-	wait?: WaitPolicy;
 	runtime: SubagentExecutorRuntimeDeps;
 	onTerminal?: (result: SingleResult) => void;
 	schedule?: ExecutionScheduler;
-	outputText?: (result: SingleResult) => string;
 	recordChild?: SubagentChildRecordSink;
 	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
 	forked?: boolean;
@@ -470,10 +516,7 @@ export async function runAgentTask(input: {
 	/** The dispatcher a released child's results wake it through; by default the process's one dispatcher. */
 	wakeDispatcher?: AgentWakeDispatcher;
 }): Promise<ModelSingleResponse> {
-	let yieldWait: ((reason: YieldReason) => Result<WaitOutcome, YieldError>) | undefined;
-	let pendingYield = false;
-	let parentObserving = input.wait?.kind === "foreground";
-	const registered = Promise.withResolvers<void>();
+	const registered = Promise.withResolvers<WeakRef<TaskLease>>();
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<
@@ -484,6 +527,7 @@ export async function runAgentTask(input: {
 	const agentSource = agentConfig?.source;
 	const requestedModel = launchRequestedModel(agentConfig, input.options);
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
+	let recordSpan: TaskElapsedSpan | undefined;
 	const recordChildTask = (
 		taskId: TaskId,
 		state: SubagentChildRecordInput["state"],
@@ -501,6 +545,8 @@ export async function runAgentTask(input: {
 			...(agentSource ? { agentSource } : {}),
 			forked,
 			state,
+			elapsedMs: recordSpan ? spanElapsedMs(recordSpan) : 0,
+			elapsedSpan: recordSpan ? { ...recordSpan } : null,
 			cwd: childCwd,
 			taskId,
 			...childSession,
@@ -614,13 +660,11 @@ export async function runAgentTask(input: {
 					onDetachedExit: undefined,
 					supervisorAuthorization: launch.supervisorAuthorization,
 				},
-				wait: { kind: "background" },
 				runtime: input.runtime,
 				...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 				onTerminal: launch.onTerminal,
 				// It waits for a slot in its run, as its original launch did.
 				...(runSchedule ? { schedule: runSchedule } : {}),
-				...(input.outputText ? { outputText: input.outputText } : {}),
 				recordChild: launch.recordChild,
 				forked,
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
@@ -645,8 +689,10 @@ export async function runAgentTask(input: {
 			},
 			(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,
 			(context) => {
+				const elapsedSpan: TaskElapsedSpan = { dispatchedAt: Date.now() };
+				recordSpan = elapsedSpan;
 				dispatched = true;
-				queuedChildren.delete(context.ref.taskId);
+				if (queuedChildren.delete(context.ref.taskId)) recordChildTask(context.ref.taskId, "running");
 				// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
 				claimRunWorktree(runId, index);
 				const cleaned = Promise.withResolvers<Cleanup>();
@@ -681,7 +727,7 @@ export async function runAgentTask(input: {
 						: (input.recordChild?.clearHeldToolResults?.(childId, delivered) ?? Promise.resolve());
 				};
 				// From here until its first turn starts the child is starting, and says where (never merely "running").
-				const dispatchedAt = Date.now();
+				const { dispatchedAt } = elapsedSpan;
 				let startText: string | undefined;
 				let lastStartStep: SubagentStartProgress["step"] | undefined;
 				const reportStart = (progress: SubagentStartProgress | undefined) => {
@@ -707,25 +753,33 @@ export async function runAgentTask(input: {
 					startedAt: dispatchedAt,
 					stepStartedAt: dispatchedAt,
 				});
-				const result = registered.promise.then(async (): Promise<TaskResult> => {
+				const result = registered.promise.then(async (lease): Promise<TaskResult> => {
 					try {
 						const ownerSessionId = input.recordChild?.ownerSessionId;
+						let settledReply: WeakRef<AssistantMessage> | undefined;
 						const running = input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 							...input.options,
+							elapsedSpan,
+							onElapsedSpanChanged: () => recordChild("running"),
 							cwdVerdict,
-							// A background child is released while it waits, and its owner wakes it (#4326).
-							...(input.options.releaseWhenWaiting === undefined &&
-							ownerSessionId !== undefined &&
-							input.wait?.kind !== "foreground"
+							// A child is released while it waits, and its owner wakes it (#4326).
+							...(input.options.releaseWhenWaiting === undefined && ownerSessionId !== undefined
 								? { releaseWhenWaiting: subagentReleasePolicy() }
 								: {}),
 							onBeforeRelease: () =>
-								reserveReleasedChildTargets(input.options, childSession.childSessionId, undefined, false),
+								reserveReleasedChildTargets(
+									input.options,
+									childSession.childSessionId,
+									undefined,
+									false,
+									context.ref.taskId,
+								),
 							signal: context.signal,
 							taskExecution: {
+								taskId: context.ref.taskId,
 								signal: context.signal,
 								reportActivity: context.reportActivity,
-								bindTranscript: (session) =>
+								bindTranscript: (session) => {
 									context.bindTranscript(
 										taskTranscriptSource(
 											session,
@@ -733,7 +787,11 @@ export async function runAgentTask(input: {
 											input.options.intercomSessionName,
 											input.options.intercomEvents,
 										),
-									),
+									);
+									settledReply = session.settledReply && new WeakRef(session.settledReply);
+									// Disposal may bind the settled transcript before or after the task publishes its output.
+									rememberTranscriptOutput(lease, context.ref, session.settledReply);
+								},
 								setExtensionStatus: context.setExtensionStatus,
 								clearExtensionStatuses: context.clearExtensionStatuses,
 								bindChildSession: (session) => {
@@ -754,8 +812,7 @@ export async function runAgentTask(input: {
 								},
 								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
-								reportStart: (progress) =>
-									reportStart(progress === undefined ? undefined : { ...progress, launchedAt: dispatchedAt }),
+								reportStart,
 								onExecution: (execution) => {
 									executionBound = true;
 									trackChildClosing(childId, execution.cleanup);
@@ -770,16 +827,11 @@ export async function runAgentTask(input: {
 											}),
 										);
 								},
-								yieldTaskWait: () => {
-									parentObserving = false;
-									if (yieldWait) yieldWait("intercom-coordination");
-									else pendingYield = true;
-								},
-								isParentObserving: () => parentObserving,
 							},
 						});
 						ticket?.onEntered();
 						const child = await running;
+						elapsedSpan.endedAt ??= Date.now();
 						if (child.model !== undefined || child.thinking !== undefined)
 							context.reportActivity({
 								reportId: "terminal-model",
@@ -822,6 +874,8 @@ export async function runAgentTask(input: {
 								input.options,
 								childSession.childSessionId,
 								child.released.intercomId,
+								true,
+								context.ref.taskId,
 							);
 							const holdMessages = input.recordChild?.holdMessages;
 							if (ownerSessionId !== undefined && holdMessages !== undefined)
@@ -866,8 +920,11 @@ export async function runAgentTask(input: {
 								context.ref.taskId,
 								wokenWith,
 							);
-						const text = input.outputText?.(child) ?? getSingleResultOutput(child);
-						if (!released) await retainTaskOutput(child, text, context.ref);
+						const text = getSingleResultOutput(child);
+						if (!released) {
+							await retainTaskOutput(child, text, context.ref, lease);
+							rememberTranscriptOutput(lease, context.ref, settledReply?.deref());
+						}
 						const bytes = Buffer.from(text);
 						context.reportActivity({
 							reportId: "terminal-output",
@@ -919,6 +976,7 @@ export async function runAgentTask(input: {
 									output,
 								};
 					} catch (error) {
+						elapsedSpan.endedAt ??= Date.now();
 						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
 						if (!ownerClosed()) recordChild("terminal", "error");
 						else if (input.recordChild?.ownerEndedForGood?.()) {
@@ -933,7 +991,7 @@ export async function runAgentTask(input: {
 						if (!executionBound) cleaned.resolve({ kind: "reaped" });
 					}
 				});
-				return { result, cleanup: cleaned.promise };
+				return { result, cleanup: cleaned.promise, elapsedSpan };
 			},
 			schedule,
 		)
@@ -957,28 +1015,23 @@ export async function runAgentTask(input: {
 		// Nothing of a queued launch survives a restart but its records: they say how to start it fresh then.
 		queuedAtAdmission ? subagentChildLaunch(input.task, input.intentTask, input.options) : undefined,
 	);
+	if (input.recordChild?.ownerSessionId !== undefined)
+		recordSubagentAdmission(started.value.lease, {
+			ownerSessionId: input.recordChild.ownerSessionId,
+			childId: subagentChildId(runId, index),
+			runId,
+			agent: input.agent,
+			taskId: started.value.taskId,
+			intercomTarget: input.options.intercomSessionName,
+		});
 	if (queuedAtAdmission) queuedChildren.set(started.value.taskId, { start: queuedStart(), stopped: false });
-	// A queued execution has no runSync listener yet. Release its observation too,
-	// without spending a concurrency slot or cancelling its owner-bound execution.
-	const yieldForIntercom = () => {
-		parentObserving = false;
-		if (yieldWait) yieldWait("intercom-coordination");
-		else pendingYield = true;
-	};
-	input.options.intercomDetachSignal?.addEventListener("abort", yieldForIntercom, { once: true });
-	if (input.options.intercomDetachSignal?.aborted) yieldForIntercom();
-	const observation = input.host.observeAgentLaunch(started.value.taskId, input.wait, (yieldRegistered) => {
-		yieldWait = yieldRegistered;
-		if (pendingYield) yieldRegistered("intercom-coordination");
-		registered.resolve();
-	});
-	registered.resolve();
+	const lease = new WeakRef(started.value.lease);
+	const register = () => registered.resolve(lease);
+	const observation = input.host.observeAgentLaunch(started.value.taskId, undefined, register);
+	register();
 	ticket?.onObserved();
 	if (ticket) await ticket.admitted;
-	const observed = await observation.finally(() => {
-		parentObserving = false;
-		input.options.intercomDetachSignal?.removeEventListener("abort", yieldForIntercom);
-	});
+	const observed = await observation;
 	if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
 	// The one Intercom target this task's child registers under, so a send never has to guess it.
 	const admitted: ModelSingleResponse & { readonly intercomTarget?: string } = {

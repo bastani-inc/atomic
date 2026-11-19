@@ -10,6 +10,25 @@ import type { TaskRecord } from "./contracts.js";
  * never sees a subagent's shells, and a subagent never sees the owner's.
  */
 
+type TaskListOwner = { readonly backgroundTasks: readonly TaskRecord[] };
+const scopeKey = Symbol("task-list-scope");
+const scopes = new WeakMap<TaskListOwner, object>();
+
+/** Each chat has one scope. Its snapshot carries the token, not a reference back to the chat. */
+export function scopedBackgroundTasks(owner: TaskListOwner, tasks: TaskRecord[]): TaskRecord[] {
+	let scope = scopes.get(owner);
+	if (scope === undefined) {
+		scope = {};
+		scopes.set(owner, scope);
+	}
+	Object.defineProperty(tasks, scopeKey, { value: scope });
+	return tasks;
+}
+
+export function backgroundTaskScope(tasks: readonly TaskRecord[]): object | undefined {
+	return (tasks as readonly TaskRecord[] & { readonly [scopeKey]?: object })[scopeKey];
+}
+
 /** The session key of a task: the subagent session that launched it, or `undefined` for the owner's own session. */
 export function taskSessionKey(task: Pick<TaskRecord, "launchedBy">): string | undefined {
 	return task.launchedBy;

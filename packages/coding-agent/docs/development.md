@@ -58,7 +58,17 @@ The process that draws the UI (`host`) and the engine that runs the agent and ex
 
 Records hold function names and file paths, never prompts or message text. Atomic never trims the file, so delete it before reproducing a problem.
 
-While the variable is set, each process checks itself every few milliseconds. The npm package (Node) attaches a debugger to a stalled process to read its stacks, which lengthens that stall, typically by tens of milliseconds. The standalone binary instead keeps a sampling profile, which costs a few percent of CPU while code runs. Unset, it costs nothing.
+Stack collection is enabled by default for this diagnostic. Both the npm package and standalone binary use a sampling CPU profile, not debugger pauses. A `debugger;` statement does not stop the application just because the diagnostic is on, and an attached debugger keeps control of its own breakpoints. Profiles rotate every five seconds while the event loop runs. Completed profile data stays available until every overlapping stall window has been read, including a stall discovered just after a startup/session boundary, and is then discarded. Functions sharing a name are listed separately by their definition's source location. Sampling adds some CPU overhead, so use delay-only mode for latency comparisons.
+
+For delay measurements without sampling overhead, disable stack collection:
+
+```bash
+ATOMIC_EVENT_LOOP_BLOCK_MS=100 ATOMIC_EVENT_LOOP_BLOCK_STACKS=0 atomic
+```
+
+This still records every delay summary and each stall over the configured threshold. The `start` record reports `stacks: "disabled"`; block records have zero samples and empty stack details. Use delay-only mode for latency comparisons, and collect stacks separately when you need to locate the code behind a stall.
+
+Neither mode runs unless `ATOMIC_EVENT_LOOP_BLOCK_MS` is a positive whole number. With that variable unset, no stack sampler is initialized and no monitoring runs.
 
 ## PDF and engine diagnostics
 

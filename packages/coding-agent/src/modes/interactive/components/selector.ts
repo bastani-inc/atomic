@@ -19,7 +19,7 @@ import {
 	type NavKeybindings,
 	type NavKeyStyle,
 	navActionText,
-	navKeyText,
+	navFirstKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
@@ -329,6 +329,19 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
+	restoreSelection(previous: SelectorState<T>): void {
+		const id = previous.getSelected()?.id;
+		const index = this.visible.findIndex((item) => item.id === id && !item.disabled);
+		if (index < 0) return;
+		if (
+			this.visible.length === previous.visible.length &&
+			this.visible.every((item, i) => item.id === previous.visible[i]?.id)
+		) {
+			this.top = previous.getTop();
+		}
+		this.select(index);
+	}
+
 	select(index: number): void {
 		if (!Number.isInteger(index) || index < 0 || index >= this.visible.length || this.visible[index]?.disabled)
 			return;
@@ -425,7 +438,7 @@ export function selectorHintEntries<T>(
 		const keys = numberedHintKeys(state.getVisible());
 		if (keys) entries.push(tagHintEntry({ keys, label: "pick" }, "pick"));
 	}
-	const cancel = firstKey(keybindings, "tui.select.cancel") || "esc";
+	const cancel = navFirstKeyText(keybindings, "tui.select.cancel") || "esc";
 	entries.push({
 		keys: cancel,
 		label: state.getQuery() ? "clear" : (options.cancelLabel ?? "cancel"),
@@ -480,11 +493,6 @@ export function fitHintEntries(
 		kept.splice(drop, 1);
 	}
 	return kept;
-}
-
-function firstKey(keybindings: NavKeybindings, action: string): string {
-	const key = keybindings.getKeys?.(action)?.[0];
-	return key ? navKeyText(key) : "";
 }
 
 function numberedHintKeys<T>(visible: readonly SelectorItem<T>[]): string {
@@ -635,6 +643,21 @@ export class Selector<T> implements Component, Focusable {
 			}
 		}
 		this.state.setItems(items, preferId);
+		this.notifySelectionChange();
+	}
+
+	/** Carry navigation, not the old rows or their callbacks, into a refreshed picker. */
+	restoreNavigation(previous: Selector<T>, keepHighlight: boolean): void {
+		if (this.input && previous.input) {
+			this.input = previous.input;
+			this.state.setQuery(this.input.getValue());
+		}
+		if (keepHighlight || this.state.getQuery()) this.state.restoreSelection(previous.state);
+		this.showingHelp = previous.showingHelp;
+		this.mousePressed = previous.mousePressed;
+		this.focused = previous.focused;
+		// Reapply a user's preview even if that row is also the new configured default.
+		if (keepHighlight) this.selectedId = undefined;
 		this.notifySelectionChange();
 	}
 
@@ -799,6 +822,7 @@ export class Selector<T> implements Component, Focusable {
 				width,
 				this.style,
 				this.options.keybindings ?? getKeybindings(),
+				"tui.select.cancel",
 			).map((line) => clipSelectorLine(line, width));
 		}
 		const lines: string[] = [];

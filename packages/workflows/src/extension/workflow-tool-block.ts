@@ -1,6 +1,12 @@
 import type { ThemeColor } from "@bastani/atomic";
 import { keyHintIfBound, navEntryKeys, sliceHead, ToolBlock, ToolBlockRecords } from "@bastani/atomic";
-import { type Component, getKeybindings, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import {
+	type Component,
+	clickableKeyTextHint,
+	getKeybindings,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 import { meter_run, type RunUsageTree } from "../shared/budget-meter.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { StoreInvalidationListener } from "../shared/store-public-types.js";
@@ -296,7 +302,7 @@ function manageKeyLabel(): string | undefined {
 function manageHintSegment(enabled = true): string | undefined {
 	if (!enabled) return undefined;
 	const key = manageKeyLabel();
-	return key ? `${key} to manage` : undefined;
+	return key ? clickableKeyTextHint(key, " to manage") : undefined;
 }
 
 export interface DefinitionErrorView {

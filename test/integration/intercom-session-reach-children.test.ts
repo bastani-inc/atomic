@@ -87,7 +87,6 @@ function scriptedModel(probes: Map<Prober, readonly ToolResultMessage[]>): FauxR
 						agent: "probe-5352",
 						task: "Probe Intercom.",
 						group: "team",
-						wait: { kind: "foreground", budgetMs: REAL_STAGE_AND_SUBAGENT_TIMEOUT_MS },
 					}),
 				],
 				{ stopReason: "toolUse" },

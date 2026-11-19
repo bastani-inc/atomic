@@ -125,7 +125,7 @@ If the first message sent after compaction fails, it stays queued with the messa
 
 Both interrupts hold a queued message only while it is still waiting in the queue. A message the agent has already picked up is written into the transcript, and an interrupt that cancels its reply before any output appears no longer strands it: Atomic answers it instead of returning it to the editor. A reply that had already started printing is left as-is and is not restarted. Sending a message while that recovered reply is still streaming is safe — it is delivered as soon as the reply finishes.
 
-Both abort routes ask the agent to stop cooperatively. Escape waits as long as the agent needs, and neither route terminates the engine during normal cancellation.
+Both abort routes ask the agent to stop cooperatively, and neither route terminates the engine during normal cancellation. The turn ends once each of its tool calls has stopped. A tool call still waiting for an earlier call to finish ends at once with `Operation aborted` and does not run. A tool call that has not stopped 10 seconds after the interrupt (set `ATOMIC_TOOL_ABORT_GRACE_MS` to change this; see [Environment variables](/environment-variables)) gets the result `Operation aborted: <tool> did not stop within 10 seconds after the turn was interrupted`, and the turn ends anyway. Such a call may keep running in the background, but later tool calls no longer wait for it. Anything it returns or throws after the grace period is discarded; it does not enter the chat or a later model request.
 
 Ctrl+C also provides a recovery path. It reaches Atomic even when an extension's custom UI owns the screen, closing that UI if it does not handle the key. If the engine stops answering, a queue clear or cancellation remains unanswered for over one second, or either operation fails, Ctrl+C replaces the engine. This includes cancelling chat, shell commands, compaction, and retries, even while engine heartbeats continue. It also covers a replacement that hangs during startup or fails to start. Recovery is explicit: a stalled control does not restart the engine on its own. Replacing the engine interrupts its running workflows and tools; inspect workflow status before resuming work.
 
@@ -192,6 +192,8 @@ The agent remembers earlier work through `history://`: it recalls this project's
 ## Exporting and Sharing Sessions
 
 Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them.
+
+`atomic --export <session.jsonl> [file]` can show an `Agent(...)` card for a single subagent launch on the selected branch. Expand it to read the prompt, tool calls and answer saved in the receipt. A recorded background handoff is labeled as a handoff, not as a currently running child. Open **Recorded arguments and result** for the original record. The export never opens the child's session. Parallel launches, incomplete or ambiguous receipts, and other extension tools keep their usual export format.
 
 Use `/share` to upload a private GitHub gist with a shareable link. The link opens the session in Atomic's viewer at `https://bastani.ai/session/`; set `ATOMIC_SHARE_VIEWER_URL` to use your own viewer instead.
 

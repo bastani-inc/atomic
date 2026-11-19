@@ -1,5 +1,6 @@
 import {
 	getKeybindings,
+	isHintActivation,
 	matchesKey,
 	Text,
 	type KeybindingsManager as TuiKeybindingsManager,
@@ -10,10 +11,16 @@ import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prom
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
+import { sessionWaitsToRetry } from "../../../core/session-retry-status.js";
 import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import { releasedWaitingOn, waitingReleasedShells, waitingReleasedTools } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.js";
+import {
+	type TaskElapsedClocks,
+	taskClockRunning,
+	taskClocksFor,
+	taskElapsedMs,
+} from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import { getOwnerTaskSession, isTaskTurnInterrupted, setTaskTurnInterrupted } from "../../../core/tasks/owner-store.js";
 import type { ChatBoxSession, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
@@ -31,8 +38,9 @@ import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-h
 import { ScrollableComponentViewport } from "./chat-transcript.js";
 import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
-import { navActionText } from "./nav-keys.ts";
+import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
+import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -186,16 +194,6 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
 }
 
 /**
- * Whether the session waits out an automatic retry's backoff: its retry has started and its next attempt has not. A
- * session with fallback models keeps its run open through the wait, so it reads as streaming then (#5523).
- */
-function waitsToRetry(
-	session: Pick<ChatBoxSession, "retryAttempt" | "isStreaming" | "isWaitingToRetry"> | undefined,
-): boolean {
-	return session !== undefined && session.retryAttempt > 0 && (!session.isStreaming || session.isWaitingToRetry);
-}
-
-/**
  * An agent task's transcript on the shared chat host: it opens at the latest page, follows the task's live session
  * where it has one, loads earlier retained history as the reader nears the top, and sends what the reader types to
  * the task through its Intercom target.
@@ -223,7 +221,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		if (task === undefined || waitingOn === undefined) return undefined;
 		const shells = waitingReleasedShells(task, this.source.ownerTasks ?? this.source.tasks);
 		const openKey = navActionText(getKeybindings(), "app.tasks.openWaited");
-		const opens = openKey ? `${openKey} opens` : "/tasks opens";
+		const opens = openKey ? clickableKeyTextHint(openKey, " opens") : "/tasks opens";
 		const shellNote =
 			shells.length === 0
 				? ""
@@ -247,6 +245,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private followedSessionId?: string;
 	private unsubscribe?: () => void;
 	private cursor?: string;
+	readonly #notices = new TaskTranscriptNotices();
 	private loading = false;
 	private reloadPending = false;
 	private loadingEarlier = false;
@@ -346,6 +345,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
 			},
 		});
+		pagedNotices.set(this.chat, this.#notices);
 		this.restoreDraft();
 		this.restoreUndelivered();
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
@@ -446,7 +446,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return handled;
 		}
-		if (!this.chat.hasTaskInspector && keybindings.matches(data, "app.agents.focus") && !this.hasDraft()) {
+		if (
+			!this.chat.hasTaskInspector &&
+			keybindings.matches(data, "app.agents.focus") &&
+			(!this.hasDraft() || isHintActivation())
+		) {
 			return this.hasTasks() ? this.chat.openTasks() : true;
 		}
 		// The host owns thinking display; only its default physical key leaves the composer, as in a stage chat.
@@ -519,7 +523,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		);
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
-		const working = reserve(this.chat.renderWorkingStatus(width), true);
+		const working = reserve(
+			this.chat.renderWorkingStatus(width, this.source.followTaskTranscript(this.taskId)?.publishedActivity),
+			true,
+		);
 		const usage = reserve(this.chat.renderUsageRow(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
 		this.bodyRows = body.length;
@@ -544,11 +551,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 							: task.metrics?.elapsedMs === undefined
 								? "running"
 								: formatPanelElapsed(
-										this.elapsedClocks.elapsedMs(
-											task.ref.taskId,
+										taskElapsedMs(task, taskClockRunning(task.execution.kind), this.elapsedClocks) ??
 											task.metrics.elapsedMs,
-											taskClockRunning(task.execution.kind),
-										) ?? task.metrics.elapsedMs,
 									);
 		const released = task === undefined ? undefined : waitingReleasedTools(task);
 		const stopped = released === undefined && this.source.taskStopped?.(this.taskId) === true;
@@ -594,6 +598,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.#notices.reset();
 		this.unsubscribePrompts();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -681,7 +686,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		this.followedSessionId = nextSessionId;
 		this.cursor = page.value.nextCursor;
-		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
+		const messages = page.value.messages;
+		this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged });
+		this.#notices.adopt(page, messages, this.cursor !== undefined);
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -717,13 +724,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	 * its run open through the wait.
 	 */
 	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
-		if (waitsToRetry(session.chatSession)) {
+		const chatSession = session.chatSession;
+		if (chatSession && sessionWaitsToRetry(chatSession)) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.hydrateRetryWait();
+			this.chat.hydrateRetryWait(messages, chatSession.turnStartedAt);
+		} else if (chatSession?.retryStatus?.type === "model_fallback_start") {
+			setTaskTurnInterrupted(this.source, this.taskId, false);
+			this.chat.hydrateModelSwitch(chatSession.turnStartedAt, messages);
 		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
-			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.(), chatSession?.turnStartedAt);
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()
@@ -751,12 +762,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					return;
 				}
 				this.cursor = page.value.nextCursor;
-				this.chat.prependMessages(page.value.messages);
+				const messages = page.value.messages;
+				this.#notices.adopt(page, messages, this.cursor !== undefined);
+				this.chat.prependMessages(messages);
 			} catch (error) {
 				if (this.disposed) return;
 				this.cursor = undefined;
 				this.status = error instanceof Error ? error.message : String(error);
 			} finally {
+				if (this.cursor === undefined) this.#notices.finishPaging();
 				this.loadingEarlier = false;
 				this.requestRender();
 			}

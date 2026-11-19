@@ -487,16 +487,20 @@ describe("foreground intercom detach routing", () => {
 	});
 });
 
-// RFC #2884: task observation yields without replacing the live execution or its cleanup.
+// RFC #2884: an exact Intercom commit to a task-hosted child never replaces its live execution or its cleanup.
 test("task hooks retain the live result through tool activity and exact Intercom commit", async () => {
 	await withTempDir(async (dir) => {
 		const gate = deferred();
 		const disposal = deferred();
-		const bus = eventBus(new EventEmitter());
+		const emitter = new EventEmitter();
+		const bus = eventBus(emitter);
 		let execution: Parameters<TaskExecutionHooks["onExecution"]>[0] | undefined;
 		const tools: string[] = [];
 		const reports: Parameters<TaskExecutionHooks["reportActivity"]>[0][] = [];
-		let yields = 0;
+		let acknowledgedCommits = 0;
+		emitter.on(INTERCOM_DETACH_RESPONSE_EVENT, (response: { phase?: string; accepted?: boolean }) => {
+			if (response.phase === "commit" && response.accepted === true) acknowledgedCommits++;
+		});
 		let launches = 0;
 		const cwdVerdict = await checkLaunchCwd(dir);
 		const launched = Promise.withResolvers<void>();
@@ -516,11 +520,6 @@ test("task hooks retain the live result through tool activity and exact Intercom
 				reportActivity: (report) => {
 					reports.push(report);
 					if (report.change.kind === "action") tools.push(report.change.tool);
-				},
-				isParentObserving: () => true,
-				yieldTaskWait: (reason) => {
-					assert.equal(reason, "intercom-coordination");
-					yields++;
 				},
 			},
 			testSession: {
@@ -551,12 +550,12 @@ test("task hooks retain the live result through tool activity and exact Intercom
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "commit" });
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "probe" });
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, runtimeGeneration: 2, phase: "commit" });
-		assert.equal(yields, 0);
+		assert.equal(acknowledgedCommits, 0);
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "commit" });
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "commit" });
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "probe" });
 		bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, phase: "commit" });
-		assert.equal(yields, 1);
+		assert.equal(acknowledgedCommits, 1);
 		assert.equal(settled, false);
 		assert.equal(execution.result, original);
 		gate.release();
@@ -594,8 +593,6 @@ test("task cleanup failure preserves successful execution and is not reaped", as
 			taskExecution: {
 				signal: new AbortController().signal,
 				reportActivity: () => {},
-				isParentObserving: () => true,
-				yieldTaskWait: () => {},
 				onExecution: (value) => {
 					execution = value;
 				},
@@ -617,8 +614,8 @@ test("task cleanup failure preserves successful execution and is not reaped", as
 	});
 });
 
-// RFC #2884: the admitted task owns cancellation, including after its observation yields.
-test("task signal cancels the original execution after Intercom yields", async () => {
+// RFC #2884: the admitted task owns cancellation, including after an Intercom handoff.
+test("task signal cancels the original execution after an Intercom handoff", async () => {
 	await withTempDir(async (dir) => {
 		const gate = deferred();
 		const controller = new AbortController();
@@ -636,8 +633,6 @@ test("task signal cancels the original execution after Intercom yields", async (
 			taskExecution: {
 				signal: controller.signal,
 				reportActivity: () => {},
-				isParentObserving: () => true,
-				yieldTaskWait: () => {},
 				onExecution: (value) => {
 					execution = value;
 				},
@@ -653,61 +648,5 @@ test("task signal cancels the original execution after Intercom yields", async (
 		assert.equal("cause" in outcome && outcome.cause, "abort");
 		assert.equal((await pending).status, "interrupted");
 		assert.deepEqual(await execution.cleanup, { kind: "reaped" });
-	});
-});
-
-// RFC #2884: a foreground group commit yields sibling observations, not executions.
-test("task group detach yields every active sibling once without ending their promises", async () => {
-	await withTempDir(async (dir) => {
-		const bus = eventBus(new EventEmitter());
-		const group = new AbortController();
-		const gate = deferred();
-		const yields = [0, 0];
-		let commits = 0;
-		const executions: Array<Parameters<TaskExecutionHooks["onExecution"]>[0]> = [];
-		const cwdVerdict = await checkLaunchCwd(dir);
-		const pending = [0, 1].map((index) =>
-			runSync(dir, [bridgedAgent()], "fake-worker", " x ", {
-				cwdVerdict,
-				runId: `task-group-${index}`,
-				intercomSessionName: `child-${index}`,
-				allowIntercomDetach: true,
-				intercomEvents: bus,
-				intercomDetachSignal: group.signal,
-				onIntercomDetachCommit: () => {
-					commits++;
-					group.abort();
-				},
-				taskExecution: {
-					signal: new AbortController().signal,
-					reportActivity: () => {},
-					onExecution: (execution) => {
-						executions.push(execution);
-					},
-					isParentObserving: () => true,
-					yieldTaskWait: () => {
-						yields[index]++;
-					},
-				},
-				testSession: { promptGate: gate.promise, output: `result-${index}` },
-			}),
-		);
-		assert.equal(executions.length, 2);
-		let settled = 0;
-		for (const execution of executions)
-			void execution.result.then(() => {
-				settled++;
-			});
-		await handoff(bus, { requestId: "group", childIntercomTarget: "child-0" });
-		assert.deepEqual(yields, [1, 1]);
-		assert.equal(commits, 1);
-		assert.equal(settled, 0);
-		gate.release();
-		assert.deepEqual(
-			(await Promise.all(pending)).map((result) => result.status),
-			["ok", "ok"],
-		);
-		assert.equal(settled, 2);
-		await Promise.all(executions.map((execution) => execution.cleanup));
 	});
 });

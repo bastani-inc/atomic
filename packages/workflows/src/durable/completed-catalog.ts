@@ -21,6 +21,7 @@ import {
 	retainReachableRunGroups,
 	runTopologyFor,
 	type StageDraft,
+	startedChildStatus,
 	validateRunGroups,
 	validBoundaryRecordSet,
 	validStageGroup,
@@ -35,7 +36,6 @@ import {
 	RUN_TIMING_CHECKPOINT_NAME,
 	RUN_USAGE_CHECKPOINT_NAME,
 } from "./run-timing.js";
-import { FAN_OUT_FORK_SOURCES_SUFFIX, FORK_SOURCE_CHECKPOINT_SUFFIX } from "./stage-fork-point.js";
 import { FORK_POINT_CHECKPOINT_SUFFIX } from "./stage-topology.js";
 import { isSubscriptionCheckpointHash } from "./subscription-records.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
@@ -52,8 +52,6 @@ function isReservedRunCheckpointHash(argsHash: string): boolean {
 		isChildRunUsageCheckpointName(argsHash) ||
 		argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME ||
 		argsHash.endsWith(FORK_POINT_CHECKPOINT_SUFFIX) ||
-		argsHash.endsWith(FORK_SOURCE_CHECKPOINT_SUFFIX) ||
-		argsHash.endsWith(FAN_OUT_FORK_SOURCES_SUFFIX) ||
 		isSubscriptionCheckpointHash(argsHash)
 	);
 }
@@ -171,6 +169,7 @@ export async function completedWorkflowRunSnapshots(
 			priorRunElapsedMs(backend, handle.workflowId) ?? Math.max(0, handle.updatedAt - handle.createdAt);
 		const root: RunSnapshot = {
 			...runs[rootIndex]!,
+			...(handle.runGeneration !== undefined ? { runGeneration: handle.runGeneration } : {}),
 			inputs: { ...handle.inputs } as WorkflowInputValues,
 			status: handle.status,
 			startedAt: handle.createdAt,
@@ -231,6 +230,7 @@ function rootSnapshot(
 	const terminalDurationMs = priorDurationMs ?? Math.max(0, handle.updatedAt - handle.createdAt);
 	return {
 		id: handle.workflowId,
+		...(handle.runGeneration !== undefined ? { runGeneration: handle.runGeneration } : {}),
 		label: handle.label,
 		summary: handle.summary,
 		summarizedThrough: handle.summarizedThrough,
@@ -337,14 +337,17 @@ export function durableNestedRunCatalog(
 		return cached.catalog;
 	}
 	const checkpoints = backend.listCheckpoints(rootWorkflowId);
-	const runs = runSnapshotsFromCheckpoints(
-		checkpoints,
+	const runs = replayableNestedRuns(
+		runSnapshotsFromCheckpoints(
+			checkpoints,
+			rootWorkflowId,
+			handle.name,
+			handle.updatedAt,
+			NESTED_CATALOG_RECONSTRUCTION,
+			(scope) => backend.checkpointScopeReleased?.(rootWorkflowId, scope) === true,
+		),
 		rootWorkflowId,
-		handle.name,
-		handle.updatedAt,
-		NESTED_CATALOG_RECONSTRUCTION,
-		(scope) => backend.checkpointScopeReleased?.(rootWorkflowId, scope) === true,
-	).filter((run) => run.id !== rootWorkflowId);
+	);
 	const catalog = nestedRunCatalog(runs, checkpoints);
 	if (version !== undefined) {
 		const byRoot = nestedRunCatalogs.get(backend) ?? new Map<string, CachedNestedRunCatalog>();
@@ -359,6 +362,33 @@ export function durableNestedRunCatalog(
 		if (byRoot.size > MAX_CACHED_ROOTS_PER_BACKEND) byRoot.delete(byRoot.keys().next().value!);
 	}
 	return catalog;
+}
+
+/**
+ * The nested runs replay may restore, without the root. A child that a failed or skipped boundary started runs again
+ * on resume, so it is left out with everything under it. Under a completed nested run it is a failure that run
+ * handled, and it is restored with that run (#5616).
+ */
+function replayableNestedRuns(runs: readonly RunSnapshot[], rootRunId: string): RunSnapshot[] {
+	const byId = new Map<string, RunSnapshot>();
+	for (const run of runs) if (!byId.has(run.id)) byId.set(run.id, run);
+	const nestedAncestry = (run: RunSnapshot): RunSnapshot[] => {
+		const chain: RunSnapshot[] = [];
+		for (let current: RunSnapshot | undefined = run; current !== undefined && current.id !== rootRunId; ) {
+			if (chain.includes(current)) break;
+			chain.push(current);
+			current = current.parentRunId === undefined ? undefined : byId.get(current.parentRunId);
+		}
+		return chain;
+	};
+	const rerun = new Set<string>();
+	for (const run of runs) {
+		if (nestedAncestry(run).some((ancestor) => ancestor.status === "completed")) continue;
+		for (const stage of run.stages)
+			if ((stage.status === "failed" || stage.status === "skipped") && stage.startedChildRunId !== undefined)
+				rerun.add(stage.startedChildRunId);
+	}
+	return runs.filter((run) => run.id !== rootRunId && !nestedAncestry(run).some((ancestor) => rerun.has(ancestor.id)));
 }
 
 function nestedRunCatalog(
@@ -619,8 +649,7 @@ function runSnapshotsFromCheckpoints(
 		if (!grouped.has(runId)) grouped.set(runId, []);
 	}
 	for (const group of grouped.values()) group.sort(compareDraftSourceOrder);
-	// Groups under a failed or skipped boundary are pruned like a finished root does; any other dropped group
-	// means an active graph is incomplete.
+	// Legacy failed/skipped boundaries have no confirmed child. Only their unlinked subtrees may be pruned.
 	if (!retainReachableRunGroups(grouped, rootRunId) && policy.failOnUnreachable) return [];
 	if (!validateRunGroups(grouped, rootRunId, toolsByRun, index, policy.retainActive, releasedChildScope)) return [];
 	const syntheticChildren: Array<{
@@ -628,17 +657,17 @@ function runSnapshotsFromCheckpoints(
 		readonly owner: StageDraft;
 		readonly child: NonNullable<StageSnapshot["workflowChild"]>;
 	}> = [];
-	const pendingChildren: Array<{ readonly parentRunId: string; readonly owner: StageDraft }> = [];
+	const emptyChildren: Array<{ readonly parentRunId: string; readonly owner: StageDraft }> = [];
 	for (const [parentRunId, runDrafts] of grouped) {
 		for (const draft of runDrafts) {
-			const pendingChildRunId = childRunIdFromDraft(draft);
+			const childRunId = childRunIdFromDraft(draft);
 			if (
-				policy.retainActive &&
-				pendingChildRunId !== undefined &&
-				!grouped.has(pendingChildRunId) &&
-				isPendingChildBoundary(draft, parentRunId, pendingChildRunId, rootRunId)
+				childRunId !== undefined &&
+				!grouped.has(childRunId) &&
+				(startedChildStatus(draft) !== undefined ||
+					(policy.retainActive && isPendingChildBoundary(draft, parentRunId, childRunId, rootRunId)))
 			) {
-				pendingChildren.push({ parentRunId, owner: draft });
+				emptyChildren.push({ parentRunId, owner: draft });
 				continue;
 			}
 			const child = workflowChildFromDraft(draft);
@@ -783,7 +812,7 @@ function runSnapshotsFromCheckpoints(
 			resumable: false,
 		});
 	}
-	for (const { parentRunId, owner } of pendingChildren) {
+	for (const { parentRunId, owner } of emptyChildren) {
 		if (!emittedRunIds.has(parentRunId)) return [];
 		const topology = owner.topology!;
 		const boundary = topology.boundary!;
@@ -793,10 +822,11 @@ function runSnapshotsFromCheckpoints(
 			id: boundary.child.runId,
 			name: boundary.child.runName,
 			inputs: {},
-			status: "running",
+			status: startedChildStatus(owner) ?? "running",
 			stages: [],
 			toolNodes: [],
 			startedAt: owner.startedAt ?? owner.firstCompletedAt,
+			...(startedChildStatus(owner) !== undefined ? { endedAt: owner.endedAt ?? owner.firstCompletedAt } : {}),
 			parentRunId,
 			parentStageId,
 			rootRunId: boundary.child.rootRunId,
@@ -842,6 +872,9 @@ function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readon
 		toolEvents: [],
 		attachable: false,
 		...(workflowChild !== undefined ? { workflowChild } : {}),
+		...(boundary !== undefined && startedChildStatus(draft) !== undefined
+			? { startedChildRunId: boundary.child.runId }
+			: {}),
 		...(workflowChild === undefined && boundary !== undefined && status !== "failed" && status !== "skipped"
 			? {
 					workflowChildRun: {

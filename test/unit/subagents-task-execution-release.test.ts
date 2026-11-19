@@ -128,7 +128,6 @@ async function launch(options: {
 		agent: "worker",
 		task: "watch CI",
 		options: { cwd, runId: options.runId, index: 0, sessionDir: join(cwd, "sessions"), ...options.options },
-		wait: { kind: "background" },
 		...(sink ? { recordChild: sink } : {}),
 		wakeDispatcher: dispatcher,
 		runtime: { runSync: runtime },

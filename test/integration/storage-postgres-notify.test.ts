@@ -122,23 +122,26 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres LISTEN/NOTIFY wake-u
 				const database = await scope.open();
 				const notifications = notificationsOf(database);
 				assert.deepEqual(await notifications.state(), { status: "listening" });
+				// Both listeners are added before the kill, so the channel keeps a listener throughout: the reconnect
+				// listens to it before it announces "listening", and the notification sent after that announcement
+				// cannot race a fresh LISTEN.
 				const relistened = nextEvent(
 					notifications,
 					"p_intercom_wakeups",
 					(event) => event.kind === "listening",
 					RECONNECT_BOUND_MS,
 				);
+				const delivered = nextEvent(
+					notifications,
+					"p_intercom_wakeups",
+					(event) => event.kind === "notification",
+					RECONNECT_BOUND_MS + NOTIFY_WAKE_BOUND_MS * 5,
+				);
 				await scope.admin.get(
 					"SELECT count(pg_terminate_backend(pid)) AS killed FROM pg_stat_activity WHERE datname = ? AND application_name = 'atomic-listen'",
 					scope.name,
 				);
 				await relistened;
-				const delivered = nextEvent(
-					notifications,
-					"p_intercom_wakeups",
-					(event) => event.kind === "notification",
-					NOTIFY_WAKE_BOUND_MS * 5,
-				);
 				await notifyInTransaction(database, "p_intercom_wakeups", "broker", true);
 				assert.deepEqual(await delivered, { kind: "notification", payload: "broker" });
 			});

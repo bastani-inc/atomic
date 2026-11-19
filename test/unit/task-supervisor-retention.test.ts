@@ -208,7 +208,6 @@ test("a burst of finishes beyond the retention still delivers every completion b
 			message: expected,
 		});
 		assert.equal(refusal(await h.supervisor.waitForTask(tasks[1] as TaskLease, 0)).code, "TaskEvicted");
-		assert.equal(refusal(await h.supervisor.foregroundTask(tasks[2] as TaskLease, 0)).code, "TaskEvicted");
 		assert.equal(refusal(h.supervisor.taskStdin(tasks[3] as TaskLease)).code, "TaskEvicted");
 		assert.equal(refusal(await h.supervisor.waitForTaskId(h.owner, evicted as C.TaskId, 0)).code, "TaskEvicted");
 		assert.equal(

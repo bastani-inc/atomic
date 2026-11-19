@@ -6,7 +6,7 @@ import {
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@bastani/atomic-tui";
-import { stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
+import { stageChatHistory, stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
 import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
@@ -103,14 +103,19 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	if (opts.initialComposerDraft !== undefined) {
 		ctx.chatHost.setInputText(opts.initialComposerDraft);
 	}
-	ctx._unregisterStageUiHost = ctx.stageUiBroker.registerHost(ctx.runId, ctx.stageId, {
-		showCustomUi: (request) => {
-			void showCustomUi(ctx, request);
+	ctx._unregisterStageUiHost = ctx.stageUiBroker.registerHost(
+		ctx.runId,
+		ctx.stageId,
+		{
+			showCustomUi: (request) => {
+				void showCustomUi(ctx, request);
+			},
+			hideCustomUi: (request) => {
+				hideMountedCustomUi(ctx, request);
+			},
 		},
-		hideCustomUi: (request) => {
-			hideMountedCustomUi(ctx, request);
-		},
-	});
+		opts.handle?.stageUiSignal,
+	);
 
 	snapshotMessagesFromHandle(ctx);
 	replayPendingToolExecutions(ctx);
@@ -140,7 +145,13 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		// stream, so a synchronously replayed `agent_start` on a retained terminal
 		// stage can see that a live delivery authorizes it.
 		ctx._unsubscribeDeliveryActivity = subscribeStageChatDeliveryActivity(ctx);
-		ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
+		ctx._unsubscribeHandle = ctx.handle.subscribe(
+			(event) => applyStageChatLiveHandleEvent(ctx, event),
+			() => {
+				ctx.chatHost.clearBusyForTerminalWorkflowStage();
+				ctx.requestRender?.();
+			},
+		);
 		if (!initialChatIsTerminal) rehydrateCompactionStatusAfterAttach(ctx);
 		rehydrateQueuedMessages(ctx);
 	}
@@ -328,9 +339,12 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 						excludeFromContext: request.excludeFromContext,
 					});
 				if (!agentSession) throw new Error("no live agent session on this stage");
-				return agentSession.executeBash(request.command, request.onChunk, {
-					excludeFromContext: request.excludeFromContext,
-				});
+				const execute = () =>
+					agentSession.executeBash(request.command, request.onChunk, {
+						excludeFromContext: request.excludeFromContext,
+					});
+				const holds = handle.releaseGate?.chatHolds;
+				return holds ? holds.operation(execute) : execute();
 			},
 			abortBash: async () => {
 				const handle = liveHandle(ctx);
@@ -350,6 +364,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		},
 		requestRender: opts.requestRender,
 		getAgentSession: () => liveHandle(ctx)?.agentSession,
+		getSessionContextMeter: (displayed) => liveHandle(ctx)?.contextMeter?.(displayed),
 		// A stage on a local worker: the handle's copy of its session's messages, kept current by the worker.
 		getSessionMessages: () => {
 			const handle = liveHandle(ctx);
@@ -387,7 +402,9 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 	const stage = run?.stages.find((s) => s.id === ctx.stageId);
 	const currentRunStatus = run?.status;
 	const currentStageStatus = stage?.status;
-	let changed = false;
+	const publishedActivity = publishedStageChatActivity(ctx, stage);
+	let changed = ctx.lastPublishedActivity !== publishedActivity;
+	ctx.lastPublishedActivity = publishedActivity;
 	if (stage && stage.status === "paused" && !ctx.localPaused) {
 		ctx.localPaused = true;
 		changed = true;
@@ -428,16 +445,27 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
  * nothing until that turn finished — a stage held mid-turn shows nothing at
  * all. The session's in-flight message closes that window, and the live
  * subscription installed after this continues it delta by delta. Between two
- * attempts of a retry nothing streams, so the chat shows the retry's wait.
+ * attempts of a retry nothing streams, so the chat shows the retry's wait, and
+ * while the stage moves its turn to its next model, the move. A turn that went on
+ * in a new session after such a move counts from its first request, which that
+ * session's messages do not hold.
  */
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
 	if (!handle) return;
-	ctx.chatHost.appendMessages(handle.messages);
+	const { messages, contextMeter } = stageChatHistory(handle);
+	ctx.chatHost.appendMessages(messages, contextMeter);
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
-	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming);
-	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait();
+	const active = activeLiveHandle(ctx);
+	if (!active) return;
+	const turnStartedAt = active.turnStartedAt ?? active.agentSession?.turnStartedAt;
+	const status = active.agentSession?.retryStatus ?? active.modelSwitch;
+	if (stageWaitsToRetry(active)) ctx.chatHost.hydrateRetryWait(messages, turnStartedAt);
+	else if (status?.type === "model_fallback_start") ctx.chatHost.hydrateModelSwitch(turnStartedAt, messages);
+	else if (active.isStreaming)
+		ctx.chatHost.hydrateRunningTurn(messages, streaming, turnStartedAt, contextMeter?.requestSide);
+	else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
 }
 
 /** The calls a stage with its session released waits on: their results arrive when it reopens, so none is interrupted. */
@@ -687,13 +715,19 @@ function activeLiveHandle(ctx: StageChatViewContext): ReturnType<typeof liveHand
 	return handle;
 }
 
-export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
-	return activeLiveHandle(ctx)?.isStreaming === true;
+export function publishedStageChatActivity(
+	ctx: StageChatViewContext,
+	stage: StageSnapshot | undefined,
+): StageSnapshot["chatActivity"] {
+	if (ctx.handle?.placement?.reconnecting || stage?.workerExecution?.reconnecting) return "idle";
+	const initial = ctx.handle?.publishedActivity;
+	if (initial === undefined || !activeLiveHandle(ctx) || stage?.status === "suspended") return undefined;
+	// Once the worker has published the stage, an absent phase is idle, not the wait from the initial watch.
+	return stage?.chatActivity ?? (stage?.workerExecution ? "idle" : initial);
 }
 
-function isLiveHandleWaitingToRetry(ctx: StageChatViewContext): boolean {
-	const handle = activeLiveHandle(ctx);
-	return handle !== undefined && stageWaitsToRetry(handle);
+export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
+	return activeLiveHandle(ctx)?.isStreaming === true;
 }
 
 export function isStreaming(ctx: StageChatViewContext): boolean {
@@ -702,9 +736,18 @@ export function isStreaming(ctx: StageChatViewContext): boolean {
 
 /** Whether Escape interrupts the stage's turn: it streams, or its session waits out a retry's backoff between attempts. */
 export function isAbortableStreamingSession(ctx: StageChatViewContext): boolean {
-	if (isPaused(ctx) || ctx.interruptedByEscape) return false;
+	if (isPaused(ctx) || ctx.interruptedByEscape || liveHandle(ctx)?.canPause === false) return false;
+	const handle = activeLiveHandle(ctx);
 	const agentSession = liveHandle(ctx)?.agentSession;
-	return isLiveHandleStreaming(ctx) || agentSession?.isStreaming === true || agentSession?.isRetrying === true;
+	return (
+		agentSession?.isStreaming === true ||
+		agentSession?.isRetrying === true ||
+		(handle !== undefined &&
+			(ctx.chatHost.isStreaming() ||
+				handle.isRetrying === true ||
+				stageWaitsToRetry(handle) ||
+				currentStage(ctx)?.rateLimits?.some((limit) => limit.waitingUntil !== undefined) === true))
+	);
 }
 
 export function isBlocked(ctx: StageChatViewContext): boolean {
@@ -743,7 +786,12 @@ async function handleSlashCommand(ctx: StageChatViewContext, text: string): Prom
 						: () => handle.compact!(instructions || undefined);
 			if (compact === undefined) return false;
 			try {
-				await compact();
+				const holds = handle.releaseGate?.chatHolds;
+				if (holds)
+					await holds.operation(async () => {
+						await compact();
+					});
+				else await compact();
 			} catch (error) {
 				// compaction_end owns cancellation/failure UI; a stage that could not start compacting says why.
 				if (handle.agentSession === undefined) ctx.chatHost.showWarning((error as Error).message);

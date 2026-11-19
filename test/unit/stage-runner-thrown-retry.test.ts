@@ -606,6 +606,45 @@ describe("createStageContext — thrown model failure retry", () => {
 		assert.equal(calls, 1);
 	});
 
+	test.each(["creation", "prompt"])(
+		"a stage chat can interrupt a %s retry owned by the stage before it sends another request (#5564)",
+		async (failure) => {
+			const texts: string[] = [];
+			let creations = 0;
+			const settings = retrySettings({ baseDelayMs: 1 });
+			const agentSession: AgentSessionAdapter = {
+				async create() {
+					if (++creations === 1 && failure === "creation")
+						throw Object.assign(new Error("503 service unavailable"), {
+							settingsManager: { getRetrySettings: () => settings },
+						});
+					return sessionWithSettings(settings, async (text) => {
+						texts.push(text);
+						if (texts.length === 1 && failure === "prompt") throw new Error("503 service unavailable");
+						return "done";
+					});
+				},
+			};
+			const ctx = createStageContext(makeOpts({ adapters: { agentSession } })) as InternalStageContext;
+			let pause: Promise<void> | undefined;
+			ctx.subscribe((event) => {
+				if (event.type === "auto_retry_start") pause = ctx.__requestPause();
+			});
+			const pending = ctx.prompt("first");
+			try {
+				await vi.waitFor(() => assert.ok(pause));
+				await pause;
+				await ctx.__resume();
+				await pending;
+				assert.equal(creations, 1);
+				assert.deepEqual(texts, failure === "creation" ? [] : ["first"]);
+			} finally {
+				await ctx.abort();
+				await pending.catch(() => {});
+			}
+		},
+	);
+
 	test("pause during backoff defers the retry until resume and uses resumed text", async () => {
 		const promptTexts: string[] = [];
 		let calls = 0;

@@ -8,7 +8,10 @@ import { taskPanelItems } from "../../packages/coding-agent/src/core/tasks/agent
 import { taskClockOf, taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { ChatBoxSession } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
-import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import {
+	launchedTaskViewSource,
+	ownerTaskViewSource,
+} from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
 	AGENT_PANEL_IDLE_ROWS,
 	AgentPanelModel,
@@ -412,6 +415,47 @@ function stageHostOptions(overrides: Partial<ChatSessionHostOpts> = {}): ChatSes
 		...overrides,
 	};
 }
+
+test("painting a sibling chat cannot bring back a stopped child in either footer (#5567)", () => {
+	initTheme("dark");
+	const root = new PooledStageTaskSource(async () => undefined);
+	const parentA = taskRecord("A").ref.taskId;
+	const parentB = taskRecord("B").ref.taskId;
+	const stopped = {
+		...taskRecord("retired-child"),
+		parentTaskId: parentA,
+		execution: { kind: "settled", result: { kind: "cancelled", cause: "user" } },
+	} as const;
+	const tasks = [stopped, { ...taskRecord("sibling-child"), parentTaskId: parentB }];
+	const publish = () =>
+		root.apply({
+			tasks,
+			background: tasks.map((t) => t.ref.taskId),
+			settlement: [],
+			activity: [],
+			stdin: [],
+			statuses: [],
+		});
+	publish();
+	const host = (id: typeof parentA) =>
+		new ChatSessionHost(stageHostOptions({ getTaskSource: () => launchedTaskViewSource(root, id) }));
+	const a = host(parentA);
+	const b = host(parentB);
+	try {
+		assert.deepEqual(a.renderTaskFooter(120), []);
+		assert.match(stripVTControlCharacters(b.renderFooter(120).join("\n")), /sibling-child/);
+		tasks.push({ ...taskRecord("new-child"), parentTaskId: parentA });
+		publish();
+		for (const lines of [a.renderFooter(120), a.renderTaskFooter(120)]) {
+			const painted = stripVTControlCharacters(lines.join("\n"));
+			assert.match(painted, /new-child/);
+			assert.doesNotMatch(painted, /retired-child/);
+		}
+	} finally {
+		a.dispose();
+		b.dispose();
+	}
+});
 
 test("two stage chat hosts with the same pooled task id keep independent footer clocks and unbound records do not tick (#5224)", () => {
 	initTheme("dark");

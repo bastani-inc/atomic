@@ -99,7 +99,6 @@ async function interruptedRun(cwd: string): Promise<InterruptedRun> {
 			intercomSessionName: "subagent-worker-lane-run-1",
 			intercomGroup: group,
 		},
-		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink(
 			{
 				appendEntry: async (customType: string, data?: unknown) => {

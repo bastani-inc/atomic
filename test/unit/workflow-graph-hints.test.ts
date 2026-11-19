@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 import type { NavKey } from "@bastani/atomic";
 import { describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -7,6 +6,7 @@ import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/sh
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type { GraphKeyTier } from "../../packages/workflows/src/tui/graph-view-render-helpers.js";
 import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 

@@ -29,11 +29,14 @@ type CompactionKind = "manual" | "automatic";
 
 const rigs: Rig[] = [];
 const heldCompactions: Array<() => void> = [];
+const heldSessions: CompactionInternals[] = [];
 
 afterEach(async () => {
 	for (const release of heldCompactions.splice(0)) release();
 	releaseOpenGates();
 	for (const rig of rigs.splice(0)) await rig.stop();
+	for (const session of heldSessions.splice(0))
+		delete (session as Partial<CompactionInternals>)._applyVerbatimCompaction;
 	vi.restoreAllMocks();
 });
 
@@ -131,9 +134,11 @@ async function createCompactingRig(
 
 function holdCompaction(rig: Rig): () => void {
 	const release = Promise.withResolvers<undefined>();
-	vi.spyOn(rig.engine.session as unknown as CompactionInternals, "_applyVerbatimCompaction").mockImplementation(
-		() => release.promise,
-	);
+	// An own property over the session's prototype method, not vi.spyOn: vitest keeps every spy until the file ends, and a
+	// spy keeps the object it was installed on, so each test's engine session stayed in memory for the rest of the file.
+	const session = rig.engine.session as unknown as CompactionInternals;
+	session._applyVerbatimCompaction = () => release.promise;
+	heldSessions.push(session);
 	const releaseCompaction = () => release.resolve(undefined);
 	heldCompactions.push(releaseCompaction);
 	return releaseCompaction;

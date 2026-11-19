@@ -107,7 +107,7 @@ test("a paused child holds the completion for its resume without being woken (#4
 	assert.deepEqual(wakes, []);
 });
 
-test("a child that runs again or has ended takes no completion: the route refuses it typed, so its launcher gets it (#4326)", async () => {
+test("a child that runs again or has ended takes no completion: the route refuses it typed, and the notice stays the child's (#4326)", async () => {
 	for (const [state, status] of [
 		["running", undefined],
 		["terminal", "ok"],
@@ -128,6 +128,26 @@ test("a child that runs again or has ended takes no completion: the route refuse
 		assert.equal(subagentChildRecordOf(ownerSessionId, childId)?.heldMessages, undefined);
 		assert.deepEqual(wakes, []);
 	}
+});
+
+test("a refused completion's hint says it waits for the child's next run, never that its launcher receives it (#5551)", async () => {
+	const current = owner();
+	const { sink, ownerSessionId, childId } = current;
+	await recorded(current, "terminal", "ok");
+	const holdMessages = sink.holdMessages;
+	assert.ok(holdMessages);
+
+	const refusal = await releasedChildShellRoute(holdMessages, ownerSessionId, childId, new AgentWakeDispatcher())
+		.deliver(completion("done", "c-1"))
+		.then(
+			() => assert.fail("a child that has ended takes no completion"),
+			(error: Error) => error,
+		);
+
+	assert.ok(isReleasedChildError(refusal) && refusal.code === "completion-not-held");
+	// The parent's command owner keeps the refused notice for this child's next run; nothing else receives it.
+	assert.match(refusal.hint, /next run/);
+	assert.doesNotMatch(refusal.hint, /session that launched the subagent receives/);
 });
 
 test("routing a released child's shell completions hands its runner the child's route, and a failure is counted typed (#4326)", async () => {

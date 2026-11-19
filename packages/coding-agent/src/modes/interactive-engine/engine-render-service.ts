@@ -13,6 +13,7 @@ import { disposeRenderer, runRendererCleanup } from "../interactive/components/r
 import { ToolBlock } from "../interactive/components/tool-block.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { RETAINED_TOOL_RENDERERS, retainedToolRenderer } from "../interactive/components/tool-renderer-scope.js";
+import { sameRows, withBlockRenderTime } from "../interactive/components/transcript-block-clicks.ts";
 import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
 import {
 	type InteractiveEngineCommand,
@@ -134,20 +135,34 @@ export class EngineRenderService {
 		// now would rebuild the record its disposal released.
 		if (this.disposedIds.has(command.componentId)) return;
 		try {
-			const lines = runSynchronousCallback({ kind: "renderer", name }, () =>
-				command.type === "engine_tool_render" ? this.renderTool(command) : this.renderMessage(command),
-			);
+			const frame = runSynchronousCallback({ kind: "renderer", name }, () => {
+				const draw = () =>
+					command.type === "engine_tool_render" ? this.renderTool(command) : this.renderMessage(command);
+				if (!command.compareExpansion) return { lines: draw() };
+				return withBlockRenderTime(() => {
+					const lines = draw();
+					const component = this.records.get(command.componentId)?.component;
+					if (!component) return { lines, expansionChangesRows: false };
+					try {
+						component.setExpanded(!command.expanded);
+						return { lines, expansionChangesRows: !sameRows(lines, component.render(command.width)) };
+					} finally {
+						component.setExpanded(command.expanded);
+					}
+				});
+			});
 			this.send({
 				type: "engine_custom_frame",
 				componentId: command.componentId,
 				requestId: command.requestId,
-				lines,
+				...frame,
 			});
 		} catch {
 			this.send({
 				type: "engine_custom_frame",
 				componentId: command.componentId,
 				requestId: command.requestId,
+				...(command.compareExpansion ? { expansionChangesRows: false } : {}),
 				lines: new ToolBlock({
 					status: "failure",
 					title: command.type === "engine_tool_render" ? "Tool renderer failed" : "Message renderer failed",

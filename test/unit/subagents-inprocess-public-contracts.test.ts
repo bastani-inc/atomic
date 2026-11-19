@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { validateToolArguments } from "@bastani/atomic-ai";
-import { afterEach, beforeEach, test } from "vitest";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { completionNoticeFromDetails } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
+import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { prepareSubagentArguments, SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -346,6 +349,87 @@ test("management status and wait resolve the launch task ID and report an owner 
 	}
 });
 
+test("a background subagent's saved notice omits an emoji that fits only in its full wait result (#5671)", async () => {
+	const cwd = makeRoot();
+	const parent = await createHarness({ cwd });
+	const prefix = "x".repeat(7999);
+	const full = `${prefix}😀${"y".repeat(300)}`;
+	const { execute } = executor(cwd, new TestEvents(), {
+		runSync: (dir, agents, name, task, options) =>
+			runSync(dir, agents, name, task, { ...options, testSession: { output: full } }),
+	});
+	const ctx = {
+		...context(cwd),
+		sessionManager: parent.sessionManager,
+		getAgentTaskHost: () => parent.session.getAgentTaskHost(),
+	};
+	const call = (id: string, params: Parameters<typeof execute.execute>[1]) =>
+		execute.execute(id, params, new AbortController().signal, undefined, ctx);
+	try {
+		parent.setResponses([fauxAssistantMessage("Noted.")]);
+		const launched = await call("launch", { agent: "qa-echo", task: "Return the result", artifacts: false });
+		const response = launched.details.taskResponse;
+		assert.ok(response?.kind === "admitted" && response.observation.kind === "yielded");
+		const id = response.observation.taskId;
+		assert.ok(text(await call("wait", { action: "wait", id })).endsWith(full), "waiting returns the full result");
+		const saved = await vi.waitUntil(
+			() =>
+				parent.sessionManager
+					.getEntries()
+					.find((entry) => entry.type === "custom_message" && entry.customType === "task-completion"),
+			{ timeout: 10_000 },
+		);
+		assert.ok(saved?.type === "custom_message" && typeof saved.content === "string");
+		const notice = completionNoticeFromDetails(saved.details);
+		assert.ok(notice && notice.taskId === id);
+		assert.deepEqual([notice.preview.isWellFormed(), saved.content.isWellFormed()], [true, true]);
+		assert.equal(notice.preview, prefix);
+		assert.ok(saved.content.includes(`\n${prefix}\n[Result excerpt truncated]`));
+	} finally {
+		await parent.cleanup();
+	}
+});
+
+test("wait and status report OutputUnavailable for SDK output that never had a private copy (#5703)", async () => {
+	const cwd = makeRoot();
+	const { execute } = executor(cwd, new TestEvents());
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: cwd }, authorizeLaunch() {} });
+	const ctx = { ...context(cwd), getAgentTaskHost: () => host };
+	try {
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "SDK job" },
+			"sdk-output" as OperationId,
+			({ ref, reportActivity }) => {
+				const bytes = Buffer.from("SDK result");
+				assert.ok(
+					reportActivity({
+						reportId: "out",
+						change: { kind: "output", offset: "0", bytesBase64: bytes.toString("base64") },
+					}).ok,
+				);
+				const [record] = host.taskRecords(new Set([ref.taskId]));
+				assert.ok(record);
+				return {
+					result: Promise.resolve({
+						kind: "completed",
+						output: { ...record.output, byteCount: String(bytes.length) },
+					}),
+					cleanup: Promise.resolve({ kind: "reaped" }),
+				};
+			},
+		);
+		assert.ok(started.ok);
+		const id = started.value.taskId;
+		const expected = `Output of ${id} (completed) is unavailable: OutputUnavailable`;
+		for (const action of ["wait", "status"] as const) {
+			const result = await execute.execute(action, { action, id }, new AbortController().signal, undefined, ctx);
+			assert.equal(text(result).split("\n\n").at(-1), expected, action);
+		}
+	} finally {
+		await host.close("session-close");
+	}
+});
+
 test("owner task cancellation reaches a real child and wait preserves raw cancellation under a killed receipt", async () => {
 	{
 		const field = "owner";
@@ -367,7 +451,7 @@ test("owner task cancellation reaches a real child and wait preserves raw cancel
 		try {
 			const launched = await execute.execute(
 				"launch-owner",
-				{ agent: "qa-echo", task: "hold", artifacts: false, wait: { kind: "background" } },
+				{ agent: "qa-echo", task: "hold", artifacts: false },
 				new AbortController().signal,
 				undefined,
 				ctx,
@@ -406,7 +490,7 @@ test("owner task cancellation reaches a real child and wait preserves raw cancel
 	}
 });
 
-test("owner foreground parallel cancellation preserves sibling execution and raw host records under a killed receipt", async () => {
+test("owner cancellation of one parallel child preserves its sibling's execution, and waiting reports each one's end", async () => {
 	const cwd = makeRoot();
 	const gate = Promise.withResolvers<void>();
 	const { execute } = executor(cwd, new TestEvents(), {
@@ -422,20 +506,21 @@ test("owner foreground parallel cancellation preserves sibling execution and raw
 	});
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "parallel-kill" }, authorizeLaunch() {} });
 	const ctx = { ...context(cwd), getAgentTaskHost: () => host };
-	const call = (params: Parameters<typeof execute.execute>[1]) =>
-		execute.execute("parallel-kill", params, new AbortController().signal, undefined, ctx);
-	const launch = call({
-		tasks: ["first", "second"].map((task) => ({ agent: "qa-echo", task })),
-		wait: { kind: "foreground" },
-		artifacts: false,
-	});
+	const call = (id: string, params: Parameters<typeof execute.execute>[1]) =>
+		execute.execute(id, params, new AbortController().signal, undefined, ctx);
 	try {
+		const launched = await call("parallel-kill", {
+			tasks: ["first", "second"].map((task) => ({ agent: "qa-echo", task })),
+			artifacts: false,
+		});
+		const response = launched.details.taskResponse;
+		assert.ok(response?.kind === "parallel");
+		const ids = response.slots.map(({ outcome }) => {
+			assert.ok(outcome.kind === "admitted" && outcome.observation.kind === "yielded");
+			return outcome.observation.taskId;
+		});
+		assert.equal(launched.details.taskRecords?.length, 2);
 		await waitUntil(() => ["first", "second"].every((task) => existsSync(join(cwd, `${task}.log`))));
-		const watched = host.watchOwnerTasks();
-		assert.ok(watched.ok);
-		const ids = watched.value.snapshot.tasks.map((task) => task.ref.taskId);
-		watched.value.dispose();
-		assert.equal(ids.length, 2);
 		const killed = await host.cancelTask(ids[0]!, "user");
 		assert.ok(killed.ok);
 		const stopped = await host.waitForTask(ids[0]!);
@@ -446,25 +531,12 @@ test("owner foreground parallel cancellation preserves sibling execution and raw
 		const sibling = await host.waitForTask(ids[1]!, 0);
 		assert.ok(sibling.ok && sibling.value.kind === "yielded");
 		gate.resolve();
-		const terminal = await launch;
-		assert.match(text(terminal), /1 killed.*cannot be resumed/);
-		const [, rawResponse] = text(terminal).split("\n");
-		assert.deepEqual(JSON.parse(rawResponse!), terminal.details.taskResponse);
-		assert.match(text(terminal), /Output of task-[\w-]+ \(completed, \d+ bytes\):\nFull output: /);
-		const response = terminal.details.taskResponse;
-		assert.ok(response?.kind === "parallel");
-		assert.deepEqual(
-			response.slots.map(({ outcome }) => {
-				assert.ok(outcome.kind === "admitted" && outcome.observation.kind === "settled");
-				return outcome.observation.result.kind;
-			}),
-			["cancelled", "completed"],
-		);
-		assert.equal(terminal.details.taskRecords?.length, 2);
+		assert.match(text(await call("wait-first", { action: "wait", id: ids[0]! })), /Killed.*cannot be resumed/);
+		const completed = await call("wait-second", { action: "wait", id: ids[1]! });
+		assert.match(text(completed), /Output of task-[\w-]+ \(completed, \d+ bytes\):\nFull output: /);
 	} finally {
 		gate.resolve();
 		await host.close("session-close");
-		await launch;
 	}
 });
 
@@ -495,7 +567,6 @@ test("owner foreground parallel cancellation preserves sibling execution and raw
 			const launched = await call({
 				tasks: Array.from({ length: 5 }, (_, index) => ({ agent: "qa-echo", task: `hold ${index}` })),
 				concurrency: 5,
-				wait: { kind: "background" },
 				artifacts: false,
 			});
 			const response = launched.details.taskResponse;

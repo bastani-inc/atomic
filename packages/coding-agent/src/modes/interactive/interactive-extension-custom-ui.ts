@@ -415,8 +415,7 @@ InteractiveModeBase.prototype.showExtensionError = function (
 	stack?: string,
 ): void {
 	const errorMsg = `Extension "${extensionPath}" error: ${error}`;
-	const errorText = new Text(theme.fg("error", errorMsg), 1, 0);
-	this.chatContainer.addChild(errorText);
+	const rows: Component[] = [new Text(theme.fg("error", errorMsg), 1, 0)];
 	if (stack) {
 		// Show stack trace in dim color, indented
 		const stackLines = stack
@@ -425,8 +424,16 @@ InteractiveModeBase.prototype.showExtensionError = function (
 			.map((line) => theme.fg("dim", `  ${line.trim()}`))
 			.join("\n");
 		if (stackLines) {
-			this.chatContainer.addChild(new Text(stackLines, 1, 0));
+			rows.push(new Text(stackLines, 1, 0));
 		}
+	}
+	if (this.deferredStartupPending || this.initialStartupBinding) {
+		// Startup redraws the transcript once it finishes; the startup notices it keeps hold the error, as
+		// `showExtensionNotify` does for warnings.
+		for (const row of rows) this.startupNoticesContainer.addChild(row);
+	} else {
+		for (const row of rows) this.chatContainer.addChild(row);
+		this.restartExtensionErrors?.push(...rows);
 	}
 	this.ui.requestRender();
 };

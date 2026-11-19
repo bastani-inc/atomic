@@ -107,10 +107,6 @@ function panelOf(items: AgentPanelItem[]) {
 	};
 }
 
-const settle = async () => {
-	for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve));
-};
-
 describe("a run blocked on a stage whose session store stays unreachable (#5490)", () => {
 	test("reads as paused in the panel, naming the stage and the reason (#5490)", async () => {
 		const item = await blockedRunItem();
@@ -123,17 +119,21 @@ describe("a run blocked on a stage whose session store stays unreachable (#5490)
 	test("rests like a paused subagent in the engine's ranking, the panel model and both hosts' hints (#5490)", async () => {
 		const blocked = await blockedRunItem();
 		const panel = panelOf([blocked, stoppedAgent, runningAgent]);
-		let hostCounts: AgentPanelCounts | undefined;
+		let nextCounts = Promise.withResolvers<AgentPanelCounts>();
 		// What the isolated engine sends its host, as the host reads it.
 		const dispose = bindAgentPanel(panel.session, { setWidget() {}, requestRender() {} } as never, (counts) => {
 			const message = parseInteractiveEngineMessage(
 				serializeInteractiveEngineMessage({ type: "engine_agent_panel_state", ...counts }).trim(),
 			);
 			assert.ok(message?.type === "engine_agent_panel_state");
-			hostCounts = engineAgentPanelCounts(message);
+			nextCounts.resolve(engineAgentPanelCounts(message));
 		});
 		try {
-			await settle();
+			const active = await nextCounts.promise;
+			assert.deepEqual(
+				mainComposerHintSegments(keybindings, () => active),
+				["↓ 2 agents", "? keys"],
+			);
 			assert.deepEqual(
 				new Set(panel.ids()),
 				new Set([blocked.id, "ext:stopped", "ext:live"]),
@@ -145,17 +145,22 @@ describe("a run blocked on a stage whose session store stays unreachable (#5490)
 				new Set(panel.ids()),
 			);
 
+			nextCounts = Promise.withResolvers<AgentPanelCounts>();
 			panel.set([blocked, stoppedAgent]);
-			await settle();
+			const hostCounts = await nextCounts.promise;
 			assert.deepEqual(panel.ids(), [], "nothing runs: the blocked run and the stopped subagent leave");
 			assert.deepEqual(
 				model.rows([blocked, stoppedAgent]).map((row) => row.id),
 				[],
 			);
-			assert.deepEqual(mainComposerHintSegments(keybindings, panel.session), ["? keys"], "in process");
 			assert.deepEqual(
-				mainComposerHintSegments(keybindings, () => hostCounts!),
-				["? keys"],
+				mainComposerHintSegments(keybindings, panel.session),
+				["/workflows to see runs", "? keys"],
+				"in process",
+			);
+			assert.deepEqual(
+				mainComposerHintSegments(keybindings, () => hostCounts),
+				["/workflows to see runs", "? keys"],
 				"isolated host",
 			);
 		} finally {

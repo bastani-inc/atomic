@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { Container, type TUI } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import { exportFromFile } from "../../packages/coding-agent/src/core/export-html/index.js";
 import type { ToolDefinition, ToolRenderers } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -24,6 +28,7 @@ import {
 	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
 import { RemoteToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive-engine/remote-renderer.js";
+import { openExportedPage } from "../../packages/coding-agent/test/helpers/exported-page.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import {
 	renderSubagentToolCall,
@@ -382,6 +387,47 @@ test("an expanded launch card shows the child's own saved transcript (#3760)", a
 	await store.close();
 });
 
+test("a standalone card with a reused task ID reports missing history without reading another owner's session (#5658)", async () => {
+	initTheme("dark", false);
+	const dir = mkdtempSync(join(tmpdir(), "atomic-file-only-child-"));
+	const store = new MemorySessionStore();
+	try {
+		const foreign = await SessionManager.create(store, dir);
+		const child = await SessionManager.create(store, dir);
+		const taskId = "task-file-only";
+		await new TranscriptBuilder(foreign, dir).record({
+			childId: "foreign-run:0",
+			runId: "foreign-run",
+			task: "Private foreign task",
+			taskId,
+			state: "terminal",
+			terminalStatus: "paused",
+			childSessionId: child.getSessionId(),
+		});
+		bindSubagentChildCards({ sessionManager: foreign });
+		const parent = await SessionManager.create(store, dir);
+		await new TranscriptBuilder(parent, dir).launch("file-only-child", taskId);
+		const file = join(dir, "parent.jsonl");
+		writeFileSync(
+			file,
+			`${[parent.getHeader(), ...parent.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+		const load = vi.spyOn(store, "load");
+		const page = openExportedPage(await exportFromFile(file, join(dir, "out.html")));
+		const card = page.getElementById("tool-call-call-1");
+		assert.ok(card);
+		assert.doesNotMatch(card.textContent ?? "", /Private foreign task|Paused/);
+		assert.match(
+			card.querySelector(".output-full")?.textContent ?? "",
+			/Child history is not included in this export/,
+		);
+		assert.deepEqual(load.mock.calls, [], "export must not open another owner's or child's session");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		await store.close();
+	}
+});
+
 test("an expanded card of a running child shows messages it saves after the card first read its transcript (#3760 run control)", async () => {
 	initTheme("dark");
 	const store = new MemorySessionStore();
@@ -667,6 +713,7 @@ function isolatedEngineHost(manager: SessionManager, subagentRenderer: ToolRende
 	service.bindSession(engineSession as unknown as AgentSession);
 	let resourcesLoaded = () => {};
 	const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+		onGenerationEnded: () => () => {},
 		onEngineMessage: (listener: (message: InteractiveEngineMessage) => void) => {
 			listeners.push(listener);
 			return () => listeners.splice(listeners.indexOf(listener), 1);

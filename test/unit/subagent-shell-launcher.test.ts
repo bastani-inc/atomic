@@ -202,7 +202,6 @@ test(
 				getChildSessionOptions: (base) => ({ ...childOptions(base), parentCommandTaskOwner }),
 				index: 0,
 			},
-			wait: { kind: "background" },
 			runtime: { runSync },
 		});
 		assert.equal(response.kind, "admitted");

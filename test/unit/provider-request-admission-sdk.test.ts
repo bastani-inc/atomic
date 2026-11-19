@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +21,7 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import { wrapCodexFastRouteFetch } from "../../packages/coding-agent/src/core/fast-model-routing-transport.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import {
+	applyProviderRateLimitObservation,
 	configureProviderRequestBudget,
 	setProviderRequestGate,
 	tryAdmitProviderRequest,
@@ -47,6 +49,12 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+/**
+ * A queued caller with a signal takes its slot after due deadlines. Under fake timers, that turn comes one tick after
+ * the slot opens (#5604).
+ */
+const takeOpenedSlot = (): Promise<unknown> => vi.advanceTimersByTimeAsync(1);
+
 test("SDK HTTP timeout starts after admission rather than while queued (#3864)", async () => {
 	configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: 1000 });
 	assert.equal(tryAdmitProviderRequest(model.provider), 0);
@@ -69,6 +77,7 @@ test("SDK HTTP timeout starts after admission rather than while queued (#3864)",
 	await vi.advanceTimersByTimeAsync(999);
 	assert.equal(dispatches, 0);
 	await vi.advanceTimersByTimeAsync(1);
+	await takeOpenedSlot();
 	const message = await result;
 	assert.equal(message.stopReason, "stop", message.errorMessage);
 	assert.equal(dispatches, 1);
@@ -103,6 +112,7 @@ test("Anthropic HTTP timeout starts after admission rather than while queued (#3
 	await vi.advanceTimersByTimeAsync(999);
 	assert.equal(dispatches, 0);
 	await vi.advanceTimersByTimeAsync(1);
+	await takeOpenedSlot();
 	const message = await result;
 	assert.equal(message.stopReason, "stop", message.errorMessage);
 	assert.equal(dispatches, 1);
@@ -213,6 +223,7 @@ test.each(["openai-completions", "anthropic-messages"] as const)(
 		await vi.advanceTimersByTimeAsync(899);
 		assert.equal(dispatches, 0);
 		await vi.advanceTimersByTimeAsync(1);
+		await takeOpenedSlot();
 		assert.equal(dispatches, 1);
 		await vi.advanceTimersByTimeAsync(20);
 		assert.match((await timedOut).errorMessage!, /timed out/i);
@@ -323,6 +334,12 @@ function codexResponse(): Response {
 	});
 }
 
+/**
+ * A slot that frees only long after any test's time budget. A request queued behind it can end its wait only through its
+ * caller's deadline or cancellation, however long a loaded runner takes to get the request into the queue (#5604).
+ */
+const heldSlotMs = 10 * 60_000;
+
 const headerTimeoutTransports = [
 	{
 		name: "mistral-conversations",
@@ -369,8 +386,8 @@ describe.each(headerTimeoutTransports)("$name header timeout admission (#3864)",
 	beforeEach(() => vi.useRealTimers());
 	afterEach(() => configureProviderRequestBudget(requestModel.provider, undefined));
 
-	function queueBehindExhaustedBudget(): void {
-		configureProviderRequestBudget(requestModel.provider, { maxRequests: 1, intervalMs });
+	function queueBehindExhaustedBudget(slotMs = intervalMs): void {
+		configureProviderRequestBudget(requestModel.provider, { maxRequests: 1, intervalMs: slotMs });
 		assert.equal(tryAdmitProviderRequest(requestModel.provider), 0);
 	}
 
@@ -412,7 +429,7 @@ describe.each(headerTimeoutTransports)("$name header timeout admission (#3864)",
 		],
 		["a caller deadline", () => AbortSignal.timeout(timeoutMs * 2)],
 	])("%s is honored while queued", async (_name, createSignal) => {
-		queueBehindExhaustedBudget();
+		queueBehindExhaustedBudget(heldSlotMs);
 		let dispatches = 0;
 		const admission = await admitProviderStream(
 			requestModel,
@@ -489,12 +506,14 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 		return runtime;
 	}
 
-	function exhaustBudget(): void {
-		configureProviderRequestBudget(codexPriorityModel.provider, { maxRequests: 1, intervalMs });
+	function exhaustBudget(slotMs = intervalMs): void {
+		configureProviderRequestBudget(codexPriorityModel.provider, { maxRequests: 1, intervalMs: slotMs });
 		assert.equal(tryAdmitProviderRequest(codexPriorityModel.provider), 0);
 	}
 
 	test("dispatches once after the queue wait with routing applied", async () => {
+		// The runtime exists before the slot is taken, so the request still waits in the queue when runtime creation is slow.
+		const runtime = await createRuntime();
 		exhaustBudget();
 		const start = Date.now();
 		const dispatches: { afterMs: number; headers: Headers }[] = [];
@@ -502,7 +521,6 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 			dispatches.push({ afterMs: Date.now() - start, headers: new Headers(init?.headers) });
 			return codexResponse();
 		}, globalThis.fetch);
-		const runtime = await createRuntime();
 		const message = await runtime.completeSimple(codexPriorityModel, context, {
 			fetch: fetcher,
 			transport: "sse",
@@ -528,13 +546,13 @@ describe("runtime Codex SSE routing keeps admission ahead of the header timeout 
 		],
 		["a caller deadline", () => AbortSignal.timeout(timeoutMs * 2)],
 	])("%s is honored while queued", async (_name, createSignal) => {
-		exhaustBudget();
+		const runtime = await createRuntime();
+		exhaustBudget(heldSlotMs);
 		let dispatches = 0;
 		const fetcher: typeof fetch = Object.assign(async () => {
 			dispatches++;
 			return codexResponse();
 		}, globalThis.fetch);
-		const runtime = await createRuntime();
 		const message = await runtime.completeSimple(codexPriorityModel, context, {
 			fetch: fetcher,
 			signal: createSignal(),
@@ -600,4 +618,162 @@ test("a request waits on the process's request gate after its own admission, wit
 	open();
 	await sent;
 	assert.equal(dispatches, 1);
+});
+
+/** Keeps the process busy, as a loaded host does, so no timer can run until `until`. */
+function keepProcessBusyUntil(until: number): void {
+	const blocked = new Int32Array(new SharedArrayBuffer(4));
+	while (Date.now() < until) Atomics.wait(blocked, 0, 0, until - Date.now());
+}
+
+test("an already queued request keeps its opened slot when a later request arrives in the same timer pass (#5604)", async () => {
+	vi.useRealTimers();
+	const received: string[] = [];
+	const server = createServer((request, response) => {
+		received.push(request.url!);
+		response.end("ok");
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		const address = server.address();
+		assert.ok(address && typeof address !== "string");
+		const url = `http://127.0.0.1:${address.port}`;
+		const { options } = await admitProviderStream(model, {}, false);
+		const slotMs = 100;
+		configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
+		assert.equal(tryAdmitProviderRequest(model.provider), 0);
+		const queued = options.fetch!(`${url}/queued`, { signal: new AbortController().signal });
+		const newcomer = new Promise<Response>((resolve) =>
+			setTimeout(() => resolve(options.fetch!(`${url}/new`)), slotMs + 10),
+		);
+		// By the time timers run, the old caller's slot has opened and the later arrival is due too.
+		keepProcessBusyUntil(Date.now() + slotMs + 25);
+		await Promise.all([queued, newcomer].map(async (request) => (await request).text()));
+		assert.deepEqual(received, ["/queued", "/new"]);
+	} finally {
+		await server[Symbol.asyncDispose]();
+	}
+});
+
+test("a model's cooldown does not defer a request to an unrestricted sibling model (#5604)", async () => {
+	applyProviderRateLimitObservation({
+		provider: model.provider,
+		model: model.id,
+		kind: "cooldown",
+		untilEpochMs: Date.now() + 100,
+	});
+	const received: string[] = [];
+	const invoke = async (id: string, signal?: AbortSignal) => {
+		const admission = await admitProviderStream({ ...model, id }, { signal }, true);
+		admission.run(() => received.push(id));
+	};
+	const waiting = invoke(model.id, new AbortController().signal);
+	setTimeout(() => void invoke("other"), 100);
+	await vi.advanceTimersByTimeAsync(100);
+	assert.ok(received.includes("other"), "the unrestricted request should already have started");
+	await takeOpenedSlot();
+	await waiting;
+});
+
+test("a caller deadline that is due when a busy process reaches the freed slot wins over the slot (#5604)", async () => {
+	vi.useRealTimers();
+	const slotMs = 50;
+	configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
+	assert.equal(tryAdmitProviderRequest(model.provider), 0);
+	let dispatches = 0;
+	const fetcher: typeof fetch = Object.assign(async () => {
+		dispatches++;
+		return new Response("{}", { status: 200 });
+	}, globalThis.fetch);
+	const admitted = await admitProviderStream(model as Model<Api>, { fetch: fetcher }, false);
+	const deadlineMs = slotMs + 10;
+	const createdAt = Date.now();
+	const deadline = AbortSignal.timeout(deadlineMs);
+	const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: deadline });
+	// The request is queued for the slot. The process stays busy until both the slot and the deadline are due, so
+	// both come due in the same timer pass: the deadline must win, and the request must never start.
+	keepProcessBusyUntil(createdAt + deadlineMs + 20);
+	await assert.rejects(sent, { name: "TimeoutError" });
+	assert.equal(dispatches, 0);
+});
+
+test("a caller deadline in the same millisecond as the slot wins every time on a busy process (#5604)", async () => {
+	vi.useRealTimers();
+	const slotMs = 20;
+	const attempts = 60;
+	let dispatches = 0;
+	const fetcher: typeof fetch = Object.assign(async () => {
+		dispatches++;
+		return new Response("{}", { status: 200 });
+	}, globalThis.fetch);
+	const admitted = await admitProviderStream(model as Model<Api>, { fetch: fetcher }, false);
+	const outcomes: string[] = [];
+	for (let attempt = 0; attempt < attempts; attempt++) {
+		configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: slotMs });
+		const slotOpensAt = Date.now() + slotMs;
+		assert.equal(tryAdmitProviderRequest(model.provider), 0);
+		const caller = new AbortController();
+		const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: caller.signal }).then(
+			() => "dispatched",
+			(error: unknown) => (error as Error).name,
+		);
+		// The request is queued. The caller sets its deadline a little later for the millisecond the slot opens, so the
+		// slot's wake-up and the deadline are separate timers that come due together.
+		keepProcessBusyUntil(slotOpensAt - slotMs / 2);
+		const deadlineSetAt = Date.now();
+		const deadline = AbortSignal.timeout(Math.max(1, slotOpensAt - deadlineSetAt));
+		deadline.addEventListener("abort", () => caller.abort(deadline.reason), { once: true });
+		// The process stays busy until both are due, so both come due in the same timer pass.
+		keepProcessBusyUntil(Math.max(slotOpensAt, deadlineSetAt + 1) + 10);
+		outcomes.push(await sent);
+		configureProviderRequestBudget(model.provider, undefined);
+	}
+	assert.deepEqual(outcomes, Array(attempts).fill("TimeoutError"));
+	assert.equal(dispatches, 0);
+});
+
+test("a caller deadline in the very millisecond the slot opens wins over the slot when the process is on time (#5604)", async () => {
+	configureProviderRequestBudget(model.provider, { maxRequests: 1, intervalMs: 1000 });
+	assert.equal(tryAdmitProviderRequest(model.provider), 0);
+	let dispatches = 0;
+	const fetcher: typeof fetch = Object.assign(async () => {
+		dispatches++;
+		return new Response("{}", { status: 200 });
+	}, globalThis.fetch);
+	const admitted = await admitProviderStream(model as Model<Api>, { fetch: fetcher }, false);
+	const caller = new AbortController();
+	const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: caller.signal });
+	// The caller's deadline falls in the millisecond the slot opens, and its timer runs right after the slot's wake-up.
+	setTimeout(() => caller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), 1000);
+	const outcome = assert.rejects(sent, { name: "TimeoutError" });
+	await vi.advanceTimersByTimeAsync(1000);
+	await outcome;
+	assert.equal(dispatches, 0);
+});
+
+test("a request whose caller gives up while the request gate answers is never dispatched (#5604)", async () => {
+	let answer!: () => void;
+	// Like a fleet coordinator whose answer is already on its way when the caller gives up: the gate still resolves.
+	setProviderRequestGate(async () => {
+		await new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+	});
+	let dispatches = 0;
+	const fetcher: typeof fetch = Object.assign(async () => {
+		dispatches++;
+		return new Response("{}", { status: 200 });
+	}, globalThis.fetch);
+	const controller = new AbortController();
+	const admitted = await admitProviderStream(
+		model as Model<Api>,
+		{ fetch: fetcher, signal: controller.signal },
+		false,
+	);
+	const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: controller.signal });
+	await vi.advanceTimersByTimeAsync(0);
+	controller.abort();
+	answer();
+	await assert.rejects(sent, { name: "AbortError" });
+	assert.equal(dispatches, 0);
 });

@@ -161,8 +161,8 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a fleet controller adds no host the fleet-wide rate limits cannot feed, records why, and grows once they can (#4768)",
-	async () => {
+	"a fleet controller adds no host the fleet-wide rate limits cannot feed, records why, and grows once they can (#4768, #5673)",
+	async ({ onTestFinished }) => {
 		const journal = await resolveRunJournal({ journal: selection(), agentDir: join(directory, "agent") });
 		journals.push(journal);
 		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
@@ -204,8 +204,7 @@ test.skipIf(process.platform === "win32")(
 		if (!seeded.held) assert.fail("seed controller lease was not acquired");
 		await store.carryDrain({ holder: "seed", epoch: seeded.epoch }, "h-draining", "vm-draining");
 		await store.release({ holder: "seed", epoch: seeded.epoch });
-		let saturated = true;
-		usage.next = bucketReadings(() => (saturated ? LIMIT_PER_MINUTE / 2 : LIMIT_PER_MINUTE / 20));
+		usage.next = bucketReadings(() => LIMIT_PER_MINUTE / 2);
 		const hosts: ProvisionedHost[] = [
 			{ id: "vm-1", state: "running", since: 0 },
 			{ id: "vm-draining", state: "running", since: 0 },
@@ -214,6 +213,7 @@ test.skipIf(process.platform === "win32")(
 			{ id: "vm-stopped", state: "stopped", since: 0 },
 		];
 		const targets: number[] = [];
+		const scaled = Promise.withResolvers<void>();
 		const provisioner: WorkerHostProvisioner = {
 			kind: "fake",
 			async list() {
@@ -221,6 +221,7 @@ test.skipIf(process.platform === "win32")(
 			},
 			async scaleTo(target) {
 				targets.push(target);
+				scaled.resolve();
 				while (hosts.length < target)
 					hosts.push({ id: `vm-${hosts.length + 1}`, state: "pending", since: Date.now() });
 			},
@@ -229,6 +230,12 @@ test.skipIf(process.platform === "win32")(
 				if (index >= 0) hosts.splice(index, 1);
 			},
 		};
+		// Run the next scheduled pass without charging time spent waiting for real journal I/O to its lease.
+		vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+		vi.setTimerTickMode("nextTimerAsync");
+		onTestFinished(() => {
+			vi.useRealTimers();
+		});
 		const running = await startWorkflowFleetController({
 			journal: selection(),
 			agentDir: join(directory, "controller"),
@@ -236,11 +243,14 @@ test.skipIf(process.platform === "win32")(
 			tickMs: TICK_MS,
 			workersPerHost: 4,
 			scaleUpQueueDepth: 0,
-			scaleUpDelayMs: 10 * TICK_MS,
+			scaleUpDelayMs: TICK_MS,
 		});
 		controllers.push(running);
-		await until("the rate cap", () => running.status().rateCapHosts !== undefined);
-		await sleep(20 * TICK_MS);
+		// The warm-up and measured cap are recorded on different passes, beyond the one-tick growth delay.
+		await until(
+			"the measured rate cap",
+			async () => (await store.recent(20)).filter((e) => e.kind === "rate-cap").length >= 2,
+		);
 		assert.deepEqual(targets, [], "a saturated limit holds the fleet at the hosts it feeds");
 		assert.deepEqual([running.status().target, running.status().rateCapHosts], [1, 1]);
 		const capped = (await store.recent(20)).filter((event) => event.kind === "rate-cap");
@@ -261,9 +271,8 @@ test.skipIf(process.platform === "win32")(
 			capped[1]!.reason,
 		);
 
-		saturated = false;
 		usage.next = bucketReadings(() => LIMIT_PER_MINUTE / 20);
-		await until("a scale-up once the limit feeds more hosts", () => targets.length > 0);
+		await scaled.promise;
 		assert.deepEqual(targets, [6]);
 		await until("the cap's release to be recorded", async () =>
 			(await store.recent(20)).some(

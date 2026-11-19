@@ -500,13 +500,12 @@ export function killTrackedDetachedChildren(): void {
  * Once it was, the root's pid may already name another process: on POSIX only its process group, which lives on only
  * while its descendants do, is signalled, and on Windows nothing is killed by pid. While the root runs, its tree is
  * killed and then the root itself through its handle, which on Windows also ends a root that taskkill could not.
+ * A child that never started (no pid) has nothing to kill: Node reports its failure as an `error` event, and on
+ * Windows its `kill()` throws.
  */
 export function killChildProcessTree(child: ChildProcess, exited: boolean): void {
 	const pid = child.pid;
-	if (pid === undefined) {
-		child.kill("SIGKILL");
-		return;
-	}
+	if (pid === undefined) return;
 	if (pid === process.pid) {
 		if (process.platform !== "win32") child.kill("SIGKILL");
 		return;

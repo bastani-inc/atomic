@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
@@ -110,7 +110,7 @@ test("agent panel reuses ranked task metadata across activity updates and refres
 		assert.equal(taskReads, 0, "metrics-only updates must refresh visible values without rescanning tasks");
 		assert.equal(previousTasks[0], previousFirst, "a previously returned task list must remain unchanged");
 		await fixture.settle(0);
-		assert.ok(taskReads > 0, "settlement must invalidate the ranked panel tasks");
+		await vi.waitFor(() => assert.ok(taskReads > 0, "settlement must invalidate the ranked panel tasks"));
 	} finally {
 		release();
 		await fixture.dispose();

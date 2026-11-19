@@ -1,5 +1,7 @@
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import { describe, test } from "vitest";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { StageSessionHolds } from "../../packages/workflows/src/runs/foreground/stage-session-holds.js";
 import {
 	assert,
 	createStore,
@@ -35,6 +37,70 @@ function rendered(view: StageChatView): string {
 }
 
 describe("StageChatView compaction fault containment", () => {
+	test.each(["/compact", "!pwd"])(
+		"%s cannot write through a stage chat reserved for resume while it was attaching (#5559)",
+		async (command) => {
+			const store = createStore();
+			setupRun(store, "run-1", "stage-a", "completed");
+			const registry = createStageControlRegistry();
+			const entered = Promise.withResolvers<void>();
+			const attached = Promise.withResolvers<void>();
+			let writes = 0;
+			const agentSession = Object.assign(fakeFooterAgentSession(false), {
+				compact: async () => {
+					writes++;
+				},
+				executeBash: async () => {
+					writes++;
+					return { output: "", exitCode: 0, cancelled: false, truncated: false };
+				},
+			});
+			const { handle: base } = makeHandle(undefined, [], "completed", agentSession);
+			const handle = {
+				...base,
+				async ensureAttached() {
+					entered.resolve();
+					await attached.promise;
+				},
+				releaseGate: {
+					chatHolds: new StageSessionHolds(),
+					idle: () => false,
+					holdsTaken: () => 0,
+					onHoldLifted: () => () => {},
+					savedForReopen: async () => undefined,
+				},
+			};
+			registry.register(handle);
+			const view = new StageChatView({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "test",
+				handle,
+				onClose: () => {},
+				onDetach: () => {},
+			});
+			try {
+				submitStageChatText(view, command);
+				await entered.promise;
+				const finish = registry.reserveStageChats?.([handle]);
+				try {
+					attached.resolve();
+					await flush();
+					await flush();
+					assert.equal(writes, 0);
+				} finally {
+					finish?.();
+				}
+			} finally {
+				attached.resolve();
+				view.dispose();
+				await registry.clear();
+			}
+		},
+	);
+
 	test("cancelled /compact remains usable and can be retried", async () => {
 		let compactCalls = 0;
 		let abortCompactionCalls = 0;

@@ -8,6 +8,7 @@ import { type RunJournalSettings, runJournalOrigin } from "../durable/journal/re
 import { isShardedRunJournal, rootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
+import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { WorkflowAdmissionConfigError } from "./admission-errors.js";
 import { admissionBootIdentity } from "./admission-host.js";
 import type { SharedPoolCoordination } from "./coordinator-protocol.js";
@@ -463,6 +464,7 @@ async function sharedJournal(journal: RunJournal | undefined): Promise<PoolDurab
 export async function activatePublicPool(
 	backend: DurableWorkflowBackend,
 	options: RunOpts,
+	resumingChats?: StageControlRegistry,
 ): Promise<LocalWorkerPool | undefined> {
 	if (!options.localWorkers && !options.admission && !options.workers) return;
 	const placement = sharedPlacement(options);
@@ -612,6 +614,7 @@ export async function activatePublicPool(
 			? {}
 			: { maxWorkerRssBytes: options.localWorkers.maxWorkerRssBytes }),
 		...(options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
+		resumingChats,
 		// The host attaches through its own resolver; an SDK caller's registry gets pooled handles.
 		...(options.stageControlRegistry === undefined || options[hostWorkerBindings]
 			? {}

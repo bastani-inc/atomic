@@ -105,7 +105,6 @@ function openSubagentInspector(options: {
 		recentActivity: () => [],
 		activityOmitted: () => false,
 		subscribe: () => () => {},
-		foregroundTask: async () => ({ ok: true, value: { kind: "running" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,
 		writeTaskInput: async () => ({ ok: true, value: { acceptedBytes: 0 } }),

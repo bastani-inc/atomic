@@ -17,7 +17,6 @@ import {
 	createAssistantMessageEventStream,
 	getModel,
 	type Message,
-	type ToolResultMessage,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
@@ -27,7 +26,7 @@ import { AuthStorage, ModelRuntime } from "../../packages/coding-agent/src/index
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import { createForkContextResolver, forkLaunchOfTasks } from "../../packages/subagents/src/shared/fork-context.js";
+import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { wrapForkTask } from "../../packages/subagents/src/shared/types-runtime.js";
 
 /**
@@ -160,11 +159,7 @@ async function forkFixture(reply: Reply) {
 	const persistedAssistantTurns = [settledAnswer, inFlightTurn];
 
 	const runForkedChildren = async () => {
-		const resolver = createForkContextResolver(
-			parentManager,
-			"fork",
-			forkLaunchOfTasks(["call_subagent", "call_subagent"], "call_subagent"),
-		);
+		const resolver = createForkContextResolver(parentManager, "fork");
 		return Promise.all(
 			[0, 1].map(async (index) =>
 				runSingleInProcess(cwd, worker(cwd), wrapForkTask(`task ${index}`), {
@@ -229,7 +224,7 @@ test(
 );
 
 test(
-	"a forked child replays the parent's in-flight turn unchanged and answers its call, so its own turn runs (#3987, #5481)",
+	"a forked child never replays the parent's in-flight turn in modified form, so its own turn runs (#3987)",
 	async () => {
 		// The provider applies the Anthropic rule for signed thinking: the latest assistant
 		// message must come back exactly as the provider produced it, or the request is a 400.
@@ -243,22 +238,14 @@ test(
 		const results = await fixture.runForkedChildren();
 
 		assert.equal(fixture.requests.length, 2);
-		const [inFlightTurn] = fixture.persistedAssistantTurns.slice(-1);
-		const answers = fixture.requests.map((request) => {
-			const launching = request.findIndex(
-				(message) => message.role === "assistant" && sameContent(message, inFlightTurn!),
+		for (const request of fixture.requests) {
+			const callIds = request.flatMap((message) =>
+				message.role === "assistant"
+					? message.content.flatMap((block) => (block.type === "toolCall" ? [block.id] : []))
+					: [],
 			);
-			assert.notEqual(launching, -1, "the child's request holds the parent's in-flight turn unchanged");
-			const results = request
-				.slice(launching + 1)
-				.filter((message): message is ToolResultMessage => message.role === "toolResult");
-			assert.deepEqual(
-				results.map((result) => result.toolCallId),
-				["call_subagent"],
-			);
-			return (results[0]!.content[0] as { text: string }).text;
-		});
-		assert.deepEqual(answers.map((answer) => answer.match(/forked child (\d) of 2/)?.[1]).sort(), ["1", "2"]);
+			assert.deepEqual(callIds, [], "the parent's in-flight subagent call is not the child's history");
+		}
 		for (const result of results) {
 			assert.equal(result.status, "ok", JSON.stringify(result));
 			assert.equal(result.finalOutput, CHILD_OUTPUT);

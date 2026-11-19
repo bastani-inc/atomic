@@ -156,6 +156,8 @@ async function runScenario(
 			ATOMIC_CODING_AGENT_SESSION_DIR: join(root, "sessions"),
 			ATOMIC_EVENT_LOOP_BLOCK_MS: String(BLOCK_THRESHOLD_MS),
 			ATOMIC_EVENT_LOOP_BLOCK_LOG: log,
+			// Measure normal responsiveness without a debugger pausing the process being measured.
+			ATOMIC_EVENT_LOOP_BLOCK_STACKS: "0",
 			ATOMIC_OFFLINE: "1",
 			ATOMIC_PACKAGE_DIR: packageDir,
 			ATOMIC_SKIP_VERSION_CHECK: "1",
@@ -185,6 +187,11 @@ async function runScenario(
 		if (exited === undefined)
 			assert.fail(`${name}: still running ${EXIT_BUDGET_MS} ms after /quit. Screen:\n${program.screen()}`);
 		const records = await waitForRecords(log, quitRecorded, EXIT_BUDGET_MS, `${name}: quit records`, program);
+		for (const role of ["host", "engine"] as const) {
+			const started = records.find((record) => record.type === "start" && record.role === role);
+			assert.ok(started?.type === "start");
+			assert.equal(started.stacks, "disabled", `${name}: ${role} must not use an intrusive stack sampler`);
+		}
 		const delays = (role: ProcessRole): ProcessDelays => ({
 			startup: delayOf(records, role, "startup") as DelayRecord,
 			session: delayOf(records, role, "session") as DelayRecord,

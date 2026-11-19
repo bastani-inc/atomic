@@ -47,7 +47,12 @@ import type {
 import { cleanupFailedStageSessionBinding } from "../runs/foreground/stage-runner-session.js";
 import { setAgentSessionAdapterDefaultCwd } from "../runs/foreground/stage-runner-session-options.js";
 import { resolveStageGroup, stageHasIntercomAccess } from "../shared/intercom-group.js";
-import { currentStageUiBroker, type StageDialogRequest, type StageUiBroker } from "../shared/stage-ui-broker.js";
+import {
+	currentStageUiBroker,
+	type StageDialogRequest,
+	type StageUiBroker,
+	stageRouteIsCurrent,
+} from "../shared/stage-ui-broker.js";
 import type { StageExecutionMeta, StageOptions } from "../shared/types.js";
 import type { PiCodingAgentSdk, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
@@ -126,6 +131,7 @@ type LateStageMessageEvent = {
 	workflowRunId: string;
 	workflowStageId: string;
 	workflowStageName: string;
+	assertCurrentStage?: () => void;
 	options?: Parameters<StageLateMessageRouter["routeMessage"]>[1];
 };
 
@@ -341,8 +347,24 @@ function emitLateIntercomRoute(
 	options: LateStageMessageEvent["options"] | undefined,
 	batch: boolean,
 ): Promise<void> | undefined {
-	if (!messages.some((message) => message.customType === "intercom_message") || !pi.events?.emit) return undefined;
+	if (!messages.some((message) => message.customType === "intercom_message")) return undefined;
+	const producer = meta.stageUiSignal;
+	const isAsk = messages.some(
+		(message) =>
+			message.customType === "intercom_message" &&
+			(message.details as { message?: { expectsReply?: boolean } } | undefined)?.message?.expectsReply === true,
+	);
+	const assertCurrentStage =
+		isAsk && producer
+			? () => {
+					if (!stageRouteIsCurrent(producer))
+						throw new Error("Intercom ask target is unavailable: the workflow stage was replaced.");
+				}
+			: undefined;
+	assertCurrentStage?.();
+	if (!pi.events?.emit) return undefined;
 	const event: LateStageMessageEvent = {
+		...(assertCurrentStage ? { assertCurrentStage } : {}),
 		handled: false,
 		messages,
 		options,
@@ -490,6 +512,11 @@ function makeStageExtensionUiContext(
 	holdsChildPrompts: boolean,
 	childInput: HostInput | undefined,
 ) {
+	const stageSignal = meta?.stageUiSignal
+		? meta.signal
+			? AbortSignal.any([meta.signal, meta.stageUiSignal])
+			: meta.stageUiSignal
+		: meta?.signal;
 	let questionnaireSessionId: string | undefined;
 	let questionnaireInput: StageQuestionnaireInput | undefined;
 	const stageUi: object = {
@@ -509,7 +536,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							descriptor,
-							stageDialogRequest(meta.signal, descriptor.kind, identity, answerWithHost),
+							stageDialogRequest(stageSignal, descriptor.kind, identity, answerWithHost),
 						),
 		[Symbol.for("atomic-coding-agent/stage-questionnaire@1")]:
 			meta === undefined
@@ -533,7 +560,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "select", message: title, choices },
-							stageDialogRequest(meta.signal, "select", options),
+							stageDialogRequest(stageSignal, "select", options),
 						);
 						return typeof value === "string" ? value : undefined;
 					},
@@ -545,7 +572,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "confirm", message: `${title}\n\n${message}` },
-							stageDialogRequest(meta.signal, "confirm", options),
+							stageDialogRequest(stageSignal, "confirm", options),
 						)) === true,
 		input:
 			meta === undefined
@@ -555,7 +582,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "input", message: placeholder ? `${title}\n\n${placeholder}` : title },
-							stageDialogRequest(meta.signal, "input", options),
+							stageDialogRequest(stageSignal, "input", options),
 						);
 						return typeof value === "string" ? value : undefined;
 					},
@@ -567,7 +594,7 @@ function makeStageExtensionUiContext(
 			meta === undefined
 				? (ui.setStatus ?? (() => undefined))
 				: (statusKey: string, text: string | undefined) =>
-						broker.setStageStatus(meta.runId, meta.stageId, statusKey, text),
+						broker.setStageStatus(meta.runId, meta.stageId, statusKey, text, meta.stageUiSignal),
 		setWorkingMessage: ui.setWorkingMessage ?? (() => undefined),
 		setWorkingVisible: ui.setWorkingVisible ?? (() => undefined),
 		setWorkingIndicator: ui.setWorkingIndicator ?? (() => undefined),
@@ -586,7 +613,7 @@ function makeStageExtensionUiContext(
 					meta.stageId,
 					factory,
 					options,
-					meta.signal,
+					stageSignal,
 					questionnaireSessionId,
 					questionnaireInput,
 				);
@@ -608,7 +635,7 @@ function makeStageExtensionUiContext(
 							meta.runId,
 							meta.stageId,
 							{ kind: "editor", message: title, initial },
-							stageDialogRequest(meta.signal, "editor", options),
+							stageDialogRequest(stageSignal, "editor", options),
 						);
 						return typeof value === "string" ? value : undefined;
 					},
@@ -761,7 +788,7 @@ export function buildRuntimeAdapters(
 					throw new Error("Workflow stage fallback model unavailable under inherited policy.");
 				const sessionOptions = withWorkflowStageSessionOptions(inheritedOptions, meta, pi);
 				// A replacement session (retry, fallback) starts without its predecessor's statuses.
-				if (meta !== undefined) broker.clearStageStatuses(meta.runId, meta.stageId);
+				if (meta !== undefined) broker.clearStageStatuses(meta.runId, meta.stageId, meta.stageUiSignal);
 				const stageUi = shouldBindStageUiContext(pi, meta)
 					? makeStageExtensionUiContext(
 							pi.ui ?? {},

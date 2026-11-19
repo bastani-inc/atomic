@@ -177,9 +177,11 @@ export function validateRunGroups(
 					owners.set(childRunId, draft);
 					continue;
 				}
+				const exited = isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId);
 				if (
-					!isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId) ||
-					index.childScopedEvidenceExists(draft.replayKey, childRunId)
+					(!exited && startedChildStatus(draft) === undefined) ||
+					// A child that failed or was skipped before any stage or tool may still have answered prompts (#5616).
+					index.childScopedEvidenceExists(draft.replayKey, childRunId, exited)
 				)
 					return false;
 				syntheticChildIds.add(childRunId);
@@ -257,8 +259,8 @@ export function isSyntheticExitedChild(
 }
 
 /**
- * Drop run groups the root cannot reach through live child links. Returns false when a dropped group is not
- * owned by a reachable failed or skipped boundary (or nested under one): only those settled subtrees are pruned
+ * Drop run groups the root cannot reach through confirmed child links. Returns false when a dropped group is not
+ * owned by a failed/skipped boundary without a recorded start (or nested under one): only those subtrees are pruned
  * by design; any other unreachable group means the checkpoint graph is incomplete.
  */
 export function retainReachableRunGroups(grouped: Map<string, StageDraft[]>, rootRunId: string): boolean {
@@ -291,15 +293,25 @@ export function retainReachableRunGroups(grouped: Map<string, StageDraft[]>, roo
 	return complete;
 }
 
+export function startedChildStatus(draft: StageDraft): RunSnapshot["status"] | undefined {
+	const boundary = draft.topology?.boundary;
+	return boundary?.event === "terminal" && (boundary.status === "failed" || boundary.status === "skipped")
+		? boundary.startedChildStatus
+		: undefined;
+}
+
 export function childRunIdFromDraft(draft: StageDraft): string | undefined {
 	const boundary = draft.topology?.boundary;
-	if (boundary !== undefined && (boundary.status === "failed" || boundary.status === "skipped")) return undefined;
+	if (boundary !== undefined && (boundary.status === "failed" || boundary.status === "skipped"))
+		return startedChildStatus(draft) === undefined ? undefined : boundary.child.runId;
 	return workflowChildFromDraft(draft)?.runId ?? boundary?.child.runId;
 }
 
 export function childRunStatus(owner: StageDraft): RunSnapshot["status"] {
 	const child = workflowChildFromDraft(owner);
 	if (child !== undefined) return child.status;
+	const started = startedChildStatus(owner);
+	if (started !== undefined) return started;
 	const status = owner.topology?.boundary?.status;
 	return status === "failed" || status === "skipped" || status === "completed" ? status : "running";
 }

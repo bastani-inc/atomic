@@ -51,6 +51,9 @@ vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
 useTemporaryAgentDir();
 
 afterEach(() => {
+	// Restoring alone keeps each spy and its implementation for the rest of the file, and these implementations hold the
+	// test's pool and claims: about 10 MB a test. Resetting first drops them.
+	vi.resetAllMocks();
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	transportHolder.notifications = undefined;

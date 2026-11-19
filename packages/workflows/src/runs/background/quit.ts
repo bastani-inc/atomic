@@ -15,6 +15,7 @@ import {
 } from "../../engine/run-tool-control-registry.js";
 import { WorkflowGracefulQuitError } from "../../engine/workflow-tool-abort.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
+import { generationAtPause } from "../../shared/run-generation.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { store as defaultStore } from "../../shared/store.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
@@ -440,6 +441,7 @@ async function markDurableQuit(
 		undefined,
 		undefined,
 		null,
+		generationAtPause(run),
 	);
 	if (!transitioned) return "refused";
 	// Persist the exact accumulated run elapsed at quit time so a later durable

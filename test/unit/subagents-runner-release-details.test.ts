@@ -47,8 +47,6 @@ function transcriptHooks(bound: TaskTranscriptSource[], cleanups: Array<Promise<
 		onExecution(execution) {
 			cleanups.push(execution.cleanup);
 		},
-		yieldTaskWait() {},
-		isParentObserving: () => false,
 	};
 }
 
@@ -177,8 +175,6 @@ test("a child whose task hooks do not take a transcript still settles (#4326)", 
 			signal: new AbortController().signal,
 			reportActivity() {},
 			onExecution() {},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		},
 		testSession: { output: "done" },
 	});

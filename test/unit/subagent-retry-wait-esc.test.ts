@@ -106,8 +106,6 @@ async function subagentWaitingToRetry(liveOptions: LiveChildOptions = {}) {
 			bound.subscribe?.((event) => events.push(event));
 		},
 		onExecution() {},
-		yieldTaskWait() {},
-		isParentObserving: () => false,
 	};
 	const options = env.options("retry-wait-esc", { signal: stop.signal, taskExecution: hooks });
 	const childSessionOptions = options.getChildSessionOptions!;

@@ -25,7 +25,7 @@ function selectedId(view: Component): string | undefined {
 }
 
 // Opens the Hugging Face search with each query's results held until the test resolves them.
-async function openSearch(): Promise<{
+async function openSearch(keybindings = new KeybindingsManager()): Promise<{
 	view: Component;
 	type: (text: string) => Promise<void>;
 	finishSearch: (query: string, results: HuggingFaceModel[]) => Promise<void>;
@@ -44,7 +44,7 @@ async function openSearch(): Promise<{
 	const ctx = {
 		ui: {
 			custom: (factory: (tui: TUI, th: typeof theme, kb: KeybindingsManager, done: () => void) => Component) => {
-				view = factory({ requestRender: () => {} } as unknown as TUI, theme, new KeybindingsManager(), () => {});
+				view = factory({ requestRender: () => {} } as unknown as TUI, theme, keybindings, () => {});
 				return Promise.resolve();
 			},
 			notify: () => {},
@@ -98,6 +98,11 @@ describe("llama.cpp Hugging Face search (pi #11810)", () => {
 		assert.equal(selectedId(view), "qwen/c-GGUF");
 		view.handleInput?.(ENTER);
 		assert.equal(await selected, "qwen/c-GGUF");
+	});
+
+	it("shows the configured slash key to go back (#5528)", async () => {
+		const { view } = await openSearch(new KeybindingsManager({ "tui.select.cancel": "/" }));
+		assert.ok(view.render(120).some((row) => stripAnsi(row).includes("/ back")));
 	});
 
 	it("selects the best match when the user did not browse", async () => {

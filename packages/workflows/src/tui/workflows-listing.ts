@@ -18,7 +18,7 @@ import {
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { displayRunStatus } from "../shared/display-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
@@ -219,13 +219,13 @@ export function runRowDescription(
 	run: RunSnapshot,
 	now: number,
 	question?: string,
-	status: RunSnapshot["status"] = effectiveRunStatus(run),
+	status: RunSnapshot["status"] = displayRunStatus(run),
 ): string {
 	if (question !== undefined)
 		return ["needs input", sanitizeToolTitleText(question), listingDuration(elapsedRunMs(run, now)), runCostText(run)]
 			.filter((part): part is string => part !== undefined && part !== "")
 			.join(" · ");
-	const state = runStateIndicator(run);
+	const state = runStateIndicator(run, status);
 	const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
 	const live = status === "running" || status === "pending" || status === "paused";
 	const reason = status === "failed" || status === "blocked" ? shortFailureReason(run) : undefined;
@@ -260,16 +260,18 @@ export function workflowsListingItems(
 	now = Date.now(),
 	invalidDefinitions: readonly WorkflowsListingInvalidDefinition[] = [],
 ): SelectorItem<WorkflowsListingTarget>[] {
+	// Reuse a marker the panel already read from this particular input, never a row at its former index.
+	const markers = new Map<RunSnapshot, Pick<RunSnapshot, "blockedAt">>();
 	const waiting = new Map(
-		panelItemsFromSnapshot(runs, now)
+		panelItemsFromSnapshot(runs, now, undefined, undefined, markers)
 			.filter((item) => item.state === "input")
 			.map((item) => [item.id, item.question ?? item.task] as const),
 	);
 	const runItems = [...topLevelWorkflowRuns(runs)]
 		.sort((a, b) => startedAtRank(b) - startedAtRank(a))
 		.map((run): SelectorItem<WorkflowsListingTarget> => {
-			const status = effectiveRunStatus(run);
-			const state = runStateIndicator(run);
+			const status = displayRunStatus(run, markers.get(run) ?? run);
+			const state = runStateIndicator(run, status);
 			const statusText = state?.kind === "quit" ? "quit" : RUN_STATUS_TEXT[status];
 			const question = waiting.get(`run:${run.id}`);
 			const label = inertDisplayLine(runRowLabel(run));

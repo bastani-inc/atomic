@@ -1,8 +1,16 @@
 import { stripVTControlCharacters } from "node:util";
+import { isProxy } from "node:util/types";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
-import type { TaskCompletionNotice, TaskNoticeLine } from "../../../core/tasks/completion.js";
+import type { CustomMessage } from "../../../core/messages.ts";
+import {
+	completionTitleDescription,
+	completionTitleText,
+	releasedWaitingOn,
+	type TaskCompletionNotice,
+	type TaskNoticeLine,
+} from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { TaskTranscriptHistory, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
@@ -26,6 +34,8 @@ function previewRow(row: string): string {
 
 const NOTICE_LINE_STATUSES = new Set(["success", "failure", "stopped", "warning", "paused", "waiting"]);
 const parsedNotices = new WeakMap<object, TaskCompletionNotice>();
+// A second message can share a notice but supply different content. Keep its source weak until a name is confirmed.
+const stopEvidence = new WeakMap<TaskCompletionNotice, WeakSet<object> | string>();
 
 /**
  * A line's status as saved. Earlier versions saved the line of a subagent released while it waits as paused; its
@@ -51,6 +61,13 @@ function noticeLineFrom(value: unknown): TaskNoticeLine | undefined {
 }
 
 export function completionNoticeFromDetails(details: unknown): TaskCompletionNotice | undefined {
+	return readCompletionNotice(details);
+}
+
+type CapturedStop = [notice: TaskCompletionNotice, savedName: string];
+function readCompletionNotice(details: unknown): TaskCompletionNotice | undefined;
+function readCompletionNotice(details: unknown, captureName: true): TaskCompletionNotice | CapturedStop | undefined;
+function readCompletionNotice(details: unknown, captureName = false): TaskCompletionNotice | CapturedStop | undefined {
 	if (!details || typeof details !== "object" || !("notification" in details)) return undefined;
 	const existing = parsedNotices.get(details);
 	if (existing !== undefined) return existing;
@@ -81,8 +98,21 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		...("thinking" in notice && typeof notice.thinking === "string" ? { thinking: notice.thinking } : {}),
 		...(line === undefined ? {} : { line }),
 	};
+	let savedName: string | undefined;
+	if (!line && parsed.status === "cancelled" && parsed.taskKind !== "command") {
+		const result = "result" in details ? details.result : undefined;
+		const stop = legacyStop(parsed.title, result);
+		if (stop) {
+			if (result === undefined && parsed.preview === "" && parsed.agentName && stop.agentName?.endsWith(":")) {
+				stopEvidence.set(parsed, new WeakSet([notice]));
+				if (captureName) savedName = parsed.agentName;
+			}
+			parsed.line = stop.line;
+			if (stop.agentName !== undefined) parsed.agentName = stop.agentName;
+		}
+	}
 	parsedNotices.set(details, parsed);
-	return parsed;
+	return savedName === undefined ? parsed : [parsed, savedName];
 }
 
 /** How long a task ran: `12s`, `3m 2s`, `1h 31m`. */
@@ -125,6 +155,104 @@ function agentNoticeOutcome(status: NoticeLineSpec["status"], line: TaskNoticeLi
 	if (status === "failure") return "failed";
 	if (status === "stopped") return "stopped";
 	return line?.outcome || "stopped";
+}
+
+const RELEASE_WORDING = "released while waiting on ";
+const PAUSE_WORDING = "paused · awaiting resume";
+const QUIT_WORDING = "quit · paused, awaiting resume";
+// Named agents could time out, but only shells recorded a timeout duration or a restart.
+const AGENT_STOP_SUFFIX =
+	/^ (?:killed \(non-resumable\)|timed out|stopped(?: \((?:task owner closed|session closed|workflow stage closed|Atomic shut down)\))?):$/u;
+
+function ownData(object: unknown, key: string): unknown {
+	if (!object || typeof object !== "object" || isProxy(object)) return undefined;
+	const property = Object.getOwnPropertyDescriptor(object, key);
+	return property && Object.hasOwn(property, "value") ? property.value : undefined;
+}
+
+function isPlainRecord(value: unknown): value is object {
+	if (!value || typeof value !== "object" || isProxy(value)) return false;
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === null || prototype === Object.prototype;
+}
+
+/** A different message may share this snapshot. Only consult the original, still-intact saved data, never a lease. */
+function sharedSavedName(details: unknown, notice: TaskCompletionNotice, sources: WeakSet<object>): string | undefined {
+	if (!isPlainRecord(details) || "result" in details) return undefined;
+	const source = ownData(details, "notification");
+	if (!isPlainRecord(source) || !sources.has(source) || "line" in source) return undefined;
+	if (
+		ownData(source, "title") !== notice.title ||
+		ownData(source, "taskId") !== notice.taskId ||
+		ownData(source, "preview") !== "" ||
+		ownData(source, "status") !== "cancelled" ||
+		ownData(source, "taskKind") !== notice.taskKind
+	)
+		return undefined;
+	const name = ownData(source, "agentName");
+	return typeof name === "string" ? name : undefined;
+}
+
+/** A name can itself end in `killed (non-resumable):`. Only a separately saved name fixes the boundary. */
+function witnessedStopName(title: string, savedName: string, label: string): string | undefined {
+	if (!label.endsWith(":") || !AGENT_STOP_SUFFIX.test(label.slice(savedName.length))) return undefined;
+	const name = label.slice(0, savedName.length);
+	if (name !== completionTitleText(savedName)) return undefined;
+	const description = title.slice("Subagent ".length + label.length + 1);
+	return description === completionTitleDescription(description) ? name.trim() : undefined;
+}
+
+/** Before notices had a line, the title held the outcome, followed by `: <task description>` or a final period. */
+function legacyStopWording(title: string, result: unknown): string | undefined {
+	if (result !== undefined) {
+		const saved = result as { kind?: string; cause?: string; released?: { waitingOn?: unknown } } | null;
+		if (saved?.kind !== "cancelled") return undefined;
+		if (saved.released !== undefined) {
+			const calls = saved.released?.waitingOn;
+			if (
+				!Array.isArray(calls) ||
+				!calls.every((call) => typeof call?.toolName === "string" && typeof call?.toolCallId === "string")
+			)
+				return undefined;
+			return (
+				RELEASE_WORDING + releasedWaitingOn({ kind: "cancelled", cause: "pause", released: { waitingOn: calls } })
+			);
+		}
+		return saved.cause === "pause" ? PAUSE_WORDING : saved.cause === "quit" ? QUIT_WORDING : undefined;
+	}
+	// Only the notification survived. Never read a quoted notice in the task description as this task's outcome.
+	const prefix =
+		/^(?:Subagent (.+?)|Background task) (released while waiting on |(?:paused · awaiting resume|quit · paused, awaiting resume)(?=: |\.$))/su.exec(
+			title,
+		);
+	if (!prefix || prefix[1]?.includes(": ")) return undefined;
+	if (prefix[2] !== RELEASE_WORDING) return prefix[2];
+	const calls = /^(a tool call|.+?\))(?:: |\.$)/su.exec(title.slice(prefix[0].length))?.[1];
+	return calls ? RELEASE_WORDING + calls : undefined;
+}
+
+function legacyStop(title: string, result: unknown): { line: TaskNoticeLine; agentName?: string } | undefined {
+	const wording = legacyStopWording(title, result);
+	if (wording === undefined) return undefined;
+	// The space after "Subagent" introduces its name, even if the name itself starts with the recorded outcome.
+	const end = title.indexOf(` ${wording}: `, title.startsWith("Subagent ") ? "Subagent ".length : 0);
+	// The writer saved only the first physical line, even when a call ID continued on the next one.
+	const [ending] = ` ${wording}.`.split("\n", 1);
+	const label = end >= 0 ? title.slice(0, end) : title.endsWith(ending) ? title.slice(0, -ending.length) : undefined;
+	if (label !== "Background task" && !label?.startsWith("Subagent ")) return undefined;
+	const waiting = wording.startsWith(RELEASE_WORDING);
+	return {
+		...(label.startsWith("Subagent ") ? { agentName: label.slice("Subagent ".length) } : {}),
+		line: {
+			label: label === "Background task" ? "Task" : "Agent",
+			status: waiting ? "waiting" : "paused",
+			outcome: waiting
+				? `is waiting on ${wording.slice(RELEASE_WORDING.length)}`
+				: wording === QUIT_WORDING
+					? "quit · awaiting resume"
+					: PAUSE_WORDING,
+		},
+	};
 }
 
 export function taskNoticeLineSpec(notice: TaskCompletionNotice): NoticeLineSpec {
@@ -560,6 +688,49 @@ export class TaskCompletionMessage implements Component {
 	private readonly pendingByTask = new Map<TaskId, Promise<void>>();
 	private readonly previewRows = new Map<TaskCompletionNotice, readonly string[]>();
 	private readonly expandedPreviews = new Map<TaskCompletionNotice, ToolBlockMarkdown>();
+	private stoppedName?: string;
+
+	/** Recognize our own cards without asking an extension component for its prototype. */
+	static isCard(component: Component | undefined): component is TaskCompletionMessage {
+		return component !== undefined && #reuseHeader in component;
+	}
+
+	static fromMessage(
+		message: CustomMessage,
+		expanded: boolean,
+		options?: TaskCompletionMessageOptions,
+		previous?: TaskCompletionMessage,
+	): TaskCompletionMessage | undefined {
+		const details = message.details;
+		const read = readCompletionNotice(details, true);
+		if (!read) return undefined;
+		const notice = Array.isArray(read) ? read[0] : read;
+		const card = new TaskCompletionMessage(notice, expanded, options);
+		if (card.#reuseHeader(previous, notice)) return card;
+		const evidence = stopEvidence.get(notice);
+		if (evidence) {
+			// A surviving body rules out recovery before we scan the independent name. Never invoke a body getter.
+			const body = ownData(message, "content");
+			if (body !== "" && body !== notice.title) return card;
+			if (typeof evidence === "string") card.stoppedName = evidence;
+			else {
+				const name = Array.isArray(read) ? read[1] : sharedSavedName(details, notice, evidence);
+				if (name && notice.agentName) {
+					card.stoppedName = witnessedStopName(notice.title, name, notice.agentName);
+					if (card.stoppedName) stopEvidence.set(notice, card.stoppedName);
+					else stopEvidence.delete(notice);
+				}
+			}
+		}
+		return card;
+	}
+
+	// A repaint of this mounted message keeps its header decision, not its old render or transcript state.
+	#reuseHeader(previous: TaskCompletionMessage | undefined, notice: TaskCompletionNotice): boolean {
+		if (previous?.notices[0] !== notice) return false;
+		this.stoppedName = previous.stoppedName;
+		return true;
+	}
 
 	constructor(
 		notices: TaskCompletionNotice | readonly TaskCompletionNotice[],
@@ -674,7 +845,9 @@ export class TaskCompletionMessage implements Component {
 			const tail = preview.split("\n").slice(-20).join("\n");
 			return new NoticeLine({ ...spec, ...(tail ? { detail: tail } : {}) }, this.expanded).render(width);
 		}
-		const [line] = new NoticeLine(spec).render(width);
+		const [line] = new NoticeLine(
+			this.stoppedName === undefined ? spec : { status: "stopped", label: this.stoppedName, outcome: "stopped" },
+		).render(width);
 		const taskId = notice.taskId as TaskId;
 		const contentWidth = Math.max(1, width - 6);
 		if (this.expanded) {

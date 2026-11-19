@@ -79,15 +79,19 @@ interface Stream {
  * statement other than a kept stream's read of `sqlite_schema` fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
  * a batch runs as its conditions say. `stream-busy`: the request fails as a whole with `SQLITE_BUSY`, which ends its
  * stream and rolls back the stream's open transaction. `schema-changed`: as `busy`, but the statement fails with
- * `SQLITE_SCHEMA`, as sqld answers a statement whose schema another connection kept changing while it was prepared.
+ * `SQLITE_SCHEMA`, as sqld answers a statement whose schema another connection kept changing while it was prepared;
+ * with `statement`, the first statement of the request whose SQL holds that text fails so instead, after the
+ * statements before it ran, also inside a sequence.
  * `missing-table`: as `busy`, but the statement fails with `no such table: <table>`, as sqld answers, without running
  * it, a statement it prepared while other connections changed the schema, though the table exists.
  */
 export type FakeLibsqlFault =
 	| { readonly kind: "expired" }
 	| { readonly kind: "busy" }
-	| { readonly kind: "schema-changed" }
+	| { readonly kind: "schema-changed"; readonly statement?: string }
 	| { readonly kind: "missing-table"; readonly table: string }
+	/** A connection's schema predates a concurrent change; taking the write lock does not refresh it, a schema read does. */
+	| { readonly kind: "stale-schema"; readonly table: string }
 	| { readonly kind: "stream-busy" }
 	| { readonly kind: "result-error"; readonly code: string }
 	| { readonly kind: "timed-out-mid-batch" }
@@ -227,10 +231,22 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 
 	let busy = false;
 	let schemaChanged = false;
+	let schemaChangedAt: string | undefined;
 	let churning = false;
 	let missingTable: string | undefined;
+	let staleTable: string | undefined;
+	let schemaChangeAtLock: string | undefined;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
 		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
+		if (sql === "BEGIN IMMEDIATE" && schemaChangeAtLock !== undefined) {
+			staleTable = schemaChangeAtLock;
+			schemaChangeAtLock = undefined;
+		}
+		if (staleTable !== undefined) {
+			if (sql?.startsWith("SELECT 1 FROM sqlite_schema")) staleTable = undefined;
+			else if (!/^(?:BEGIN|COMMIT|ROLLBACK)\b/.test(sql ?? ""))
+				throw Object.assign(new Error(`SQLite error: no such table: ${staleTable}`), { errstr: "unknown" });
+		}
 		// The read of `sqlite_schema` a kept stream sends before its statement takes no write lock, so the server never
 		// answers it busy.
 		if (busy && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
@@ -239,6 +255,10 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		}
 		if (schemaChanged && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
 			schemaChanged = false;
+			throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
+		}
+		if (schemaChangedAt !== undefined && sql?.includes(schemaChangedAt)) {
+			schemaChangedAt = undefined;
 			throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
 		}
 		if (
@@ -327,7 +347,17 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 				}
 				if (churning && !database.isTransaction)
 					throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
-				database.exec(request.sql ?? stream.sqls.get(request.sql_id ?? -1) ?? "");
+				{
+					const text = request.sql ?? stream.sqls.get(request.sql_id ?? -1) ?? "";
+					const at = schemaChangedAt === undefined ? -1 : text.indexOf(schemaChangedAt);
+					if (at !== -1) {
+						// The statements before the refused one ran and committed.
+						schemaChangedAt = undefined;
+						database.exec(text.slice(0, text.lastIndexOf(";", at) + 1));
+						throw Object.assign(new Error("database schema has changed"), { errstr: "schema" });
+					}
+					database.exec(text);
+				}
 				return { type: "sequence" };
 			case "store_sql":
 				stream.sqls.set(request.sql_id, request.sql);
@@ -413,8 +443,11 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 				: undefined;
 		if (timedOut !== undefined) rollBack(stream);
 		busy = fault?.kind === "busy";
-		schemaChanged = fault?.kind === "schema-changed";
+		schemaChanged = fault?.kind === "schema-changed" && fault.statement === undefined;
+		schemaChangedAt = fault?.kind === "schema-changed" ? fault.statement : undefined;
 		missingTable = fault?.kind === "missing-table" ? fault.table : undefined;
+		staleTable = undefined;
+		schemaChangeAtLock = fault?.kind === "stale-schema" ? fault.table : undefined;
 		const results = body.requests.map((each) => {
 			if (fault?.kind === "timed-out-mid-batch" && each.type === "batch") {
 				const began: StmtResult = { cols: [], rows: [], affected_row_count: 0, last_insert_rowid: null };

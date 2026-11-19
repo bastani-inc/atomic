@@ -1,6 +1,7 @@
 import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { IntercomEventBus, RunSyncOptions } from "../../shared/types.js";
-import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import { reservationRecordLookup, subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import { subagentChildRequestEvents } from "./subagent-child-owner.js";
 import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -38,16 +39,31 @@ export interface ReleasedChildReservation {
 	readonly aliases: readonly string[];
 	/** True: the first send held for it asks the owner to wake it. False: parked (paused or quit), never woken. */
 	readonly wake: boolean;
+	/**
+	 * The task of the run that released or parked the child, which this reservation is for. Kept in this process, never
+	 * sent: a failure of it is not reported once the child's latest record is another run's (#5551).
+	 */
+	readonly taskId?: string;
 }
 
 /** Deliver a reservation failure to the launching session, without retaining a registry per child. */
 export const SUBAGENT_HOLD_FAILURE_EVENT = "subagent:released-child-hold-failure";
+/** The broker took the reservations of these children: payload {@link ReleasedChildHoldRecovery}. */
 export const SUBAGENT_HOLD_RECOVERED_EVENT = "subagent:released-child-hold-recovered";
 
 export interface ReleasedChildHoldFailure {
+	/** The children this failure leaves without a hold: exactly those the broker refused or never took. */
 	readonly childNames: readonly string[];
+	/** The task each child's request was made for, by child name, when the request knew it (#5551). */
+	readonly taskIds?: ReadonlyMap<string, string>;
+	/** Shared by all frames of this request, not retained after it settles. */
+	readonly recordOf?: ReturnType<typeof reservationRecordLookup>;
 	readonly error: Error;
 	handled?: boolean;
+}
+
+export interface ReleasedChildHoldRecovery {
+	readonly childNames: readonly string[];
 }
 
 function closedOwnerSession(error: Error): boolean {
@@ -65,9 +81,20 @@ function emitToOwner(events: IntercomEventBus, eventName: string, payload: objec
 	}
 }
 
-function recordHoldFailure(events: IntercomEventBus, childNames: readonly string[], error: Error): void {
+function recordHoldFailure(
+	events: IntercomEventBus,
+	childNames: readonly string[],
+	error: Error,
+	taskIds?: ReadonlyMap<string, string>,
+	recordOf?: ReleasedChildHoldFailure["recordOf"],
+): void {
 	if (closedOwnerSession(error)) return;
-	const failure: ReleasedChildHoldFailure = { childNames, error };
+	const failure: ReleasedChildHoldFailure = {
+		childNames,
+		...(taskIds === undefined || taskIds.size === 0 ? {} : { taskIds }),
+		...(recordOf === undefined ? {} : { recordOf }),
+		error,
+	};
 	if (!emitToOwner(events, SUBAGENT_HOLD_FAILURE_EVENT, failure)) return;
 	if (!failure.handled) console.error("Released subagent reservation failed (hold-failed); no owner is listening");
 }
@@ -84,22 +111,31 @@ type ChildReservationFacts = Pick<
 	| "waitingOn"
 	| "childSessionId"
 	| "releasedIntercomId"
+	| "taskId"
 >;
+
+/** Whether the broker should hold sends for this child: it is released, or was stopped while it waited (#5551). */
+export function isHeldChildRecord(
+	record: Pick<ChildReservationFacts, "state" | "terminalStatus" | "waitingOn">,
+): boolean {
+	if (record.state !== "terminal") return false;
+	if (record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) return true;
+	return (record.waitingOn?.length ?? 0) > 0 && PARKED_STATUSES.has(record.terminalStatus ?? "");
+}
 
 /**
  * What the broker should hold for this child, if it is released or was stopped while it waited: a released child wakes
  * its owner when a send is held for it, a stopped one only holds the send. Undefined for every other child.
  */
 export function releasedChildReservation(record: ChildReservationFacts): ReleasedChildReservation | undefined {
-	if (record.intercomTarget === undefined || record.state !== "terminal") return undefined;
+	if (record.intercomTarget === undefined || !isHeldChildRecord(record)) return undefined;
 	const released = record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS;
-	const parked = (record.waitingOn?.length ?? 0) > 0 && PARKED_STATUSES.has(record.terminalStatus ?? "");
-	if (!released && !parked) return undefined;
 	return {
 		childName: record.intercomTarget,
 		...(record.intercomGroup === undefined ? {} : { group: record.intercomGroup }),
 		aliases: [record.childSessionId, record.releasedIntercomId].filter((id): id is string => id !== undefined),
 		wake: released,
+		...(record.taskId === undefined ? {} : { taskId: record.taskId }),
 	};
 }
 
@@ -139,23 +175,124 @@ async function emitIntercomRequest(events: IntercomEventBus, eventName: string, 
 	await ((request as { completion?: Promise<void> }).completion ?? Promise.resolve());
 }
 
-/** Reserve released children at the broker, or park them; one call whatever their number. Idempotent per child. */
-export function reserveReleasedChildren(
+/** The broker takes at most this many children per frame, and refuses a frame whole. */
+const RESERVATION_FRAME_MAX = 500;
+
+/**
+ * The latest reservation request made for each child on each owner's bus, while it is in flight: a request that a later
+ * one for the same child overtook leaves that child to the later one (#5551). Holds only children with a request in flight.
+ */
+const latestReservations = new WeakMap<IntercomEventBus, Map<string, object>>();
+const reservationOwners = new WeakMap<IntercomEventBus, { sessionId: string }>();
+
+/** An in-flight retry must not use a release, or an owner session, that ended while the broker answered. */
+export function bindReleasedChildReservationOwner(events: IntercomEventBus, sessionId: string): () => void {
+	const owner = { sessionId };
+	reservationOwners.set(events, owner);
+	return () => {
+		if (reservationOwners.get(events) === owner) reservationOwners.delete(events);
+	};
+}
+
+/** The child of `frame` the broker refused the whole frame for, when the refusal names one of them. */
+function refusedChildOf(
+	error: Error,
+	frame: readonly ReleasedChildReservation[],
+): ReleasedChildReservation | undefined {
+	const refusal = error as Error & { readonly childName?: unknown };
+	if (error.name !== "ReleasedChildReservationError" || typeof refusal.childName !== "string") return undefined;
+	const childName = refusal.childName;
+	return frame.find((child) => child.childName === childName || child.childName.trim() === childName);
+}
+
+/**
+ * Reserve one frame. A child the broker refused is reported alone, and the others, which a refused frame leaves
+ * unreserved, are asked for again without it: each try leaves one out, so this ends. A failure that names no child of
+ * the frame, as a lost connection, is reported for the whole frame. A child a later request overtook is left to it.
+ */
+async function reserveFrame(
 	events: IntercomEventBus,
-	children: readonly ReleasedChildReservation[],
+	frame: readonly ReleasedChildReservation[],
+	current: (child: ReleasedChildReservation) => boolean,
+	recordOf: ReleasedChildHoldFailure["recordOf"],
 ): Promise<void> {
-	if (children.length === 0) return Promise.resolve();
-	return emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children }).then(
-		() => {
-			emitToOwner(events, SUBAGENT_HOLD_RECOVERED_EVENT, {});
-		},
-		(error: Error) =>
+	let asked = frame;
+	while (asked.length > 0) {
+		let error: Error | undefined;
+		try {
+			// The task id stays in this process: the broker holds a child by name and ids.
+			const children = asked.map(({ taskId: _taskId, ...child }) => child);
+			await emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children });
+		} catch (caught) {
+			error = caught as Error;
+		}
+		if (error === undefined) {
+			const recovered = asked.filter(current);
+			if (recovered.length > 0) {
+				const recovery: ReleasedChildHoldRecovery = { childNames: recovered.map((child) => child.childName) };
+				emitToOwner(events, SUBAGENT_HOLD_RECOVERED_EVENT, recovery);
+			}
+			return;
+		}
+		const refused = refusedChildOf(error, asked);
+		const failed = (refused === undefined ? asked : [refused]).filter(current);
+		if (failed.length > 0) {
+			const taskIds = new Map<string, string>();
+			for (const child of failed) if (child.taskId !== undefined) taskIds.set(child.childName, child.taskId);
 			recordHoldFailure(
 				events,
-				children.map((child) => child.childName),
+				failed.map((child) => child.childName),
 				error,
-			),
-	);
+				taskIds,
+				recordOf,
+			);
+		}
+		if (refused === undefined) return;
+		asked = asked.filter((child) => {
+			if (child === refused || !current(child)) return false;
+			if (recordOf === undefined) return true;
+			const latest = recordOf(child.childName);
+			return (
+				latest !== undefined &&
+				latest.taskId === child.taskId &&
+				isHeldChildRecord(latest) &&
+				(latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) === child.wake
+			);
+		});
+	}
+}
+
+/**
+ * Reserve released children at the broker, or park them, in requests of one broker frame each, whatever their number.
+ * Idempotent per child. A failure is reported for exactly the children it leaves without a hold, with the task each
+ * was reserved for, so a child the broker took, or one a later request asked for again, is never named (#5551).
+ */
+export async function reserveReleasedChildren(
+	ownerEvents: IntercomEventBus,
+	children: readonly ReleasedChildReservation[],
+): Promise<void> {
+	if (children.length === 0) return;
+	// Parking and reconnects share the same in-flight requests on this generation's bus.
+	const events = subagentChildRequestEvents(ownerEvents);
+	if (!events) return;
+	const inFlight = latestReservations.get(events) ?? new Map<string, object>();
+	latestReservations.set(events, inFlight);
+	const request = {};
+	for (const child of children) inFlight.set(child.childName, request);
+	const owner = reservationOwners.get(events);
+	const current = (child: ReleasedChildReservation) =>
+		inFlight.get(child.childName) === request && reservationOwners.get(events) === owner;
+	const recordOf = owner === undefined ? undefined : reservationRecordLookup(owner.sessionId);
+	try {
+		const frames: Promise<void>[] = [];
+		for (let start = 0; start < children.length; start += RESERVATION_FRAME_MAX)
+			frames.push(reserveFrame(events, children.slice(start, start + RESERVATION_FRAME_MAX), current, recordOf));
+		// Every frame settles before this call stops answering for its children.
+		const rejected = (await Promise.allSettled(frames)).find((outcome) => outcome.status === "rejected");
+		if (rejected !== undefined) throw rejected.reason;
+	} finally {
+		for (const child of children) if (inFlight.get(child.childName) === request) inFlight.delete(child.childName);
+	}
 }
 
 /** End the broker's reservation of children that ended or were taken over. */
@@ -170,10 +307,25 @@ export function dropReleasedChildren(
 	);
 }
 
-/** Tell the broker this owner is waking the child, so the sends held for it may wait longer. */
-export function acknowledgeReleasedChildWake(events: IntercomEventBus, childName: string): Promise<void> {
+/**
+ * Tell the broker this owner is waking the child, so the sends held for it may wait longer. `taskId`: the run whose
+ * release this wake ends, so a refusal is not reported once the child's latest record is another run's.
+ */
+export function acknowledgeReleasedChildWake(
+	ownerEvents: IntercomEventBus,
+	childName: string,
+	taskId?: string,
+): Promise<void> {
+	const events = subagentChildRequestEvents(ownerEvents);
+	if (!events) return Promise.resolve();
 	return emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName }).catch(
-		(error: Error) => recordHoldFailure(events, [childName], error),
+		(error: Error) =>
+			recordHoldFailure(
+				events,
+				[childName],
+				error,
+				taskId === undefined ? undefined : new Map([[childName, taskId]]),
+			),
 	);
 }
 
@@ -220,6 +372,7 @@ export function reserveReleasedChildTargets(
 	childSessionId: string | undefined,
 	intercomId: string | undefined,
 	wake = true,
+	taskId?: string,
 ): Promise<void> {
 	const events = options.intercomEvents;
 	const childName = options.intercomSessionName;
@@ -230,6 +383,7 @@ export function reserveReleasedChildTargets(
 			...(options.intercomGroup === undefined ? {} : { group: options.intercomGroup }),
 			aliases: [childSessionId, intercomId].filter((id): id is string => id !== undefined),
 			wake,
+			...(taskId === undefined ? {} : { taskId }),
 		},
 	]);
 }

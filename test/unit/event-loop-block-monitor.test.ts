@@ -221,7 +221,21 @@ test("on Node, an anonymous function's hot frame counts every sample, wherever i
 	const running = block.hotFrames?.find(fromFixture("runAnonymousBlock"));
 	assert.equal(anonymous.length, 1, `one hot frame for the function wherever its samples landed: ${frames}`);
 	assert.ok((running?.count ?? 0) > 1, `the function ran across several samples: ${frames}`);
-	assert.equal(anonymous[0]?.count, running?.count, `every sample taken while it ran counts toward it: ${frames}`);
+	assert.ok((anonymous[0]?.count ?? 0) > 1, `the anonymous function has several samples: ${frames}`);
+	assert.ok(
+		(anonymous[0]?.count ?? Infinity) <= (running?.count ?? 0),
+		`anonymous samples are contained in the caller's samples: ${frames}`,
+	);
+	// CPU profiles can also sample the caller itself, without a callee frame.
+	assert.ok(typeof block.stacks === "object");
+	for (const stack of block.stacks) {
+		if (stack.frames.some((frame) => fromFixture("(anonymous)")({ frame }))) {
+			assert.ok(
+				stack.frames.some((frame) => fromFixture("runAnonymousBlock")({ frame })),
+				frames,
+			);
+		}
+	}
 });
 
 test("hot frames count a function once per sample across sampled line and column changes (#5377)", () => {

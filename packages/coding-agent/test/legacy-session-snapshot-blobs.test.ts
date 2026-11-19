@@ -12,6 +12,7 @@ import { LegacySessionStore } from "../src/core/storage/session/legacy-session-s
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
 import { SqlSnapshotBlobStore } from "../src/core/worktree-snapshot/blob-store.ts";
 import { snapshotBlob } from "../src/core/worktree-snapshot/env-hash.ts";
+import { SNAPSHOT_COLLECTION_SESSION_DELAY_MS } from "../src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
 import { createHarness } from "./suite/harness.js";
 
@@ -25,6 +26,7 @@ beforeEach(() => {
 	vi.stubEnv(ENV_SESSION_DIR, "");
 });
 afterEach(async () => {
+	vi.useRealTimers();
 	vi.unstubAllEnvs();
 	while (cleanups.length > 0) await cleanups.pop()?.();
 	rmSync(root, { recursive: true, force: true });
@@ -95,11 +97,14 @@ test("the default session storage exposes its blob table, so sessions on it reco
 	assert.equal(store.snapshotBlobs.table, "snapshot_blobs");
 });
 
-test("closing a session on the default storage collects the blobs its superseded snapshot released (#4355)", async () => {
+test("closing a session on the default storage collects the blobs its superseded snapshot released, once the collection's delay has passed (#4355, #5530)", async () => {
 	const { store, released, kept, stored } = await defaultStoreWithSupersededSnapshot();
 	const harness = await createHarness({ sessionManager: await SessionManager.create(store, root) });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 
 	await harness.session.dispose();
+	await vi.advanceTimersByTimeAsync(SNAPSHOT_COLLECTION_SESSION_DELAY_MS);
+	vi.useRealTimers();
 
 	await vi.waitFor(async () => assert.deepEqual(await stored(), [kept.hash]));
 	assert.ok(!(await stored()).includes(released.hash));

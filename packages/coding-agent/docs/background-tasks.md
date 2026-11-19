@@ -20,6 +20,7 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
 ```
 
 - **Each row shows** the status, the agent's name (a workflow's name for a run), what it works on, and how long it has run. Agents and workflow runs also show the tokens they have used. A workflow row shows stage progress; a waiting row shows its question instead.
+- The task title in the panel and in an attached chat header stops at a whole character. A shortened title ends in `…`.
 - **Status glyphs:**
   - `∀` running
   - `◆` needs input, with its question when it waits on one
@@ -28,10 +29,10 @@ Below the main chat's prompt, the **agent panel** lists the session's active bac
   - `✓` done
   - `✗` failed, showing the reason
   - `◼` stopped
-- **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent, and a workflow run that is paused or blocked on a failed stage, stays while another subagent, workflow run or background shell is still running, and leaves once nothing is running. It does not come back when new work starts, unless you resume it; a resumed subagent is one row. `/tasks` and `/workflows` still list a paused run. A stopped row, and a finished workflow run, read dim after 30 seconds. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
+- **Finished subagents** leave the panel as soon as they finish; `/tasks` still lists them. A stopped, paused or interrupted subagent, and a workflow run that is paused or blocked on a failed stage, stays while another subagent, workflow run or background shell is still running, and leaves once nothing is running. Switching chats or starting unrelated work does not bring it back. If it resumes and stops again while other work is running, it reappears as one row, even if the panel was closed during the resume. `/tasks` and `/workflows` still list a paused run. A stopped row, and a finished workflow run, read dim after 30 seconds. A finished workflow run stays until you have opened it. Narrow terminals drop the token count and the stage bar.
 - **Up to four rows** show while the prompt has focus, then `+N more`; the focused panel shows eight at a time. The main row does not count toward either.
 
-The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place.
+The main footer shows `↓ N agents` for the subagent rows the panel lists. Workflow runs are not agents: a panel that lists only workflow runs shows no `↓` count, though **↓** still focuses it. `N needs input` counts every row that waits for an answer, workflow runs included. These counts include rows folded into `+N more` and use the current chat's tasks. When the panel lists nothing but `/tasks` lists subagents of this chat, the footer shows `/tasks to see subagents`; while background shells run, `N shells · /tasks to manage` takes its place. If a paused or blocked workflow run has left the panel, `/workflows to see runs` points to it until it runs again or is gone. This extra hint appears only when there is room beside the status and the other hints. You can still type `/workflows` when the hint is hidden.
 
 Background shells are not panel rows. The footer counts the running ones, for example `2 shells`; with no rows in the panel it adds `/tasks to manage`. Open, read and stop shells in [`/tasks`](#open-the-task-inspector).
 
@@ -44,7 +45,7 @@ Press **↓** on an empty prompt to focus the panel. It then works like every li
 - **x** stops the selected item when pressed again within 3 seconds, and dismisses a finished row.
 - **Esc** or **←**, or ↑ past `● main` (past the first row when there is no main row), returns to the prompt. **?** shows the keys.
 
-In fullscreen mode you can also click a row, focused or not, to open it as Enter does. Clicking `● main` in the focused panel returns to the prompt.
+In fullscreen mode you can also click a row, focused or not, to open it as Enter does. Clicking `● main` in the focused panel returns to the prompt. The hints click too: `↓ N agents` focuses the panel, `/tasks to manage` and `/tasks to see subagents` open `/tasks`, `/workflows to see runs` opens `/workflows`, and each key in a hint row does what pressing it does.
 
 Going back from what you opened returns to the main chat with the panel focused on the same row. The subagent chat's hint reads `← main chat`; press **←** on its empty prompt. A workflow graph uses **Esc** to return.
 
@@ -73,9 +74,10 @@ Run `/tasks` to inspect work without stopping it:
 - Enter or Right on a row opens it: a workflow run's graph, a subagent's chat or a shell's output, or its detail page when no transcript is available.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it. Up or Down selects a row and keeps the filter.
 - Paused workflow runs remain in Working with a `‖ paused` status. Their elapsed time stays frozen, and `x` twice stops them rather than dismissing them as finished.
+- A shell's completion notice and output page take the last 8 KiB of retained output. If that window starts partway through a UTF-8 character, the excerpt starts at the next character. If the completion notice must shorten the output further, it keeps whole graphemes and shows an omission label only if the entire label fits.
 - Detail and transcript pages use the full screen. A shell's input stays in the sheet, under `Input to <command>`, with `enter send · ← back to list`.
 - Escape returns to the picker with your selection preserved, then to chat.
-- Completed background work remains available, including after a later foreground wait. Foreground-only commands are excluded.
+- Completed background work remains available, including after a later wait for it. A shell command its tool call still waits on is excluded.
 - Updates never open or close the inspector automatically. Closing it does not stop tasks.
 
 Results and failures remain in completion notices and `/tasks` after leaving the agent panel. The command appears in workflow-stage slash suggestions even when skill commands are disabled.
@@ -86,7 +88,7 @@ Opening `/tasks` is navigation, not approval. It does not mark the agent blocked
 
 ## Choose how long to wait
 
-The agent can choose foreground-first or background observation for each authorized shell or subagent call. Choosing a mode does not require a separate user confirmation and does not relax tool permissions or task ownership.
+The agent can choose foreground-first or background observation for each authorized shell call. Every subagent runs in the background; the agent waits for one with `subagent({ action: "wait", id })` when it needs the result next. Neither choice requires a separate user confirmation or relaxes tool permissions or task ownership.
 
 For ordinary shell commands, leave `wait` out rather than routinely requesting one-second waits. Short waits can background otherwise brief commands and add follow-up calls without speeding up execution. Use explicit background observation when you have independent work to do, and a short budget only when you need control back sooner. Explicit budgets remain supported on every platform.
 
@@ -95,12 +97,13 @@ Keep immediately blocking work local unless a specialist, isolated context, or y
 | Call | Observation behavior |
 | --- | --- |
 | `bash` or `powershell` without `wait` | Waits for the owner's command observation budget, normally 10 seconds, then automatically returns if still running. |
-| `subagent` without `wait` | Returns after admission; the child runs in the background by default. |
-| Any of these tools with `wait: { kind: "background" }` | Explicitly returns after admission without waiting for execution to finish. |
-| Any of these tools with `wait: { kind: "foreground" }` | Waits for the owner's observation budget, normally 10 seconds for shells and 30 seconds for agents. |
-| Any of these tools with `wait: { kind: "foreground", budgetMs: 1000 }` | Waits up to one second, then automatically yields if the original task is still running. |
+| `subagent` launch | Returns after admission; the child always runs in the background. A `wait` the call still passes is ignored, and a foreground one is noted in the result. |
+| `subagent({ action: "wait", id })` | Waits for the owner's agent wait budget, normally 30 seconds, or for its `budgetMs`. Esc ends it at once. |
+| `bash` or `powershell` with `wait: { kind: "background" }` | Explicitly returns after admission without waiting for execution to finish. |
+| `bash` or `powershell` with `wait: { kind: "foreground" }` | Waits for the owner's command observation budget, normally 10 seconds. |
+| `bash` or `powershell` with `wait: { kind: "foreground", budgetMs: 1000 }` | Waits up to one second, then automatically yields if the original task is still running. |
 
-If the task finishes during observation, the call returns its terminal result instead. Automatic backgrounding is **observation expiry**, not a slow-task failure, a restart, or a second execution. Use foreground-first observation for a dependency and background observation for independent work. If a dependency yields, wait for its actual completion before using the result.
+If the task finishes during observation, the call returns its terminal result instead. Automatic backgrounding is **observation expiry**, not a slow-task failure, a restart, or a second execution. Wait for a dependency and let independent work run in the background. If a wait for a dependency ends early, wait for its actual completion before using the result.
 
 Shell `budgetMs` accepts finite non-negative milliseconds; zero means no observation delay. On command launches it belongs inside a foreground `wait`; existing-task `action: "wait"` calls take it at the top level. A trusted SDK host can override the usual budgets or select `tasks.wait.kind: "until-settled"`; omitted foreground budgets then wait until settlement. Explicit per-call budgets still take precedence.
 
@@ -115,13 +118,12 @@ Have a codebase-analyzer trace the authentication flow in the background.
 Keep working with me here while it runs.
 ```
 
-For tool callers, owner-bound launches default to background observation. Explicit examples:
+For tool callers, every launch runs in the background. Examples:
 
 ```ts
 subagent({
   agent: "codebase-analyzer",
   task: "Trace the authentication flow. Do not edit files.",
-  wait: { kind: "background" },
 })
 
 subagent({
@@ -130,40 +132,32 @@ subagent({
     { agent: "codebase-pattern-finder", task: "Find authorization test patterns." },
   ],
   concurrency: 2,
-  wait: { kind: "background" },
 })
 ```
 
 Parallel tasks have independent identities. Accepted work beyond the concurrency limit stays queued. Use `/agents` to browse available definitions before choosing an agent.
 
-Intercom communication does not cancel a parallel batch. An `intercom` ask returns at delivery and its reply arrives as a message in the requesting child; a supervisor decision waits only in the requesting child and resumes that same execution after the matching reply. Sends and progress updates remain nonblocking. Foreground observations may yield so the parent can reply; execution concurrency, queued siblings, and task identities are preserved. Stop a selected task explicitly, or close its owner to cancel all owned work.
+Intercom communication does not cancel a parallel batch. An `intercom` ask returns at delivery and its reply arrives as a message in the requesting child; a supervisor decision waits only in the requesting child and resumes that same execution after the matching reply. Sends and progress updates remain nonblocking. A parent's `action: "wait"` ends so the parent can reply; execution concurrency, queued siblings, and task identities are preserved. Stop a selected task explicitly, or close its owner to cancel all owned work.
 
 A launch result says **Launched in background**. This records what happened at launch; it is not a permanently live status label. The agent panel and `/tasks` show the current state.
 
 ### Waiting is not restarting
 
-When specialist delegation is useful and its result is needed next, use foreground observation:
+When specialist delegation is useful and its result is needed next, launch the child and wait for the task ID the launch returned:
 
 ```ts
-subagent({
-  agent: "codebase-analyzer",
-  task: "Trace the authentication flow.",
-  wait: { kind: "foreground", budgetMs: 30000 },
-})
-```
-
-If that observation budget expires, the same child continues in the background. It is not an execution timeout. Observe the task ID returned by the original call:
-
-```ts
-subagent({ action: "wait", id: taskId })
+subagent({ agent: "codebase-analyzer", task: "Trace the authentication flow." })
+subagent({ action: "wait", id: taskId, budgetMs: 120000 })
 subagent({ action: "status", id: taskId })
 ```
+
+If the wait's budget runs out, or you press Esc while it waits, the same child continues in the background. Neither is an execution timeout or a stop: wait again, or let its completion notice arrive.
 
 To stop, hold, or continue a child, use `pause`, `quit`, and `resume`; see [Run control](/subagents#run-control).
 
 Do not launch a duplicate just to retrieve its result. Use the task ID returned at launch. IDs are scoped to the session or workflow stage that owns them.
 
-Foreground subagent launches and explicit `action: "wait"` calls also yield when user steering or an Intercom ask/send is admitted to the waiting parent, in main chat or a live workflow stage. The message stays in the normal delivery queue so the parent can handle it and reply. This releases only observation: children keep running under the same task IDs, and other owners' waits are unaffected.
+An `action: "wait"` call also ends when user steering or an Intercom ask/send is admitted to the waiting parent, in main chat or a live workflow stage. The message stays in the normal delivery queue so the parent can handle it and reply. This releases only observation: children keep running under the same task IDs, and other owners' waits are unaffected.
 
 ### Completion messages
 
@@ -179,7 +173,7 @@ Completion adds one notice line to the owning chat without depending on a model 
  ◌ worker is waiting on bash (toolu_01) · 16m 16s
 ```
 
-The main chat, a workflow stage's chat and a subagent's view show the same line.
+The main chat, a workflow stage's chat and a subagent's view show the same line. When you reopen an older session, a notice that recorded a release shows `◌`. Atomic 0.9.86 and 0.9.87 recorded releases as pauses, so those notices still show `⏸`. If the result and line are missing, Atomic can still show `◼` when a separately saved agent name identifies a stop in the title. For example, `worker killed (non-resumable): paused · awaiting resume: check the queue` identifies a stop if the saved name is `worker`, but not if it is `worker killed (non-resumable):`. This applies to notices with an empty preview and an empty or title-only string for content. Earlier notices that lack a separate name, and notices with a body or preview, keep their previous reading.
 
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
 
@@ -197,7 +191,7 @@ Restored completions may have only an outcome and task identity if the original 
 
 A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows only its line. Use the expand-tools key, normally Ctrl+O, for the shell's last output lines or the agent's full retained result, or `/tasks` to inspect.
 
-Completion notices are unshaded. Long titles shorten to fit one terminal row, and expanded results wrap to the terminal width. Ctrl+O shows the entire retained agent result, up to 8,000 characters.
+Completion notices are unshaded. Long titles shorten to fit one terminal row, and expanded results wrap to the terminal width. A subagent's saved preview and its result excerpt for the parent stop before any character, such as an emoji, that would cross the 8,000 UTF-16 code unit limit. The child's full result is unchanged.
 
 ## Task heartbeats
 
@@ -236,7 +230,7 @@ For a shell, the status gives its output size, when it last wrote output, and up
 - The cadence counts from when the task started running, never from the previous heartbeat.
 - Tasks that come due within about a minute of each other share one heartbeat. One heartbeat describes up to eight tasks in full and lists the rest by name.
 - A chat has at most one unread heartbeat. While it waits behind a long response or paused messages, later intervals are not stacked: the tasks that came due are reported together once it has been read, and missed intervals are not replayed.
-- A heartbeat queues behind the current response, like a steering message, and never interrupts streaming text. In an idle chat it starts a turn at once, including right after you interrupt with Esc. That turn sends only the heartbeat, along with any incoming messages the interrupt held; your interrupted response is not resumed. If you queued a message and interrupted with Ctrl+C, the heartbeat waits for you instead, so your text is never sent without you. Intercom messages and finished-task notices do not start a turn after an interrupt; they wait for your next message. Set [`tasks.heartbeatWakesIdleSession`](/settings#tasks) to `false` to keep heartbeats waiting too. Like other incoming messages, it releases a subagent launch or a `wait` action that is observing a task in the foreground; the task keeps running.
+- A heartbeat queues behind the current response, like a steering message, and never interrupts streaming text. In an idle chat it starts a turn at once, including right after you interrupt with Esc. That turn sends only the heartbeat, along with any incoming messages the interrupt held; your interrupted response is not resumed. If you queued a message and interrupted with Ctrl+C, the heartbeat waits for you instead, so your text is never sent without you. Intercom messages and finished-task notices do not start a turn after an interrupt; they wait for your next message. Set [`tasks.heartbeatWakesIdleSession`](/settings#tasks) to `false` to keep heartbeats waiting too. Like other incoming messages, it ends a `wait` action the chat is in; the task keeps running.
 - Heartbeats go to the chat that owns the task: main chat, or the workflow stage's chat, including stages that run on [local worker pools](/settings#local-worker-pools). Shells a subagent starts run in its parent's task owner, so their heartbeats go to the parent.
 - A shell's execution `timeout` (300 seconds by default) still ends it. A shell heartbeats only while it runs longer than its cadence.
 
@@ -284,7 +278,7 @@ Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheel
 
 The list groups subagents, workflow runs and shells by **Needs input**, **Working** and **Done**, with counts and status symbols. Detail views pin identity, state, available metrics, and the selected action while their body scrolls. Missing metrics are omitted rather than displayed as zero. Recorded zero values remain visible.
 
-Agent rows in `/tasks` show the resolved model and reasoning setting, for example `openai-codex/gpt-6-astra · thinking medium`. These settings update on fallback and remain after completion. Foreground results retain the same metadata. Completion notices keep it in their saved details but do not display a model line. Missing settings are not inferred from token counts; early launch receipts may not yet have a resolved model.
+Agent rows in `/tasks` show the resolved model and reasoning setting, for example `openai-codex/gpt-6-astra · thinking medium`. These settings update on fallback and remain after completion. A subagent's result, when a wait returns it, keeps the same metadata. Completion notices keep it in their saved details but do not display a model line. Missing settings are not inferred from token counts; early launch receipts may not yet have a resolved model.
 
 Agent details include recent retained tool activity, the prompt, a latest-response preview, and error or attention information. Transcript inspection shows the agent's conversation as a chat: retained messages, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and extension notices, with a compaction status while the agent compacts. Earlier pages do not jump back to the latest page when background activity arrives.
 

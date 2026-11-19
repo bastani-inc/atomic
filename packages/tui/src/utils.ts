@@ -132,7 +132,7 @@ function finalizeTruncatedResult(
 	pad: boolean,
 ): string {
 	const reset = "\x1b[0m";
-	const hyperlinkClose = getActiveOsc8Close(prefix);
+	const hyperlinkClose = getActiveOsc8Close(prefix) + getActiveHintClose(prefix);
 	const visibleWidth = prefixWidth + ellipsisWidth;
 	let result: string;
 
@@ -604,6 +604,17 @@ function formatOsc8Close(terminator: Osc8Terminator): string {
 	return `\x1b]8;;${terminator}`;
 }
 
+/** The opening marker of a clickable key hint, which its action and a BEL follow; see clickable-hints.ts. */
+export const HINT_OPEN = "\x1b_pi:h:";
+/** The closing marker of a clickable key hint. */
+export const HINT_CLOSE = "\x1b_pi:/h\x07";
+
+/** The closing marker for a key hint `prefix` leaves open, or "" when it leaves none open. */
+function getActiveHintClose(prefix: string): string {
+	const open = prefix.lastIndexOf(HINT_OPEN);
+	return open !== -1 && prefix.indexOf(HINT_CLOSE, open) === -1 ? HINT_CLOSE : "";
+}
+
 function getActiveOsc8Close(prefix: string): string {
 	if (!prefix.includes("\x1b]8;")) {
 		return "";
@@ -642,8 +653,19 @@ class AnsiCodeTracker {
 	private fgColor: string | null = null; // Stores the full code like "31" or "38;5;240"
 	private bgColor: string | null = null; // Stores the full code like "41" or "48;5;240"
 	private activeHyperlink: ActiveHyperlink | null = null;
+	/** The opening marker of the key hint the text is inside, closed at a line's end and re-opened on the next. */
+	private activeHint: string | null = null;
 
 	process(ansiCode: string): void {
+		if (ansiCode.startsWith(HINT_OPEN)) {
+			this.activeHint = ansiCode;
+			return;
+		}
+		if (ansiCode === HINT_CLOSE) {
+			this.activeHint = null;
+			return;
+		}
+
 		// OSC 8 hyperlink: \x1b]8;;<url>\x1b\\ (open) or \x1b]8;;\x1b\\ (close).
 		// Preserve the original terminator because some terminals only make BEL-terminated
 		// links clickable. OAuth login URLs use BEL, so reopening wrapped lines with ST
@@ -788,13 +810,19 @@ class AnsiCodeTracker {
 		this.strikethrough = false;
 		this.fgColor = null;
 		this.bgColor = null;
-		// SGR reset does not affect OSC 8 hyperlink state
+		// SGR reset does not affect OSC 8 hyperlink or key hint state
 	}
 
 	/** Clear all state for reuse. */
 	clear(): void {
 		this.reset();
 		this.activeHyperlink = null;
+		this.activeHint = null;
+	}
+
+	/** The closing marker of the key hint the text is inside, or "" outside one. */
+	getHintClose(): string {
+		return this.activeHint === null ? "" : HINT_CLOSE;
 	}
 
 	getActiveCodes(): string {
@@ -813,6 +841,9 @@ class AnsiCodeTracker {
 		let result = codes.length > 0 ? `\x1b[${codes.join(";")}m` : "";
 		if (this.activeHyperlink) {
 			result += formatOsc8Hyperlink(this.activeHyperlink);
+		}
+		if (this.activeHint) {
+			result += this.activeHint;
 		}
 		return result;
 	}
@@ -833,14 +864,15 @@ class AnsiCodeTracker {
 			this.strikethrough ||
 			this.fgColor !== null ||
 			this.bgColor !== null ||
-			this.activeHyperlink !== null
+			this.activeHyperlink !== null ||
+			this.activeHint !== null
 		);
 	}
 
 	/**
 	 * Get reset codes for attributes that need to be turned off at line end.
 	 * Underline and strikethrough must be closed to prevent bleeding into padding.
-	 * Active OSC 8 hyperlinks must be closed and re-opened on the next line.
+	 * Active OSC 8 hyperlinks and key hints must be closed and re-opened on the next line.
 	 * Returns empty string if no attributes need closing.
 	 */
 	getLineEndReset(): string {
@@ -854,7 +886,7 @@ class AnsiCodeTracker {
 		if (this.activeHyperlink) {
 			result += formatOsc8Close(this.activeHyperlink.terminator); // Re-opened at line start via getActiveCodes()
 		}
-		return result;
+		return result + this.getHintClose(); // Re-opened at line start via getActiveCodes()
 	}
 }
 
@@ -997,6 +1029,9 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 	for (const inputLine of inputLines) {
 		// Prepend active ANSI codes from previous lines (except for first line)
 		const prefix = result.length > 0 ? tracker.getActiveCodes() : "";
+		// A key hint open across the newline ends with this line's text, so padding or a border after it is not part
+		// of the hint; the next line re-opens it.
+		if (result.length > 0) result[result.length - 1] += tracker.getHintClose();
 		const wrappedLines = wrapSingleLine(prefix + inputLine, width);
 		for (const wrappedLine of wrappedLines) {
 			result.push(wrappedLine);
@@ -1006,6 +1041,37 @@ export function wrapTextWithAnsi(text: string, width: number): string[] {
 	}
 
 	return result.length > 0 ? result : [""];
+}
+
+function hintMarkerLength(line: string, index: number): number {
+	if (line.startsWith(HINT_CLOSE, index)) return HINT_CLOSE.length;
+	return line.startsWith(HINT_OPEN, index) ? ansiCodeLength(line, index) : 0;
+}
+
+/** Hint markers carry the active action across a wrap but do not by themselves make a row. */
+function hasWrapContent(line: string): boolean {
+	for (let i = 0; i < line.length; ) {
+		const length = hintMarkerLength(line, i);
+		if (!length) return true;
+		i += length;
+	}
+	return false;
+}
+
+/** Trim the same spaces as the unmarked row, retaining any hint markers among them. */
+function trimWrapEnd(line: string): string {
+	const trimmed = line.trimEnd();
+	if (!trimmed.endsWith("\x07")) return trimmed;
+	let end = trimmed.length;
+	const markers: string[] = [];
+	while (end > 0 && trimmed.charCodeAt(end - 1) === 7) {
+		const start = trimmed.lastIndexOf("\x1b", end - 1);
+		if (start < 0 || hintMarkerLength(trimmed, start) !== end - start) break;
+		markers.push(trimmed.slice(start, end));
+		end = start;
+		while (end > 0 && WHITESPACE_REGEX.test(trimmed[end - 1]!)) end--;
+	}
+	return markers.length ? trimmed.slice(0, end) + markers.reverse().join("") : trimmed;
 }
 
 function wrapSingleLine(line: string, width: number): string[] {
@@ -1031,9 +1097,9 @@ function wrapSingleLine(line: string, width: number): string[] {
 
 		// Token itself is too long - break it character by character
 		if (tokenVisibleLength > width && !isWhitespace) {
-			if (currentLine) {
+			if (hasWrapContent(currentLine)) {
 				// Trim before adding the reset, which would otherwise block the final trimEnd()
-				currentLine = currentLine.trimEnd();
+				currentLine = trimWrapEnd(currentLine);
 				// Add specific reset for underline only (preserves background)
 				const lineEndReset = tracker.getLineEndReset();
 				if (lineEndReset) {
@@ -1059,7 +1125,7 @@ function wrapSingleLine(line: string, width: number): string[] {
 
 		if (totalNeeded > width && currentVisibleLength > 0) {
 			// Trim trailing whitespace, then add underline reset (not full reset, to preserve background)
-			let lineToWrap = currentLine.trimEnd();
+			let lineToWrap = trimWrapEnd(currentLine);
 			if (isWhitespace) {
 				// The dropped space may carry codes (e.g. closing a styled word). Keep them on the wrapped line so
 				// the style ends there and is not re-opened on the next line.
@@ -1079,7 +1145,12 @@ function wrapSingleLine(line: string, width: number): string[] {
 			}
 			currentLine = tracker.getActiveCodes() + token;
 			currentVisibleLength = tokenVisibleLength;
-		} else if (isWhitespace && totalNeeded > width && token.includes("\x1b")) {
+		} else if (
+			isWhitespace &&
+			totalNeeded > width &&
+			token.includes("\x1b") &&
+			hasWrapContent(extractAnsiCodes(token))
+		) {
 			// Whitespace wider than an empty line. Plain spaces are removed by the final trimEnd(), but codes after
 			// them (e.g. a trailing reset) would block that and leave the line wider than width. Keep only the codes.
 			currentLine += extractAnsiCodes(token);
@@ -1092,13 +1163,13 @@ function wrapSingleLine(line: string, width: number): string[] {
 		updateTrackerFromText(token, tracker);
 	}
 
-	if (currentLine) {
+	if (hasWrapContent(currentLine)) {
 		// No reset at end of final line - let caller handle it
 		wrapped.push(currentLine);
 	}
 
 	// Trailing whitespace can cause lines to exceed the requested width
-	return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
+	return wrapped.length > 0 ? wrapped.map(trimWrapEnd) : [""];
 }
 
 export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;

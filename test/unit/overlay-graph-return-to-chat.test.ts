@@ -1,9 +1,9 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it, vi } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 

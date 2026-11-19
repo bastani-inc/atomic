@@ -46,6 +46,7 @@ import {
 	durableRecordedToolResults,
 	durableWaitingStages,
 	latestStageSessionCheckpoints,
+	resumingStageChats,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
 import { recordThrowingToolFailure, recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
@@ -112,7 +113,12 @@ import {
 	type RunEvictionCheck,
 	RunStageResidency,
 } from "../runs/foreground/run-residency.js";
-import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import {
+	stageControlRegistry as defaultStageControlRegistry,
+	disposeAfterStageHolds,
+	type StageControlHandle,
+	type StageControlRegistry,
+} from "../runs/foreground/stage-control-registry.js";
 import { disposeStageIdleReleaser, settleReleasedStages } from "../runs/foreground/stage-idle-release.js";
 import { readReplayedStageMessages } from "../runs/foreground/stage-runner-options.js";
 import type { StageWaitHandoff } from "../runs/foreground/stage-wake-dispatcher.js";
@@ -126,6 +132,7 @@ import { coercePossibleStages } from "../shared/possible-stages.js";
 import { assertRecordedParentsMaterialised } from "../shared/replay-topology-failure.js";
 import { parseEvictWhenWaiting, type RunEvictionPolicy } from "../shared/run-eviction.js";
 import { RunEvictedError, RunEvictionConfigError, RunReplayError } from "../shared/run-eviction-errors.js";
+import { generationAtPause } from "../shared/run-generation.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
 import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
@@ -362,7 +369,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				opts.workers ||
 				backend.getWorkflow(opts.continuation?.source.id ?? runId)?.resources);
 		if (publicResources) opts = await restoreWorkerOptions(backend, { ...opts, runId });
-		const publicPool = publicResources ? await activatePublicPool(backend, opts) : undefined;
+		const publicPool = publicResources ? await activatePublicPool(backend, opts, resumingChats) : undefined;
 		try {
 			if (opts.effectiveResources)
 				opts = {
@@ -407,9 +414,18 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			}
 		}
 	};
-	return opts.parentRun === undefined && backend instanceof JournalDurableBackend
-		? await backend.withWorkflowLease(runId, execute)
-		: await execute();
+	const resumingChats =
+		opts.parentRun === undefined && opts.runId !== undefined && backend.getWorkflow(runId) !== undefined
+			? (opts.stageControlRegistry ?? defaultStageControlRegistry)
+			: undefined;
+	const releaseChats = resumingChats?.reserveStageChats?.(resumingStageChats(backend, runId));
+	try {
+		return opts.parentRun === undefined && backend instanceof JournalDurableBackend
+			? await backend.withWorkflowLease(runId, execute)
+			: await execute();
+	} finally {
+		releaseChats?.();
+	}
 }
 
 function evictionRefused(
@@ -616,8 +632,14 @@ async function executeRun(
 	const freshLaunchBranch =
 		initialBranch === undefined && isFreshLaunch ? resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined;
 	const keepsCopiedParent = (parentId: string): boolean => keepsForkCopiedParent(copiedByFork, runSnapshot, parentId);
+	const priorGeneration = Math.max(
+		existingRootHandle?.runGeneration ?? 0,
+		activeStore.run(runId)?.runGeneration ?? 0,
+		opts.continuation?.source.id === runId ? (opts.continuation.source.runGeneration ?? 0) : 0,
+	);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
+		...(priorGeneration > 0 ? { runGeneration: priorGeneration } : {}),
 		name: def.name,
 		inputs: Object.freeze(resolvedInputs),
 		status: "running" as const,
@@ -748,7 +770,15 @@ async function executeRun(
 	});
 	const mapRestoredOptions = restoredStageOptionsMapper(opts.worktreeRootMappings ?? []);
 	const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
-	const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
+	const sharedStageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
+	/**
+	 * The stage handles this execution registered. A resume can take the run's id before this execution's cleanup
+	 * runs, so its end releases only these and leaves a successor's handles alone (#5499).
+	 */
+	const ownStageHandles = new Set<StageControlHandle>();
+	const stageRegistry = recordStageRegistrations(sharedStageRegistry, ownStageHandles, () =>
+		isTerminalRunStatus(runSnapshot.status),
+	);
 	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
 	const sourceToContinuationNodeIds = new Map<string, string>();
 	const replayIndex = createContinuationReplayIndex(opts.continuation, sourceToContinuationNodeIds);
@@ -1161,7 +1191,15 @@ async function executeRun(
 		let resumable: boolean | undefined;
 		if (durable?.status === "running") {
 			resumable = isDurableWorkflowResumable({ ...durable, status: "paused", resumable: true });
-			await transitionDurableWorkflowStatus(durableBackend, runId, ["running"], "paused", undefined, resumable);
+			await transitionDurableWorkflowStatus(
+				durableBackend,
+				runId,
+				["running"],
+				"paused",
+				undefined,
+				resumable,
+				generationAtPause(runSnapshot),
+			);
 			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
 		}
 		activeStore.recordRunPaused(runId, undefined, {
@@ -1335,20 +1373,8 @@ async function executeRun(
 		},
 	});
 	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
-	const chain = createChainPrimitive({
-		runtime,
-		task: gatedTask,
-		nextReplayKey: (name) => stageReplayKeyGenerator(name),
-	});
-	const parallel = createParallelPrimitive({
-		runtime,
-		task: gatedTask,
-		durable: {
-			backend: durableBackend,
-			workflowId: runId,
-			nextReplayKey: (name) => stageReplayKeyGenerator(name),
-		},
-	});
+	const chain = createChainPrimitive({ runtime, task: gatedTask });
+	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
 	const ui = buildExitGatedUiContext({
 		opts,
 		throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
@@ -1385,6 +1411,8 @@ async function executeRun(
 		runId,
 		{
 			registry: stageRegistry,
+			store: activeStore,
+			stageUiBroker,
 			adapters: opts.adapters,
 			cwd: workflowInvocationCwd,
 			defaultSessionDir: opts.defaultSessionDir,
@@ -1557,6 +1585,7 @@ async function executeRun(
 		if (opts.parentRun !== undefined) return;
 		if (!durableRootAdmitted || durableBackend.getWorkflow(runId) === undefined) return;
 		const previous = controlSettlements;
+		const runGeneration = runSnapshot.runGeneration;
 		const control = ++latestControl;
 		const settlement = (async () => {
 			await previous;
@@ -1569,6 +1598,7 @@ async function executeRun(
 					status,
 					undefined,
 					true,
+					runGeneration,
 				))
 			) {
 				throw new WorkflowRunControlError(runId, status, "transition-refused");
@@ -1669,6 +1699,7 @@ async function executeRun(
 		if (opts.persistence && !rebuilt) {
 			await appendRunStart(opts.persistence, {
 				runId,
+				runGeneration: runSnapshot.runGeneration,
 				name: def.name,
 				inputs: resolvedInputs,
 				...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
@@ -1739,6 +1770,7 @@ async function executeRun(
 				const { branch: _invocationBranch, ...invocationPaths } = invocationMetadata;
 				const registration = {
 					...durableRootRegistration,
+					...(runSnapshot.runGeneration !== undefined ? { runGeneration: runSnapshot.runGeneration } : {}),
 					...(definitionSource === undefined ? {} : { definitionSource }),
 					modelOwner: runSnapshot.modelOwner,
 					...invocationPaths,
@@ -1844,10 +1876,19 @@ async function executeRun(
 			await recordRunResultCheckpointAsync(durableBackend, runSnapshot);
 			if (returned.status === "completed") await recordRunCompletedCheckpointAsync(durableBackend, runId);
 		}
-		await durableBackend.commitWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
-		terminalStatusCommitted = true;
-		await appendRunEndWhenRecorded(opts.persistence, recorded, {
+		await durableBackend.commitWorkflowStatus(
 			runId,
+			returned.status,
+			undefined,
+			returned.metadata?.resumable,
+			undefined,
+			runSnapshot.runGeneration,
+			runSnapshot.finishSequence,
+		);
+		terminalStatusCommitted = true;
+		await appendRunEndWhenRecorded(opts.persistence, recorded, runSnapshot, {
+			runId,
+			runGeneration: runSnapshot.runGeneration,
 			status: returned.status,
 			result,
 			...(returned.error !== undefined ? { error: returned.error } : {}),
@@ -2044,15 +2085,15 @@ async function executeRun(
 					runtime.wakeDispatcher.dispose();
 					terminalEvents.dispose();
 					await subscriberReports.release();
-					// Standalone terminal runs have no host to own retained SDK sessions.
-					// Preserve caller-owned registries and handles needed for continuation.
+					// Standalone terminal runs have no host to own retained SDK sessions, so every ending releases them,
+					// a resumable failure included: resume replays its completed stages from the record and opens new
+					// sessions for the rest (#5499). Caller-owned registries keep theirs until their owner clears them.
 					if (
 						opts.stageControlRegistry === undefined &&
 						opts.executionMode !== "interactive" &&
-						isTerminalRunStatus(runSnapshot.status) &&
-						runSnapshot.resumable !== true
+						isTerminalRunStatus(runSnapshot.status)
 					) {
-						await stageRegistry.clear(runId);
+						await releaseOwnStageHandles(sharedStageRegistry, runId, ownStageHandles);
 					} else if (isTerminalRunStatus(runSnapshot.status)) {
 						// The workflow body has returned, so no author code can reuse a stage
 						// context. Saved, idle stage sessions leave RAM; chat reopens them.
@@ -2065,4 +2106,99 @@ async function executeRun(
 			}
 		}
 	}
+}
+
+/**
+ * `registry`, recording in `own` every handle registered through it until that handle is unregistered. A handle
+ * another registration displaced stays recorded: only this execution can still release it.
+ */
+function recordStageRegistrations(
+	registry: StageControlRegistry,
+	own: Set<StageControlHandle>,
+	executionEnded: () => boolean,
+): StageControlRegistry {
+	return new Proxy(registry, {
+		get(target, key) {
+			if (key === "register") {
+				return (handle: StageControlHandle) => {
+					own.add(handle);
+					const unregister = target.register(handle, executionEnded);
+					return () => {
+						own.delete(handle);
+						unregister();
+					};
+				};
+			}
+			if (key === "releaseIdle") {
+				return (runId: string, stageId?: string) => {
+					if (stageId === undefined) return releaseOwnIdleStages(target, runId, own);
+					// An old context can be collected after a resume takes its stage id. Release only this run's session.
+					const current = target.peek(runId, stageId);
+					if (current === undefined || !own.has(current)) return Promise.resolve();
+					return target.releaseIdle(runId, stageId);
+				};
+			}
+			const value: unknown = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
+/**
+ * Release the stage handles an ended execution registered under `runId`: all of the run's when every registered one
+ * is its own, otherwise only its own, so a resume that took the id meanwhile, or a chat opened on a stage, keeps its
+ * handles. Its handles a resume displaced by registering the same stage are released too; see
+ * {@link disposeDisplacedStageHandles}.
+ */
+async function releaseOwnStageHandles(
+	registry: StageControlRegistry,
+	runId: string,
+	own: ReadonlySet<StageControlHandle>,
+): Promise<void> {
+	const registered = registry.forRun(runId);
+	const disposals = disposeDisplacedStageHandles(registered, own);
+	if (registered.every((handle) => own.has(handle))) disposals.push(registry.clear(runId));
+	else for (const handle of registered) if (own.has(handle)) disposals.push(Promise.resolve(handle.dispose?.()));
+	await settleStageReleases(disposals);
+}
+
+/**
+ * Release the idle saved stages an ended execution registered under `runId`, leaving out any stage a resume that took
+ * the id meanwhile registered: its workflow body can still reuse that stage after it completed (#5499). The resume can
+ * register a stage while this waits on another one's release, so each stage is checked to be this execution's just
+ * before it is released. The handles that resume displaced, before or during the release, are released too; see
+ * {@link disposeDisplacedStageHandles}.
+ */
+async function releaseOwnIdleStages(
+	registry: StageControlRegistry,
+	runId: string,
+	own: ReadonlySet<StageControlHandle>,
+): Promise<void> {
+	const registered = registry.forRun(runId);
+	// Releasing the whole run checks each stage's handle when it gets to it, so it never releases a resume's.
+	if (registered.every((handle) => own.has(handle))) await registry.releaseIdle(runId);
+	else
+		for (const handle of registered)
+			if (own.has(handle) && registry.peek(runId, handle.stageId) === handle)
+				await registry.releaseIdle(runId, handle.stageId);
+	await settleStageReleases(disposeDisplacedStageHandles(registry.forRun(runId), own));
+}
+
+/**
+ * Dispose an ended execution's handles that are no longer registered. A resume that registered the same stage
+ * displaced them, so neither the registry's owner nor anything else can release them any more (#5499); any other way
+ * a handle leaves the registry has disposed it already, and disposing it again does nothing.
+ */
+function disposeDisplacedStageHandles(
+	registered: readonly StageControlHandle[],
+	own: ReadonlySet<StageControlHandle>,
+): Promise<unknown>[] {
+	return [...own]
+		.filter((handle) => !registered.includes(handle))
+		.map((handle) => Promise.resolve(disposeAfterStageHolds(handle)));
+}
+
+async function settleStageReleases(releases: readonly Promise<unknown>[]): Promise<void> {
+	for (const result of await Promise.allSettled(releases))
+		if (result.status === "rejected") console.warn("atomic-workflows: stage session release failed", result.reason);
 }

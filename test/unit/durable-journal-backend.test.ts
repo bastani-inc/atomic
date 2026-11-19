@@ -187,12 +187,16 @@ test("opening rejects a boundary record without its invocation fingerprint", asy
 	});
 });
 
-test("opening folds every journal event exactly once through paged reads", async () => {
+test("opening folds every journal event exactly once through paged reads (#5517)", async () => {
 	const path = database();
 	const writer = await open(path);
 	await register(writer);
-	for (let index = 0; index <= JOURNAL_READ_PAGE_SIZE * 2; index++)
-		await writer.commitCheckpoint({ ...checkpoint(`output ${index}`), checkpointId: `checkpoint ${index}` });
+	// This tests replay, not one fsync per event: the same burst uses the backend's normal append batching.
+	await Promise.all(
+		Array.from({ length: JOURNAL_READ_PAGE_SIZE * 2 + 1 }, (_, index) =>
+			writer.commitCheckpoint({ ...checkpoint(`output ${index}`), checkpointId: `checkpoint ${index}` }),
+		),
+	);
 	const events = (await entries(writer.journal)).length;
 	assert.ok(events > JOURNAL_READ_PAGE_SIZE * 2);
 	const expected = writer.getWorkflow("run");

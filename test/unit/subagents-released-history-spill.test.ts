@@ -148,7 +148,6 @@ async function ownerOf(store: SessionStore, closeStore: () => Promise<void>) {
 				index: 0,
 			},
 			wakeDispatcher: dispatcher,
-			wait: { kind: "background" },
 			recordChild: createSubagentChildRecordSink({ appendEntry }, ctx),
 			runtime: { runSync },
 		});

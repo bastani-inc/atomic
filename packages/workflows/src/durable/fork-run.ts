@@ -82,7 +82,6 @@ import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
-import { forkSourceRecordWithSessions } from "./stage-fork-point.js";
 import { type ForkPointTopology, forkPointCheckpointKey } from "./stage-topology.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
@@ -1135,16 +1134,9 @@ function forkCheckpoint(checkpoint: DurableCheckpoint, ids: ForkIdentities): Dur
 	if (checkpoint.kind === "ui") return forkUiCheckpoint(checkpoint, ids);
 	if (checkpoint.kind === "tool") {
 		const toolTopology = checkpoint.topology;
-		// A record of where a forked stage's source was names the source's session, which the fork copies under a new id.
-		const forkSources = forkSourceRecordWithSessions(
-			checkpoint.argsHash,
-			checkpoint.output,
-			(id) => ids.session(id)!,
-		);
 		return {
 			...checkpoint,
 			workflowId: ids.forkRunId,
-			...(forkSources === undefined ? {} : { output: forkSources }),
 			...(toolTopology?.run === undefined
 				? {}
 				: { topology: { ...toolTopology, run: ids.runTopology(toolTopology.run) } }),
@@ -1256,6 +1248,7 @@ async function forkHandle(
 ): Promise<DurableWorkflowHandle> {
 	const {
 		transitionClaimId: _transitionClaimId,
+		runGeneration: _runGeneration,
 		rootWorkflowId: _rootWorkflowId,
 		sessionFile: _sessionFile,
 		releasedModelOwner: _releasedModelOwner,

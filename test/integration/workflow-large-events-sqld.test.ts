@@ -47,7 +47,8 @@ async function longest(database: SqliteDatabase, table: string, column: string):
 
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => {
-	while (closers.length > 0) await closers.pop()!();
+	// A timed-out hook can keep running: it must never close resources the next test registers (#5521).
+	for (const close of closers.splice(0).reverse()) await close();
 });
 
 for (const backend of storageBackends) {
@@ -186,22 +187,24 @@ for (const backend of storageBackends) {
 				const { int } = dialect.types;
 				const t = runJournalTables(scope.prefix);
 				// The tables as a build of journal schema version 1 created them: no chunks column, no chunk table.
-				await database.exec(`
-					CREATE TABLE ${t.meta}(schema_version ${int} NOT NULL);
-					CREATE TABLE ${t.runs}(
+				// Each schema change can safely run again after SQLITE_SCHEMA; several in one exec cannot (#5521).
+				for (const sql of [
+					`CREATE TABLE ${t.meta}(schema_version ${int} NOT NULL)`,
+					`CREATE TABLE ${t.runs}(
 						run_id TEXT PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL,
 						created_at ${int} NOT NULL, status TEXT NOT NULL, header_json TEXT NOT NULL${dialect.rowOrderColumn}
-					);
-					CREATE TABLE ${t.events}(
+					)`,
+					`CREATE TABLE ${t.events}(
 						run_id TEXT NOT NULL,
 						seq ${int} NOT NULL, epoch ${int} NOT NULL, key TEXT${dialect.byteOrderCollation},
 						type TEXT NOT NULL, payload TEXT NOT NULL, at ${int} NOT NULL${dialect.rowOrderColumn},
 						PRIMARY KEY(run_id, seq), UNIQUE(run_id, key)
-					);
-					CREATE TABLE ${t.leases}(
+					)`,
+					`CREATE TABLE ${t.leases}(
 						run_id TEXT PRIMARY KEY, holder_id TEXT, epoch ${int} NOT NULL, renewed_at ${int} NOT NULL
-					);
-				`);
+					)`,
+				])
+					await database.exec(sql);
 				await database.run(`INSERT INTO ${t.meta} VALUES (1)`);
 				const header = { runId: "old", name: "old", cwd: "/repo", createdAt: 1, status: "running" };
 				await database.run(

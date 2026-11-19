@@ -13,10 +13,9 @@ import { resolveSubagentIntercomTarget } from "../../packages/subagents/src/inte
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import registerSubagentNotify from "../../packages/subagents/src/runs/foreground/notify.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import {
-	BURST_EXECUTION_SCHEDULE,
-	type ExecutorDeps,
-	type SubagentExecutorRuntimeDeps,
+import type {
+	ExecutorDeps,
+	SubagentExecutorRuntimeDeps,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import {
@@ -245,36 +244,51 @@ test("a queued subagent without a task host starts in its launch directory after
 	const rejections = captureRejections();
 	const stage = retirableStageContext(root, new WorkflowStageAdmissionBoundary());
 	const started: string[] = [];
+	const firstRunning = Promise.withResolvers<void>();
+	const firstGate = Promise.withResolvers<void>();
 	const { executor, unregisterNotify } = stageExecutor(
 		root,
 		new EventEmitter(),
 		async (cwd, agents, agentName, task, options) => {
 			started.push(cwd);
-			return runSync(cwd, agents, agentName, task, { ...options, testSession: { output: `${task} result` } });
+			const first = task.includes("first");
+			if (first) firstRunning.resolve();
+			return runSync(cwd, agents, agentName, task, {
+				...options,
+				testSession: { output: `${task} result`, ...(first ? { promptGate: firstGate.promise } : {}) },
+			});
 		},
 	);
-	// The launch waits for a slot, as one queued behind its burst's concurrency limit does.
-	const queued = Promise.withResolvers<() => Promise<void>>();
 	try {
+		// The second child waits for the first one's slot, as one queued behind its run's concurrency limit does.
 		const execution = executor
 			.execute(
 				"tool-call",
-				{ agent: "worker", task: "queued", artifacts: false, [BURST_EXECUTION_SCHEDULE]: queued.resolve },
+				{
+					tasks: [
+						{ agent: "worker", task: "first" },
+						{ agent: "worker", task: "queued" },
+					],
+					concurrency: 1,
+					artifacts: false,
+				},
 				new AbortController().signal,
 				undefined,
 				stage.ctx,
 			)
 			.catch(() => undefined);
-		const dispatch = await queued.promise;
+		await firstRunning.promise;
+		assert.deepEqual(started, [root], "the second child is still queued");
 
 		// Model fallback replaces the session that launched it before a slot frees.
 		stage.retire();
-		await dispatch();
+		firstGate.resolve();
 		await execution;
 
-		assert.deepEqual(started, [root]);
+		assert.deepEqual(started, [root, root]);
 		assert.deepEqual(rejections.stale(), []);
 	} finally {
+		firstGate.resolve();
 		unregisterNotify();
 		rejections.stop();
 	}

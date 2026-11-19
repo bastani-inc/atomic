@@ -1,3 +1,5 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent, not the parent orchestrator.",
 	"The parent session owns delegation, orchestration, review fanout, and follow-up worker launches.",
@@ -14,6 +16,15 @@ export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
 	"If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
 
+const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
+	"subagent-orchestration-instructions",
+	"subagent-slash-result",
+	"subagent-slash-text-result",
+	"subagent-notify",
+	"subagent_control_notice",
+	"subagent-control",
+	"subagent-control-notice",
+]);
 const SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN = /<name>\s*subagent(?:@[^<\s]*)?\s*<\/name>/;
 const PROJECT_CONTEXT_HEADER = "\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n";
 const SKILLS_HEADER = "\n\nThe following skills provide specialized instructions for specific tasks.";
@@ -107,6 +118,66 @@ export function rewriteSubagentPrompt(prompt: string, options: PromptRewriteOpti
 	return `${boundary}\n\n${rewritten}`;
 }
 
+function isParentOnlySubagentMessage(message: unknown): boolean {
+	const m = message as { role?: string; customType?: string };
+	return (
+		m?.role === "custom" && typeof m.customType === "string" && PARENT_ONLY_CUSTOM_MESSAGE_TYPES.has(m.customType)
+	);
+}
+
+function isSubagentToolResultMessage(message: unknown): boolean {
+	const m = message as { role?: string; toolName?: string };
+	return m?.role === "toolResult" && m.toolName === "subagent";
+}
+
+function isSubagentToolCallBlock(block: unknown): boolean {
+	const b = block as { type?: string; name?: string };
+	return b?.type === "toolCall" && b.name === "subagent";
+}
+
+function stripAssistantSubagentToolCallBlocks<T>(message: T): T | undefined {
+	const m = message as { role?: string; content?: unknown };
+	if (m?.role !== "assistant" || !Array.isArray(m.content)) return message;
+	const filteredContent = m.content.filter((block) => !isSubagentToolCallBlock(block));
+	if (filteredContent.length === m.content.length) return message;
+	if (filteredContent.length === 0) return undefined;
+	return { ...m, content: filteredContent } as T;
+}
+
+/** Remove parent-only orchestration history while preserving it for an authorized fanout child. */
+export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanoutToolHistory = false): T[] {
+	let changed = false;
+	const filtered: T[] = [];
+	for (const message of messages) {
+		if (
+			isParentOnlySubagentMessage(message) ||
+			(!preserveFanoutToolHistory && isSubagentToolResultMessage(message))
+		) {
+			changed = true;
+			continue;
+		}
+		const stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
+		if (stripped === undefined) {
+			changed = true;
+			continue;
+		}
+		if (stripped !== message) changed = true;
+		filtered.push(stripped);
+	}
+	return changed ? filtered : messages;
+}
+
+const forkReplayFilter = Symbol.for("atomic.subagents/fork-replay-filter@1");
+
+export interface InProcessChildPromptBehavior {
+	readonly systemPromptTransform: (prompt: string) => string;
+	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
+	readonly [forkReplayFilter]: {
+		project: (messages: AgentMessage[]) => AgentMessage[];
+		boundary: (message: AgentMessage) => "visible" | "hidden" | undefined;
+	};
+}
+
 export function createInProcessChildSystemPromptTransform(
 	policy: ChildPromptPolicy,
 	explicitSkillInjection = "",
@@ -121,14 +192,30 @@ export function createInProcessChildSystemPromptTransform(
 	};
 }
 
-/**
- * The session options that make a session an admitted in-process child: its rewritten system prompt. A forked child's
- * inherited conversation is left exactly as the parent would send it (#5481); what it must not act on is covered by
- * the boundary instructions and the child's tool policy.
- */
-export function createInProcessChildPromptBehavior(
-	policy: ChildPromptPolicy,
-	explicitSkillInjection = "",
-): { readonly systemPromptTransform: (prompt: string) => string } {
-	return { systemPromptTransform: createInProcessChildSystemPromptTransform(policy, explicitSkillInjection) };
+/** Build the construction-time transforms for one admitted in-process child. */
+export function createInProcessChildPromptBehavior(policy: ChildPromptPolicy): InProcessChildPromptBehavior {
+	const project = (messages: AgentMessage[]) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized);
+	return {
+		systemPromptTransform: createInProcessChildSystemPromptTransform(policy),
+		initialContextTransform: project,
+		[forkReplayFilter]: {
+			project,
+			boundary(message) {
+				if (!policy.fanoutAuthorized && isSubagentToolResultMessage(message)) return "visible";
+				if (
+					!policy.fanoutAuthorized &&
+					message.role === "assistant" &&
+					message.content?.length &&
+					message.content.every(isSubagentToolCallBlock)
+				)
+					return "hidden";
+				if (!isParentOnlySubagentMessage(message) || message.role !== "custom") return undefined;
+				return !("excludeFromContext" in message && message.excludeFromContext === true) &&
+					typeof message.content === "string" &&
+					(message.content.at(0)?.trim() || message.content.at(-1)?.trim())
+					? "visible"
+					: "hidden";
+			},
+		},
+	};
 }

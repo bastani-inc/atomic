@@ -174,7 +174,6 @@ async function launchInterruptedChild(cwd: string, sessionManager: SessionManage
 			intercomSessionName: `subagent-worker-${runId}-1`,
 			intercomGroup: "default",
 		},
-		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink(
 			{
 				appendEntry: async (customType: string, data?: unknown) => {

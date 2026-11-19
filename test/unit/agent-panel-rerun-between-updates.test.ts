@@ -16,6 +16,8 @@ import { agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
+import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
+import { snapshotStageTasks } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
 import { taskFixture } from "../helpers/task-projection.ts";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -122,6 +124,29 @@ describe("a row that runs again before the panel updates is listed again while w
 		}
 	});
 
+	test("a worker stage footer sees a subagent interrupted again between snapshots (#5567)", async () => {
+		const fixture = taskFixture();
+		try {
+			await fixture.start("interrupted");
+			const child = fixture.store.tasks[0]!.ref.taskId;
+			const worker = ownerTaskViewSource(fixture.store);
+			const root = new PooledStageTaskSource(async () => undefined);
+			const paint = () => {
+				root.apply(structuredClone(snapshotStageTasks(worker)));
+				return renderTaskFooter(root, 120).join("\n");
+			};
+			fixture.store.setTurnInterrupted(child, true);
+			assert.equal(paint(), "");
+			await fixture.start("unrelated");
+			assert.doesNotMatch(paint(), /interrupted/);
+			fixture.store.setTurnInterrupted(child, false);
+			fixture.store.setTurnInterrupted(child, true);
+			assert.match(paint(), /interrupted/);
+		} finally {
+			await fixture.dispose();
+		}
+	});
+
 	test("an interrupted subagent that left and is then stopped without running stays out (#5504)", async () => {
 		const fixture = taskFixture();
 		try {
@@ -192,6 +217,60 @@ describe("a row that runs again before the panel updates is listed again while w
 		blocked(3_000);
 		panel.changed();
 		assert.deepEqual(new Set(panel.ids()), new Set(["ext:live", "run:w"]), "it ran again, so it is listed again");
+	});
+
+	test("a restored workflow that runs and blocks again in the same millisecond reappears in both panels (#5567)", () => {
+		const panel = workflowPanel();
+		const model = new AgentPanelModel();
+		const rows = () => {
+			panel.changed();
+			return [
+				panel.ids().sort(),
+				model
+					.rows(panel.items())
+					.map((item) => item.id)
+					.sort(),
+			];
+		};
+		const block = () =>
+			panel.store.recordRunBlocked("w", "provider unavailable", {
+				failureKind: "provider",
+				failureRecoverability: "recoverable",
+				failureDisposition: "active_blocked",
+				resumable: true,
+				blockedAt: 2_000,
+			});
+		panel.store.recordRunStart(workflowRun("w"));
+		block();
+		assert.deepEqual(rows(), [[], []]);
+		panel.setAgentRunning(true);
+		const snapshot = structuredClone(panel.store.run("w")!);
+		panel.store.clear();
+		panel.store.recordRunStart(snapshot);
+		assert.deepEqual(rows(), [["ext:live"], ["ext:live"]], "restoring the same attempt is not a resume");
+		const first = Number(panel.items()[0]!.runGeneration);
+		panel.store.recordRunStart(workflowRun("w"));
+		block();
+		assert.deepEqual(rows(), [
+			["ext:live", "run:w"],
+			["ext:live", "run:w"],
+		]);
+		assert.ok(Number(panel.items()[0]!.runGeneration) > first);
+	});
+
+	test("restoring an earlier snapshot cannot reuse a later attempt's generation (#5567)", () => {
+		const panel = workflowPanel();
+		const pause = () => panel.store.recordRunPaused("w", 2000);
+		panel.store.recordRunStart(workflowRun("w"));
+		pause();
+		const earlier = structuredClone(panel.store.run("w")!);
+		panel.store.recordRunResumed("w", 2000);
+		pause();
+		const latest = Number(panel.items()[0]!.runGeneration);
+		panel.store.recordRunStart(earlier);
+		panel.store.recordRunResumed("w", 2000);
+		pause();
+		assert.ok(Number(panel.items()[0]!.runGeneration) > latest);
 	});
 
 	test("an extension's stopped row with a new run identity is listed again while work runs (#5504)", () => {

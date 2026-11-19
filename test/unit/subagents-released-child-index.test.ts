@@ -182,7 +182,6 @@ async function releaseChild(at: Owner, index: number, finishes = false): Promise
 		agent: "waiter",
 		task: large ? "t".repeat(LARGE_PAYLOAD_CHARS) : "watch CI",
 		options: { cwd: at.cwd, runId, index: 0, intercomSessionName: `subagent-waiter-${id}` },
-		wait: { kind: "background" },
 		recordChild: at.sink,
 		wakeDispatcher: at.dispatcher,
 		schedule: (dispatch) => setImmediate(() => void dispatch()),

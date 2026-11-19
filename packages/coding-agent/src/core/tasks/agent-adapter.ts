@@ -140,25 +140,37 @@ export class AgentTaskHost {
 		if (task.ok) this.supervisor.releaseTaskRecord(task.value);
 	}
 
-	observeAgentLaunch(
-		taskId: C.TaskId,
-		policy?: C.WaitPolicy,
-		onRegistered?: (yieldWait: (reason: C.YieldReason) => C.Result<C.WaitOutcome, C.YieldError>) => void,
-	) {
+	/**
+	 * The launch's observation of an agent task, which always runs in the background: it yields once registered, with
+	 * `explicit` when the launch asked for the background and `default-background` otherwise, also for any other policy
+	 * an untyped caller passes. Wait for the task explicitly with {@link waitForTask}.
+	 */
+	observeAgentLaunch(taskId: C.TaskId, policy?: { readonly kind: "background" }, onRegistered?: () => void) {
 		const task = this.resolveTask(taskId);
+		const background = policy?.kind === "background" ? policy : undefined;
 		return task.ok
-			? this.supervisor.initialObservation(task.value, policy, (wait) => {
-					if (policy?.kind === "foreground") this.trackMessageWait(wait);
-					onRegistered?.((reason) => this.supervisor.yieldTaskWait(wait, reason));
-				})
+			? this.supervisor.initialObservation(task.value, background, () => onRegistered?.())
 			: Promise.resolve(task);
 	}
 
-	waitForTask(taskId: C.TaskId, budgetMs?: number, onRegistered?: (wait: WaitLease) => void) {
-		return this.supervisor.waitForTaskId(this.owner, taskId, budgetMs, (wait) => {
-			this.trackMessageWait(wait);
-			onRegistered?.(wait);
-		});
+	/**
+	 * Waits for the task to settle, until `budgetMs` (the owner's agent budget when omitted) yields the wait. An aborted
+	 * `signal` ends the wait at once with `ObserverCancelled`, as it does when it is already aborted; the task keeps running.
+	 */
+	waitForTask(taskId: C.TaskId, budgetMs?: number, onRegistered?: (wait: WaitLease) => void, signal?: AbortSignal) {
+		let registered: WaitLease | undefined;
+		const stop = () => {
+			if (registered) this.supervisor.disposeTaskWait(registered);
+		};
+		signal?.addEventListener("abort", stop, { once: true });
+		return this.supervisor
+			.waitForTaskId(this.owner, taskId, budgetMs, (wait) => {
+				registered = wait;
+				this.trackMessageWait(wait);
+				onRegistered?.(wait);
+				if (signal?.aborted) stop();
+			})
+			.finally(() => signal?.removeEventListener("abort", stop));
 	}
 
 	/** The automatic foreground budget this owner gives a command wait that names none (bash's default); `undefined` waits until settled. */

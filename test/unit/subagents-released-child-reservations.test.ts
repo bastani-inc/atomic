@@ -8,6 +8,8 @@ import {
 	acknowledgeReleasedChildWake,
 	dropReleasedChildren,
 	INTERCOM_CONNECTED_EVENT,
+	type ReleasedChildHoldFailure,
+	type ReleasedChildHoldRecovery,
 	type ReleasedChildReservation,
 	releasedChildReservation,
 	reserveReleasedChildren,
@@ -19,7 +21,10 @@ import {
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
-import { observeSubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import {
+	observeSubagentChildRecord,
+	subagentChildIndexEntry,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -113,7 +118,7 @@ async function ownerWith(records: Array<Partial<SubagentChildRecord>>) {
 	return { ctx, ownerSessionId };
 }
 
-test("every released and parked child of an owner is reserved in one request, whatever their number (#4326)", async () => {
+test("every released and parked child of an owner is reserved in one request per broker frame, whatever their number (#4326, #5551)", async () => {
 	const many = Array.from({ length: 1_201 }, () => ({}));
 	const { ownerSessionId } = await ownerWith([
 		...many,
@@ -125,12 +130,21 @@ test("every released and parked child of an owner is reserved in one request, wh
 
 	await reserveReleasedChildrenOf(events, ownerSessionId);
 
-	assert.equal(emitted.length, 1, "one request, not one per child");
-	const [request] = emitted;
-	assert.ok(request);
-	const children = (request.data as { children: ReleasedChildReservation[] }).children;
-	assert.equal(request.channel, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT);
-	assert.equal(children.length, 1_202);
+	// The broker refuses a frame whole: one request per frame tells which children a failure leaves without a hold.
+	assert.deepEqual(
+		emitted.map((request) => [
+			request.channel,
+			(request.data as { children: ReleasedChildReservation[] }).children.length,
+		]),
+		[
+			[SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, 500],
+			[SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, 500],
+			[SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, 202],
+		],
+		"one request per frame, not one per child",
+	);
+	const children = emitted.flatMap((request) => (request.data as { children: ReleasedChildReservation[] }).children);
+	assert.equal(new Set(children.map((child) => child.childName)).size, 1_202);
 	assert.equal(children.filter((child) => child.wake).length, 1_201);
 	assert.equal(children.filter((child) => !child.wake).length, 1);
 });
@@ -207,46 +221,232 @@ test("a broker refusal of a released child's reservation appears in status and n
 	}
 });
 
-test("a failed reservation of thousands of children finds them by name in one pass over the owner's records (#4326)", async () => {
-	const { ctx, ownerSessionId } = await ownerWith([]);
+test("a released child's reservation failure notice and status state its code and hint once (#5551)", async () => {
+	const { ctx } = await ownerWith([{ waitingOn: [] }]);
 	const { events, emitted } = bus();
 	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
-		(data as { completion?: Promise<void> }).completion = Promise.resolve();
+		(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("Not connected"));
 	});
 	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
 	try {
-		const children = 2_000;
-		let targetReads = 0;
-		const names: string[] = [];
-		for (let index = 0; index < children; index++) {
-			const name = `subagent-bulk-${index}`;
-			const bulk = record({
-				childId: `bulk:${index}`,
-				runId: "bulk",
-				index,
-				owner: { kind: "session", sessionId: ownerSessionId },
-			});
-			Object.defineProperty(bulk, "intercomTarget", {
-				enumerable: true,
-				get: () => {
-					targetReads++;
-					return name;
-				},
-			});
-			observeSubagentChildRecord(bulk);
-			names.push(name);
-		}
-		targetReads = 0;
-		events.emit(SUBAGENT_HOLD_FAILURE_EVENT, { childNames: names, error: new Error("broker gone") });
-		assert.ok(targetReads <= 2 * children, `${targetReads} target reads for ${children} failed reservations`);
 		await vi.waitFor(() =>
 			assert.equal(emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length, 1),
 		);
-		assert.equal(subagentChildRecordFailures.last?.code, "hold-failed");
+		const notice = emitted.find((item) => item.channel === SUBAGENT_COMPLETE_EVENT)?.data as { summary: string };
+		const once =
+			"Sends to released subagent subagent-worker-run0-1 cannot be held (hold-failed). Check that Intercom is connected; until the reservation exists, sends to this subagent are answered as not found.";
+		assert.equal(notice.summary, once);
+		const status = subagentChildrenAwaitingResume(ctx);
+		assert.equal(status.at(-1), `Subagent run0:0: ${once}`);
 	} finally {
 		stop();
 	}
 });
+
+test("a failure that leaves several released subagents without a hold names each of them, in one notice (#5551)", async () => {
+	const { ctx } = await ownerWith([{}, {}, { terminalStatus: "ok", waitingOn: undefined }]);
+	const { events, emitted } = bus();
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+		(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("Not connected"));
+	});
+	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	try {
+		await reserveReleasedChildren(events, [
+			{ childName: "subagent-worker-run0-1", aliases: [], wake: true },
+			{ childName: "subagent-worker-run1-1", aliases: [], wake: true },
+			{ childName: "subagent-worker-run2-1", aliases: [], wake: true },
+		]);
+		await vi.waitFor(() => assert.ok(emitted.some((item) => item.channel === SUBAGENT_COMPLETE_EVENT)));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(
+			emitted
+				.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT)
+				.map((item) => (item.data as { summary: string }).summary),
+			[
+				"Sends to released subagents subagent-worker-run0-1 and subagent-worker-run1-1 cannot be held (hold-failed). Check that Intercom is connected; until the reservation exists, sends to these subagents are answered as not found.",
+			],
+			"the one that ended on its own has nothing to hold",
+		);
+	} finally {
+		stop();
+	}
+});
+
+test("a frame that fails without naming a child is reported for its own children only, not for the frames the broker took (#5551)", async () => {
+	const { events, emitted } = bus();
+	const failures: ReleasedChildHoldFailure[] = [];
+	const recovered: string[] = [];
+	events.on(SUBAGENT_HOLD_FAILURE_EVENT, (data) => {
+		const failure = data as ReleasedChildHoldFailure;
+		failure.handled = true;
+		failures.push(failure);
+	});
+	events.on(SUBAGENT_HOLD_RECOVERED_EVENT, (data) =>
+		recovered.push(...(data as ReleasedChildHoldRecovery).childNames),
+	);
+	let requests = 0;
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+		// The connection is lost while the second frame is asked for.
+		(data as { completion?: Promise<void> }).completion =
+			++requests === 2 ? Promise.reject(new Error("Not connected")) : Promise.resolve();
+	});
+	const names = Array.from({ length: 501 }, (_, index) => `subagent-bulk-${index}-1`);
+
+	await reserveReleasedChildren(
+		events,
+		names.map((childName) => ({ childName, aliases: [], wake: true, taskId: "task-1" })),
+	);
+
+	assert.equal(emitted.filter((item) => item.channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT).length, 2);
+	assert.deepEqual(
+		failures.map((failure) => [failure.childNames, failure.taskIds?.get(names[500] as string)]),
+		[[[names[500]], "task-1"]],
+	);
+	assert.deepEqual(recovered, names.slice(0, 500));
+});
+
+test("a refused frame is asked for again without the refused child, and without a child a later request asked for (#5551)", async () => {
+	const { events, emitted } = bus();
+	const failures: ReleasedChildHoldFailure[] = [];
+	events.on(SUBAGENT_HOLD_FAILURE_EVENT, (data) => {
+		const failure = data as ReleasedChildHoldFailure;
+		failure.handled = true;
+		failures.push(failure);
+	});
+	const refusal = new ReleasedChildReservationError({ code: "not_owner", childName: "taken" });
+	const earlierAnswer = Promise.withResolvers<void>();
+	let requests = 0;
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+		const request = data as { completion?: Promise<void> };
+		request.completion = ++requests === 1 ? earlierAnswer.promise : Promise.resolve();
+	});
+	const reserved = () =>
+		emitted
+			.filter((item) => item.channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT)
+			.map((item) =>
+				(item.data as { children: ReleasedChildReservation[] }).children.map(
+					(child) => `${child.childName}:${child.wake ? "wake" : "park"}`,
+				),
+			);
+
+	const earlier = reserveReleasedChildren(events, [
+		{ childName: "paused-since", aliases: [], wake: true },
+		{ childName: "taken", aliases: [], wake: true },
+		{ childName: "other", aliases: [], wake: true },
+	]);
+	// Paused meanwhile: parked by a later request, which the broker takes.
+	await reserveReleasedChildren(events, [{ childName: "paused-since", aliases: [], wake: false }]);
+	earlierAnswer.reject(refusal);
+	await earlier;
+
+	assert.deepEqual(reserved(), [
+		["paused-since:wake", "taken:wake", "other:wake"],
+		["paused-since:park"],
+		["other:wake"],
+	]);
+	assert.deepEqual(
+		failures.map((failure) => failure.childNames),
+		[["taken"]],
+	);
+});
+
+test("a reservation that fails after its child runs again or has ended notifies nobody and logs nothing (#5551)", async () => {
+	const { ctx } = await ownerWith([
+		{ terminalStatus: "ok", waitingOn: undefined },
+		// Woken: its running record still carries the status of its last released run.
+		{ state: "running", terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS, waitingOn: undefined },
+	]);
+	const { events, emitted } = bus();
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+		(data as { completion?: Promise<void> }).completion = Promise.reject(
+			new Error("Restoring-recipient request timeout"),
+		);
+	});
+	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const before = subagentChildRecordFailures.count;
+		await reserveReleasedChildren(events, [
+			{ childName: "subagent-worker-run0-1", aliases: [], wake: true },
+			{ childName: "subagent-worker-run1-1", aliases: [], wake: true },
+		]);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(
+			emitted.filter((item) => item.channel === SUBAGENT_HOLD_FAILURE_EVENT).length,
+			1,
+			"the failure reached the owner",
+		);
+		assert.deepEqual(
+			emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT),
+			[],
+			"no notice: neither child is released, so there is nothing to hold",
+		);
+		assert.equal(subagentChildRecordFailures.count, before, "status shows no failure");
+		assert.deepEqual(logged.mock.calls, []);
+	} finally {
+		logged.mockRestore();
+		stop();
+	}
+});
+
+test.each(["one failure event", "a multi-frame reservation"] as const)(
+	"%s for thousands of children finds them in one pass over the owner's records (#4326, #5551)",
+	async (source) => {
+		const { ctx, ownerSessionId } = await ownerWith([]);
+		const { events, emitted } = bus();
+		events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+			(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("broker gone"));
+		});
+		const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+		try {
+			const children = 2_000;
+			let targetReads = 0;
+			const names: string[] = [];
+			for (let index = 0; index < children; index++) {
+				const name = `subagent-bulk-${index}`;
+				const bulk = record({
+					childId: `bulk:${index}`,
+					runId: "bulk",
+					index,
+					owner: { kind: "session", sessionId: ownerSessionId },
+				});
+				const countedTarget = {
+					enumerable: true,
+					get: () => {
+						targetReads++;
+						return name;
+					},
+				};
+				Object.defineProperty(bulk, "intercomTarget", countedTarget);
+				observeSubagentChildRecord(bulk);
+				// Count reads from either the index or the full record, including repeated passes for later frames.
+				const indexed = subagentChildIndexEntry(bulk.childId);
+				assert.ok(indexed);
+				Object.defineProperty(indexed, "intercomTarget", countedTarget);
+				names.push(name);
+			}
+			targetReads = 0;
+			if (source === "one failure event") {
+				events.emit(SUBAGENT_HOLD_FAILURE_EVENT, { childNames: names, error: new Error("broker gone") });
+			} else {
+				await reserveReleasedChildren(
+					events,
+					names.map((childName) => ({ childName, aliases: [], wake: true })),
+				);
+			}
+			assert.ok(targetReads <= 2 * children, `${targetReads} target reads for ${children} failed reservations`);
+			await vi.waitFor(() =>
+				assert.equal(
+					emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length,
+					source === "one failure event" ? 1 : 4,
+				),
+			);
+			assert.equal(subagentChildRecordFailures.last?.code, "hold-failed");
+		} finally {
+			stop();
+		}
+	},
+);
 
 for (const operation of ["drop", "acknowledge"] as const) {
 	test(`a failed ${operation} reports hold-failed to the owner (#4326)`, async () => {

@@ -560,8 +560,8 @@ function completionIdOf(details: object): string {
 
 /**
  * The route the completions of shell tasks a released child launched take to that child: each is held in its record
- * and wakes it, or waits for its resume when it is stopped. A child that runs again or has ended holds none, so the
- * session that launched it receives the notice instead.
+ * and wakes it, or waits for its resume when it is stopped. A child that runs again or has ended holds none: the route
+ * refuses it, and the parent's task owner keeps it for the child's next run. The session that launched it never gets it.
  */
 export function releasedChildShellRoute(
 	holdMessages: NonNullable<SubagentChildRecordSink["holdMessages"]>,

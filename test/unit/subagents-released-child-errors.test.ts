@@ -73,13 +73,28 @@ describe("ReleasedChildError", () => {
 		assert.equal(error.retryable, true);
 	});
 
-	test("toJSON carries the code, hint, retryability and fields, and survives a JSON round trip (#4326)", () => {
+	test("a failed hold of several subagents names them, the first few and how many more (#5551)", () => {
+		const names = (count: number) => Array.from({ length: count }, (_, index) => `w-${index}`);
+		const subject = (count: number) =>
+			new ReleasedChildError("hold-failed", { childName: "w-0", childNames: names(count) }).subject;
+		assert.equal(subject(1), "Sends to released subagent w-0 cannot be held");
+		assert.equal(subject(2), "Sends to released subagents w-0 and w-1 cannot be held");
+		assert.equal(subject(4), "Sends to released subagents w-0, w-1, w-2 and w-3 cannot be held");
+		assert.equal(subject(9), "Sends to released subagents w-0, w-1, w-2 and 6 more cannot be held");
+		assert.match(
+			new ReleasedChildError("hold-failed", { childNames: names(2) }).hint,
+			/sends to these subagents are answered as not found/,
+		);
+	});
+
+	test("toJSON carries the code, subject, hint, retryability and fields, and survives a JSON round trip (#4326, #5551)", () => {
 		const fields = { childId: "run:6", state: "released" };
 		const error = new ReleasedChildError("record-append-failed", fields);
 		const copy = JSON.parse(JSON.stringify(error));
 		assert.deepEqual(copy, {
 			name: "ReleasedChildError",
 			code: "record-append-failed",
+			subject: "The released record of subagent run:6 could not be saved",
 			message: error.message,
 			hint: error.hint,
 			retryable: true,

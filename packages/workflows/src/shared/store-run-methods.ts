@@ -1,3 +1,4 @@
+import { generationAtPause } from "./run-generation.js";
 import { isTopLevelWorkflowRun } from "./run-visibility.js";
 import {
 	applyRunEndMetadata,
@@ -60,6 +61,22 @@ type RunStoreMethods = Pick<
 
 export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 	const { state } = context;
+	let lastFinish = 0;
+	const noteFinish = (run: RunSnapshot, previousStatus?: RunStatus, previousSequence?: number): void => {
+		// A nested run shares its invocation's route window; replaying it is not a new invocation finish.
+		if (!isTopLevelWorkflowRun(run) || !TERMINAL_STATUSES.has(run.status)) {
+			delete run.finishSequence;
+			return;
+		}
+		// Imported terminal snapshots keep their recorded order. A live transition advances the clock even if the
+		// wall clock stands still or moves backwards; endedAt remains the actual time used to measure duration.
+		const endedAt = run.endedAt ?? run.startedAt;
+		run.finishSequence ??=
+			previousStatus === undefined
+				? (context.backend?.getWorkflow(run.id)?.finishSequence ?? endedAt)
+				: (previousSequence ?? Math.max(endedAt, lastFinish + 1));
+		lastFinish = Math.max(lastFinish, run.finishSequence);
+	};
 
 	return {
 		runs(): readonly RunSnapshot[] {
@@ -102,6 +119,8 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 
 		recordRunStart(run: RunSnapshot): void {
 			// Resume replaces the snapshot, not the identity's prompt answers or notices.
+			const previous = context.findRun(run.id);
+			noteFinish(run, previous?.status, previous?.finishSequence);
 			context.placeRun(run);
 			context.bumpAndNotify({ runId: run.id });
 		},
@@ -110,8 +129,13 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const run = context.findRun(runId);
 			if (run === undefined) return false;
 			context.batch(() => {
+				const previousStatus = run.status;
+				const previousSequence = run.finishSequence;
 				const edited = edit(run);
-				if (edited.run === true) context.bumpAndNotify({ runId });
+				if (edited.run === true) {
+					noteFinish(run, previousStatus, previousSequence);
+					context.bumpAndNotify({ runId });
+				}
 				for (const stageId of edited.stageIds ?? []) context.bumpAndNotify({ runId, stageId });
 				for (const toolNodeId of edited.toolNodeIds ?? []) context.bumpAndNotify({ runId, toolNodeId });
 			});
@@ -166,8 +190,14 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const endedAt = Date.now();
+			const previousStatus = run.status;
+			if (metadata?.runGeneration !== undefined) run.runGeneration = metadata.runGeneration;
+			else if (status === "blocked" && run.status !== "paused" && run.blockedAt === undefined)
+				run.runGeneration = (run.runGeneration ?? 0) + 1;
 			run.status = status;
 			run.endedAt = endedAt;
+			if (metadata?.finishSequence !== undefined) run.finishSequence = metadata.finishSequence;
+			noteFinish(run, previousStatus);
 			if (run.phase !== undefined) {
 				run.phase = "ended";
 				run.phaseStartedAt = endedAt;
@@ -216,6 +246,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const run = context.findRun(runId);
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
+			if (run.status !== "paused") run.runGeneration = (run.runGeneration ?? 0) + 1;
 			run.status = "running";
 			run.error = error;
 			run.failureKind = metadata.failureKind;
@@ -250,8 +281,14 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				stages: source.stages.map((stage) => ({ ...stage })),
 				toolNodes: source.toolNodes.map((node) => ({ ...node })),
 			};
-			delete restored.endedAt;
-			delete restored.durationMs;
+			delete restored.finishSequence;
+			if (metadata.endedAt === undefined) {
+				delete restored.endedAt;
+				delete restored.durationMs;
+			} else {
+				restored.endedAt = metadata.endedAt;
+				restored.durationMs = elapsedRunMs(restored, metadata.endedAt);
+			}
 			restored.failureKind = metadata.failureKind;
 			restored.failureCode = metadata.failureCode;
 			restored.failureMessage = metadata.failureMessage;
@@ -305,6 +342,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (TERMINAL_STATUSES.has(run.status)) return false;
 			const wasPaused = run.status === "paused";
 			if (!wasPaused) {
+				run.runGeneration = generationAtPause(run);
 				run.status = "paused";
 				run.pausedAt = nextControlTimestamp(pausedAt, run.resumedAt);
 				run.resumedAt = undefined;

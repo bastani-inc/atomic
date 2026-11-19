@@ -155,7 +155,6 @@ async function release(args: ReleaseArgs): Promise<void> {
 				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
 			}),
 		},
-		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink(pi, ctx),
 		runtime: { runSync },
 	});

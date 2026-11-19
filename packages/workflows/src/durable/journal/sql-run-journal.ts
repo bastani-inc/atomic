@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { setImmediate } from "node:timers";
 import type { WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStoredSchemaVersion,
 	dialectOf,
 	type FencedPathId,
+	isStorageResponseRefusal,
 	olderBuildLive,
 	openNodeSqliteDatabase,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
@@ -17,6 +19,7 @@ import {
 	type StorageDescriptor,
 	type StorageDialect,
 	type StorageFailureCause,
+	type StoragePayloadTooLargeError,
 	StorageSchemaVersionError,
 	StorageUnavailableError,
 	type StoredJournalPayload,
@@ -87,6 +90,19 @@ type LeaseRow = SqliteRow & JournalLeaseRow & { [c.renewedAt]: number };
 type HeaderRow = SqliteRow & { [c.headerJson]: string; [c.status]: string };
 const EVENT_COLUMNS = [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at] as const;
 const APPEND_SAVEPOINT = "journal_append";
+
+/**
+ * Events one statement of `snapshotTail` walks past at most, as many as one page of a run's read (#5480). A statement
+ * reads each event it passes: a few microseconds each with the pages cached, and a disk read each when they are not.
+ */
+const SNAPSHOT_TAIL_WINDOW = JOURNAL_READ_PAGE_SIZE;
+/** Runs one statement of `runVersions` looks up, when the statements run on this process's thread (#5480). */
+const RUN_VERSIONS_PAGE = 128;
+/**
+ * Runs one statement of `runVersions` looks up over a database server, a network round trip each (#5480). A libSQL
+ * server refuses a response over 10 MB, which one statement for every run of a catalog of 150,000 runs came to.
+ */
+const RUN_VERSIONS_SERVER_PAGE = 4_096;
 
 /** The column a read selects the journal's schema version as, so that it checks the version in its own statement. */
 const META_VERSION = "meta_version";
@@ -597,10 +613,17 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
-			const rows = await this.database.all<HeaderRow>(
+			const request = this.database.all<HeaderRow>(
 				`SELECT ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`} ORDER BY ${c.runId}`,
 				...(filter?.cwd === undefined ? [] : [filter.cwd]),
 			);
+			let rows: HeaderRow[];
+			try {
+				rows = await request;
+			} catch (error) {
+				if (filter !== undefined || !isStorageResponseRefusal(error) || this.legacy) throw error;
+				return this.listRefusedCatalog(error);
+			}
 			if (rows.length === 0) await this.assertVersion(this.database);
 			assertRowVersion(rows[0]);
 			const legacy = (await this.legacy?.pending(this.database, filter)) ?? [];
@@ -611,6 +634,98 @@ export class SqlRunJournal implements RunJournal {
 				}))
 				.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
+	}
+
+	/** Read the refused, current-format catalog from one new snapshot. Never reopen it or replay a fitting prefix. */
+	private async listRefusedCatalog(refusal: StoragePayloadTooLargeError): Promise<readonly RunSummary[]> {
+		this.assertOpen();
+		let reader: SqliteDatabase | undefined;
+		try {
+			reader = await this.database.openReader?.();
+		} catch {
+			throw refusal;
+		}
+		// Never borrow the journal's connection: its lease renewals cannot wait for this read to finish.
+		if (!reader || reader === this.database) throw refusal;
+		let listed: RunSummary[];
+		try {
+			this.assertOpen();
+			listed = await this.readCatalogPages(reader, refusal);
+			await this.assertVersion(reader);
+		} catch (error) {
+			await reader.close().catch(() => {});
+			throw error;
+		}
+		await reader.close();
+		return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
+	}
+
+	private readCatalogPages(reader: SqliteDatabase, refusal: StoragePayloadTooLargeError): Promise<RunSummary[]> {
+		return reader.transaction(
+			async (tx) => {
+				await this.assertVersion(tx);
+				const keepRefusal = (error: unknown): never => {
+					if (isStorageResponseRefusal(error)) throw refusal;
+					throw error;
+				};
+				const table = this.tables.runs;
+				const bytes = this.dialect.textByteLength;
+				const width = `${bytes(c.headerJson)} + ${bytes(c.status)}`;
+				const widest = await tx
+					.get<{ run_id: string; width: number | bigint }>(
+						`SELECT ${c.runId}, ${width} AS width FROM ${table} ORDER BY ${width} DESC LIMIT 1`,
+					)
+					.catch(keepRefusal);
+				const runs: RunSummary[] = [];
+				if (!widest) return runs;
+				const projection = `${c.headerJson}, ${c.status}, ${this.metaVersion}`;
+				const collect = (row: HeaderRow, key: string) => {
+					const header = JSON.parse(row[c.headerJson]) as RunHeader;
+					if (header.runId !== key) throw refusal;
+					runs.push({ ...header, status: runStatusFromRecord(row[c.status]) });
+				};
+				const point = async (id: string) => {
+					const row = await tx
+						.get<HeaderRow>(`SELECT ${projection} FROM ${table} WHERE ${c.runId} = ?`, id)
+						.catch(keepRefusal);
+					if (!row) throw refusal;
+					collect(row, id);
+				};
+				// Use the original columns for the widest singleton. Even appending its key could put it over the limit.
+				const widestId = widest.run_id;
+				await point(widestId);
+				// Leave room for the physical key (also present in a canonical header) and the response's row framing.
+				const limit = Math.max(1, Math.floor((128 * 1024) / (2 * Number(widest.width) + 128)));
+				for (let after: string | undefined; ; ) {
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					this.assertOpen();
+					const range = `FROM ${table} WHERE ${c.runId} <> ?${after === undefined ? "" : ` AND ${c.runId} > ?`} ORDER BY ${c.runId} LIMIT ?`;
+					const args = after === undefined ? [widestId, limit] : [widestId, after, limit];
+					if (limit === 1) {
+						const next = await tx
+							.get<{ run_id: string }>(`SELECT ${c.runId} ${range}`, ...args)
+							.catch(keepRefusal);
+						if (!next) break;
+						after = next.run_id;
+						await point(after);
+					} else {
+						const page = await tx
+							.all<HeaderRow & { run_id: string }>(
+								`SELECT ${c.runId}, ${c.headerJson}, ${c.status} ${range}`,
+								...args,
+							)
+							.catch(keepRefusal);
+						for (const row of page) {
+							after = row.run_id;
+							collect(row, after);
+						}
+						if (page.length < limit) break;
+					}
+				}
+				return runs;
+			},
+			{ readOnly: true },
+		);
 	}
 
 	/**
@@ -635,27 +750,70 @@ export class SqlRunJournal implements RunJournal {
 		});
 	}
 
-	async runVersions(): Promise<ReadonlyMap<string, RunVersion>> {
+	/**
+	 * Every run's latest event, read in statements of `RUN_VERSIONS_SERVER_PAGE` runs over a database server. Over this
+	 * process's own SQLite connection the runs are read `RUN_VERSIONS_PAGE` at a time, with a turn of the event loop
+	 * between statements: a statement looks up each run's latest event, which on a journal of thousands of runs held the
+	 * event loop for over 100 ms when the pages were not cached (#5480). Once `stop` aborts, the read ends at the next
+	 * statement with its reason.
+	 */
+	async runVersions(stop?: AbortSignal): Promise<ReadonlyMap<string, RunVersion>> {
 		this.assertOpen();
 		return this.operation(async () => {
-			const rows = await this.database.all<RunVersionRow>(
-				`SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`,
-			);
-			const legacy = (await this.legacy?.versions(this.database)) ?? [];
-			return new Map(
-				[...rows, ...legacy].map((row) => [
-					row[c.runId],
-					{ seq: journalCounter(row[c.runId], "seq", row[c.seq]), at: Number(row[c.at]) },
-				]),
-			);
+			const local = this.database.descriptor.adapter === "node-sqlite";
+			const pageRuns = local ? RUN_VERSIONS_PAGE : RUN_VERSIONS_SERVER_PAGE;
+			const select = `SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`;
+			const versions = new Map<string, RunVersion>();
+			const add = (row: RunVersionRow) =>
+				versions.set(row[c.runId], {
+					seq: journalCounter(row[c.runId], "seq", row[c.seq]),
+					at: Number(row[c.at]),
+				});
+			const readPage = (reader: SqliteExecutor, after?: string) =>
+				reader.all<RunVersionRow>(
+					`${select}${after === undefined ? "" : ` WHERE runs.${c.runId} > ?`} ORDER BY runs.${c.runId} LIMIT ?`,
+					...(after === undefined ? [] : [after]),
+					pageRuns,
+				);
+			const nextPage = async () => {
+				if (local) await new Promise<void>((resolve) => setImmediate(resolve));
+				stop?.throwIfAborted();
+			};
+			const first = await readPage(this.database);
+			if (first.length < pageRuns) {
+				for (const row of first) add(row);
+			} else {
+				// Reread even the first page in the snapshot: a writer may have deleted one of its runs and created
+				// another beyond the cursor. Combining those pages would list runs that never coexisted.
+				await nextPage();
+				await this.database.transaction(
+					async (reader) => {
+						for (let after: string | undefined; ; ) {
+							stop?.throwIfAborted();
+							const page = await readPage(reader, after);
+							for (const row of page) add(row);
+							if (page.length < pageRuns) break;
+							after = page.at(-1)![c.runId];
+							await nextPage();
+						}
+					},
+					{ readOnly: true },
+				);
+			}
+			for (const row of (await this.legacy?.versions(this.database)) ?? []) add(row);
+			return versions;
 		});
 	}
 
 	/**
 	 * The latest snapshot event is found by walking the run's `(run_id, seq)` key back from its last event, so
-	 * only the events after it are visited and only its payload is read.
+	 * only the events after it are visited and only its payload is read. A statement visits every event it walks past, so
+	 * on a journal read through a connection of this process, the statement looks for the snapshot only among the latest
+	 * `SNAPSHOT_TAIL_WINDOW` events, and a snapshot further back is found by `walkToSnapshot` in statements of that size:
+	 * one run with a hundred thousand checkpoints after its snapshot held the event loop for seconds (#5480). Once `stop`
+	 * aborts, the walk ends at its next statement with its reason.
 	 */
-	async snapshotTail(runId: string): Promise<RunSnapshotTail | undefined> {
+	async snapshotTail(runId: string, stop?: AbortSignal): Promise<RunSnapshotTail | undefined> {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
@@ -663,23 +821,34 @@ export class SqlRunJournal implements RunJournal {
 			const events = legacy ? JOURNAL_TABLES.events : this.tables.events;
 			// The legacy tables have no chunks column: every payload there is stored whole.
 			const chunks = legacy ? `0 AS ${c.chunks}` : c.chunks;
+			// A journal read over the network does not hold this process's event loop while a statement runs.
+			const windowed = this.readerFile !== undefined;
 			const later = `FROM ${events} AS later WHERE later.${c.runId} = snapshot.${c.runId} AND later.${c.seq} > snapshot.${c.seq} AND later.${c.type} = ?`;
+			const latestSeq = `(SELECT ${c.seq} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1)`;
 			const row = await this.database.get<SnapshotTailRow>(
 				`SELECT ${EVENT_COLUMNS.map((column) => `snapshot.${column}`).join(", ")}, snapshot.${c.chunks},
 					latest.${c.seq} AS latest_seq, latest.${c.at} AS latest_at, ${this.metaVersion},
 					(SELECT count(*) ${later}) AS later_checkpoints,
 					(SELECT ${this.dialect.jsonText(`later.${c.payload}`, "completedAt")} ${later} ORDER BY later.${c.seq} DESC LIMIT 1) AS last_checkpoint_at
-				FROM (SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1) AS latest,
-					(SELECT ${EVENT_COLUMNS.join(", ")}, ${chunks} FROM ${events} WHERE ${c.runId} = ? AND ${c.type} NOT IN (${NON_SNAPSHOT_EVENT_TYPES.map(() => "?").join(", ")}) ORDER BY ${c.seq} DESC LIMIT 1) AS snapshot`,
+				FROM (SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1) AS latest
+					${windowed ? "LEFT JOIN" : ","} (SELECT ${EVENT_COLUMNS.join(", ")}, ${chunks} FROM ${events} WHERE ${c.runId} = ? AND ${c.type} NOT IN (${NON_SNAPSHOT_EVENT_TYPES.map(() => "?").join(", ")})${windowed ? ` AND ${c.seq} > ${latestSeq} - ?` : ""} ORDER BY ${c.seq} DESC LIMIT 1) AS snapshot${windowed ? " ON 1 = 1" : ""}`,
 				RUN_EVENT_TYPES.checkpointRecorded,
 				RUN_EVENT_TYPES.checkpointRecorded,
 				runId,
 				runId,
 				...NON_SNAPSHOT_EVENT_TYPES,
+				...(windowed ? [runId, SNAPSHOT_TAIL_WINDOW] : []),
 			);
 			if (row === undefined) {
 				await this.assertVersion(this.database);
 				return undefined;
+			}
+			// Without a snapshot among the window's events, the left join leaves the snapshot's columns null.
+			if ((row as SqliteRow)[c.seq] === null) {
+				assertRowVersion(row);
+				// The window held every event of the run: it has no snapshot.
+				if (Number(row.latest_seq) < SNAPSHOT_TAIL_WINDOW) return undefined;
+				return this.walkToSnapshot(runId, events, chunks, stop);
 			}
 			const [snapshot] = await withJournalPayloads(this.database, this.tables.eventChunks, [row]);
 			return {
@@ -687,6 +856,77 @@ export class SqlRunJournal implements RunJournal {
 				snapshot: entryFromRow(snapshot!),
 				laterCheckpoints: Number(row.later_checkpoints),
 				...(row.last_checkpoint_at === null ? {} : { lastCheckpointAt: Number(row.last_checkpoint_at) }),
+			};
+		});
+	}
+
+	/**
+	 * `snapshotTail` for a run whose latest snapshot is further back than one statement's window. The run's events are
+	 * walked back `SNAPSHOT_TAIL_WINDOW` at a time, counting the checkpoints passed, with a turn of the event loop between
+	 * statements. Every statement runs in one read transaction of the reader connection, so the walk reads one state of
+	 * the journal, as the single statement does, whatever is committed meanwhile. A walk `stop` ends lets go of that
+	 * transaction: it is rolled back.
+	 */
+	private walkToSnapshot(
+		runId: string,
+		events: string,
+		chunks: string,
+		stop: AbortSignal | undefined,
+	): Promise<RunSnapshotTail | undefined> {
+		return this.readSnapshot(async (reader) => {
+			const latest = await reader.get<SqliteRow & { [c.seq]: number; [c.at]: number }>(
+				`SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1`,
+				runId,
+			);
+			let snapshotSeq: number | undefined;
+			let laterCheckpoints = 0;
+			let lastCheckpointSeq: number | undefined;
+			for (let below = latest === undefined ? 0 : Number(latest[c.seq]) + 1; below > 0; ) {
+				const rows = await reader.all<SqliteRow & { [c.seq]: number; [c.type]: string }>(
+					`SELECT ${c.seq}, ${c.type} FROM ${events} WHERE ${c.runId} = ? AND ${c.seq} < ? ORDER BY ${c.seq} DESC LIMIT ?`,
+					runId,
+					below,
+					SNAPSHOT_TAIL_WINDOW,
+				);
+				for (const row of rows) {
+					const type = row[c.type];
+					if (!(NON_SNAPSHOT_EVENT_TYPES as readonly string[]).includes(type)) {
+						snapshotSeq = Number(row[c.seq]);
+						break;
+					}
+					if (type !== RUN_EVENT_TYPES.checkpointRecorded) continue;
+					laterCheckpoints++;
+					lastCheckpointSeq ??= Number(row[c.seq]);
+				}
+				if (snapshotSeq !== undefined || rows.length < SNAPSHOT_TAIL_WINDOW) break;
+				below = Number(rows.at(-1)![c.seq]);
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				stop?.throwIfAborted();
+			}
+			if (latest === undefined || snapshotSeq === undefined) {
+				await this.assertVersion(reader);
+				return undefined;
+			}
+			const snapshot = await reader.get<EventRow>(
+				`SELECT ${EVENT_COLUMNS.join(", ")}, ${chunks}, ${this.metaVersion} FROM ${events} WHERE ${c.runId} = ? AND ${c.seq} = ?`,
+				runId,
+				snapshotSeq,
+			);
+			const lastCheckpoint =
+				lastCheckpointSeq === undefined
+					? undefined
+					: await reader.get<SqliteRow & { completed_at: number | null }>(
+							`SELECT ${this.dialect.jsonText(c.payload, "completedAt")} AS completed_at FROM ${events} WHERE ${c.runId} = ? AND ${c.seq} = ?`,
+							runId,
+							lastCheckpointSeq,
+						);
+			const [loaded] = await withJournalPayloads(reader, this.tables.eventChunks, [snapshot!]);
+			const completedAt = lastCheckpoint?.completed_at ?? null;
+			return {
+				version: { seq: journalCounter(runId, "seq", latest[c.seq]), at: Number(latest[c.at]) },
+				snapshot: entryFromRow(loaded!),
+				laterCheckpoints,
+				...(completedAt === null ? {} : { lastCheckpointAt: Number(completedAt) }),
 			};
 		});
 	}

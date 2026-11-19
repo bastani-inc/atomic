@@ -90,7 +90,7 @@ configureProviderRequestBudget("openai-2", { maxRequests: 30, intervalMs: 60_000
 
 Each budget limits starts in a rolling time window. OpenAI, Anthropic, Azure, Mistral, pi-messages, and explicit Codex SSE transports count HTTP attempts, including their internal retries. Other transports count model-stream starts; their own internal retries are not counted separately. Budgets do not limit tokens or simultaneous streams.
 
-Waiting for a budget slot does not consume an OpenAI or Anthropic SDK HTTP timeout. Workflow and structured-output time limits still include that wait.
+Waiting for a budget slot does not consume an OpenAI or Anthropic SDK HTTP timeout. Workflow and structured-output time limits still include that wait. Cancelling a request, or reaching its caller's deadline, ends the wait: a request whose cancellation or deadline has come due is never sent, even when its slot opens in the same moment.
 
 Pass `undefined` as the second argument to remove a budget, for example `configureProviderRequestBudget("openai-1", undefined)`. Configure budgets on each process start; do not put this setup behind a replay-cached `ctx.tool` call.
 

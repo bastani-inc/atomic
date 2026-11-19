@@ -151,7 +151,6 @@ test(
 					}),
 				},
 				wakeDispatcher: dispatcher,
-				wait: { kind: "background" },
 				recordChild: sink,
 				runtime: { runSync },
 			});

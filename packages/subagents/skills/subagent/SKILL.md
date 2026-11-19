@@ -59,7 +59,7 @@ subagent({
 
 ### Parallel cleanup technique
 
-Use this after implementation when the user wants cleanup review or when a final pass would reduce AI-slop. Launch two fresh-context `codebase-analyzer` scouts with `output: false` and `progress: false`: one deslop pass and one verbosity pass. If the `deslop` or `verbosity-cleaner` skills are available, pass the relevant skill to that scout; otherwise inline the criteria. Both scouts are read-only and should flag concrete issues with severity, file/line references, and smallest safe fixes. Phrase the constraint as “Do not modify project/source files; returning findings through the configured output artifact is allowed” when you use `output` or `outputMode: "file-only"`. The parent decides what to apply and asks before making changes unless cleanup was already authorized. When the user opts to autofix, the parent launches one foreground `code-simplifier` writer with the synthesized fixes as its explicit scope.
+Use this after implementation when the user wants cleanup review or when a final pass would reduce AI-slop. Launch two fresh-context `codebase-analyzer` scouts with `output: false` and `progress: false`: one deslop pass and one verbosity pass. If the `deslop` or `verbosity-cleaner` skills are available, pass the relevant skill to that scout; otherwise inline the criteria. Both scouts are read-only and should flag concrete issues with severity, file/line references, and smallest safe fixes. Phrase the constraint as “Do not modify project/source files; returning findings through the configured output artifact is allowed” when you use `output` or `outputMode: "file-only"`. The parent decides what to apply and asks before making changes unless cleanup was already authorized. When the user opts to autofix, the parent launches one `code-simplifier` writer, and waits for it, with the synthesized fixes as its explicit scope.
 
 ## Builtin Agents
 
@@ -156,7 +156,7 @@ subagent({
 })
 ```
 
-Enable file-based progress tracking for foreground single-agent runs with `progress: true`. The child maintains a run-scoped `progress.md` under isolated subagent artifact storage without writing it into its effective `cwd`; `progress: false` disables an agent's `defaultProgress`. Omission inherits that default except for read-only tasks, and `artifacts: false` removes foreground storage after the child exits. This is distinct from `includeProgress: true`, which only returns detailed runtime progress data in the final foreground result.
+Enable file-based progress tracking for single-agent runs with `progress: true`. The child maintains a run-scoped `progress.md` under isolated subagent artifact storage without writing it into its effective `cwd`; `progress: false` disables an agent's `defaultProgress`. Omission inherits that default except for read-only tasks, and `artifacts: false` removes that storage after the child exits. This is distinct from `includeProgress: true`, which only returns detailed runtime progress data in the final result of a run its caller waits for.
 
 ```typescript
 subagent({
@@ -207,17 +207,17 @@ Avoid duplicate output paths in parallel tasks. Concurrent children should not w
 Concurrent writers conflict. `code-simplifier` and `debugger` change files. Do not run two writers in parallel against the same worktree unless you isolate them with `worktree: true`.
 
 
-### Foreground, background, and automatic yielding
+### Background launches and explicit waits
 
 Keep immediately blocking work local unless specialist expertise, context isolation, or an explicit user request justifies delegation. Prefer independent tasks you can overlap with useful parent work. Do not spawn a child merely to wait immediately, or duplicate its assigned work while it runs.
 
-Choose the observation mode for each authorized task. No extra user confirmation is needed merely to choose foreground or background. In owner-bound main and workflow-stage sessions, omitted `wait` or `wait: { kind: "background" }` returns after admission. Use `wait: { kind: "foreground", budgetMs: 30000 }` when the result is needed next. If the observation budget expires, the same child keeps running in the background; do not relaunch it. This applies to single and parallel calls.
+Every subagent runs in the background. A launch returns after admission with each child's task id, and each child reports by a completion notice. When the result is needed next, wait for it with `subagent({ action: "wait", id: taskId })`; no extra user confirmation is needed. If the wait's budget runs out or the user presses Esc, the same child keeps running in the background; do not relaunch it. This applies to single and parallel calls. Launches take no `wait`; one that still passes `wait: { kind: "foreground" }` runs in the background and its result says so.
 
-Use `subagent({ action: "wait", id: taskId })` to observe an existing task with the owner's budget, `status` to inspect its state, or `pause`, `quit`, and `resume` to control it (see [Subagent control](#subagent-control)). Wait when the result becomes a dependency; otherwise rely on completion notices. Avoid repeated short waits or status polls; override the budget only for a concrete responsiveness need. A yielded receipt is not a terminal result. Background counts stay below the prompt; `/tasks` opens inspection only on command. A shaded completion notification reaches the owning chat without requiring a model reply. A later wait does not extend the owner's lifetime.
+Use `subagent({ action: "wait", id: taskId })` to wait for an existing task with the owner's budget, `status` to inspect its state, or `pause`, `quit`, and `resume` to control it (see [Subagent control](#subagent-control)). Wait when the result becomes a dependency; otherwise rely on completion notices. Avoid repeated short waits or status polls; override the budget only for a concrete responsiveness need. A launch receipt or an ended wait is not a terminal result. Running subagents stay listed below the prompt; `/tasks` opens inspection only on command. A shaded completion notification reaches the owning chat without requiring a model reply. A later wait does not extend the owner's lifetime.
 
 Intercom `ask` cannot revive a completed, failed, interrupted, or cancelled noninteractive child, even if its retained registration says `idle`. New asks fail immediately, and termination fails an already-admitted ask that has not received a reply. Use `resume` on a resumable child, or a fresh child, for follow-up work. Live interactive idle sessions and workflow post-mortem conversations remain separate reply-capable cases; `send` transport behavior is unchanged.
 
-A completed, failed, interrupted, paused, or quit child can continue in the same run identity with `subagent({ action: "resume", id, message })`; see [Subagent control](#subagent-control). Children cancelled for good (by owner or batch cancellation, including a `/tasks` stop, and the removed `kill` action), children whose workflow stage ended (all of that stage's children, including paused and quit ones), and children reported gone after a restart are terminal. For those, and to answer a single-child handoff, start follow-up work with the normal launch form and an explicit handoff:
+A completed, failed, interrupted, paused, or quit child can continue in the same run identity with `subagent({ action: "resume", id, message })`; see [Subagent control](#subagent-control). Children cancelled for good (by owner or batch cancellation, or the removed `kill` action), children whose workflow stage ended (all of that stage's children, including paused and quit ones), and children reported gone after a restart are terminal. For those, and to answer the single-child handoff an SDK host without a task owner can return, start follow-up work with the normal launch form and an explicit handoff:
 
 ```typescript
 subagent({ agent: "worker", task: "[TASK_CONTEXT] Continue with this supervisor answer: ..." })
@@ -229,7 +229,7 @@ A parent-ask handoff supplies the original question, ordered attachments, previo
 
 Subagent control is the runtime visibility and intervention layer for delegated runs. Lifecycle status distinguishes queued and running children from paused, quit, completed, failed, and cancelled results. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
 
-Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs push this as a `subagent:control-event` event, and notification-worthy control events are inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `quit` options. Visible notifications fire once per child run and attention state.
+Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Runs push this as a `subagent:control-event` event, and notification-worthy control events are inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `quit` options. Visible notifications fire once per child run and attention state.
 
 Run control mirrors the workflow tool's `pause`, `resume`, and `quit`. `id` accepts the child id (`<runId>:<index>`), its task id, its Intercom name, or the run id of a single-child run:
 
@@ -241,7 +241,7 @@ subagent({ action: "quit", all: true })            // also covers paused childre
 subagent({ action: "resume", id: taskId, message: "Focus on the failing test first." })
 ```
 
-Pause stops a child's current turn and keeps its queued steering and Intercom messages held until resume. Quit stops it the same way without holding new messages, and also accepts a child already paused by you or with its workflow stage. Both keep the child resumable while the session or workflow stage that launched it can still resume it, and so does a pause or quit of that workflow stage. Resume reopens the child's own saved session under the same id, Intercom name, and group, with fresh supervisor authorization. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, any resumable child, including a completed or failed one, is asked to continue where it left off or stop if it is finished. A child cancelled for good (owner or batch cancellation, including a `/tasks` stop, or the removed `kill` action), a child whose workflow stage ended (the stage finished, or its run ended or was cancelled; this covers every child of that stage, including paused and quit ones), or one reported gone after a restart cannot be resumed: resume returns an error that says why, so launch a fresh child with the relevant task context. `kill` and `interrupt` were removed; calls using them are rejected with an error that names `quit`.
+Pause stops a child's current turn and keeps its queued steering and Intercom messages held until resume. Quit stops it the same way without holding new messages, and also accepts a child already paused by you or with its workflow stage. Both keep the child resumable while the session or workflow stage that launched it can still resume it, and so does a pause or quit of that workflow stage. Resume reopens the child's own saved session under the same id, Intercom name, and group, with fresh supervisor authorization. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, any resumable child, including a completed or failed one, is asked to continue where it left off or stop if it is finished. A child cancelled for good (owner or batch cancellation, or the removed `kill` action), a child whose workflow stage ended (the stage finished, or its run ended or was cancelled; this covers every child of that stage, including paused and quit ones), or one reported gone after a restart cannot be resumed: resume returns an error that says why, so launch a fresh child with the relevant task context. `kill` and `interrupt` were removed; calls using them are rejected with an error that names `quit`.
 
 Per-run control thresholds can be overridden when a task legitimately runs without observable output for longer than usual:
 
@@ -311,7 +311,7 @@ intercom({ action: "pending" })
 Message conventions:
 
 - `reason: "progress_update"` is non-blocking and should stay concise.
-- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side subagents send grouped completion results through the intercom companion: one grouped message per foreground parent run and one per detached child completion. Acknowledged delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved.
+- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side subagents send grouped completion results through the intercom companion: one grouped message per run its caller waits for and one per detached child completion. Acknowledged delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved.
 
 For supervisor requests, prefer `contact_supervisor`; use generic `intercom` toward the supervisor only when the bridge instructions provide the target and `contact_supervisor` is unavailable. For peers, discover targets with `intercom({ action: "list" })`. Never invent a target.
 
@@ -437,9 +437,9 @@ If a prompt-template extension is installed, additional user prompt templates ca
 
 ## Best Practices
 
-### Choose observation intentionally
+### Wait intentionally
 
-Use background observation for independent work and foreground-first observation when the next action depends on the result. If foreground observation yields, wait for the existing task's actual completion before consuming its result. Do not duplicate delegated work or mistake a launch receipt for a finished report. The owner's usual agent observation budget is 30 seconds, independent of execution lifetime.
+Let independent work run in the background and wait for a child explicitly when the next action depends on its result. If a wait ends before the child finishes, wait for the existing task's actual completion before consuming its result. Do not duplicate delegated work or mistake a launch receipt for a finished report. The owner's usual agent wait budget is 30 seconds, independent of execution lifetime.
 
 ### Keep writes single-threaded by default
 
@@ -485,8 +485,9 @@ Use `/name` so intercom targeting stays stable.
 When each result guides the next task, wait for its terminal completion before starting the dependent step:
 
 ```typescript
-subagent({ agent: "codebase-locator", task: "Map the relevant auth files.", wait: { kind: "foreground" } })
-// If yielded, observe the returned task ID or await its completion notice.
+subagent({ agent: "codebase-locator", task: "Map the relevant auth files." })
+subagent({ action: "wait", id: taskId })
+// If the wait ends first, wait for the same task ID again or await its completion notice.
 // Only then give the result to codebase-analyzer, and later to debugger.
 ```
 
@@ -505,7 +506,7 @@ clarify when needed → validation contract → optional bounded discovery → o
 
 The validation contract defines completion before code is written: expected behavior, checks, commands or user flows to exercise, and evidence the writer should return. Keep it lightweight for small tasks, but make it explicit enough that reviewers and validators are checking the intended outcome rather than the writer’s own assumptions. Subagent runs do not carry a structured `acceptance` field, infer acceptance policies, inject acceptance-report prompts, or run acceptance gates; put any evidence requirements directly in the task text. Do not set removed acceptance config fields on `subagent()` calls, parallel task items, or agent frontmatter; move those requirements into the assigned task text instead.
 
-The first writer implements the approved change. The parent waits for its terminal handoff before review, even if the foreground observation has yielded, and does not make parallel edits to the same files. Treat the handoff as the transition into review unless the user requested writer-only work. Reviewers inspect the resulting diff from fresh context. The fix writer applies accepted findings, then the parent checks the final diff. Ask only needed scope questions before a non-interactive launch.
+The first writer implements the approved change. The parent waits for its terminal handoff before review, even if an earlier wait ended first, and does not make parallel edits to the same files. Treat the handoff as the transition into review unless the user requested writer-only work. Reviewers inspect the resulting diff from fresh context. The fix writer applies accepted findings, then the parent checks the final diff. Ask only needed scope questions before a non-interactive launch.
 
 For complex or risky changes, increase review and validation fanout when user intent or correctness risk materially warrants it rather than automatically trusting one reviewer. Use distinct angles such as correctness/regressions (`codebase-analyzer`), failure-mode hunt (`debugger` inspect-only), pattern fit (`codebase-pattern-finder`), prior-decision conformance (`codebase-research-*`), and external-spec conformance (`codebase-online-researcher`). When reviewers find non-trivial issues or the fix writer touches many lines, consider another focused review round before final validation.
 
@@ -516,10 +517,10 @@ Keep orchestration authority in the parent session. Child subagents cannot launc
 1. Clarify only when needed. Use existing context first; gather missing code or research context selectively, then ask only unresolved questions that materially affect scope, completion criteria, constraints, or non-goals.
 2. Define the validation contract. State completion expectations before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
 3. Plan when useful. For complex work, write a plan doc yourself and get approval before implementation. For simple work, confirm shared understanding and explicitly note why planning is skipped.
-4. Implement with one writer. After approval, launch `debugger` (for correctness-shaped work) or `code-simplifier` (for refinement-shaped work) in the foreground with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. While it runs, prepare validation or inspect adjacent code instead of editing the same worktree.
+4. Implement with one writer. After approval, launch `debugger` (for correctness-shaped work) or `code-simplifier` (for refinement-shaped work), and wait for it, with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. While it runs, prepare validation or inspect adjacent code instead of editing the same worktree.
 5. Require a useful writer handoff. Ask the writer to report changed files, what was implemented, what was left undone, commands run with exit codes, validation evidence, surprises or new risks, decisions made inside approved scope, and decisions needing parent approval.
 6. Review after implementation. After the writer completes, launch bounded fresh-context specialist reviewers when risk or user intent warrants it — `codebase-analyzer` for correctness/regressions, `debugger` (inspect-only) for failure-mode hunts, and `codebase-pattern-finder` for consistency. Add `codebase-online-researcher` for external-spec angles and `codebase-research-*` for prior-decision angles when the work calls for it. Use `output: false` unless review artifacts are explicitly needed.
-7. Synthesize, then run the fix writer when needed. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch one foreground writer (`debugger` or `code-simplifier`) to apply accepted fixes when implementation is authorized. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
+7. Synthesize, then run the fix writer when needed. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch one writer (`debugger` or `code-simplifier`) and wait for it to apply accepted fixes when implementation is authorized. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
 8. Review again when warranted. If the fix writer made substantial changes or addressed non-trivial findings, run another focused parallel review round before final validation.
 9. Validate and complete. After the fix writer and any follow-up review return, inspect the final diff yourself, run or confirm focused validation, update docs/changelog when relevant, and summarize what changed and why.
 
@@ -559,7 +560,7 @@ subagent({
 
 When implementation review is part of the requested shape, do not treat the first review as the final step: synthesize findings against user scope and the validation contract, then launch one writer for accepted fixes when implementation is authorized.
 
-When a writer completes, treat its handoff as an intermediate state when review is part of the requested shape. The next action is review, then synthesis and a fix writer if needed. Foreground-first observation is convenient, but a yield requires waiting for the original task's terminal handoff before the next dependent action.
+When a writer completes, treat its handoff as an intermediate state when review is part of the requested shape. The next action is review, then synthesis and a fix writer if needed. An explicit wait is convenient, but one that ends early requires waiting for the original task's terminal handoff before the next dependent action.
 
 When the user explicitly asks to keep reviewing until the work is clean, repeat writer → fresh-specialist-reviewers → synthesized-fix-writer cycles until reviewers find no blockers or fixes worth doing now, remaining feedback is optional or intentionally deferred, an unapproved product/scope/architecture decision needs the user, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap.
 

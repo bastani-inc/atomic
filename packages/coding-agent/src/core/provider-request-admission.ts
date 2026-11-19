@@ -6,6 +6,7 @@ import {
 	isProviderRateLimit,
 	markProviderRateLimitObserved,
 	type ProviderLimitScope,
+	providerAdmissionTurn,
 	providerLimitScope,
 	providerRequestGate,
 	recordProviderRateLimit,
@@ -92,14 +93,23 @@ function sleepForAdmission(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function waitForAdmission(provider: string, model: string, signal?: AbortSignal): Promise<void> {
+	let queued = false;
 	while (true) {
 		signal?.throwIfAborted();
+		const turn = providerAdmissionTurn(provider, model, queued, signal);
+		if (turn) {
+			await turn;
+			signal?.throwIfAborted();
+		}
 		const delay = tryAdmitProviderRequest(provider, model);
 		if (delay === 0) {
 			await providerRequestGate()?.(provider, model, signal);
+			// A gate's answer can cross the caller's abort; a request its caller gave up on is never sent.
+			signal?.throwIfAborted();
 			return;
 		}
 		await sleepForAdmission(Math.min(delay, 60_000), signal);
+		queued = true;
 	}
 }
 

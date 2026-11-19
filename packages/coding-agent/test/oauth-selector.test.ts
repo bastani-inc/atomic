@@ -6,7 +6,7 @@ import { OAuthSelectorComponent } from "../src/modes/interactive/components/oaut
 import { openRouterGlow } from "../src/modes/interactive/components/provider-brand.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { stripAnsi } from "./helpers/visible-text.js";
 import { fakeModelRuntime } from "./model-runtime-test-utils.ts";
 
 describe("OAuthSelectorComponent", () => {

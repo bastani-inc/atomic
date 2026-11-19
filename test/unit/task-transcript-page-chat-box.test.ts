@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, Text, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
@@ -32,6 +31,7 @@ import {
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 import { WORKED_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
@@ -120,7 +120,6 @@ function treeSource(
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		foregroundTask: async () => ({ ok: true, value: { kind: "foreground" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,
 		writeTaskInput: async () => ({ ok: true, value: { acceptedBytes: 0 } }),
@@ -219,6 +218,17 @@ describe("a subagent's chat label (#4640, #5224)", () => {
 		assert.ok(rows[top + 1]?.startsWith("❯"), "the prompt stays on the editor's content line");
 		assert.equal(rows[top + 2], "─".repeat(80), "the bottom rule is the main composer's rule too");
 		page.dispose();
+	});
+
+	test("an attached chat's header keeps whole emoji at its short title cutoff (#5654)", async () => {
+		const prefix = "x".repeat(58);
+		const page = subagentPage(treeSource([record("child", "agent", undefined, { title: `${prefix}👩‍💻more` })]));
+		try {
+			await page.load();
+			assert.ok(labelRows(page.render(110, 12))[0]?.includes(`agent-child · ${prefix}… · running`));
+		} finally {
+			page.dispose();
+		}
 	});
 
 	test("falls back to the session's name, then to `subagent`, when the task has no agent name (#5224)", async () => {
@@ -593,6 +603,27 @@ describe("a live subagent's chat box (#4640)", () => {
 		const idle = await livePage({ isRunning: () => false });
 		assert.ok(!plain(idle.page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
 		idle.page.dispose();
+	});
+
+	test("a subagent chat opened while the session switches models shows the switch until the next request (#5572)", async () => {
+		const phase = {
+			type: "model_fallback_start",
+			from: "primary",
+			to: "fallback",
+			reason: "not found",
+			attempt: 1,
+		} as const;
+		const { page, live } = await livePage({
+			chatSession: { ...(await liveChatSession()), retryStatus: phase },
+			isRunning: () => true,
+		});
+		try {
+			assert.match(text(page.render(100, 20)), /∀ switching model…/);
+			for (const listener of live.listeners) listener({ type: "agent_start" });
+			assert.doesNotMatch(text(page.render(100, 20)), /switching model…/);
+		} finally {
+			page.dispose();
+		}
 	});
 
 	test("a chat opened while its subagent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", async () => {
@@ -1003,7 +1034,6 @@ describe("a subagent's task view (#4640)", () => {
 			recentActivity: note("recentActivity", []),
 			activityOmitted: note("activityOmitted", true),
 			subscribe: note("subscribe", () => {}),
-			foregroundTask: note("foregroundTask", Promise.resolve({ ok: true as const, value: { kind: "fg" } })),
 			cancelTask: note("cancelTask", Promise.resolve({ ok: true as const, value: undefined })),
 			stdinAvailable: note("stdinAvailable", true),
 			writeTaskInput: note("writeTaskInput", Promise.resolve({ ok: true as const, value: { acceptedBytes: 3 } })),
@@ -1020,7 +1050,6 @@ describe("a subagent's task view (#4640)", () => {
 		assert.equal(child.activityOmitted(id), true);
 		const listener = () => {};
 		assert.equal(typeof child.subscribe(listener), "function");
-		assert.deepEqual(await child.foregroundTask(id), { ok: true, value: { kind: "fg" } });
 		assert.deepEqual(await child.cancelTask(id), { ok: true, value: undefined });
 		assert.equal(child.stdinAvailable(id), true);
 		assert.deepEqual(await child.writeTaskInput(id, "abc"), { ok: true, value: { acceptedBytes: 3 } });
@@ -1034,7 +1063,6 @@ describe("a subagent's task view (#4640)", () => {
 			"recentActivity:child-shell",
 			"activityOmitted:child-shell",
 			`subscribe:${String(listener)}`,
-			"foregroundTask:child-shell",
 			"cancelTask:child-shell",
 			"stdinAvailable:child-shell",
 			"writeTaskInput:child-shell,abc",

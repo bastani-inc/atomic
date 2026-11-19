@@ -160,6 +160,7 @@ test.each(components)("$name renders at outputPad 0 and 1", ({ create }) => {
 test("restored isolated tool rows preserve output padding and support updates", () => {
 	const commands: InteractiveEngineCommand[] = [];
 	const runtime = Object.assign(Object.create(IsolatedInteractiveRuntime.prototype), {
+		onGenerationEnded: () => () => {},
 		onEngineMessage: () => () => {},
 		sendEngineCommand: (command: InteractiveEngineCommand) => commands.push(command),
 	}) as IsolatedInteractiveRuntime;

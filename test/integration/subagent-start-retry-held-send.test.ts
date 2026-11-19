@@ -285,8 +285,6 @@ for (const { stallAt, resume } of [
 						cleanupSettled = true;
 					});
 				},
-				yieldTaskWait() {},
-				isParentObserving: () => false,
 			};
 			const agent: AgentConfig = {
 				name: "worker",

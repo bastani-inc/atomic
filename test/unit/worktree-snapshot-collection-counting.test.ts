@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import {
+	SNAPSHOT_COLLECTION_BATCH,
+	SNAPSHOT_COLLECTION_DELETE_BATCH,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { CountedStatement } from "../helpers/counting-database.js";
 import { countingDatabase } from "../helpers/counting-database.js";
@@ -33,13 +37,13 @@ afterEach(async () => {
 });
 
 /**
- * The only scans a collection may make: the schema and source rows its index check reads, and the structures it builds
- * once per statement from the open leaves of session trees (the covering index of leaves with a snapshot behind them,
- * the distinct anchors they give, the snapshot entries on their branches and the restores among them), none of which
- * grows with messages.
+ * The only scans a collection may make: the schema and source rows its index check reads, the one table's entry its
+ * chunk-layout check reads (#5541), and the structures it builds once per statement from the open leaves of session
+ * trees (the covering index of leaves with a snapshot behind them, the distinct anchors they give, the snapshot entries
+ * on their branches and the restores among them), none of which grows with messages.
  */
 const SCANS_OF_INDEX_STRUCTURES =
-	/^SCAN (?!json_each|sqlite_schema|snapshot_index_sources|snapshot_session_links USING COVERING INDEX snapshot_session_links_leaves$|anchor$|branch$|walk$|checkout$|session_heads$)/u;
+	/^SCAN (?!json_each|sqlite_schema|pragma_table_list VIRTUAL TABLE|snapshot_index_sources|snapshot_session_links USING COVERING INDEX snapshot_session_links_leaves$|anchor$|branch$|walk$|checkout$|session_heads$)/u;
 
 /** Tables a collection must never read: the journal's and the sessions'. */
 const HISTORY_TABLES = /\b(wf_events|wf_runs|wf_leases|session_entries|session_sessions|session_search_texts)\b/u;
@@ -115,11 +119,31 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
 /**
  * One check that the reference index is complete: which of the 3 referencing tables and 9 triggers exist (12 schema
  * rows) and how far each of the 3 sources is backfilled (3 rows), with the row that says the session entries'
- * triggers are this build's (#5065). A collection makes one before it sweeps and one inside each batch's own transaction.
+ * triggers are this build's (#5065) and this build's own backfill progress of them (#5558). A collection makes one
+ * before it sweeps and one inside each delete batch's own transaction.
  */
-const INDEX_CHECK = { statements: 2, rows: 16 } as const;
-/** The chunk-delete trigger and two maintenance-index rows, then an indexed legacy-row probe, once per collection. */
-const AGE_CHECK = { statements: 2, rows: 3 } as const;
+const INDEX_CHECK = { statements: 2, rows: 17 } as const;
+/**
+ * The chunk-delete trigger and two maintenance-index rows, then an indexed legacy-row probe, then whether the chunk
+ * table still has to move to the row layout (#5541), which it has not, once per collection.
+ */
+const AGE_CHECK = { statements: 3, rows: 3 } as const;
+/**
+ * Each page of aged blobs (#5530): a range of the age index, the blobs of it no run or carried work keeps, and the
+ * sessions whose snapshot records name those.
+ */
+const PAGE = { statements: 3 } as const;
+/**
+ * The sessions a sweep meets for the first time: what walking them costs, then the blobs their retained snapshots name,
+ * one statement each for sessions this small (#5530).
+ */
+const WALK = { statements: 2 } as const;
+/**
+ * Each delete batch's transaction after its index check: one statement for the blobs of the batch it keeps, those the
+ * retained snapshots of the sessions the sweep walked for them name and those another session names, and the delete
+ * (#5530).
+ */
+const BATCH = { statements: 2 } as const;
 
 const summary = (measured: { statements: readonly CountedStatement[]; rows: number; transactions: number }) => ({
 	statements: measured.statements.length,
@@ -145,12 +169,14 @@ describe("collection cost follows the number of snapshots, never the number of j
 		// the schema version rows the session listing and load check (#5065); the load reads its entries in growing batches.
 		assert.deepEqual(summary(before.fullScan), { statements: 9, rows: 427, transactions: 1 });
 		assert.deepEqual(summary(after.fullScan), { statements: 90, rows: 40_027, transactions: 1 });
-		// Collection checks the index twice, pages through the 7 aged blobs nothing retains and deletes them, in one
-		// batch, at either length.
+		// At either length, collection checks the index twice and reads one page of the 16 aged blobs. It keeps the 8 the
+		// failed run retains, walks the one session that names 4 of the other 8 and keeps the 1 its latest snapshot
+		// retains, and deletes the other 7 in one batch, which walks that session again in one statement of its transaction.
 		for (const { collection } of measured) {
 			assert.deepEqual(summary(collection), {
-				statements: 2 * INDEX_CHECK.statements + 2 + AGE_CHECK.statements,
-				rows: 2 * INDEX_CHECK.rows + 7 + 7 + AGE_CHECK.rows,
+				statements:
+					2 * INDEX_CHECK.statements + AGE_CHECK.statements + PAGE.statements + WALK.statements + BATCH.statements,
+				rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows + (16 + 8 + 4) + (1 + 1) + (0 + 7),
 				transactions: 1,
 			});
 			assert.equal(collection.result.deleted.length, 7);
@@ -202,7 +228,7 @@ describe("collection cost follows the number of snapshots, never the number of j
 		assert.deepEqual(costs[0], costs[1]);
 	});
 
-	test("collection rows grow with the number of snapshots, a batch of statements per 256 blobs it deletes", async () => {
+	test("collection rows grow with the number of snapshots, a page of statements per 256 aged blobs", async () => {
 		const few = await history("few", 16, 200);
 		const many = await history("many", 600, 200);
 
@@ -210,19 +236,39 @@ describe("collection cost follows the number of snapshots, never the number of j
 		const large = await many.measure(() => collectSnapshotGarbage(many.shared.journal.snapshotBlobs));
 
 		assert.deepEqual(summary(small), {
-			statements: 2 * INDEX_CHECK.statements + 2 + AGE_CHECK.statements,
-			rows: 2 * INDEX_CHECK.rows + 7 + 7 + AGE_CHECK.rows,
+			statements:
+				2 * INDEX_CHECK.statements + AGE_CHECK.statements + PAGE.statements + WALK.statements + BATCH.statements,
+			rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows + (16 + 8 + 4) + (1 + 1) + (0 + 7),
 			transactions: 1,
 		});
 		assert.equal(large.result.deleted.length, 150 + 149);
+		// Three pages hold the 600 aged blobs: 300 of them the failed run keeps, and the one session names 150 of the
+		// other 300. The 299 the rest leaves are deleted in batches of at most SNAPSHOT_COLLECTION_DELETE_BATCH, a page's
+		// last batch possibly smaller.
+		const pages = Math.ceil(600 / SNAPSHOT_COLLECTION_BATCH);
+		const deletes = large.statements.filter((statement) => statement.sql.startsWith("DELETE"));
+		const batches = deletes.length;
+		assert.ok(deletes.every((statement) => statement.rows <= SNAPSHOT_COLLECTION_DELETE_BATCH));
+		assert.ok(batches >= Math.ceil(299 / SNAPSHOT_COLLECTION_DELETE_BATCH));
+		assert.ok(batches <= Math.ceil(299 / SNAPSHOT_COLLECTION_DELETE_BATCH) + pages - 1);
+		// Each batch checks the index, finds the blobs of the batch it keeps (none) and deletes, in its transaction. The
+		// session is walked once to nominate; then one statement of each batch's transaction walks the sessions the sweep
+		// walked for the batch's blobs: that session, or none for a batch of blobs no session names (#5530).
+		const walks = large.statements.filter((statement) => statement.sql.includes("open_anchors(")).length;
+		assert.equal(walks, 1 + batches);
 		assert.deepEqual(summary(large), {
-			statements: INDEX_CHECK.statements + 2 * (INDEX_CHECK.statements + 2) + AGE_CHECK.statements,
-			rows: INDEX_CHECK.rows + 2 * INDEX_CHECK.rows + 299 + 299 + AGE_CHECK.rows,
-			transactions: 2,
+			statements:
+				INDEX_CHECK.statements +
+				AGE_CHECK.statements +
+				pages * PAGE.statements +
+				WALK.statements +
+				batches * (INDEX_CHECK.statements + BATCH.statements),
+			rows: INDEX_CHECK.rows + AGE_CHECK.rows + (600 + 300 + 150) + (1 + 1) + batches * INDEX_CHECK.rows + 299,
+			transactions: batches,
 		});
 	});
 
-	test("with nothing old enough to collect, a collection reads no blob rows and deletes nothing", async () => {
+	test("with nothing old enough to collect, a collection reads no blob rows, takes no write lock and deletes nothing", async () => {
 		const fixture = await history("fresh", 16, 200);
 		await fixture.shared.database.run(
 			`UPDATE ${fixture.shared.journal.snapshotBlobs.table} SET created_at = unixepoch()`,
@@ -231,9 +277,9 @@ describe("collection cost follows the number of snapshots, never the number of j
 		const fresh = await fixture.measure(() => collectSnapshotGarbage(fixture.shared.journal.snapshotBlobs));
 
 		assert.deepEqual(summary(fresh), {
-			statements: 2 * INDEX_CHECK.statements + 1 + AGE_CHECK.statements,
-			rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows,
-			transactions: 1,
+			statements: INDEX_CHECK.statements + 1 + AGE_CHECK.statements,
+			rows: INDEX_CHECK.rows + AGE_CHECK.rows,
+			transactions: 0,
 		});
 		assert.deepEqual(fresh.result.deleted, []);
 	});

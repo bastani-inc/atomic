@@ -65,6 +65,11 @@ export class WindowedContainer extends Container {
 	private lastFullSweepAt = Number.NEGATIVE_INFINITY;
 	private sweptStale = -1;
 
+	/** Content width of the window that laid out these children, including a containing window's layout. */
+	protected get windowLayoutWidth(): number | undefined {
+		return this.windowHost?.width || this.width || undefined;
+	}
+
 	protected windowChildren(): readonly Component[] {
 		return this.children;
 	}

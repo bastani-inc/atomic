@@ -11,7 +11,7 @@ import {
 } from "../../intercom/intercom-bridge.js";
 import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { getArtifactsDir } from "../../shared/artifacts.js";
-import { createForkContextResolver, forkLaunchOfTasks } from "../../shared/fork-context.js";
+import { createForkContextResolver } from "../../shared/fork-context.js";
 import { resolveCurrentSessionId } from "../../shared/session-identity.js";
 import { buildReadInstruction } from "../../shared/settings.js";
 import {
@@ -32,8 +32,8 @@ import {
 	withForkContext,
 } from "./subagent-executor-input.js";
 import {
+	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
-	BURST_TASK_LAUNCH_CALL_ID,
 	type BurstTaskParam,
 	type ExecutionContextBuildResult,
 	type ExecutionContextData,
@@ -64,8 +64,6 @@ export async function prepareExecutionContext(input: {
 	signal: AbortSignal;
 	onUpdate?: (r: SubagentToolResult) => void;
 	deps: ResolvedExecutorDeps;
-	/** The `subagent` tool call being executed, which a forked child answers as the call that launched it. */
-	toolCallId?: string;
 }): Promise<ExecutionContextBuildResult> {
 	const { params, ctx, signal, onUpdate, deps } = input;
 	const admission = ctx.orchestrationContext?.messageAdmission;
@@ -75,6 +73,8 @@ export async function prepareExecutionContext(input: {
 	const normalized = normalizeRepeatedParallelCounts(params);
 	if (normalized.error) return { error: normalized.error };
 	const normalizedParams = normalized.params!;
+	if (normalizedParams.worktree !== true && normalizedParams.tasks)
+		normalizedParams[BURST_PREPARED_TASKS]?.(normalizedParams.tasks);
 
 	let effectiveParams = normalizedParams;
 
@@ -151,10 +151,6 @@ export async function prepareExecutionContext(input: {
 		sessionManagerForIndex = createForkContextResolver(
 			ctx.sessionManager,
 			effectiveParams.context,
-			forkLaunchOfTasks(
-				effectiveParams.tasks?.map((task) => (task as BurstTaskParam)[BURST_TASK_LAUNCH_CALL_ID]),
-				input.toolCallId,
-			),
 		).sessionManagerForIndex;
 	} catch (error) {
 		return { error: toExecutionErrorResult(effectiveParams, error) };

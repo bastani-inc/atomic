@@ -29,9 +29,6 @@ export type WaitError = Failure<
 	"UnknownTask" | "TaskEvicted" | "OwnerClosed" | "EnvironmentClosing" | "ScopeMismatch" | "ObserverCancelled"
 >;
 export type YieldError = Failure<"UnknownWait" | "StaleGeneration" | "ObserverCancelled">;
-export type ForegroundError = Failure<
-	"TaskTerminal" | "OwnerClosing" | "UnknownTask" | "TaskEvicted" | "ObserverCancelled"
->;
 export type CancelError = Failure<"UnknownTask" | "TaskEvicted" | "CleanupFailed">;
 /** A hold on a task record its owner already evicted, which no hold brings back; see `TaskEvictedError`. */
 export type RetainError = Failure<"TaskEvicted">;
@@ -176,6 +173,16 @@ export type HostObservation =
 	| { kind: "foreground"; waitId: WaitId }
 	| { kind: "background"; reason: YieldReason | "not-observed" | "observer-cancelled" }
 	| { kind: "none"; reason: "task-settled" | "owner-closing" };
+/** One execution of a subagent, from dispatch (not queue admission) until release, stop or completion. */
+export interface TaskElapsedSpan {
+	dispatchedAt: number;
+	endedAt?: number;
+}
+
+export function spanElapsedMs(span: TaskElapsedSpan, now = Date.now()): number {
+	return Math.max(0, (span.endedAt ?? now) - span.dispatchedAt);
+}
+
 export type TaskRecord = {
 	ref: NativeTaskRef;
 	launchOperationId: OperationId;
@@ -198,6 +205,9 @@ export type TaskRecord = {
 	readonly requestedModel?: string;
 	/** Heartbeat cadence the task was launched with; `0` disables. Omitted uses the owner default. */
 	readonly heartbeatMs?: number;
+	/** Turn state copied from the owning session when this record crosses a process boundary. */
+	readonly turnInterrupted?: true;
+	readonly resumedTurns?: number;
 	execution: Execution;
 	observation: HostObservation;
 	/** Retained native background membership, independent of the current wait. */
@@ -205,6 +215,7 @@ export type TaskRecord = {
 	attention: Attention;
 	cleanup: Cleanup;
 	currentAction?: { tool: string; text: string };
+	elapsedSpan?: TaskElapsedSpan;
 	metrics?: { elapsedMs?: number; toolCount?: number; tokenCount?: number };
 	output: OutputRef;
 };

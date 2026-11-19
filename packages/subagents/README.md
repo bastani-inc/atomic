@@ -6,7 +6,7 @@
 
 `@bastani/subagents` lets Atomic delegate work to focused child agents. It is Atomic's bundled adaptation of upstream `pi-subagents`; use it for code review, scouting, implementation, parallel audits, and anything else that benefits from a second or third set of model eyes.
 
-Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. For autonomous jobs that need durable stages, checkpoints, resumability, HIL, gates, retries, or bounded loops, use an appropriate workflow. Owner-bound subagent calls support foreground-first and background observation; omitted `wait` starts in the background.
+Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. For autonomous jobs that need durable stages, checkpoints, resumability, HIL, gates, retries, or bounded loops, use an appropriate workflow. Every subagent runs in the background; `subagent({ action: "wait", id })` waits for one whose result is needed next.
 
 https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
@@ -48,7 +48,7 @@ That is enough to start.
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job.
 
-Atomic starts the child once and gives it the task. Background launches return after admission; foreground-first launches wait until completion or their observation budget expires. On expiry, the same child continues in the background and later delivers its result to the owning session.
+Atomic starts the child once and gives it the task. Every launch runs in the background: it returns after admission, and the child later delivers its result to the owning session as a completion notice. To use a result in the same turn, wait for the child's task explicitly.
 
 Installing the extension does not start an automatic review. It gives Pi a delegation tool. If you want every implementation reviewed, say that in your prompt or put it in your project instructions:
 
@@ -172,23 +172,22 @@ You can ask naturally:
 Show me the current subagent status.
 ```
 
-### Choose foreground or background
+### Launch, then wait when you need the result
 
-The agent can choose a mode for each authorized call without asking you merely to select an execution mode:
+Every subagent runs in the background. The agent decides for each call whether its next step needs the result, without asking you to choose:
 
 Keep immediately blocking work local unless specialist expertise, context isolation, or an explicit delegation request makes a child worthwhile. Continue independent work after spawning without duplicating the child's task. Wait when its result becomes a dependency; otherwise rely on completion notices rather than repeated short waits or status polls.
 
 ```ts
-subagent({ agent: "codebase-analyzer", task: "Trace authentication.", wait: { kind: "background" } })
-subagent({ agent: "codebase-analyzer", task: "Trace authentication.", wait: { kind: "foreground", budgetMs: 30000 } })
-subagent({ action: "wait", id: taskId })
+subagent({ agent: "codebase-analyzer", task: "Trace authentication." })
+subagent({ action: "wait", id: taskId, budgetMs: 120000 })
 subagent({ action: "status", id: taskId })
 subagent({ action: "pause", id: taskId })
 subagent({ action: "resume", id: taskId, message: "Focus on the failing test." })
 subagent({ action: "quit", id: taskId })
 ```
 
-In owner-bound sessions, omitted `wait` means background. Explicit foreground waits use the owner's agent observation budget, normally 30 seconds, unless overridden. Expiry releases the caller, not the execution. Wait or inspect the returned task ID instead of launching a duplicate. Existing SDK callers without an owner retain their original execution path.
+`action: "wait"` uses the owner's agent wait budget, normally 30 seconds, unless `budgetMs` overrides it, and Esc ends it at once. Either way the wait releases the caller, not the execution. Wait or inspect the returned task ID instead of launching a duplicate. A launch that still passes `wait`, as older prompts and workflows may, runs in the background too, and a foreground one says so in its result. SDK callers without a task owner retain their original execution path, which waits for the child.
 
 See [Background tasks](../coding-agent/docs/background-tasks.md) for shell examples, automatic backgrounding, output retention, keyboard controls, platform limits, and session/workflow lifetimes.
 
@@ -236,11 +235,11 @@ Child-side routine completion handoffs are still not expected. In parallel runs,
 
 Children can also talk to each other. Children launched in one parallel set (or with the same explicit `group`) share an Intercom group, and children launched from a workflow stage inherit that stage's invocation group. `intercom({ action: "list" })` shows live siblings, and ordinary `send`/`ask` reaches them directly: a locator hands paths to an analyzer, writers agree on file ownership or who runs a shared suite, a debugger reuses a sibling's reproduction, or one reviewer challenges another's finding before each returns its own verdict. `contact_supervisor` stays reserved for the supervisor. Peer-to-peer (swarm) exchange is the default, and the supervisor is not a message relay. There are no limits on communication between agents; it is encouraged whenever you need to. Children coordinate spontaneously and each still returns its own result. For very complex work or requested heavy parallelism, swarms scale to hundreds or thousands of agents organized into teams; see [Scaling a swarm](../coding-agent/docs/subagents.md#scaling-a-swarm) for the limits. Peer asks and one blocking supervisor request may wait concurrently in the same child.
 
-An exact-child probe/commit handshake may release parallel foreground observations, including queued slots, so the parent can respond. It does not end any execution or spend a running concurrency slot. Active siblings keep working, queued siblings start once capacity becomes available, and worktrees remain until their owners finish. Do not relaunch children to answer an ask. Targeted `pause`/`quit`, explicit batch cancellation, and owner closure remain separate controls.
+An exact-child probe/commit handshake lets a child's message reach its busy parent at once, and an `action: "wait"` the parent is in ends so it can respond. Neither ends any execution or spends a running concurrency slot. Active siblings keep working, queued siblings start once capacity becomes available, and worktrees remain until their owners finish. Do not relaunch children to answer an ask. Targeted `pause`/`quit`, explicit batch cancellation, and owner closure remain separate controls.
 
-Single-child launches retain their existing terminal parent-ask handoff: the exact live child ends before broker send or waiter admission and the parent receives the verbatim question, ordered attachments, identity, and `[TASK_CONTEXT]` for a fresh child. The bridge still obtains each child's capability during admission; the child connects only when it uses Intercom.
+A single child that an SDK caller without a task owner runs directly retains the terminal parent-ask handoff: the exact live child ends before broker send or waiter admission and the parent receives the verbatim question, ordered attachments, identity, and `[TASK_CONTEXT]` for a fresh child. Every other child waits for the reply in the same execution. The bridge still obtains each child's capability during admission; the child connects only when it uses Intercom.
 
-Parent-side Atomic sends grouped completion results through Intercom: one grouped message per foreground parent `subagent` run and one per detached child completion while its owning session remains live. When a workflow stage completes, Atomic cancels its still-running detached children and suppresses their late findings and completion notifications instead of forwarding them to the parent/main chat. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child Intercom targets and full child summaries.
+Parent-side Atomic sends grouped completion results through Intercom: one grouped message per `subagent` run its caller waits for and one per detached child completion while its owning session remains live. When a workflow stage completes, Atomic cancels its still-running detached children and suppresses their late findings and completion notifications instead of forwarding them to the parent/main chat. Intercom-confirmed delivery returns a compact receipt with artifact/session paths; without that confirmation, the normal full output is preserved. Grouped messages include child Intercom targets and full child summaries.
 
 If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, quitting the child, or nudging it.
 
@@ -532,13 +531,12 @@ Agent definitions are not loaded into context by default. Management actions let
 | `task` | string | - | Task string for single mode. |
 | `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `wait`, `pause`, `resume`, or `quit`. `kill` and `interrupt` were removed and are rejected with an error naming `quit`. |
 | `config` | object/string | - | Agent config for create/update. |
-| `wait` | object | background in owner-bound sessions | `{ kind: "background" }` yields after admission; `{ kind: "foreground", budgetMs?: number }` waits before automatically yielding. |
-| `budgetMs` | number | owner wait policy | Observation budget for `action: "wait"`; not a child execution deadline. |
+| `budgetMs` | number | owner wait policy | Observation budget for `action: "wait"`; not a child execution deadline. A launch always runs in the background; a `wait` it still passes is ignored. |
 | `id` | string | - | Task ID returned by an owner-bound launch for `wait` or `status`; for `pause`, `resume`, and `quit` also the child id (`<runId>:<index>`), Intercom name, or a single-child run id. |
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
 | `reads` | `string[] \| false` | - | Single-agent files to read before execution, or `false` to disable. Relative paths resolve against the effective child `cwd`; absolute paths pass through. |
-| `progress` | boolean | agent default | Enable or disable single-agent run-scoped `progress.md` tracking under isolated artifact storage. Omission inherits the agent default except for read-only tasks. This does not write `progress.md` into the child `cwd` and is independent of `includeProgress`; with `artifacts: false`, foreground storage is removed after the child exits. |
+| `progress` | boolean | agent default | Enable or disable single-agent run-scoped `progress.md` tracking under isolated artifact storage. Omission inherits the agent default except for read-only tasks. This does not write `progress.md` into the child `cwd` and is independent of `includeProgress`; with `artifacts: false`, that storage is removed after the child exits. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `worktree` (named), `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
@@ -572,7 +570,7 @@ subagent({ action: "quit", all: true })
 
 `status` lists the children this session launched that are still in this process, each as `<run-id>/<agent>_<n> — <state> (loaded|cold) · id <child-id>`, with the cause of a failed or interrupted child after it; `pause`, `resume` and `quit` take the child id or that path, and `status` takes either to show one child. Children other sessions in the same process launched, such as a workflow stage's, are not listed, since this session cannot control them. A child that has not started within its start budget (5 minutes, or `sessionStartTimeoutMs` in `config.json`) fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch` or `event-loop`) instead of staying running; see [Subagent start timeouts](../coding-agent/docs/subagents.md#subagent-start-timeouts).
 
-`pause` stops a child and holds its queued messages until `resume`; `quit` stops it gracefully, including a child already paused by you or with its workflow stage. Both stay resumable while the session or workflow stage that launched the child can still resume it, as do children stopped because their workflow stage was paused or quit, including by Atomic exiting or a session switch. `resume` reopens the child's own session under the same id and Intercom name. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, every resumable child, including a completed or failed one, is asked to continue where it left off. Children cancelled for good (owner or batch cancellation, including a `/tasks` stop, and the removed `kill` action), children whose workflow stage ended (the stage finished, or its run ended or was cancelled; this covers all of that stage's children, including ones you paused or quit), and children reported gone after a restart cannot be resumed: `resume` returns an error that says why, and follow-up work requires a fresh launch with explicit context. A parallel child waiting for a reply is not terminal and continues in its original execution. Parent cancellation of a still-running child uses the interrupted/abort state: receipts and progress present it as cancelled rather than failed, persisted metadata keeps the abort cause, and bounded partial findings remain available. Migrate old subagent calls from `action: "kill"` or `action: "interrupt"` to `action: "quit"`; the old actions are rejected with `The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.` (naming the action that was used). Host interrupt APIs are unchanged.
+`pause` stops a child and holds its queued messages until `resume`; `quit` stops it gracefully, including a child already paused by you or with its workflow stage. Both stay resumable while the session or workflow stage that launched the child can still resume it, as do children stopped because their workflow stage was paused or quit, including by Atomic exiting or a session switch. `resume` reopens the child's own session under the same id and Intercom name. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, every resumable child, including a completed or failed one, is asked to continue where it left off. Children cancelled for good (owner or batch cancellation, or the removed `kill` action), children whose workflow stage ended (the stage finished, or its run ended or was cancelled; this covers all of that stage's children, including ones you paused or quit), and children reported gone after a restart cannot be resumed: `resume` returns an error that says why, and follow-up work requires a fresh launch with explicit context. A parallel child waiting for a reply is not terminal and continues in its original execution. Parent cancellation of a still-running child uses the interrupted/abort state: receipts and progress present it as cancelled rather than failed, persisted metadata keeps the abort cause, and bounded partial findings remain available. Migrate old subagent calls from `action: "kill"` or `action: "interrupt"` to `action: "quit"`; the old actions are rejected with `The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.` (naming the action that was used). Host interrupt APIs are unchanged.
 
 ## Worktree isolation
 
@@ -606,7 +604,7 @@ After a worktree parallel step reaches a terminal result, per-agent diff stats a
 
 Atomic subagents read optional JSON config from `~/.atomic/agent/extensions/subagent/config.json` and still check the legacy `~/.pi/agent/extensions/subagent/config.json` path for compatibility.
 
-Subagent configuration controls discovery, parallel limits, session storage, control notices, and intercom delivery. Foreground/background observation is selected per call through `wait`; it is not a global execution-mode toggle.
+Subagent configuration controls discovery, parallel limits, session storage, control notices, and intercom delivery. Every launch runs in the background; `action: "wait"` waits for one when its result is needed.
 
 ### `parallel`
 
@@ -705,7 +703,7 @@ Session files are stored under a per-run session directory. With `context: "fork
 
 Owner-bound completions notify the originating session while its admission boundary remains open. Closing a workflow stage cancels its running children and suppresses late completion delivery; unrelated stages remain live. Visible completions use an unshaded notice line with a status glyph and the agent's task title, followed by the first line of its retained result or error. Ctrl+O expands the full retained result, up to 8,000 characters, and `/tasks` opens retained inspection. Completion notices keep model and reasoning metadata in their saved details without displaying a model line. Receipt identities persist in session history for retry without duplicate delivery or execution. Integrations without a task owner retain their existing result and Intercom paths.
 
-Foreground runs persist their session and user-facing artifacts beside the parent session:
+Subagent runs persist their session and user-facing artifacts beside the parent session:
 
 ```text
 {parent-session-dir}/subagent-artifacts/
@@ -732,9 +730,9 @@ For existing subagent integrations and agent definitions:
 
 ## Live progress
 
-Foreground runs show compact live progress for single and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and artifact paths when available.
+Subagent runs show compact live progress for single and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and artifact paths when available.
 
-File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. Parallel tasks with `progress` enabled share one run-scoped `progress.md` in the same artifact storage, never in a task's working directory or the project. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
+File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. Parallel tasks with `progress` enabled share one run-scoped `progress.md` in the same artifact storage, never in a task's working directory or the project. `includeProgress: true` only adds detailed runtime progress data to the final tool result of a run its caller waits for; it does not enable the file.
 
 Press `CTRL+O` to expand the full streaming view with complete output per step.
 
@@ -761,7 +759,7 @@ Completion and intercom events:
 - `subagent:control-intercom`
 - `subagent:result-intercom`
 
-Foreground status/control events are surfaced as visible parent notices, and typed terminal records carry the canonical path, status, cause, and session statistics. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
+Status/control events are surfaced as visible parent notices, and typed terminal records carry the canonical path, status, cause, and session statistics. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
 
 ## Prompt-template integration
 

@@ -32,7 +32,7 @@ export interface ClickExpandableBlock extends Component {
 	 * isolated engine renders. It calls `changed` once the new rows differ from the old ones, and otherwise goes back
 	 * to the expansion it had. Blocks drawn in place omit it: they are drawn in both states at once instead.
 	 */
-	expandByClick?(expanded: boolean, changed: () => void): void;
+	expandByClick?(expanded: boolean, changed: () => void, width: number, signal?: AbortSignal): void;
 }
 
 export function isClickExpandableBlock(component: Component | undefined): component is ClickExpandableBlock {
@@ -53,7 +53,7 @@ function roleOf(block: ClickExpandableBlock): ToolGroupRole["kind"] {
  * block alone. Folded calls follow their summary block; rows between them that are not blocks, such as an empty
  * assistant turn, are skipped.
  */
-function clickUnit(siblings: readonly Component[], index: number): readonly ClickExpandableBlock[] | undefined {
+export function clickUnit(siblings: readonly Component[], index: number): readonly ClickExpandableBlock[] | undefined {
 	const clicked = siblings[index];
 	if (!isClickExpandableBlock(clicked)) return undefined;
 	let headIndex = index;
@@ -104,6 +104,23 @@ export function isClickedGroup(unit: readonly ClickExpandableBlock[]): boolean {
 	return unit.length > 1 || (head !== undefined && roleOf(head) === "head");
 }
 
+let comparisonTime: number | undefined;
+
+/** A tool's elapsed label must read the same clock in both synchronous draws of a click comparison. */
+export function blockRenderTime(): number {
+	return comparisonTime ?? Date.now();
+}
+
+export function withBlockRenderTime<T>(draw: () => T): T {
+	const previous = comparisonTime;
+	comparisonTime = blockRenderTime();
+	try {
+		return draw();
+	} finally {
+		comparisonTime = previous;
+	}
+}
+
 export function sameRows(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((line, index) => line === right[index]);
 }
@@ -113,11 +130,13 @@ export function sameRows(left: readonly string[], right: readonly string[]): boo
  * it did: a block with nothing to expand or collapse goes back to how it was.
  */
 export function expandIfItChangesRows(block: ClickExpandableBlock, width: number, expanded: boolean): boolean {
-	const before = block.render(width);
-	block.setExpanded(expanded);
-	if (!sameRows(before, block.render(width))) return true;
-	block.setExpanded(!expanded);
-	return false;
+	return withBlockRenderTime(() => {
+		const before = block.render(width);
+		block.setExpanded(expanded);
+		if (!sameRows(before, block.render(width))) return true;
+		block.setExpanded(!expanded);
+		return false;
+	});
 }
 
 /**
@@ -129,6 +148,7 @@ export function toggleClickedBlocks(
 	unit: readonly ClickExpandableBlock[],
 	width: number,
 	changed: (expanded: boolean) => void,
+	signal?: AbortSignal,
 ): void {
 	const [head] = unit;
 	if (head === undefined) return;
@@ -140,7 +160,7 @@ export function toggleClickedBlocks(
 		return;
 	}
 	if (head.expandByClick) {
-		head.expandByClick(expanded, () => changed(expanded));
+		head.expandByClick(expanded, () => changed(expanded), width, signal);
 		return;
 	}
 	if (expandIfItChangesRows(head, width, expanded)) changed(expanded);
@@ -151,41 +171,65 @@ export function toggleClickedBlocks(
  * child that is a plain container of blocks, among that child's children.
  */
 function clickUnitAt(
-	children: readonly Component[],
-	locate: (width: number, row: number) => { readonly component: Component; readonly row: number } | undefined,
+	container: Container,
 	width: number,
 	row: number,
-): readonly ClickExpandableBlock[] | undefined {
-	const hit = locate(width, row);
-	if (!hit) return undefined;
-	const index = children.indexOf(hit.component);
-	if (index === -1) return undefined;
-	if (isClickExpandableBlock(hit.component)) return clickedBlocks(children, index, width, hit.row);
-	const nested = hit.component as Partial<Container>;
-	if (nested.children === undefined || nested.childAtRow === undefined) return undefined;
-	return clickUnitAt(nested.children, (w, r) => nested.childAtRow?.(w, r), width, hit.row);
+): (() => readonly ClickExpandableBlock[] | undefined) | undefined {
+	const hit = container.childAtRow(width, row);
+	if (!hit || !container.children.includes(hit.component)) return undefined;
+	if (isClickExpandableBlock(hit.component)) {
+		const area = hit.component.clickArea(width);
+		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
+		return () => clickUnit(container.children, container.children.indexOf(hit.component));
+	}
+	const nested = hit.component as Container;
+	if (!nested.children || !nested.childAtRow) return undefined;
+	const unit = clickUnitAt(nested, width, hit.row);
+	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
 }
 
-/**
- * A single left click on any row of a block among `siblings`, stacked in order, expands or collapses it once the click
- * cannot become a double-click: a double- or triple-click selects text instead, and a drag selects as everywhere else.
- * `owner` is the container the siblings belong to; it is reported as the click's handler. `onToggled` runs when the
- * click changed what the blocks draw.
- */
+// A global expansion supersedes only transcript toggles, not other controls' single-click actions.
+const clickScopes = new WeakMap<Container, AbortController>();
+const pressedScopes = new WeakMap<Container, AbortSignal>();
+
+export function supersedeBlockClicks(container: Container): void {
+	clickScopes.get(container)?.abort();
+	clickScopes.delete(container);
+}
+
+/** A click names the block it landed on. It toggles that block in its current group at the current width. */
 export function handleTranscriptBlockClick(
 	owner: Component,
-	siblings: readonly Component[],
-	locate: (width: number, row: number) => { readonly component: Component; readonly row: number } | undefined,
+	container: Container,
 	event: TuiMouseEvent,
+	currentWidth: () => number | undefined,
 	onToggled?: (expanded: boolean) => void,
 ): ContainerMouseResult {
-	if (!isSingleLeftClick(event)) return undefined;
+	if (event.type !== "press" && !isSingleLeftClick(event)) return undefined;
+	let scope = clickScopes.get(container);
+	if (!scope) {
+		scope = new AbortController();
+		clickScopes.set(container, scope);
+	}
+	if (event.type === "press") {
+		pressedScopes.set(container, scope.signal);
+		return undefined;
+	}
+	const signal = pressedScopes.get(container) ?? scope.signal;
+	pressedScopes.delete(container);
+	if (signal.aborted) return undefined;
 	// The click names its blocks where it lands; it toggles them once it settles, so each single click toggles once.
-	const unit = clickUnitAt(siblings, locate, event.width, event.y);
+	const unit = clickUnitAt(container, event.width, event.y);
 	if (!unit) return undefined;
 	return {
 		handled: true,
-		whenSingleClick: () => toggleClickedBlocks(unit, event.width, (expanded) => onToggled?.(expanded)),
+		whenSingleClick: () => {
+			if (signal.aborted) return;
+			const blocks = unit();
+			const width = currentWidth();
+			if (blocks && width !== undefined)
+				toggleClickedBlocks(blocks, width, (expanded) => onToggled?.(expanded), signal);
+		},
 		target: {
 			component: owner,
 			originX: event.screenX - event.x,
@@ -217,11 +261,15 @@ export function repaintAfterSingleClick(
  * take clicks as the transcript's do.
  */
 export function clickableBlocksView(container: Container, hidden: () => boolean): Component {
-	const view: Component = {
-		render: (width) => (hidden() ? [] : container.render(width)),
+	let paintedWidth: number | undefined;
+	const view: Component & Pick<Container, "childAtRow"> = {
+		childAtRow: (width, row) => (paintedWidth === width ? container.childAtRow(width, row) : undefined),
+		render: (width) => {
+			paintedWidth = hidden() ? undefined : width;
+			return paintedWidth === undefined ? [] : container.render(width);
+		},
 		invalidate: () => container.invalidate(),
-		handleMouse: (event) =>
-			handleTranscriptBlockClick(view, container.children, (width, row) => container.childAtRow(width, row), event),
+		handleMouse: (event) => handleTranscriptBlockClick(view, container, event, () => paintedWidth),
 	};
 	return view;
 }

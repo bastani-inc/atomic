@@ -130,7 +130,7 @@ This setting selects the model that makes each decision listed above. It does no
 
 A model named with `--model` on the command line runs as named. That session falls back only to the models `--fallback-models` names, never to this list, whether user or project. `--fallback-models` replaces this list for one run, and `--no-fallback` turns fallback off for one run. See [CLI model options](/reference/cli#model-options).
 
-If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback.
+If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback. Press Esc during a retry wait or a model switch to stop the pending request. In a subagent chat, send a new message to continue; in a workflow stage chat, Esc pauses the stage, including while it waits for a provider's rate limit to clear.
 
 A content-filter refusal, such as OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, or a `content_filter` finish reason, also moves to the next fallback, without retrying the model that refused: the same request would be refused again. The refused model is recorded in the fallback history. Set `retry.fallbackOnContentFilter` to `false` to keep such a refusal on the model that gave it. Subagents and workflow stages follow the same setting for their own `fallbackModels`.
 
@@ -341,7 +341,7 @@ These compaction settings were removed and are ignored when present; settings st
 | `snapshots.maxFileBytes` | number | `5242880` | Largest file a snapshot captures, in bytes |
 | `snapshots.maxSnapshotBytes` | number | `52428800` | Largest total of captured content, and largest unpushed-commit bundle, in bytes |
 | `snapshots.fullEvery` | number | `10` | Restart the patch chain from `HEAD` after this many snapshots |
-| `snapshots.autoCollect` | boolean | `true` | Delete snapshot content nothing retains when a session closes or a workflow run finishes |
+| `snapshots.autoCollect` | boolean | `true` | Delete snapshot content nothing retains, in the background of an interactive session, after a session closes, and when a workflow run finishes |
 | `snapshots.collectIntervalSeconds` | number | `3600` | Shortest time between two automatic collections of one database, in seconds |
 | `snapshots.graceSeconds` | number | `3600` | Snapshot content stored or reused less than this many seconds ago is never collected; `0` turns this protection off |
 | `snapshots.pool.maxIdlePerRepository` | number | `2` | Idle restored worktrees kept per repository; a resume that restores another removes the oldest unchanged ones beyond it. See [Restored worktrees](/worktree-snapshots#restored-worktrees) |

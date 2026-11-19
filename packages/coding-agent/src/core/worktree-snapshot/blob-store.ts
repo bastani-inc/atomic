@@ -14,6 +14,44 @@ import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
+/** A trigger or view, by its exact name. */
+interface SchemaObject {
+	readonly type: "trigger" | "view";
+	readonly name: string;
+}
+
+/**
+ * The key under which a failed rename's error carries the trigger or view that stopped it, once confirmed in the
+ * database (#5622); `WorkspaceCollectionError` names it in its hint. A `Symbol.for` key, shared without an import.
+ */
+const RENAME_BLOCKER = Symbol.for("atomic-snapshots/rename-blocker@1");
+
+/** What SQLite writes after an object's name when the object stops a schema change only once the change is made. */
+const RENAME_BLOCKER_WHEN = [" after rename", " after drop column"];
+
+/**
+ * Every trigger or view that `error`, a failed rename, or an error it wraps can name. SQLite names a trigger or view
+ * that no longer compiles, such as one that refers to a dropped table, as `error in <type> <name>[ <when>]: <reason>`,
+ * and drivers add their own prefix. The name is not quoted, so `error in view sales after rename: …` can name a view
+ * `sales after rename` or a view `sales`, and a name can hold `: `. Only the database can tell which object it is.
+ */
+function renameBlockerCandidates(error: unknown): SchemaObject[] {
+	const candidates: SchemaObject[] = [];
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth++, current = current.cause)
+		for (const match of current.message.matchAll(/\berror in (trigger|view) /gu)) {
+			const type = match[1] as SchemaObject["type"];
+			const rest = current.message.slice(match.index + match[0].length);
+			for (let end = rest.indexOf(": "); end !== -1; end = rest.indexOf(": ", end + 1)) {
+				const name = rest.slice(0, end);
+				candidates.push({ type, name });
+				for (const when of RENAME_BLOCKER_WHEN)
+					if (name.endsWith(when)) candidates.push({ type, name: name.slice(0, -when.length) });
+			}
+		}
+	return candidates;
+}
+
 /** Every blob hash a snapshot needs to be restored: its chain's patches and its bundle. */
 export function snapshotBlobHashes(snapshot: WorktreeSnapshot): string[] {
 	const hashes = snapshot.chain.flatMap((link) => (link.patch === null ? [] : [link.patch]));
@@ -62,7 +100,11 @@ export interface SnapshotIndexTables {
 	 * in `chunks` rows of {@link SnapshotIndexTables.blobChunks}.
 	 */
 	readonly blobs: string;
-	/** `(hash, idx, data)`: the chunks of each blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES}, in order (#4954). */
+	/**
+	 * `(hash, idx, data)`: the chunks of each blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES}, in order (#4954). An
+	 * ordinary table whose primary key is an index of its own, never `WITHOUT ROWID` (#5541): see
+	 * {@link chunkTableDefinition}.
+	 */
 	readonly blobChunks: string;
 	/** `(run_id, hash)`: each blob a run's tool or stage checkpoints reference, once per run. */
 	readonly runRefs: string;
@@ -239,8 +281,27 @@ const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resol
 export const DEGRADED_RESTORE_RETENTION_DAYS = 30;
 const DEGRADED_PIN_SECONDS = DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60;
 
-/** Blobs one collection batch examines and deletes in one write transaction. */
+/** Aged blobs one page of a collection examines, read from the age index in one statement. */
 export const SNAPSHOT_COLLECTION_BATCH = 256;
+
+/**
+ * The most blobs one delete batch of a collection deletes, in one write transaction (#5530). Deleting a blob also
+ * deletes its chunks. On a chunk table an earlier release created `WITHOUT ROWID`, until collection moves it (#5541),
+ * finding them reads whole chunks of the rows each seek compares: about 3.5 ms per blob on a large store with its
+ * pages cached, so a batch of this many takes about 30 ms.
+ * The transaction also checks again, in one statement, the sessions that reference the batch's blobs: at most
+ * {@link SNAPSHOT_COLLECTION_SESSION_REFS} snapshot entries of them.
+ */
+export const SNAPSHOT_COLLECTION_DELETE_BATCH = 8;
+
+/**
+ * The most snapshot entries of sessions one collection statement walks to find the snapshots those sessions retain
+ * (#5530). Each session's retained snapshots are found by walking the snapshot entries on its open branches, about
+ * 2 µs per entry with its pages cached, so a statement over this many takes a few milliseconds, and the event loop
+ * gets a turn between statements. A session with more entries than this is walked in a statement of its own, and so
+ * is a blob whose sessions hold more together when its delete batch checks them again.
+ */
+export const SNAPSHOT_COLLECTION_SESSION_REFS = 2_048;
 
 /**
  * The most bytes of legacy blobs one write transaction of a collection stamps or moves. A blob stored before blob ages
@@ -251,6 +312,38 @@ export const SNAPSHOT_COLLECTION_BATCH = 256;
  * proportional to that value's size.
  */
 export const SNAPSHOT_LEGACY_STAMP_BYTES = 16 * SNAPSHOT_BLOB_CHUNK_BYTES;
+
+/**
+ * The most chunk rows one write transaction copies or frees while collection moves a chunk table an earlier release
+ * created `WITHOUT ROWID` to the row layout (#5541). Each costs a read of its 1 MiB, cold on a first move, under the
+ * write lock.
+ */
+export const SNAPSHOT_CHUNK_MOVE_ROWS = 4;
+
+/**
+ * The free space a chunk table's move to the row layout leaves on the file system of a SQLite or libSQL database file
+ * beyond its copy, at least (#5694): the move starts only when the disk has room for the copy, its write-ahead log and
+ * this much more, so other writes keep room on the disk.
+ */
+export const SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Whether `error`, or a failure it wraps, says the database's disk is full or failed to read or write: SQLite's
+ * `SQLITE_FULL` or `SQLITE_IOERR` and its extended codes (node:sqlite's `errcode`, libSQL's code or `rawCode`), as a
+ * libSQL server answers when its disk fills, or PostgreSQL's `disk_full` (53100) or `io_error` (58030).
+ */
+function isStorageSpaceFailure(error: unknown): boolean {
+	const seen = new Set<object>();
+	for (let cause = error; typeof cause === "object" && cause !== null && !seen.has(cause); ) {
+		seen.add(cause);
+		const { code, errcode, rawCode } = cause as { code?: unknown; errcode?: unknown; rawCode?: unknown };
+		if (typeof code === "string" && /^(?:SQLITE_FULL|SQLITE_IOERR(?:_\w+)?|53100|58030)$/.test(code)) return true;
+		const number = errcode ?? rawCode;
+		if (typeof number === "number" && ((number & 0xff) === 13 || (number & 0xff) === 10)) return true;
+		cause = (cause as { cause?: unknown }).cause;
+	}
+	return false;
+}
 
 /** Rows of one referencing table that one backfill transaction indexes. */
 export const SNAPSHOT_INDEX_BACKFILL_BATCH = 500;
@@ -299,6 +392,152 @@ function collectableAge(graceSeconds: number): number {
 }
 
 /**
+ * How long the light statements of a sweep, such as reading what walking a session costs, may hold the event loop
+ * together before the sweep gives it a turn, in milliseconds. Counting a session's snapshot entries reads them: a few
+ * milliseconds for a large session whose pages are not cached, so each session is counted in a statement of its own.
+ */
+const SWEEP_TURN_MS = 8;
+
+/**
+ * How long a sweep goes without a write before it renews its claim in a transaction of its own: a quarter of the claim
+ * lease, so pages with nothing to delete, which write nothing else, never let the lease run out.
+ */
+const SWEEP_CLAIM_RENEWAL_MS = (SNAPSHOT_COLLECTION_LEASE_SECONDS * 1_000) / 4;
+
+/** A blob a sweep may delete, with the sessions whose records reference it. */
+interface SweepCandidate {
+	readonly hash: string;
+	readonly sessions: readonly string[];
+}
+
+/** Blobs a sweep deletes in one write transaction, with the sessions whose records referenced them when it walked them. */
+interface SweepDeleteBatch {
+	readonly hashes: readonly string[];
+	readonly sessions: readonly string[];
+}
+
+/**
+ * Groups `costs`' sessions, in order, into groups whose costs add up to at most {@link SNAPSHOT_COLLECTION_SESSION_REFS};
+ * a session that costs more is a group of its own.
+ */
+function sessionGroups(costs: ReadonlyMap<string, number>): string[][] {
+	const groups: string[][] = [];
+	let group: string[] = [];
+	let total = 0;
+	for (const [session, cost] of costs) {
+		if (group.length > 0 && total + cost > SNAPSHOT_COLLECTION_SESSION_REFS) {
+			groups.push(group);
+			group = [];
+			total = 0;
+		}
+		group.push(session);
+		total += cost;
+	}
+	if (group.length > 0) groups.push(group);
+	return groups;
+}
+
+/**
+ * The turns of the event loop between the steps of a sweep that hold it, such as a statement that walks sessions, a
+ * delete batch or a page: {@link next} gives the loop a turn when a step has held it since the last turn, then checks
+ * the sweep's abort signal.
+ */
+class SweepTurns {
+	private readonly signal?: AbortSignal;
+	private readonly yieldTurn: () => Promise<void>;
+	private holding = false;
+	private turnedAt = performance.now();
+
+	constructor(options: { readonly signal?: AbortSignal }, yieldTurn: () => Promise<void>) {
+		this.signal = options.signal;
+		this.yieldTurn = yieldTurn;
+	}
+
+	async next(): Promise<void> {
+		if (this.holding) {
+			this.holding = false;
+			await this.yieldTurn();
+			this.turnedAt = performance.now();
+		}
+		this.signal?.throwIfAborted();
+	}
+
+	/** Records that a step held the event loop since the last turn. */
+	held(): void {
+		this.holding = true;
+	}
+
+	/** Gives the event loop a turn once the light steps since the last one have held it for {@link SWEEP_TURN_MS}. */
+	async light(): Promise<void> {
+		if (performance.now() - this.turnedAt >= SWEEP_TURN_MS) this.holding = true;
+		await this.next();
+	}
+}
+
+/**
+ * What one sweep has read about the sessions that reference its candidates (#5530): how many snapshot entries walking
+ * each costs, and the blobs the snapshots of those it walked retain. Only nominates candidates: each delete batch reads
+ * its sessions again in its transaction.
+ */
+class SweepSessions {
+	private readonly costs = new Map<string, number>();
+	private readonly walked = new Set<string>();
+	private readonly retained = new Set<string>();
+
+	/** Which of `sessions` this sweep has not walked yet. */
+	unwalked(sessions: Iterable<string>): string[] {
+		return [...new Set(sessions)].filter((session) => !this.walked.has(session));
+	}
+
+	cost(costs: ReadonlyMap<string, number>): void {
+		for (const [session, cost] of costs) this.costs.set(session, cost);
+	}
+
+	/** Records that `sessions` were walked and that their retained snapshots reference `hashes`. */
+	retain(sessions: readonly string[], hashes: readonly string[]): void {
+		for (const session of sessions) this.walked.add(session);
+		for (const hash of hashes) this.retained.add(hash);
+	}
+
+	retains(hash: string): boolean {
+		return this.retained.has(hash);
+	}
+
+	/**
+	 * `candidates` in delete batches, in order, of at most {@link SNAPSHOT_COLLECTION_DELETE_BATCH} blobs whose sessions
+	 * cost at most {@link SNAPSHOT_COLLECTION_SESSION_REFS} to walk together; a candidate whose own sessions cost more
+	 * is a batch of its own.
+	 */
+	batches(candidates: readonly SweepCandidate[]): SweepDeleteBatch[] {
+		const batches: SweepDeleteBatch[] = [];
+		let batch: string[] = [];
+		let sessions = new Set<string>();
+		let total = 0;
+		const added = (candidate: SweepCandidate) =>
+			candidate.sessions.reduce(
+				(sum, session) => (sessions.has(session) ? sum : sum + (this.costs.get(session) ?? 1)),
+				0,
+			);
+		for (const candidate of candidates) {
+			if (
+				batch.length === SNAPSHOT_COLLECTION_DELETE_BATCH ||
+				(batch.length > 0 && total + added(candidate) > SNAPSHOT_COLLECTION_SESSION_REFS)
+			) {
+				batches.push({ hashes: batch, sessions: [...sessions] });
+				batch = [];
+				sessions = new Set();
+				total = 0;
+			}
+			total += added(candidate);
+			batch.push(candidate.hash);
+			for (const session of candidate.sessions) sessions.add(session);
+		}
+		if (batch.length > 0) batches.push({ hashes: batch, sessions: [...sessions] });
+		return batches;
+	}
+}
+
+/**
  * A table whose rows reference snapshot blobs, with the triggers that index its future rows and the statements that
  * index the rows it already holds. Both are built from the same statements, so they cannot disagree.
  */
@@ -317,11 +556,40 @@ interface IndexSource {
 	/** Clears the source's index rows when its triggers are installed again, so no stale row outlives its entry. */
 	readonly reset?: readonly string[];
 	/**
-	 * The progress row this build writes when it installs the source's triggers, and that no older build writes. Without
-	 * it, triggers of the source's names are an older build's, which index less, and this build installs its own and
-	 * indexes the table again (#5065).
+	 * The row that says the source's triggers index what this build's do, and that no build before 0.9.88 writes.
+	 * Without it, triggers of the source's names are an older build's, which index less, and this build installs its own
+	 * and indexes the table again (#5065). Builds 0.9.88 and 0.9.89 write it as `(0, 0)` when they install the triggers
+	 * and read only that it exists. This build writes it as {@link PUBLISHED_VERSION}, and on SQLite, which builds before
+	 * 0.9.88 also open, only once its own backfill of the source is done, so that builds 0.9.88 and 0.9.89 never trust
+	 * rows a build before 0.9.88 indexed during this build's backfill: they install their own triggers and index the
+	 * table again instead (#5558).
 	 */
 	readonly version?: string;
+	/**
+	 * The progress row of this build's own backfill of the source, which no older build writes (#5558). An older build
+	 * that takes this build's triggers for its own indexes the rows it backfills with statements that index less, and
+	 * advances only the source's row: the source is backfilled only once this row's progress reaches its watermark too,
+	 * and this build indexes those rows again. On SQLite, a source a build of 0.9.88 or 0.9.89 installed is trusted once
+	 * its backfill is done, as those builds index what this build does; one whose backfill is not done is indexed again
+	 * by this build from its first row, as a build before 0.9.88 may have indexed some of it.
+	 */
+	readonly own?: string;
+	/**
+	 * Text that the SQL of every trigger this build installs for the source holds, and no older build's does (#5558).
+	 * Builds 0.9.88 and 0.9.89 install triggers without it, and their pending trigger does not move {@link own} back. On
+	 * SQLite, which builds before 0.9.88 also open, an index this build installed is this build's only while every
+	 * trigger it has holds the text: such a build installs a lost trigger again, keeps the triggers it finds, some of
+	 * them the same SQL in every build, empties the index and indexes the table its way. Without the text everywhere,
+	 * this build indexes the table again. A takeover installs this build's triggers before its backfill relies on its
+	 * own progress.
+	 */
+	readonly marker?: string;
+	/**
+	 * Text that only this build's SQL of the trigger `trigger` holds. On SQLite, which older builds also open, a trigger
+	 * of that name without it is an older build's, installed after this build's went missing, so the source is indexed
+	 * again as an older build's (#5558).
+	 */
+	readonly signature?: { readonly trigger: string; readonly text: string };
 }
 
 interface SourceState {
@@ -329,7 +597,28 @@ interface SourceState {
 	readonly installed: boolean;
 	readonly backfilled: boolean;
 	readonly deferred: boolean;
+	/** Installed by another build whose index this build does not trust: an upgrade, or an older build's again. */
+	readonly foreign: boolean;
+	/**
+	 * On SQLite, installed with {@link IndexSource.version} but not backfilled, as by a build of 0.9.88 or 0.9.89 whose
+	 * backfill is not done. This build's backfill removes the row, installs its own triggers and indexes the source again
+	 * from its first row (#5558).
+	 */
+	readonly takeover: boolean;
 }
+
+/**
+ * The watermark and progress of a source's {@link IndexSource.version} row as this build writes it: on SQLite once its
+ * own backfill of the source is done, on Postgres when it installs the source's triggers (#5558). Builds 0.9.88 and
+ * 0.9.89 write the row as `(0, 0)`.
+ */
+const PUBLISHED_VERSION = 1;
+
+/**
+ * A row that a development build marked a source with while it removed the source's index in batches. An index an
+ * older build installed while it was there is never trusted as that build's finished index (#5558).
+ */
+const rebuildRow = (source: IndexSource) => `${source.name}@rebuild`;
 
 const CHECKPOINT_EVENT = "CheckpointRecorded";
 const STATUS_EVENTS = "'RunStarted', 'StatusChanged'";
@@ -470,6 +759,15 @@ function carriedSource(d: StorageDialect, t: SnapshotIndexTables, carried: Carri
 		backfill: index(storedRows(d, table, [rowOf(storedRow)], carries(storedRow) ?? d.literals.true)),
 		reset: [`DELETE FROM ${t.carriedRefs} WHERE owner LIKE '${carried.owner}:%'`],
 	};
+}
+
+/** The progress row of this build's own backfill of the session entries (#5558). */
+const ENTRIES_OWN_PROGRESS = "session-entries@own-progress";
+
+/** `trigger`, its SQL holding `marker` in a comment that changes nothing it does (#5558). */
+function withMarker(trigger: StorageTrigger, marker: string): StorageTrigger {
+	const [first, ...rest] = trigger.statements;
+	return { ...trigger, statements: [`/* ${marker} */ ${first}`, ...rest] };
 }
 
 function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect): readonly IndexSource[] {
@@ -622,6 +920,9 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 				[
 					`UPDATE ${t.sources} SET watermark = ${newRowOrder} WHERE source = 'session-entries' AND watermark < ${newRowOrder}`,
 					`UPDATE ${t.sources} SET backfilled_through = ${newRowOrder} - 1 WHERE source = 'session-entries' AND backfilled_through >= ${newRowOrder}`,
+					// This build's own progress follows, so an older build's backfill of these rows is never trusted (#5558).
+					`UPDATE ${t.sources} SET watermark = ${newRowOrder} WHERE source = '${ENTRIES_OWN_PROGRESS}' AND watermark < ${newRowOrder}`,
+					`UPDATE ${t.sources} SET backfilled_through = ${newRowOrder} - 1 WHERE source = '${ENTRIES_OWN_PROGRESS}' AND backfilled_through >= ${newRowOrder}`,
 				],
 				`NOT COALESCE(${indexComplete}, ${d.literals.true})`,
 			),
@@ -631,11 +932,14 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 				`DELETE FROM ${t.sessionRefs} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 				`DELETE FROM ${t.sessionRecords} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 			]),
-		],
+		].map((trigger) => withMarker(trigger, ENTRIES_OWN_PROGRESS)),
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
 		// The triggers that index degraded pins (#4922). Older builds install theirs under the same names (#5065).
 		version: "session-entries@degraded-pins",
+		own: ENTRIES_OWN_PROGRESS,
+		marker: ENTRIES_OWN_PROGRESS,
+		signature: { trigger: `${entries}_snapshot_refs`, text: "degraded_from" },
 		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
 	};
 	// What a shared-placement root carries to its children (#4503): the snapshot each queued pool work row carries, and
@@ -661,6 +965,31 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 }
 
 /**
+ * Creates a chunk table named `table` unless it exists. An ordinary table, whose primary key is an index of its own:
+ * a lookup reads that small index, then only the row it finds. A `WITHOUT ROWID` table, as earlier releases created,
+ * keeps each row in its key's b-tree, so a seek reads the whole record of every 1 MiB row it compares on its way, and
+ * every lookup, a delete's of a blob without chunks included, read several chunks (#5541). On Postgres both are the
+ * same heap table.
+ */
+function chunkTableDefinition(table: string, dialect: StorageDialect): string {
+	const { int, text, blob } = dialect.types;
+	return `CREATE TABLE IF NOT EXISTS ${table} (hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL, PRIMARY KEY (hash, idx))${dialect.tableOptions}`;
+}
+
+/** The trigger that deletes a blob's chunks with it, in the statement that deletes it, whoever deletes it. */
+const chunksDeleteTrigger = (t: SnapshotIndexTables) =>
+	createTrigger(`${t.blobs}_chunks_delete_all`, "DELETE", t.blobs, [
+		`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`,
+	]);
+
+/**
+ * The tables of a chunk table's move to the row layout (#5541): `next`, the new table it fills, which then takes the
+ * chunk table's name, and `retired`, the old table under its new name until it is emptied and dropped.
+ */
+const chunkMoveTables = (t: SnapshotIndexTables) =>
+	({ next: `${t.blobChunks}_next`, retired: `${t.blobChunks}_retired` }) as const;
+
+/**
  * Chunked blobs (#4954): the chunk table, the blob table's `chunks` column, 0 for a blob whose bytes are in its own row,
  * as every blob written before it was, and the trigger that deletes a blob's chunks with it. Idempotent.
  */
@@ -669,24 +998,15 @@ async function addBlobChunks(
 	t: SnapshotIndexTables,
 	dialect: StorageDialect,
 ): Promise<void> {
-	const { int, text, blob } = dialect.types;
-	await transaction.exec(
-		`CREATE TABLE IF NOT EXISTS ${t.blobChunks} (hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL, PRIMARY KEY (hash, idx))${dialect.withoutRowidTableOptions}`,
-	);
+	await transaction.exec(chunkTableDefinition(t.blobChunks, dialect));
 	const column = dialect.columnExists(t.blobs, "chunks");
 	if (!(await transaction.get(column.sql, ...column.params))) {
-		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${dialect.types.int} NOT NULL DEFAULT 0`);
 	}
 	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete_all`]);
 	if (await transaction.get(trigger.sql, ...trigger.params)) return;
 	await transaction.exec(dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs, true));
-	await transaction.exec(
-		dialect.renderTrigger(
-			createTrigger(`${t.blobs}_chunks_delete_all`, "DELETE", t.blobs, [
-				`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`,
-			]),
-		),
-	);
+	await transaction.exec(dialect.renderTrigger(chunksDeleteTrigger(t)));
 }
 
 /** Creates the blob table and the tables of its reference index that are missing. */
@@ -796,11 +1116,43 @@ async function installSource(
 		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
 		source.name,
 	);
-	if (source.version !== undefined)
+	if (source.own !== undefined)
 		await transaction.run(
-			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, 0, 0) ${REPLACE_PROGRESS}`,
-			source.version,
+			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, watermark, 0 FROM ${t.sources} WHERE source = ? ${REPLACE_PROGRESS}`,
+			source.own,
+			source.name,
 		);
+	await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, rebuildRow(source));
+	if (source.version === undefined) return;
+	if (!withholdsVersion(dialect, source)) {
+		await publishVersion(transaction, t, source);
+		return;
+	}
+	// A table with no row yet is backfilled as it is installed; any other is published once its backfill is done.
+	const installed = await transaction.get<SqliteRow & { watermark: number }>(
+		`SELECT watermark FROM ${t.sources} WHERE source = ?`,
+		source.name,
+	);
+	if (Number(installed?.watermark) === 0) await publishVersion(transaction, t, source);
+	else await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, source.version);
+}
+
+/**
+ * Whether this build writes `source`'s {@link IndexSource.version} row only once its own backfill of the source is done:
+ * on SQLite and libSQL, which builds before 0.9.88 also open (#5558).
+ */
+function withholdsVersion(dialect: StorageDialect, source: IndexSource): boolean {
+	return dialect.name === "sqlite" && source.version !== undefined && source.own !== undefined;
+}
+
+/** Writes `source`'s version row as this build's, its own backfill of the source being done (#5558). */
+async function publishVersion(transaction: SqliteExecutor, t: SnapshotIndexTables, source: IndexSource): Promise<void> {
+	await transaction.run(
+		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, ?) ${REPLACE_PROGRESS}`,
+		source.version!,
+		PUBLISHED_VERSION,
+		PUBLISHED_VERSION,
+	);
 }
 
 /**
@@ -831,10 +1183,40 @@ async function readSourceStates(
 	sources: readonly IndexSource[],
 ): Promise<SourceState[]> {
 	const names = sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
-	const objects = dialect.schemaObjects(names);
-	const present = new Set(
-		(await executor.all<SqliteRow & { name: string }>(objects.sql, ...objects.params)).map((row) => row.name),
+	// Builds before 0.9.88 open SQLite and libSQL databases only, so only there can a trigger of this build's name be
+	// one that indexes less.
+	const sqlite = dialect.name === "sqlite";
+	const signatures = sqlite ? sources.flatMap((source) => source.signature ?? []) : [];
+	const markers = sqlite
+		? sources.flatMap((source) =>
+				source.marker === undefined
+					? []
+					: source.triggers.map((trigger) => ({ trigger: trigger.name, text: source.marker! })),
+			)
+		: [];
+	const holds = (checks: readonly { readonly trigger: string; readonly text: string }[]) =>
+		checks.length === 0 ? "NULL" : `CASE ${checks.map(() => "WHEN name = ? THEN instr(sql, ?) > 0").join(" ")} END`;
+	const objects =
+		signatures.length + markers.length === 0
+			? dialect.schemaObjects(names)
+			: {
+					sql: `SELECT name, ${holds(signatures)} AS signed, ${holds(markers)} AS marked FROM sqlite_schema WHERE name IN (${names.map(() => "?").join(", ")})`,
+					params: [...signatures, ...markers].flatMap((check) => [check.trigger, check.text]).concat(names),
+				};
+	const objectRows = await executor.all<SqliteRow & { name: string; signed?: number | null; marked?: number | null }>(
+		objects.sql,
+		...objects.params,
 	);
+	const present = new Set(objectRows.map((row) => row.name));
+	// Whether each checked trigger's SQL holds this build's text; every other object reads null.
+	const checked = (column: "signed" | "marked") =>
+		new Map(
+			objectRows
+				.filter((row) => row[column] !== null && row[column] !== undefined)
+				.map((row) => [row.name, Number(row[column]) === 1]),
+		);
+	const signed = checked("signed");
+	const marked = checked("marked");
 	const progress = new Map(
 		(
 			await executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
@@ -846,21 +1228,56 @@ async function readSourceStates(
 		.filter((source) => present.has(source.table))
 		.map((source) => {
 			const row = progress.get(source.name);
-			// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
-			const foreign = source.version !== undefined && !progress.has(source.version);
+			const version = source.version === undefined ? undefined : progress.get(source.version);
+			const own = source.own === undefined ? undefined : progress.get(source.own);
+			const ownDone =
+				own !== undefined && row !== undefined && Number(own.backfilled_through) >= Number(row.watermark);
+			// An index an older build installed while a rebuild row was there, which 0.9.87 may have indexed since (#5558).
+			const reinstalled = row !== undefined && progress.has(rebuildRow(source));
+			// On SQLite, a reference trigger without this build's text is a build's before 0.9.88, installed after this
+			// build's went missing (#5558).
+			const unsigned = source.signature !== undefined && signed.get(source.signature.trigger) === false;
+			// Every trigger the source has is this build's. One a build before 0.9.88 installed again after it went
+			// missing is not, even when its SQL is the same in every build otherwise (#5558).
+			const mine =
+				source.marker !== undefined &&
+				source.triggers.every((trigger) => !present.has(trigger.name) || marked.get(trigger.name) === true);
+			let foreign: boolean;
+			// Whether the backfill is done for this build, besides the source's own progress row.
+			let trusted: boolean;
+			if (withholdsVersion(dialect, source)) {
+				// This build's install whose backfill is not done yet, which holds back the version row (#5558).
+				const pending = version === undefined && own !== undefined && mine;
+				// A row of 0 is a build of 0.9.88 or 0.9.89's, whose finished backfill indexed what this build's does, unless
+				// it installed the index while a rebuild row was there: this build takes it over then. This build publishes
+				// its own once its own progress reaches the watermark, which it must still hold.
+				const published = version !== undefined && Number(version.watermark) === PUBLISHED_VERSION;
+				foreign = unsigned || (version === undefined && !pending) || (published && !mine);
+				trusted = published ? ownDone : version !== undefined && !reinstalled;
+			} else {
+				// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
+				foreign = unsigned || (source.version !== undefined && version === undefined) || reinstalled;
+				// Rows an older build indexed with its statements past this build's own progress are not backfilled.
+				trusted = own === undefined || ownDone;
+			}
+			const installed =
+				row !== undefined &&
+				!foreign &&
+				Number(row.watermark) >= 0 &&
+				source.triggers.every((trigger) => present.has(trigger.name));
+			const backfilled =
+				row !== undefined &&
+				!foreign &&
+				trusted &&
+				Number(row.watermark) >= 0 &&
+				Number(row.backfilled_through) >= Number(row.watermark);
 			return {
 				source,
-				installed:
-					row !== undefined &&
-					!foreign &&
-					Number(row.watermark) >= 0 &&
-					source.triggers.every((trigger) => present.has(trigger.name)),
-				backfilled:
-					row !== undefined &&
-					!foreign &&
-					Number(row.watermark) >= 0 &&
-					Number(row.backfilled_through) >= Number(row.watermark),
+				installed,
+				backfilled,
 				deferred: row !== undefined && (foreign || Number(row.watermark) === -1),
+				foreign,
+				takeover: withholdsVersion(dialect, source) && installed && version !== undefined && !backfilled,
 			};
 		});
 }
@@ -967,6 +1384,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		);
 		await store.installIndex();
 		return store;
+	}
+
+	/** A transcript-only handle has no snapshot sources to index. Binding it must not even inspect their tables. */
+	static forTranscriptReader(database: SqliteDatabase & { readonly readOnly: true }): SqlSnapshotBlobStore {
+		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }).meta;
+		return new SqlSnapshotBlobStore(database, dialectOf(database), snapshotIndexTables(), [], journalMeta, "");
 	}
 
 	/**
@@ -1163,15 +1586,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Indexes the rows that referencing tables held before their triggers were installed, in transactions of
 	 * {@link SNAPSHOT_INDEX_BACKFILL_BATCH} rows, so that the index covers every reference. A one-time cost in the number
 	 * of existing rows, paid in the background by the first collection; resumes where it stopped. Does nothing once the
-	 * index is complete. Yields to the event loop between batches, and checks `signal` before each batch and rejects
-	 * with its reason.
+	 * index is complete. Yields to the event loop after every batch, so the next batch, of the same table or another,
+	 * or what follows the index, such as a sweep's first batch, starts on a turn of its own (#5530). Checks `signal`
+	 * before each batch and rejects with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
 		for (const { source, backfilled } of await this.installIndex(options.pace, true)) {
 			if (backfilled) continue;
-			for (;;) {
+			for (let done = false; !done; ) {
 				options.signal?.throwIfAborted();
-				if (await this.backfillBatch(source, options)) break;
+				done = await this.backfillBatch(source, options);
 				await this.betweenBatches(options.pace);
 			}
 		}
@@ -1181,24 +1605,85 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private backfillBatch(source: IndexSource, { holder, pace, signal }: SnapshotIndexOptions): Promise<boolean> {
 		const t = this.tables;
 		const row = this.dialect.rowOrder();
+		const withholds = withholdsVersion(this.dialect, source);
 		return this.write(pace, async (transaction) => {
+			const [state] = await readSourceStates(transaction, this.dialect, t, [source]);
+			if (state === undefined || state.backfilled) return true;
+			if (state.foreign) {
+				// A build before 0.9.88 installed its own triggers since the loop read the states: the source is installed again
+				// in this transaction, its old rows removed, as at the start of a collection. Left as it is, that build could
+				// index it its way, and builds 0.9.88 and 0.9.89 trust their version row (#5558).
+				await withShortSchemaLockWaits(transaction, this.dialect, () =>
+					installSource(transaction, this.dialect, t, source),
+				);
+				if (holder !== undefined) await this.renewClaim(transaction, holder);
+				return false;
+			}
+			// A source that lost triggers meanwhile is indexed on, as its rows still need this build's statements; the sweep
+			// installs its triggers again before it deletes anything.
 			const progress = await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
 				source.name,
 			);
-			if (progress === undefined || progress.backfilled_through >= progress.watermark) return true;
+			if (progress === undefined || progress.watermark < 0) return true;
+			if (state.takeover) {
+				// Installed by a build of 0.9.88 or 0.9.89 whose backfill is not done, which a build before 0.9.88 may have
+				// indexed some of its way: this build indexes it again from its first row, with its own triggers, whose
+				// pending trigger moves its own progress back, and holds the version row back until it is done, so that
+				// builds 0.9.88 and 0.9.89 do not trust it meanwhile (#5558).
+				await transaction.run(
+					`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, 0) ${REPLACE_PROGRESS}`,
+					source.own!,
+					progress.watermark,
+				);
+				for (const name of [source.version!, rebuildRow(source)])
+					await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, name);
+				for (const trigger of source.triggers)
+					await transaction.exec(this.dialect.dropTrigger(trigger.name, trigger.table));
+				await transaction.exec(source.triggers.map((trigger) => this.dialect.renderTrigger(trigger)).join("\n"));
+			}
+			// This build's own progress (#5558): rows an older build indexed past it are indexed again. On Postgres, which
+			// no build before 0.9.88 opens, a source a build of 0.9.88 or 0.9.89 installed has none: its backfill, which
+			// indexes what this one does, is trusted as far as it got.
+			let own =
+				source.own === undefined
+					? undefined
+					: await transaction.get<SqliteRow & { backfilled_through: number }>(
+							`SELECT backfilled_through FROM ${t.sources} WHERE source = ?`,
+							source.own,
+						);
+			if (source.own !== undefined && own === undefined && progress.backfilled_through < progress.watermark) {
+				await transaction.run(
+					`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, ?, ?) ${REPLACE_PROGRESS}`,
+					source.own,
+					progress.watermark,
+					progress.backfilled_through,
+				);
+				own = { backfilled_through: progress.backfilled_through };
+			}
+			const from =
+				own !== undefined && own.backfilled_through < progress.backfilled_through
+					? own.backfilled_through
+					: progress.backfilled_through;
+			// The version row says the index is this build's and complete: never while a trigger is missing, which a build
+			// before 0.9.88 would install again its way under it (#5558).
+			const publish = withholds && state.installed;
+			if (from >= progress.watermark) {
+				if (publish) await publishVersion(transaction, t, source);
+				return true;
+			}
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
 				`SELECT MAX(${row}) AS upper FROM (SELECT ${row} FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row} LIMIT ?)`,
-				progress.backfilled_through,
+				from,
 				progress.watermark,
 				SNAPSHOT_INDEX_BACKFILL_BATCH,
 			))!;
 			const upper = lastRow ?? progress.watermark;
-			for (const sql of source.backfill) await transaction.run(sql, progress.backfilled_through, upper);
+			for (const sql of source.backfill) await transaction.run(sql, from, upper);
 			if (source.rowwise !== undefined) {
 				const rows = await transaction.all<SqliteRow & { id: number }>(
 					`SELECT ${row} AS id FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row}`,
-					progress.backfilled_through,
+					from,
 					upper,
 				);
 				for (const { id } of rows) {
@@ -1207,28 +1692,50 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					for (const sql of source.rowwise) await transaction.run(sql, id);
 				}
 			}
-			await transaction.run(`UPDATE ${t.sources} SET backfilled_through = ? WHERE source = ?`, upper, source.name);
+			// Indexing rows again behind the source's progress, for this build's own, never moves the progress back.
+			await transaction.run(
+				`UPDATE ${t.sources} SET backfilled_through = ? WHERE source = ? AND backfilled_through < ?`,
+				upper,
+				source.name,
+				upper,
+			);
+			if (own !== undefined)
+				await transaction.run(
+					`UPDATE ${t.sources} SET watermark = ?, backfilled_through = ? WHERE source = ?`,
+					progress.watermark,
+					upper,
+					source.own!,
+				);
 			if (holder !== undefined) await this.renewClaim(transaction, holder);
-			return upper >= progress.watermark;
+			const done = upper >= progress.watermark;
+			// Both progress rows reach the watermark: builds 0.9.88 and 0.9.89 may trust the index now (#5558).
+			if (done && publish) await publishVersion(transaction, t, source);
+			return done;
 		});
 	}
 
 	/**
 	 * Deletes every blob stored or re-stored at least `graceSeconds` ago on the database clock that no retained snapshot
-	 * and no snapshot dispatched work carries references, in batches of {@link SNAPSHOT_COLLECTION_BATCH}, and resolves
-	 * with the hashes deleted. Each batch is one write transaction whose delete re-checks age and references in the same
-	 * statement, so a reference published before the batch commits keeps its blob and a process killed mid-collection
-	 * leaves only garbage. Each batch's page holds only blobs it can delete, so a sweep started again after a process
-	 * exited makes progress even when the oldest blobs are all retained. Reads the reference index and the blob table's
-	 * age index, never a journal or a session. Ages are counted in whole seconds, so a blob can stay up to a second past
-	 * `graceSeconds`, never less.
+	 * and no snapshot dispatched work carries references, and resolves with the hashes deleted. Reads the reference index
+	 * and the blob table's age index, never a journal or a session. Ages are counted in whole seconds, so a blob can stay
+	 * up to a second past `graceSeconds`, never less.
 	 *
-	 * Every batch first checks, in its own transaction, that every referencing table has its triggers and a finished
+	 * Pages through the aged blobs, oldest first, {@link SNAPSHOT_COLLECTION_BATCH} at a time, and keeps as candidates
+	 * those no retaining run, no carried work and no session retains. A session's retained snapshots are found by walking
+	 * its snapshot entries, at most {@link SNAPSHOT_COLLECTION_SESSION_REFS} of them per statement, once per sweep
+	 * (#5530). The candidates are deleted in batches, each one write transaction that finds the retained snapshots of the
+	 * sessions it walked for its blobs again, in one statement, and deletes only the blobs none of them retains, no other
+	 * session records, and that are still old and unreferenced by runs and carried work. So a reference published before
+	 * the batch commits keeps its blob, and a process killed mid-collection leaves only garbage. The event loop never
+	 * gets a turn inside a write transaction: another connection of this process that wrote then would wait for the
+	 * write lock while holding the event loop, and the transaction could not end until it gave up.
+	 *
+	 * Every batch first checks, in its transaction, that every referencing table has its triggers and a finished
 	 * backfill, as {@link completeIndex} leaves them. When one does not, because a table appeared or lost its triggers
 	 * since, nothing is deleted until the index has been completed again. A sweep repairs the index once; when it is
 	 * incomplete again after that, because the schema keeps changing under it, the sweep stops without deleting
-	 * anything more and the next collection tries again. Yields to the event loop between batches, and checks `signal`
-	 * before each batch and rejects with its reason.
+	 * anything more and the next collection tries again. Gives the event loop a turn between statements that walk
+	 * sessions, between batches and between pages, and checks `signal` before each and rejects with its reason.
 	 */
 	async sweep(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		const t = this.tables;
@@ -1250,58 +1757,213 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			});
 			await this.betweenBatches(options.pace);
 		}
-		const unreferenced = `NOT EXISTS (
-				SELECT 1 FROM ${t.runRefs} AS ref WHERE ref.hash = ${t.blobs}.hash
-				AND NOT EXISTS (SELECT 1 FROM ${t.runState} AS state WHERE state.run_id = ref.run_id AND state.retained = 0)
-			) AND NOT EXISTS (
-				SELECT 1 FROM ${t.sessionRecords} AS record
-				WHERE record.hash = ${t.blobs}.hash AND (
-					(record.session_id, record.snapshot_id) IN (${this.sessionHeads()})
-					OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
-				)
-			) AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS carried WHERE carried.hash = ${t.blobs}.hash)`;
 		const minimumAge = collectableAge(options.graceSeconds);
 		const deleted: string[] = [];
+		const turns = new SweepTurns(options, () => this.betweenBatches(options.pace));
+		let sessions = new SweepSessions();
 		let cursor: PageRow | undefined;
 		let repaired = false;
+		let renewedAt = Number.NEGATIVE_INFINITY;
 		for (;;) {
-			options.signal?.throwIfAborted();
-			const after = cursor;
-			const batch = await this.write(options.pace, async (transaction) => {
-				const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
-				if (!states.every((state) => state.installed && state.backfilled)) return undefined;
-				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
-				const page = await this.page(transaction, minimumAge, unreferenced, after);
-				if (page.length === 0) return { page, deleted: [] };
-				const rows = await transaction.all<SqliteRow & { hash: string }>(
-					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} RETURNING hash`,
-					JSON.stringify(page.map((row) => row.hash)),
-					minimumAge,
-				);
-				return { page, deleted: rows.map((row) => row.hash) };
-			});
-			if (batch === undefined) {
+			await turns.next();
+			if (options.holder !== undefined && performance.now() - renewedAt >= SWEEP_CLAIM_RENEWAL_MS) {
+				// Pages that hold nothing to delete write nothing else; the claim is renewed when the sweep starts and then
+				// at least once per quarter lease.
+				const holder = options.holder;
+				await this.write(options.pace, (transaction) => this.renewClaim(transaction, holder));
+				renewedAt = performance.now();
+			}
+			const page = await this.page(minimumAge, cursor);
+			const candidates = await this.unretainedOf(
+				page.map((row) => row.hash),
+				sessions,
+				turns,
+			);
+			let incomplete = false;
+			for (const batch of sessions.batches(candidates)) {
+				// Every delete batch starts on a turn of its own and ends with one: never a turn while it holds the write lock.
+				await turns.next();
+				const removed = await this.deleteUnretained(batch, minimumAge, options);
+				turns.held();
+				if (removed === undefined) {
+					incomplete = true;
+					break;
+				}
+				renewedAt = performance.now();
+				deleted.push(...removed);
+				options.onBatch?.(removed);
+			}
+			if (incomplete) {
 				if (repaired) return deleted;
 				repaired = true;
 				await this.completeIndex(options);
+				sessions = new SweepSessions();
 				continue;
 			}
-			deleted.push(...batch.deleted);
-			options.onBatch?.(batch.deleted);
-			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) {
+			if (page.length < SNAPSHOT_COLLECTION_BATCH) {
 				await this.stampLegacyAges(options);
+				await this.moveChunksToRowTable(options);
 				return deleted;
 			}
-			cursor = batch.page.at(-1);
-			await this.betweenBatches(options.pace);
+			cursor = page.at(-1);
+			// Every page holds the event loop, also one whose blobs runs, carried work or sessions this sweep walked
+			// already retain, which walks no session and deletes nothing: the next page starts after a turn (#5530).
+			turns.held();
 		}
+	}
+
+	/**
+	 * Which of `hashes` no retaining run, no carried work and no session retains, as far as these reads see: the sweep's
+	 * candidates, which a delete batch checks again in its transaction. Finds the retained blobs of each session that
+	 * references one of them and that `sessions` has not walked yet, in statements of at most
+	 * {@link SNAPSHOT_COLLECTION_SESSION_REFS} snapshot entries, with a turn between them.
+	 */
+	private async unretainedOf(
+		hashes: readonly string[],
+		sessions: SweepSessions,
+		turns: SweepTurns,
+	): Promise<SweepCandidate[]> {
+		if (hashes.length === 0) return [];
+		const t = this.tables;
+		const free = await this.database.all<SqliteRow & { hash: string }>(
+			`SELECT value AS hash FROM ${this.dialect.jsonValues("?")} WHERE ${this.unreferencedByRuns("value")}`,
+			JSON.stringify(hashes),
+		);
+		if (free.length === 0) return [];
+		const referencing = new Map<string, string[]>(free.map((row) => [row.hash, []]));
+		for (const { hash, session_id } of await this.database.all<SqliteRow & { hash: string; session_id: string }>(
+			`SELECT DISTINCT hash, session_id FROM ${t.sessionRecords} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
+			JSON.stringify([...referencing.keys()]),
+		))
+			referencing.get(hash)?.push(session_id);
+		const unwalked = sessions.unwalked([...referencing.values()].flat());
+		if (unwalked.length > 0) {
+			const costs = await this.sessionCosts(unwalked, () => turns.light());
+			sessions.cost(costs);
+			for (const group of sessionGroups(costs)) {
+				await turns.next();
+				sessions.retain(group, await this.retainedBySessions(group));
+				turns.held();
+			}
+		}
+		return [...referencing]
+			.filter(([hash]) => !sessions.retains(hash))
+			.map(([hash, referencedBy]) => ({ hash, sessions: referencedBy }));
+	}
+
+	/**
+	 * Deletes the blobs of `batch` that are still old and that no retaining run, no carried work and no session retains,
+	 * in one write transaction, and resolves with the hashes deleted; undefined, deleting nothing, when the reference
+	 * index is incomplete. The transaction checks the batch's blobs again in one statement, so what it sees is what
+	 * holds when the batch commits: the snapshots the batch's sessions, those the sweep walked for its blobs, retain now,
+	 * and the sessions that record its blobs now. A blob a session the sweep did not walk records, such as one created
+	 * since, is kept; the next collection walks that session. Nothing in the transaction waits for a turn of the event
+	 * loop (#5530).
+	 */
+	private deleteUnretained(
+		batch: SweepDeleteBatch,
+		minimumAge: number,
+		options: SnapshotSweepOptions,
+	): Promise<string[] | undefined> {
+		const t = this.tables;
+		return this.write(options.pace, async (transaction) => {
+			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
+			if (!states.every((state) => state.installed && state.backfilled)) return undefined;
+			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+			const kept = new Set(await this.keptBySessions(transaction, batch));
+			const unretained = batch.hashes.filter((hash) => !kept.has(hash));
+			if (unretained.length === 0) return [];
+			const rows = await transaction.all<SqliteRow & { hash: string }>(
+				`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${this.unreferencedByRuns(`${t.blobs}.hash`)} RETURNING hash`,
+				JSON.stringify(unretained),
+				minimumAge,
+			);
+			return rows.map((row) => row.hash);
+		});
+	}
+
+	/** A condition that no retaining run and no carried work references the blob `hash` names. */
+	private unreferencedByRuns(hash: string): string {
+		const t = this.tables;
+		return `NOT EXISTS (
+				SELECT 1 FROM ${t.runRefs} AS ref WHERE ref.hash = ${hash}
+				AND NOT EXISTS (SELECT 1 FROM ${t.runState} AS state WHERE state.run_id = ref.run_id AND state.retained = 0)
+			) AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS carried WHERE carried.hash = ${hash})`;
+	}
+
+	/**
+	 * How many snapshot entries finding the retained snapshots of each of `sessions` walks: the entries of the session,
+	 * once for each distinct latest snapshot entry of its open leaves, which bounds the entries on those leaves'
+	 * branches. Reads one session per statement, waiting for `turn` between statements.
+	 */
+	private async sessionCosts(sessions: readonly string[], turn: () => Promise<void>): Promise<Map<string, number>> {
+		const t = this.tables;
+		const costs = new Map<string, number>();
+		for (const [index, session] of sessions.entries()) {
+			if (index > 0) await turn();
+			const row = await this.database.get<SqliteRow & { refs: number; anchors: number }>(
+				`SELECT count(*) AS refs,
+					(SELECT count(DISTINCT anchor_seq) FROM ${t.sessionLinks} WHERE session_id = ? AND children = 0 AND anchor_seq IS NOT NULL) AS anchors
+				FROM ${t.sessionRefs} WHERE session_id = ?`,
+				session,
+				session,
+			);
+			costs.set(session, Math.max(1, Number(row?.refs ?? 0) * Number(row?.anchors ?? 0)));
+		}
+		return costs;
+	}
+
+	/**
+	 * The blobs that the snapshots `sessions` retain reference, in one statement. A session whose tree the index could
+	 * not follow retains every snapshot it records.
+	 */
+	private async retainedBySessions(sessions: readonly string[]): Promise<string[]> {
+		const t = this.tables;
+		const ids = JSON.stringify(sessions);
+		const rows = await this.database.all<SqliteRow & { hash: string }>(
+			`SELECT DISTINCT record.hash FROM ${t.sessionRecords} AS record
+			WHERE record.session_id IN (SELECT value FROM ${this.dialect.jsonValues("?")})
+			AND (
+				(record.session_id, record.snapshot_id) IN (${this.sessionHeads(`session_id IN (SELECT value FROM ${this.dialect.jsonValues("?")})`)})
+				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
+			)`,
+			ids,
+			ids,
+		);
+		return rows.map((row) => row.hash);
+	}
+
+	/**
+	 * The blobs of `batch` that a session records and that the delete must keep, in one statement: those the snapshots
+	 * of `batch.sessions` retain, and those a session not among them records, whose snapshots the sweep did not walk.
+	 * Walks only `batch.sessions`, whose snapshot entries the sweep bounded when it made the batch (#5530).
+	 */
+	private async keptBySessions(executor: SqliteExecutor, batch: SweepDeleteBatch): Promise<string[]> {
+		const t = this.tables;
+		const ids = JSON.stringify(batch.sessions);
+		const walked = `(SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		const rows = await executor.all<SqliteRow & { hash: string }>(
+			`SELECT DISTINCT record.hash FROM ${t.sessionRecords} AS record
+			WHERE record.hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})
+			AND (
+				record.session_id NOT IN ${walked}
+				OR (record.session_id, record.snapshot_id) IN (${this.sessionHeads(`session_id IN ${walked}`)})
+				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
+			)`,
+			JSON.stringify(batch.hashes),
+			ids,
+			ids,
+		);
+		return rows.map((row) => row.hash);
 	}
 
 	/**
 	 * Stamps every blob of unknown age with the database clock, in hash order, in write transactions of at most
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} of blobs. Moves every in-row blob larger than
 	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} to chunks regardless of age. Chunk writes have the same byte bound;
-	 * publishing also frees the old in-row value, whose cost grows with its size.
+	 * publishing also frees the old in-row value, whose cost grows with its size. Starts with a turn of the event loop
+	 * when there is anything to do, so its first write does not share the turn of the sweep's last batch, and every
+	 * stamp and every statement of a move ends with a turn, whatever it found, so every page does too (#5530).
 	 */
 	private async stampLegacyAges(options: SnapshotIndexOptions): Promise<void> {
 		const oversized = `chunks = 0 AND length(data) > ${SNAPSHOT_BLOB_CHUNK_BYTES}`;
@@ -1311,6 +1973,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			))
 		)
 			return;
+		await this.betweenBatches(options.pace);
 		let after = "";
 		for (;;) {
 			options.signal?.throwIfAborted();
@@ -1360,6 +2023,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * {@link SNAPSHOT_LEGACY_STAMP_BYTES} per transaction while readers retain the in-row value. Publishing stamps
 	 * only an unknown age and frees the old value under the writer, with time proportional to the freed size. It marks the
 	 * journal as requiring chunk support, as {@link putBlobs} does. A stopped move leaves chunks the next move reuses.
+	 * Gives the event loop a turn after reading the blob's bytes and after every transaction, also when another host
+	 * moved or deleted the blob first (#5530).
 	 */
 	private async moveLegacyBlobToChunks(hash: string, options: SnapshotIndexOptions): Promise<void> {
 		const t = this.tables;
@@ -1368,6 +2033,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			`SELECT data FROM ${t.blobs} WHERE ${unmoved}`,
 			hash,
 		);
+		await this.betweenBatches(options.pace);
 		if (legacy === undefined) return;
 		const { data } = legacy;
 		const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
@@ -1390,8 +2056,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				}
 				return true;
 			});
-			if (!pending) return;
 			await this.betweenBatches(options.pace);
+			if (!pending) return;
 		}
 		options.signal?.throwIfAborted();
 		const journal = await import("../storage/journal-adoption.js");
@@ -1423,6 +2089,216 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		);
 	}
 
+	/**
+	 * Moves a chunk table that an earlier release created `WITHOUT ROWID` to the row layout of
+	 * {@link chunkTableDefinition} (#5541), in write transactions that each copy or free at most
+	 * {@link SNAPSHOT_CHUNK_MOVE_ROWS} chunks in all. It copies the rows, in key order, to a new table in that layout;
+	 * later transactions copy the rows written since and drop the copies of rows deleted since, and the one that leaves
+	 * the new table holding exactly the chunk table's rows gives it the chunk table's name, under which the old one is
+	 * kept until later transactions empty and drop it. The chunk table keeps its name, columns and key throughout, so
+	 * a process of an earlier release reads and writes it unchanged, and a chunk is copied with its bytes: its key, a
+	 * blob's hash and an index, names them. A stopped move resumes from what the tables hold. Does nothing on a chunk
+	 * table in the row layout, which every Postgres table is.
+	 */
+	private async moveChunksToRowTable(options: SnapshotIndexOptions): Promise<void> {
+		const t = this.tables;
+		const { next, retired } = chunkMoveTables(t);
+		// The old table is `WITHOUT ROWID` under either name, so one statement tells a store with nothing to move, as
+		// every store is once its move is over.
+		const probe = this.dialect.withoutRowidTables([t.blobChunks, retired]);
+		const clustered = async (executor: SqliteExecutor) =>
+			(await executor.all<SqliteRow & { name: string }>(probe.sql, ...probe.params)).map((row) => row.name);
+		const rows = SNAPSHOT_CHUNK_MOVE_ROWS;
+		const pending = await clustered(this.database);
+		if (pending.includes(retired)) await this.dropChunkTable(retired, options);
+		if (!pending.includes(t.blobChunks)) return;
+		// A copy the disk has no room for would fill it (#5694): the table stays as it is, read and written as before, and a
+		// partial copy an earlier collection left is dropped, its pages back on the database's free list.
+		if (!(await this.roomForChunkCopy(next))) return this.dropChunkTable(next, options);
+		// Copies the rows after the last one copied: no other statement writes the new table before it is renamed.
+		const copyNext = async (transaction: SqliteExecutor) => {
+			const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
+				`SELECT hash, idx FROM ${next} ORDER BY hash DESC, idx DESC LIMIT 1`,
+			);
+			const { changes } = await transaction.run(
+				`INSERT INTO ${next} (hash, idx, data) SELECT hash, idx, data FROM ${t.blobChunks} WHERE (hash, idx) > (?, ?) ORDER BY hash, idx LIMIT ? ON CONFLICT DO NOTHING`,
+				last?.hash ?? "",
+				last?.idx ?? -1,
+				rows,
+			);
+			return changes;
+		};
+		// Copies the first rows the new table lacks, wherever they are: rows written behind the copy.
+		const copyMissing = async (transaction: SqliteExecutor) => {
+			const { changes } = await transaction.run(
+				`INSERT INTO ${next} (hash, idx, data) SELECT old.hash, old.idx, old.data FROM ${t.blobChunks} AS old WHERE NOT EXISTS (SELECT 1 FROM ${next} AS copy WHERE copy.hash = old.hash AND copy.idx = old.idx) ORDER BY old.hash, old.idx LIMIT ?`,
+				rows,
+			);
+			return changes;
+		};
+		// The rows the new table holds and the chunk table no longer does: copies of rows deleted since they were copied.
+		const stale = `SELECT hash, idx FROM ${next} EXCEPT SELECT hash, idx FROM ${t.blobChunks}`;
+		for (let copying = true; ; ) {
+			options.signal?.throwIfAborted();
+			let moved: boolean;
+			try {
+				moved = await this.write(options.pace, async (transaction) => {
+					if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+					if (!(await clustered(transaction)).includes(t.blobChunks)) return true;
+					await transaction.exec(chunkTableDefinition(next, this.dialect));
+					if (copying) {
+						copying = (await copyNext(transaction)) === rows;
+						return false;
+					}
+					// Rows copied and stale copies dropped share the transaction's rows. The tables are renamed only by a transaction
+					// that leaves the new table holding exactly the chunk table's rows; otherwise the next transaction continues.
+					const copied = await copyMissing(transaction);
+					if (copied === rows) return false;
+					const room = rows - copied;
+					const { changes: dropped } = await transaction.run(
+						`DELETE FROM ${next} WHERE (hash, idx) IN (${stale} LIMIT ?)`,
+						room,
+					);
+					if (dropped === room && (await transaction.get(`${stale} LIMIT 1`)) !== undefined) return false;
+					// Renaming the table would point a trigger that names it at the old table: both of the delete triggers releases
+					// installed are dropped, and the current one is installed again on the new table.
+					await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete`, t.blobs));
+					await transaction.exec(this.dialect.dropTrigger(`${t.blobs}_chunks_delete_all`, t.blobs));
+					try {
+						await transaction.exec(`ALTER TABLE ${t.blobChunks} RENAME TO ${retired}`);
+						await transaction.exec(`ALTER TABLE ${next} RENAME TO ${t.blobChunks}`);
+					} catch (error) {
+						await this.confirmRenameBlocker(transaction, error);
+						throw error;
+					}
+					await transaction.exec(this.dialect.renderTrigger(chunksDeleteTrigger(t)));
+					return true;
+				});
+			} catch (error) {
+				// A disk that fills up ends the move, not the collection (#5694): the partial copy is dropped, its pages back on
+				// the database's free list, and a later collection tries again.
+				if (!isStorageSpaceFailure(error)) throw error;
+				await this.betweenBatches(options.pace);
+				return this.dropChunkTable(next, options);
+			}
+			await this.betweenBatches(options.pace);
+			if (moved) break;
+		}
+		await this.dropChunkTable(retired, options);
+	}
+
+	/**
+	 * Records on `error`, a rename that failed in `transaction`, the trigger or view SQLite named in it, when the schema
+	 * holds exactly one trigger or view that the error's words can name (#5622). The failed statement left the
+	 * transaction open on the schema SQLite checked, so that object is the one SQLite named. Otherwise, or when the schema
+	 * cannot be read, nothing is recorded and the collection warning names no object.
+	 */
+	private async confirmRenameBlocker(transaction: SqliteExecutor, error: unknown): Promise<void> {
+		const candidates = renameBlockerCandidates(error);
+		if (candidates.length === 0) return;
+		const names = JSON.stringify([...new Set(candidates.map((candidate) => candidate.name))]);
+		const objects = (schema: string) =>
+			`SELECT type, name FROM ${schema} WHERE type IN ('trigger', 'view') AND name IN (SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		const rows = await transaction
+			.all<SqliteRow & SchemaObject>(
+				`${objects("sqlite_master")} UNION ALL ${objects("sqlite_temp_master")}`,
+				names,
+				names,
+			)
+			.catch(() => undefined);
+		if (rows === undefined) return;
+		const named = rows.filter((row) =>
+			candidates.some((candidate) => candidate.type === row.type && candidate.name === row.name),
+		);
+		const [only] = named;
+		if (named.length === 1 && only !== undefined && typeof error === "object" && error !== null)
+			Reflect.defineProperty(error, RENAME_BLOCKER, { value: { type: only.type, name: only.name } });
+	}
+
+	/**
+	 * Whether the file system of a SQLite or libSQL database file has room to copy what is left of the chunk table to the
+	 * row layout (#5694): the copy grows the file by the bytes its free pages do not hold, and the write-ahead log can
+	 * hold every page the copy writes until a checkpoint moves them into the file, with
+	 * {@link SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES} left over; the database's own `freeBytes` says how much the file system
+	 * holds. A database whose disk this process cannot see, such as a libSQL server, moves only what is left of a table
+	 * no larger than that headroom: the move must never be what fills a disk, and the old layout works as before.
+	 */
+	private async roomForChunkCopy(next: string): Promise<boolean> {
+		const rowsOf = async (table: string) =>
+			Number(
+				(await this.database.get<SqliteRow & { rows: number }>(`SELECT count(*) AS rows FROM ${table}`))?.rows ?? 0,
+			);
+		const copy = this.dialect.tableExists(next);
+		const copyExists = async () => (await this.database.get(copy.sql, ...copy.params)) !== undefined;
+		// The chunks the copy lacks, counted in one statement against what it holds: a copy may also hold copies of chunks
+		// deleted since, which take no more room, and chunks stored since that it lacks.
+		const lacking = async () =>
+			Number(
+				(
+					await this.database.get<SqliteRow & { rows: number }>(
+						`SELECT count(*) AS rows FROM ${this.tables.blobChunks} AS old WHERE NOT EXISTS (SELECT 1 FROM ${next} AS copy WHERE copy.hash = old.hash AND copy.idx = old.idx)`,
+					)
+				)?.rows ?? 0,
+			);
+		const rows = !(await copyExists())
+			? await rowsOf(this.tables.blobChunks)
+			: await lacking().catch(async (error: unknown) => {
+					// Another collector finished the move, which took the copy's name, or dropped the copy, since it was found:
+					// none of it is left to count on. The move's own transactions see which.
+					if (!(await copyExists())) return rowsOf(this.tables.blobChunks);
+					throw error;
+				});
+		const left = rows * SNAPSHOT_BLOB_CHUNK_BYTES;
+		let free: number | undefined;
+		try {
+			free = await this.database.freeBytes?.();
+		} catch {
+			// A reading that fails is no reading: the collection goes on as for a disk this process cannot see.
+			free = undefined;
+		}
+		if (free === undefined) return left <= SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+		const freePages = await this.database.get<SqliteRow & { bytes: number }>(
+			"SELECT (SELECT freelist_count FROM pragma_freelist_count()) * (SELECT page_size FROM pragma_page_size()) AS bytes",
+		);
+		const reused = Math.min(left, Number(freePages?.bytes ?? 0));
+		return free >= left - reused + left + SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+	}
+
+	/**
+	 * Empties `table`, the chunk table a move to the row layout retired or a partial copy of the move (#5694), in write
+	 * transactions of at most {@link SNAPSHOT_CHUNK_MOVE_ROWS} rows, from its first key on, then drops it; its pages go
+	 * to the database's free list. A full disk stops it without a failure: a later collection goes on.
+	 */
+	private async dropChunkTable(table: string, options: SnapshotIndexOptions): Promise<void> {
+		const probe = this.dialect.tableExists(table);
+		if ((await this.database.get(probe.sql, ...probe.params)) === undefined) return;
+		for (;;) {
+			options.signal?.throwIfAborted();
+			let dropped: boolean;
+			try {
+				dropped = await this.write(options.pace, async (transaction) => {
+					if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+					if ((await transaction.get(probe.sql, ...probe.params)) === undefined) return true;
+					const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
+						`SELECT hash, idx FROM ${table} ORDER BY hash, idx LIMIT 1 OFFSET ?`,
+						SNAPSHOT_CHUNK_MOVE_ROWS - 1,
+					);
+					if (last === undefined) {
+						await transaction.exec(`DROP TABLE IF EXISTS ${table}`);
+						return true;
+					}
+					await transaction.run(`DELETE FROM ${table} WHERE (hash, idx) <= (?, ?)`, last.hash, last.idx);
+					return false;
+				});
+			} catch (error) {
+				if (isStorageSpaceFailure(error)) return;
+				throw error;
+			}
+			await this.betweenBatches(options.pace);
+			if (dropped) return;
+		}
+	}
+
 	/** {@link completeIndex}, then {@link sweep}: what a manual collection does. */
 	async collectGarbage(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		await this.completeIndex(options);
@@ -1430,7 +2306,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/**
-	 * The snapshots sessions keep, as a subquery of `(session_id, snapshot_id)`: for every leaf of every session tree,
+	 * The snapshots the sessions that `sessions` selects keep, a condition on `session_id` (#5530), as a subquery of
+	 * `(session_id, snapshot_id)`: for every leaf of their session trees,
 	 * the latest snapshot entry of each checkout on the leaf's branch, followed through each entry's link to the
 	 * nearest snapshot entry before it. A leaf costs the snapshot entries on its branch and never a message, and leaves
 	 * that share their latest snapshot are followed once. Roots are grouped into checkouts the way resume does: a root
@@ -1439,10 +2316,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * snapshot more than resume needs and never fewer. A head that records a partly restored worktree also keeps the
 	 * snapshot it lacks, named in `degraded_from`, for {@link DEGRADED_RESTORE_RETENTION_DAYS} (#4922).
 	 */
-	private sessionHeads(): string {
+	private sessionHeads(sessions: string): string {
 		const t = this.tables;
 		return `WITH RECURSIVE
-			open_anchors(session_id, seq) AS (SELECT DISTINCT session_id, anchor_seq FROM ${t.sessionLinks} WHERE children = 0 AND anchor_seq IS NOT NULL),
+			open_anchors(session_id, seq) AS (SELECT DISTINCT session_id, anchor_seq FROM ${t.sessionLinks} WHERE ${sessions} AND children = 0 AND anchor_seq IS NOT NULL),
 			branch(session_id, start_seq, root, snapshot_id, restore_from, restore_to, degraded_from, degraded_since, prev_seq, depth) AS (
 				SELECT ref.session_id, ref.seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.degraded_from, ref.degraded_since, ref.prev_seq, 0 FROM open_anchors AS anchor JOIN ${t.sessionRefs} AS ref ON ref.session_id = anchor.session_id AND ref.seq = anchor.seq
 				UNION ALL
@@ -1470,23 +2347,20 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * The next {@link SNAPSHOT_COLLECTION_BATCH} blobs whose `created_at` is at least `minimumAge` whole seconds behind
-	 * the database clock and that are `unreferenced`, oldest first, after `after`.
+	 * the database clock, oldest first, after `after`: a range of the age index, whatever references them. A page after
+	 * `after` searches the index from `after`, which already excludes an unknown age (0): with `created_at > 0` as a
+	 * second lower bound, SQLite searched from the oldest blob instead, so each page cost more than the one before (#5530).
 	 */
-	private page(
-		transaction: SqliteExecutor,
-		minimumAge: number,
-		unreferenced: string,
-		after: PageRow | undefined,
-	): Promise<PageRow[]> {
+	private page(minimumAge: number, after: PageRow | undefined): Promise<PageRow[]> {
 		const t = this.tables;
 		return after === undefined
-			? transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+			? this.database.all<PageRow>(
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					SNAPSHOT_COLLECTION_BATCH,
 				)
-			: transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+			: this.database.all<PageRow>(
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					after.created_at,
 					after.hash,

@@ -111,8 +111,6 @@ test(
 			reportActivity() {},
 			bindTranscript: (source) => void bound.push(source),
 			onExecution() {},
-			yieldTaskWait() {},
-			isParentObserving: () => false,
 		};
 		env.faux.setResponses([
 			{
