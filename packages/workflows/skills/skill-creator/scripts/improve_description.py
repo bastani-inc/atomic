@@ -10,10 +10,10 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
+from scripts.run_eval import run_cancellable, run_command
 from scripts.utils import parse_skill_md
 
 
@@ -32,14 +32,8 @@ def _call_claude(prompt: str, model: str | None, timeout: int = 300) -> str:
     # programmatic subprocess usage is safe. Same pattern as run_eval.py.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
-    result = subprocess.run(
-        cmd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=timeout,
-    )
+    # Started like the evaluator's queries, so stopping the script ends it and everything it started.
+    result = run_command(cmd, input=prompt, env=env, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(
             f"claude -p exited {result.returncode}\nstderr: {result.stderr}"
@@ -244,4 +238,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_cancellable(main)
