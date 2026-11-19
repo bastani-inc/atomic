@@ -417,7 +417,7 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	async readForkWindow(sessionId: string, entryId: string) {
-		const { indexedForkWindow, rangedForkMetadata, scanForkRecords, locateMemoryFork, fullForkWindow } = await import(
+		const { indexedForkWindow, rangedForkMetadata, scanForkRecords, locateFork, fullForkWindow } = await import(
 			"./fork-window.js"
 		);
 		for (;;) {
@@ -440,7 +440,7 @@ export class MemorySessionStore implements SessionStore {
 				(start, n) => this.bytesOf(sessionId, held, start, start + n),
 			);
 			try {
-				const { index, leaf } = await locateMemoryFork(captured, entryId, metadata);
+				const { index, leaf } = await locateFork(captured, entryId, metadata);
 				const window = await indexedForkWindow(
 					decodeHeader(record),
 					index,
