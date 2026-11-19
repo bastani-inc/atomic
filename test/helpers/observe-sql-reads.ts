@@ -6,6 +6,14 @@ import type {
 } from "../../packages/coding-agent/src/core/storage/database.js";
 
 import { StoragePayloadTooLargeError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import type { StorageBackendScope } from "./storage-backends.js";
+
+/** An adapter with an independent reader, including on engines where only the test introduces a response ceiling. */
+export async function connectCatalogScope(scope: StorageBackendScope): Promise<SqliteDatabase> {
+	const database = await scope.connect();
+	database.openReader ??= scope.connect;
+	return database;
+}
 
 /** A configurable response ceiling for exercising the same paging boundaries on all three engines. */
 export function limitHeaderResponse(
@@ -31,6 +39,14 @@ export function observeSqlReads(
 	const all = database.all.bind(database);
 	const get = database.get.bind(database);
 	const transaction = database.transaction.bind(database);
+	const openReader = database.openReader;
+	if (openReader) {
+		database.openReader = async () => {
+			const reader = await openReader.call(database);
+			observeSqlReads(reader, observer);
+			return reader;
+		};
+	}
 	const executor = (source: SqliteExecutor, pinned: boolean): SqliteExecutor => ({
 		exec: source.exec.bind(source),
 		run: source.run.bind(source),
@@ -55,5 +71,6 @@ export function observeSqlReads(
 		database.all = all;
 		database.get = get;
 		database.transaction = transaction;
+		if (openReader) database.openReader = openReader;
 	};
 }

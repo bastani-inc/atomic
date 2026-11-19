@@ -639,7 +639,29 @@ export class SqlRunJournal implements RunJournal {
 	/** Read the refused, current-format catalog from one new snapshot. Never reopen it or replay a fitting prefix. */
 	private async listRefusedCatalog(refusal: StoragePayloadTooLargeError): Promise<readonly RunSummary[]> {
 		this.assertOpen();
-		const listed = await this.database.transaction(
+		let reader: SqliteDatabase | undefined;
+		try {
+			reader = await this.database.openReader?.();
+		} catch {
+			throw refusal;
+		}
+		// Never borrow the journal's connection: its lease renewals cannot wait for this read to finish.
+		if (!reader || reader === this.database) throw refusal;
+		let listed: RunSummary[];
+		try {
+			this.assertOpen();
+			listed = await this.readCatalogPages(reader, refusal);
+			await this.assertVersion(reader);
+		} catch (error) {
+			await reader.close().catch(() => {});
+			throw error;
+		}
+		await reader.close();
+		return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
+	}
+
+	private readCatalogPages(reader: SqliteDatabase, refusal: StoragePayloadTooLargeError): Promise<RunSummary[]> {
+		return reader.transaction(
 			async (tx) => {
 				await this.assertVersion(tx);
 				const keepRefusal = (error: unknown): never => {
@@ -704,8 +726,6 @@ export class SqlRunJournal implements RunJournal {
 			},
 			{ readOnly: true },
 		);
-		await this.assertVersion(this.database);
-		return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 	}
 
 	/**

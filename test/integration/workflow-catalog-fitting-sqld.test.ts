@@ -7,7 +7,7 @@ import {
 	JOURNAL_SCHEMA_VERSION,
 	JournalSchemaVersionError,
 } from "../../packages/workflows/src/durable/journal/types.js";
-import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { connectCatalogScope, limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
@@ -66,7 +66,7 @@ for (const backend of storageBackends) {
 		it("can return two individually fitting headers in one-row pages (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
-				const db = await scope.connect();
+				const db = await connectCatalogScope(scope);
 				const journal = await SqlRunJournal.open(db, { prefix: scope.prefix });
 				try {
 					const ids = ["c201abba-8f91-4bc4-946a-889a31345303", "c201abba-8f91-4bc4-946a-889a31345304"];
@@ -105,7 +105,7 @@ for (const backend of storageBackends) {
 		it("does not replay the fitting prefix when a later recovery page is refused (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
-				const db = await scope.connect();
+				const db = await connectCatalogScope(scope);
 				const peer = await scope.connect();
 				const journal = await SqlRunJournal.open(db, { prefix: scope.prefix });
 				try {

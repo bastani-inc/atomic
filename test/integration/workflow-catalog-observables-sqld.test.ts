@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { connectCatalogScope, limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
@@ -43,7 +43,7 @@ for (const backend of storageBackends) {
 		it("reads every page from one snapshot while another journal commits ordered creations (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
-				const database = await scope.connect();
+				const database = await connectCatalogScope(scope);
 				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
 				const writer = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
 				try {

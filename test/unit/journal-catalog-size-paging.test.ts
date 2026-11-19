@@ -11,11 +11,18 @@ import {
 import { limitHeaderResponse, observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
+async function openWithReader(path: string) {
+	const database = await openNodeSqliteDatabase(path);
+	database.openReader = () => openNodeSqliteDatabase(path, { readOnly: true });
+	return database;
+}
+
 describe("journal catalog paging", () => {
 	it.each([16, 512])(
 		"a permanently oversized header after %i fitting rows does not replay the prefix (#5537)",
 		async (count) => {
-			const database = await openNodeSqliteDatabase(":memory:");
+			const dir = makeTempDirectory("catalog-tail-");
+			const database = await openWithReader(join(dir, "journal.sqlite"));
 			const journal = await SqlRunJournal.open(database, { prefix: "tail_" });
 			try {
 				await database.run(
@@ -47,6 +54,26 @@ describe("journal catalog paging", () => {
 			} finally {
 				await journal.close();
 				await database.close();
+				removeTempDirectory(dir);
+			}
+		},
+	);
+
+	it.each(["absent", "unavailable", "same handle"])(
+		"keeps the original refusal when the independent reader is %s (#5537)",
+		async (kind) => {
+			const db = await openNodeSqliteDatabase(":memory:");
+			const journal = await SqlRunJournal.open(db);
+			try {
+				if (kind === "unavailable") db.openReader = () => Promise.reject(new Error("cannot open reader"));
+				if (kind === "same handle") db.openReader = async () => db;
+				const refusal = new StoragePayloadTooLargeError(0, 0, { kind: "response" });
+				db.all = () => Promise.reject(refusal);
+				await expect(journal.listRuns()).rejects.toBe(refusal);
+				expect(await journal.getRun("missing")).toBeUndefined();
+			} finally {
+				await journal.close();
+				await db.close();
 			}
 		},
 	);
@@ -111,7 +138,8 @@ describe("journal catalog paging", () => {
 	);
 
 	it("does not claim a complete catalog when a stored key differs from the published run ID (#5537)", async () => {
-		const database = await openNodeSqliteDatabase(":memory:");
+		const dir = makeTempDirectory("catalog-keys-");
+		const database = await openWithReader(join(dir, "journal.sqlite"));
 		const journal = await SqlRunJournal.open(database, { prefix: "keys_" });
 		try {
 			const header = { runId: "zzz", name: "r", cwd: "/p", createdAt: 1, status: "completed" as const };
@@ -129,13 +157,14 @@ describe("journal catalog paging", () => {
 		} finally {
 			await journal.close();
 			await database.close();
+			removeTempDirectory(dir);
 		}
 	});
 
 	it("does not publish recovered headers after the journal upgrades (#5537)", async () => {
 		const dir = makeTempDirectory("catalog-schema-");
 		const path = join(dir, "journal.sqlite"),
-			db = await openNodeSqliteDatabase(path),
+			db = await openWithReader(path),
 			peer = await openNodeSqliteDatabase(path);
 		const journal = await SqlRunJournal.open(db);
 		try {

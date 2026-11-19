@@ -247,6 +247,60 @@ async function refusedAddress() {
 
 const sqld = storageBackends.find((backend) => backend.name.includes("sqld"))!;
 describe.skipIf(sqld.skipReason !== undefined)("warm sqld catalog", () => {
+	it("can renew, append and read on the same journal while a refused catalog is still being read (#5537)", async () => {
+		const scope = await sqld.openScope();
+		try {
+			const db = await scope.connect();
+			const journal = await SqlRunJournal.open(db, { prefix: scope.prefix });
+			try {
+				const live = { ...header, runId: "live", status: "running" } as const;
+				await journal.createRun(live);
+				const acquired = await journal.acquire(live.runId, "host");
+				if (acquired.status !== "acquired") throw new Error("unable to acquire live lease");
+				for (const runId of ["a", "b", "c"])
+					await journal.createRun({ ...header, runId, name: "w".repeat(70_000) });
+				// Exercise the same refusal even on servers configured to return more than 150 KB.
+				const releaseLimit = limitHeaderResponse(db, (rows) => rows.length <= 1);
+				const paused = Promise.withResolvers<void>();
+				const resume = Promise.withResolvers<void>();
+				const restore = observeSqlReads(db, {
+					after: async (rows, _sql, pinned) => {
+						if (pinned && rows.some((row) => typeof row.header_json === "string")) {
+							paused.resolve();
+							await resume.promise;
+						}
+					},
+				});
+				const list = journal.listRuns();
+				try {
+					await Promise.race([
+						paused.promise,
+						list.then(() => {
+							throw new Error("catalog settled before pause");
+						}),
+					]);
+					const [, appended, read] = await Promise.all([
+						journal.renew(acquired.lease),
+						journal.append(acquired.lease, { type: "MessageQueued", payload: { message: "live" } }),
+						journal.getRun(live.runId),
+					]);
+					expect(appended.status).toBe("appended");
+					expect(read).toEqual(live);
+				} finally {
+					resume.resolve();
+					await Promise.allSettled([list]);
+					restore();
+					releaseLimit();
+				}
+				expect((await list).map((run) => run.runId)).toEqual(["a", "b", "c", "live"]);
+			} finally {
+				await journal.close();
+			}
+		} finally {
+			await scope.close();
+		}
+	});
+
 	it("does not replay the catalog after losing the recovery connection (#5537)", async () => {
 		const scope = await sqld.openScope();
 		try {
