@@ -473,7 +473,7 @@ test("PARALLEL retains dirty worktrees through parent coordination and cleans th
 	}
 });
 
-type ParentWait = "foreground" | "background" | "foreground-yielded";
+type ParentWait = "background" | "explicit-wait";
 
 async function childAskClaimedWhileParent(wait: ParentWait): Promise<boolean> {
 	const session = {
@@ -529,18 +529,18 @@ async function childAskClaimedWhileParent(wait: ParentWait): Promise<boolean> {
 				interruptSignal: interruptController.signal,
 				onParentAskHandoff: () => interruptController.abort(),
 			},
-			wait: { kind: wait === "background" ? "background" : "foreground" },
 			runtime: { runSync: runSyncFake },
 		});
 		await childRunning.promise;
-		if (wait === "background") await launch;
-		if (wait === "foreground-yielded") {
-			host.yieldTaskWaits("input-needed");
-			await launch;
-		}
+		const launched = await launch;
+		assert.equal(launched.kind, "admitted");
+		const waited =
+			wait === "explicit-wait" && launched.kind === "admitted"
+				? host.waitForTask(launched.observation.taskId)
+				: undefined;
 		askNow.resolve();
 		const claimed = await asked.promise;
-		await launch;
+		await waited;
 		return claimed;
 	} finally {
 		await host.close("session-close");
@@ -551,10 +551,6 @@ test("a background child's parent ask is not claimed as a handoff, so intercom d
 	assert.equal(await childAskClaimedWhileParent("background"), false);
 });
 
-test("a parent ask after the foreground observation yielded is not claimed as a handoff (#3251)", async () => {
-	assert.equal(await childAskClaimedWhileParent("foreground-yielded"), false);
-});
-
-test("a parent ask while the parent waits in the foreground is still claimed as a handoff (#3251)", async () => {
-	assert.equal(await childAskClaimedWhileParent("foreground"), true);
+test("a parent ask while the parent waits on the child explicitly is not claimed as a handoff either (#3251)", async () => {
+	assert.equal(await childAskClaimedWhileParent("explicit-wait"), false);
 });

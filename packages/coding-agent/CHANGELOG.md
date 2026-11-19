@@ -6,6 +6,11 @@
 
 - Agent panel sources can set `runGeneration` on an item, an identity of its latest run, so a stopped or paused row that left the panel and ran again, however briefly, is listed again while other work runs ([#5504](https://github.com/bastani-inc/atomic/issues/5504))
 - A storage driver's `transientFailure` can return `hop: { name, failure }` for a call that failed before it reached the database server, such as at a proxy. `StorageTransientError`, and the warning printed while the call is retried, then say what happened at that hop instead of "the database server call failed", and the hint asks to check that hop; the error carries it as `hop` and `hopFailure`. The PostgreSQL adapter uses it to name the proxy ([#5473](https://github.com/bastani-inc/atomic/issues/5473))
+- `AgentTaskHost.waitForTask` takes an optional `AbortSignal` as its fourth argument. Aborting it ends the wait at once with `ObserverCancelled` and leaves the task running.
+
+### Breaking Changes
+
+- `AgentTaskHost.observeAgentLaunch` takes only `{ kind: "background" }` or no policy, and always returns once the launch's observation is registered, because every subagent now runs in the background; wait for a task with `waitForTask`. Its `onRegistered` callback no longer receives a function that yields the observation. A JavaScript caller that still passes `{ kind: "foreground" }` gets the default background observation, with reason `default-background`. `TaskViewSource.foregroundTask`, which no view used, was removed.
 
 ### Changed
 
@@ -33,6 +38,8 @@
 - Cancelling a retry right after a request fails, before the retry's wait starts (for example with the RPC `abort_retry` command), now cancels it. Before, the next attempt still started after the cancellation ([#5507](https://github.com/bastani-inc/atomic/issues/5507)).
 - A subagent's chat opened while the subagent waits to retry now shows `retrying…` also when the subagent has a fallback model, as the builtin agents on `model: auto` do, instead of a running turn with a growing timer ([#5523](https://github.com/bastani-inc/atomic/issues/5523)).
 - A subagent's chat opened after one of its requests failed or was interrupted before any text arrived, for example during the retry wait or after the subagent finished, now shows the request's `Error: …` line or `Interrupted` block, as the main chat does. Before, the chat showed them only when it was open as the request ended ([#5529](https://github.com/bastani-inc/atomic/issues/5529)).
+- An engine restart while Atomic loads models or waits for another trust answer no longer repeats a session-only trust question you already answered for a project or `-e` extension source ([#5568](https://github.com/bastani-inc/atomic/issues/5568)).
+- Reopening a session that recorded a subagent's release only in its notice title now shows `◌` and the tool calls it was waiting on, instead of `◼ stopped`. Older notices that recorded a pause or quit show `⏸` ([#5563](https://github.com/bastani-inc/atomic/issues/5563)).
 
 ## [0.9.89] - 2026-11-18
 

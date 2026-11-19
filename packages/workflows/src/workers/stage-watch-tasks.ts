@@ -46,8 +46,6 @@ export async function runStageTaskAction(
 	action: PooledTaskAction,
 ): Promise<PooledTaskReply> {
 	switch (action.kind) {
-		case "foreground":
-			return { kind: "foreground", result: await source.foregroundTask(taskId) };
 		case "cancel":
 			return { kind: "cancel", result: await source.cancelTask(taskId) };
 		case "input":

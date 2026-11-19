@@ -60,11 +60,11 @@ try {
 	await receiver.connect({...registration, name: "s3-parent"});
 	const delivered = Promise.withResolvers<void>();
 	receiver.on("message", (from: SessionInfo, message: Message) => {
-		void handoff.deliver({from, message, generation: 1, isCurrent: () => boundary.isOpen(), surface: () => {console.log(`PEER MESSAGE ${message.content.text}`); delivered.resolve();}}).then((value) => assert.equal(value, "delivered"), delivered.reject);
+		void handoff.deliver({from, message, generation: 1, isCurrent: () => boundary.isOpen(), surface: () => {console.log(`PEER MESSAGE ${message.content.text}`); host.yieldTaskWaits("intercom-coordination"); delivered.resolve();}}).then((value) => assert.equal(value, "delivered"), delivered.reject);
 	});
 	let taskId = "";
 	let bashSeen = false;
-	const pending = runAgentTask({host, cwd, agent: "fake-worker", task: "read, coordinate, bash, complete", agents: [{name: "fake-worker", description: "Deterministic child", source: "project", filePath: "fake-worker.md", systemPrompt: "Intercom orchestration channel:\nCoordinate.", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false}], wait: {kind: "foreground"}, options: {cwd, runId: randomUUID(), index: 0, allowIntercomDetach: true, intercomSessionName: "s3-child", intercomEvents: events as Parameters<typeof runSync>[4]["intercomEvents"]}, runtime: {runSync: async (...args) => {
+	const pending = runAgentTask({host, cwd, agent: "fake-worker", task: "read, coordinate, bash, complete", agents: [{name: "fake-worker", description: "Deterministic child", source: "project", filePath: "fake-worker.md", systemPrompt: "Intercom orchestration channel:\nCoordinate.", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false}], options: {cwd, runId: randomUUID(), index: 0, allowIntercomDetach: true, intercomSessionName: "s3-child", intercomEvents: events as Parameters<typeof runSync>[4]["intercomEvents"]}, runtime: {runSync: async (...args) => {
 		starts++;
 		const options = args[4];
 		assert.ok(options.taskExecution);
@@ -73,7 +73,11 @@ try {
 		return running;
 	}}});
 	await started.promise;
-	// The real foreground route registers onUpdate before awaiting the fake model gate.
+	// The launch returns once the child is admitted; the parent then waits for it explicitly, as subagent({ action: "wait" }) does.
+	const launched = await pending;
+	assert.ok(launched.kind === "admitted" && launched.observation.kind === "yielded");
+	const waiting = host.waitForTask(launched.observation.taskId);
+	// The real launch route registers onUpdate before awaiting the fake model gate.
 	const readDeadline = Date.now() + BROKER_READY_MS;
 	for (;;) {
 		const watch = host.watchOwnerTasks(); assert.ok(watch.ok);
@@ -84,8 +88,9 @@ try {
 	console.log(`ACTIVITY ${taskId} read`);
 	const receipt = await sender.send("s3-parent", {text: "genuine peer message"});
 	assert.equal(receipt.delivered, true);
-	const response = await pending;
-	assert.ok(response.kind === "admitted" && response.observation.kind === "yielded");
+	const waited = await waiting;
+	assert.ok(waited.ok && waited.value.kind === "yielded");
+	const response = {kind: "admitted" as const, observation: waited.value};
 	assert.equal(response.observation.reason, "intercom-coordination");
 	assert.equal(response.observation.taskId, taskId);
 	console.log(`TOOL RETURN ${JSON.stringify(response)}`);

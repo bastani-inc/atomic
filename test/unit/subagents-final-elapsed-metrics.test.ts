@@ -69,8 +69,6 @@ function metricsHooks(signal: AbortSignal, reports: number[]): TaskExecutionHook
 				reports.push(report.change.elapsedMs);
 		},
 		onExecution() {},
-		yieldTaskWait() {},
-		isParentObserving: () => false,
 	};
 }
 
@@ -362,7 +360,7 @@ test("an SDK child still records its exit if saving output after a handoff fails
 	}
 });
 
-test("a foreground launch card counts silent work between progress updates (#5570)", async () => {
+test("a launch card counts silent work between progress updates while the parent waits (#5570)", async () => {
 	const env = await liveChildEnvironment(cleanups);
 	const host = new AgentTaskHost({
 		scope: { kind: "session", sessionId: "foreground-elapsed" },
@@ -381,7 +379,6 @@ test("a foreground launch card counts silent work between progress updates (#557
 		agents: [agent],
 		agent: agent.name,
 		task: "stand by",
-		wait: { kind: "foreground", budgetMs: 100_000 },
 		options: env.options("silent-elapsed", {
 			testSession: { output: "done", promptGate: gate.promise, onSession: () => started.resolve() },
 			onUpdate: (update) => {
@@ -396,6 +393,9 @@ test("a foreground launch card counts silent work between progress updates (#557
 			},
 		},
 	});
+	const response = await run;
+	assert.ok(response.kind === "admitted");
+	const wait = host.waitForTask(response.observation.taskId);
 	try {
 		await Promise.all([started.promise, reported.promise]);
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -404,7 +404,7 @@ test("a foreground launch card counts silent work between progress updates (#557
 		assert.match(stripVTControlCharacters(card.render(120).join("\n")), /Running[^\n]*7s/);
 	} finally {
 		gate.resolve();
-		await run;
+		await wait;
 		card.dispose();
 		await host.close("session-close");
 		clock.mockRestore();
@@ -429,7 +429,6 @@ test("a launch card outside the task host freezes on turn interrupt and follows 
 			agent: agent.name,
 			task: "stand by",
 			agents: [agent],
-			wait: { kind: "background" },
 			runtime: { runSync },
 			options: env.options("elapsed-next-turn", {
 				testSession: {
@@ -513,7 +512,6 @@ test("a heartbeat attached after dispatch counts the child's whole active span b
 			agent: agent.name,
 			task: "stand by",
 			options: { runId: "elapsed-queued" },
-			wait: { kind: "background" },
 			schedule: (run) => {
 				dispatch = run;
 			},
@@ -609,7 +607,6 @@ test(
 					releaseWhenWaiting: subagentReleasePolicy(10),
 				}),
 				wakeDispatcher: new AgentWakeDispatcher(),
-				wait: { kind: "background" },
 				runtime: { runSync },
 				recordChild: createSubagentChildRecordSink(
 					{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
@@ -691,7 +688,6 @@ test(
 				index: 0,
 			},
 			wakeDispatcher: new AgentWakeDispatcher(),
-			wait: { kind: "background" },
 			recordChild: createSubagentChildRecordSink(
 				{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
 				{ sessionManager: owner, orchestrationContext: undefined },
