@@ -179,10 +179,12 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		if (this.expandedOverrides.size) {
 			const tools = new Set(
 				this.transcript.flatMap((entry) =>
-					"kind" in entry && entry.kind === "tool" && "toolCallId" in entry ? [entry.toolCallId] : [],
+					"kind" in entry && entry.kind === "tool" && "toolCallId" in entry ? [`tool:${entry.toolCallId}`] : [],
 				),
 			);
-			for (const key of this.expandedOverrides.keys()) if (!tools.has(key)) this.expandedOverrides.delete(key);
+			// A click on a saved row stays chosen for when its page is read again, until Ctrl+O or the chat closes.
+			for (const key of this.expandedOverrides.keys())
+				if (key.startsWith("tool:") && !tools.has(key)) this.expandedOverrides.delete(key);
 		}
 	}
 

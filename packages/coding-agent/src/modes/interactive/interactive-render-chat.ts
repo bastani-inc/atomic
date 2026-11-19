@@ -15,7 +15,11 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { messageComponents, statusComponents } from "./chat-message-count.ts";
-import { applyToolEntryState } from "./components/chat-message-renderer.ts";
+import {
+	applyToolEntryState,
+	callsAwaitingLaterResults,
+	isResultWithoutCall,
+} from "./components/chat-message-renderer.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { createMarkdownTransform } from "./components/markdown-transform.ts";
@@ -63,6 +67,7 @@ import {
 	releaseSavedChatHistory,
 	type SavedRendererInstances,
 } from "./interactive-saved-chat-history.js";
+import { followChosenExpansion, SavedPageCallsBuilder } from "./interactive-saved-tool-calls.ts";
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
@@ -894,35 +899,53 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 	}
 }
 
-/** Render an archived page on its own. Never register historical tools as pending in the live turn. */
+/**
+ * Render an archived page on its own. Never register historical tools as pending in the live turn. When a later page
+ * follows (`newer`), calls the page ends with wait for it: their results start that page.
+ */
 function savedChatComponents(
 	mode: InteractiveModeBase,
 	entries: SessionEntry[],
 	seqs: number[],
 	exceptions: SavedRendererInstances,
+	newer: boolean,
 ): Component[] {
 	const scratch = new Container();
 	const chat = mode.chatContainer;
 	try {
 		mode.chatContainer = scratch;
 		const saved = { seqs: new Map(entries.map((e, i) => [e, seqs[i]!])), owners: new WeakMap<object, string>() };
-		for (const step of planTranscript(mode, entries, { saved })) {
+		const steps = planTranscript(mode, entries, { saved });
+		const held = new Set(
+			newer ? callsAwaitingLaterResults(steps.flatMap((step) => (step.kind === "entry" ? [step.entry] : []))) : [],
+		);
+		const calls = new SavedPageCallsBuilder(seqs, exceptions);
+		for (const step of steps) {
 			const key = step.kind === "cost" ? undefined : saved.owners.get(step.entry);
-			const kept = key && exceptions.get(key);
-			if (kept) {
-				for (const component of kept) scratch.addChild(component);
+			if (step.kind === "entry" && step.entry.kind === "tool" && held.has(step.entry)) {
+				scratch.addChild(calls.hold(step.entry, key));
 				continue;
 			}
 			const index = scratch.children.length;
-			addTranscriptStep(mode, step, false, true);
-			if (key) {
-				const [seq, block] = key.split(":");
-				exceptions.remember(key, scratch.children.slice(index), {
-					seq: Number(seq),
-					block: block === "entry" ? 0 : Number(block),
-				});
+			const kept = key && exceptions.get(key);
+			if (kept) for (const component of kept) scratch.addChild(component);
+			else {
+				addTranscriptStep(mode, step, false, true);
+				if (key) {
+					const [seq, block] = key.split(":");
+					exceptions.remember(key, scratch.children.slice(index), {
+						seq: Number(seq),
+						block: block === "entry" ? 0 : Number(block),
+					});
+				}
 			}
+			const drawn = scratch.children.slice(index);
+			if (key) followChosenExpansion(mode, exceptions, key, drawn);
+			if (step.kind !== "entry") continue;
+			if (step.entry.kind === "tool" && isResultWithoutCall(step.entry)) calls.drewResult(step.entry, drawn);
+			calls.drew(step.entry);
 		}
+		if (scratch.children.length > 0) scratch.children.unshift(calls.finish(mode, chat));
 		return scratch.children;
 	} finally {
 		mode.chatContainer = chat;

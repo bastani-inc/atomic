@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { ScrollView, type TuiAltScreen } from "@bastani/atomic-tui";
+import { stripVTControlCharacters } from "node:util";
+import { MULTI_CLICK_INTERVAL_MS, ScrollView, type TuiAltScreen } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test } from "vitest";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { type FileEntry, SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
@@ -146,6 +147,7 @@ interface ResumedTranscript {
 	readonly mode: InteractiveMode;
 	readonly tui: TuiAltScreen;
 	readonly transcript: ScrollView;
+	readonly terminal: RecordingTerminal;
 }
 
 async function openResumedSession(turns: number): Promise<ResumedTranscript> {
@@ -161,7 +163,7 @@ async function openResumedSession(turns: number): Promise<ResumedTranscript> {
 	releaseStartupChatOutput(mode);
 	tui.start();
 	stops.push(() => tui.stop());
-	return { mode, tui, transcript };
+	return { mode, tui, transcript, terminal };
 }
 
 function nextTurn(): Promise<void> {
@@ -294,6 +296,107 @@ test.each([false, true])(
 		assert.equal(second === first, !replayable);
 	},
 );
+
+test("saved pages of the main chat draw each call once, finished, with its arguments and its click's expansion, read in either direction (#5593)", async () => {
+	const { mode, tui, transcript, terminal } = await openResumedSession(0);
+	const manager = mode.sessionManager;
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const call = (id: string, name: string, args: Record<string, string>) =>
+		manager.appendMessage({
+			role: "assistant",
+			api: "openai-completions",
+			provider: "scripted",
+			model: "scripted",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 0,
+			content: [{ type: "toolCall", id, name, arguments: args }],
+		});
+	const result = (toolCallId: string, toolName: string, text: string) =>
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId,
+			toolName,
+			content: [{ type: "text", text }],
+			isError: false,
+			timestamp: 0,
+		});
+	// Pages of 64 entries: read back from entry 140 they cut at 12|13 and 76|77; read on from the start at 64|65 and
+	// 128|129. The call of y.txt ends a page read back, that of x.txt one read on; z.txt never got a result.
+	for (let seq = 1; seq <= 140; seq++) {
+		if (seq === 12) await call("call-y", "read", { path: "y.txt" });
+		else if (seq === 13)
+			await result("call-y", "read", Array.from({ length: 30 }, (_, i) => `y line ${i + 1}`).join("\n"));
+		else if (seq === 64) await call("call-x", "write", { path: "x.txt", content: "x" });
+		else if (seq === 65) await result("call-x", "write", "wrote");
+		else if (seq === 128) await call("call-z", "read", { path: "z.txt" });
+		else await manager.appendMessage({ role: "user", content: `P-${String(seq).padStart(3, "0")}`, timestamp: seq });
+	}
+	await manager.appendCompaction("cut", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "test" },
+		stats: {
+			linesBefore: 1,
+			linesDeleted: 1,
+			linesKept: 0,
+			rangeCount: 0,
+			tokensBefore: 100,
+			tokensAfter: 2,
+			percentReduction: 98,
+		},
+		form: "cleared",
+	});
+	await manager.appendMessage({ role: "user", content: "at the end", timestamp: 200 });
+	mode.renderInitialMessages();
+	tui.renderNow();
+	const held = () => stripVTControlCharacters(mode.chatContainer.render(COLUMNS).join("\n"));
+	const scrollUntil = async (lines: number, shown: RegExp) => {
+		for (let i = 0; i < 80 && !shown.test(held()); i++) {
+			transcript.scrollBy(lines);
+			for (let turn = 0; turn < 4; turn++) await nextTurn();
+			tui.renderNow();
+		}
+		assert.match(held(), shown);
+	};
+	const drawnOnce = (header: RegExp, argless: RegExp) => {
+		const rows = held();
+		assert.equal(rows.match(new RegExp(header, "g"))?.length, 1, rows);
+		assert.doesNotMatch(rows, argless, "a result's card shows its call's arguments");
+		assert.doesNotMatch(rows, /∀ (Read|Write)\((y|x)\.txt\)/, "a call whose result is saved is not running");
+	};
+
+	await scrollUntil(-20, /P-001/);
+	drawnOnce(/Read\(y\.txt\)/, /Read\(\)/);
+	drawnOnce(/Write\(x\.txt\)/, /Write\(\)/);
+
+	const document = mode.documentContainer.render(COLUMNS).map((line) => stripVTControlCharacters(line));
+	transcript.scrollTo(document.findIndex((line) => /Read\(y\.txt\)/.test(line)) - 2);
+	tui.renderNow();
+	const row = tui.getScreenLines().findIndex((line) => /Read\(y\.txt\)/.test(stripVTControlCharacters(line)));
+	assert.notEqual(row, -1);
+	terminal.input(`\x1b[<0;10;${row + 1}M`);
+	terminal.input(`\x1b[<0;10;${row + 1}m`);
+	await new Promise((resolve) => setTimeout(resolve, MULTI_CLICK_INTERVAL_MS + 50));
+	tui.renderNow();
+	assert.match(held(), /y line 30/, "the click expands the card");
+
+	// Read on from the start, the call of y.txt and its result share a page; the call of x.txt ends one.
+	transcript.scrollToStart();
+	for (let i = 0; i < 30 && !/P-001/.test(held()); i++) await nextTurn();
+	assert.doesNotMatch(held(), /P-100/, "the pages read back were released");
+	assert.match(held(), /y line 30/, "the card read again keeps the click's expansion");
+	await scrollUntil(20, /P-140/);
+	drawnOnce(/Write\(x\.txt\)/, /Write\(\)/);
+	assert.equal(held().match(/Read\(z\.txt\)/g)?.length, 1, "a call that never got a result still shows");
+});
 
 test("a frame after the first renders what the viewport shows, however long the resumed transcript", async () => {
 	for (const turns of TURNS) {

@@ -20,6 +20,7 @@ type Draw = (
 	entries: SessionEntry[],
 	seqs: number[],
 	exceptions: SavedRendererInstances,
+	newer: boolean,
 ) => Component[];
 
 const exceptionsByHost = new WeakMap<
@@ -205,6 +206,7 @@ class SavedChatHistory {
 			page.items.map(entryForDisplay),
 			page.items.map((item) => item.seq),
 			this.exceptions,
+			page.adjacent?.newer !== undefined,
 		);
 		const mounted: MountedPage = { children, older: page.adjacent?.older, newer: page.adjacent?.newer };
 		if (direction === "newer") {
