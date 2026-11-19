@@ -180,7 +180,7 @@ const reviewer = await createAgentSession({ workspace: api.readOnly() });
 - **Children:** subagent children inherit the workspace. A child of a read-only session stays read-only even when it passes its own workspace.
 - **Changes:** `workspaceChangeSet(binding)` returns the committed changes since the base commit, and `publishPullRequest(changeSet, { draft: true })` pushes them and opens a pull request with the GitHub CLI.
 
-Invalid options throw `WorkspaceConfigError`; binding failures reject with `WorkspaceBindingError` (for example `wrong-branch`, `cwd-outside-worktree`, or `git-unavailable` when git cannot be started). Both are checked before the session is created. See [Workspaces](/workflows/api-reference#workspaces) for the resolution rules, the binding record and the full error table.
+Invalid options throw `WorkspaceConfigError`; binding failures reject with `WorkspaceBindingError` (for example `wrong-branch`, `cwd-outside-worktree`, or `git-unavailable` when git cannot be started). Both are checked before the session is created.
 
 ### Shared resource admission
 
@@ -318,7 +318,7 @@ To continue a saved run in another session:
 2. Bind the new host.
 3. Use `session.workflows.resume(runId)` ([Workflow run control](#workflow-run-control)), `/resume`, or the workflow tool's `resume` action.
 
-Rebinding alone does not reopen a saved run. See [workflow operations](/workflows/operations) for inspection, graceful quit, and resume.
+Rebinding alone does not reopen a saved run.
 
 Launching without an adapter still preserves required gates and returns the run identity. Inspect status, then bind an authorized host or submit a validated answer. Headless CLI launches use the same execution defaults, but skip pickers and return without waiting for terminal completion. Explicit runtime execution restrictions still apply.
 
@@ -362,7 +362,7 @@ await run(myWorkflow, inputs, { journal: { memory: true } });
 
 Use `{ database, prefix? }` for an async `SqliteDatabase` facade; Atomic never closes the caller-owned database. To use a driver selected by module specifier, pass `{ adapter, options?, secrets?, prefix? }`. Atomic bundles no remote drivers. A supplied `RunJournal` is used as-is. Memory is an explicit opt-in for tests or ephemeral runs and cannot recover runs after process exit. See [Storage adapters](/storage#selecting-an-adapter).
 
-Custom journals implement the full `RunJournal` interface, including `deleteOwnedRun(lease, expectSeq?)` for atomic lease-fenced deletion with an optional sequence check. A stale lease rejects with `StaleLeaseError` without deleting the successor's data. Open a facade-backed journal with `await SqlRunJournal.open(database, { prefix })`, or use `await openSqlRunJournal(pathOrDatabase?)` for the node adapter. Validate custom journals with `registerRunJournalConformance`; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
+Custom journals implement the full `RunJournal` interface, including `deleteOwnedRun(lease, expectSeq?)` for atomic lease-fenced deletion with an optional sequence check. A stale lease rejects with `StaleLeaseError` without deleting the successor's data. Open a facade-backed journal with `await SqlRunJournal.open(database, { prefix })`, or use `await openSqlRunJournal(pathOrDatabase?)` for the node adapter. Validate custom journals with `registerRunJournalConformance`.
 
 To choose the journal for the model-facing `workflow` tool of one SDK session, pass the same selection to `createAgentSession`. A session can use its own journal, for example to isolate tests, without setting `ATOMIC_WORKFLOW_JOURNAL_PATH`:
 
@@ -377,7 +377,7 @@ Without a per-run or per-session option, `ATOMIC_WORKFLOWS_JOURNAL` or a non-emp
 
 ### Intercom in standalone workflows
 
-Workflow stages run by the standalone `run()` API can use Intercom when the stage has access to the `intercom` tool, including with `executionMode: "non_interactive"`. Atomic opens Intercom when an eligible stage starts and closes the workflow route when the run settles. Intercom remains unavailable when a stage excludes the tool or disables its builtin package. A local session that needs to steer a standalone run can join `workflow:<rootRunId>` and send to a stage or `workflow:<rootRunId>/**`. See [Programmatic usage](/workflows/api-reference#programmatic-usage) for details.
+Workflow stages run by the standalone `run()` API can use Intercom when the stage has access to the `intercom` tool, including with `executionMode: "non_interactive"`. Atomic opens Intercom when an eligible stage starts and closes the workflow route when the run settles. Intercom remains unavailable when a stage excludes the tool or disables its builtin package. A local session that needs to steer a standalone run can join `workflow:<rootRunId>` and send to a stage or `workflow:<rootRunId>/**`.
 
 ### Intercom group and reach
 
@@ -399,7 +399,7 @@ await session.intercom.setReachable(["doc-1907", "doc-2011"]);
 - Reach is one way: listing B's group lets the session reach B, not B reach the session. B can still reply to the session's asks.
 - Workflow stages keep their own subgroups under the run's `workflow:<rootRunId>` group, and the session keeps its control over them. A subagent launched with `group: "x"` is placed in `<group>/x`, which the session can reach. Stages and subagents never get the session's `reachable` groups: each reaches only its own group and the subgroups under it.
 - The Intercom broker holds and enforces the policy, so a client that skips the `intercom` tool cannot get around it. The policy is registered again after a reconnect or a broker restart.
-- A child workflow that runs on a [local worker pool](/workflows/api-reference#programmatic-usage) runs its stages in the worker processes, which follow their own Intercom settings and do not get this policy. Leave `localWorkers` off for sessions that need this isolation.
+- A child workflow that runs on a local worker pool runs its stages in the worker processes, which follow their own Intercom settings and do not get this policy. Leave `localWorkers` off for sessions that need this isolation.
 
 `createAgentSessionFromServices()` accepts the same `intercom` option, so a runtime factory can pass it through. `session.intercom.setReachable(groups)` takes effect from the session's next Intercom call; its promise settles once the broker holds the new set, or at once while the session is not connected, which then registers with the new set. Narrowing it also leaves any group the session joined that is no longer reachable. `session.intercom.group` and `session.intercom.reachable` report the current policy. On a session created without the option, `group` is `undefined` and `setReachable` rejects with `IntercomPolicyError`; such sessions keep the usual Intercom rules. An invalid `intercom` option (an empty or reserved group name such as `auto`, or more than 1,000 reachable groups) makes `createAgentSession()` reject with `IntercomPolicyError` before anything is created.
 
@@ -436,7 +436,7 @@ Disposing an owning session with `await session.dispose()` stops its in-flight r
 
 A run reports `completed`, `failed` or `killed` to `workflow_lifecycle` and `session.workflows` as soon as it ends, and then records that ending in the journal. With a remote journal this takes a few round trips. `await session.dispose()` waits up to 10 seconds for runs in that window before it closes the journal. If the journal still cannot record an ending, `dispose()` rejects with `ShutdownFailed` and names the run, rather than leaving the journal showing it as `running`. To wait without disposing, for example before another process reads the journal, call `await session.workflows.waitForSettled(runId)`. It resolves once the ending is in the journal and the run's lease is released, resolves at once for a run this session is not executing, and rejects with `WorkflowRunStorageError` when the journal could not record the ending. It has no timeout of its own, so race it against your own deadline.
 
-Workflow resume is project-scoped. SDK and workflow-tool resume calls for a run from a different `cwd` return an actionable error without changing it. To continue in a different project, fork the run instead: `forkRun(runId, { cwd })` from `@bastani/atomic/workflows`, the `workflow` tool's `fork` action, or `f` in a stage's detail in the run's graph. The fork receives a new run ID and copies saved progress; the original run is left untouched. See [`forkRun`](/workflows/api-reference#forkrun-runid-options). To keep the original ID, create the successor session with the original `cwd`.
+Workflow resume is project-scoped. SDK and workflow-tool resume calls for a run from a different `cwd` return an actionable error without changing it. To continue in a different project, fork the run instead: `forkRun(runId, { cwd })` from `@bastani/atomic/workflows`, the `workflow` tool's `fork` action, or `f` in a stage's detail in the run's graph. The fork receives a new run ID and copies saved progress; the original run is left untouched. To keep the original ID, create the successor session with the original `cwd`.
 
 ```ts
 await owner.dispose(); // quits in-flight runs at their last checkpoint and releases them
@@ -493,7 +493,7 @@ async function onResumeClicked() {
 }
 ```
 
-`pause` holds the live run and keeps it resumable in this process; `quit` retires the executor at a durability boundary so a later process can resume it. After `quit`, or when resuming a run from a previous process, `resume` follows the durable resume path: keep the workflow definition and durable storage available. See [pausing, quitting, and resuming](/workflows/operations#pausing-quitting-and-resuming) for what each action guarantees.
+`pause` holds the live run and keeps it resumable in this process; `quit` retires the executor at a durability boundary so a later process can resume it. After `quit`, or when resuming a run from a previous process, `resume` follows the durable resume path: keep the workflow definition and durable storage available.
 
 #### Observing workflow runs
 
@@ -569,7 +569,7 @@ const result = await run(reviewLoop, inputs, {
 });
 ```
 
-The option also exists on each task, stage, chain and parallel step, `stage.release()` and `stage.rehydrate()` do the same between prompts, and the `StageWaitError` family reports refused releases. While a stage's session is released, including a stage the workflow held idle past its threshold, `stage.messages` and `stage.agent` throw `StageReleasedError` (`stage-released`): read the transcript with `await stage.readMessages()`, which leaves the session released, or call `await stage.rehydrate()` first. See the [workflow API reference](/workflows/api-reference#releasewhenwaiting) for the details and error codes.
+The option also exists on each task, stage, chain and parallel step, `stage.release()` and `stage.rehydrate()` do the same between prompts, and the `StageWaitError` family reports refused releases. While a stage's session is released, including a stage the workflow held idle past its threshold, `stage.messages` and `stage.agent` throw `StageReleasedError` (`stage-released`): read the transcript with `await stage.readMessages()`, which leaves the session released, or call `await stage.rehydrate()` first.
 
 ### AgentSession
 
@@ -654,7 +654,7 @@ Custom messages queued with `persistWhenStreaming: true` survive a successful re
 
 #### Event subscriptions
 
-`session.subscribe(source, handler, options?)` is the session-level form of the workflow [`ctx.subscribe`](/workflows/api-reference#workflowcontext): each event of `source` is handled by `handler(event, child)` without entering the session's context.
+`session.subscribe(source, handler, options?)` handles events in a child session: each event of `source` is handled by `handler(event, child)` without entering the session's context.
 
 ```typescript
 import { githubReviews } from "@bastani/atomic";
@@ -672,7 +672,7 @@ const subscription = session.subscribe(
 - `child.task({ prompt, model?, thinkingLevel?, tools?, noTools?, excludedTools? })` runs a short-lived in-process child session seeded with your prompt and the event, then disposes it. When the session closes, a running child is aborted and disposed, and `child.task` rejects with the session's `AbortError`. If aborting or disposing the child fails, that failure is on the error's `cleanupCause`; when several children of the subscription fail to clean up, `cleanupCause` is an `AggregateError` of their failures. The child inherits this session's model, tool limits and custom tools, and gets a `report_to_subscriber` tool, which an explicit `tools` allowlist keeps; with `noTools: "all"` the child cannot report, so call `child.report()` instead. The child is named `<name>#<n>/<event id>` (the id is URI-encoded), which is also what the report text and `EventReportDetails.child` show. It resolves `{ text, sessionId }`. A session built without `createAgentSession()` has no child sessions; `child.task` then fails with `SubscriptionChildUnavailableError`.
 - `child.report(text)` delivers one `event_report` custom message into this session and starts a turn when it is idle (steering when it is streaming). A report sent while the session is in a turn is saved in the transcript before `report()` returns, so it survives a crash before the session reads it. Its `details` are `{ subscriptionId, eventId, child }`.
 
-`options` takes `name`, `maxConcurrent` (default 4) and `maxRate`, with the semantics of `ctx.subscribe`. The session transcript records the subscription and each processed event id as custom entries, which never enter model context, so a session reopened on the same transcript drops events it already handled. Each child session that finishes adds one `event_subscription_child` entry with the child's name, event id, session id, number of reports and the first 500 characters of its answer, so you can see what each event did. Subscribing again in the same session starts a new subscription that handles every event again. If writing the subscription record or a processed-event record fails, `done` rejects with a `SubscriptionRecordError` (the handler itself succeeded, and the event is handled again after a reopen). Disposing the session cancels its subscriptions; their `done` rejects with an `AbortError`, and an event whose handler was still running is not recorded as processed. The returned `Subscription` has `id`, `done`, `stats()` and `close()`; pass `id` to `publishEvent()` to bridge your own webhooks. Event sources, `publishEvent` and the `SubscriptionError` family are documented in the [workflow API reference](/workflows/api-reference#event-sources).
+`options` takes `name`, `maxConcurrent` (default 4) and `maxRate`, with the semantics of `ctx.subscribe`. The session transcript records the subscription and each processed event id as custom entries, which never enter model context, so a session reopened on the same transcript drops events it already handled. Each child session that finishes adds one `event_subscription_child` entry with the child's name, event id, session id, number of reports and the first 500 characters of its answer, so you can see what each event did. Subscribing again in the same session starts a new subscription that handles every event again. If writing the subscription record or a processed-event record fails, `done` rejects with a `SubscriptionRecordError` (the handler itself succeeded, and the event is handled again after a reopen). Disposing the session cancels its subscriptions; their `done` rejects with an `AbortError`, and an event whose handler was still running is not recorded as processed. The returned `Subscription` has `id`, `done`, `stats()` and `close()`; pass `id` to `publishEvent()` to bridge your own webhooks. Event sources, `publishEvent` and the `SubscriptionError` family belong to the earlier workflow API.
 
 #### Finishing admitted work
 

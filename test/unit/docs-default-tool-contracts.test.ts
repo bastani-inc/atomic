@@ -83,13 +83,9 @@ test("computer use and initialization troubleshooting have live learning-path de
 // #3181: desktop computer use routes to agent-desktop, never to PyAutoGUI, and every documented path checks readiness.
 test("computer-use guides route desktop apps to agent-desktop and never to PyAutoGUI (#3181)", async () => {
 	const computer = await readDoc("computer-use.md");
-	const verification = await readDoc("workflows/verification.md");
-	const authoring = await readDoc("workflows/authoring.md");
 	const skills = await readDoc("skills.md");
 	for (const [name, text] of [
 		["computer-use.md", computer],
-		["workflows/verification.md", verification],
-		["workflows/authoring.md", authoring],
 		["skills.md", skills],
 	] as const) {
 		assert.doesNotMatch(text, /PyAutoGUI|pyautogui/i, `${name} still names PyAutoGUI`);
@@ -98,26 +94,9 @@ test("computer-use guides route desktop apps to agent-desktop and never to PyAut
 		assert.doesNotMatch(text, /cua-driver|trycua|CUA_DRIVER|CuaDriver/, `${name} still routes to Cua Driver`);
 		assert.match(text, /agent-desktop permissions --guide/, `${name} does not say how to grant macOS permission`);
 	}
-	for (const [name, text] of [
-		["computer-use.md", computer],
-		["workflows/verification.md", verification],
-	] as const) {
-		assert.match(text, /Electron desktop app/, `${name} does not scope agent-browser by its skill`);
-		assert.match(
-			text,
-			/agent-browser hits a limitation/,
-			`${name} does not route agent-browser limitations to agent-desktop`,
-		);
-		assert.match(text, /native iOS app/i, `${name} does not say where native iOS apps go`);
-	}
-	assert.match(
-		verification,
-		/gh pr create --title "Fix settings save" --body-file body\.md \\\n {2}--attach 'before\.png#Settings panel before saving'/,
-	);
-	assert.match(
-		verification,
-		/before\/after `agent-desktop screenshot` PNGs[\s\S]*`screenshot` PNGs and `record` recordings/,
-	);
+	assert.match(computer, /Electron desktop app/);
+	assert.match(computer, /agent-browser hits a limitation/);
+	assert.match(computer, /native iOS app/i);
 	assert.match(computer, /attach the before and after PNGs to the PR body/);
 	assert.match(computer, /Keep `screenshot` PNGs and `record` recordings from the verified flow/);
 	for (const heading of ["### Install if missing", "### Check readiness", "### Coverage and limits"]) {
@@ -125,7 +104,7 @@ test("computer-use guides route desktop apps to agent-desktop and never to PyAut
 	}
 	assert.match(
 		computer,
-		/when a model chooses the next action, use the skill and one-shot commands; when TypeScript code owns the sequence and the postcondition, call the CLI from `ctx\.tool`/,
+		/When a model chooses the next action, use the skill and one-shot commands\. When a script owns the sequence, call the CLI from the script\./,
 	);
 	assert.match(computer, /npm install -g agent-desktop/);
 	assert.match(computer, /npm install-scripts approve agent-desktop/);
@@ -136,59 +115,13 @@ test("computer-use guides route desktop apps to agent-desktop and never to PyAut
 	assert.match(computer, /leave any existing user-level skill alone/);
 	assert.match(computer, /\*\*No pixel matching\.\*\*/);
 	assert.match(computer, /\*\*No native iOS or Android support\.\*\*/);
-	assert.match(computer, /\/workflows\/authoring#desktop-verification-with-agent-desktop-in-ctx-tool/);
-	assert.match(
-		verification,
-		/\| Native desktop app, menus and menu bars, desktop Safari or another non-Chromium browser, or OS dialogs and permission prompts \| \*\*agent-desktop\*\*/,
-	);
-	assert.match(
-		verification,
-		/\| Native iOS app in the Simulator or Android app in an emulator \| \*\*Native mobile tooling\*\*/,
-	);
-	assert.match(verification, /Mobile Safari in the iOS Simulator[^|]*\| \*\*agent-browser\*\*/);
 	assert.match(computer, /### What agent-browser covers/);
 	assert.match(computer, /agent-browser -p ios --device "iPhone 16 Pro" open <url>/);
 	assert.match(computer, /agent-browser's iOS mode drives Mobile Safari only/);
-	assert.match(verification, /`blocked`\/`needs_human`/);
-	assert.match(verification, /ctx\.exit\(\{ status: "blocked", reason \}\)/);
-	assert.match(verification, /structured accessibility state plus screenshots, not a screenshot alone/);
-	assert.ok(authoring.includes('<a id="desktop-verification-with-agent-desktop-in-ctx-tool" />'));
-	assert.match(authoring, /spawn\(agentDesktopCommand\(\), args, \{ signal, stdio/);
-	assert.doesNotMatch(authoring, /shell: process\.platform === "win32"/);
-	assert.match(authoring, /agent-desktop-win32-\$\{process\.arch\}\.exe/);
-	assert.match(authoring, /Could not capture the \$\{step\} screenshot/);
-	assert.match(authoring, /ctx\.exit\(\{ status: "blocked", reason: preflight\.reason \}\)/);
-	assert.match(authoring, /timeoutMs: 5 \* 60_000/);
-	for (const [name, text] of [
-		["workflows/verification.md", verification],
-		["workflows/authoring.md", authoring],
-	] as const) {
-		assert.match(text, /blocked author exit is terminal and not resumable/, `${name} must state the engine's rule`);
-		assert.doesNotMatch(
-			text,
-			/`workflow resume` re-runs the preflight/,
-			`${name} promises a resume the engine never does`,
-		);
-	}
+	assert.match(
+		computer,
+		/Stop and report a missing macOS permission, an absent Linux accessibility bus, or a missing install/,
+	);
 	assert.match(skills, /vercel-labs\/agent-desktop\/tree\/v1\.3\.1\/skills\/agent-desktop/);
 	assert.match(skills, /Apache-2\.0 licensed/);
-});
-
-// #2847: upstream wording changes must not break previously published fragments.
-test("updated workflow headings retain exact legacy fragment aliases", async () => {
-	for (const [path, aliases] of [
-		["workflows/reliable-design.md", ["8-interrupt-stale-or-wrong-work"]],
-		[
-			"workflows/verification.md",
-			[
-				"select-the-verification-environment",
-				"terminal-contracts",
-				"reproduce-stage-skill-terminal-evidence",
-				"desktop-safety",
-			],
-		],
-	] as const) {
-		const text = await readDoc(path);
-		for (const id of aliases) assert.equal(text.split(`<a id="${id}" />`).length, 2, `${path}#${id}`);
-	}
 });

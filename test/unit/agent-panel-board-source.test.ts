@@ -31,6 +31,43 @@ import {
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
+test("a legacy workflow row is absent from both the panel and /tasks without hiding a neighboring agent", async () => {
+	initTheme("dark");
+	const fixture = taskFixture();
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const agent: AgentPanelItem = {
+		id: "current",
+		kind: "agent",
+		state: "running",
+		name: "reviewer",
+		task: "Current review",
+	};
+	// Simulate data from an extension written for 0.9.x, not a row a new extension should produce.
+	const legacy = { ...agent, id: "old", kind: "workflow", name: "Old workflow" };
+	hub.register({ items: () => [legacy, agent] as AgentPanelItem[], subscribe: () => () => {} });
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	try {
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.id),
+			["current"],
+		);
+		inspector.setBoardSource(agentPanelBoardSource(session));
+		const board = stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n"));
+		assert.match(board, /Tasks {2}1 working/);
+		assert.match(board, /reviewer +Current review/);
+		assert.doesNotMatch(board, /Old workflow/);
+	} finally {
+		inspector.dispose();
+		hub.dispose();
+		await fixture.dispose();
+	}
+});
+
 test("agentPanelBoardSource subscribes to the extension hub only and reads extension items without reading the task store (#5224)", async () => {
 	const fixture = taskFixture();
 	try {
@@ -47,7 +84,7 @@ test("agentPanelBoardSource subscribes to the extension hub only and reads exten
 		const extListeners = new Set<() => void>();
 		const runItem: AgentPanelItem = {
 			id: "run:r1",
-			kind: "workflow",
+			kind: "agent",
 			state: "running",
 			name: "ralph",
 			task: "stage build",
@@ -152,7 +189,7 @@ test("bindAgentPanel skips row projection while hidden and budgets burst refresh
 			items: () => {
 				sourceReads++;
 				now += costMs;
-				return [{ id: "run:r1", kind: "workflow", state: "running", name: "ralph", task: "stage build" }];
+				return [{ id: "run:r1", kind: "agent", state: "running", name: "ralph", task: "stage build" }];
 			},
 			subscribe: (listener) => {
 				extListeners.add(listener);
@@ -226,7 +263,7 @@ test("extension panel sources validate malformed items and isolate throwing sour
 	};
 	const valid: AgentPanelItem = {
 		id: "run:ok",
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: "deploy",
 		task: "stage approve",
@@ -293,9 +330,9 @@ test("extension panel sources validate malformed items and isolate throwing sour
 	if (!answered.ok) assert.equal(typeof answered.reason, "string");
 });
 
-test("showAgentPanel does not mark a workflow row viewed when open returns false or throws and notifies on false (#5224)", async () => {
+test("showAgentPanel notifies when the extension refuses to open a row or throws (#5224)", async () => {
 	initTheme("dark");
-	let now = 10_000;
+	const now = 10_000;
 	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 	try {
 		const hub = new AgentPanelSourceHub();
@@ -303,8 +340,8 @@ test("showAgentPanel does not mark a workflow row viewed when open returns false
 		const notices: string[] = [];
 		hub.register({
 			items: () => [
-				{ id: "run:false", kind: "workflow", state: "done", name: "refused-wf", task: "stage 1" },
-				{ id: "run:throw", kind: "workflow", state: "done", name: "throwing-wf", task: "stage 1" },
+				{ id: "run:false", kind: "agent", state: "running", name: "refused-wf", task: "stage 1" },
+				{ id: "run:throw", kind: "agent", state: "running", name: "throwing-wf", task: "stage 1" },
 			],
 			subscribe: () => () => {},
 			open: (id) => {
@@ -353,13 +390,6 @@ test("showAgentPanel does not mark a workflow row viewed when open returns false
 		await openRow("run:throw");
 		assert.deepEqual(notices, ["Could not open refused-wf.", "Could not open throwing-wf."]);
 		assert.equal(errors.length, 1);
-
-		now += 24 * 60 * 60_000;
-		assert.deepEqual(
-			agentPanelRows(session).map((row) => row.id),
-			["run:throw", "run:false"],
-			"finished workflow rows whose open failed or threw remain unviewed and do not age out",
-		);
 	} finally {
 		clock.mockRestore();
 	}
@@ -378,13 +408,6 @@ test("extension agent and shell items share one session clock across the agent p
 		let notify = () => {};
 		hub.register({
 			items: () => [
-				{
-					id: "run:wf-1",
-					kind: "workflow",
-					state: "running",
-					name: "wf",
-					task: "stage 1",
-				},
 				{
 					id: "ext:agent-shared",
 					kind: "agent",
@@ -405,11 +428,11 @@ test("extension agent and shell items share one session clock across the agent p
 		const initialRows = agentPanelRows(session);
 		assert.deepEqual(
 			initialRows.map((row) => row.id),
-			["run:wf-1", `task:${fixture.store.backgroundTasks[0]!.ref.taskId}`, "ext:agent-shared"],
+			[`task:${fixture.store.backgroundTasks[0]!.ref.taskId}`, "ext:agent-shared"],
 		);
-		assert.equal(initialRows[2]?.elapsedMs, 1_000);
+		assert.equal(initialRows[1]?.elapsedMs, 1_000);
 		now += 60_000;
-		assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
+		assert.equal(agentPanelRows(session)[1]?.elapsedMs, 61_000);
 
 		const inspector = new TaskInspector(
 			fixture.store,
@@ -425,16 +448,16 @@ test("extension agent and shell items share one session clock across the agent p
 				/ext-helper +check cluster +1m\b/,
 				"opening /tasks must not jump the extension item's elapsed time back to 1s",
 			);
-			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
+			assert.equal(agentPanelRows(session)[1]?.elapsedMs, 61_000);
 
 			state = "stopped";
 			notify();
-			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
+			assert.equal(agentPanelRows(session)[1]?.elapsedMs, 61_000);
 			now += 30_000;
 			state = "running";
 			reportedMs = 2_000;
 			notify();
-			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 2_000, "restarted extension item starts a fresh clock");
+			assert.equal(agentPanelRows(session)[1]?.elapsedMs, 2_000, "restarted extension item starts a fresh clock");
 		} finally {
 			inspector.dispose();
 		}

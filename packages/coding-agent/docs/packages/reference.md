@@ -19,7 +19,6 @@ Filter what a package loads using the object form in settings:
       "skills": [],
       "prompts": ["prompts/review.md"],
       "themes": ["+themes/legacy.json"],
-      "workflows": ["workflows/*.ts"],
       "mcpServers": ["acme-*", "!acme-legacy"]
     }
   ]

@@ -10,9 +10,9 @@ description: |
 
 # Subagent
 
-This skill is for the main parent orchestrator only. Do not inject or follow it inside spawned child subagents. The parent session owns delegation, orchestration, review fanout, and final writer launches; child subagents should receive concrete role-specific tasks and should not run their own subagent workflows.
+This skill is for the main parent orchestrator only. Do not inject or follow it inside spawned child subagents. The parent session owns delegation, orchestration, review fanout, and final writer launches; child subagents should receive concrete role-specific tasks and should not delegate their assignments.
 
-Use this skill when bounded specialist delegation adds value and the parent should remain in control. Keep interactive, exploratory, conceptual, and conversation-led work inline. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow; use a durable workflow for clearly delegated long-running autonomous jobs that materially need its lifecycle features.
+Use this skill when bounded specialist delegation adds value and the parent should remain in control. Keep interactive, exploratory, conceptual, and conversation-led work inline. When the parent needs several rounds of independent work, it can coordinate children with codemode and continue from their completion notices.
 
 ## When to Use
 
@@ -34,7 +34,6 @@ When the user asks for research, context-build, or cleanup shapes, apply the sam
 ## Applying Prompt Techniques
 
 If the user provides a URL, issue, PR, plan, local file, screenshot, or freeform target, treat that target as the primary scope: read or fetch it before launching children, then include it explicitly in every child task. Do not depend on the parent conversation history when the recipe calls for fresh context.
-
 
 ### Parallel research technique
 
@@ -82,7 +81,6 @@ Each builtin defaults to `model: "auto"`, with no pinned fallback chain. `auto` 
 ```typescript
 subagent({ agent: "codebase-analyzer", task: "Trace the auth flow", model: "anthropic/claude-sonnet-4" })
 ```
-
 
 For persistent tweaks, edit `subagents.agentOverrides` in user or project settings. User overrides apply everywhere. Project overrides apply only in that repo and win over user overrides.
 
@@ -206,7 +204,6 @@ Avoid duplicate output paths in parallel tasks. Concurrent children should not w
 
 Concurrent writers conflict. `code-simplifier` and `debugger` change files. Do not run two writers in parallel against the same worktree unless you isolate them with `worktree: true`.
 
-
 ### Background launches and explicit waits
 
 Keep immediately blocking work local unless specialist expertise, context isolation, or an explicit user request justifies delegation. Prefer independent tasks you can overlap with useful parent work. Do not spawn a child merely to wait immediately, or duplicate its assigned work while it runs.
@@ -215,9 +212,9 @@ Every subagent runs in the background. A launch returns after admission with eac
 
 Use `subagent({ action: "wait", id: taskId })` to wait for an existing task with the owner's budget, `status` to inspect its state, or `pause`, `quit`, and `resume` to control it (see [Subagent control](#subagent-control)). Wait when the result becomes a dependency; otherwise rely on completion notices. Avoid repeated short waits or status polls; override the budget only for a concrete responsiveness need. A launch receipt or an ended wait is not a terminal result. Running subagents stay listed below the prompt; `/tasks` opens inspection only on command. A shaded completion notification reaches the owning chat without requiring a model reply. A later wait does not extend the owner's lifetime.
 
-Intercom `ask` cannot revive a completed, failed, interrupted, or cancelled noninteractive child, even if its retained registration says `idle`. New asks fail immediately, and termination fails an already-admitted ask that has not received a reply. Use `resume` on a resumable child, or a fresh child, for follow-up work. Live interactive idle sessions and workflow post-mortem conversations remain separate reply-capable cases; `send` transport behavior is unchanged.
+Intercom `ask` cannot revive a completed, failed, interrupted, or cancelled noninteractive child, even if its retained registration says `idle`. New asks fail immediately, and termination fails an already-admitted ask that has not received a reply. Use `resume` on a resumable child, or a fresh child, for follow-up work. Live interactive idle sessions can still reply; `send` transport behavior is unchanged.
 
-A completed, failed, interrupted, paused, or quit child can continue in the same run identity with `subagent({ action: "resume", id, message })`; see [Subagent control](#subagent-control). Children cancelled for good (by owner or batch cancellation, or the removed `kill` action), children whose workflow stage ended (all of that stage's children, including paused and quit ones), and children reported gone after a restart are terminal. For those, and to answer the single-child handoff an SDK host without a task owner can return, start follow-up work with the normal launch form and an explicit handoff:
+A completed, failed, interrupted, paused, or quit child can continue in the same run identity with `subagent({ action: "resume", id, message })`; see [Subagent control](#subagent-control). Children cancelled for good (by owner or batch cancellation, or the removed `kill` action) and children reported gone after a restart are terminal. For those, and to answer the single-child handoff an SDK host without a task owner can return, start follow-up work with the normal launch form and an explicit handoff:
 
 ```typescript
 subagent({ agent: "worker", task: "[TASK_CONTEXT] Continue with this supervisor answer: ..." })
@@ -231,7 +228,7 @@ Subagent control is the runtime visibility and intervention layer for delegated 
 
 Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Runs push this as a `subagent:control-event` event, and notification-worthy control events are inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `quit` options. Visible notifications fire once per child run and attention state.
 
-Run control mirrors the workflow tool's `pause`, `resume`, and `quit`. `id` accepts the child id (`<runId>:<index>`), its task id, its Intercom name, or the run id of a single-child run:
+Use `pause`, `resume`, and `quit` to control a child. `id` accepts the child id (`<runId>:<index>`), its task id, its Intercom name, or the run id of a single-child run:
 
 ```typescript
 subagent({ action: "pause", id: taskId })          // stop now, hold queued messages until resume
@@ -241,7 +238,7 @@ subagent({ action: "quit", all: true })            // also covers paused childre
 subagent({ action: "resume", id: taskId, message: "Focus on the failing test first." })
 ```
 
-Pause stops a child's current turn and keeps its queued steering and Intercom messages held until resume. Quit stops it the same way without holding new messages, and also accepts a child already paused by you or with its workflow stage. Both keep the child resumable while the session or workflow stage that launched it can still resume it, and so does a pause or quit of that workflow stage. Resume reopens the child's own saved session under the same id, Intercom name, and group, with fresh supervisor authorization. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, any resumable child, including a completed or failed one, is asked to continue where it left off or stop if it is finished. A child cancelled for good (owner or batch cancellation, or the removed `kill` action), a child whose workflow stage ended (the stage finished, or its run ended or was cancelled; this covers every child of that stage, including paused and quit ones), or one reported gone after a restart cannot be resumed: resume returns an error that says why, so launch a fresh child with the relevant task context. `kill` and `interrupt` were removed; calls using them are rejected with an error that names `quit`.
+Pause stops a child's current turn and keeps its queued steering and Intercom messages held until resume. Quit stops it the same way without holding new messages, and also accepts an already paused child. Both leave the child resumable from the session that launched it. Resume reopens the child's own saved session under the same id, Intercom name, and group, with fresh supervisor authorization. A paused, quit, or interrupted child receives `message` once as its next prompt and then continues where it left off; a completed or failed child receives `message` as one fresh prompt. Without `message`, any resumable child, including a completed or failed one, is asked to continue where it left off or stop if it is finished. A child cancelled for good (owner or batch cancellation, or the removed `kill` action) or one reported gone after a restart cannot be resumed: resume returns an error that says why, so launch a fresh child with the relevant task context. `kill` and `interrupt` were removed; calls using them are rejected with an error that names `quit`.
 
 Per-run control thresholds can be overridden when a task legitimately runs without observable output for longer than usual:
 
@@ -264,7 +261,6 @@ Every supported subagent launch starts immediately without a preview/editor prom
 
 Resolve questions in the parent conversation before launching children. Use `interview` when the user must answer a question, then put the resolved scope and validation contract in the child task.
 
-
 ## Worktree Isolation
 
 When multiple writers might run concurrently, use worktrees instead of letting them share one filesystem view.
@@ -279,7 +275,7 @@ subagent({
 })
 ```
 
-`worktree: true` gives each parallel task its own `worktree-*` branch under the canonical main root's `.atomic/worktrees/`, using the remote default branch when available and `HEAD` otherwise. This requires a clean git state and is mainly for intentionally parallel writer workflows. If you want one writer thread and several advisory readers, prefer a single-writer pattern instead — only `debugger` and `code-simplifier` write, so co-locating them with read-only specialists in the same worktree is safe.
+`worktree: true` gives each parallel task its own `worktree-*` branch under the canonical main root's `.atomic/worktrees/`, using the remote default branch when available and `HEAD` otherwise. This requires a clean git state and is mainly for intentionally parallel writing. If you want one writer thread and several advisory readers, prefer a single-writer pattern instead — only `debugger` and `code-simplifier` write, so co-locating them with read-only specialists in the same worktree is safe.
 
 ## Subagent + Intercom Coordination
 
@@ -317,7 +313,7 @@ For supervisor requests, prefer `contact_supervisor`; use generic `intercom` tow
 
 ### Peer coordination
 
-Default to peer-to-peer (swarm) coordination. There are no limits on communication between agents; it is encouraged whenever you need to. The supervisor is not a message relay: relaying adds latency, loses detail, and bloats the supervisor's context, while direct exchange converges faster. Children launched in the same parallel set, or in the same explicit `group`, share one Intercom group, and workflow stages share their invocation group. Any of them can run `intercom({ action: "list" })`, see live siblings, and `send` or `ask` them directly. `contact_supervisor` is reserved for the supervisor; everything peer-to-peer goes through ordinary `intercom`.
+Default to peer-to-peer (swarm) coordination. There are no limits on communication between agents; it is encouraged whenever you need to. The supervisor is not a message relay: relaying adds latency, loses detail, and bloats the supervisor's context, while direct exchange converges faster. Children launched in the same parallel set, or in the same explicit `group`, share one Intercom group. Any of them can run `intercom({ action: "list" })`, see live siblings, and `send` or `ask` them directly. `contact_supervisor` is reserved for the supervisor; everything peer-to-peer goes through ordinary `intercom`.
 
 Use peer messaging whenever a sibling is the better source than the supervisor:
 
@@ -338,7 +334,7 @@ Peer asks and one blocking supervisor request may wait concurrently in the same 
 
 Children coordinate spontaneously: they discover peers with `list` and talk to them without waiting for the parent to name them. Launch related work as one parallel set (or an explicit `group`) so the children share a group. Use `group: true` to give one parallel set its own private group, or a named group to let later launches join the same conversation.
 
-Scale the swarm with the task. For very complex work or requested heavy parallelism, run hundreds or thousands of agents that self-organize into teams and coordinate peer-to-peer like an organization. A child cannot call `subagent`, so nest teams through workflow stages (each runs its own parallel set) and child workflows up to `maxDepth`. `parallel.maxTasks`, `parallel.concurrency` and `parallel.runningCapacity` each default to 1000; to run more than 1000 children at once, raise all three; see the Scaling a swarm section of the user subagents guide.
+Scale the swarm with the task. For very complex work or requested heavy parallelism, run hundreds or thousands of agents that self-organize into teams and coordinate peer-to-peer like an organization. Only the parent launches children; use named groups to separate teams. `parallel.maxTasks`, `parallel.concurrency` and `parallel.runningCapacity` each default to 1000; to run more than 1000 children at once, raise all three; see the Scaling a swarm section of the user subagents guide.
 
 If intercom messages do not show up, check the bridge from the intercom side with `intercom({ action: "status" })`.
 
@@ -424,7 +420,6 @@ For many customizations, builtin overrides in settings are lower-friction than c
 
 If a prompt-template extension is installed, additional user prompt templates can delegate into subagents.
 
-
 ## Important Constraints
 
 - **Forking requires a persisted parent session.** If the current session does not have a persisted session file, forked runs fail.
@@ -478,7 +473,7 @@ Use subagent control proactively when a delegated run emits `needs_attention`, o
 
 Use `/name` so intercom targeting stays stable.
 
-## Common Workflows
+## Common Patterns
 
 ### Locate, analyze, fix
 
@@ -491,12 +486,11 @@ subagent({ action: "wait", id: taskId })
 // Only then give the result to codebase-analyzer, and later to debugger.
 ```
 
-### Clarify → Discover → Implement → Review (self-orchestrated workflow)
+### Clarify → Discover → Implement → Review (parent-led sequence)
 
 When the user requests a bounded orchestration shape, apply it through the `subagent` tool. Keep builtin agent defaults unless the user explicitly asks for a different model, thinking level, skills, output behavior, context mode, or other override.
 
-When the user approves launching a subagent to carry out a workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, completion criteria, expected output, and validation expectations. Do not pass vague instructions like "implement the change fully" or "review this" by themselves.
-
+When the user approves launching a subagent to carry out a task, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, completion criteria, expected output, and validation expectations. Do not pass vague instructions like "implement the change fully" or "review this" by themselves.
 
 For feature work, use this sequence as scaffolding for parent-agent behavior:
 
@@ -515,7 +509,7 @@ For very large work, split into serial milestones instead of launching a swarm o
 Keep orchestration authority in the parent session. Child subagents cannot launch more subagents or run their own orchestration loops: delegation is one level deep and nothing configures it. This skill is parent-only and is stripped from every child prompt. A child may still have the `subagent` extension tool registered, because bundled extensions load through normal discovery; registration is not authority. Typed admission policy lets a child use only `list`, `get`, `status`, and `wait`, and refuses delegation and run control (`pause`, `resume`, `quit`). Spawned children also do not receive parent-only status/control/slash messages or prior parent `subagent` tool-call/tool-result artifacts, and child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, that the `subagent` tool refuses every launch and run control from inside a subagent, and that writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
 1. Clarify only when needed. Use existing context first; gather missing code or research context selectively, then ask only unresolved questions that materially affect scope, completion criteria, constraints, or non-goals.
-2. Define the validation contract. State completion expectations before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
+2. Define the validation contract. State completion expectations before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or orchestration changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
 3. Plan when useful. For complex work, write a plan doc yourself and get approval before implementation. For simple work, confirm shared understanding and explicitly note why planning is skipped.
 4. Implement with one writer. After approval, launch `debugger` (for correctness-shaped work) or `code-simplifier` (for refinement-shaped work), and wait for it, with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. While it runs, prepare validation or inspect adjacent code instead of editing the same worktree.
 5. Require a useful writer handoff. Ask the writer to report changed files, what was implemented, what was left undone, commands run with exit codes, validation evidence, surprises or new risks, decisions made inside approved scope, and decisions needing parent approval.
@@ -575,7 +569,6 @@ subagent({
 })
 ```
 
-
 ## Error Handling
 
 **"Unknown agent"**
@@ -588,8 +581,7 @@ subagent({ action: "list" })
 **"Subagent delegation is not available inside a subagent"**
 
 ```typescript
-// Do the work in this session. Only a top-level session — main chat or a
-// workflow stage — can delegate, and the one-level rule is not configurable.
+// Do the work in this session. Only a top-level session can delegate.
 ```
 
 **"Session manager did not return a session file"**

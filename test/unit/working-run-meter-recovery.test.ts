@@ -34,32 +34,6 @@ function seedRunningMeter(host: ReturnType<typeof makeLifecycleHost>, setNow: (m
 	setNow(3_000);
 }
 
-test("#5243: clearBusyForTerminalWorkflowStage stops the working-run meter before the next prompt lifecycle", async () => {
-	let now = 1_000;
-	vi.spyOn(Date, "now").mockImplementation(() => now);
-	const host = makeLifecycleHost({
-		commands: {
-			prompt: async () => {},
-		},
-	});
-	try {
-		seedRunningMeter(host, (ms) => {
-			now = ms;
-		});
-		assert.equal(workingLine(host), " ∀ Working… (2s · ↓ 18.4k tokens)");
-
-		host.clearBusyForTerminalWorkflowStage();
-		assert.equal(workingLine(host), undefined);
-
-		const submitPromise = host.submit("auto", "next prompt");
-		assert.equal(workingLine(host), " ∀ Working…");
-		await submitPromise;
-	} finally {
-		vi.restoreAllMocks();
-		host.dispose();
-	}
-});
-
 test("#5243: idle submitChatSession and external prompt lifecycle reset a stale meter while streaming steer keeps it", async () => {
 	let now = 1_000;
 	vi.spyOn(Date, "now").mockImplementation(() => now);

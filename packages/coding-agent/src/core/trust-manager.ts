@@ -47,6 +47,7 @@ export const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
 	"skills",
 	"prompts",
 	"themes",
+	// Legacy recipe paths can appear in the system prompt. Listing them still requires project trust.
 	"workflows",
 	"agents",
 	"mcp.json",

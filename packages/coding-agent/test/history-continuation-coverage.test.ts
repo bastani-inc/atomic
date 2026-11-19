@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { AsyncResource } from "node:async_hooks";
 import { resolve } from "node:path";
 import { describe, it } from "vitest";
-import type { WorkflowRunDetail, WorkflowRunSummary } from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
-import { createHistoryRouter, type WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
+import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
@@ -39,27 +38,6 @@ async function addSession(store: MemorySessionStore, id: string, at: number, tex
 	);
 }
 
-const summary = (runId: string, startedAt: number): WorkflowRunSummary => ({
-	runId,
-	name: `flow ${runId}`,
-	status: "completed",
-	startedAt,
-	elapsedMs: 1,
-	activeStages: [],
-	awaitingInput: [],
-	awaitingInputCount: 0,
-});
-const detail = (runId: string, startedAt: number): WorkflowRunDetail => ({
-	runId,
-	name: `flow ${runId}`,
-	status: "completed",
-	startedAt,
-	endedAt: startedAt + 1,
-	summary: `needle ${runId}`,
-	inputs: {},
-	stages: [],
-});
-
 describe("history:// continuation chains cover each entry once", () => {
 	for (const first of ["history://sessions?limit=2", "history://sessions"]) {
 		it(`a session the chain has not reached yet that gets new activity is still searched, once (${first})`, async () => {
@@ -68,7 +46,6 @@ describe("history:// continuation chains cover each entry once", () => {
 			const router = createHistoryRouter({
 				cwd: PROJECT,
 				sessionStore: () => store,
-				workflows: () => undefined,
 				...(first.includes("limit") ? {} : { budget: { bytes: 600 } }),
 			});
 			const urls: string[] = [];
@@ -102,7 +79,7 @@ describe("history:// continuation chains cover each entry once", () => {
 		await store.append("session-1", [message("first-change", "updated before searching", BASE + 60 * 60_000)], {
 			expectSeq: 1,
 		});
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 		const rows: string[] = [];
 		let url: string | undefined = "history://sessions?limit=2";
 		for (let call = 0; url && call < 10; call++) {
@@ -132,7 +109,7 @@ describe("history:// continuation chains cover each entry once", () => {
 			await addSession(store, id, BASE + (i === 2 ? 1 : 0), [`needle ${id}`]);
 			await store.append(id, [message(`prior-${id}`, "prior activity", BASE + 40 - i)], { expectSeq: 1 });
 		}
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 		const rows: string[] = [];
 		let url: string | undefined = "history://sessions?limit=1";
 		for (let i = 0; url && i < 6; i++) {
@@ -163,7 +140,7 @@ describe("history:// continuation chains cover each entry once", () => {
 					(_, i) => `history://sessions/s${fixture.sessions - 1 - i}`,
 				),
 			];
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 			const result = await createSearchToolDefinition(PROJECT, { contextBefore: 0, contextAfter: 0 }).execute(
 				"search",
 				{ pattern: "needle", paths },
@@ -180,242 +157,25 @@ describe("history:// continuation chains cover each entry once", () => {
 		},
 	);
 
-	it.each(["router", "search tool"])(
-		"a %s forwarded through a 1 KiB extension page keeps all ten matches",
-		async (source) => {
-			const ids = Array.from({ length: 20 }, (_, i) => `flow-summary-${String(i).padStart(3, "0")}-abc`);
-			const workflows: WorkflowRunHistory = {
-				listRuns: async () => ids.map((id) => summary(id, BASE)),
-				getRun: async (id) => detail(id, BASE),
-			};
-			const router = createHistoryRouter({
-				cwd: PROJECT,
-				sessionStore: () => undefined,
-				workflows: () => workflows,
-			});
-			const tool = createSearchToolDefinition(PROJECT, { contextBefore: 0, contextAfter: 0 });
-			const catalog = "history://workflows?limit=10";
-			const result = await tool.execute(
-				"extension",
-				{ pattern: "needle", paths: "artifact://workflow-catalog" },
-				undefined,
-				undefined,
-				{
-					cwd: PROJECT,
-					internalResourceRouter: {
-						async search(_url: string, query: InternalSearchRequest) {
-							let text: string;
-							if (source === "router") text = (await router.search!(catalog, query))!;
-							else {
-								const inner = await tool.execute(
-									"inner",
-									{ pattern: query.pattern, paths: catalog },
-									undefined,
-									undefined,
-									{ cwd: PROJECT, internalResourceRouter: router } as never,
-								);
-								const block = inner.content[0];
-								assert.ok(block?.type === "text");
-								text = block.text;
-							}
-							const page: string[] = [];
-							let bytes = 0;
-							for (const line of text.split("\n")) {
-								bytes += Buffer.byteLength(line) + (page.length ? 1 : 0);
-								if (bytes > 1_024) break;
-								page.push(line);
-							}
-							return page.join("\n");
-						},
-					},
-				} as never,
-			);
-			const text = result.content[0];
-			assert.ok(text?.type === "text");
-			assert.deepEqual(
-				[...text.text.matchAll(/summary: needle (.+)$/gm)].map((hit) => hit[1]),
-				ids.slice(0, 10),
-			);
-		},
-	);
-
-	it.each(["sessions", "workflows"] as const)(
-		"read of a printed %s cursor still fits the listing's own budget",
-		async (domain) => {
-			const store = new MemorySessionStore();
-			const at = 1_700_000_000_000;
-			for (let i = 0; i < 3; i++) await addSession(store, `s${i}`, at - i, ["needle"]);
-			const workflows: WorkflowRunHistory = {
-				listRuns: async () => [0, 1, 2].map((i) => ({ ...summary(`r${i}`, at - i), name: "n".repeat(160) })),
-				getRun: async (id) => ({ ...detail(id, at), name: "needle", summary: "x" }),
-			};
-			const router = createHistoryRouter({
-				cwd: PROJECT,
-				sessionStore: () => store,
-				workflows: () => workflows,
-				budget: { bytes: domain === "sessions" ? 245 : 222 },
-			});
-			const first = (await router.search!(`history://${domain}?limit=1`, request("needle")))!;
-			const next = continuation(first)!;
-			const pin = domain === "sessions" ? `after=${at}.${at}.s0` : "run=r1";
-			const expected = `history://${domain}?offset=1&limit=1&${pin}`;
-			const read = await router.read!(next);
-			assert.equal(read, await router.read!(expected));
-			assert.ok(read?.includes(`continue with ${expected}&cursor=2:2-2]`), read);
-		},
-	);
-
-	it("an unchanged early workflow page and a skipped selector do not need an off-page shard", async () => {
-		let farthest = 1;
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () =>
-				Array.from({ length: 4_096 }, (_, i) => ({
-					...summary(`r${i}`, BASE - i),
-					get runId() {
-						if (i > farthest) throw new Error("unrelated shard closed");
-						return `r${i}`;
-					},
-				})),
-			getRun: async (id) => detail(id, BASE),
-		};
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
-		const tool = createSearchToolDefinition(PROJECT, { contextBefore: 0, contextAfter: 0 });
-		const path = "history://workflows?limit=1";
-		const skipped = await tool.execute("skip", { pattern: "needle", paths: path, skip: 1000 }, undefined, undefined, {
-			cwd: PROJECT,
-			internalResourceRouter: router,
-		} as never);
-		assert.deepEqual(skipped.content, [{ type: "text", text: "No more results (skip=1000)" }]);
-		const next = continuation((await router.search!(path, request("needle")))!)!;
-		farthest = 2;
-		assert.match((await router.search!(next, request("needle")))!, /summary: needle r1$/m);
-	});
-
-	it("an old run cursor reads both the next detail and its continuation from the live listing", async () => {
-		const slots = ["r4", "r3", "r2", "r1"];
-		const entered = Promise.withResolvers<void>();
-		const release = Promise.withResolvers<void>();
-		const reads: string[] = [];
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () =>
-				slots.flatMap((id, i) =>
-					id
-						? [
-								{
-									...summary(id, BASE - i),
-									get runId() {
-										return slots[i]!;
-									},
-								},
-							]
-						: [],
-				),
-			getRun: async (id) => {
-				reads.push(id);
-				if (id === "r3") {
-					entered.resolve();
-					await release.promise;
-				}
-				if (!slots.includes(id)) throw new Error("run retired");
-				return detail(id, BASE);
-			},
-		};
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
-		const pending = router.search!("history://workflows?offset=1&limit=2&run=r3", request("needle"));
-		await entered.promise;
-		slots[0] = "";
-		slots[2] = "r2-new";
-		slots[3] = "r1-new";
-		release.resolve();
-		const first = (await pending)!;
-		const next = continuation(first)!;
-		const second = (await router.search!(next, request("needle")))!;
-		assert.deepEqual(
-			{ reads, next },
-			{
-				reads: ["r3", "r2-new", "r1-new"],
-				next: "history://workflows?offset=3&limit=2&run=r1-new",
-			},
-		);
-		assert.match(first, /summary: needle r2-new/);
-		assert.match(second, /summary: needle r1-new/);
-	});
-
-	it("finishing a workflow search releases its listing while the sessions half of a root search waits", async () => {
-		const release = Promise.withResolvers<void>();
-		const lastDetail = Promise.withResolvers<void>();
-		const refs: WeakRef<WorkflowRunSummary>[] = [];
-		class WaitingStore extends MemorySessionStore {
-			override async *list(...args: Parameters<MemorySessionStore["list"]>) {
-				await release.promise;
-				yield* super.list(...args);
-			}
-		}
-		const store = new WaitingStore();
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () =>
-				Array.from({ length: 4 }, (_, i) => {
-					const run = summary(`r${i}`, BASE - i);
-					refs.push(new WeakRef(run));
-					return run;
-				}),
-			getRun: async (id) => {
-				if (id === "r1") lastDetail.resolve();
-				return detail(id, BASE);
-			},
-		};
+	it("a read of a printed session cursor still fits the listing's own budget", async () => {
+		const store = new MemorySessionStore();
+		const at = 1_700_000_000_000;
+		for (let i = 0; i < 3; i++) await addSession(store, `s${i}`, at - i, ["needle"]);
 		const router = createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => store,
-			workflows: () => workflows,
-			budget: { timeMs: 30_000 },
+			budget: { bytes: 245 },
 		});
-		const search = router.search!("history://?limit=2", request("needle"));
-		try {
-			await lastDetail.promise;
-			await new Promise<void>((done) => setImmediate(done));
-			const bun = (globalThis as { Bun?: { gc(force: boolean): void } }).Bun;
-			if (bun)
-				for (let i = 0; i < 10; i++) {
-					bun.gc(true);
-					await new Promise<void>((done) => setTimeout(done, 10));
-				}
-			else await (await import("../../../test/helpers/collect-garbage.js")).collectGarbage();
-			assert.equal(refs.filter((ref) => ref.deref()).length, 0);
-		} finally {
-			release.resolve();
-			await search;
-			await store.close();
-		}
-	});
-
-	it("direct and already-cancelled workflow searches don't need an unrelated session's identity", async () => {
-		let calls = 0;
-		const router = createHistoryRouter({
-			cwd: PROJECT,
-			get currentSessionId(): string {
-				throw new Error("unrelated session unavailable");
-			},
-			sessionStore: () => undefined,
-			workflows: () => {
-				calls++;
-				return { listRuns: async () => [summary("one", BASE)], getRun: async () => detail("one", BASE) };
-			},
-		});
-		const reason = new Error("cancelled");
-		await assert.rejects(
-			router.search!("history://workflows/one", { ...request("needle"), signal: AbortSignal.abort(reason) }),
-			(error) => error === reason,
-		);
-		const cancelled = { ...request("needle"), signal: AbortSignal.abort(reason) };
-		await assert.rejects(router.search!("history://workflows?p=bad", cancelled), (error) => error === reason);
-		await assert.rejects(router.search!("history://workflows?limit=0", cancelled), /history limit must be/);
-		assert.equal(calls, 0);
-		assert.match((await router.search!("history://workflows/one", request("needle")))!, /summary: needle one/);
+		const first = (await router.search!("history://sessions?limit=1", request("needle")))!;
+		const next = continuation(first)!;
+		const expected = `history://sessions?offset=1&limit=1&after=${at}.${at}.s0`;
+		const read = await router.read!(next);
+		assert.equal(read, await router.read!(expected));
+		assert.ok(read?.includes(`continue with ${expected}&cursor=2:2-2]`), read);
 	});
 
 	it("validates an ordinary history URL before asking a retired extension for its cancellation signal", async () => {
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => undefined });
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined });
 		const query = {
 			...request("needle"),
 			get signal(): AbortSignal {
@@ -428,7 +188,7 @@ describe("history:// continuation chains cover each entry once", () => {
 	it("an abandoned chain does not need its original router or a free slot in a process cache", async () => {
 		const store = new MemorySessionStore();
 		for (let i = 0; i < 4; i++) await addSession(store, `s${i}`, BASE + i, [`needle s${i}`]);
-		const open = () => createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+		const open = () => createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 		const path = "history://sessions?limit=1";
 		let next = continuation((await open().search!(path, request("needle")))!);
 		const other = open();
@@ -446,7 +206,7 @@ describe("history:// continuation chains cover each entry once", () => {
 	it("a string-only router and a saved legacy URL count the same coverage row once", async () => {
 		const store = new MemorySessionStore();
 		for (let i = 1; i <= 5; i++) await addSession(store, `s${i}`, BASE + i, [`needle s${i}`]);
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 		const saved = `history://sessions?offset=1&limit=1&after=${BASE + 5}.${BASE + 5}.s5`;
 		await store.delete("s5");
 		const outside = new AsyncResource("independent history reader");
@@ -526,80 +286,4 @@ describe("history:// continuation chains cover each entry once", () => {
 			notes,
 		);
 	});
-
-	it("when a tied run finishes and the pin disappears, neither visited run appears again", async () => {
-		let ids = ["A", "B", "C", "D", "E"];
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () => ids.map((id) => summary(id, BASE)),
-			getRun: async (id) => detail(id, BASE),
-		};
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
-		const first = (await router.search!("history://workflows?limit=2", request("needle")))!;
-		// With identical start times the provider lists still-running B before now-completed A.
-		ids = ["B", "A", "D", "E"];
-		const second = (await router.search!(continuation(first)!, request("needle")))!;
-		const hits = (page: string) => [...page.matchAll(/summary: needle (.+)$/gm)].map((hit) => hit[1]);
-		assert.deepEqual([...hits(first), ...hits(second)], ["A", "B", "D", "E"]);
-		assert.equal(continuation(second), undefined);
-	});
-
-	it("removing the pin does not bring back tied runs excluded by the initial offset", async () => {
-		const runs = ["r6", "r5", "r4", "r3", "r2", "r1"];
-		const workflows: WorkflowRunHistory = {
-			listRuns: async () => runs.map((id) => summary(id, BASE)),
-			getRun: async (id) => detail(id, BASE),
-		};
-		const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => workflows });
-		const first = (await router.search!("history://workflows?offset=2&limit=2", request("needle")))!;
-		const next = continuation(first)!;
-		runs.splice(runs.indexOf("r2"), 1);
-		const second = (await router.search!(next, request("needle")))!;
-		assert.deepEqual(
-			[...second.matchAll(/summary: needle (r\d)/g)].map((hit) => hit[1]),
-			["r1"],
-			second,
-		);
-		assert.equal(continuation(second), undefined);
-	});
-
-	for (const change of [
-		"the run it resumes at and a run it searched are removed",
-		"the run it resumes at is removed and a run starts",
-	] as const) {
-		it(`a workflow search chain covers every run once when ${change}`, async () => {
-			const runs = new Map<string, number>();
-			for (let n = 1; n <= 5; n++) runs.set(`r${n}`, BASE + n * 60_000);
-			const control: WorkflowRunHistory = {
-				listRuns: async () => [...runs].map(([id, at]) => summary(id, at)),
-				listProjectRuns: async () => [...runs].map(([id, at]) => summary(id, at)),
-				getRun: async (id) => detail(id, runs.get(id) ?? BASE),
-			};
-			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => control });
-			const outputs: string[] = [];
-			let url: string | undefined = "history://workflows?limit=2";
-			let changed = false;
-			for (let call = 0; url !== undefined && call < 20; call++) {
-				const out = (await router.search!(url, request("needle"))) ?? "";
-				outputs.push(out);
-				if (!changed) {
-					changed = true;
-					runs.delete("r3");
-					if (change.includes("searched")) runs.delete("r5");
-					else runs.set("r6", BASE + 100 * 60_000);
-				}
-				url = continuation(out);
-			}
-			const rows = outputs.flatMap((out) => [...out.matchAll(/summary: (needle r\d)$/gm)].map((match) => match[1]!));
-			assert.deepEqual(
-				rows.filter((row, index) => rows.indexOf(row) !== index),
-				[],
-				outputs.join("\n---\n"),
-			);
-			assert.deepEqual(
-				[...new Set(rows)].filter((row) => row !== "needle r3").sort(),
-				["needle r1", "needle r2", "needle r4", "needle r5"],
-				outputs.join("\n---\n"),
-			);
-		});
-	}
 });

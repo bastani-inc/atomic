@@ -264,7 +264,6 @@ export class ExtensionRunner {
 	getProjectHistory(): ProjectHistory {
 		return {
 			sessionStore: () => this.inheritedHistory?.sessionStore() ?? this.sessionManager.getSessionStore(),
-			workflows: () => this.getWorkflowRunControl() ?? this.inheritedHistory?.workflows(),
 		};
 	}
 	/** Observe this generation's workflow activity: snapshot first, then FIFO changes. */

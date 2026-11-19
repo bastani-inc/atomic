@@ -62,8 +62,6 @@ export interface ResourceLoader {
 	getInheritanceSnapshot?(): DefaultResourceLoaderInheritanceSnapshot;
 	/** Paths to earlier workflow recipes, not executable resources. */
 	getLegacyWorkflowFiles?(): LegacyWorkflowFiles | undefined;
-	getWorkflowResources?(): ResolvedResource[];
-	refreshWorkflowResources?(): Promise<ResolvedResource[]>;
 	getMcpServerContributions?(): McpServerContribution[];
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getSkillCatalog?(): SkillCatalog;

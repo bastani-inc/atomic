@@ -52,14 +52,12 @@
             "group": "Running work for you",
             "pages": [
               "guides/orchestration",
-              "guides/workflows",
               "guides/subagents",
               "background-tasks",
               "guides/intercom",
               "guides/team-setup",
-              "guides/worker-hosts",
-              "guides/worker-fleets-postgres",
-              "computer-use"
+              "computer-use",
+              "verification"
             ]
           },
           {
@@ -117,18 +115,6 @@
               "orchestration",
               "orchestration/patterns",
               "orchestration/migrating-workflows",
-              {
-                "group": "Workflows",
-                "pages": [
-                  "workflows",
-                  "workflows/builtins",
-                  "workflows/authoring",
-                  "workflows/reliable-design",
-                  "workflows/verification",
-                  "workflows/operations",
-                  "workflows/api-reference"
-                ]
-              },
               {
                 "group": "Subagents",
                 "pages": [
@@ -270,6 +256,14 @@
     }
   },
   "redirects": [
+    { "source": "/workflows", "destination": "/orchestration" },
+    { "source": "/guides/workflows", "destination": "/orchestration" },
+    { "source": "/workflows/builtins", "destination": "/orchestration/migrating-workflows" },
+    { "source": "/workflows/authoring", "destination": "/orchestration/migrating-workflows" },
+    { "source": "/workflows/reliable-design", "destination": "/orchestration/patterns" },
+    { "source": "/workflows/verification", "destination": "/verification" },
+    { "source": "/workflows/operations", "destination": "/orchestration/migrating-workflows" },
+    { "source": "/workflows/api-reference", "destination": "/orchestration/migrating-workflows" },
     {
       "source": "/session",
       "destination": "/session-format"

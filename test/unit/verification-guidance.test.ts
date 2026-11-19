@@ -41,10 +41,8 @@ test("registered base guidance honors complex inline requests and retains defaul
 			prompt,
 			/Because workflows are the default[\s\S]*use a workflow and let its stages delegate specialists/,
 		);
-		assert.match(prompt, /[Dd]ecide yourself whether a workflow fits/);
-		assert.match(prompt, /workflow run (?:with|using) the registered workflow name/);
-		assert.doesNotMatch(prompt, /workflow route|workflowId/);
-		assert.match(prompt, /workflows are the default for non-trivial structured work/);
+		assert.match(prompt, /coordinate children from codemode/);
+		assert.match(prompt, /Honor requests to work inline/);
 		assert.match(prompt, /testing, review and evidence inline/);
 		assert.match(prompt, /Do not claim (?:already-)?completed work was undone/);
 	} finally {

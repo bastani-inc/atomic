@@ -14,7 +14,6 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	isWorkflowStageOrchestrationContext,
 	resolveTopLevelParallelConcurrency,
 	resolveTopLevelParallelMaxTasks,
 	type SingleResult,
@@ -37,7 +36,6 @@ import {
 	createForegroundControlNotifier,
 	maybeBuildForegroundIntercomReceipt,
 	notifyDetachedForegroundChildExit,
-	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
 import {
 	BURST_ANSWERS,
@@ -170,8 +168,6 @@ export async function runParallelPath(
 		}
 	}
 
-	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
-
 	const worktreeTaskError = await parallelWorktreeTaskError(tasks, params.worktree, effectiveCwd);
 	if (worktreeTaskError) return worktreeTaskError;
 
@@ -250,23 +246,18 @@ export async function runParallelPath(
 			}
 		}
 
-		// #3981: a detached child can exit after model fallback retired the stage session that launched it, whose
-		// context then throws on every read. Its stage admission outlives that session, so read it now.
-		const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 		const results = await runForegroundParallelTasks({
 			runWorktrees,
 			...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
 			onDetachedExit: (index, result) => {
-				if (workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
-					notifyDetachedForegroundChildExit({
-						pi: deps.pi,
-						runId,
-						mode: "parallel",
-						index,
-						totalTasks: tasks.length,
-						result,
-					});
-				}
+				notifyDetachedForegroundChildExit({
+					pi: deps.pi,
+					runId,
+					mode: "parallel",
+					index,
+					totalTasks: tasks.length,
+					result,
+				});
 			},
 			tasks,
 			taskTexts,
@@ -285,7 +276,6 @@ export async function runParallelPath(
 			artifactsDir,
 			maxOutput: params.maxOutput,
 			paramsCwd: effectiveCwd,
-			workflowStageSubagentGuard,
 			availableModels,
 			knownModelProviders,
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),

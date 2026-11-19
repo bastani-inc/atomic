@@ -65,7 +65,7 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		}
 	});
 
-	test("main footer at narrow widths keeps existing hints ahead of the retired workflow pointer (#5239, #5710)", () => {
+	test("main footer at narrow widths keeps its key hints visible (#5239, #5710)", () => {
 		const keybindings = new KeybindingsManager();
 		setKeybindings(keybindings);
 		for (const working of [true, false]) {
@@ -92,14 +92,13 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 				getAvailableProviderCount: () => 1,
 				onBranchChange: () => () => {},
 			};
-			let hiddenWorkflow = false;
 			const footer = new FooterComponent(
 				session as never,
 				footerData as never,
 				undefined,
 				() => false,
 				undefined,
-				() => mainComposerFooterHints(keybindings, { agentRows: 3, needsInput: 1, hiddenWorkflow }),
+				() => mainComposerFooterHints(keybindings, { agentRows: 3, needsInput: 1 }),
 			);
 			for (const width of [30, 40, 50, 60, 80, 160]) {
 				const line = stripTerminalSequences(footer.render(width)[0] ?? "");
@@ -113,42 +112,15 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 				working ? "esc to interrupt · ↓ 3 agents · ? keys" : "claude-sonnet-4... · ↓ 3 agents · ? keys",
 			);
 			assert.equal(stripTerminalSequences(footer.render(30)[0] ?? ""), "↓ 3 agents · ? keys");
-			hiddenWorkflow = true;
 			assert.match(stripTerminalSequences(footer.render(60)[0] ?? ""), /↓ 3 agents · 1 needs input · \? keys$/u);
 			assert.equal(
 				stripTerminalSequences(footer.render(100)[0] ?? ""),
 				working
-					? "esc to interrupt · ↓ 3 agents · 1 needs input · /workflows to see runs · ? keys"
+					? "esc to interrupt · ↓ 3 agents · 1 needs input · ? keys"
 					: "claude-sonnet-4-5  medium • /workspace/atomic-project (main) · ↓ 3 agents · 1 needs input · ? keys",
 			);
-			assert.match(
-				stripTerminalSequences(footer.render(160)[0] ?? ""),
-				/1 needs input · \/workflows to see runs · \? keys$/u,
-			);
+			assert.match(stripTerminalSequences(footer.render(160)[0] ?? ""), /1 needs input · \? keys$/u);
 		}
-	});
-
-	test("a workflow pointer can use the space after a clipped status when help is unbound (#5710)", () => {
-		// These spacing marks form one grapheme wider than the terminal. The footer cannot show part of it.
-		const model = { provider: "local", id: `a${"\u093e".repeat(100)}` };
-		const footer = new FooterComponent(
-			{ state: { model }, sessionManager: { getCwd: () => "/project" } } as never,
-			{
-				getGitBranch: () => null,
-				getExtensionStatuses: () => new Map(),
-				getAvailableProviderCount: () => 1,
-				onBranchChange: () => () => {},
-			},
-			undefined,
-			undefined,
-			undefined,
-			() =>
-				mainComposerFooterHints(
-					{ matches: () => false, getKeys: () => [] },
-					{ agentRows: 0, hiddenWorkflow: true },
-				),
-		);
-		assert.equal(stripTerminalSequences(footer.render(80)[0]!), "... · /workflows to see runs");
 	});
 
 	test("renderNavHintLine keeps one separator style and preserves way-out and ? keys on panel, /tasks, and attached chats (#5239)", () => {
@@ -228,16 +200,9 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		assert.ok(visibleWidth(statuses[0]!) <= 60);
 	});
 
-	test("subagents and workflows docs reflect agent-panel rows, current workflow commands, and clean prose (#5239)", async () => {
+	test("the subagent guide describes agent-panel rows rather than below-prompt counts (#5239)", async () => {
 		const subagentsRef = await readText(resolve(docsRoot, "subagents/reference.md"));
 		assert.doesNotMatch(subagentsRef, /below-prompt background counts/u);
 		assert.match(subagentsRef, /agent panel/iu);
-
-		const operationsDoc = await readText(resolve(docsRoot, "workflows/operations.md"));
-		assert.doesNotMatch(operationsDoc, /named by id, name or unique prefix by its id, name or unique id prefix/u);
-		assert.doesNotMatch(operationsDoc, /stops a run as `\/workflow quit` does/u);
-
-		const builtinsDoc = await readText(resolve(docsRoot, "workflows/builtins.md"));
-		assert.doesNotMatch(builtinsDoc, /Use `\/workflow status` for full details/u);
 	});
 });

@@ -52,7 +52,6 @@ export interface InternalSearchRequest {
 export interface HistoryNoteWindow {
 	first: number;
 	end: number;
-	includes: (lines: readonly string[], note: string) => boolean;
 }
 export const historyNoteWindows = new WeakMap<InternalSearchRequest, HistoryNoteWindow>();
 
@@ -696,7 +695,7 @@ async function fallbackInternalPath(value: string, cwd: string): Promise<string 
 		const name = skill[1] ?? "",
 			rest = skill[2] || "SKILL.md";
 		const candidates: string[] = [];
-		for (const base of [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"])
+		for (const base of [".agents/skills", "packages/subagents/skills"])
 			candidates.push(
 				await resolveContainedPath(
 					await resolveContainedLocalPath(cwd, base, "skill:// resource"),

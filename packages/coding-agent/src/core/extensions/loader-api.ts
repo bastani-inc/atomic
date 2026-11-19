@@ -375,14 +375,14 @@ export function createExtensionAPI(
 
 		getWorkflowResources() {
 			assertActive(true);
-			return [...workflowResources.get()];
+			return [...(workflowResources.get?.() ?? [])];
 		},
 
 		async refreshWorkflowResources() {
 			assertActive();
 			return trackAPIWork(async () => {
 				const refreshed = await workflowResources.refresh?.();
-				return [...(refreshed ?? workflowResources.get())];
+				return [...(refreshed ?? workflowResources.get?.() ?? [])];
 			});
 		},
 

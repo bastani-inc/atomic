@@ -28,7 +28,7 @@ const PANEL_ROWS: AgentPanelRow[] = [
 	{ id: "task:b", kind: "agent", state: "input", name: "debugger", task: "which lock?", elapsedMs: 18_000 },
 	{
 		id: "run:r",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "ralph",
 		task: "stage implement",

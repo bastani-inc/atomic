@@ -1121,11 +1121,11 @@ if (startError && isRetryableSessionStartError(startError)) {
 
 These helpers let extensions and SDK code follow [debug mode](/development#debugging):
 
-- `isDebugEnabled(area?, env?)` returns whether debug output is on: in debug mode for every area, and for `area` also while its own variable is set. Without `area`, only debug mode counts. `env` defaults to `process.env`.
-- `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. While the area's own variable is set, `ownOutput` is called with the variable's value to write the event where that variable always has.
+- `isDebugEnabled(area?, env?)` returns whether debug mode is on. The same setting applies to every area. `env` defaults to `process.env`.
+- `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. The optional `ownOutput` callback is not used by any current area.
 - `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file. It and `reportDebug()` retain their synchronous write and immediate failure-reporting behavior.
 - `appendDebugRecordAsync(path, record)` and `reportDebugAsync(area, event, fields, ownOutput?, env?)` provide the same redaction and reporting without blocking the host. Await their promises to observe the completed write, or call `flushDebugLog()` to wait for all queued debug records.
-- `DEBUG_AREA_VARIABLES` maps each area (`workflow`, `decision`, `pooled-watch`, `pool`, `storage`) to its own environment variable, or `undefined`. `decision`, `pool` and `storage` have none; they write only in debug mode.
+- `DEBUG_AREA_VARIABLES` lists `decision`, `storage` and `engine`. All have value `undefined`: there are no separate environment switches for these areas.
 - `getDebugLogFailure()` returns the first `DebugLogUnwritableError` of this process, if writing a debug log ever failed.
 - `setDebugSetting(enabled)` turns debug mode on or off for this process and for child processes it starts afterwards. It does not save the `debug` setting.
 - `onDebugSettingChange(listener)` calls `listener` with each change of that value and returns a function that unsubscribes.
@@ -1462,7 +1462,7 @@ Without a supported owner, explicit background execution is refused. Native Wind
 
 `watchHeldPromptAttention(sessionId, report)` maps the current prompt to task `input-needed` activity, clears attention when it settles and returns a stop function that unsubscribes and clears its last report. `isHeldPromptInput(input)` distinguishes Atomic's held-prompt adapter from an SDK host's adapter when forwarding child bindings. `isPresentationHostInput(input)` identifies a fallback adapter for a launching chat's presentation, so workflow stage hosts can discard that adapter without discarding explicitly supplied SDK input.
 
-Only Atomic's interactive hosts with a task inspector hold child prompts automatically. A plain RPC or SDK `uiContext` binding continues presenting them through its existing dialogs. Custom hosts that need session-local forms should supply their own `humanInput` adapter and route requests by `HostInputOptions.sessionId`. Workflow stage dialogs use their run's pending prompts instead; see [Workflow input](/workflows/operations).
+Only Atomic's interactive hosts with a task inspector hold child prompts automatically. A plain RPC or SDK `uiContext` binding continues presenting them through its existing dialogs. Custom hosts that need session-local forms should supply their own `humanInput` adapter and route requests by `HostInputOptions.sessionId`. Workflow stage dialogs use their run's pending prompts instead.
 
 ### Task transcript references
 

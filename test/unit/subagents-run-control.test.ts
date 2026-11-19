@@ -194,9 +194,7 @@ interface Harness {
 	>;
 	/** The hold of each starting child, as its capability and how long it holds sends. */
 	readonly startHolds: Array<{ readonly reserve: string; readonly holdMs: number }>;
-	readonly holds: Array<
-		{ reserve: string; aliases: readonly string[]; dormant?: true } | { release: string; gone?: string }
-	>;
+	readonly holds: Array<{ reserve: string; aliases: readonly string[] } | { release: string; gone?: string }>;
 	/** How the next child run settles once its prompt runs; the original launch always waits until stopped. */
 	settleAs: "ok" | "error";
 	/** Whether the original launch completes normally when it is stopped, as a child finishing just before the stop does. */
@@ -298,11 +296,10 @@ function harness(options: { ownerless?: boolean; answer?: (task: string) => stri
 				const request = data as SubagentReserveRestoringChildRequest;
 				if (request.holdMs !== undefined) startHolds.push({ reserve: request.capability, holdMs: request.holdMs });
 				// A launch holds sends to its starting child until it registers; run control's holds are the subject here.
-				if (request.holdMs === undefined || request.aliases.length > 0 || request.dormant === true)
+				if (request.holdMs === undefined || request.aliases.length > 0)
 					holds.push({
 						reserve: request.capability,
 						aliases: request.aliases,
-						...(request.dormant === true ? { dormant: true as const } : {}),
 					});
 				request.completion = Promise.resolve();
 			}

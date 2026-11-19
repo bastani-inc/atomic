@@ -68,6 +68,25 @@ describe("settings notices are shown once", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
+	it("names removed workflow settings once for each file that supplies them", async () => {
+		const projectPath = join(cwd, ".atomic", "settings.json");
+		mkdirSync(join(cwd, ".atomic"));
+		writeFileSync(globalPath(), JSON.stringify({ workflows: ["./recipes"] }));
+		writeFileSync(
+			projectPath,
+			JSON.stringify({ workflows: { paths: ["flow.ts"] }, intercom: { showUnknownTargetWarnings: true } }),
+		);
+		const manager = start();
+		assert.equal(warnings(/Ignored removed setting "workflows"/).length, 1);
+		manager.setProjectTrusted(true);
+		await manager.reload();
+		assert.equal(warnings(/Ignored removed setting "workflows"/).length, 2);
+		assert.equal(warnings(/Ignored removed setting "intercom\.showUnknownTargetWarnings"/).length, 1);
+		nextProcess();
+		start().setProjectTrusted(true);
+		assert.deepEqual(warnings(/Ignored removed setting/), []);
+	});
+
 	it("gives one modelRouting notice when another process holds the file at startup and the migration then removes it", () => {
 		writeFileSync(globalPath(), JSON.stringify({ theme: "dark", modelRouting: ROUTING }));
 		const release = lockfile.lockSync(globalPath(), { realpath: false, stale: 60_000 });
