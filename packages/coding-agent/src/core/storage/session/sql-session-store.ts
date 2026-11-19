@@ -60,6 +60,7 @@ import type {
 	SessionStoredEntry,
 	SessionSummary,
 	SessionTail,
+	SessionTreeOutlineEntry,
 	SessionWriteOptions,
 	SessionWriteResult,
 	StorageDescriptor,
@@ -1936,6 +1937,64 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		const { index } = await this.prepareResume(sessionId);
 		return transcriptBranchSpan(sessionId, index, cut);
+	}
+
+	/** Send only tree headings over the database connection. A chunk stub has no message role or
+	 * timestamp; its caller streams those fields instead of joining or decoding the stored body. */
+	async readTreeOutline(
+		sessionId: string,
+		fromSeq: number,
+		toSeq: number,
+		epoch?: string,
+	): Promise<readonly (SessionTreeOutlineEntry | { seq: number; streamed: true })[]> {
+		this.assertOpen();
+		return this.transaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId);
+			if ((epoch !== undefined && head.epoch !== epoch) || head.lastSeq < toSeq)
+				throw new SessionConflictError(sessionId, toSeq, head.lastSeq);
+			const sqlite = this.dialect.name === "sqlite";
+			const j = (...path: string[]) => this.dialect.jsonText("entry_json", ...path);
+			const role = j("message", "role"),
+				content = j("message", "content"),
+				ctype = this.dialect.jsonType("entry_json", "message", "content");
+			// String.prototype.trim's WhiteSpace + LineTerminator set (SQLite trim's default is ASCII space only).
+			const whites =
+				"\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
+			const trim = sqlite ? "trim" : "btrim";
+			const hasText = sqlite
+				? `EXISTS(SELECT 1 FROM json_each(entry_json,'$.message.content') b WHERE CASE WHEN b.type='object' AND json_extract(b.value,'$.type')='text' THEN length(trim(json_extract(b.value,'$.text'),?))>0 END)`
+				: `EXISTS(SELECT 1 FROM jsonb_array_elements((${content})::jsonb) b WHERE b->>'type'='text' AND length(btrim(b->>'text',?))>0)`;
+			const rows = await tx.all(
+				`SELECT seq,entry_id,chunks,${j("type")} kind,${j("parentId")} parent,${j("timestamp")} stamp,${role} role,
+				CASE WHEN ${role}='assistant' AND COALESCE(${j("message", "stopReason")},'') IN ('','toolUse','stop') AND CASE WHEN ${ctype}='array' THEN NOT ${hasText} WHEN ${ctype}='${sqlite ? "text" : "string"}' THEN length(${trim}(${content},?))=0 ELSE TRUE END THEN 1 ELSE 0 END hidden,
+				CASE WHEN ${j("type")}='custom' AND ${j("customType")}='atomic.leaf' THEN 1 ELSE 0 END leaf_move,
+				CASE WHEN ${j("type")}='label' THEN ${j("targetId")} END target,CASE WHEN ${j("type")}='label' THEN substr(${j("label")},1,128) END label
+				FROM ${this.tables.entries} WHERE session_id=? AND seq BETWEEN ? AND ? ORDER BY seq LIMIT ?`,
+				whites,
+				whites,
+				sessionId,
+				fromSeq,
+				toSeq,
+				SESSION_HISTORY_PAGE_ENTRIES,
+			);
+			return rows.map((row) =>
+				Number(row.chunks) > 0
+					? ({ seq: Number(row.seq), streamed: true } as const)
+					: {
+							seq: Number(row.seq),
+							id: String(row.entry_id),
+							parentId: row.parent === null ? null : String(row.parent),
+							timestamp: String(row.stamp),
+							type: row.kind as SessionEntry["type"],
+							...(typeof row.role === "string" ? { role: row.role } : {}),
+							...(Number(row.hidden) === 1 ? { hideAssistant: true } : {}),
+							...(Number(row.leaf_move) === 1 ? { leafMove: true } : {}),
+							...(typeof row.target === "string"
+								? { labelTarget: row.target, label: typeof row.label === "string" ? row.label : undefined }
+								: {}),
+						},
+			);
+		}, SESSION_TRANSACTION);
 	}
 
 	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {

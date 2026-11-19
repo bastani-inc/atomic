@@ -1721,6 +1721,21 @@ export class SessionManager {
 		return getEntriesWithoutHeader(this.fileEntries);
 	}
 
+	/** Read the topology at this view's cut, not the body of every entry. Current SDK objects can have
+	 * local edits, so their outline takes precedence over the durable projection. */
+	readTreeOutline(signal?: AbortSignal) {
+		const { store, sessionId, historyEpoch, lastSeq } = this;
+		const held = new Map(this.getEntries().map((entry) => [this.entrySeqs.get(entry.id)!, entry]));
+		return (async function* () {
+			const { treeOutlineEntry, treeOutlinePages } = await import("./storage/session/tree-outline.js");
+			for await (const page of treeOutlinePages(store, sessionId, historyEpoch, lastSeq, signal))
+				yield page.map((row) => {
+					const local = held.get(row.seq);
+					return local ? treeOutlineEntry(row.seq, local) : row;
+				});
+		})();
+	}
+
 	/** Get the session as a tree structure. Returns a shallow defensive copy of all entries. */
 	getTree(): SessionTreeNode[] {
 		return buildSessionTree(this.getEntries(), this.labelsById, this.labelTimestampsById);

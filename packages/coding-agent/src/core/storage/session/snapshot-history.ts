@@ -111,6 +111,13 @@ export async function snapshotBranchSpan(store: SessionStore, id: string, cut: S
 	return transcriptBranchSpan(id, { ...index, epoch: cut.epoch ?? snapshotStamp(snapshot) }, cut);
 }
 
+export async function snapshotOutline(store: SessionStore, id: string, from: number, to: number, epoch?: string) {
+	const snapshot = await store.load(id);
+	assertSnapshotCut(snapshot, epoch, to);
+	const { treeOutlineEntry } = await import("./tree-outline.js");
+	return snapshot.entries.slice(from - 1, to).map((entry, i) => treeOutlineEntry(from + i, entry));
+}
+
 export async function snapshotHead(store: SessionStore, id: string) {
 	const snapshot = await store.load(id);
 	return { header: snapshot.header, epoch: snapshotStamp(snapshot), lastSeq: snapshot.lastSeq };

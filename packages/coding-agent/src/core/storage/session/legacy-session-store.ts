@@ -58,6 +58,7 @@ export class LegacySessionStore implements SessionStore {
 	readonly getBlob?: (sessionId: string, hash: string) => Promise<Uint8Array | undefined>;
 	readonly readEntryRange?: (sessionId: string, query: SessionEntriesQuery) => Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
+	readonly readTreeOutline?: SessionStore["readTreeOutline"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -71,6 +72,11 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		if (inner.readTreeOutline)
+			this.readTreeOutline = async (id, from, to, epoch) => {
+				await this.convert(id);
+				return inner.readTreeOutline!(id, from, to, epoch);
+			};
 		const { readEntryRange, searchIndex } = inner;
 		if (readEntryRange !== undefined)
 			this.readEntryRange = async (sessionId, query) => {

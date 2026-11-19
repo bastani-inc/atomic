@@ -1,6 +1,7 @@
 import { jsonParser, type Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "../../session-manager-types.js";
 import type { SqliteRow, SqliteValue } from "../database.js";
+import type { SessionTreeOutlineEntry } from "./types.js";
 
 // A projection only constructs values consumed by the resume fold. The stream parser must not pack
 // strings or keys: even a single unselected JSON string (or property name) can span many chunks.
@@ -17,6 +18,9 @@ type Shape =
 	| "truth"
 	| "short"
 	| "answerText"
+	| "nonBlank"
+	| "treeContent"
+	| "labelPreview"
 	| "string"
 	| "stringPresent"
 	| "objectPresent"
@@ -172,6 +176,17 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			return out;
 		}
 		case "startArray": {
+			if (shape === "treeContent") {
+				let present = false;
+				for (let token = yield; token.name !== "endArray"; token = yield) {
+					if (present) yield* skip(token);
+					else {
+						const block = object(yield* readValue(token, { type: "short", text: "nonBlank" }));
+						present = block.type === "text" && block.text === true;
+					}
+				}
+				return present;
+			}
 			if (shape === "answerText") {
 				let text = "";
 				for (let token = yield; token.name !== "endArray"; token = yield) {
@@ -207,6 +222,13 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			if (shape === "owner" || shape === "tasks" || shape === "groups" || shape === "usage")
 				return JSON.stringify(yield* embedded(shape));
 			if (shape === "truth") return (yield* stringValue(1)) === "" ? "" : "x";
+			if (shape === "labelPreview") return yield* stringValue(128);
+			if (shape === "nonBlank" || shape === "treeContent") {
+				let present = false;
+				for (let token = yield; token.name === "stringChunk"; token = yield)
+					present ||= token.value.trim().length > 0;
+				return present;
+			}
 			return yield* stringValue(shape === "short" ? 64 : Infinity);
 		case "numberValue":
 			return Number(first.value);
@@ -438,6 +460,51 @@ export async function chunkedPrefixFields(
 	if (type === "worktree_snapshot" && !value.snapshot) delete value.snapshot;
 	const count = object(value.message).content;
 	return { entry: value as unknown as SessionEntry, toolCalls: typeof count === "number" ? count : 0 };
+}
+
+export async function chunkedTreeOutline(
+	seq: number,
+	chunks: AsyncIterable<Uint8Array>,
+): Promise<SessionTreeOutlineEntry> {
+	const e = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					id: "string",
+					parentId: "string",
+					type: "short",
+					timestamp: "string",
+					customType: "short",
+					targetId: "string",
+					label: "labelPreview",
+					message: { role: "short", stopReason: "short", content: "treeContent" },
+				});
+			})(),
+		),
+	);
+	const m = object(e.message);
+	return {
+		seq,
+		id: String(e.id),
+		parentId: typeof e.parentId === "string" ? e.parentId : null,
+		timestamp: String(e.timestamp),
+		type: e.type as SessionEntry["type"],
+		...(e.type === "message"
+			? {
+					role: String(m.role),
+					...(m.role === "assistant" &&
+					!m.content &&
+					(!m.stopReason || m.stopReason === "stop" || m.stopReason === "toolUse")
+						? { hideAssistant: true }
+						: {}),
+				}
+			: {}),
+		...(e.type === "custom" && e.customType === "atomic.leaf" ? { leafMove: true } : {}),
+		...(e.type === "label"
+			? { labelTarget: String(e.targetId), label: typeof e.label === "string" ? e.label : undefined }
+			: {}),
+	};
 }
 
 export async function chunkedAnswerHeader(chunks: AsyncIterable<Uint8Array>) {
