@@ -171,6 +171,11 @@ export declare class WaitLease {
   get waitId(): string
 }
 
+export declare class WindowsTemporaryFile {
+  /** Close the original handle off the event loop. Closing it removes only its own name, not a published hard link. */
+  close(): Promise<undefined>
+}
+
 export type ActivityChange =
   | { kind: 'action'; tool: string; text: string }
   | { kind: 'model'; model?: string; thinking?: string }
@@ -663,6 +668,12 @@ export interface OmittedRange {
   end: string
 }
 
+/**
+ * Creates a new file without replacing an existing entry. A null result means the filesystem does not support
+ * delete-on-close here. An existing name is reported separately so the caller can choose another one.
+ */
+export declare function openWindowsTemporaryFile(path: string): Promise<WindowsTemporaryFile | undefined | null>
+
 export interface OutcomeReport {
   reportId: string
   result: TaskResult
@@ -758,6 +769,9 @@ export interface PtyStartOptions {
   commandTransport?: string
   closeStdinAfterCommand?: boolean
 }
+
+/** Removes a regular file older than `beforeMs` using the handle whose last-write time was checked. */
+export declare function removeWindowsFileOlderThan(path: string, beforeMs: number): Promise<undefined>
 
 /**
  * Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,

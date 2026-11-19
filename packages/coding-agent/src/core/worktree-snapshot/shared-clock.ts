@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import { open, readdir, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile, { type LockOptions } from "proper-lockfile";
+import { openWindowsTemporary, sweepWindowsProbe } from "./windows-temporary.ts";
 
 const PROBE_NAME = /^\.clock-[0-9a-f]{16}\.probe$/;
 
@@ -33,6 +34,11 @@ async function removeLeftoverProbes(directory: string, offset: number): Promise<
 	for (const name of await readdir(directory).catch(() => [] as string[])) {
 		if (!PROBE_NAME.test(name)) continue;
 		const probe = join(directory, name);
+		const sweep = process.platform === "win32" ? sweepWindowsProbe(probe, now - LEFTOVER_PROBE_AGE_MS) : undefined;
+		if (sweep) {
+			await sweep.catch(() => {});
+			continue;
+		}
 		const age = await stat(probe).then(
 			(stats) => now - stats.mtimeMs,
 			() => 0,
@@ -50,25 +56,38 @@ async function removeLeftoverProbes(directory: string, offset: number): Promise<
  */
 export async function sharedClockOffset(directory: string): Promise<number> {
 	// Random bytes, not a UUID: the probe's name never takes a UUID the caller's own records draw.
-	const probe = join(directory, `.clock-${randomBytes(8).toString("hex")}.probe`);
-	let offset = 0;
-	try {
-		const before = Date.now();
-		await (await open(probe, "w")).close();
-		const { mtimeMs } = await stat(probe);
-		offset = mtimeMs - (before + Date.now()) / 2;
-	} catch {
-		return 0;
-	} finally {
-		await unlink(probe).catch(() => {});
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const probe = join(directory, `.clock-${randomBytes(8).toString("hex")}.probe`);
+		let created = false;
+		let temporary: Awaited<ReturnType<typeof openWindowsTemporary>>;
+		let offset: number;
+		try {
+			const before = Date.now();
+			if (process.platform === "win32") temporary = await openWindowsTemporary(probe);
+			if (temporary === undefined) {
+				const file = await open(probe, "wx");
+				created = true;
+				await file.close();
+			}
+			const { mtimeMs } = await stat(probe);
+			offset = mtimeMs - (before + Date.now()) / 2;
+		} catch (error) {
+			if (!created && (error as NodeJS.ErrnoException).code === "EEXIST") continue;
+			return 0;
+		} finally {
+			if (temporary) await temporary.close().catch(() => {});
+			else if (created) await unlink(probe).catch(() => {});
+		}
+		await removeLeftoverProbes(directory, offset);
+		return offset;
 	}
-	await removeLeftoverProbes(directory, offset);
-	return offset;
+	return 0;
 }
 
 /** The time now by the clock of the filesystem holding `directory`, which every host sharing it reads alike. */
 export async function sharedClockNow(directory: string): Promise<number> {
-	return Date.now() + (await sharedClockOffset(directory));
+	const offset = await sharedClockOffset(directory);
+	return Date.now() + offset;
 }
 
 /**

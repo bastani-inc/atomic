@@ -15,6 +15,8 @@ import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./rest
 import { lockShared, sharedClockNow } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
+import { openWindowsTemporary } from "./windows-temporary.ts";
+
 export { processStartToken } from "../process-start-token.js";
 
 /**
@@ -555,8 +557,12 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 
 async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
 	const temporary = `${file}.${randomUUID()}.tmp`;
+	const windows = process.platform === "win32";
+	const reservation = windows ? await openWindowsTemporary(temporary) : undefined;
+	let created = false;
 	try {
-		await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+		await writeFile(temporary, JSON.stringify(record), { mode: 0o600, flag: windows && !reservation ? "wx" : "w" });
+		created = true;
 		try {
 			await link(temporary, file);
 			return true;
@@ -565,7 +571,12 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 			throw error;
 		}
 	} finally {
-		await rm(temporary, { force: true }).catch((error) => {
+		const cleanup = reservation
+			? reservation.close()
+			: created || !windows
+				? rm(temporary, { force: true })
+				: undefined;
+		await cleanup?.catch((error: unknown) => {
 			reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
 		});
 	}
