@@ -1,4 +1,4 @@
-import { type Component, type ScrollView, Text } from "@bastani/atomic-tui";
+import { type Component, type ScrollView, Text, WindowedContainer } from "@bastani/atomic-tui";
 import type { SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import type {
 	SessionHistoryItem,
@@ -22,6 +22,7 @@ type Draw = (
 /** A renderer may keep widget state that is not in the stored row. Only these exceptions (not stock rows or
  * their page) survive eviction, keyed by the saved occurrence and sub-block within this session. */
 export class SavedRendererInstances {
+	private readonly source = Symbol();
 	private readonly kept = new Map<string, Component[]>();
 	private readonly owner = new WeakMap<Component, string>();
 	private readonly retired = new WeakSet<Component[]>();
@@ -44,6 +45,15 @@ export class SavedRendererInstances {
 		for (const component of group) disposeRenderer(component);
 	}
 	remember(key: string, components: Component[]): void {
+		const [seq, block] = key.split(":");
+		for (let part = 0; part < components.length; part++)
+			WindowedContainer.markHistoryComponent(
+				components[part]!,
+				this.source,
+				Number(seq),
+				block === "entry" ? 0 : Number(block),
+				part,
+			);
 		if (
 			!components.some(
 				(component) => component.selectionTextMayChangeOnReplay === true && component.historyReplayable !== true,

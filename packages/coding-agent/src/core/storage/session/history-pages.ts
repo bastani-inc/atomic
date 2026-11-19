@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { yieldToEventLoop } from "../../../utils/event-loop.js";
 import { SessionConflictError } from "./errors.js";
+import { type HistoryPacketReader, historySnapshotFor } from "./history-snapshot.js";
 import {
 	type OversizedSessionEntry,
 	SESSION_HISTORY_CHUNK_BYTES,
@@ -10,17 +11,6 @@ import {
 	type SessionHistoryReadOptions,
 	type SessionStore,
 } from "./types.js";
-
-type Packet = (from: number, through: number, reverse: boolean) => Promise<SessionHistoryPage["items"]>;
-type SnapshotPage = (
-	sessionId: string,
-	read: (epoch: string, lastSeq: number, packet: Packet) => Promise<SessionHistoryPage | undefined>,
-) => Promise<SessionHistoryPage | undefined>;
-const snapshotPages = new WeakMap<SessionStore, SnapshotPage>();
-/** @internal A store that can size and return a page in the same snapshot needn't open it three times. */
-export function registerHistorySnapshot(store: SessionStore, snapshot: SnapshotPage): void {
-	snapshotPages.set(store, snapshot);
-}
 
 function cursorScope(sessionId: string, epoch: string): string {
 	return createHash("sha256")
@@ -46,7 +36,7 @@ export async function* historyPages(
 	epoch: string | undefined,
 	watermark: number,
 	options: SessionHistoryReadOptions,
-	packet?: Packet,
+	packet?: HistoryPacketReader,
 ): AsyncGenerator<SessionHistoryPage, void> {
 	const snapshotOnly = !store.readEntrySizes || !store.readRange;
 	let cut = watermark;
@@ -209,7 +199,7 @@ export async function* readSessionHistory(
 	options: SessionHistoryReadOptions = {},
 ): AsyncGenerator<SessionHistoryPage, void> {
 	options.signal?.throwIfAborted();
-	const snapshot = snapshotPages.get(store);
+	const snapshot = historySnapshotFor(store);
 	// Branch spans may need a separate index snapshot. Never request one from inside a single-connection reader.
 	if (snapshot && options.branchLeafSeq === undefined && !options.cursor?.includes(".p")) {
 		let request = options;

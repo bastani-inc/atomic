@@ -17,7 +17,7 @@ import {
 } from "./errors.js";
 import { guardSessionDatabase } from "./format-fence.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
-import { registerHistorySnapshot } from "./history-pages.js";
+import { registerHistorySnapshot } from "./history-snapshot.js";
 import {
 	branchRanges,
 	foldSessionResume,

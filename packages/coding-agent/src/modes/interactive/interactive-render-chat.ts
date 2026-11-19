@@ -62,7 +62,7 @@ import {
 	installSavedChatHistory,
 	releaseSavedChatHistory,
 	type SavedRendererInstances,
-} from "./interactive-saved-chat-history.ts";
+} from "./interactive-saved-chat-history.js";
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";

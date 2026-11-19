@@ -7,7 +7,7 @@ import {
 import { type HintAction, type HintSpan, hintActionAt, readHintSpans } from "./clickable-hints.ts";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
-import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
+import { type HistoryRowPosition, WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
 import { getKeybindings } from "./keybindings.ts";
 import { isKeyRelease } from "./keys.ts";
 import {
@@ -110,7 +110,14 @@ interface CachedKittyImage {
 	estimatedDecodedBytes: number;
 }
 
+function compareArchivedRows(a: HistoryRowPosition, b: HistoryRowPosition): number {
+	return a.seq - b.seq || a.block - b.block || a.part - b.part || a.line - b.line;
+}
+function archivedRowKey(p: HistoryRowPosition): string {
+	return `${p.seq}:${p.block}:${p.part}:${p.line}`;
+}
 interface SelectionPoint {
+	archive?: HistoryRowPosition;
 	row: number;
 	col: number;
 	scrollView?: ScrollView;
@@ -348,6 +355,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly uploadedKittyImages = new Map<number, CachedKittyImage>();
 	private selectionAnchor?: SelectionPoint;
 	private selectionFocus?: SelectionPoint;
+	private readonly archiveSelection = new Map<
+		string,
+		{ position: HistoryRowPosition; start: number; end: number; text: string }
+	>();
 	private readonly selectedFragments = new Map<
 		number,
 		{ renderer: symbol; start: number; end: number; text: string }
@@ -509,7 +520,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.invalidate();
 		}
 		this.lastDocument = [];
-		this.selectedFragments.clear();
+		this.clearSelectionFragments();
 		this.selectionAnchor = undefined;
 		this.selectionFocus = undefined;
 		this.selectionGranularity = "character";
@@ -539,7 +550,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStop(_options: TuiStopOptions): void {
-		this.selectedFragments.clear();
+		this.clearSelectionFragments();
 		this.closeSearch();
 		this.dropWaitingSingleClicks();
 		this.stopSelectionAutoScroll();
@@ -936,7 +947,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.selectionDragged = false;
 			this.clearComponentMouseGesture();
 			if (hadActiveSelection) {
-				this.selectedFragments.clear();
+				this.clearSelectionFragments();
 				this.selectionAnchor = undefined;
 				this.selectionFocus = undefined;
 				this.selectionGranularity = "character";
@@ -1170,8 +1181,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		for (const start of this.waitingSingleClicks.keys()) this.cancelWaitingSingleClicks(start);
 	}
 
-	private clearTextSelection(): void {
+	private clearSelectionFragments(): void {
 		this.selectedFragments.clear();
+		this.archiveSelection.clear();
+	}
+	private clearTextSelection(): void {
+		this.clearSelectionFragments();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.selectionAnchor = undefined;
@@ -1429,7 +1444,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (event.release || (event.button & 32) !== 0 || (event.button & 3) !== 0) return false;
 		const target = this.getScrollbarTargetAt(event.x, event.y);
 		if (!target) return false;
-		this.selectedFragments.clear();
+		this.clearSelectionFragments();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.selectionAnchor = undefined;
@@ -1473,7 +1488,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const row = Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y));
 		return {
 			row,
-			...(scrollView.hasHistoryNavigation ? { trackRow: lines?.trackRow?.(row) } : {}),
+			...(scrollView.hasHistoryNavigation
+				? { trackRow: lines?.trackRow?.(row), archive: lines?.historyRow?.(row) }
+				: {}),
 			col: Math.max(0, Math.min(box.rect.width - 1, x - box.rect.x)),
 			scrollView,
 		};
@@ -1761,7 +1778,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 		this.stopSelectionAutoScroll();
-		this.selectedFragments.clear();
+		this.clearSelectionFragments();
 		this.selectionPressActive = true;
 		const scrollView =
 			!this.hasOverlay() && this.currentLayout
@@ -1815,13 +1832,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.selectionAnchor.scrollView !== this.selectionFocus.scrollView) return undefined;
 		this.selectionAnchor.row = this.selectionAnchor.trackRow?.() ?? this.selectionAnchor.row;
 		this.selectionFocus.row = this.selectionFocus.trackRow?.() ?? this.selectionFocus.row;
-		const anchorBeforeFocus =
-			this.selectionAnchor.row < this.selectionFocus.row ||
-			(this.selectionAnchor.row === this.selectionFocus.row && this.selectionAnchor.col < this.selectionFocus.col);
-		if (
-			this.selectionAnchor.row === this.selectionFocus.row &&
-			this.selectionAnchor.col === this.selectionFocus.col
-		) {
+		const a = this.selectionAnchor.archive,
+			b = this.selectionFocus.archive;
+		const order =
+			a && b && a.source === b.source
+				? compareArchivedRows(a, b)
+				: this.selectionAnchor.row - this.selectionFocus.row;
+		const anchorBeforeFocus = order < 0 || (order === 0 && this.selectionAnchor.col < this.selectionFocus.col);
+		if (order === 0 && this.selectionAnchor.col === this.selectionFocus.col) {
 			return undefined;
 		}
 		return anchorBeforeFocus
@@ -1853,9 +1871,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private captureVolatileSelection(): void {
 		const selection = this.getSelectionBounds();
 		if (!selection) {
-			this.selectedFragments.clear();
+			this.clearSelectionFragments();
 			return;
 		}
+		const a = selection.start.archive,
+			b = selection.end.archive;
+		if (a && b && a.source === b.source)
+			for (const [key, fragment] of this.archiveSelection) {
+				if (
+					fragment.position.source !== a.source ||
+					compareArchivedRows(fragment.position, a) < 0 ||
+					compareArchivedRows(fragment.position, b) > 0
+				)
+					this.archiveSelection.delete(key);
+			}
 		for (const row of this.selectedFragments.keys())
 			if (row < selection.start.row || row > selection.end.row) this.selectedFragments.delete(row);
 		this.capturePaintedFragments(selection, this.currentLayout);
@@ -1865,9 +1894,45 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const view = selection.start.scrollView;
 		if (!layout || !view) return;
 		const rows = getScrollContentRows(getScrollViewBox(layout, view));
-		const first = Math.max(selection.start.row, view.scrollTop);
-		const last = Math.min(selection.end.row, view.scrollTop + view.viewportHeight - 1);
-		rows?.visitVolatileRows?.(first, last, (row, line, renderer) => {
+		const a = selection.start.archive,
+			b = selection.end.archive;
+		const archived = a && b && a.source === b.source;
+		const first = archived ? view.scrollTop : Math.max(selection.start.row, view.scrollTop);
+		const last = archived
+			? view.scrollTop + view.viewportHeight - 1
+			: Math.min(selection.end.row, view.scrollTop + view.viewportHeight - 1);
+		rows?.visitVolatileRows?.(first, last, (row, line, renderer, position) => {
+			if (archived && position && a && b) {
+				const lo = compareArchivedRows(position, a),
+					hi = compareArchivedRows(position, b);
+				if (position.source !== a.source || lo < 0 || hi > 0) return;
+				const { start, end } = this.getSelectionColumns(line, 0, {
+					start: { ...selection.start, row: lo === 0 ? 0 : -1 },
+					end: { ...selection.end, row: hi === 0 ? 0 : 1 },
+				});
+				const key = archivedRowKey(position),
+					old = this.archiveSelection.get(key);
+				if (old && old.start === start && old.end === end) return;
+				const slice = (s: string, p: number, n: number) =>
+					stripTerminalSequences(sliceByColumn(s, p, Math.max(0, n), true));
+				const before = old ? Math.max(start, old.start) : end,
+					after = old ? Math.min(end, old.end) : start;
+				const value =
+					old && after > before
+						? slice(line, start, before - start) +
+							slice(old.text, before - old.start, after - before) +
+							slice(line, after, end - after)
+						: slice(line, start, end - start);
+				// Detach narrow selections from potentially large source strings, preserving UTF-16 code units.
+				this.archiveSelection.set(key, {
+					position,
+					start,
+					end,
+					text: Buffer.from(value, "utf16le").toString("utf16le"),
+				});
+				return;
+			}
+			if (archived) return;
 			const { start, end } = this.getSelectionColumns(line, row, selection);
 			const previous = this.selectedFragments.get(row);
 			// The same live component can publish new text. A recreated historical component, however, cannot
@@ -1893,6 +1958,19 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private getActiveSelectionText(): string | undefined {
 		const selection = this.getSelectionBounds();
 		if (!selection) return undefined;
+		const a = selection.start.archive,
+			b = selection.end.archive;
+		if (a && b && a.source === b.source && this.archiveSelection.size) {
+			const chunks = [...this.archiveSelection.values()]
+				.filter(
+					(f) =>
+						f.position.source === a.source &&
+						compareArchivedRows(f.position, a) >= 0 &&
+						compareArchivedRows(f.position, b) <= 0,
+				)
+				.sort((x, y) => compareArchivedRows(x.position, y.position));
+			return chunks.map((f) => f.text.trimEnd()).join("\n") || undefined;
+		}
 		let sourceLines: WindowRows = this.previousScreen;
 		if (selection.start.scrollView) {
 			if (!this.currentLayout) return undefined;

@@ -1,12 +1,26 @@
 import { type Component, Container } from "../tui.ts";
 
+export interface HistoryRowPosition {
+	readonly source: symbol;
+	readonly seq: number;
+	readonly block: number;
+	readonly part: number;
+	readonly line: number;
+}
+const archivePositions = new WeakMap<Component, Omit<HistoryRowPosition, "line">>();
+
 export interface WindowRows {
 	readonly length: number;
 	at(index: number): string | undefined;
 	/** A weak position within a painted leaf; resolving it never draws or requests history. */
 	trackRow?(index: number): (() => number | undefined) | undefined;
+	historyRow?(index: number): HistoryRowPosition | undefined;
 	/** Visit already rendered, non-replayable rows of an active selection, without requesting historical content. */
-	visitVolatileRows?(first: number, last: number, visit: (row: number, line: string, renderer: symbol) => void): void;
+	visitVolatileRows?(
+		first: number,
+		last: number,
+		visit: (row: number, line: string, renderer: symbol, history?: HistoryRowPosition) => void,
+	): void;
 }
 
 export interface WindowRequest {
@@ -60,6 +74,11 @@ function yieldThen(run: () => void): void {
 }
 
 export class WindowedContainer extends Container {
+	/** Identify the leaf of a mutable saved transcript. A selection can then keep just its selected characters
+	 * across eviction or an external rewrite, without keeping the component or its page. */
+	static markHistoryComponent(component: Component, source: symbol, seq: number, block: number, part: number): void {
+		archivePositions.set(component, { source, seq, block, part });
+	}
 	/** The container that last laid this one out among its own rows, when this one is nested in it. */
 	private windowHost: WindowedContainer | undefined;
 	/** The windowed container this one is a child of, in that layout. */
@@ -143,16 +162,29 @@ export class WindowedContainer extends Container {
 				if (!anchor) return undefined;
 				return weakRowPosition(new WeakRef(this), new WeakRef(anchor.entry.component), anchor.within);
 			},
+			historyRow: (index) => {
+				if (index < 0 || index >= length) return undefined;
+				const anchor = this.locateAnchor(index);
+				const position = anchor && archivePositions.get(anchor.entry.component);
+				return position && anchor ? { ...position, line: anchor.within } : undefined;
+			},
 			visitVolatileRows: (first, last, visit) => {
 				if (!length || first >= length || last < 0) return;
 				for (let i = this.indexAt(Math.max(0, first)); i < this.laidOut.length; i++) {
 					const entry = this.laidOut[i]!,
 						start = this.offsets[i]!;
 					if (start > last) break;
-					if (!entry.current || entry.component.selectionTextMayChangeOnReplay !== true) continue;
+					if (!entry.current) continue;
+					const history = archivePositions.get(entry.component);
+					if (!history && entry.component.selectionTextMayChangeOnReplay !== true) continue;
 					entry.selectionRenderer ??= Symbol();
 					for (let row = Math.max(first, start); row <= last && row < start + entry.lines.length; row++)
-						visit(row, entry.lines[row - start]!, entry.selectionRenderer);
+						visit(
+							row,
+							entry.lines[row - start]!,
+							entry.selectionRenderer,
+							history && { ...history, line: row - start },
+						);
 				}
 			},
 		};

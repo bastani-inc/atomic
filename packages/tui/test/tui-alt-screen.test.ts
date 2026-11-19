@@ -1717,6 +1717,48 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
+	it("copies mutable archive selections after both sources replace the only saved row, and reset releases the selection (#5593)", async () => {
+		for (const word of ["word", "text"]) {
+			const terminal = new RecordingTerminal(30, 4);
+			const document = new WindowedContainer();
+			const row = new Text(word, 0, 0);
+			document.addChild(row);
+			const source = Symbol("saved source");
+			WindowedContainer.markHistoryComponent?.(row, source, 1, 0, 0);
+			const view = new ScrollView(document, { primary: true });
+			view.setHistoryNavigation(() => {});
+			let copied = "";
+			const tui = new TuiAltScreen(terminal, undefined, undefined, {
+				copyOnSelect: false,
+				copySelection: async (text) => {
+					copied = text;
+					return true;
+				},
+			});
+			tui.setLayoutRoot(view);
+			tui.start();
+			try {
+				await terminal.waitForRender();
+				terminal.sendInput("\x1b[<0;1;1M");
+				terminal.sendInput("\x1b[<32;4;1M");
+				terminal.sendInput("\x1b[<0;4;1m");
+				await terminal.waitForRender();
+				document.clear();
+				const replacement = new Text("else", 0, 0);
+				document.addChild(replacement);
+				WindowedContainer.markHistoryComponent?.(replacement, source, 1, 0, 0);
+				tui.requestRender();
+				await terminal.waitForRender();
+				assert.ok(await tui.copyActiveSelectionToClipboard());
+				assert.equal(copied, word);
+				tui.resetTextSelection();
+				assert.equal(await tui.copyActiveSelectionToClipboard(), false);
+			} finally {
+				tui.stop();
+			}
+		}
+	});
+
 	it("copies selected volatile rows twice after their components change and forgets them on reset (#5593)", async () => {
 		const terminal = new RecordingTerminal(30, 4);
 		const copied: string[] = [];

@@ -3,7 +3,7 @@ import { type AnsiTheme, type MermaidArt, render, toAnsi } from "lovely-mermaid"
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../../../core/settings-manager.ts";
 import type { Theme, ThemeColor } from "../theme/theme.js";
-import { replayableMarkdownTransform } from "./markdown-transform.js";
+import { replayableMarkdownTransform } from "./markdown-transform.ts";
 
 const markdownParser = new Marked();
 
