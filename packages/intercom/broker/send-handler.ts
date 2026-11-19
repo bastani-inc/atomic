@@ -22,7 +22,7 @@ import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { type ReturnPathParty, type ReturnPaths, returnPathClosedReason } from "./return-paths.js";
 import { returnAddressOf } from "./multinode-state-store.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
-import { isWorkflowTarget, WORKFLOW_TARGET_REMOVED_REASON } from "./legacy-workflow-frames.js";
+import { isWorkflowTarget, workflowTargetFailure } from "./legacy-workflow-frames.js";
 
 export interface BrokerConnectedSession {
   socket: net.Socket;
@@ -362,15 +362,19 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor target does not match the authorized relationship" });
     return;
   }
-	// Atomic 0.10.0 removed workflows: a 0.9.x session's send to a workflow stage target is refused, typed, never
-	// resolved as a session name.
+	// Atomic 0.10.0 removed workflows: a 0.9.x session's send to a workflow stage target is answered as one to a name
+	// no session has, and never resolved or routed, so no broker of any version queues it for a stage.
 	if (isWorkflowTarget(trimmedTo)) {
 		write(socket, {
 			type: "delivery_failed",
 			messageId: message.id,
-			...(attemptId ? { attemptId } : {}),
-			reason: WORKFLOW_TARGET_REMOVED_REASON,
-			reasonCode: "session_not_found",
+			attemptId,
+			...workflowTargetFailure({
+				to: clientMessage.to,
+				requirePendingReply,
+				...(expectedRecipientId === undefined ? {} : { expectedRecipientId }),
+				...(fromSession.reach === undefined ? {} : { reach: fromSession.reach }),
+			}),
 		});
 		return;
 	}

@@ -79,7 +79,7 @@ intercom({ action: "send", to: "subagent-worker-*", message: "Scope changed", br
 
 Patterns match only sessions you can already see in `intercom list`: they never reach outside your groups. `ask` and `replyTo` need one exact target, because a reply to a broadcast question would be ambiguous, so a pattern there is an error. Patterns match live sessions only.
 
-Workflow stage targets (`workflow:<rootRunId>/...`) were removed with workflows in Atomic 0.10.0: a send or ask to one is refused with `Workflow stage targets (workflow:<rootRunId>/...) were removed in Atomic 0.10.0; send to a session by name or id`. See [Mixed versions and workflows](/intercom/operations#mixed-versions-and-workflows) for how a 0.10.0 broker serves sessions of Atomic 0.9.x that still run workflows.
+Workflow stage targets (`workflow:<rootRunId>/...`) were removed with workflows in Atomic 0.10.0: a send, ask or reply to one gets the answer any unknown name gets, `Session not found`, and is never sent on. See [Mixed versions and workflows](/intercom/operations#mixed-versions-and-workflows) for how a 0.10.0 broker serves sessions of Atomic 0.9.x that still run workflows.
 
 Agent list rows put the copyable exact ID first, followed by status and working directory. Meaningful names remain secondary metadata; redundant generated aliases are hidden only in the list, not removed from lookup. Copy the target rather than reconstructing it from a name.
 
