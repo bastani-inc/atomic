@@ -217,7 +217,12 @@ export interface BlockRecord {
 export type LogRecord =
 	| DelayRecord
 	| BlockRecord
-	| { readonly type: "start"; readonly role: ProcessRole; readonly pid: number };
+	| {
+			readonly type: "start";
+			readonly role: ProcessRole;
+			readonly pid: number;
+			readonly stacks?: "debugger" | "profiler" | "unavailable" | "disabled";
+	  };
 
 export function readRecords(path: string): LogRecord[] {
 	if (!fileExistsSync(path)) return [];

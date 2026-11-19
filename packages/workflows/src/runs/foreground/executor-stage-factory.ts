@@ -59,7 +59,7 @@ import type { ParallelFailFastScope, StageSessionCheckpointOptions } from "./exe
 import { createWorkflowPendingStageDelivery } from "./pending-stage-delivery.js";
 import type { RunStageResidency } from "./run-residency.js";
 import { StageAbortListeners } from "./stage-abort-listeners.js";
-import type { StageControlRegistry } from "./stage-control-registry.js";
+import type { StageControlHandle, StageControlRegistry } from "./stage-control-registry.js";
 import { persistStageEndWhenRunEndsIt, runEndedInFlightStages } from "./stage-end-by-run-end.js";
 import { type IdleStage, stageIdleReleaser } from "./stage-idle-release.js";
 import {
@@ -612,6 +612,18 @@ export function createWorkflowStageFactory(input: {
 			},
 		);
 
+		/** This stage's control handle, once created; see {@link supersededBySuccessor}. */
+		let stageHandle: StageControlHandle | undefined;
+		/**
+		 * A resume that took the run's id runs this stage again under the same stage id, with its own live handle. The
+		 * stage's shared state (awaiting input, its prompt, attachable) is then the resume's: this ended execution
+		 * releasing its own session must leave it alone (#5499). That holds for every handle registered under the id,
+		 * including one whose stage already completed and only serves its chat, which no longer controls the run.
+		 */
+		const supersededBySuccessor = (): boolean => {
+			const registered = input.stageRegistry.peek(input.runId, stageId);
+			return registered !== undefined && registered !== stageHandle;
+		};
 		const disposeInnerContext = async (): Promise<void> => {
 			idleReleaser.unwatch(stageId);
 			unsubscribeAskUserQuestionWatcher();
@@ -619,8 +631,10 @@ export function createWorkflowStageFactory(input: {
 			unregisterStageDialogJournal();
 			activeAskUserQuestionCalls.clear();
 			state.activeAskUserQuestionAnonymousCalls = 0;
-			input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
-			input.stageUiBroker.clearStagePrompt(input.runId, stageId);
+			if (!supersededBySuccessor()) {
+				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
+				input.stageUiBroker.clearStagePrompt(input.runId, stageId);
+			}
 			try {
 				await innerCtx.__dispose();
 			} finally {
@@ -917,10 +931,11 @@ export function createWorkflowStageFactory(input: {
 		};
 
 		const handle = createStageControlHandle(runtime);
+		stageHandle = handle;
 		runtime.dropStageControlHandle = (): void => {
 			if (state.stageControlDropped) return;
 			state.stageControlDropped = true;
-			input.activeStore.recordStageAttachable(input.runId, stageId, false);
+			if (!supersededBySuccessor()) input.activeStore.recordStageAttachable(input.runId, stageId, false);
 			input.stageRegistry.detachControl(input.runId, stageId, handle);
 		};
 		runtime.unregisterStageHandle = input.stageRegistry.register(handle);

@@ -331,7 +331,10 @@ test("a /tasks transcript expands a block when a terminal press and release land
  * `olderHost`, the host talks to the engine as one from before clicks were settled does: its clicks carry no number
  * and it never settles them.
  */
-async function engineStageChat(ui: ReturnType<typeof makeScreen>, options: { readonly olderHost?: boolean } = {}) {
+async function engineStageChat(
+	ui: ReturnType<typeof makeScreen>,
+	options: { readonly olderHost?: boolean; readonly noCancel?: boolean } = {},
+) {
 	const engineListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	let frames = 0;
 	const child = new EngineCustomUiService((line) => {
@@ -352,6 +355,11 @@ async function engineStageChat(ui: ReturnType<typeof makeScreen>, options: { rea
 			if (options.olderHost && command.type === "engine_custom_click_settle") return;
 			if (options.olderHost && command.type === "engine_custom_click") {
 				const { clickId: _settledLater, ...click } = command;
+				child.handleLine(serializeInteractiveEngineFrame(click));
+				return;
+			}
+			if (options.noCancel && command.type === "engine_custom_click") {
+				const { cancelsClicks: _notSupported, ...click } = command;
 				child.handleLine(serializeInteractiveEngineFrame(click));
 				return;
 			}
@@ -401,6 +409,9 @@ async function engineStageChat(ui: ReturnType<typeof makeScreen>, options: { rea
 	return {
 		sent,
 		shows,
+		engineShows: (pattern: RegExp) =>
+			pane!.render(ui.terminal.columns).some((line) => pattern.test(stripVTControlCharacters(line))),
+		deliver: (command: InteractiveEngineCommand) => child.handleLine(serializeInteractiveEngineFrame(command)),
 		/** How many frames the engine has sent the host. */
 		frames: () => frames,
 		dispose: () => {
@@ -445,6 +456,37 @@ test("fast single clicks on different rows of a block in the isolated engine's s
 	}
 });
 
+for (const noCancel of [false, true]) {
+	test(
+		noCancel
+			? "a numbered host without click cancellation keeps its bounded fallback (#5562)"
+			: "an isolated stage chat applies all 17 single clicks in one burst (#5562)",
+		async () => {
+			const ui = makeScreen();
+			const engine = await engineStageChat(ui, { noCancel });
+			try {
+				const targets = [/engine line 18\s*$/, /engine line 19\s*$/].map((pattern) => {
+					const row = ui.screen().findIndex((line) => pattern.test(line));
+					assert.notEqual(row, -1);
+					return `0;${ui.screen()[row]!.indexOf("engine") + 1};${row + 1}`;
+				});
+				for (let i = 0; i < 17; i++) {
+					const point = targets[i % 2];
+					ui.terminal.input(`\x1b[<${point}M`);
+					ui.terminal.input(`\x1b[<${point}m`);
+				}
+				await ui.settle();
+				assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 17);
+				assert.equal(engine.engineShows(/engine line 1\s*$/), !noCancel);
+				await vi.waitFor(() => assert.equal(engine.shows(/engine line 1\s*$/), !noCancel), ENGINE_FRAME_WAIT);
+			} finally {
+				engine.dispose();
+				ui.tui.stop();
+			}
+		},
+	);
+}
+
 test("a stage chat in an isolated engine paired with an older host expands a block on a click, as that host expects", async () => {
 	const ui = makeScreen();
 	const engine = await engineStageChat(ui, { olderHost: true });
@@ -458,7 +500,7 @@ test("a stage chat in an isolated engine paired with an older host expands a blo
 	}
 });
 
-test("a double-click in a block's output in the isolated engine's stage chat selects a word and toggles nothing", async () => {
+test("a double-click in an isolated stage chat cancels the forwarded action, selects a word and toggles nothing (#5562)", async () => {
 	const ui = makeScreen();
 	const engine = await engineStageChat(ui);
 	try {
@@ -471,6 +513,13 @@ test("a double-click in a block's output in the isolated engine's stage chat sel
 			"only the first click of the double-click reaches the engine",
 		);
 		assert.equal(engine.sent.filter((command) => command.type === "engine_custom_click_settle").length, 0);
+		const cancellations = engine.sent.filter((command) => command.type === "engine_custom_click_cancel");
+		assert.equal(cancellations.length, 1);
+		// The engine released this callback: even a stale settlement cannot run it now.
+		const canceled = cancellations[0]!;
+		if (canceled.type !== "engine_custom_click_cancel") assert.fail("missing cancellation");
+		engine.deliver({ ...canceled, type: "engine_custom_click_settle" });
+		assert.ok(!engine.engineShows(/engine line 1\s*$/));
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.ok(!engine.shows(/engine line 1\s*$/), ui.screen().join("\n"));
 	} finally {
