@@ -315,7 +315,12 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 									)
 								: undefined;
 					}
-					const handle = this.ui.showOverlay(mountedComponent, mountedOverlayOptions);
+					const handle = this.ui.showOverlay(
+						mountedComponent,
+						options?.purpose === "navigation"
+							? { ...mountedOverlayOptions, modal: false }
+							: mountedOverlayOptions,
+					);
 					overlayHandle = handle;
 					mounted = true;
 					this.extensionOverlays.add(removeOverlay);
@@ -394,7 +399,13 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 				} else {
 					inlineMount = component;
 					const deferFocus = this.shouldDeferInlineCustomUiFocus();
-					this.pushExtensionDialog(component, options?.blocked, !deferFocus, releaseHostCustomUi);
+					this.pushExtensionDialog(
+						component,
+						options?.blocked,
+						!deferFocus,
+						releaseHostCustomUi,
+						options?.purpose,
+					);
 					if (deferFocus) {
 						this.pendingInlineCustomUiFocus = component;
 						this.notifyHostCustomUiStateListeners();

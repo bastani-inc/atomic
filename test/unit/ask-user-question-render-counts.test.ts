@@ -7,7 +7,7 @@
  * the dialog builds nothing, and previews and layout are wrapped once per (content, width).
  */
 import assert from "node:assert/strict";
-import { Markdown } from "@bastani/atomic-tui";
+import { ClickableRows, Markdown } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { QuestionnaireSession } from "../../packages/coding-agent/src/core/tools/ask-user-question/state/questionnaire-session.ts";
@@ -41,6 +41,9 @@ vi.mock(
 		return { ...original, crossTabLeftWidthWithDonation: vi.fn(original.crossTabLeftWidthWithDonation) };
 	},
 );
+
+/** Lines as the terminal shows them: without the zero-width marks that name each row's click target. */
+const unmarked = (lines: readonly string[]): string[] => new ClickableRows<string>().collect(lines, () => undefined);
 
 /** Wide enough for the side-by-side preview layout. */
 const WIDE = 120;
@@ -170,7 +173,7 @@ test("moving between options reuses styled descriptions until resize or invalida
 	assert.ok(first.some((line) => line.includes("first:")));
 	list.setNumbering(9, 11);
 	assert.ok(
-		list.render(40).some((line) => line.startsWith("      second:")),
+		unmarked(list.render(40)).some((line) => line.startsWith("      second:")),
 		"numbering changes indentation",
 	);
 });
@@ -418,7 +421,7 @@ test("an option list measures and paints from one layout per props and width (#4
 	assert.equal(select.mock.calls.length, 2, "a new width lays the list out again");
 	list.setProps({ selectedIndex: 1, focused: true, inputBuffer: "", inputCaret: 0 });
 	assert.ok(
-		list.render(30).some((line) => line.startsWith("❯ 2. Prose")),
+		unmarked(list.render(30)).some((line) => line.startsWith("❯ 2. Prose")),
 		"new props move the pointer",
 	);
 	list.render(40);

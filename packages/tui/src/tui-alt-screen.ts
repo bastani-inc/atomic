@@ -5,6 +5,7 @@ import {
 	getAltScreenSearchMatchKey,
 } from "./alt-screen-search.ts";
 import { type HintAction, type HintSpan, hintActionAt, readHintSpans } from "./clickable-hints.ts";
+import { isSingleLeftClick } from "./clickable-rows.ts";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.ts";
 import { ScrollView } from "./components/scroll-view.ts";
 import { WindowedContainer, type WindowRows } from "./components/windowed-container.ts";
@@ -41,6 +42,7 @@ import {
 	compositeTuiLine,
 	dispatchMouseEvent,
 	type OverlayHandle,
+	type PointerFocus,
 	retargetMouseEvent,
 	TuiBase,
 	type TuiMouseButton,
@@ -143,7 +145,7 @@ interface ClickTarget {
 	 * component acted on, such as one that expanded a block, takes what the next paint draws there instead.
 	 */
 	drawn: readonly unknown[];
-	/** Whether a component acted on the click, so the next paint shows what the click itself drew. */
+	/** Whether a key hint ran, so the next paint shows what its key did. */
 	awaitingPaint: boolean;
 }
 
@@ -167,7 +169,7 @@ interface PointerFrame {
 		| undefined;
 	readonly decorated: boolean;
 	/** The components drawn at the pointer, outermost first, then what the innermost reports for its row. */
-	readonly drawn: readonly unknown[];
+	readonly drawn: readonly (Component | string | undefined)[];
 }
 
 /** Whether the same components are drawn at the pointer in the same places: the frame's geometry there. */
@@ -223,8 +225,8 @@ function stacksChildren(component: Component): component is ChildRows {
  * The components a frame drew at `row` of `component`, laid out `width` wide, from `component` itself inward, then
  * the innermost one's row key. A root that draws the row itself is the only component named.
  */
-function drawnAt(component: Component, width: number, row: number): unknown[] {
-	const drawn: unknown[] = [component];
+function drawnAt(component: Component, width: number, row: number): (Component | string | undefined)[] {
+	const drawn: (Component | string | undefined)[] = [component];
 	let current: Component = component;
 	let at = row;
 	for (let depth = 0; depth < MAX_DRAWN_DEPTH && stacksChildren(current); depth++) {
@@ -244,6 +246,12 @@ interface SgrMouseEvent {
 	x: number;
 	y: number;
 	release: boolean;
+}
+
+/** Some terminals report no button (3) on release. The click keeps the button that went down and any
+ * modifier held at either end of the gesture. */
+function clickButton(press: number, release: number): number {
+	return ((release & 3) === 3 ? press & 3 : release & 3) | ((press | release) & (4 | 8 | 16));
 }
 
 interface WheelEvent {
@@ -309,6 +317,8 @@ export interface TuiAltScreenOptions {
 	 */
 	scrollToEndIndicator?: () => string;
 	scrollPinnedPrompt?: { isPrompt: (row: string) => boolean; render: (promptRow: string) => string };
+	/** The dialog mounted in the layout, if any. It owns clicks only while it or one of its children has focus. */
+	getInlineDialog?: () => Component | undefined;
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
@@ -367,17 +377,28 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private paintedHints: (readonly HintSpan[] | undefined)[] = [];
 	/** What the screen showed under the pointer when the left button went down. */
 	private pressFrame?: PointerFrame;
+	private selectionPressButton = 0;
+	/** The dialog that held focus when the left button went down: one shown or closed before the release takes the click. */
+	private pressFocus?: PointerFocus;
 	/** Rows of the primary transcript that a drawn-over row covers: the pinned prompt and the jump-to-latest row. */
 	private decoratedRows = new Map<number, { readonly x: number; readonly width: number }>();
 	private selectionDragged = false;
 	private mouseCapture?: TuiMouseDispatchTarget;
 	private mousePressTarget?: TuiMouseDispatchTarget;
-	private mousePressPoint?: { x: number; y: number };
+	private mousePressPoint?: { x: number; y: number; button: number };
 	/** What the screen showed at a press a component took: its click needs the same geometry at the release. */
 	private mousePressFrame?: PointerFrame;
+	/** The dialog that held focus at that press: a dialog shown before the release takes the click away. */
+	private mousePressFocus?: PointerFocus;
 	private mousePressMoved = false;
-	/** Single clicks whose action waits until a second press can no longer continue them. */
-	private readonly waitingSingleClicks = new Map<ClickTarget, TuiMouseDispatchResult>();
+	/**
+	 * Single clicks whose action waits until a second press can no longer continue them, with the dialog focus each
+	 * was clicked under.
+	 */
+	private readonly waitingSingleClicks = new Map<
+		ClickTarget,
+		{ readonly result: TuiMouseDispatchResult; readonly focus: PointerFocus }
+	>();
 	private singleClickTimer?: NodeJS.Timeout;
 	private readonly wheelScroll: WheelScrollAccelerator;
 	private readonly mouseEnabled: boolean;
@@ -386,6 +407,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
 	private readonly scrollToEndIndicator?: () => string;
 	private readonly scrollPinnedPrompt?: TuiAltScreenOptions["scrollPinnedPrompt"];
+	private readonly getInlineDialog?: () => Component | undefined;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
 	private copyOnSelect: boolean;
@@ -416,6 +438,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.searchNavigationButtonStyle = options.searchNavigationButtonStyle ?? ((text) => text);
 		this.scrollToEndIndicator = options.scrollToEndIndicator;
 		this.scrollPinnedPrompt = options.scrollPinnedPrompt;
+		this.getInlineDialog = options.getInlineDialog;
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.copyOnSelect = options.copyOnSelect ?? true;
@@ -899,6 +922,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flashes.flash(message, durationMs);
 	}
 
+	/** The find bar holds focus while the transcript behind it is read and clicked: it is no dialog. */
+	protected override getModalOwner(): Component | undefined {
+		const focused = this.getFocusedComponent();
+		if (!focused || focused === this.activeSearch?.component) return undefined;
+		const dialog = this.getInlineDialog?.();
+		return dialog && this.containsComponent(dialog, focused) ? dialog : super.getModalOwner();
+	}
+
+	protected override modalContainsPoint(owner: Component, x: number, y: number): boolean {
+		const frame = this.pointerFrame(x, y);
+		if (frame.overlay) return frame.overlay.component === owner;
+		return !frame.decorated && (frame.drawn.includes(owner) || frame.boxes.some((box) => box.component === owner));
+	}
+
 	/** Focused overlays and components that capture viewport input receive viewport keys instead of the transcript. */
 	private shouldDeferViewportInput(): boolean {
 		if (this.getFocusedComponent()?.capturesViewportInput) return true;
@@ -910,6 +947,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mousePressTarget = undefined;
 		this.mousePressPoint = undefined;
 		this.mousePressFrame = undefined;
+		this.mousePressFocus = undefined;
 		this.mousePressMoved = false;
 	}
 
@@ -951,7 +989,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const overlay = this.dispatchMouseToOverlay(event);
 			const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
 			if (result) {
-				if (this.applyMouseDispatchResult(event, result)) this.requestRender();
+				if (this.applyMouseDispatchResult(event, result, this.getPointerFocus())) this.requestRender();
 				return { consume: true };
 			}
 			this.routeWheel(wheelEvent, wheelDelta);
@@ -1077,22 +1115,66 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			if (visited.has(box.component)) continue;
 			if (getLayoutNode(box.component) && box.component.handleMouse === Container.prototype.handleMouse) continue;
 			visited.add(box.component);
+			// A click names the painted source row. Wheel coordinates stay relative to the visible box.
+			const offset = event.type === "wheel" ? 0 : (box.lineOffset ?? 0);
 			const result = dispatchMouseEvent(box.component, {
 				...event,
 				x: event.screenX - box.rect.x,
-				y: event.screenY - box.rect.y,
+				y: event.screenY - box.rect.y + offset,
 				width: box.rect.width,
-				height: box.rect.height,
+				height: box.rect.height + offset,
 			});
 			if (result) return result;
 		}
 		return undefined;
 	}
 
-	private applyMouseDispatchResult(event: TuiMouseEvent, result: TuiMouseDispatchResult): boolean {
+	/** A validated single click enters the pane it will act in. Do not spend the first click focusing it,
+	 * or steal focus back after the row action opens its next view. Drags never transfer keyboard focus. */
+	private focusForClick(event: TuiMouseEvent, frame: PointerFrame, focus: PointerFocus): PointerFocus {
+		if (focus.owner || !isSingleLeftClick(event)) return focus;
+		const pane =
+			frame.overlay?.component ??
+			frame.drawn.find(
+				(item): item is Component => typeof item === "object" && !!item.handleInput && !!item.handleMouse,
+			);
+		if (
+			!pane?.handleInput ||
+			!pane.handleMouse ||
+			pane.acceptsClickFocus === false ||
+			this.getFocusedComponent() === pane ||
+			!this.isPointerTargetMounted(pane)
+		)
+			return focus;
+		this.setFocus(pane);
+		return this.focusAfterClaim(focus, pane);
+	}
+
+	/** Only the target's own acquisition belongs to its click. Keep the stale token after any other transition,
+	 * including a different dialog opened and closed synchronously by the new focus owner's setter. */
+	private focusAfterClaim(before: PointerFocus, target: Component): PointerFocus {
+		const after = this.getPointerFocus();
+		return !before.owner &&
+			after.generation === before.generation + 1 &&
+			after.owner &&
+			this.containsComponent(after.owner, target)
+			? after
+			: before;
+	}
+
+	private applyMouseDispatchResult(
+		event: TuiMouseEvent,
+		result: TuiMouseDispatchResult,
+		focus: PointerFocus,
+	): boolean {
 		const focusTarget = this.resolveMouseFocusTarget(result.focusTarget ?? result.target.component);
-		const focusChanged = result.focus === true && this.getFocusedComponent() !== focusTarget;
-		if (result.focus) this.setFocus(focusTarget);
+		const focusChanged =
+			result.focus === true && this.getPointerFocus() === focus && this.getFocusedComponent() !== focusTarget;
+		if (focusChanged) {
+			this.setFocus(focusTarget);
+			// A captured control can claim focus on release rather than on press.
+			if (this.mousePressFocus === focus) this.mousePressFocus = this.focusAfterClaim(focus, focusTarget);
+		}
 		if (result.capture) this.mouseCapture = result.target;
 		return (
 			result.render ??
@@ -1112,14 +1194,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	/** Run an action only if its press stays single. */
-	private waitForSingleClick(result: TuiMouseDispatchResult, start: ClickTarget): void {
+	private waitForSingleClick(result: TuiMouseDispatchResult, start: ClickTarget, focus: PointerFocus): void {
 		const action = result.whenSingleClick;
 		if (action === undefined) return;
 		if (start.count !== 1 || !this.altScreenActive) {
 			result.onSingleClickCancel?.();
 			return;
 		}
-		this.waitingSingleClicks.set(start, result);
+		this.waitingSingleClicks.set(start, { result, focus });
 		this.scheduleSingleClickTimer();
 	}
 
@@ -1131,10 +1213,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			() => {
 				this.singleClickTimer = undefined;
 				try {
-					for (const [press, result] of this.waitingSingleClicks) {
+					for (const [press, waiting] of this.waitingSingleClicks) {
 						if (clickTime() - press.timestamp <= MULTI_CLICK_INTERVAL_MS) break;
 						this.waitingSingleClicks.delete(press);
-						result.whenSingleClick?.();
+						// A dialog that takes focus before the click settles takes the click away from what is behind it.
+						if (this.getPointerFocus() !== waiting.focus) {
+							waiting.result.onSingleClickCancel?.();
+							continue;
+						}
+						waiting.result.whenSingleClick?.();
 						this.requestRender();
 					}
 				} finally {
@@ -1155,7 +1242,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			clearTimeout(this.singleClickTimer);
 			this.singleClickTimer = undefined;
 		}
-		waiting.onSingleClickCancel?.();
+		waiting.result.onSingleClickCancel?.();
 	}
 
 	private dropWaitingSingleClicks(): void {
@@ -1188,7 +1275,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		// A press taken by a scrollbar, search button or another gesture also breaks the click sequence.
 		if (type === "press") this.lastClick = undefined;
 		const event = this.createMouseEvent(type, raw.button, raw.x, raw.y);
+		const focus = this.getPointerFocus();
 
+		if ((this.mouseCapture || this.mousePressTarget) && this.mousePressFocus !== focus) {
+			this.clearComponentMouseGesture();
+			// The gesture ends without a click, so it continues no click sequence either.
+			this.lastClick = undefined;
+			if (type !== "press") return;
+		}
 		if (this.mouseCapture || this.mousePressTarget) {
 			const target = this.mouseCapture ?? this.mousePressTarget!;
 			if (this.mousePressPoint && (raw.x !== this.mousePressPoint.x || raw.y !== this.mousePressPoint.y)) {
@@ -1197,25 +1291,34 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			}
 			let render = false;
 			const targetResult = this.dispatchMouseToTarget(event, target);
-			if (targetResult) render = this.applyMouseDispatchResult(event, targetResult);
+			if (targetResult) render = this.applyMouseDispatchResult(event, targetResult, focus);
 			if (raw.release) {
-				// The release always reaches the target, so it can end what its press started. The click needs the
-				// same target still drawn where it was pressed, not another that took its place.
+				// The click needs the same target still drawn where it was pressed, not another that took its place.
 				const click = this.lastClick;
 				if (
 					click &&
 					!this.mousePressMoved &&
 					this.mousePressPoint?.x === raw.x &&
 					this.mousePressPoint.y === raw.y &&
+					((raw.button & 3) === 3 || (raw.button & 3) === (this.mousePressPoint.button & 3)) &&
+					this.getPointerFocus() === this.mousePressFocus &&
 					sameDrawnAtPointer(this.mousePressFrame, this.pointerFrame(raw.x, raw.y))
 				) {
-					const clickEvent = this.createMouseEvent("click", raw.button, raw.x, raw.y, {
-						clickCount: click.count,
-					});
-					const clickResult = this.dispatchMouseToTarget(clickEvent, target);
+					const clickEvent = this.createMouseEvent(
+						"click",
+						clickButton(this.mousePressPoint.button, raw.button),
+						raw.x,
+						raw.y,
+						{
+							clickCount: click.count,
+						},
+					);
+					const clickFocus = this.focusForClick(clickEvent, this.mousePressFrame!, this.getPointerFocus());
+					const clickResult =
+						clickFocus === this.getPointerFocus() ? this.dispatchMouseToTarget(clickEvent, target) : undefined;
 					if (clickResult) {
-						render = this.applyMouseDispatchResult(clickEvent, clickResult) || render;
-						this.waitForSingleClick(clickResult, click);
+						render = this.applyMouseDispatchResult(clickEvent, clickResult, clickFocus) || render;
+						this.waitForSingleClick(clickResult, click, clickFocus);
 					}
 				} else this.lastClick = undefined;
 				this.clearComponentMouseGesture();
@@ -1224,13 +1327,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 
-		if (this.handleSearchMouseEvent(raw)) return;
+		if (!focus.owner && this.handleSearchMouseEvent(raw)) return;
 
 		// A press on a key hint, and the drag or release that follows it, belong to the text selection: a click runs the
 		// hint and a drag selects text, whatever component drew the hint.
 		if (this.hintGestureActive || (type === "press" && this.isHintPress(raw))) {
 			this.hintGestureActive = !raw.release;
-			this.handleSelectionMouseEvent(raw, timestamp, previous);
+			this.handleSelectionMouseEvent(raw, focus, timestamp, previous);
 			return;
 		}
 
@@ -1246,12 +1349,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 		const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(event));
 		if (result) {
-			const render = this.applyMouseDispatchResult(event, result);
+			const takesFocus = result.focus && this.getPointerFocus() === focus;
+			const render = this.applyMouseDispatchResult(event, result, focus);
 			if (type === "press") {
 				this.clearTextSelection();
 				this.mousePressTarget = result.target;
-				this.mousePressPoint = { x: raw.x, y: raw.y };
+				this.mousePressPoint = { x: raw.x, y: raw.y, button: raw.button };
 				this.mousePressFrame = this.pointerFrame(raw.x, raw.y);
+				this.mousePressFocus = takesFocus
+					? this.focusAfterClaim(focus, result.focusTarget ?? result.target.component)
+					: focus;
 				this.recordPress(previous, {
 					timestamp,
 					button: raw.button,
@@ -1268,8 +1375,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return;
 		}
 
-		if (this.handleRightClickPaste(raw)) return;
-		this.handleSelectionMouseEvent(raw, timestamp, previous);
+		if (
+			raw.button === 2 &&
+			this.getPointerFocus() === focus &&
+			(!focus.owner || this.modalContainsPoint(focus.owner, raw.x, raw.y)) &&
+			this.handleRightClickPaste(raw)
+		)
+			return;
+		this.handleSelectionMouseEvent(raw, focus, timestamp, previous);
 	}
 
 	private parseWheelEvent(data: string): WheelEvent | undefined {
@@ -1567,6 +1680,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return count;
 	}
 
+	/** A press replayed by an asynchronous input handler still has to land on what the user pressed. */
+	protected guardMousePress(x: number, y: number): () => boolean {
+		const pressed = this.pointerFrame(x, y);
+		return () => samePointerFrame(pressed, this.pointerFrame(x, y));
+	}
+
 	/** What the screen shows at `x`, `y`: the painted row, the layout boxes and overlay drawn there. */
 	private pointerFrame(x: number, y: number): PointerFrame {
 		const decoration = this.decoratedRows.get(y);
@@ -1578,11 +1697,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			hint: this.hintAt(x, y),
 			unselectedLine: this.unselectedScreen[y],
 			highlighted: this.highlightedRows.has(y),
-			boxes: boxes.map((box) => ({ component: box.component, x: box.rect.x, y: box.rect.y })),
+			boxes: boxes.map((box) => ({
+				component: box.component,
+				x: box.rect.x,
+				y: box.rect.y - (box.lineOffset ?? 0),
+			})),
 			drawn: overlay
 				? drawnAt(overlay.component, overlay.width, y - overlay.row)
 				: innermost
-					? drawnAt(innermost.component, innermost.rect.width, y - innermost.rect.y)
+					? drawnAt(innermost.component, innermost.rect.width, y - innermost.rect.y + (innermost.lineOffset ?? 0))
 					: [],
 			overlay,
 			// An overlay drawn over the row takes its clicks; the decoration under it is hidden.
@@ -1649,7 +1772,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionDragPointer = undefined;
 	}
 
-	private handleSelectionMouseEvent(event: SgrMouseEvent, timestamp: number, previous: ClickTarget | undefined): void {
+	private handleSelectionMouseEvent(
+		event: SgrMouseEvent,
+		focus: PointerFocus,
+		timestamp: number,
+		previous: ClickTarget | undefined,
+	): void {
 		const button = event.button & 3;
 		if (button !== 0 && !(event.release && button === 3)) return;
 		const anchorScrollView = this.selectionAnchor?.scrollView;
@@ -1671,12 +1799,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 						stripTerminalSequences(releaseFrame.line ?? "") &&
 					getOsc8LinkAtColumn(this.pressFrame?.line ?? "", event.x) ===
 						getOsc8LinkAtColumn(releaseFrame.line ?? "", event.x));
+			// A component may open a dialog while handling the raw release before it falls through to selection.
 			const unchanged =
-				samePaint ||
-				(sameSpot &&
-					this.pressFrame?.highlighted &&
-					!releaseFrame.highlighted &&
-					this.pressFrame.unselectedLine === releaseFrame.unselectedLine);
+				this.getPointerFocus() === this.pressFocus &&
+				(samePaint ||
+					(sameSpot &&
+						this.pressFrame?.highlighted &&
+						!releaseFrame.highlighted &&
+						this.pressFrame.unselectedLine === releaseFrame.unselectedLine));
 			if (click && (click.row !== event.y || click.col !== event.x || !sameSpot)) this.lastClick = undefined;
 			const isClick =
 				this.lastClick !== undefined &&
@@ -1687,6 +1817,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			// A click acts on what the screen showed when it was pressed: a repaint that changed what is under the
 			// pointer before the release makes it no click at all.
 			this.pressFrame = undefined;
+			this.pressFocus = undefined;
 			const clickedUrl = isClick && unchanged ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
 			// A key hint acts on a single click of what the press showed, as a pressed key would.
@@ -1712,18 +1843,32 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				return;
 			}
 			if (click && isClick && unchanged && !releaseFrame.decorated) {
-				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
-					clickCount: click.count,
-				});
+				const clickEvent = this.createMouseEvent(
+					"click",
+					clickButton(this.selectionPressButton, event.button),
+					event.x,
+					event.y,
+					{
+						clickCount: click.count,
+					},
+				);
+				const clickFocus = this.focusForClick(clickEvent, releaseFrame, focus);
+				if (clickFocus !== this.getPointerFocus()) {
+					this.clearTextSelection();
+					this.requestRender();
+					return;
+				}
 				const overlay = this.dispatchMouseToOverlay(clickEvent);
 				const result = overlay.result ?? (overlay.hit ? undefined : this.dispatchMouseToLayout(clickEvent));
 				if (result) {
-					const render = this.applyMouseDispatchResult(clickEvent, result);
+					const render = this.applyMouseDispatchResult(clickEvent, result, clickFocus);
 					this.clearTextSelection();
-					this.waitForSingleClick(result, click);
-					// Only an immediate action has changed what the next frame draws here.
-					click.awaitingPaint = result.whenSingleClick === undefined;
-					if (render) this.requestRender();
+					this.waitForSingleClick(result, click, clickFocus);
+					if (render && !result.whenSingleClick) {
+						// Remember the immediate action's own paint (e.g. opening a submenu), not a later list refresh.
+						this.renderNow();
+						click.drawn = this.pointerFrame(click.col, click.row).drawn;
+					} else if (render) this.requestRender();
 					return;
 				}
 			}
@@ -1769,12 +1914,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionFocus = range?.end ?? anchor;
 		this.selectionDragged = false;
 		this.pressFrame = pressFrame;
-		this.pressedUrl = range
-			? undefined
-			: getOsc8LinkAtColumn(
-					this.previousScreen[Math.max(0, Math.min(this.terminal.rows - 1, event.y))] ?? "",
-					Math.max(0, Math.min(this.terminal.columns - 1, event.x)),
-				);
+		this.selectionPressButton = event.button;
+		this.pressFocus = focus;
+		this.pressedUrl =
+			range || (focus.owner && !this.modalContainsPoint(focus.owner, event.x, event.y))
+				? undefined
+				: getOsc8LinkAtColumn(
+						this.previousScreen[Math.max(0, Math.min(this.terminal.rows - 1, event.y))] ?? "",
+						Math.max(0, Math.min(this.terminal.columns - 1, event.x)),
+					);
 		this.pressedHint = range || (event.button & MODIFIER_BUTTON_BITS) !== 0 ? undefined : pressFrame.hint;
 		this.requestRender();
 	}
@@ -2160,6 +2308,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override doRender(): void {
+		// A resize can change which dialog is visible without moving keyboard focus.
+		this.getPointerFocus();
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);

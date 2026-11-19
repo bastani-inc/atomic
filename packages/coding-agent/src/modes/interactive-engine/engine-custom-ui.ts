@@ -179,8 +179,8 @@ function serializableOverlayOptions(
 ): SerializableOverlayOptions | undefined {
 	const value = typeof options === "function" ? options() : options;
 	if (!value) return undefined;
-	const { anchor, col, margin, maxHeight, minWidth, offsetX, offsetY, row, width } = value;
-	return { anchor, col, margin, maxHeight, minWidth, offsetX, offsetY, row, width };
+	const { anchor, col, margin, maxHeight, minWidth, modal, nonCapturing, offsetX, offsetY, row, width } = value;
+	return { anchor, col, margin, maxHeight, minWidth, modal, nonCapturing, offsetX, offsetY, row, width };
 }
 
 function sameFrame(
@@ -281,6 +281,7 @@ export class EngineCustomUiService {
 				this.send({
 					type: "engine_custom_open",
 					componentId,
+					...(!component.handleInput || component.acceptsClickFocus === false ? { acceptsClickFocus: false } : {}),
 					overlay: false,
 					widgetKey: key,
 					widgetPlacement: placement,
@@ -356,6 +357,7 @@ export class EngineCustomUiService {
 		this.send({
 			type: "engine_custom_open",
 			componentId,
+			...(!component.handleInput || component.acceptsClickFocus === false ? { acceptsClickFocus: false } : {}),
 			overlay: options?.overlay === true,
 			purpose: options?.purpose,
 			deferInlineCustomUiFocus: options?.deferInlineCustomUiFocus,
@@ -498,13 +500,14 @@ export class EngineCustomUiService {
 					if (paintedRowKey.call(record.component, command.y) !== command.rowKey) break;
 				} else if (command.frame !== record.frame) break;
 				const { x, y, width, height, clickId } = command;
+				let clicked: TuiMouseEventResult | undefined;
 				record.handlingInput = true;
 				try {
 					runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
 						const handleMouse = record.component.handleMouse as
 							| ((event: TuiMouseEvent) => TuiMouseEventResult | undefined)
 							| undefined;
-						const result = handleMouse?.call(record.component, {
+						clicked = handleMouse?.call(record.component, {
 							type: "click",
 							button: "left",
 							x,
@@ -520,12 +523,12 @@ export class EngineCustomUiService {
 						});
 						// Resolved against the frame the host clicked, it acts once the host settles the click. A host from
 						// before clicks were settled numbers none and settles none: its click acts now, as it did there.
-						if (!result?.whenSingleClick) return;
-						if (clickId === undefined) result.whenSingleClick();
+						if (!clicked?.whenSingleClick) return;
+						if (clickId === undefined) clicked.whenSingleClick();
 						else {
 							const waiting = record.singleClickActions ?? new Map<number, TuiMouseEventResult>();
 							record.singleClickActions = waiting;
-							waiting.set(clickId, result);
+							waiting.set(clickId, clicked);
 							if (!command.cancelsClicks && waiting.size > LEGACY_WAITING_SINGLE_CLICKS) {
 								const oldest = waiting.keys().next().value!;
 								const evicted = waiting.get(oldest);
@@ -539,7 +542,9 @@ export class EngineCustomUiService {
 				} finally {
 					record.handlingInput = false;
 				}
-				if (record.paintAfterInput === true) {
+				// A click the component took repaints it, as a key it took does: a list that ran a row on the click
+				// shows what the row opened without asking for a render itself.
+				if (record.paintAfterInput === true || (clicked?.handled === true && clicked.render !== false)) {
 					record.paintAfterInput = false;
 					this.paintComponent(command.componentId);
 				}

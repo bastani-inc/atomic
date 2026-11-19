@@ -624,15 +624,17 @@ export class WorkflowAttachPane implements Component {
 		}
 		return this.graphView.render(width);
 	}
-	/** A click in an attached stage chat: the chat draws from the pane's top row. */
+	/** A click in the attached stage chat, or on the graph's stage switcher: each draws from the pane's top row. */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (!this.visible || this.mode !== "stage-chat" || !this.chatView) return undefined;
-		return this.chatView.handleMouse(event);
+		if (!this.visible) return undefined;
+		if (this.mode === "stage-chat" && this.chatView) return this.chatView.handleMouse(event);
+		return this.graphView.handleMouse(event);
 	}
-	/** What the attached stage chat last drew on `row`; the graph names none. */
+	/** What the attached stage chat, or the graph's stage switcher, last drew on `row`. */
 	paintedRowKey(row: number): string | undefined {
-		if (!this.visible || this.mode !== "stage-chat" || !this.chatView) return undefined;
-		return this.chatView.paintedRowKey(row);
+		if (!this.visible) return undefined;
+		if (this.mode === "stage-chat" && this.chatView) return this.chatView.paintedRowKey(row);
+		return this.graphView.paintedRowKey(row);
 	}
 	handleInput(data: string): boolean | undefined {
 		this._flushStoreUpdate();
