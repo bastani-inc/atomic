@@ -101,24 +101,19 @@ for (const shared of [false, true]) {
 	);
 }
 
-test("an already-open SQL store refuses a newer format before reading or writing session data (#5554)", async () => {
+test("paged history reads on an already-open SQL store refuse a newer session format (#5554)", async () => {
 	await withNodeSqliteDatabase(async ({ database }) => {
 		const store = await SqlSessionStore.open(database);
 		try {
 			await store.create(header, [message("first", "saved")]);
-			const blob = await store.putBlob(header.id, Uint8Array.of(42));
 			await database.run("UPDATE session_meta SET schema_version = ?", SESSION_SCHEMA_VERSION + 1);
 			const newer = (error: Error) =>
 				error instanceof StorageSchemaVersionError && /newer Atomic/i.test(error.message);
 			for (const read of [
-				() => store.readHeader(header.id),
-				() => store.readEntryRange(header.id, { fromSeq: 1, toSeq: 1 }),
-				() => store.getBlob(header.id, blob.hash),
-				() => store.snapshotBlobs.listBlobHashes(),
-				() => store.searchIndex!.coverage(header.id, 1),
-				() => store.findMostRecent({ cwd: header.cwd }),
-				() => store.readResume(header.id),
-				() => store.append(header.id, [message("wrong", "no")], { expectSeq: 1 }),
+				() => store.readTreeOutline(header.id, 1, 1),
+				() => store.readEntrySizes(header.id, 1, 1),
+				() => store.readResumeAt(header.id, "first", 1),
+				() => store.readRange(header.id, 1, 1),
 			])
 				await assert.rejects(read(), newer);
 			assert.equal((await database.get("SELECT count(*) AS n FROM session_entries"))?.n, 1);

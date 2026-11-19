@@ -60,6 +60,7 @@ export class LegacySessionStore implements SessionStore {
 	readonly readEntryRange?: (sessionId: string, query: SessionEntriesQuery) => Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
 	readonly readForkWindow?: SessionStore["readForkWindow"];
+	readonly readTreeOutline?: SessionStore["readTreeOutline"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -78,6 +79,11 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		if (inner.readTreeOutline)
+			this.readTreeOutline = async (id, from, to, epoch) => {
+				await this.convert(id);
+				return inner.readTreeOutline!(id, from, to, epoch);
+			};
 		const { readEntryRange, searchIndex } = inner;
 		if (readEntryRange !== undefined)
 			this.readEntryRange = async (sessionId, query) => {
@@ -150,10 +156,8 @@ export class LegacySessionStore implements SessionStore {
 	}
 
 	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
-		if (!this.inner.updateHeader)
-			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement updateHeader`);
 		await this.convert(header.id);
-		return this.inner.updateHeader(header, options);
+		return (await import("./snapshot-history.js")).updateStoredHeader(this.inner, header, options);
 	}
 
 	async load(sessionId: string): Promise<SessionSnapshot> {

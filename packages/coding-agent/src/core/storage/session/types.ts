@@ -9,6 +9,14 @@ import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
 
+/** Yield between archive pages, including in browser-backed custom stores. */
+export function yieldSessionTurn(): Promise<void> {
+	return new Promise((resolve) => {
+		if (typeof setImmediate === "function") setImmediate(resolve);
+		else setTimeout(resolve, 0);
+	});
+}
+
 /** @internal Platform-owned stores inject filesystem identity without coupling portable adapters to it. */
 export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean | Promise<boolean>;
 
@@ -118,6 +126,20 @@ export interface SessionBranchSpan {
 	readonly end: number;
 	readonly older: boolean;
 	readonly newer: boolean;
+}
+
+/** Body-free navigation record. The original entry and any long label stay at their sequence in the store. */
+export interface SessionTreeOutlineEntry {
+	readonly seq: number;
+	readonly id: string;
+	readonly parentId: string | null;
+	readonly timestamp: string;
+	readonly type: SessionEntry["type"];
+	readonly role?: string;
+	readonly hideAssistant?: boolean;
+	readonly leafMove?: boolean;
+	readonly labelTarget?: string;
+	readonly label?: string;
 }
 
 export interface SessionEntrySizes {
@@ -412,6 +434,13 @@ export interface SessionStore {
 	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
 
 	readRange?(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange>;
+	/** Project structural metadata for tree navigation; never return a message body or tool arguments. */
+	readTreeOutline?(
+		sessionId: string,
+		fromSeq: number,
+		toSeq: number,
+		epoch?: string,
+	): Promise<readonly (SessionTreeOutlineEntry | { readonly seq: number; readonly streamed: true })[]>;
 	/** Locate a contiguous range on the requested branch without reading neighboring conversation bodies. */
 	readBranchSpan?(sessionId: string, cut: SessionBranchPageCut): Promise<SessionBranchSpan | undefined>;
 	/** Metadata only; a historical page is sized before any entry is decoded. */

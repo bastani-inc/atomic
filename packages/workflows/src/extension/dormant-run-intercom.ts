@@ -266,19 +266,12 @@ export function registerDormantRunIntercomRoutes(
 		dormant.clear();
 		releaseAllSubagents();
 		if (disposed || ctx?.isPresentationOnly === true) return;
-		const manager = ctx?.sessionManager;
-		const current = generation;
-		const open = async (ids: readonly string[]): Promise<void> => {
-			if (disposed || current !== generation) return;
-			const runIds = ids.filter((id) => !isLive(id));
-			if (runIds.length > 0) await examine(ctx, runIds, current);
-		};
-		if (manager?.readOpenWorkflowIds) {
-			examined = manager.readOpenWorkflowIds().then(open).catch(reportExamineFailure);
-		} else {
-			const entries = (manager?.getEntries?.() ?? []) as readonly SessionEntry[];
-			examined = open(scanInFlightRuns(entries).map((run) => run.runId)).catch(reportExamineFailure);
-		}
+		const entries = (ctx?.sessionManager?.getEntries?.() ?? []) as readonly SessionEntry[];
+		const runIds = scanInFlightRuns(entries)
+			.map((run) => run.runId)
+			.filter((runId) => !isLive(runId));
+		if (runIds.length === 0) return;
+		examined = examine(ctx, runIds, generation).catch(reportExamineFailure);
 	});
 	const unsubscribeStore = activeStore.subscribeInvalidation(() => {
 		// A resumed run's live owner re-announces the same route; it is no longer dormant here.

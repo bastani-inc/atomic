@@ -266,6 +266,33 @@ test("resume excludes abandoned branches after the active boundary (#5249)", asy
 	assert.deepEqual(partial.getEntries(), (await store.load("session")).entries);
 });
 
+test("opening the tree returns historical ancestry without fetching old message bodies or hydrating the manager (#5554)", async () => {
+	const { open, store } = await fixture([
+		user("old", null),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+		user("sibling", "old"),
+	]);
+	const view = await open();
+	await view.branch("current");
+	const held = view.getEntryCount();
+	const reads = vi.spyOn(store, "readRange");
+	const rows = [];
+	for await (const page of view.readTreeOutline()) rows.push(...page);
+	assert.deepEqual(
+		rows.map((row) => [row.id, row.parentId]),
+		[
+			["old", null],
+			["clear", "old"],
+			["current", "clear"],
+			["sibling", "old"],
+		],
+	);
+	assert.equal(reads.mock.calls.length, 0);
+	assert.equal(view.getEntryCount(), held);
+	assert.equal(view.getEntry("old"), undefined);
+});
+
 test("settled heartbeats and delivery cards do not grow the resumed state (#5249)", async () => {
 	const counts = [];
 	for (const n of [10, 100]) {

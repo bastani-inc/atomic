@@ -460,9 +460,7 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 };
 
 InteractiveModeBase.prototype.handleSessionCommand = function (this: InteractiveModeBase): void | Promise<void> {
-	if (this.sessionManager.hasFullHistory?.() === false) {
-		return this.sessionManager.loadFullHistory().then(() => showSessionInfo.call(this));
-	}
+	// getSessionStats combines the window with the store's omitted-history totals.
 	showSessionInfo.call(this);
 };
 

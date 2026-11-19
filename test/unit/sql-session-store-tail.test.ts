@@ -234,6 +234,43 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		}
 	});
 
+	it("reopening a session does not evict an older client's resume index (#5554)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(4);
+		await writeSession(path, entries);
+		await onDatabase(path, async (db) => {
+			const state = JSON.parse(
+				(await db.get<{ summary_state: string }>(
+					"SELECT summary_state FROM session_sessions WHERE id=?",
+					header.id,
+				))!.summary_state,
+			);
+			const older = { ...state.resume, version: 5, admissions: [] };
+			await db.run(
+				"UPDATE session_sessions SET summary_state=? WHERE id=?",
+				JSON.stringify({ ...state, resume: older }),
+				header.id,
+			);
+			const openAndRead = async () => {
+				const store = await SqlSessionStore.open(db);
+				try {
+					await store.readResume(header.id);
+				} finally {
+					await store.close();
+				}
+				return JSON.parse(
+					(await db.get<{ summary_state: string }>(
+						"SELECT summary_state FROM session_sessions WHERE id=?",
+						header.id,
+					))!.summary_state,
+				);
+			};
+			const first = await openAndRead();
+			assert.deepEqual(first.resume, older, "a released reader still recognizes the original index");
+			assert.deepEqual(await openAndRead(), first);
+		});
+	});
+
 	it("rebuilds tool counts with SQLite's original JSON functions (#5590)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(5);
@@ -272,7 +309,20 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		try {
 			const store = await SqlSessionStore.open(db);
 			try {
-				assert.equal((await store.readResume(header.id)).omitted.toolCalls, 1);
+				const resume = await store.readResume(header.id);
+				const residentCalls = [...resume.branch, ...resume.state].reduce(
+					(count, { entry }) =>
+						count +
+						(entry.type === "message" && entry.message.role === "assistant"
+							? entry.message.content.filter((block) => block.type === "toolCall").length
+							: 0),
+					0,
+				);
+				assert.equal(
+					resume.omitted.toolCalls + residentCalls,
+					3,
+					"all three calls survive regardless of which assistant supplied current model state",
+				);
 			} finally {
 				await store.close();
 			}

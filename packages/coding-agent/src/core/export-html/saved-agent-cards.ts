@@ -1,5 +1,6 @@
 import type { AssistantMessage, ToolCall } from "@bastani/atomic-ai/compat";
 import type { SessionEntry, SessionManager } from "../session-manager.ts";
+import type { captureHtmlHistory } from "./session-data.js";
 
 /** Entry addresses, not provider call IDs: separate turns and fork receipts may reuse those IDs. */
 export interface SavedAgentCard {
@@ -51,11 +52,19 @@ function marker(entry: SessionEntry | undefined): boolean {
 	return entry?.type === "custom" && entry.customType === "subagent-child";
 }
 
-type PreviousTurn = (entry: SessionEntry) => SessionEntry | undefined;
+type Address = Pick<SessionEntry, "id" | "parentId">;
+interface CardLookup<N extends Address> {
+	getEntry(id: string): N | undefined;
+	getEntrySeq(id: string): number | undefined;
+	getEntryCount(): number;
+}
 
 /** Resolve only bookkeeping ancestors, once each, including on forks or out-of-order recordings. */
-function previousTurns(sm: SessionManager): PreviousTurn {
-	let markers: Map<string, SessionEntry | undefined> | undefined;
+function previousTurns<N extends Address>(
+	sm: CardLookup<N>,
+	marker: (entry: N) => boolean,
+): (entry: N) => N | undefined {
+	let markers: Map<string, N | undefined> | undefined;
 	return (entry) => {
 		let parent = entry.parentId ? sm.getEntry(entry.parentId) : undefined;
 		if (!parent || !marker(parent)) return parent;
@@ -76,7 +85,7 @@ function previousTurns(sm: SessionManager): PreviousTurn {
 }
 
 /** The viewer stops at a missing or self parent, but a disconnected parent cycle has no selectable path. */
-function rootedLaunches(sm: SessionManager, entries: SessionEntry[]): (id: string) => boolean {
+function rootedLaunches<N extends Address>(sm: CardLookup<N>, entries: readonly N[]): (id: string) => boolean {
 	const checking = 1,
 		rooted = 2,
 		cyclic = 3;
@@ -128,13 +137,13 @@ interface SavedReceipt {
 	answerBlock?: number;
 }
 
-function savedReceipt(sm: SessionManager, entry: SessionEntry): SavedReceipt | undefined {
+function savedReceipt(id: string, entry: SessionEntry): SavedReceipt | undefined {
 	if (entry.type !== "message" || entry.message.role !== "toolResult") return;
 	const receipt = entry.message;
 	if (receipt.toolName !== "subagent" || receipt.isError || !receipt.toolCallId) return;
 	const details = record(receipt.details);
 	if (details?.mode !== "single" || !Array.isArray(details.results)) return;
-	if (details.ownerSessionId !== undefined && details.ownerSessionId !== sm.getSessionId()) return;
+	if (details.ownerSessionId !== undefined && details.ownerSessionId !== id) return;
 	if (details.results.length === 0) {
 		const response = record(details.taskResponse);
 		const observation = record(response?.observation);
@@ -204,22 +213,107 @@ function savedReceipt(sm: SessionManager, entry: SessionEntry): SavedReceipt | u
 
 /** Do not embed viewer code unless a complete recorded branch can show a card. */
 export function savedAgentCards(sm: SessionManager, entries: SessionEntry[]): SavedAgentCard[] | undefined {
+	return cardsFor(
+		sm,
+		entries,
+		marker,
+		(entry) => entry.type === "message" && entry.message.role === "toolResult",
+		(entry) => savedReceipt(sm.getSessionId(), entry),
+		(entry) =>
+			entry.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)
+				? singleLaunchCall(entry.message.content)
+				: null,
+	);
+}
+
+type Launch = Pick<ToolCall, "id" | "arguments">;
+interface CardHeading extends Address {
+	marker: boolean;
+	result: boolean;
+	receipt?: SavedReceipt;
+	call?: Launch;
+}
+/** Visit the entire captured tree without retaining message bodies. The file's selectable branches, not
+ * the branch selected when opening the file, determine which receipt each exported card can show. */
+export async function savedFileCards(source: Awaited<ReturnType<typeof captureHtmlHistory>>) {
+	const entries: CardHeading[] = [];
+	const positions = new Map<string, number>();
+	for await (const { items } of source.readHistory())
+		for (const item of items) {
+			const held =
+				"entry" in item
+					? { entry: item.entry, answerBlock: undefined }
+					: await (await import("./card-projection.js")).chunkedCardEntry(source.readHistoryChunks(item));
+			const e = held.entry;
+			const receipt = savedReceipt(source.header.id, e);
+			const call =
+				e.type === "message" && e.message.role === "assistant" && Array.isArray(e.message.content)
+					? singleLaunchCall(e.message.content)
+					: null;
+			entries.push({
+				id: e.id,
+				parentId: e.parentId,
+				marker: marker(e),
+				result: e.type === "message" && e.message.role === "toolResult",
+				...(call
+					? { call: { id: call.id, arguments: { agent: call.arguments.agent, task: call.arguments.task } } }
+					: {}),
+				...(receipt
+					? {
+							receipt: {
+								toolCallId: receipt.toolCallId,
+								answerBlock:
+									receipt.answerBlock === undefined ? undefined : (held.answerBlock ?? receipt.answerBlock),
+								...(receipt.child ? { child: { agent: receipt.child.agent, task: receipt.child.task } } : {}),
+							},
+						}
+					: {}),
+			});
+			positions.set(e.id, entries.length);
+		}
+	const sm = {
+		getEntry(id: string) {
+			return entries[(positions.get(id) ?? 0) - 1];
+		},
+		getEntrySeq(id: string) {
+			return positions.get(id);
+		},
+		getEntryCount() {
+			return positions.size;
+		},
+	};
+	return cardsFor(
+		sm,
+		entries,
+		(e) => e.marker,
+		(e) => e.result,
+		(e) => e.receipt,
+		(e) => e.call ?? null,
+	);
+}
+function cardsFor<N extends Address>(
+	sm: CardLookup<N>,
+	entries: readonly N[],
+	marker: (entry: N) => boolean,
+	isToolResult: (entry: N) => boolean,
+	readReceipt: (entry: N) => SavedReceipt | undefined,
+	launchOf: (entry: N) => Launch | null,
+) {
 	if (sm.getEntryCount() !== entries.length) return; // A reused entry address cannot identify its own receipt.
-	const previousTurn = previousTurns(sm);
-	let calls: Map<SessionEntry, ToolCall | null> | undefined;
+	const previousTurn = previousTurns(sm, marker);
+	let calls: Map<N, Launch | null> | undefined;
 	let rooted: ReturnType<typeof rootedLaunches> | undefined;
 	let cards: SavedAgentCard[] | undefined;
 	for (const entry of entries) {
-		const receipt = savedReceipt(sm, entry);
+		const receipt = readReceipt(entry);
 		if (!receipt) continue;
 		const launch = previousTurn(entry);
-		if (launch?.type !== "message" || launch.message.role !== "assistant" || !Array.isArray(launch.message.content))
-			continue;
+		if (!launch) continue;
 		// Fork receipts share a launch. Remember even an ambiguous launch, but never scan one for a compacted receipt.
 		calls ??= new Map();
 		let call = calls.get(launch);
 		if (call === undefined) {
-			call = singleLaunchCall(launch.message.content);
+			call = launchOf(launch);
 			calls.set(launch, call);
 		}
 		if (!call || call.id !== receipt.toolCallId) continue;
@@ -248,7 +342,7 @@ export function savedAgentCards(sm: SessionManager, entries: SessionEntry[]): Sa
 		if (!entry.parentId || entry.parentId === entry.id || !tips.has(entry.parentId)) continue;
 		parents.add(entry.parentId);
 		if (marker(entry)) continue;
-		const outcomes = entry.type === "message" && entry.message.role === "toolResult" ? contradicted : supported;
+		const outcomes = isToolResult(entry) ? contradicted : supported;
 		outcomes.add(entry.parentId);
 	}
 	if (!contradicted.size) return cards;
@@ -270,7 +364,7 @@ export function savedAgentCards(sm: SessionManager, entries: SessionEntry[]): Sa
 	// A branch with a conflicting receipt never even schedules a card during navigation.
 	for (const entry of entries) {
 		if (!entry.parentId || !supported.has(entry.parentId) || !contradicted.has(entry.parentId)) continue;
-		if (contradicted.has(entry.id) || (entry.type === "message" && entry.message.role === "toolResult")) continue;
+		if (contradicted.has(entry.id) || isToolResult(entry)) continue;
 		tips.get(entry.parentId)!.branches!.push(entry.id);
 	}
 	const selected = cards.filter((card) => supported.has(card.receipt));
