@@ -23,7 +23,6 @@ import { moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = resolve(moduleDir(import.meta.url), "../..");
 const subagentSkills = join(root, "packages/subagents/skills");
-const workflowSkills = join(root, "packages/workflows/skills");
 const liteparseSkill = join(subagentSkills, "liteparse");
 const agentDesktopSkill = join(subagentSkills, "agent-desktop");
 
@@ -264,18 +263,33 @@ describe("synced upstream skill trees", () => {
 	});
 
 	test(
-		"discovers Impeccable through the coding-agent package loader",
+		"discovers the general-purpose skills without the workflows package",
 		async () => {
-			const agentDir = mkdtempSync(join(tmpdir(), "atomic-impeccable-discovery-"));
+			const agentDir = mkdtempSync(join(tmpdir(), "atomic-builtin-skill-discovery-"));
 			try {
 				const loader = new DefaultResourceLoader({
-					cwd: root,
+					cwd: agentDir,
 					agentDir,
 					settingsManager: SettingsManager.inMemory(),
-					builtinPackagePaths: [join(root, "packages/workflows")],
+					builtinPackagePaths: [join(root, "packages/subagents")],
 				});
 				await loader.reload();
-				assert.ok(loader.getSkills().skills.some((skill) => skill.name === "impeccable"));
+				const names = new Set(loader.getSkills().skills.map((skill) => skill.name));
+				for (const name of [
+					"bro",
+					"create-spec",
+					"how",
+					"impeccable",
+					"prompt-engineer",
+					"research-codebase",
+					"show-me",
+					"skill-creator",
+					"teach",
+					"unslop",
+					"why",
+				]) {
+					assert.ok(names.has(name), `missing builtin skill: ${name}`);
+				}
 			} finally {
 				rmSync(agentDir, { recursive: true, force: true });
 			}
@@ -287,7 +301,7 @@ describe("synced upstream skill trees", () => {
 		assertFiles(join(subagentSkills, "agent-browser"), ["SKILL.md"]);
 		assertFiles(agentDesktopSkill, ["SKILL.md"]);
 		assertFiles(join(subagentSkills, "liteparse"), ["SKILL.md", "scripts/search.py"]);
-		assertFiles(join(workflowSkills, "impeccable"), [
+		assertFiles(join(subagentSkills, "impeccable"), [
 			"SKILL.md",
 			"reference/live.md",
 			"reference/hooks.md",
@@ -311,9 +325,9 @@ describe("synced upstream skill trees", () => {
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.9\.1\r?$/m);
+		assert.match(readFileSync(join(subagentSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.9\.1\r?$/m);
 		assert.equal(
-			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
+			readFileSync(join(subagentSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
 			"the launcher's pinned engine version must match the synced skill",
 		);
@@ -329,18 +343,16 @@ describe("synced upstream skill trees", () => {
 			"scripts/live/ui-core.mjs",
 			"scripts/lib/provider.mjs",
 		]) {
-			assert.equal(existsSync(join(workflowSkills, "impeccable", stale)), false, `stale upstream file: ${stale}`);
+			assert.equal(existsSync(join(subagentSkills, "impeccable", stale)), false, `stale upstream file: ${stale}`);
 		}
 		assertNoScaffolding(join(subagentSkills, "agent-browser"));
 		assertNoScaffolding(agentDesktopSkill);
 		assertNoScaffolding(join(subagentSkills, "liteparse"));
-		assertNoScaffolding(join(workflowSkills, "impeccable"));
+		assertNoScaffolding(join(subagentSkills, "impeccable"));
 		assertPacked(join(root, "packages/subagents"), [
 			"skills/agent-browser/SKILL.md",
 			"skills/liteparse/scripts/search.py",
 			"skills/agent-desktop/SKILL.md",
-		]);
-		assertPacked(join(root, "packages/workflows"), [
 			"skills/impeccable/scripts/impeccable",
 			"skills/impeccable/scripts/impeccable.cmd",
 			"skills/impeccable/scripts/VERSION",
@@ -349,7 +361,7 @@ describe("synced upstream skill trees", () => {
 	});
 
 	test("ships the exact Impeccable 4.9.1 tree with the pi distribution's launcher paths and modes", () => {
-		const skillRoot = join(workflowSkills, "impeccable");
+		const skillRoot = join(subagentSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
 		// pins shortcuts under the `/` command prefix; `.agents` would print
@@ -369,13 +381,13 @@ describe("synced upstream skill trees", () => {
 		assert.match(skill, /creates or removes a standalone `\/<command>` shortcut/u);
 		assert.doesNotMatch(skill, /\.agents\/skills\/impeccable|\$<command>|\.mjs/u);
 
-		const packed = packedPaths(join(root, "packages/workflows")).filter((path) => !isLocalEngineBinary(path));
+		const packed = packedPaths(join(root, "packages/subagents")).filter((path) => !isLocalEngineBinary(path));
 		assert.deepEqual(
 			packed.filter((path) => path.startsWith("skills/impeccable/")),
 			impeccableTree.map((path) => `skills/impeccable/${path}`),
 		);
 
-		const staged = spawnSyncCollect(["git", "ls-files", "--stage", "--", "packages/workflows/skills/impeccable"], {
+		const staged = spawnSyncCollect(["git", "ls-files", "--stage", "--", "packages/subagents/skills/impeccable"], {
 			cwd: root,
 			env: createGitEnvironment(),
 		});
@@ -392,7 +404,7 @@ describe("synced upstream skill trees", () => {
 			entries,
 			impeccableTree.map(
 				(path) =>
-					`${impeccableExecutables.has(path) ? "100755" : "100644"} packages/workflows/skills/impeccable/${path}`,
+					`${impeccableExecutables.has(path) ? "100755" : "100644"} packages/subagents/skills/impeccable/${path}`,
 			),
 		);
 		assert.equal(
@@ -445,7 +457,7 @@ describe("synced upstream skill trees", () => {
 			["bro", "638186a185a29dbaa188e976ab505c0e0e630d83ebc37b0ec83feba342aecb1f", true, undefined],
 		];
 		for (const [name, bodySha256, userInvokedOnly, adaptation] of pstack) {
-			const skillRoot = join(workflowSkills, name);
+			const skillRoot = join(subagentSkills, name);
 			const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
 			let upstreamBody = body;
 			if (adaptation !== undefined) {
@@ -467,13 +479,13 @@ describe("synced upstream skill trees", () => {
 		}
 		// Atomic keeps unslop model-invocable, so its description keeps the phrase upstream dropped with the flag.
 		assert.match(
-			readFileSync(join(workflowSkills, "unslop/SKILL.md"), "utf8"),
+			readFileSync(join(subagentSkills, "unslop/SKILL.md"), "utf8"),
 			/^description: Cut AI tells from any writing\. Must always apply\.\r?$/mu,
 		);
 	});
 
 	test("ships the humanlayer/skills show-me body with only its documented opener adaptation", () => {
-		const skillRoot = join(workflowSkills, "show-me");
+		const skillRoot = join(subagentSkills, "show-me");
 		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
 		// Upstream opens the artifact with macOS `open`; Atomic uses a portable opener through its bash tool.
 		const atomicOpener = [
@@ -589,7 +601,7 @@ describe("synced upstream skill trees", () => {
 	});
 
 	test("tracks the skill-creator scripts with the modes of anthropics/skills tree 3cf9a8db", () => {
-		const skillCreatorRoot = "packages/workflows/skills/skill-creator/";
+		const skillCreatorRoot = "packages/subagents/skills/skill-creator/";
 		const executableScripts = new Set(
 			[
 				"aggregate_benchmark",
@@ -721,11 +733,11 @@ describe("synced upstream skill trees", () => {
 		assertRegularTree(join(subagentSkills, "agent-browser"));
 		assertRegularTree(agentDesktopSkill);
 		assertRegularTree(join(subagentSkills, "liteparse"));
-		assertRegularTree(join(workflowSkills, "impeccable"));
+		assertRegularTree(join(subagentSkills, "impeccable"));
 	});
 
 	test("tracks every bundled skill file instead of silently ignoring part of a synced tree", () => {
-		const skillFiles = [...collectFiles(subagentSkills), ...collectFiles(workflowSkills)];
+		const skillFiles = collectFiles(subagentSkills);
 		assert.ok(skillFiles.length > 100, `expected a complete bundled skill inventory, saw ${skillFiles.length}`);
 		// `--no-index` reports ignore rules even for already-tracked paths, so a broad
 		// rule (such as the Python packaging `lib/`) cannot silently truncate a sync.
@@ -735,7 +747,7 @@ describe("synced upstream skill trees", () => {
 			stdin: Buffer.from(`${skillFiles.join("\n")}\n`),
 		});
 		assert.equal(ignored.stdout.toString().trim(), "", "bundled skill files are excluded by .gitignore");
-		const tracked = spawnSyncCollect(["git", "ls-files", "packages/workflows/skills/impeccable"], {
+		const tracked = spawnSyncCollect(["git", "ls-files", "packages/subagents/skills/impeccable"], {
 			cwd: root,
 			env: createGitEnvironment(),
 		});
@@ -748,15 +760,15 @@ describe("synced upstream skill trees", () => {
 			"scripts/data/font-index.json",
 		]) {
 			assert.ok(
-				tracked.stdout.toString().includes(`packages/workflows/skills/impeccable/${path}\n`),
+				tracked.stdout.toString().includes(`packages/subagents/skills/impeccable/${path}\n`),
 				`untracked bundled file: ${path}`,
 			);
 		}
 	});
 
 	test("keeps synced live-preview session ids on the CSPRNG outside secure contexts", () => {
-		const dom = readFileSync(join(workflowSkills, "impeccable/scripts/live-browser-dom.js"), "utf8");
-		const session = readFileSync(join(workflowSkills, "impeccable/scripts/live-browser-session.js"), "utf8");
+		const dom = readFileSync(join(subagentSkills, "impeccable/scripts/live-browser-dom.js"), "utf8");
+		const session = readFileSync(join(subagentSkills, "impeccable/scripts/live-browser-session.js"), "utf8");
 		// Upstream's last-resort fallback (no usable crypto) still draws these ids
 		// from Math.random, including the randomUUID helper 4.7.0 added to the
 		// session script; they name live-edit sessions, so Atomic keeps the CodeQL
@@ -770,8 +782,8 @@ describe("synced upstream skill trees", () => {
 	});
 
 	test("keeps the vendored Impeccable launchers offline by default", () => {
-		const posix = readFileSync(join(workflowSkills, "impeccable/scripts/impeccable"), "utf8");
-		const windows = readFileSync(join(workflowSkills, "impeccable/scripts/impeccable.cmd"), "utf8");
+		const posix = readFileSync(join(subagentSkills, "impeccable/scripts/impeccable"), "utf8");
+		const windows = readFileSync(join(subagentSkills, "impeccable/scripts/impeccable.cmd"), "utf8");
 		// The engine binary carries upstream's concept-roll telemetry ping and the
 		// daily `npx impeccable update` check. A skill vendored inside an Atomic
 		// release cannot self-update, and #2382 removed the ping outright, so both
@@ -799,7 +811,7 @@ describe("synced upstream skill trees", () => {
 	});
 
 	test("keeps the pinned Impeccable engine verified against the shipped SHA-256 manifest", () => {
-		const scripts = join(workflowSkills, "impeccable/scripts");
+		const scripts = join(subagentSkills, "impeccable/scripts");
 		const posix = readFileSync(join(scripts, "impeccable"), "utf8");
 		const windows = readFileSync(join(scripts, "impeccable.cmd"), "utf8");
 		const manifest = readFileSync(join(scripts, "engine-checksums.txt"), "utf8");

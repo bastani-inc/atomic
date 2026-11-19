@@ -168,12 +168,22 @@ export const SNAPSHOT_BLOB_CHUNK_BYTES = 1024 * 1024;
 /** The schema domain of the blob table and its reference index, in the prefix's migration ledger. */
 export const SNAPSHOT_BLOB_DOMAIN = "snapshot-blobs";
 
+/** Why collection left a legacy chunk table in place. Byte estimates are from the decision, before any partial copy was discarded. */
+export type PendingChunkMove =
+	| {
+			readonly reason: "free-space";
+			readonly remainingBytes: number;
+			readonly requiredFreeBytes: number;
+			readonly freeBytes: number;
+	  }
+	| { readonly reason: "space-unknown"; readonly remainingBytes: number; readonly automaticLimitBytes: number };
+
 export type SnapshotCollectionSkipReason = "disabled" | "unsupported" | "in-progress" | "not-due";
 
 /** How one automatic collection ended. Its promise never rejects: a failure is an outcome, reported once. */
 export type SnapshotCollectionOutcome =
 	| { readonly status: "skipped"; readonly reason: SnapshotCollectionSkipReason }
-	| { readonly status: "collected"; readonly deleted: readonly string[] }
+	| { readonly status: "collected"; readonly deleted: readonly string[]; readonly pendingChunkMove?: PendingChunkMove }
 	/**
 	 * The storage closed, or its last store was released, before the collection finished; it stopped at its next batch
 	 * and what it deleted stays deleted.
@@ -327,6 +337,9 @@ export const SNAPSHOT_CHUNK_MOVE_ROWS = 4;
  */
 export const SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES = 64 * 1024 * 1024;
 
+// Four 1 MiB chunks per offline transaction, plus space for b-tree pages and WAL framing.
+const OFFLINE_CHUNK_LOG_ALLOWANCE = 16 * SNAPSHOT_BLOB_CHUNK_BYTES;
+
 /**
  * Whether `error`, or a failure it wraps, says the database's disk is full or failed to read or write: SQLite's
  * `SQLITE_FULL` or `SQLITE_IOERR` and its extended codes (node:sqlite's `errcode`, libSQL's code or `rawCode`), as a
@@ -378,6 +391,8 @@ export interface SnapshotSweepOptions extends SnapshotIndexOptions {
 	readonly graceSeconds: number;
 	/** Called after each batch commits with the hashes it deleted. */
 	readonly onBatch?: (deleted: readonly string[]) => void;
+	/** The existing space check deferred layout maintenance; garbage collection itself succeeded. */
+	readonly onPendingChunkMove?: (pending: PendingChunkMove) => void;
 }
 
 type PageRow = SqliteRow & { created_at: number; hash: string };
@@ -1420,6 +1435,61 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		return store;
 	}
 
+	/** Runs only layout maintenance on the offline command's dedicated, exclusively locked SQLite file connection. */
+	static async moveChunksOffline(file: string, prefix = ""): Promise<void> {
+		const tables = snapshotIndexTables(prefix);
+		const { withOfflineSnapshotFile } = await import("../storage/offline-snapshot-file.js");
+		await withOfflineSnapshotFile(file, async (database) => {
+			const store = new SqlSnapshotBlobStore(database, dialectOf(database), tables, [], "", prefix);
+			await store.checkOfflineLayout();
+			await store.moveChunksToRowTable({ graceSeconds: 0 }, true);
+		});
+	}
+
+	/** Don't rename away a custom index or view, or run extra triggers outside the offline batch's space budget. */
+	private async checkOfflineLayout(): Promise<void> {
+		const t = this.tables;
+		const { next, retired } = chunkMoveTables(t);
+		const erase = chunksDeleteTrigger(t);
+		const conditional = { ...erase, name: `${t.blobs}_chunks_delete`, when: "OLD.chunks > 0" };
+		// sqlite_schema elides IF NOT EXISTS and the final semicolon; RENAME quotes the new table name.
+		const stored = (sql: string) => sql.replace(" IF NOT EXISTS", "").replace(/;$/, "");
+		const layouts = [t.blobChunks, next, retired].flatMap((name) => {
+			const row = stored(chunkTableDefinition(name, this.dialect));
+			return [row, row.replace(`TABLE ${name} `, `TABLE "${name}" `)].flatMap((definition) => {
+				const legacy = `${definition}, WITHOUT ROWID`;
+				return name === next ? [definition] : name === retired ? [legacy] : [definition, legacy];
+			});
+		});
+		const current = stored(this.dialect.renderTrigger(erase));
+		const expected = new Set([...layouts, current, stored(this.dialect.renderTrigger(conditional))]);
+		const objects = await this.database.all<SqliteRow & { name: string; sql: string }>(
+			"SELECT name, sql FROM sqlite_schema WHERE sql IS NOT NULL AND (instr(lower(sql), lower(?)) > 0 OR name IN (?, ?))",
+			t.blobChunks,
+			erase.name,
+			conditional.name,
+		);
+		if (!objects.some((row) => row.name === t.blobChunks) || !objects.some((row) => row.sql === current))
+			throw new Error(`No standard Atomic snapshot chunk store found for table ${t.blobs}.`);
+		for (const row of objects)
+			if (!expected.has(row.sql))
+				throw new Error(`Cannot move a customized snapshot chunk layout offline (${row.name}).`);
+	}
+
+	/** Another file on this volume may have grown since admission. Check outside the write transaction, including during retirement. */
+	private async requireOfflineBatchSpace(): Promise<void> {
+		const free = await this.database.freeBytes?.();
+		if (free === undefined || free < SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES + OFFLINE_CHUNK_LOG_ALLOWANCE)
+			throw new Error("Not enough free space for another offline chunk batch and the 64 MiB reserve.");
+	}
+
+	/** The exclusive connection is the only WAL writer. Never start a second batch on a nonempty log. */
+	private async checkpointChunkMove(): Promise<void> {
+		const row = await this.database.get("PRAGMA wal_checkpoint(TRUNCATE)");
+		if (row?.busy !== 0 || row.log !== 0)
+			throw new Error("Could not truncate the offline chunk move's write-ahead log.");
+	}
+
 	/** A transcript-only handle has no snapshot sources to index. Binding it must not even inspect their tables. */
 	static forTranscriptReader(database: SqliteDatabase & { readonly readOnly: true }): SqlSnapshotBlobStore {
 		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }).meta;
@@ -2179,7 +2249,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * blob's hash and an index, names them. A stopped move resumes from what the tables hold. Does nothing on a chunk
 	 * table in the row layout, which every Postgres table is.
 	 */
-	private async moveChunksToRowTable(options: SnapshotIndexOptions): Promise<void> {
+	private async moveChunksToRowTable(options: SnapshotSweepOptions, offline = false): Promise<void> {
 		const t = this.tables;
 		const { next, retired } = chunkMoveTables(t);
 		// The old table is `WITHOUT ROWID` under either name, so one statement tells a store with nothing to move, as
@@ -2189,11 +2259,21 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			(await executor.all<SqliteRow & { name: string }>(probe.sql, ...probe.params)).map((row) => row.name);
 		const rows = SNAPSHOT_CHUNK_MOVE_ROWS;
 		const pending = await clustered(this.database);
-		if (pending.includes(retired)) await this.dropChunkTable(retired, options);
+		if (pending.includes(retired)) await this.dropChunkTable(retired, options, offline);
 		if (!pending.includes(t.blobChunks)) return;
 		// A copy the disk has no room for would fill it (#5694): the table stays as it is, read and written as before, and a
 		// partial copy an earlier collection left is dropped, its pages back on the database's free list.
-		if (!(await this.roomForChunkCopy(next))) return this.dropChunkTable(next, options);
+		const pendingMove = await this.chunkCopySpace(next, offline);
+		if (pendingMove) {
+			if (offline)
+				throw new Error(
+					pendingMove.reason === "free-space"
+						? `The chunk move needs ${pendingMove.requiredFreeBytes} free bytes; ${pendingMove.freeBytes} are available.`
+						: "Cannot measure free disk space for the offline chunk move.",
+				);
+			options.onPendingChunkMove?.(pendingMove);
+			return this.dropChunkTable(next, options);
+		}
 		// Copies the rows after the last one copied: no other statement writes the new table before it is renamed.
 		const copyNext = async (transaction: SqliteExecutor) => {
 			const last = await transaction.get<SqliteRow & { hash: string; idx: number }>(
@@ -2219,6 +2299,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const stale = `SELECT hash, idx FROM ${next} EXCEPT SELECT hash, idx FROM ${t.blobChunks}`;
 		for (let copying = true; ; ) {
 			options.signal?.throwIfAborted();
+			if (offline) await this.requireOfflineBatchSpace();
 			let moved: boolean;
 			try {
 				moved = await this.write(options.pace, async (transaction) => {
@@ -2256,14 +2337,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			} catch (error) {
 				// A disk that fills up ends the move, not the collection (#5694): the partial copy is dropped, its pages back on
 				// the database's free list, and a later collection tries again.
-				if (!isStorageSpaceFailure(error)) throw error;
+				if (offline || !isStorageSpaceFailure(error)) throw error;
 				await this.betweenBatches(options.pace);
 				return this.dropChunkTable(next, options);
 			}
+			if (offline) await this.checkpointChunkMove();
 			await this.betweenBatches(options.pace);
 			if (moved) break;
 		}
-		await this.dropChunkTable(retired, options);
+		await this.dropChunkTable(retired, options, offline);
 	}
 
 	/**
@@ -2302,7 +2384,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * holds. A database whose disk this process cannot see, such as a libSQL server, moves only what is left of a table
 	 * no larger than that headroom: the move must never be what fills a disk, and the old layout works as before.
 	 */
-	private async roomForChunkCopy(next: string): Promise<boolean> {
+	private async chunkCopySpace(next: string, offline: boolean): Promise<PendingChunkMove | undefined> {
 		const rowsOf = async (table: string) =>
 			Number(
 				(await this.database.get<SqliteRow & { rows: number }>(`SELECT count(*) AS rows FROM ${table}`))?.rows ?? 0,
@@ -2335,12 +2417,23 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			// A reading that fails is no reading: the collection goes on as for a disk this process cannot see.
 			free = undefined;
 		}
-		if (free === undefined) return left <= SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+		if (free === undefined)
+			return !offline && left <= SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES
+				? undefined
+				: {
+						reason: "space-unknown",
+						remainingBytes: left,
+						automaticLimitBytes: SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES,
+					};
 		const freePages = await this.database.get<SqliteRow & { bytes: number }>(
 			"SELECT (SELECT freelist_count FROM pragma_freelist_count()) * (SELECT page_size FROM pragma_page_size()) AS bytes",
 		);
 		const reused = Math.min(left, Number(freePages?.bytes ?? 0));
-		return free >= left - reused + left + SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+		const requiredFreeBytes =
+			left - reused + (offline ? OFFLINE_CHUNK_LOG_ALLOWANCE : left) + SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES;
+		return free >= requiredFreeBytes
+			? undefined
+			: { reason: "free-space", remainingBytes: left, requiredFreeBytes, freeBytes: free };
 	}
 
 	/**
@@ -2348,11 +2441,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * transactions of at most {@link SNAPSHOT_CHUNK_MOVE_ROWS} rows, from its first key on, then drops it; its pages go
 	 * to the database's free list. A full disk stops it without a failure: a later collection goes on.
 	 */
-	private async dropChunkTable(table: string, options: SnapshotIndexOptions): Promise<void> {
+	private async dropChunkTable(table: string, options: SnapshotIndexOptions, offline = false): Promise<void> {
 		const probe = this.dialect.tableExists(table);
 		if ((await this.database.get(probe.sql, ...probe.params)) === undefined) return;
 		for (;;) {
 			options.signal?.throwIfAborted();
+			if (offline) await this.requireOfflineBatchSpace();
 			let dropped: boolean;
 			try {
 				dropped = await this.write(options.pace, async (transaction) => {
@@ -2370,9 +2464,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					return false;
 				});
 			} catch (error) {
-				if (isStorageSpaceFailure(error)) return;
+				if (!offline && isStorageSpaceFailure(error)) return;
 				throw error;
 			}
+			if (offline) await this.checkpointChunkMove();
 			await this.betweenBatches(options.pace);
 			if (dropped) return;
 		}
