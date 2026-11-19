@@ -69,7 +69,7 @@ type ArchiveReader = (
 	) => PageResult | Promise<PageResult>,
 	loadSnapshot: typeof loadArchiveSnapshot,
 ) => Promise<PageResult>;
-interface FileArchive {
+export interface FileArchive {
 	readonly path: string;
 	readonly sessionId: string;
 	readonly unsaved?: Entries[number];
@@ -85,6 +85,16 @@ function archiveReader(source: TaskTranscriptSource): ArchiveReader | undefined 
 	return archive && !isProxy(source) && archive.load === Object.getOwnPropertyDescriptor(source, "loadHistory")?.value
 		? archive.read
 		: undefined;
+}
+
+/** @internal The session file a first-party archive reader bound to exactly this source reads, if any. */
+export function taskTranscriptFile(source: TaskTranscriptSource): FileArchive | undefined {
+	return archiveReader(source) ? fileArchives.get(source) : undefined;
+}
+
+/** @internal The final answer a first-party source shows after its saved history because its session could not save it. */
+export function taskTranscriptUnsavedAnswer(source: TaskTranscriptSource): Entries[number] | undefined {
+	return taskTranscriptFile(source)?.unsaved;
 }
 
 /** @internal A first-party archive reader supplies the identity of the records it returned. */

@@ -310,6 +310,80 @@ export async function* taskFilePages(
 	}
 }
 
+/**
+ * The bytes of one saved line too large for a page, `bytes` long at byte `offset`, from the file generation the page
+ * that returned it read: `cursor` is that page's `adjacent.current`. The file must still be that session's, unchanged
+ * or only appended to, before the first read and after the last; the caller never sees bytes of another generation.
+ */
+export async function* taskFileEntryChunks(
+	path: string,
+	sessionId: string,
+	cursor: string,
+	offset: number,
+	bytes: number,
+	signal?: AbortSignal,
+): AsyncGenerator<Uint8Array, void> {
+	const cut = decode(cursor, digest(JSON.stringify([path, sessionId])));
+	if (
+		!Number.isSafeInteger(offset) ||
+		!Number.isSafeInteger(bytes) ||
+		offset < 0 ||
+		bytes < 0 ||
+		offset + bytes > cut.size
+	)
+		throw new RangeError("Invalid saved file entry range");
+	signal?.throwIfAborted();
+	const file = await open(path, "r").catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT")
+			throw new Error(`History unavailable: the session file was moved or deleted (${path}).`);
+		throw error;
+	});
+	const closeOnAbort = () => {
+		void file.close().catch(() => {});
+	};
+	signal?.addEventListener("abort", closeOnAbort, { once: true });
+	const verify = async () => {
+		signal?.throwIfAborted();
+		const stat = await file.stat({ bigint: true });
+		const size = Number(stat.size);
+		const lines = new Lines(file, size);
+		const same =
+			`${stat.dev}:${stat.ino}:${stat.birthtimeNs}` === cut.inode &&
+			((size === cut.size && `${stat.mtimeNs}:${stat.ctimeNs}` === cut.stamp) ||
+				(size > cut.size && digest(await lines.bytes(Math.max(0, cut.size - 64), cut.size)) === cut.witness)) &&
+			(await matchesHeader(lines, await lines.forward(0, size), sessionId));
+		signal?.throwIfAborted();
+		if (!same) throw new Error(`History unavailable: the session file changed while it was being read (${path}).`);
+	};
+	try {
+		await verify();
+		const end = offset + bytes;
+		let at = offset;
+		for await (const part of new Lines(file, end).chunks(offset, end)) {
+			signal?.throwIfAborted();
+			at += part.length;
+			// Check the generation again once the last byte is read, before the caller sees it.
+			if (at >= end) await verify();
+			yield part;
+		}
+	} finally {
+		signal?.removeEventListener("abort", closeOnAbort);
+		await file.close().catch(() => {});
+	}
+}
+
+/** Why a task's saved file could not be read, worded as its runner words a failed whole read. */
+export async function taskFileUnavailable(path: string, error: unknown): Promise<string> {
+	const message = error instanceof Error ? error.message : String(error);
+	if (message.startsWith("History unavailable:")) return message;
+	const exists = await stat(path).then(
+		() => true,
+		() => false,
+	);
+	if (!exists) return `History unavailable: the session file was moved or deleted (${path}).`;
+	return `History unavailable: ${error instanceof Error ? error.message : String(error ?? "its session could not be read")}`;
+}
+
 /** A detail card needs the first prompt and last response, not the intervening conversation. */
 export async function taskFileDetail(
 	path: string,

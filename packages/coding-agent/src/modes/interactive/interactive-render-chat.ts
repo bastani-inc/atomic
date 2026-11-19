@@ -9,7 +9,8 @@ import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
-import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
+import { readTaskCompletionHistory } from "../../core/tasks/task-completion-history.js";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
@@ -489,9 +490,9 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 				},
 		loadTaskTranscript: isolated
 			? undefined
-			: async (taskId) => {
+			: async (taskId, options) => {
 					const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
-					return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+					return lease?.ok ? readTaskCompletionHistory(lease.value, options?.signal) : undefined;
 				},
 		getCustomMessageRenderer: isolated
 			? undefined
@@ -640,9 +641,9 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 										const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
 										return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
 									},
-									loadTranscript: async (taskId) => {
+									loadTranscript: async (taskId, options) => {
 										const lease = getOwnerTaskStore(this.session)?.resolveTask(taskId);
-										return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+										return lease?.ok ? readTaskCompletionHistory(lease.value, options?.signal) : undefined;
 									},
 									getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
 									cwd: this.sessionManager.getCwd(),
