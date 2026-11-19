@@ -521,6 +521,8 @@ export type LaunchMetadata = {
 	readonly launchedAt: Map<string, number>;
 	/** The active span each dispatched subagent owns, including its endpoint once it stops. */
 	readonly agentSpans: Map<string, C.TaskElapsedSpan>;
+	/** Counts registered spans, so that a read looks again at records that had none. */
+	spanRevision: number;
 	/** The close that ended the owner, which every task that close cancelled names (#4639). Kept past the close. */
 	ownerClose?: C.OwnerCloseCause;
 };
@@ -558,6 +560,7 @@ function timedRecord(task: C.TaskRecord, launches: LaunchMetadata, sample = fals
 /** An owner's records as its last read returned them: a record whose span may still run is read again at each read. */
 type TimedRecords = {
 	readonly snapshot: C.OwnerSnapshot;
+	readonly revision: number;
 	/** The positions of the records whose span may still be running. */
 	readonly live: readonly number[];
 	tasks: readonly C.TaskRecord[];
@@ -565,6 +568,15 @@ type TimedRecords = {
 	/** Each live record's span as that read saw it: the span, its dispatch and its end. */
 	spans: readonly (C.TaskElapsedSpan | number | undefined)[];
 };
+/** Whether a read reads this record's span again: it may still run, and the record or its task has one. */
+function readsSpan(task: C.TaskRecord, launches: LaunchMetadata): boolean {
+	return (
+		task.kind === "agent" &&
+		task.execution.kind !== "queued" &&
+		task.elapsedSpan?.endedAt === undefined &&
+		(task.elapsedSpan !== undefined || launches.agentSpans.has(task.ref.taskId))
+	);
+}
 /**
  * The records with every running span read now. While no span runs and nothing changed, a read returns the same array
  * as the last one, and the same records.
@@ -574,13 +586,12 @@ function timedRecords(
 	launches: LaunchMetadata,
 	last: TimedRecords | undefined,
 ): TimedRecords {
-	if (last?.snapshot !== snapshot) {
+	if (last?.snapshot !== snapshot || last.revision !== launches.spanRevision) {
 		const live: number[] = [];
 		snapshot.tasks.forEach((task, at) => {
-			if (task.kind === "agent" && task.execution.kind !== "queued" && task.elapsedSpan?.endedAt === undefined)
-				live.push(at);
+			if (readsSpan(task, launches)) live.push(at);
 		});
-		last = { snapshot, live, tasks: snapshot.tasks, at: Number.NaN, spans: [] };
+		last = { snapshot, revision: launches.spanRevision, live, tasks: snapshot.tasks, at: Number.NaN, spans: [] };
 	}
 	if (last.live.length === 0) return last;
 	const now = Date.now();
@@ -604,7 +615,7 @@ function timedRecords(
 		spans.push(span, span?.dispatchedAt, span?.endedAt);
 		tasks[at] = timedRecord(snapshot.tasks[at]!, launches, true);
 	}
-	return { snapshot, live: last.live, tasks, at: now, spans };
+	return { snapshot, revision: last.revision, live: last.live, tasks, at: now, spans };
 }
 function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
@@ -1078,6 +1089,7 @@ export class TaskSupervisor {
 						launchers: new Map(),
 						launchedAt: new Map(),
 						agentSpans: new Map(),
+						spanRevision: 0,
 					},
 				};
 				this.#owners.set(owner, ownerState);
@@ -1568,7 +1580,10 @@ export class TaskSupervisor {
 					}),
 				};
 			}
-			if (execution.elapsedSpan !== undefined) state.launches.agentSpans.set(id, execution.elapsedSpan);
+			if (execution.elapsedSpan !== undefined) {
+				state.launches.agentSpans.set(id, execution.elapsedSpan);
+				state.launches.spanRevision++;
+			}
 			const outcome = execution.result
 				.catch((error) => ({ kind: "failed" as const, code: "RunnerFailed", message: rejectionMessage(error) }))
 				.then((result) => {
@@ -1823,9 +1838,16 @@ export class TaskSupervisor {
 		const state = this.#owner(owner);
 		const current = this.#recordIndex(state);
 		if (!current || !state.recordIndex) return [];
+		if (ids !== undefined) {
+			// Only the spans of the tasks asked for are read.
+			const tasks = current.tasks.filter((task) => ids.has(task.ref.taskId));
+			return tasks.some((task) => readsSpan(task, state.launches))
+				? tasks.map((task) => (readsSpan(task, state.launches) ? timedRecord(task, state.launches, true) : task))
+				: tasks;
+		}
 		const timed = timedRecords(current, state.launches, state.recordIndex.timed);
 		state.recordIndex.timed = timed;
-		return ids === undefined ? timed.tasks : timed.tasks.filter((task) => ids.has(task.ref.taskId));
+		return timed.tasks;
 	}
 	#recordIndex(state: OwnerState): C.OwnerSnapshot | undefined {
 		if (!state.recordIndex) {

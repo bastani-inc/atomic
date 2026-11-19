@@ -26,8 +26,10 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/heartbeat.js";
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { taskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { rowMeta } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
+import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { taskMetricsText } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -48,6 +50,7 @@ import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { getArtifactPaths } from "../../packages/subagents/src/shared/artifacts.js";
 import type { SingleResult, TaskExecutionHooks } from "../../packages/subagents/src/shared/types.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent } from "../helpers/released-task-launch.js";
 import { sleep } from "../helpers/runtime.js";
@@ -750,6 +753,7 @@ test(
 		let now = Date.now();
 		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
 		const panel = new AgentPanelModel(() => now);
+		let tasks: TaskInspector | undefined;
 		let id: TaskId | undefined;
 		try {
 			const response = await runAgentTask({
@@ -768,13 +772,19 @@ test(
 			await started.promise;
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			store.drain();
+			tasks = new TaskInspector(
+				ownerTaskViewSource(store),
+				() => {},
+				() => {},
+			);
 			const shown = () => {
 				const task = store.taskRecord(id!)!;
 				const footer = stripVTControlCharacters(renderTaskFooter(store, 120).join("\n"));
+				const board = tasks!.renderViewport(120, 24).map((line) => stripVTControlCharacters(line));
 				return {
 					panel: panel.withElapsed(taskPanelItem(task)).elapsedMs,
 					details: taskMetricsText(task).split(" · ")[0],
-					board: rowMeta({ id: task.ref.taskId, kind: "task", task }).split(" · ")[0],
+					board: /\b\d+s\b/.exec(board.find((line) => line.includes("stand by")) ?? "")?.[0],
 					footer: /\b\d+s\b/.exec(footer)?.[0],
 				};
 			};
@@ -782,6 +792,7 @@ test(
 			const before = shown();
 			assert.deepEqual(before, { panel: 8000, details: "8s", board: "8s", footer: "8s" });
 			now -= 3000;
+			await collectGarbage();
 			assert.deepEqual(shown(), before, "a wall-clock step back must not lower the time already shown");
 			store.setTurnInterrupted(id, true);
 			store.setTurnInterrupted(id, false);
@@ -789,6 +800,7 @@ test(
 			now += 4000;
 			assert.deepEqual(shown(), { panel: 9000, details: "9s", board: "9s", footer: "9s" });
 		} finally {
+			tasks?.dispose();
 			finish.resolve();
 			if (id) await host.waitForTask(id);
 			store.dispose();
@@ -964,7 +976,11 @@ test("an owner's task read follows a span that ends or restarts before its recor
 		);
 		assert.ok(started.ok);
 		const id = started.value.taskId;
-		const read = () => host.taskRecords().find((task) => task.ref.taskId === id);
+		const read = () => {
+			const record = host.taskRecords().find((task) => task.ref.taskId === id);
+			assert.deepEqual(host.taskRecords(new Set([id])), [record], "a read of this task alone sees the same record");
+			return record;
+		};
 		await until(() => read()?.execution.kind === "running");
 		now += 4000;
 		assert.deepEqual(read()?.elapsedSpan, { dispatchedAt: span.dispatchedAt });
@@ -986,4 +1002,128 @@ test("an owner's task read follows a span that ends or restarts before its recor
 		await host.close("session-close");
 		clock.mockRestore();
 	}
+});
+
+/** Map lookups made by 64 reads of an idle owner after `rows` children finished, the first with an ended span if `spanned`. */
+async function idleReadLookups(rows: number, spanned: boolean): Promise<number> {
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: `idle-${rows}-${spanned}` },
+		authorizeLaunch() {},
+	});
+	try {
+		for (let index = 0; index < rows; index++) {
+			const at = Date.now();
+			const started = await host.startAgentTask(
+				{ kind: "agent", agent: "worker", task: `answer ${index}` },
+				`idle-${rows}-${spanned}-${index}` as OperationId,
+				() => ({
+					result: Promise.resolve<TaskResult>({ kind: "failed", code: "Done", message: "done" }),
+					cleanup: Promise.resolve<Cleanup>({ kind: "reaped" }),
+					...(spanned && index === 0 ? { elapsedSpan: { dispatchedAt: at, endedAt: at } } : {}),
+				}),
+			);
+			assert.ok(started.ok);
+			assert.ok((await host.waitForTask(started.value.taskId)).ok);
+		}
+		assert.ok(host.taskRecords().every((task) => task.execution.kind === "settled"));
+		const lookups = vi.spyOn(Map.prototype, "get");
+		try {
+			for (let read = 0; read < 64; read++) host.taskRecords();
+			return lookups.mock.calls.length;
+		} finally {
+			lookups.mockRestore();
+		}
+	} finally {
+		await host.close("session-close");
+	}
+}
+
+test("an idle owner's reads do no more work for a longer finished history, with or without spans (#5570)", async () => {
+	for (const spanned of [false, true]) {
+		assert.equal(await idleReadLookups(64, spanned), await idleReadLookups(1, spanned), `spanned=${spanned}`);
+	}
+});
+
+test("a span registered after a read of its task's record is read at the next read (#5570)", async () => {
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "late-span" }, authorizeLaunch() {} });
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const span: TaskElapsedSpan = { dispatchedAt: now };
+	try {
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "stand by" },
+			"late-span" as OperationId,
+			() => {
+				assert.equal(host.taskRecords()[0]?.elapsedSpan, undefined);
+				return {
+					result: new Promise<TaskResult>(() => {}),
+					cleanup: Promise.resolve<Cleanup>({ kind: "reaped" }),
+					elapsedSpan: span,
+				};
+			},
+		);
+		assert.ok(started.ok);
+		now += 3000;
+		const task = host.taskRecords().find((record) => record.ref.taskId === started.value.taskId);
+		assert.deepEqual(task?.elapsedSpan, { dispatchedAt: span.dispatchedAt });
+		assert.equal(task?.metrics?.elapsedMs, 3000);
+	} finally {
+		await host.close("session-close");
+		clock.mockRestore();
+	}
+});
+
+/** Map lookups made by 64 reads, each a moment later, of one finished task's record while `running` other children run. */
+async function oneRecordReadLookups(running: number): Promise<number> {
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: `one-record-${running}` },
+		authorizeLaunch() {},
+	});
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		const cleanup = () => Promise.resolve<Cleanup>({ kind: "reaped" });
+		const finished = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "answer" },
+			`one-record-${running}-finished` as OperationId,
+			() => ({
+				result: Promise.resolve<TaskResult>({ kind: "failed", code: "Done", message: "done" }),
+				cleanup: cleanup(),
+				elapsedSpan: { dispatchedAt: now, endedAt: now },
+			}),
+		);
+		assert.ok(finished.ok);
+		assert.ok((await host.waitForTask(finished.value.taskId)).ok);
+		for (let index = 0; index < running; index++) {
+			const started = await host.startAgentTask(
+				{ kind: "agent", agent: "worker", task: `stand by ${index}` },
+				`one-record-${running}-${index}` as OperationId,
+				() => ({
+					result: new Promise<TaskResult>(() => {}),
+					cleanup: cleanup(),
+					elapsedSpan: { dispatchedAt: now },
+				}),
+			);
+			assert.ok(started.ok);
+		}
+		const ids = new Set([finished.value.taskId]);
+		assert.equal(host.taskRecords(ids).length, 1);
+		const lookups = vi.spyOn(Map.prototype, "get");
+		try {
+			for (let read = 0; read < 64; read++) {
+				now += 1;
+				host.taskRecords(ids);
+			}
+			return lookups.mock.calls.length;
+		} finally {
+			lookups.mockRestore();
+		}
+	} finally {
+		await host.close("session-close");
+		clock.mockRestore();
+	}
+}
+
+test("a read of one task's record does no more work while more other children run (#5570)", async () => {
+	assert.equal(await oneRecordReadLookups(16), await oneRecordReadLookups(1));
 });

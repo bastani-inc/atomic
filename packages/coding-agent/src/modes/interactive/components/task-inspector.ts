@@ -23,6 +23,7 @@ import {
 } from "../../../core/tasks/completion.js";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
+	bindTaskClock,
 	liveElapsedFromRead,
 	type TaskElapsedClocks,
 	taskClockOf,
@@ -1482,7 +1483,9 @@ export class TaskInspector implements Component {
 		if (isTaskTurnInterrupted(task)) return task;
 		const elapsedMs = taskElapsedMs(task, taskClockRunning(task.execution.kind), this.elapsedClocks);
 		if (elapsedMs === undefined) return task;
-		return { ...task, metrics: { ...task.metrics, elapsedMs } };
+		const copy = { ...task, metrics: { ...task.metrics, elapsedMs } };
+		// The board and peek read a running span again: from this view's clock, which keeps what it showed.
+		return task.elapsedSpan ? bindTaskClock(copy, this.elapsedClocks) : copy;
 	}
 	private withBoardElapsed(row: TaskBoardRow): TaskBoardRow {
 		if (row.kind === "task") return { ...row, task: this.withLiveElapsed(row.task) };
