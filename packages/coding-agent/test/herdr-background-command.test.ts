@@ -15,8 +15,7 @@ test.runIf(process.platform !== "win32").each([undefined, "child-session"])(
 	async (launchedBy) => {
 		const fake = await fakeHerdr();
 		const runtime = createExtensionRuntime();
-		const publisher = runtime.workflowActivityHub.registerWorkflowActivityPublisher();
-		publisher.publishSnapshot({ availability: "ready", roots: [] });
+
 		const session = SessionManager.inMemory();
 		const host = new AgentTaskHost({
 			scope: { kind: "session", sessionId: session.getSessionId() },

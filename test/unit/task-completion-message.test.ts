@@ -340,7 +340,6 @@ test("a shell its execution timeout stopped names the timeout's length and how t
 
 test.each([
 	["session-close", "session closed"],
-	["stage-close", "workflow stage closed"],
 	["app-shutdown", "Atomic shut down"],
 ] as const)("a shell its owner's %s cancelled names that close (#4639)", (ownerClose, reason) => {
 	const shell = taskRecord("owner-closed-shell", "command");
@@ -408,7 +407,7 @@ test.each<[CancelCause, string]>([
 });
 
 test("a cancellation names a close or a timeout only for its own cause (#4639)", () => {
-	assert.equal(cancelReasonText({ kind: "cancelled", cause: "user", ownerClose: "stage-close" }), "stop requested");
+	assert.equal(cancelReasonText({ kind: "cancelled", cause: "user", ownerClose: "session-close" }), "stop requested");
 	assert.equal(cancelReasonText({ kind: "cancelled", cause: "user", executionTimeoutMs: 5_000 }), "stop requested");
 	assert.equal(
 		cancelReasonText({ kind: "cancelled", cause: "owner-close", executionTimeoutMs: 5_000 }),
@@ -485,8 +484,8 @@ test.each([
 		line: /^ ! Background command "npm test" timed out after 300 seconds$/,
 	},
 	{
-		result: { kind: "cancelled", cause: "owner-close", ownerClose: "stage-close" },
-		line: /^ ◼ Background command "npm test" was stopped \(workflow stage closed\)$/,
+		result: { kind: "cancelled", cause: "owner-close", ownerClose: "session-close" },
+		line: /^ ◼ Background command "npm test" was stopped \(session closed\)$/,
 	},
 ] as const)("a shell notice reads how it ended: $line", ({ result, line }) => {
 	initTheme("dark");

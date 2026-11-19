@@ -1,16 +1,14 @@
-import { holdPendingDetachedCalls, holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
+import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	dismissProtectedStreamingCustomMessage,
 	pendingProtectedStreamingCustomMessages,
 	recoverProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
-import { isSubagentChildSession } from "./agent-session-tasks.js";
 import type { SessionRecoveryReport } from "./agent-session-types.js";
 import type { SessionRecoveryReason } from "./extensions/index.js";
 import { assertSessionOpen, sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { pendingTaskCompletionIntents } from "./tasks/completion.js";
-import { recordTasksInterruptedByRestart } from "./workflow-stage-parked-tasks.ts";
 
 export const SESSION_RECOVERY_NOTICE_TYPE = "session-recovery-notice";
 export const SESSION_RECOVERY_REPLAY_TYPE = "session-recovery-replay";
@@ -49,10 +47,6 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 	const restored = await session.extensionRunner.emitSessionRecovery({ type: "session_recovery_restore", reason });
 	report.notices.push(...restored.notices);
 	if (isClosing(session)) return report;
-	// A resumed stage starts its pending detachable calls again once its turn resumes; a chat may show the stage
-	// before then, and must see them in flight, not interrupted (#4022).
-	const callsPending = reason === "workflow_stage_resume" && holdPendingDetachedCalls(session);
-
 	const pending = pendingProtectedStreamingCustomMessages(session);
 	let replay = pending;
 	if (pending.length > 0) {
@@ -83,9 +77,6 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 		);
 	}
 
-	// The shells of a stage that an earlier process released, whose completions died with it (#5079).
-	if (!isClosing(session) && session._workflowStageAdmission !== undefined && !isSubagentChildSession(session))
-		await recordTasksInterruptedByRestart(session.sessionManager, session._workflowStageAdmission.attemptId);
 	if (!isClosing(session) && pendingTaskCompletionIntents(session.sessionManager).length > 0) {
 		session.getAgentTaskHost();
 		session._taskCompletionOutbox?.adoptSavedIntents();
@@ -103,9 +94,7 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 		{ triggerTurn: false, excludeFromContext: true },
 	);
 	report.replayed = recoverProtectedStreamingCustomMessages(session, replay);
-	// A resumed stage whose detachable calls are pending takes the replayed deliveries in the turn those calls resume:
-	// a turn of their own ahead of them would answer the calls as interrupted (#4391).
-	if (!session.isStreaming && !session._isPreparingRun && !callsPending) {
+	if (!session.isStreaming && !session._isPreparingRun) {
 		const startsChildRecoveryRun =
 			session._subagentMessageAdmission !== undefined &&
 			session._activePromptCount === 0 &&

@@ -3,7 +3,7 @@ import llamaExtension, { finishLlamaAfterQuit } from "../extensions/llama/index.
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
-import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
+import { loadExtensionFromFactory, loadExtensionsCached, type PackageMcpServerSource } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
@@ -20,7 +20,7 @@ function resolveExtensionLoadPath(loader: DefaultResourceLoader, path: string): 
 export async function loadExtensionPaths(
 	loader: DefaultResourceLoader,
 	paths: string[],
-	workflowResourceProvider: WorkflowResourceProvider,
+	packageMcpServerSource: PackageMcpServerSource,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 	runtime?: ExtensionRuntime,
 	startupSessionQuit?: () => boolean,
@@ -30,7 +30,7 @@ export async function loadExtensionPaths(
 		paths.filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
 		state.cwd,
 		state.eventBus,
-		workflowResourceProvider,
+		packageMcpServerSource,
 		runtime,
 		inheritanceSnapshotProvider,
 		state.agentDir,
@@ -52,7 +52,7 @@ export async function loadExtensionPaths(
 				state.eventBus,
 				result.runtime,
 				path,
-				workflowResourceProvider,
+				packageMcpServerSource,
 				inheritanceSnapshotProvider,
 			);
 			extension.hidden = true;
@@ -71,7 +71,7 @@ export async function loadFinalExtensionSet(
 	loader: DefaultResourceLoader,
 	extensionPaths: string[],
 	preTrustExtensions: LoadExtensionsResult | undefined,
-	workflowResourceProvider: WorkflowResourceProvider,
+	packageMcpServerSource: PackageMcpServerSource,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 	startupSessionQuit?: () => boolean,
 ): Promise<LoadExtensionsResult> {
@@ -80,7 +80,7 @@ export async function loadFinalExtensionSet(
 		const extensionsResult = await loadExtensionPaths(
 			loader,
 			extensionPaths,
-			workflowResourceProvider,
+			packageMcpServerSource,
 			inheritanceSnapshotProvider,
 		);
 		endTimingSpan(loadExtensionsSpan);
@@ -88,7 +88,7 @@ export async function loadFinalExtensionSet(
 		const inlineExtensions = await loadExtensionFactories(
 			loader,
 			extensionsResult.runtime,
-			workflowResourceProvider,
+			packageMcpServerSource,
 			inheritanceSnapshotProvider,
 		);
 		endTimingSpan(inlineExtensionsSpan);
@@ -121,7 +121,7 @@ export async function loadFinalExtensionSet(
 	const remainingExtensions = await loadExtensionPaths(
 		loader,
 		remainingPaths,
-		workflowResourceProvider,
+		packageMcpServerSource,
 		inheritanceSnapshotProvider,
 		preTrustExtensions.runtime,
 		startupSessionQuit,
@@ -153,7 +153,7 @@ export async function loadFinalExtensionSet(
 export async function loadExtensionFactories(
 	loader: DefaultResourceLoader,
 	runtime: ExtensionRuntime,
-	workflowResourceProvider: WorkflowResourceProvider,
+	packageMcpServerSource: PackageMcpServerSource,
 	inheritanceSnapshotProvider: () => DefaultResourceLoaderInheritanceSnapshot,
 ): Promise<{
 	extensions: Extension[];
@@ -178,7 +178,7 @@ export async function loadExtensionFactories(
 				state.eventBus,
 				runtime,
 				extensionPath,
-				workflowResourceProvider,
+				packageMcpServerSource,
 				inheritanceSnapshotProvider,
 			);
 			extension.hidden = descriptor?.hidden;

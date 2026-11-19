@@ -193,7 +193,7 @@ function removeUnownedModelHeaders(
 function sessionIntercomPolicyFor(options: CreateAgentSessionOptions): SessionIntercomPolicy | undefined {
 	const parent = options.parentIntercomPolicy;
 	if (parent !== undefined) {
-		const own = options.subagentPolicy?.intercomGroup ?? options.orchestrationContext?.intercomGroup;
+		const own = options.subagentPolicy?.intercomGroup;
 		return SessionIntercomPolicy.forChild(own !== undefined && own.trim().length > 0 ? own : parent.home, parent);
 	}
 	return options.intercom === undefined ? undefined : SessionIntercomPolicy.fromOptions(options.intercom);
@@ -356,10 +356,9 @@ async function constructAgentSession(
 	if (workspace !== undefined) await assertSessionManagerInWorktreeAsync(workspace, options.sessionManager);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	await validateProcessStorageAsync(agentDir);
-	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
-	// `journal`; an unused selection needs no adapter, while the process's own profile is still checked.
-	const storageUsed =
-		(options.sessionManager === undefined && options.sessionStore === undefined) || options.journal === undefined;
+	// `storage` backs the sessions only without `sessionManager` and `sessionStore`; an unused selection needs no
+	// adapter, while the process's own profile is still checked.
+	const storageUsed = options.sessionManager === undefined && options.sessionStore === undefined;
 	await assertTeamAdapterInstalled(agentDir, storageUsed ? options.storage : undefined);
 	const suppliedSession =
 		options.cwd === undefined && workspace === undefined
@@ -425,19 +424,6 @@ async function constructAgentSession(
 	}
 
 	if (workspace !== undefined && persistInitialState) await recordSessionWorkspace(sessionManager, workspace);
-
-	// Mark workflow-created sessions as internal so they are excluded from the
-	// standard `/resume` history while remaining resumable via `/workflow resume`.
-	// Only stamped when the orchestration context identifies a workflow stage;
-	// reattaching to an already-marked session preserves its existing marker.
-	if (options.orchestrationContext?.kind === "workflow-stage") {
-		const ctx = options.orchestrationContext;
-		await sessionManager.markSessionInternal({
-			runId: ctx.workflowRunId,
-			stageId: ctx.workflowStageId,
-			stageName: ctx.workflowStageName,
-		});
-	}
 
 	if (!resourceLoader) {
 		resourceLoader = new DefaultResourceLoader({
@@ -587,7 +573,7 @@ async function constructAgentSession(
 
 	// `defaultTools` narrows only the initial BUILT-IN selection. It must not
 	// narrow `allowedToolNames`: a narrow allowlist would drop every extension
-	// and SDK custom tool (workflow, subagent, intercom, mcp, web_search, ...)
+	// and SDK custom tool (subagent, intercom, mcp, web_search, ...)
 	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
 	const toolListError = options.tools ? getToolListError(options.tools) : undefined;
 	if (toolListError) throw new Error(`Invalid tools option: ${toolListError}`);
@@ -863,7 +849,7 @@ async function constructAgentSession(
 				}
 				const env = auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined;
 				const cacheRetentionEnv = getAtomicEnvValue("CACHE_RETENTION", env);
-				// Shared by main chat, workflow stages and subagents; provider capability gates still apply.
+				// Shared by the main chat and subagents; provider capability gates still apply.
 				const cacheRetention =
 					streamOptions?.cacheRetention ??
 					(cacheRetentionEnv === "none"
@@ -1012,7 +998,6 @@ async function constructAgentSession(
 	);
 	const childHistory: ProjectHistory = {
 		sessionStore: () => session.extensionRunner.getProjectHistory().sessionStore(),
-		workflows: () => session.extensionRunner.getProjectHistory().workflows(),
 	};
 	try {
 		// One sink per session, so every resolved child configuration carries the same callback identity.
@@ -1027,7 +1012,6 @@ async function constructAgentSession(
 			settingsManager,
 			cwd,
 			powerShellAvailable,
-			workflowJournal: options.journal ?? options.storage,
 			storageAgentDir: agentDir,
 			worktreeSnapshots:
 				options.snapshots === undefined
@@ -1081,7 +1065,6 @@ async function constructAgentSession(
 			excludedToolNames: excludedTools,
 			extensionRunnerRef,
 			sessionStartEvent: options.sessionStartEvent,
-			orchestrationContext: options.orchestrationContext,
 			subagentPolicy,
 			intercomPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,

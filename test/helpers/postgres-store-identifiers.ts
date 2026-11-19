@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
-import { describe, it, test } from "vitest";
+import { describe, test } from "vitest";
 import {
 	postgresDialect,
 	type StorageDialect,
@@ -17,23 +17,15 @@ import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-rele
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import { physicalIdentifiers } from "../../packages/storage-postgres/postgres.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
-import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
-import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
-import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
-import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
-import { type PoolStoreScope, registerPoolStoreConformance } from "./pool-store-conformance.js";
+import { seedLegacyWorkflowTables } from "./legacy-store-0990.js";
 import { storageBackends } from "./storage-backends.js";
 
 /**
  * Every store on PostgreSQL under long prefixes (#4793): the longest one PostgreSQL accepts, and a longer one the
  * prefix check would refuse, which these tests pass to the stores directly. Every name a store gives the server
  * reaches it as `postgresDialect.identifier` of it, in creation, use and catalog probes alike, so each store opens
- * again cleanly, and no two names become one identifier.
+ * again cleanly, and no two names become one identifier. The database holds an earlier release's workflow tables, as an
+ * upgraded one does: the snapshot index's triggers on them are the names past 63 bytes under the longest prefix.
  */
 
 const postgres = storageBackends.find((backend) => backend.name === "Postgres")!;
@@ -41,20 +33,6 @@ const postgres = storageBackends.find((backend) => backend.name === "Postgres")!
 const LONG_PREFIX = `${"p".repeat(23)}_`;
 /** Longer than any prefix PostgreSQL accepts: its names would be truncated if any reached the server whole. */
 const OVERLONG_PREFIX = `${"q".repeat(35)}_`;
-
-function prefixScope(prefix: string): () => Promise<PoolStoreScope> {
-	return async () => ({ ...(await postgres.openScope()), prefix });
-}
-
-const runner = (name: string, body: () => Promise<void>, timeoutMs?: number) =>
-	postgres.skipReason === undefined ? it(name, body, timeoutMs) : it.skip(name, body);
-
-for (const prefix of [LONG_PREFIX, OVERLONG_PREFIX])
-	registerPoolStoreConformance(
-		runner,
-		`worker pool on Postgres under a ${prefix.length}-character prefix`,
-		prefixScope(prefix),
-	);
 
 /** `database`, whose dialect records every name the stores hand it to create, render, probe or drop. */
 function recordingNames(database: SqliteDatabase, asked: Set<string>, made = new Set<string>()): SqliteDatabase {
@@ -124,7 +102,7 @@ function recordingNames(database: SqliteDatabase, asked: Set<string>, made = new
 	});
 }
 
-/** Opens every store Atomic keeps on a database under `prefix`: sessions, the run journal, Intercom and the pool. */
+/** Opens every store Atomic keeps on a database under `prefix`: sessions and Intercom. */
 async function openEveryStore(
 	database: SqliteDatabase,
 	prefix: string,
@@ -143,18 +121,6 @@ async function openEveryStore(
 	await openSqlSentMessageAuthority(options);
 	await openSqlKnownSessionStore(options);
 	await (await openDatabaseWakeUpBus({ openDatabase: connect, prefix })).close();
-	const journal = await SqlRunJournal.open(database, { prefix });
-	try {
-		const queue = await openSqlPoolQueue(journal);
-		await openSqlPoolUsage(journal);
-		await SqlSharedPool.open(journal, queue);
-		await SqlFleetStore.open(journal);
-		await SqlRateBuckets.open(journal);
-		await SqlResourceAdmission.open(journal, { root: "root", holder: "holder" });
-		await (await openPoolSessions(sqlPoolStorage(journal)!)).close();
-	} finally {
-		await journal.close();
-	}
 }
 
 test("every unquoted identifier past 63 bytes, in DDL, DML and function bodies, becomes the dialect's name for it (#4793)", () => {
@@ -240,6 +206,7 @@ describe.skipIf(postgres.skipReason !== undefined)(
 					const asked = new Set<string>();
 					const made = new Set<string>();
 					const connect = async () => recordingNames(await scope.connect(), asked, made);
+					await seedLegacyWorkflowTables(await scope.connect(), { prefix });
 					await openEveryStore(await connect(), prefix, connect);
 					// A second host opening the same stores finds every object and changes nothing.
 					await openEveryStore(await connect(), prefix, connect);
@@ -277,22 +244,18 @@ describe.skipIf(postgres.skipReason !== undefined)(
 				}
 			});
 
-		test("no two names any store asks for map to one Postgres identifier, under any prefix or pool sub-prefix", async () => {
-			const asked = new Set<string>();
+		test("no two names any store asks for map to one Postgres identifier, under any prefix", async () => {
+			const names = new Set<string>();
 			for (const prefix of ["", LONG_PREFIX, OVERLONG_PREFIX]) {
 				const scope = await postgres.openScope();
 				try {
-					const connect = async () => recordingNames(await scope.connect(), asked);
+					const connect = async () => recordingNames(await scope.connect(), names);
+					await seedLegacyWorkflowTables(await scope.connect(), { prefix });
 					await openEveryStore(await connect(), prefix, connect);
-					// The snapshot store indexes the pool's tables once they exist, as the next journal to open finds them.
-					await (await SqlRunJournal.open(recordingNames(await scope.connect(), asked), { prefix })).close();
 				} finally {
 					await scope.close();
 				}
 			}
-			// The same names under the pool's other session sub-prefix, the one it uses where identifiers are unlimited.
-			const names = new Set(asked);
-			for (const name of asked) if (name.includes("wf_ps_")) names.add(name.replace("wf_ps_", "wf_runs_pool_"));
 			assert.ok(
 				[...names].some((name) => name.length > 63),
 				"some names were long enough to be hashed",

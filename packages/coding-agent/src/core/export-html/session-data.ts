@@ -2,7 +2,7 @@ import type { SessionManager } from "../session-manager.ts";
 import { chunkedForkLink } from "../storage/session/chunked-resume-projection.js";
 import { SessionConflictError, SessionNotFoundError } from "../storage/session/errors.js";
 import { historyChunks, historyPages } from "../storage/session/history-pages.js";
-import type { OversizedSessionEntry } from "../storage/session/types.js";
+import { type OversizedSessionEntry, SESSION_HISTORY_SCAN_ENTRIES } from "../storage/session/types.js";
 import type { renderHtmlInputs } from "./render-inputs.js";
 
 /** A manager can move to another session while the file is being written. Capture the physical store,
@@ -28,7 +28,8 @@ export async function captureHtmlHistory(sm: SessionManager) {
 	return {
 		header: { type: "session" as const, ...header },
 		leafId,
-		readHistory: () => historyPages(store, id, cut.epoch, cut.lastSeq, {}),
+		// Every pass reads the whole cut, in larger scan pages with the same byte bound.
+		readHistory: () => historyPages(store, id, cut.epoch, cut.lastSeq, { pageEntries: SESSION_HISTORY_SCAN_ENTRIES }),
 		/** Resolve an edge on another branch without an export-wide map of removed links. */
 		async visibleParent(parent: string | null, before: number) {
 			if (parent === null) return null;

@@ -3,8 +3,10 @@ import { StoragePrefixError } from "./errors.js";
 
 /**
  * What follows the prefix in every identifier Atomic names on PostgreSQL: the tables, indexes, triggers and trigger
- * functions of sessions, the run journal, worktree snapshots, the Intercom broker state (#5067) and worker pools (#4793),
- * pooled-stage sessions under `POSTGRES_POOL_SESSION_PREFIX` included. The storage adapters name none of their own, and
+ * functions of sessions, worktree snapshots and the Intercom broker state (#5067), and those the workflow run journal and
+ * worker pools (#4793) of earlier releases left under the same prefix, pooled-stage sessions under
+ * `POSTGRES_POOL_SESSION_PREFIX` included. Prefixes stay checked against them all, so a database those releases share
+ * keeps every name whole. The storage adapters name none of their own, and
  * Postgres chooses constraint and sequence names itself. Longer pool names are in
  * `POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES`.
  */
@@ -103,8 +105,6 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"wf_ps_session_entries_snapshot_refs",
 	"wf_ps_session_entries_snapshot_refs_fn",
 	"wf_ps_session_entry_chunks",
-	"wf_ps_session_fork_staging",
-	"wf_ps_session_fork_staging_name",
 	"wf_ps_session_meta",
 	"wf_ps_session_open",
 	"wf_ps_session_owners",
@@ -224,8 +224,9 @@ export const POSTGRES_MAX_STORAGE_PREFIX_LENGTH =
 	63 - Math.max(...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES.map((suffix) => suffix.length));
 
 /**
- * What a worker pool adds to the journal's prefix for the stores it carries on PostgreSQL: its pooled-stage sessions and
- * their snapshot index live under `<prefix>wf_ps_` (#4793). The length limit applies to the prefix before it.
+ * What a worker pool of an earlier release added to the journal's prefix for the stores it carried on PostgreSQL: its
+ * pooled-stage sessions and their snapshot index live under `<prefix>wf_ps_` (#4793). The length limit applies to the
+ * prefix before it.
  */
 export const POSTGRES_POOL_SESSION_PREFIX = "wf_ps_";
 

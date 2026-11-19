@@ -9,7 +9,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/host-adapters.js";
 import { collectStorageStatus } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { createChildProcessEnvironment } from "../../packages/coding-agent/src/utils/child-process.js";
-import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 afterEach(() => {
@@ -79,7 +79,7 @@ test("storage.adapter names an adapter from a package the host loaded through th
 			});
 		}
 
-		// Sessions and the workflow journal open through the name, and `atomic storage status` reports the module.
+		// Sessions open through the name, and `atomic storage status` reports the module.
 		const database = join(home, "store.sqlite");
 		const selection = { adapter: "@atomic-test/host-app", options: { path: database } };
 		const sessions = await new StorageProvider().openSessionStore(
@@ -87,14 +87,11 @@ test("storage.adapter names an adapter from a package the host loaded through th
 			{ agentDir, domain: "sessions" },
 		);
 		await sessions.close();
-		const journal = await resolveRunJournal({ agentDir, journal: selection });
-		await journal.close();
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify(selection));
-		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", JSON.stringify(selection));
 		const status = await collectStorageStatus({ cwd: home, agentDir, probe: true });
-		for (const domain of ["sessions", "journal"] as const) {
-			const entry = status.domains.find((candidate) => candidate.domain === domain);
-			assert.equal(entry?.source, domain === "sessions" ? "ATOMIC_SESSIONS_STORAGE" : "ATOMIC_WORKFLOWS_JOURNAL");
+		{
+			const entry = status.domains.find((candidate) => candidate.domain === "sessions");
+			assert.equal(entry?.source, "ATOMIC_SESSIONS_STORAGE");
 			assert.deepEqual(entry?.probe?.adapter, {
 				module: "@atomic-test/host-app",
 				loaded: true,

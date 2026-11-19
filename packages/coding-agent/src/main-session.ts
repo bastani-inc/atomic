@@ -30,7 +30,7 @@ import {
 } from "./core/session-cwd.ts";
 import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
-import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
+import { classifiedWorkflowMetadata } from "./core/session-manager-classification.ts";
 import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.js";
 import {
 	resolveSessionStore,
@@ -290,15 +290,6 @@ async function openSessionOrExit(sessionId: string, store: SessionStore): Promis
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
 	}
-}
-
-export async function applyInheritedWorkflowSessionClassification(
-	sessionManager: SessionManager,
-	env: Record<string, string | undefined> = process.env,
-): Promise<SessionManager> {
-	const metadata = workflowSessionMetadataFromEnv(env);
-	if (metadata) await sessionManager.markSessionInternal(metadata);
-	return sessionManager;
 }
 
 const initialStorageKeys = new WeakMap<SessionManager, string>();

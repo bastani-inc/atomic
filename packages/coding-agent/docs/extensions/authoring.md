@@ -30,7 +30,7 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Editable extensions and workflows support TypeScript without compilation. `/reload` picks up edits to an extension or its imported helpers; unchanged modules may retain module-scoped state.
+Editable extensions support TypeScript without compilation. `/reload` picks up edits to an extension or its imported helpers; unchanged modules may retain module-scoped state.
 
 Imports from Atomic's supplied core packages keep the running host's classes and shared state across `/reload`, including on Windows. The supported `@earendil-works/pi-coding-agent` compatibility import shares those exports with `@bastani/atomic`, so class comparisons and `instanceof` checks work across both names after reload. Edits to your extension and its imported local helpers still take effect; restart Atomic after updating Atomic itself.
 
@@ -435,7 +435,7 @@ Nested execution events and the nested tool's `ctx` include `parentToolCallId`. 
 
 Use `model-only` for interactive or orchestration tools that should not be called from scripts. `codemode` tools are advertised in the codemode tool's catalog; `deferred` tools are discoverable without occupying that inline catalog. Session allowlists and exclusions remain authoritative. Exposure cannot restore a suppressed tool.
 
-Atomic's workflow, subagent, Intercom/supervisor, and user-question tools are `model-only`: scripts can launch and control their session's subagents and send exact-target Intercom messages, but cannot edit agent definitions, ask questions of other sessions, or request interactive input through them. Ordinary permitted file, shell, MCP, and web-data tools remain callable. Custom tools that perform interactive or orchestration work should use the same exposure.
+Scripts can launch and control their session's subagents and send exact-target Intercom messages. They cannot edit agent definitions, ask questions of other sessions, or request interactive input. Use `model-only` for tools or actions that require the model to interact directly.
 
 A `model-only` tool can offer scripts part of its actions with `scriptAccess: { description, outputSchema?, refuse(params) }`. While the tool is active, scripts see it with `description` and receive its `structuredContent` as described by `outputSchema`. `refuse` runs after schema validation and before permission hooks, and returns why a script may not make the call, or `undefined` to run the tool's own `execute`. Direct calls are unaffected. Intercom uses it to let scripts list sessions and send to exact targets.
 

@@ -291,10 +291,20 @@ describe("what retention keeps for sessions", () => {
 	test("collection keeps the latest snapshot of internal workflow-stage sessions, which ordinary listings leave out (#4355)", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "one\n" });
 		const store = await sqlStore();
-		const stage = await SessionManager.create(store, clone, {
-			internal: true,
-			workflow: { runId: "run-1", stageId: "stage-1", stageName: "implement" },
-		});
+		// A header persisted by a pre-0.10.0 release. New sessions no longer write stage metadata.
+		const id = crypto.randomUUID();
+		await store.create(
+			{
+				id,
+				cwd: clone,
+				createdAt: new Date().toISOString(),
+				version: 4,
+				internal: true,
+				workflow: { runId: "run-1", stageId: "stage-1", stageName: "implement" },
+			},
+			[],
+		);
+		const stage = await SessionManager.open(store, id);
 		writeFileSync(join(clone, "a.txt"), "stage\n");
 		const capture = await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
 		assert.equal(capture.status, "captured");

@@ -348,11 +348,6 @@ const LISTING_SCOPES = 8;
  * ended before it committed runs again (#4383); `append` and `replace` check `expectSeq` again on each run.
  */
 const SESSION_TRANSACTION: SqliteTransactionOptions = { retryTransientFailures: true };
-/**
- * Set to `true` on a first-party database view whose writes wait for another process's write lock on the calling
- * thread (#5682). A global symbol, so every loaded copy of the package reads the same mark.
- */
-const LOCKS_ON_THREAD = Symbol.for("atomic.storage.locks-on-thread.v1");
 
 /** A write revision: 32 random hex digits, the form SQLite's `lower(hex(randomblob(16)))` gave earlier builds. */
 function newRevision(): string {
@@ -413,13 +408,11 @@ export class SqlSessionStore implements SessionStore {
 	/**
 	 * Absent on a local libSQL file, which then behaves as before: @libsql/client waits for another process's write
 	 * lock on the calling thread, even to begin a transaction, so a side write would stop the event loop where an
-	 * ordinary turn-ending notice writes nothing (#5682). The same holds for a first-party view over such a file that
-	 * marks itself with `LOCKS_ON_THREAD`, such as a workflow pool's sessions in a local libSQL journal.
+	 * ordinary turn-ending notice writes nothing (#5682).
 	 */
 	get chatRecords(): SessionChatRecords | undefined {
 		const { adapter, location } = this.database.descriptor;
 		if (adapter === "libsql" && /^file:/i.test(location)) return undefined;
-		if ((this.database as { readonly [LOCKS_ON_THREAD]?: unknown })[LOCKS_ON_THREAD] === true) return undefined;
 		if (!this.chatStore) {
 			const names = renderStorageIdentifiers(
 				"sessions",

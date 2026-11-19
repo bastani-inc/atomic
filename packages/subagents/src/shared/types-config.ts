@@ -2,7 +2,7 @@
  * Configuration, execution option, display, and event bus types.
  */
 
-import type { AgentSessionEvent, SessionManager, SessionWorkflowMetadata } from "@bastani/atomic";
+import type { AgentSessionEvent, SessionManager } from "@bastani/atomic";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { CwdVerdict } from "./launch-cwd.js";
 import type { CandidateModelResolver } from "./model-resolution.js";
@@ -132,7 +132,7 @@ export interface RunSyncOptions {
 		supervisorSessionId: string;
 		childName: string;
 	};
-	/** Resolved intercom home group for the spawned child (explicit subagent group or inherited stage group). */
+	/** Resolved intercom home group for the spawned child (explicit subagent group or inherited session group). */
 	intercomGroup?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
@@ -173,8 +173,6 @@ export interface RunSyncOptions {
 	outputMode?: OutputMode;
 	/** Current session depth passed to the in-process admission door. */
 	parentDepth?: number;
-	workflowStageSubagentGuard?: boolean;
-	workflowSessionMetadata?: SessionWorkflowMetadata;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
 	/**

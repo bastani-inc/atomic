@@ -363,9 +363,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
 			isDisabled: () => source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined,
 			onNearTop: () => this.loadEarlier(),
-			// A subagent's `/tasks` lists the tasks it launched, as a stage chat's lists the stage's own.
+			// A subagent's `/tasks` lists the tasks it launched.
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
-			// The completion a stage chat offers, from the subagent's own cwd and skills.
+			// The completion the subagent's chat offers, from its own cwd and skills.
 			autocompleteProvider: createSessionSkillAutocompleteProvider(async () => {
 				const commands = await source.taskCommands?.(taskId);
 				return commands === undefined
@@ -512,7 +512,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		) {
 			return this.hasTasks() ? this.chat.openTasks() : true;
 		}
-		// The host owns thinking display; only its default physical key leaves the composer, as in a stage chat.
+		// The host owns thinking display; only its default physical key leaves the composer.
 		if (matchesKey(data, "ctrl+t") && keybindings.matches(data, "app.thinking.toggle")) return false;
 		if (keybindings.matches(data, "app.tools.expand")) {
 			if (this.env.setToolsExpanded === undefined) return false;
@@ -535,7 +535,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		// A read-only chat scrolls and keeps its keys, but takes no typing: nothing it sends could reach the task.
 		if (!this.chat.hasTaskInspector && this.readOnlyReason() !== undefined && isTyping(data)) return true;
-		// The subagent's own task list is modal while it is open, as in a stage chat.
+		// The subagent's own task list is modal while it is open.
 		const handled = this.chat.hasTaskInspector ? this.chat.handleTaskInput(data) : this.chat.handleInput(data);
 		this.requestRender();
 		return handled;
@@ -557,7 +557,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.toolOutputToggled();
 	}
 
-	/** The chat box of a stage chat: the transcript, then pending, working, usage, the named editor and the footer. */
+	/** The chat box of a subagent's chat: the transcript, then pending, working, usage, the named editor and the footer. */
 	render(width: number, rows: number): string[] {
 		const viewport = Math.max(1, rows);
 		this.bodyRows = 0;

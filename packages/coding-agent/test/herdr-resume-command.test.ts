@@ -37,9 +37,7 @@ async function startReporter(
 	timeoutMs = FAKE_HERDR_CHILD_TIMEOUT_MS,
 ) {
 	const runtime = createExtensionRuntime();
-	runtime.workflowActivityHub
-		.registerWorkflowActivityPublisher()
-		.publishSnapshot({ availability: "ready", roots: [] });
+
 	const extension = await loadExtensionFromFactory(
 		createHerdrExtension({
 			env: fake.env,

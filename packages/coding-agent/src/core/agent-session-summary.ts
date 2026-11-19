@@ -61,7 +61,7 @@ async function generateOwnedSessionSummary(this: AgentSession): Promise<void> {
 		const model = this.model;
 		if (!model) return;
 
-		// Workflow-stage sessions are excluded from /resume entirely.
+		// Internal sessions are excluded from /resume.
 		if (this.sessionManager.getHeader()?.internal) return;
 
 		// Claim the launch before waiting, so a later turn supersedes this one while both are

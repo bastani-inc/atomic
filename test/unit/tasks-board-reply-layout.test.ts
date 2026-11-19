@@ -93,7 +93,7 @@ function heldFixture() {
 function waiting(id: string, choices: string[]): AgentPanelItem {
 	return {
 		id,
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: id.slice(4),
 		task: "stage plan",

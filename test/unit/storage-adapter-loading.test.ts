@@ -130,6 +130,9 @@ test("modules a type:module adapter imports get the host's @bastani/atomic/stora
 	}
 });
 
+// The three type:module adapters below still export `openRunJournal`, a hook of earlier releases that the loader accepts
+// and no store calls; each test calls it itself to run the adapter's own imports.
+
 test("concurrent imports of a type:module helper both wait for its top-level await (#3972)", async () => {
 	const agentDir = makeTempDirectory("storage-module-type-concurrent-");
 	const adapterDir = join(agentDir, "adapter");
@@ -153,7 +156,7 @@ test("concurrent imports of a type:module helper both wait for its top-level awa
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
+			{ agentDir, domain: "sessions" },
 			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.deepEqual(await Promise.all([adapter.openRunJournal(), adapter.openRunJournal()]), ["run", "run"]);
@@ -191,7 +194,7 @@ test("type:module adapter modules that import each other load without waiting on
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
+			{ agentDir, domain: "sessions" },
 			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.equal(await adapter.openRunJournal(), "done");
@@ -231,7 +234,7 @@ test("a type:module helper and a TypeScript module that import each other load w
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
+			{ agentDir, domain: "sessions" },
 			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.equal(await adapter.openRunJournal(), "done");

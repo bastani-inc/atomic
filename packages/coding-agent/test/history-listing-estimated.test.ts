@@ -37,7 +37,7 @@ describe("history:// session listing (#5250)", () => {
 			await writeFile(join(directory, "small.jsonl"), sessionText("small", [message("only", "small", 1)]));
 			const store = await JsonlSessionStore.open(directory, { scanExisting: false });
 			try {
-				const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+				const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store });
 				const rows = String(await router.read?.("history://sessions"))
 					.split("\n")
 					.filter((line) => line.startsWith("history://sessions/"));

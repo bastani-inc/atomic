@@ -22,7 +22,7 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+
 import { createSession, snapshotEntry, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 
 let directory: string;
@@ -185,7 +185,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 		}
 
 		test.each(["", "custom_"])(
-			"opens an old blob journal with prefix '%s' and gives existing and new blobs a full grace window (#4532)",
+			"opens an old blob store with prefix '%s' and gives existing and new blobs a full grace window (#4532)",
 			async (prefix) => {
 				const database = await openDatabase();
 				const table = `${prefix}snapshot_blobs`;
@@ -195,9 +195,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				const old = textBlob("blob from before creation timestamps");
 				await database.run(`INSERT INTO ${table} VALUES (?, ?, ?)`, old.hash, old.data.byteLength, old.data);
 
-				const journal = await SqlRunJournal.open(database, { prefix });
-				closers.push(() => journal.close());
-				const blobs = journal.snapshotBlobs;
+				const blobs = await SqlSnapshotBlobStore.open(database, prefix);
 				assert.equal(
 					Number((await database.get(`SELECT created_at FROM ${table} WHERE hash = ?`, old.hash))?.created_at),
 					0,

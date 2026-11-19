@@ -38,7 +38,6 @@ export interface BenchmarkSample {
 		readonly toolNames: readonly string[];
 		readonly requestCount: number;
 	};
-	readonly workflowListSucceeded?: boolean;
 }
 
 export interface RawSampleArtifacts {

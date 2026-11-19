@@ -30,8 +30,7 @@ Choose the provider and model you have configured, then add the settings you nee
   "warnings": {
     "anthropicExtraUsage": true
   },
-  "packages": ["pi-skills"],
-  "workflows": ["./workflows/*.ts"]
+  "packages": ["pi-skills"]
 }
 ```
 

@@ -2,16 +2,13 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { defaultJournalStoreDirectory, openNodeSqliteDatabase } from "@bastani/atomic/storage";
+import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { parseStorageCommand, runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import { LIBSQL_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
-import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
-import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
-import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
 /** Loading the libSQL package adapter through jiti and opening a `file:` database, several times. */
@@ -26,8 +23,6 @@ const STORAGE_VARIABLES = [
 	"ATOMIC_WORKFLOW_JOURNAL_PATH",
 	"ATOMIC_PROFILE",
 ];
-const RUN_A = testRunId("selection-a");
-const RUN_B = testRunId("selection-b");
 
 let root: string;
 let project: string;
@@ -79,59 +74,24 @@ async function seed(agentDir: string): Promise<string> {
 	} finally {
 		await store.close();
 	}
-	const journal = await ShardedRunJournal.open({
-		directory: defaultJournalStoreDirectory(agentDir),
-		openShard: (path) => openSqlRunJournal(path),
-	});
-	try {
-		for (const [runId, createdAt] of [
-			[RUN_A, 1_000],
-			[RUN_B, 2_000],
-		] as const) {
-			await journal.createRun({
-				runId,
-				name: "transfer",
-				cwd: "/project",
-				createdAt,
-				status: "running",
-				inputs: {},
-			});
-			const outcome = await journal.acquire(runId, "holder");
-			assert.equal(outcome.status, "acquired");
-			if (outcome.status !== "acquired") continue;
-			await journal.append(outcome.lease, { type: "StatusChanged", payload: { status: "paused" } });
-			await journal.release(outcome.lease);
-		}
-	} finally {
-		await journal.close();
-	}
 	return sessionId;
 }
 
 function tree(directory: string): Record<string, string> {
 	const result: Record<string, string> = {};
-	for (const kind of ["sessions", "workflows"]) {
-		const path = join(directory, kind);
-		if (!existsSync(path)) continue;
-		for (const name of readdirSync(path).sort()) result[`${kind}/${name}`] = readFileSync(join(path, name), "utf8");
-	}
+	const path = join(directory, "sessions");
+	if (!existsSync(path)) return result;
+	for (const name of readdirSync(path).sort()) result[`sessions/${name}`] = readFileSync(join(path, name), "utf8");
 	return result;
 }
 
 test("export and import parse --storage and --storage-file (#4793)", () => {
-	assert.deepEqual(parseStorageCommand(["export", "out", "--storage", '{"path":"old.sqlite"}']), {
-		kind: "export",
-		directory: "out",
-		kinds: { sessions: true, workflows: true, explicit: false },
-		unfinished: false,
-		storage: { path: "old.sqlite" },
-	});
-	assert.deepEqual(parseStorageCommand(["import", "in", "--workflows", "--storage-file", "new.json"]), {
-		kind: "import",
-		directory: "in",
-		kinds: { sessions: false, workflows: true, explicit: true },
-		storageFile: "new.json",
-	});
+	const exported = parseStorageCommand(["export", "out", "--storage", '{"path":"old.sqlite"}']);
+	assert.equal(exported.kind, "export");
+	assert.deepEqual(exported.kind === "export" ? exported.storage : undefined, { path: "old.sqlite" });
+	const imported = parseStorageCommand(["import", "in", "--sessions", "--storage-file", "new.json"]);
+	assert.equal(imported.kind, "import");
+	assert.equal(imported.kind === "import" ? imported.storageFile : undefined, "new.json");
 	assert.throws(
 		() => parseStorageCommand(["export", "out", "--storage", "{}", "--storage-file", "x.json"]),
 		/Pass only one of --storage and --storage-file/,
@@ -156,11 +116,7 @@ test(
 		const exported = join(root, "exported");
 		assert.equal((await storage(source, ["export", exported])).code, 0);
 		const before = tree(exported);
-		assert.deepEqual(Object.keys(before).sort(), [
-			`sessions/${sessionId}.jsonl`,
-			`workflows/${RUN_A}.jsonl`,
-			`workflows/${RUN_B}.jsonl`,
-		]);
+		assert.deepEqual(Object.keys(before), [`sessions/${sessionId}.jsonl`]);
 
 		// This machine joined the shared database: the plain commands refuse it, a named selection is used.
 		const target = machine("b", { packages: [libsqlPackage], storage: shared });
@@ -172,14 +128,13 @@ test(
 		const imported = await storage(target, ["import", exported, "--storage-file", selectionFile]);
 		assert.equal(imported.code, 0, imported.err);
 		assert.match(imported.out, /Imported 1 session .*\(1 added/);
-		assert.match(imported.out, /Imported 2 workflow runs .*\(2 added/);
 		const again = await storage(target, ["import", exported, "--storage", JSON.stringify(shared)]);
-		assert.match(again.out, /2 workflow runs .*\(0 added, 0 updated, 2 already up to date\)/);
+		assert.match(again.out, /1 session .*\(0 added, 0 updated, 1 already up to date\)/);
 
 		const reexported = join(root, "reexported");
 		const back = await storage(target, ["export", reexported, "--storage", JSON.stringify(shared)]);
 		assert.equal(back.code, 0, back.err);
-		assert.deepEqual(tree(reexported), before, "the runs and the session read back byte for byte");
+		assert.deepEqual(tree(reexported), before, "the session reads back byte for byte");
 		const database = await openNodeSqliteDatabase(join(libsqlDirectory, "shared.sqlite"), { readOnly: true });
 		try {
 			const tables = await database.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'");
@@ -190,19 +145,6 @@ test(
 		} finally {
 			await database.close();
 		}
-		const missing = await storage(target, [
-			"export",
-			join(root, "one"),
-			"--run",
-			"missing-run",
-			"--storage-file",
-			selectionFile,
-		]);
-		assert.equal(missing.code, 1);
-		assert.match(
-			missing.err,
-			/adapter @bastani\/atomic-storage-libsql \(prefix team_\).*run missing-run is not in this workflow journal/s,
-		);
 	},
 	LIBSQL_SCENARIO_TIMEOUT_MS,
 );

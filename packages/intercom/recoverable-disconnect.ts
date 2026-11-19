@@ -9,15 +9,9 @@
  * Explicit, user-initiated operations keep rejecting visibly.
  *
  * Classification is by construction, never by message text. Only errors this
- * module or `live-route-refusal.ts` create carry the marker, so an identically
- * worded error raised anywhere else — and every protocol, authentication,
- * configuration, or non-recoverable initialization failure — stays actionable.
- *
- * A broker refusal of a live workflow-stage route ends the socket too. When its
- * code is transient (the workflow owner is re-registering after its own
- * reconnect, or the previous attempt's session is still being torn down), the
- * same bounded retry that recovers a lost socket clears it (#3163). A refusal
- * whose code repeats identically on retry is not recoverable.
+ * module creates carry the marker, so an identically worded error raised
+ * anywhere else — and every protocol, authentication, configuration, or
+ * non-recoverable initialization failure — stays actionable.
  *
  * A broker that accepts the socket but does not answer a registration in time is
  * saturated, not gone. Its timeout is recoverable for the same reason, and a
@@ -29,8 +23,6 @@
  * before it closes, or is gone by the time the client looks. The client spawns
  * and connects to the replacement.
  */
-
-import { IntercomLiveRouteRefusedError } from "./live-route-refusal.js";
 
 /** Transport diagnosis. Delivery tools own bounded recovery, not their callers. */
 export const RECOVERABLE_DISCONNECT_MESSAGE = "Client disconnected";
@@ -90,8 +82,8 @@ export class IntercomBrokerRetiringError extends Error implements RecoverableDis
 }
 
 /**
- * True for an `IntercomClientDisconnectedError`, an `IntercomBrokerTimeoutError`, an `IntercomBrokerRetiringError`,
- * or a transient `IntercomLiveRouteRefusedError`, directly or as a bounded `cause` ancestor.
+ * True for an `IntercomClientDisconnectedError`, an `IntercomBrokerTimeoutError` or an `IntercomBrokerRetiringError`,
+ * directly or as a bounded `cause` ancestor.
  */
 export function isRecoverableIntercomDisconnect(error: unknown): boolean {
 	let current: unknown = error;
@@ -100,7 +92,6 @@ export function isRecoverableIntercomDisconnect(error: unknown): boolean {
 		if (current instanceof IntercomClientDisconnectedError) return true;
 		if (current instanceof IntercomBrokerTimeoutError) return true;
 		if (current instanceof IntercomBrokerRetiringError) return true;
-		if (current instanceof IntercomLiveRouteRefusedError) return current.transient;
 		current = current.cause;
 	}
 	return false;

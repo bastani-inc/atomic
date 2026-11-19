@@ -81,6 +81,10 @@ test("built package exposes the same storage classes through main and storage su
 		import * as storage from '@bastani/atomic/storage';
 		import { registerSqliteDatabaseConformance } from '@bastani/atomic/storage/testing';
 		assert.equal(typeof registerSqliteDatabaseConformance, 'function');
+		assert.deepEqual(Object.keys(main).filter(name => /workflow/i.test(name)).sort(), [
+			'workflowsStorageDir', 'workflowsStorageDirAsync',
+		], 'only the existing session-storage directory helpers retain workflow names');
+		assert.equal('workflows' in main.AgentSession.prototype, false);
 		for (const [name, value] of Object.entries(storage)) assert.equal(main[name], value, name);
 		const database = await storage.openNodeSqliteDatabase(':memory:');
 		assert.deepEqual(await database.get('SELECT ? AS value', 9007199254740992n), {value: 9007199254740992n});

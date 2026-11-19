@@ -27,7 +27,6 @@ import {
 import { frameOutboundAskReply } from "../../packages/intercom/outbound-asks.ts";
 import type { Message, SessionInfo } from "../../packages/intercom/types.ts";
 import { InlineMessageComponent, renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.ts";
-import { stageChatRenderSettings } from "../../packages/workflows/src/tui/stage-chat-view-render-settings.ts";
 
 const originalKeybindings = getKeybindings();
 
@@ -536,7 +535,7 @@ test("render-only Supervisor registration fills metadata-only tool definitions (
 	);
 });
 
-test("main chat, subagent view and stage chat resolve the exact same intercom_message card component (#5350)", () => {
+test("main chat and subagent view resolve the same intercom_message card component (#5350)", () => {
 	initTheme("dark", false);
 	let lightRenderer: ConstructorParameters<typeof CustomMessageComponent>[1];
 	let heavyRenderer: ConstructorParameters<typeof CustomMessageComponent>[1];
@@ -583,29 +582,7 @@ test("main chat, subagent view and stage chat resolve the exact same intercom_me
 
 	const mainLines = new CustomMessageComponent(customMsg, heavyRenderer, undefined, 1).render(100);
 	const subagentLines = new CustomMessageComponent(customMsg, lightRenderer, undefined, 1).render(100);
-	const stageSettings = stageChatRenderSettings(
-		{
-			handle: {
-				isDisposed: false,
-				agentSession: {
-					getToolDefinition: () => undefined,
-					extensionRunner: {
-						getMessageRenderer: (t: string) => (t === "intercom_message" ? lightRenderer : undefined),
-					},
-				},
-			},
-		} as never,
-		{} as never,
-	);
-	const stageLines = new CustomMessageComponent(
-		customMsg,
-		stageSettings?.getCustomMessageRenderer?.("intercom_message"),
-		undefined,
-		1,
-	).render(100);
-
 	assert.deepEqual(mainLines, subagentLines);
-	assert.deepEqual(mainLines, stageLines);
 	const plain = stripTerminalSequences(mainLines.join("\n"));
 	assert.match(plain, /› Message from worker-2 · atomic-wt\/fix-x · update sent 05:41/);
 	assert.doesNotMatch(plain, /\[intercom_message\]/);

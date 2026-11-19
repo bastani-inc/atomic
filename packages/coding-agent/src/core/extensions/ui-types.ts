@@ -185,9 +185,9 @@ export interface HostInputFormField {
 export interface HostInputFormRequest {
 	title: string;
 	fields: HostInputFormField[];
-	/** Panel heading label. Defaults to "WORKFLOW INPUTS". */
+	/** Panel heading label. */
 	heading?: string;
-	/** Submit button label. Defaults to "[ Run workflow ]". */
+	/** Submit button label. */
 	submitLabel?: string;
 }
 
@@ -200,8 +200,6 @@ export interface HostSessionPickerRow {
 	path: string;
 	id: string;
 	cwd: string;
-	/** A workflow selection must still match this journal version when it is resumed. */
-	resumeSelection?: { readonly updatedAt: number };
 	/** Creation time in epoch milliseconds. */
 	createdAt: number;
 	/** Last-modified time in epoch milliseconds. */

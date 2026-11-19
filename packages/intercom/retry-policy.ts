@@ -13,7 +13,7 @@ export const SEND_RESPONSE_TIMEOUT_MS = 10_000;
 /** The broker answers an unconfirmed save before the sender's own wait ends, so the sender learns the outcome is uncertain. */
 export const RECIPIENT_RECEIPT_TIMEOUT_MS = 8_000;
 /**
- * #3983: a recipient still saving a message (a pooled stage's journal commit waiting behind other writers) reports
+ * #3983: a recipient still saving a message (a journal commit waiting behind other writers) reports
  * progress this often, each report extending the sender's wait by another `RECIPIENT_RECEIPT_TIMEOUT_MS`.
  */
 export const RECIPIENT_SAVING_REPORT_INTERVAL_MS = RECIPIENT_RECEIPT_TIMEOUT_MS / 4;

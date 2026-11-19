@@ -47,7 +47,7 @@ export interface SubagentState {
 	lastUiContext: ExtensionContext | null;
 	/**
 	 * The Intercom id this session's own client registered under, by the Atomic session it registered for. Other
-	 * sessions in the process, such as its workflow stages and subagents, hold Intercom connections of their own.
+	 * sessions in the process, including its subagents, hold Intercom connections of their own.
 	 */
 	ownIntercomSession?: { readonly sessionId: string; readonly intercomSessionId: string };
 }

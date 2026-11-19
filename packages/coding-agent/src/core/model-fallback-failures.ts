@@ -1,9 +1,9 @@
 /**
  * Shared model/provider failure classification.
  *
- * Workflows, subagents, and the main chat all need the same decision about
+ * Subagents and the main chat all need the same decision about
  * whether a provider failure may spend another model candidate. Keep this
- * module free of AgentSession and workflow imports so the published SDK can
+ * module free of AgentSession imports so the published SDK can
  * expose it to the raw-TypeScript companion packages without a cycle.
  */
 
@@ -842,7 +842,7 @@ const GITHUB_COPILOT_FAILURE_KINDS: Readonly<Record<GitHubCopilotErrorCode, Mode
 /**
  * A GitHub Copilot failure is typed at the provider: its code decides, never its text. The typed error is found on
  * the failure, anywhere in its cause chain, or in the diagnostics of a failed assistant message in that chain, as
- * when a workflow wraps the message.
+ * when a caller wraps the message.
  */
 function githubCopilotSignal(error: unknown): ModelFallbackFailureSignal | undefined {
 	const copilotError: GitHubCopilotError | undefined = findGitHubCopilotError(error);

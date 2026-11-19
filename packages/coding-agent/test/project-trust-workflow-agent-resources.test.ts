@@ -5,7 +5,9 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";
 import type { ProjectTrustContext } from "../src/core/extensions/types.ts";
+import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { resolveProjectTrusted } from "../src/core/project-trust.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 import {
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
@@ -66,7 +68,23 @@ async function resolveWithPrompt(cwd: string, agentDir: string): Promise<{ trust
 	return { trusted, prompts };
 }
 
-describe("project workflows and agents ask for project trust", () => {
+describe("project recipes and agents respect project trust", () => {
+	test("never trusting a folder hides its legacy recipes even when it contains no active resources", async () => {
+		const { root, agentDir } = makeRoot();
+		const cwd = join(root, "project");
+		writeFileEnsuringDir(join(cwd, ".atomic", "workflows", "flow.ts"), "throw new Error('not executable');");
+		const projectTrusted = await resolveProjectTrusted({
+			cwd,
+			trustStore: new ProjectTrustStore(agentDir),
+			defaultProjectTrust: "never",
+			projectTrustContext: { cwd, mode: "print", hasUI: false, ui: noOpUIContext },
+		});
+		assert.equal(projectTrusted, false);
+		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+		const paths = await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve();
+		assert.deepEqual(paths.legacyWorkflowFiles, []);
+	});
+
 	for (const [label, relativePath] of [
 		["a workflow module", ".atomic/workflows/flow.ts"],
 		["an agent definition", ".atomic/agents/helper.md"],

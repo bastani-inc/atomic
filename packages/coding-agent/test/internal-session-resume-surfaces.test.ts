@@ -156,10 +156,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		expect(fullTranscriptReadTracking.paths.filter((path) => path.endsWith(".jsonl"))).toHaveLength(65);
 		expect(all).toHaveLength(65);
 		const stage = all.find((session) => session.id === "workflow-63");
-		expect(stage).toMatchObject({
-			internal: true,
-			workflow: { runId: "run-many", stageId: "stage-63", stageName: "stage-workflow-63" },
-		});
+		expect(stage).toMatchObject({ internal: true });
 	});
 
 	it("the interactive /resume surface wires default-filtered project and all-history loaders", async () => {

@@ -3,17 +3,9 @@ import { join } from "node:path";
 import { APP_NAME } from "../config.js";
 import { stripBom } from "../utils/text.ts";
 import type { McpServerConfig } from "./mcp-servers.ts";
-import type { PiManifest, ResourceType } from "./package-manager-types.ts";
+import type { FileKind, PackageFilter, PiManifest } from "./package-manager-types.ts";
 
-const MANIFEST_ENTRY_FIELDS = [
-	"extensions",
-	"skills",
-	"prompts",
-	"themes",
-	"workflows",
-	"workflow",
-	"storageAdapters",
-] as const;
+const MANIFEST_ENTRY_FIELDS = ["extensions", "skills", "prompts", "themes", "storageAdapters"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -36,6 +28,13 @@ function sanitizeManifest(value: unknown): PiManifest | null {
 		const entries = value[field];
 		if (Array.isArray(entries) && entries.every((entry): entry is string => typeof entry === "string")) {
 			manifest[field] = entries;
+		}
+	}
+	for (const name of ["workflows", "workflow"] as const) {
+		const entries = value[name];
+		if (Array.isArray(entries) && entries.every((entry): entry is string => typeof entry === "string")) {
+			manifest.legacyWorkflowFiles = entries;
+			break;
 		}
 	}
 	const mcpServers = typeof value.mcpServers === "string" ? value.mcpServers : sanitizeMcpServers(value.mcpServers);
@@ -66,18 +65,16 @@ export function readPiManifest(packageRoot: string): PiManifest | null {
 	return readPiManifestFile(packageJsonPath);
 }
 
-export function conventionDirsForResource(packageRoot: string, resourceType: ResourceType): string[] {
-	if (resourceType === "workflows") {
+export function conventionDirsForResource(packageRoot: string, resourceType: FileKind): string[] {
+	if (resourceType === "legacyWorkflowFiles") {
 		return [join(packageRoot, "workflows"), join(packageRoot, "workflow")];
 	}
 	return [join(packageRoot, resourceType)];
 }
 
-export function manifestEntriesForResource(
-	manifest: PiManifest | null,
-	resourceType: ResourceType,
-): string[] | undefined {
-	if (!manifest) return undefined;
-	if (resourceType === "workflows") return manifest.workflows ?? manifest.workflow;
-	return manifest[resourceType];
+/** Old package filters restrict only the paths the migration catalog may advertise. */
+export function legacyWorkflowFilePatterns(filter: PackageFilter | undefined): string[] | undefined {
+	if (!filter || !("workflows" in filter)) return undefined;
+	const entries = filter.workflows;
+	return Array.isArray(entries) ? entries.filter((entry): entry is string => typeof entry === "string") : [];
 }

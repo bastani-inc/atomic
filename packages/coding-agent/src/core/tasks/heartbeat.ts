@@ -128,9 +128,8 @@ function byBoundary(a: Tracked, b: Tracked): number {
 /**
  * Periodic "is this still making progress?" notices for one task owner's running shells and subagents.
  *
- * It follows the workflow heartbeat rules: boundaries are anchored at the task's start and never at the previous
- * delivery, missed boundaries are skipped rather than replayed, and only one notice per owner is outstanding. Unlike
- * a workflow run, an owner can have many tasks, so tasks due together share one bounded notice, and a task due while
+ * Boundaries are anchored at the task's start and never at the previous
+ * delivery, missed boundaries are skipped rather than replayed, and only one notice per owner is outstanding. An owner can have many tasks, so tasks due together share one bounded notice, and a task due while
  * the owner has not read the previous notice waits for it rather than losing its turn.
  */
 export class TaskHeartbeatMonitor {

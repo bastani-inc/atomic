@@ -1,13 +1,6 @@
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 
-export type CallbackActivityKind =
-	| "extension.hook"
-	| "renderer"
-	| "tool.execute"
-	| "tool.prepare"
-	| "workflow.ctx_tool"
-	| "workflow.run"
-	| "workflow.stage_adapter";
+export type CallbackActivityKind = "extension.hook" | "renderer" | "tool.execute" | "tool.prepare";
 
 export interface CallbackActivity {
 	id: string;
@@ -16,8 +9,6 @@ export interface CallbackActivity {
 	startedAt: number;
 	sourcePath?: string;
 	toolCallId?: string;
-	runId?: string;
-	stageId?: string;
 }
 
 export interface CallbackActivityReporter {
@@ -30,8 +21,6 @@ export interface CallbackActivityDescriptor {
 	name: string;
 	sourcePath?: string;
 	toolCallId?: string;
-	runId?: string;
-	stageId?: string;
 }
 
 let reporter: CallbackActivityReporter | undefined;

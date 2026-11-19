@@ -23,11 +23,7 @@ import {
 	registrationFields,
 	resolveInvocationRuntime,
 } from "./loader-bindings.ts";
-import {
-	emptyWorkflowResourceProvider,
-	type ResourceLoaderInheritanceSnapshotProvider,
-	type WorkflowResourceProviderInput,
-} from "./loader-resources.ts";
+import type { PackageMcpServerSource, ResourceLoaderInheritanceSnapshotProvider } from "./loader-resources.ts";
 import { factoryAcquisitions, factoryRollbackError, rollbackExtensionFactories } from "./loader-rollback.ts";
 import { createExtensionRuntime } from "./loader-runtime.ts";
 import { type ExtensionCacheToken, loadExtensionModule, useExtensionCacheCwd } from "./loader-virtual-modules.js";
@@ -42,7 +38,7 @@ interface ExtensionSource {
 	identity: symbol;
 	factory: ExtensionFactory;
 	registrationSource: object | string;
-	workflowResourceProvider: WorkflowResourceProviderInput;
+	packageSource: PackageMcpServerSource | undefined;
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider;
 }
 type DiscoveredExtension = Extension & { [extensionSource]?: ExtensionSource };
@@ -107,7 +103,7 @@ export async function instantiateExtensions(target: LoadExtensionsResult, cwd: s
 				eventBus,
 				runtime,
 				source.path,
-				recipe.workflowResourceProvider,
+				recipe.packageSource,
 				recipe.resourceLoaderInheritanceSnapshotProvider,
 				source,
 				recipe.registrationSource,
@@ -181,7 +177,7 @@ async function loadExtension(
 	cwd: string,
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
-	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+	packageSource?: PackageMcpServerSource,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	cacheToken?: ExtensionCacheToken,
 	agentDir?: string,
@@ -208,7 +204,7 @@ async function loadExtension(
 			eventBus,
 			runtime,
 			extensionPath,
-			workflowResourceProvider,
+			packageSource,
 			resourceLoaderInheritanceSnapshotProvider,
 			createExtension(extensionPath, resolvedPath),
 			await getResourcePathKeyAsync(resolvedPath),
@@ -232,7 +228,7 @@ export async function loadExtensionFromFactory(
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
 	extensionPath = "<inline>",
-	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+	packageSource?: PackageMcpServerSource,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	source?: Pick<Extension, "resolvedPath" | "sourceInfo">,
 ): Promise<Extension> {
@@ -243,7 +239,7 @@ export async function loadExtensionFromFactory(
 		eventBus,
 		runtime,
 		extensionPath,
-		workflowResourceProvider,
+		packageSource,
 		resourceLoaderInheritanceSnapshotProvider,
 		source,
 	);
@@ -257,7 +253,7 @@ async function loadOwnedExtensionFromFactory(
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
 	extensionPath: string,
-	workflowResourceProvider: WorkflowResourceProviderInput,
+	packageSource: PackageMcpServerSource | undefined,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	source?: Pick<Extension, "resolvedPath" | "sourceInfo">,
 	registrationSource: object | string = factory,
@@ -270,7 +266,7 @@ async function loadOwnedExtensionFromFactory(
 		runtime,
 		resolvedCwd,
 		eventBus,
-		workflowResourceProvider,
+		packageSource,
 		resourceLoaderInheritanceSnapshotProvider,
 		registrationSource,
 	);
@@ -292,7 +288,7 @@ async function loadOwnedExtensionFromFactory(
 		identity: Symbol(),
 		factory,
 		registrationSource,
-		workflowResourceProvider,
+		packageSource,
 		resourceLoaderInheritanceSnapshotProvider,
 	});
 	factoryAcquisitions.getStore()?.pending?.set(extension, { cwd: resolvedCwd, runtime });
@@ -306,7 +302,7 @@ async function loadExtensionsInternal(
 	paths: string[],
 	cwd: string,
 	eventBus?: EventBus,
-	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+	packageSource?: PackageMcpServerSource,
 	runtime?: ExtensionRuntime,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	useCache = false,
@@ -336,7 +332,7 @@ async function loadExtensionsInternal(
 			resolvedCwd,
 			resolvedEventBus,
 			resolvedRuntime,
-			workflowResourceProvider,
+			packageSource,
 			resourceLoaderInheritanceSnapshotProvider,
 			cacheToken,
 			agentDir,
@@ -369,7 +365,7 @@ export async function loadExtensions(
 	paths: string[],
 	cwd: string,
 	eventBus?: EventBus,
-	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+	packageSource?: PackageMcpServerSource,
 	runtime?: ExtensionRuntime,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	agentDir?: string,
@@ -378,7 +374,7 @@ export async function loadExtensions(
 		paths,
 		cwd,
 		eventBus,
-		workflowResourceProvider,
+		packageSource,
 		runtime,
 		resourceLoaderInheritanceSnapshotProvider,
 		false,
@@ -390,7 +386,7 @@ export async function loadExtensionsCached(
 	paths: string[],
 	cwd: string,
 	eventBus?: EventBus,
-	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+	packageSource?: PackageMcpServerSource,
 	runtime?: ExtensionRuntime,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	agentDir?: string,
@@ -399,7 +395,7 @@ export async function loadExtensionsCached(
 		paths,
 		cwd,
 		eventBus,
-		workflowResourceProvider,
+		packageSource,
 		runtime,
 		resourceLoaderInheritanceSnapshotProvider,
 		true,

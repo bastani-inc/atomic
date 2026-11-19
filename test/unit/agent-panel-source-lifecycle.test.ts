@@ -30,7 +30,7 @@ test("read-time source elapsed values are exact on first display and after a hid
 		items: () => [
 			{
 				id: "run:clock",
-				kind: "workflow",
+				kind: "agent",
 				state: "running",
 				name: "clock",
 				task: "build",
@@ -81,9 +81,7 @@ test("a source applies all pending changes before returning its notified snapsho
 				pending = 0;
 				notify();
 			}
-			return [
-				{ id: "run:pending", kind: "workflow", state: "running", name: "job", task: `generation ${generation}` },
-			];
+			return [{ id: "run:pending", kind: "agent", state: "running", name: "job", task: `generation ${generation}` }];
 		},
 		subscribe(listener) {
 			notify = listener;
@@ -113,7 +111,7 @@ test("hidden panel refreshes sample extension sources without rebuilding backgro
 	hub.register({
 		items() {
 			reads++;
-			return [{ id: "run:sample", kind: "workflow", state: "running", name: "job", task: "build" }];
+			return [{ id: "run:sample", kind: "agent", state: "running", name: "job", task: "build" }];
 		},
 		subscribe(listener) {
 			notify = listener;
@@ -222,7 +220,7 @@ test("a source that returns a pre-change snapshot and notifies inside items() re
 			return [
 				{
 					id: "ext:always",
-					kind: "workflow",
+					kind: "agent",
 					state: "running",
 					name: "wf",
 					task: `step ${alwaysReads}`,
@@ -279,7 +277,7 @@ test("subscribeAgentPanel follows a non-transactional reload that invalidates th
 		items: () => [
 			{
 				id: "wf:first",
-				kind: "workflow",
+				kind: "agent",
 				state: "running",
 				name: "first",
 				task: "stage one",
@@ -311,7 +309,7 @@ test("subscribeAgentPanel follows a non-transactional reload that invalidates th
 					? [
 							{
 								id: "wf:reloaded",
-								kind: "workflow",
+								kind: "agent",
 								state: "running",
 								name: "reloaded",
 								task: "stage two",

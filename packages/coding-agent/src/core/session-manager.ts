@@ -53,7 +53,6 @@ export type {
 	SessionProjection,
 	SessionSummaryEntry,
 	SessionTreeNode,
-	SessionWorkflowMetadata,
 	ThinkingLevelChangeEntry,
 	UsageEntry,
 	WorktreeRestoreHostWarning,

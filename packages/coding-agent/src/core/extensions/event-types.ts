@@ -29,12 +29,10 @@ import type {
 } from "./agent-events.ts";
 import type { ResourcesDiscoverEvent, SessionEvent } from "./session-events.ts";
 import type { ToolCallEvent, ToolResultEvent } from "./tool-events.ts";
-import type { WorkflowEvent } from "./workflow-events.js";
 
 /** Union of all event types */
 export type ExtensionEvent =
 	| CacheWarmingDecisionEvent
-	| WorkflowEvent
 	| ResourcesDiscoverEvent
 	| SessionEvent
 	| ContextEvent

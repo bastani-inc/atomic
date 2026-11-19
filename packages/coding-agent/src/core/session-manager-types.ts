@@ -8,7 +8,6 @@ import type {
 	Usage,
 	UserMessage,
 } from "@bastani/atomic-ai/compat";
-import type { HostSessionPickerRow } from "./extensions/ui-types.js";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "./storage/session/types.js";
@@ -28,9 +27,7 @@ export type WorktreeRestoreHostWarning = Extract<
 export const CURRENT_SESSION_VERSION = SESSION_FORMAT_VERSION;
 
 /**
- * Workflow linkage persisted on internal (workflow-created) session headers.
- * Used to exclude workflow stage sessions from the standard `/resume` history
- * while keeping them resumable through the workflow-specific resume path.
+ * Legacy linkage in stored session headers. Kept for storage compatibility; new sessions do not write it.
  */
 export interface SessionWorkflowMetadata {
 	runId: string;
@@ -45,10 +42,6 @@ export interface SessionHeader extends SessionRecordHeader {
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
-	/** Mark the new session as internal (e.g. a workflow stage session). */
-	internal?: boolean;
-	/** Workflow run/stage linkage for internal workflow sessions. */
-	workflow?: SessionWorkflowMetadata;
 }
 
 export interface SessionOpenOptions {
@@ -239,9 +232,8 @@ export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
 	details?: T;
 	display: boolean;
 	excludeFromContext?: boolean;
-	/** Stable producer identity used by workflow stages to de-nominate admitted external turns. */
+	/** Stable producer identity for idempotent delivery of external messages. */
 	stageAdmissionKey?: string;
-	/** Runtime provenance used to distinguish stage continuation from an externally triggered response. */
 	/** Internal crash-recovery marker for a model-facing protected turn. */
 	protectedReconciliation?: ProtectedReconciliationMarker;
 }
@@ -358,10 +350,8 @@ export interface SessionInfo {
 	hasName?: boolean;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
-	/** True when this session was created by automated machinery (e.g. a workflow stage). */
+	/** True when this session was created by automated machinery. */
 	internal?: boolean;
-	/** Workflow run/stage linkage when the session is an internal workflow session. */
-	workflow?: SessionWorkflowMetadata;
 	created: Date;
 	modified: Date;
 	messageCount: number;
@@ -376,8 +366,6 @@ export interface SessionInfo {
 	title?: string;
 	/** Synthetic selector rows: the row's dim second line, in place of age · messages · summary. */
 	detail?: string;
-	resumeKind?: "workflow";
-	resumeSelection?: HostSessionPickerRow["resumeSelection"];
 	canDelete?: boolean;
 }
 
