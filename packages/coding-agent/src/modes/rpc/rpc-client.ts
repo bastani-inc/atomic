@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
+import { receiveChatReceipt } from "../../core/chat-receipts.js";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
 import { removeOwnedInteractiveEngineBootstrapAsync } from "../../utils/interactive-engine-bootstrap.ts";
@@ -524,6 +525,7 @@ export class RpcClient extends RpcClientApi {
 				return;
 			}
 			if (data.type === "response" && data.id && this.pendingRequests.resolve(data.id, data as RpcResponse)) return;
+			if (this.engineMonitor && "atomicChatReceipt" in data) receiveChatReceipt(data);
 			const event = data as RpcEvent;
 			if (this.eventBuffer) this.eventBuffer.enqueue(event);
 			else this.emitEvent(event);

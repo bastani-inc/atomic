@@ -103,6 +103,10 @@ export class LegacySessionStore implements SessionStore {
 		return this.inner.descriptor;
 	}
 
+	get chatRecords(): SessionStore["chatRecords"] {
+		return this.inner.chatRecords;
+	}
+
 	/** The blob table of the wrapped store, so sessions on the default database record snapshots and collect them. */
 	get snapshotBlobs(): SnapshotBlobStore | undefined {
 		return this.inner.snapshotBlobs;

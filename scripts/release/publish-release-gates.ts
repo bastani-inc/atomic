@@ -492,8 +492,9 @@ function parseJson<T>(text: string): T {
 	return JSON.parse(text) as T;
 }
 
+/** GitHub's REST paths take {branch} as one segment, so a branch's '/' stays %2F, as Octokit sends it. */
 function encoded(value: string): string {
-	return encodeURIComponent(value).replaceAll("%2F", "%2F");
+	return encodeURIComponent(value);
 }
 
 type ApiPullRequest = {
