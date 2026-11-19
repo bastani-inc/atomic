@@ -67,6 +67,7 @@ export {
 	DEFAULT_BLOB_GRACE_SECONDS,
 	runningSnapshotCollection,
 	type ScheduleSnapshotCollectionOptions,
+	SNAPSHOT_COLLECTION_SESSION_DELAY_MS,
 	type SnapshotCollectionOutcome,
 	type SnapshotCollectionSkipReason,
 	scheduleSnapshotCollection,
