@@ -929,13 +929,13 @@ Repository-wide workflow permissions are read-only. Only draft staging and undra
 
 ## Repository-local release gates
 
-The [publish-release skill](../.agents/skills/publish-release/SKILL.md) follows the versionless-base and detached-tag sequence above. It uses three read-only `bun run scripts/release/publish-release.ts` commands:
+The [publish-release skill](../.agents/skills/publish-release/SKILL.md) follows the versionless-base and detached-tag sequence above. Run the skill's commands as `bun run scripts/release/publish-release.ts <command>` from the repository root. Exit 0 means passed, 2 blocked, 1 error. The three external inspection gates are:
 
 - `inspect-preparation` requires a clean worktree and reads the exact remote base/branch and matching open PR. It reuses an existing release only when the branch is one changelog-only commit atop the current remote base, every paginated commit-file destination and rename source is changelog-only, an optional local branch points to that same commit, and exactly one open PR matches the repository, base, head branch, and head SHA. Otherwise dirty state or conflicting base, commit, file set, branch, or PR fails closed. Reuse never resets or force-pushes and skips changelog preparation and PR creation entirely.
 - `wait-required-checks` reads configured contexts from both branch protection and active branch rulesets, preserving configured context/app identity. Only the classic unprotected-branch status-check lookup may return absent; a rules lookup error fails closed rather than accepting a partial set. A configured check missing from the commit remains pending. The gate fails on an actually empty configured set, PR/base/head drift, a terminal required-check failure, GitHub/auth/command errors, abort, or 45-minute timeout. It passes only when every exact configured check succeeds or the exact captured PR is already admin-merged.
 - `wait-publish-run` waits up to 60 minutes for the push-event run from `.github/workflows/publish.yml` with repository `bastani-inc/atomic`, exact tag, exact detached release SHA, and exact workflow identity. A run that has not appeared remains pending; drift or a completed non-success conclusion fails closed. The tool never dispatches or reruns publication.
 
-Both wait commands bound GitHub reads and polling sleeps, and exit nonzero when interrupted or when verification fails. To check the gates without releasing, run them against an existing PR and its published tag commit; do not run the tag cutter, even without `--push`.
+The skill also uses `validate` for the requested version and base, `check-changelog-diff` before committing release notes, and `merge-exact-head` only after CI passes. The merge command rechecks the exact head, CI and changelog-only preparation, merges with a SHA precondition, then verifies a clean fast-forward of the base. `--dry-run` on that command performs the pre-merge inspections only. Both wait commands bound GitHub reads and polling sleeps. To check without releasing, use `--dry-run` and existing refs; do not run the tag cutter, even without `--push`.
 
 ## Release checklist
 

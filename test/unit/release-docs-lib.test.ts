@@ -18,7 +18,7 @@ import {
 	type StaleDocTask,
 	type UpdateArtifactStatus,
 	verifyReleaseDocsPr,
-} from "../../scripts/release/release-docs.js";
+} from "../../scripts/release/release-docs-lib.js";
 import { bunExecutable } from "../helpers/runtime.js";
 
 const task = (id: string, ownerDocs: string[]): StaleDocTask => ({
@@ -65,11 +65,11 @@ describe("release-docs guards", () => {
 			writeFileSync(join(repo, "notes.txt"), "not part of the docs change");
 			const result = spawnSync(
 				bunExecutable(),
-				[join(process.cwd(), "scripts/release/release-docs.ts"), "preflight"],
+				[join(process.cwd(), "scripts/release/release-docs.ts"), "require-non-base-branch", "--dry-run"],
 				{ cwd: repo, env: createGitEnvironment(), encoding: "utf8" },
 			);
-			assert.equal(result.status, 1);
-			assert.match(result.stderr, /dirty working tree[\s\S]*notes\.txt/u);
+			assert.equal(result.status, 2);
+			assert.match(JSON.parse(result.stdout).summary, /dirty working tree[\s\S]*notes\.txt/u);
 		} finally {
 			rmSync(repo, { recursive: true, force: true });
 		}
@@ -112,7 +112,7 @@ describe("release-docs guards", () => {
 			commitAll(ambientRepo, "initial");
 			runGit(ambientRepo, ["checkout", "--detach", "HEAD", "--quiet"]);
 
-			const moduleUrl = pathToFileURL(join(process.cwd(), "scripts/release/release-docs.ts")).href;
+			const moduleUrl = pathToFileURL(join(process.cwd(), "scripts/release/release-docs-lib.ts")).href;
 			writeFileSync(
 				scriptPath,
 				[
