@@ -3,7 +3,6 @@ import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/com
 import { type Component, Container, type MarkdownTheme, Text, type TUI } from "@bastani/atomic-tui";
 import { parseSkillBlock } from "../../../core/agent-session.js";
 import type { MarkdownTransformer, MessageRenderer, ToolRenderers } from "../../../core/extensions/types.ts";
-import { HOST_NOTICE_TYPE } from "../../../core/host-notices.js";
 import {
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
@@ -12,7 +11,6 @@ import {
 } from "../../../core/messages.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore, TaskActivity } from "../../../core/tasks/owner-store.js";
-import { stripTerminalControls } from "../../../utils/ansi.js";
 import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -876,14 +874,6 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				messageEntry.timestamp,
 			);
 		case "custom": {
-			const { customType, content, details } = messageEntry.message;
-			if (
-				customType === HOST_NOTICE_TYPE &&
-				typeof content === "string" &&
-				(details === "error" || details === "warning" || details === "dim")
-			) {
-				return new Text(theme.fg(details, stripTerminalControls(content)), options.outputPad ?? 1, 0);
-			}
 			if (isVerbatimCompactionMessage(messageEntry.message)) {
 				return compactionBoundaryFromMessage(
 					messageEntry.message,

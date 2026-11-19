@@ -333,7 +333,7 @@ A resume that restored a checkout or ran a blueprint step records where its time
 
 ### CustomMessageEntry
 
-Messages that participate in LLM context unless `excludeFromContext` is true.
+Extension-injected messages that DO participate in LLM context.
 
 ```json
 {"type":"custom_message","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:25:00.000Z","customType":"my-extension","content":"Injected context...","display":true}
@@ -343,9 +343,6 @@ Fields:
 - `content`: String or `(TextContent | ImageContent)[]` (same as UserMessage)
 - `display`: `true` = show in TUI with distinct styling, `false` = hidden
 - `details`: Optional extension-specific metadata (not sent to LLM)
-- `excludeFromContext`: `true` for a display-only message that is not sent to the model
-
-Atomic saves its turn-ending diagnostics as display-only messages of type `atomic.turn-outcome.v1`. For example, a cancelled retry leaves `Error: Retry failed after 1 attempts: Retry cancelled` in the session. A chat reading that history shows the line inline, in order with the surrounding messages.
 
 ### LabelEntry
 
