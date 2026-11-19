@@ -232,7 +232,7 @@ class AgentSessionBase {
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	/** Messages whose message_end processing, including their save, has not settled yet. */
 	protected readonly _messagesAwaitingPersistence = new WeakMap<object, Promise<void>>();
-	protected _transcriptAppend: { message: AgentMessage; previousLeaf: string | null } | undefined;
+	protected _transcriptAppend: { message: AgentMessage; previousLeaf: string | null; owner?: object } | undefined;
 	protected readonly _messagesWithFailedPersistence = new WeakSet<object>();
 	/** The reported cause once a message of the current run could not be saved; the run stops (#4226). */
 	protected _persistenceFailure: string | undefined = undefined;

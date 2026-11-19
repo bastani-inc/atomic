@@ -7,6 +7,7 @@ import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
+import { bindChatEpoch, type SessionChatRecords } from "./chat-records.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -37,6 +38,7 @@ import {
 	type SessionSummaryText,
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
+import { sqlChatRecords } from "./sql-chat-records.js";
 import type {
 	SessionBlob,
 	SessionCompactionPoint,
@@ -350,6 +352,18 @@ export class SqlSessionStore implements SessionStore {
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
 	readonly searchIndex?: SqlSessionSearchIndex;
+	private chatStore?: SessionChatRecords;
+	get chatRecords(): SessionChatRecords {
+		if (!this.chatStore) {
+			const names = renderStorageIdentifiers(
+				"sessions",
+				{ rows: "chat_v1", byAnchor: "chat_v1_anchor" },
+				this.prefix,
+			);
+			this.chatStore = sqlChatRecords(this.database, this.tables.sessions, names.rows, names.byAnchor);
+		}
+		return this.chatStore;
+	}
 	private readonly entryByteLength: (expression: string) => string;
 	private chunkRowids?: boolean;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
@@ -1341,6 +1355,8 @@ export class SqlSessionStore implements SessionStore {
 			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
 			lastSeq: row.last_seq,
 		};
+		const state = JSON.parse(String(row.summary_state)) as StoredSummaryState;
+		if (state?.epoch) bindChatEpoch(snapshot.header, state.epoch);
 		// The revision comes from the same transaction. An intervening write conservatively starts a new view.
 		return noteSnapshotGeneration(this, snapshot, nativeLoad, row, "revision");
 	}

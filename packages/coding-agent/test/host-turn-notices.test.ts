@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
-import { estimateTokens } from "../src/core/compaction/compaction.js";
-import { buildCompactorMessages } from "../src/core/compaction/compactor.js";
-import { convertToLlm } from "../src/core/messages.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
@@ -18,17 +15,26 @@ async function harness(options: Parameters<typeof createHarness>[0]) {
 }
 const fail = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" });
 const retry = { enabled: true, maxRetries: 1, baseDelayMs: 1 };
-const savedLines = (manager: SessionManager) =>
-	manager
-		.getEntries()
-		.flatMap((entry) =>
-			entry.type === "custom_message" && entry.customType === "atomic.turn-outcome.v1" ? [entry.content] : [],
-		);
+const savedLines = async (manager: SessionManager) => {
+	const scope = manager.chatRecordScope();
+	assert.ok(scope);
+	const rows = await scope.store.read(
+		scope.owner,
+		manager.getBranch().map((e) => e.id),
+	);
+	return rows.flatMap(({ record }) => (record.kind === "line" ? [record.text] : []));
+};
 
 test("a saved retry failure precedes the follow-up and is absent from its request, token count and compaction (#5649)", async () => {
 	const h = await harness({ settings: { retry } });
 	h.setResponses([fail(), fail()]);
 	await h.session.prompt("first");
+	assert.ok(
+		!h.sessionManager
+			.getEntries()
+			.some((e) => e.type === "custom_message" && e.customType === "atomic.turn-outcome.v1"),
+		"turn outcomes must never become conversation entries",
+	);
 	const reopened = await SessionManager.open(h.sessionManager.getSessionStore(), h.sessionManager.getSessionId());
 	const resumed = await harness({ sessionManager: reopened });
 	let request: string | undefined;
@@ -40,10 +46,7 @@ test("a saved retry failure precedes the follow-up and is absent from its reques
 	]);
 	await resumed.session.prompt("follow-up");
 	const lines = reopened.buildSessionContext().messages;
-	const outcome = lines.find(
-		(line) => line.role === "custom" && line.content === "Error: Retry failed after 1 attempts: overloaded_error",
-	);
-	assert.ok(outcome);
+	assert.deepEqual(await savedLines(reopened), ["Error: Retry failed after 1 attempts: overloaded_error"]);
 	assert.deepEqual(
 		lines.flatMap((m) =>
 			m.role === "user" || m.role === "custom"
@@ -54,14 +57,8 @@ test("a saved retry failure precedes the follow-up and is absent from its reques
 					]
 				: [],
 		),
-		["first", "Error: Retry failed after 1 attempts: overloaded_error", "follow-up"],
+		["first", "follow-up"],
 	);
-	assert.equal(estimateTokens(outcome), 0);
-	assert.deepEqual(
-		buildCompactorMessages([outcome], () => false),
-		[],
-	);
-	assert.deepEqual(convertToLlm([outcome]), []);
 	assert.match(request ?? "", /follow-up/);
 	assert.doesNotMatch(request!, /Retry failed/);
 });
@@ -71,12 +68,12 @@ test.each([false, true])(
 	async (refused) => {
 		const h = await harness({ settings: { retry } });
 		h.setResponses([fail(), fail()]);
-		const store = h.sessionManager.getSessionStore();
+		const store = h.sessionManager.getSessionStore().chatRecords!;
 		const append = store.append.bind(store);
 		const gate = Promise.withResolvers<void>();
 		const writing = Promise.withResolvers<void>();
 		store.append = async (...args) => {
-			if (args[1].some((e) => e.type === "custom_message" && e.customType === "atomic.turn-outcome.v1")) {
+			if (args[2].kind === "line") {
 				writing.resolve();
 				await gate.promise;
 				if (refused) throw new Error("Write refused");
@@ -96,7 +93,7 @@ test.each([false, true])(
 			await prompt;
 		}
 		assert.deepEqual(
-			savedLines(h.sessionManager),
+			await savedLines(h.sessionManager),
 			refused ? [] : ["Error: Retry failed after 1 attempts: overloaded_error"],
 		);
 		assert.equal(
@@ -126,13 +123,13 @@ test("manual compaction cancellation leaves one saved diagnostic after the reply
 	await started.promise;
 	h.session.abortCompaction();
 	await assert.rejects(compact, /Compaction cancelled/);
-	await vi.waitFor(() => assert.deepEqual(savedLines(h.sessionManager), ["Error: Compaction cancelled"]));
+	await vi.waitFor(async () => assert.deepEqual(await savedLines(h.sessionManager), ["Error: Compaction cancelled"]));
 	const manager = await SessionManager.open(h.sessionManager.getSessionStore(), h.sessionManager.getSessionId());
 	assert.deepEqual(
 		manager
 			.buildSessionContext()
 			.messages.slice(-2)
 			.map((m) => m.role),
-		["assistant", "custom"],
+		["user", "assistant"],
 	);
 });

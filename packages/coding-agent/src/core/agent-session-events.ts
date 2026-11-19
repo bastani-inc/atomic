@@ -33,6 +33,7 @@ import {
 	isSingleGenericAbortTextContent,
 	replacementAbortContent,
 } from "./agent-session-types.js";
+import { recordPromptOrder } from "./chat-admission-order.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
 import { assignMissingToolCallIds } from "./context-tool-pairing.js";
 import {
@@ -54,7 +55,7 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { STALE_EXTENSION_CONTEXT_MESSAGE } from "./extensions/stale-context.ts";
 import type { SessionShutdownEvent } from "./extensions/types.ts";
-import { HOST_NOTICE_TYPE, hostNoticeForEvent } from "./host-notices.js";
+import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
 import {
@@ -68,6 +69,7 @@ import {
 	sessionLifetime,
 	shutdownDeadline,
 } from "./session-lifecycle-work.ts";
+import { physicalForkHeader } from "./session-manager-core.js";
 import { retryStatusUpdate } from "./session-retry-status.js";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { observeToolExecutionTiming } from "./tool-execution-timing.ts";
@@ -84,17 +86,12 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	observeToolExecutionTiming(this, event);
 	const notice = hostNoticeForEvent(event, this._compactionReason);
 	if (notice && !this._disposed && !sessionGenerationClosing.has(this)) {
-		// Enqueue the ordinary display-only row before a listener can append the next input. The original event
-		// still draws the live line; neither a slow nor a refused write changes what its listeners see.
-		const saved = this.sessionManager.appendCustomMessageEntry(
-			HOST_NOTICE_TYPE,
-			notice.text,
-			true,
-			notice.level,
-			true,
-		);
-		this._agentEventQueue = Promise.all([this._agentEventQueue, saved.catch(() => {})]).then(() => {});
-		this._agentEventQueue.catch(() => {});
+		// Capture the branch position before listeners run. The event, not this best-effort record,
+		// owns the live line; persistence, subsequent prompts and model decisions never await it.
+		const manager = this.sessionManager;
+		const scope = manager.chatRecordScope();
+		if (scope)
+			void scope.store.append(scope.owner, manager.getLeafId() ?? "", { kind: "line", ...notice }).catch(() => {});
 	}
 	for (const l of this._eventListeners) {
 		l(event);
@@ -212,7 +209,11 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 		// The store can already hold the new row before its append promise returns. Pin the preceding leaf
 		// when this serialized save begins, not when it first joins the queue.
 		if (event.type === "message_end")
-			this._transcriptAppend = { message: event.message, previousLeaf: this.sessionManager.getLeafId() };
+			this._transcriptAppend = {
+				message: event.message,
+				previousLeaf: this.sessionManager.getLeafId(),
+				owner: event.message.role === "user" ? physicalForkHeader(this.sessionManager) : undefined,
+			};
 		return this._processAgentEvent(event, retryGeneration);
 	};
 	const processing = this._agentEventQueue.then(process, process);
@@ -407,6 +408,7 @@ export async function _processAgentEvent(
 			this._messagesAwaitingPersistence.delete(event.message);
 		}
 		if (entryId) {
+			if (event.message.role === "user") recordPromptOrder(this, entryId);
 			this._entryIdsByMessage.set(event.message, entryId);
 			noteMessageSaved(this, event.message);
 		}

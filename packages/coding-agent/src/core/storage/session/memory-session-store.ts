@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { getErrnoCode } from "../../tools/errno.ts";
 import { SessionSpillError, type SessionSpillErrorCode, type SessionSpillErrorFields } from "../errors.js";
 import { sha256Hex } from "./blob-hash.js";
+import { bindChatEpoch, type ChatRecord, type SessionChatRecords } from "./chat-records.js";
 import { EntryTypeReader } from "./entry-type.js";
 import {
 	SessionConflictError,
@@ -74,6 +75,7 @@ const STUB_ENTRY: SessionEntry = {
 
 interface StoredSession {
 	readonly header: Uint8Array;
+	chat?: Map<string, ChatRecord[]>;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
 	summaryState: SessionSummaryState;
@@ -266,6 +268,29 @@ export class MemorySessionStore implements SessionStore {
 		if (historyFiles !== undefined) this.spill = new SpillDirectory(historyFiles);
 	}
 
+	readonly chatRecords: SessionChatRecords = {
+		append: async (owner, anchor, record) => {
+			const held = this.stored(owner.id);
+			if (!held || held.index.epoch !== owner.epoch) return;
+			held.chat ??= new Map();
+			const byAnchor = held.chat;
+			const list = byAnchor.get(anchor);
+			if (list) list.push({ ...record });
+			else byAnchor.set(anchor, [{ ...record }]);
+		},
+		has: async (owner) => {
+			const held = this.stored(owner.id);
+			return held?.index.epoch === owner.epoch && !!held.chat?.size;
+		},
+		read: async (owner, anchors) => {
+			const held = this.stored(owner.id);
+			if (held?.index.epoch !== owner.epoch || !held.chat) return [];
+			return anchors.flatMap(
+				(anchor) => held.chat?.get(anchor)?.map((record) => ({ anchor, record: { ...record } })) ?? [],
+			);
+		},
+	};
+
 	get descriptor(): StorageDescriptor {
 		return { adapter: "memory", location: ":memory:" };
 	}
@@ -355,6 +380,7 @@ export class MemorySessionStore implements SessionStore {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
 		const snapshot = await this.decode(sessionId, record);
+		if (snapshot) bindChatEpoch(snapshot.header, record.index.epoch);
 		return snapshot
 			? noteSnapshotGeneration(this, snapshot, nativeLoad, record.index, "epoch")
 			: this.load(sessionId);
