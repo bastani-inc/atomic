@@ -358,8 +358,7 @@ async function constructAgentSession(
 
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
 	const modelsPath = options.agentDir ? join(agentDir, "models.json") : undefined;
-	const modelRuntime =
-		options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath, deferModelListFetch: true }));
+	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
@@ -428,33 +427,8 @@ async function constructAgentSession(
 		resourceLoader = await withMandatoryResourceLoader(resourceLoader, cwd, agentDir);
 	}
 
-	const existingSession = sessionManager.buildSessionContext();
-	const selectionProvider =
-		options.model?.provider ??
-		(existingSession.messages.length ? existingSession.model?.provider : undefined) ??
-		settingsManager.getDefaultProvider();
-	if (modelRuntime.needsMissingModelLists(selectionProvider)) {
-		// Apply the same registrations the extension runner would otherwise bind after selection. Never start a
-		// missing-list request against a provider that the session's extensions are about to replace.
-		const extensions = resourceLoader.getExtensions().runtime;
-		extensions.pendingProviderRegistrations = extensions.pendingProviderRegistrations.filter((registration) => {
-			try {
-				if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
-				else modelRuntime.registerProvider(registration.name, registration.config);
-				extensions.extensionProviderIds.add(
-					"provider" in registration ? registration.provider.id : registration.name,
-				);
-				return false;
-			} catch {
-				// Leave invalid registrations for the runner's normal extension error reporting.
-				return true;
-			}
-		});
-		await modelRuntime.whenRegistrationRefreshesSettled();
-		await modelRuntime.fetchMissingModelLists({ providers: selectionProvider ? [selectionProvider] : undefined });
-	}
-
 	// Check if session has existing data to restore
+	const existingSession = sessionManager.buildSessionContext();
 	const repairedMessages = repairOrphanToolResults(existingSession.messages, { repairTrailing: true });
 	const existingMessages = options.initialContextTransform
 		? options.initialContextTransform(repairedMessages)

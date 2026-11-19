@@ -125,12 +125,6 @@ function resolveTemplate(parts: TemplatePart[], env?: Record<string, string>): s
 	return resolved;
 }
 
-/** Resolve only a literal or environment template. A cache restore must never run a key command. */
-export function resolveConfigValueWithoutCommand(config: string): string | undefined {
-	const reference = parseConfigValueReference(config);
-	return reference.type === "template" ? resolveTemplate(reference.parts) : undefined;
-}
-
 export function getConfigValueEnvVarName(config: string): string | undefined {
 	const reference = parseConfigValueReference(config);
 	if (reference.type !== "template") return undefined;
