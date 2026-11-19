@@ -41,7 +41,7 @@ function resumer(deps: SubagentChildRestoreDeps, ctx: ExtensionContext): TaskRes
 		stop(taskId: TaskId) {
 			const child = childOf(taskId);
 			if (child === undefined || child.readOnlyReason !== undefined) return undefined;
-			// `quit` stops it and keeps it resumable, as a quit workflow run is.
+			// `quit` stops it and keeps it resumable.
 			return controlSubagentChildren(deps, ctx, { action: "quit", id: child.childId }).then((result) => {
 				if (ctx.hasUI && !result.isError) {
 					for (const note of result.details.runControl?.worktreeNotes ?? []) ctx.ui.notify(note, "warning");

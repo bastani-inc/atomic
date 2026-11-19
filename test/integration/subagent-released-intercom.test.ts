@@ -270,7 +270,7 @@ test(
 				},
 				recordChild: createSubagentChildRecordSink(
 					{ appendEntry: parent.appendEntry },
-					{ sessionManager: parent.sessionManager, orchestrationContext: undefined },
+					{ sessionManager: parent.sessionManager },
 				),
 				runtime,
 			});
@@ -466,7 +466,7 @@ test(
 				},
 				recordChild: createSubagentChildRecordSink(
 					{ appendEntry: parent.appendEntry },
-					{ sessionManager: parent.sessionManager, orchestrationContext: undefined },
+					{ sessionManager: parent.sessionManager },
 				),
 				runtime,
 			});

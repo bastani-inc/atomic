@@ -139,7 +139,7 @@ function owner(): Owner {
 			await sessionManager.appendCustomEntry(customType, data);
 		},
 	};
-	const sink = createSubagentChildRecordSink(pi, { sessionManager, orchestrationContext: undefined });
+	const sink = createSubagentChildRecordSink(pi, { sessionManager });
 	return { sessionManager, host, dispatcher, sink, pi, cwd };
 }
 

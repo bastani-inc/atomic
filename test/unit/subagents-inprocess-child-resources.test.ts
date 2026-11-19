@@ -60,19 +60,10 @@ function childAgent(): AgentConfig {
 	};
 }
 
-const stageContext = {
-	kind: "workflow-stage",
-	workflowRunId: "run-test",
-	workflowStageId: "stage-test",
-	workflowStageName: "Stage Test",
-	constraints: { disableWorkflowTool: true },
-} as const;
-
 /** Create a child session the way the in-process runner does. */
 async function createChildSession(options: {
 	readonly cwd: string;
 	readonly agentDir: string;
-	readonly orchestrationContext?: typeof stageContext;
 	/** Drop the bundled package roots, reproducing the pre-fix child loader. */
 	readonly withoutBundledPackages?: boolean;
 	readonly policy?: Partial<SubagentChildPolicy>;
@@ -87,7 +78,6 @@ async function createChildSession(options: {
 		agentDir: options.agentDir,
 		settingsManager,
 		agent: childAgent(),
-		orchestrationContext: options.orchestrationContext,
 	});
 	const resourceLoader = new DefaultResourceLoader(
 		options.withoutBundledPackages ? { ...loaderOptions, builtinPackagePaths: [] } : loaderOptions,
@@ -101,7 +91,6 @@ async function createChildSession(options: {
 		sessionManager: SessionManager.inMemory(options.cwd),
 		model: model!,
 		...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
-		...(options.orchestrationContext ? { orchestrationContext: options.orchestrationContext } : {}),
 		subagentPolicy: {
 			managementActions: "full",
 			fanoutAuthorized: true,
@@ -180,7 +169,7 @@ const REQUIRED_BUNDLED_TOOLS = ["subagent", "web_search", "fetch_content", "inte
 
 describe("in-process child session resources", () => {
 	test(
-		"a child session registers every required bundled tool without the parent workflow extension",
+		"a child session registers every required bundled tool",
 		async () => {
 			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-tools-cwd-");
 			const { session } = await createChildSession({ cwd, agentDir });
@@ -350,31 +339,6 @@ describe("in-process child session resources", () => {
 				const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 
 				assert.equal(text, SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE);
-			} finally {
-				session.dispose();
-			}
-		},
-		CHILD_SESSION_RELOAD_TIMEOUT_MS,
-	);
-
-	test(
-		"a child of a workflow stage registers every required bundled tool without the workflow tool",
-		async () => {
-			const { cwd, agentDir } = sessionCwd("atomic-inprocess-child-stage-tools-cwd-");
-			const { session } = await createChildSession({ cwd, agentDir, orchestrationContext: stageContext });
-			try {
-				const toolNames = session.getAllTools().map((tool) => tool.name);
-				for (const bundled of REQUIRED_BUNDLED_TOOLS) {
-					assert.ok(
-						toolNames.includes(bundled),
-						`expected the bundled '${bundled}' tool, got: ${toolNames.join(", ")}`,
-					);
-				}
-				assert.equal(
-					toolNames.includes("workflow"),
-					false,
-					"a stage-owned child must not re-enter the workflow tool",
-				);
 			} finally {
 				session.dispose();
 			}

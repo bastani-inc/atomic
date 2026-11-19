@@ -99,7 +99,6 @@ interface Harness {
 	readonly ctx: ExtensionContext;
 	readonly deps: ExecutorDeps;
 	readonly runs: Array<{ task: string; options: RunSyncOptions; scope: readonly WorktreeRootMapping[] }>;
-	readonly holds: Array<{ reserve: string; dormant?: true } | { release: string }>;
 	host: AgentTaskHost;
 	original: OriginalLaunch;
 	originalGate?: PromiseWithResolvers<void>;
@@ -143,7 +142,6 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 	let host = newHost();
 	const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
 	const runs: Harness["runs"] = [];
-	const holds: Harness["holds"] = [];
 	let authorizations = 0;
 	const events = {
 		on: () => () => {},
@@ -161,15 +159,10 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 				(data as { completion?: Promise<boolean> }).completion = Promise.resolve(true);
 			if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReserveRestoringChildRequest;
-				holds.push({
-					reserve: request.capability,
-					...(request.dormant === true ? { dormant: true as const } : {}),
-				});
 				request.completion = Promise.resolve();
 			}
 			if (channel === SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReleaseRestoringChildRequest;
-				holds.push({ release: request.capability });
 				request.completion = Promise.resolve();
 			}
 		},
@@ -212,7 +205,6 @@ function harness(options: { sessionManager?: SessionManager } = {}): Harness {
 			thinkingLevel: undefined,
 		} as unknown as ExtensionContext,
 		runs,
-		holds,
 		saved: [],
 		releasedWaits: [WAIT_CALL],
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
@@ -754,11 +746,6 @@ test("a child that completes normally under a release policy completes and is re
 	const record = await h.waitForLatest("completes:0", (candidate) => candidate.state === "terminal");
 	assert.equal(record.terminalStatus, "ok");
 	assert.deepEqual(record.waitingOn ?? [], [], "it waits on nothing");
-	assert.deepEqual(
-		h.holds.filter((hold) => "dormant" in hold),
-		[],
-		"nothing of it is kept addressable while it waits",
-	);
 });
 
 test("a child released just as pause stops it is paused, not released (#4326)", async () => {
@@ -774,10 +761,6 @@ test("a child released just as pause stops it is paused, not released (#4326)", 
 	const record = await h.waitForLatest("stop-race:0", (candidate) => candidate.state === "terminal");
 	assert.equal(record.terminalStatus, "paused");
 	assert.deepEqual(record.waitingOn ?? [], [], "it waits on nothing");
-	assert.deepEqual(
-		h.holds.filter((hold) => "dormant" in hold),
-		[],
-	);
 });
 
 async function repositoryWithSeed(): Promise<string> {

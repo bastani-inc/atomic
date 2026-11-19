@@ -14,8 +14,6 @@ import {
 	recordSubagentChildStop,
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 
@@ -51,9 +49,8 @@ test("a wake may relaunch only a released child or one that ended on its own (#4
 	assert.equal(relaunchable({ terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS }), true);
 	assert.equal(relaunchable({ terminalStatus: "ok" }), true);
 	assert.equal(relaunchable({ terminalStatus: "error" }), true);
-	for (const stopped of ["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS])
-		assert.equal(relaunchable({ terminalStatus: stopped }), false, stopped);
-	for (const ended of ["killed", SUBAGENT_CHILD_STAGE_CLOSED_STATUS, SUBAGENT_CHILD_GONE_STATUS])
+	for (const stopped of ["paused", "quit"]) assert.equal(relaunchable({ terminalStatus: stopped }), false, stopped);
+	for (const ended of ["killed", SUBAGENT_CHILD_GONE_STATUS])
 		assert.equal(relaunchable({ terminalStatus: ended }), false, ended);
 	assert.equal(relaunchable({ state: "running", terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS }), false);
 	assert.equal(isRelaunchableChildRecord(undefined), false);
@@ -113,7 +110,6 @@ test("pause and quit record over the child's latest record, and only a released 
 		[SUBAGENT_CHILD_RELEASED_STATUS, "terminal", "paused", "paused"],
 		[SUBAGENT_CHILD_RELEASED_STATUS, "terminal", "quit", "quit"],
 		["paused", "terminal", "quit", "quit"],
-		[SUBAGENT_CHILD_STAGE_PAUSED_STATUS, "terminal", "quit", "quit"],
 		["paused", "terminal", "paused", undefined],
 		["ok", "terminal", "paused", undefined],
 		["ok", "terminal", "quit", undefined],
