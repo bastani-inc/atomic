@@ -419,10 +419,19 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 
 InteractiveModeBase.prototype.getMarkdownTransformers = function (this: InteractiveModeBase) {
 	const mode = this.settingsManager.getMermaidRenderingMode();
-	if (this.mermaidMarkdownTransformerMode !== mode) {
+	const withheld =
+		this.runtimeHost instanceof IsolatedInteractiveRuntime &&
+		this.runtimeHost.isProjectTrustPending() &&
+		!this.settingsManager.isProjectTrusted();
+	if (this.mermaidMarkdownTransformerMode !== mode || withheld !== (this.mermaidTransformerWithheldProject === true)) {
 		this.mermaidMarkdownTransformerMode = mode;
+		this.mermaidTransformerWithheldProject = withheld;
+		const edit = this.mermaidUserEdit;
 		this.mermaidMarkdownTransformer = createMermaidMarkdownTransformer({
-			getMode: () => this.settingsManager.getMermaidRenderingMode(),
+			// Invalidating a message for a redraw isn't permission to replace a mounted diagram with source text.
+			// The user's own subsequent rendering choice, unlike approval, still applies to visible messages.
+			getMode: () =>
+				withheld && edit === this.mermaidUserEdit ? mode : this.settingsManager.getMermaidRenderingMode(),
 			theme,
 		});
 	}
@@ -516,68 +525,6 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 	};
 };
 
-function transcriptSettings(mode: InteractiveModeBase) {
-	return {
-		indent: mode.settingsManager.getCodeBlockIndent(),
-		latex: mode.settingsManager.getLatexRenderingEnabled(),
-		hideThinking: mode.hideThinkingBlock,
-		padding: mode.outputPad,
-		images: mode.settingsManager.getShowImages(),
-		imageWidth: mode.settingsManager.getImageWidthCells(),
-		notices: mode.settingsManager.getShowCacheMissNotices(),
-	};
-}
-const lastTranscriptSettings = new WeakMap<InteractiveModeBase, ReturnType<typeof transcriptSettings>>();
-const cacheNoticeSlots = new WeakMap<Component, (visible: boolean) => void>();
-
-// Keep the position of a conditional history notice even if project settings are not available at first paint.
-function addCacheNotices(mode: InteractiveModeBase, populate: (target: Container) => void): void {
-	const visible = mode.settingsManager.getShowCacheMissNotices();
-	if (mode.runtimeHost instanceof IsolatedInteractiveRuntime && mode.runtimeHost.isProjectTrustPending()) {
-		const slot = new Container();
-		cacheNoticeSlots.set(slot, (show) => {
-			slot.clear();
-			if (show) populate(slot);
-		});
-		mode.chatContainer.addChild(slot);
-		if (visible) populate(slot);
-	} else if (visible) populate(mode.chatContainer);
-}
-
-/** Reconfigure mounted messages in place: rebuilding history would discard expansion, pending clicks and selection. */
-export function applyProjectSettingsToTranscript(mode: InteractiveModeBase): void {
-	const was = lastTranscriptSettings.get(mode);
-	if (!was) return; // First paint still has to build the transcript.
-	const now = transcriptSettings(mode);
-	lastTranscriptSettings.set(mode, now);
-	const markdownChanged = was.indent !== now.indent || was.latex !== now.latex;
-	if (
-		!markdownChanged &&
-		was.hideThinking === now.hideThinking &&
-		was.padding === now.padding &&
-		was.images === now.images &&
-		was.imageWidth === now.imageWidth &&
-		was.notices === now.notices
-	)
-		return;
-	const markdown = mode.getMarkdownThemeWithSettings();
-	for (const container of [mode.chatContainer, mode.pendingMessagesContainer]) {
-		for (const child of container.children) {
-			if (was.notices !== now.notices) cacheNoticeSlots.get(child)?.(now.notices);
-			if (was.hideThinking !== now.hideThinking && child instanceof AssistantMessageComponent)
-				child.setHideThinkingBlock(now.hideThinking);
-			if (markdownChanged && "setMarkdownSettings" in child && typeof child.setMarkdownSettings === "function")
-				child.setMarkdownSettings(markdown, now.latex);
-			if (was.padding !== now.padding && "setOutputPad" in child && typeof child.setOutputPad === "function")
-				child.setOutputPad(now.padding);
-			if (child instanceof RemoteToolExecutionComponent) {
-				if (was.images !== now.images) child.setShowImages(now.images);
-				if (was.imageWidth !== now.imageWidth) child.setImageWidthCells(now.imageWidth);
-			}
-		}
-	}
-}
-
 InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	this: InteractiveModeBase,
 	entry: ChatMessageEntry,
@@ -605,13 +552,14 @@ InteractiveModeBase.prototype.addCompactionCostNotice = function (
 	kind: "compaction" | "branch_summary",
 	usage: Usage,
 ): void {
-	addCacheNotices(this, (target) => {
-		const tokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-		const cost = usage.cost.total >= 0.01 ? ` (~$${usage.cost.total.toFixed(2)})` : "";
-		const label = kind === "compaction" ? "Compaction" : "Branch summary";
-		target.addChild(new Spacer(1));
-		target.addChild(new Text(theme.fg("warning", `${label}: ${tokens.toLocaleString()} tokens billed${cost}`), 1, 0));
-	});
+	if (!this.settingsManager.getShowCacheMissNotices()) return;
+	const tokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	const cost = usage.cost.total >= 0.01 ? ` (~$${usage.cost.total.toFixed(2)})` : "";
+	const label = kind === "compaction" ? "Compaction" : "Branch summary";
+	this.chatContainer.addChild(new Spacer(1));
+	this.chatContainer.addChild(
+		new Text(theme.fg("warning", `${label}: ${tokens.toLocaleString()} tokens billed${cost}`), 1, 0),
+	);
 };
 
 InteractiveModeBase.prototype.addCustomEntryToChat = function (this: InteractiveModeBase, entry: CustomEntry): void {
@@ -967,19 +915,17 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	options: {
 		updateFooter?: boolean;
 		populateHistory?: boolean;
+		preserveViewportInput?: boolean;
 		suppressCompactionBoundary?: VerbatimCompactionResult;
 	} = {},
 ): void {
-	this.resetTranscriptSelection();
+	if (!options.preserveViewportInput) this.resetTranscriptSelection();
 	this.pendingTools.clear();
 	const pendingEchoes = takeDeferredEchoes(this);
 	if (options.updateFooter) {
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}
-	if (this.runtimeHost instanceof IsolatedInteractiveRuntime && this.runtimeHost.isProjectTrustPending())
-		lastTranscriptSettings.set(this, transcriptSettings(this));
-	else lastTranscriptSettings.delete(this);
 	const steps = planTranscript(this, sessionEntries, options);
 	const tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
 	if (tailStart > 0) {
@@ -988,14 +934,14 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
 	}
 	for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
-	addCacheNotices(this, (target) => {
+	if (this.settingsManager.getShowCacheMissNotices()) {
 		for (const miss of collectCacheMisses(
 			sessionEntries,
 			createCacheMissModelSource(this.session.modelRuntime),
 		).values()) {
-			target.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
+			this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 		}
-	});
+	}
 	restoreDeferredEchoes(this, pendingEchoes);
 	this.ui.requestRender();
 };
@@ -1177,6 +1123,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	options: {
 		suppressCompactionBoundary?: VerbatimCompactionResult;
 		resetStartupDisclosure?: boolean;
+		preserveViewportInput?: boolean;
 	} = {},
 ): void {
 	// Generic rebuilds keep the same session: pending fd/rg callbacks still own
@@ -1190,7 +1137,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
-	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
+	this.renderSessionEntries(entries, options);
 	// A caller that suppresses the persisted boundary appends the live one, then the warning (appendProjectTrustWarning).
 	if (!options.suppressCompactionBoundary) renderProjectTrustWarningIfNeeded(this);
 	renderer.newMessages?.replaced(countChatMessages(this.chatContainer));

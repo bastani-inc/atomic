@@ -15,6 +15,7 @@ export class SettingsPicker implements Component, Focusable {
 	private readonly selector: Selector<SettingItem>;
 	private submenu: Component | null = null;
 	private submenuItemId: string | null = null;
+	private nextSubmenus?: () => SettingItem[];
 	private navigateAfterClose: string | null = null;
 	private _focused = false;
 
@@ -54,7 +55,12 @@ export class SettingsPicker implements Component, Focusable {
 		if (this.submenu && "focused" in this.submenu) (this.submenu as Component & Focusable).focused = value;
 	}
 
+	setSubmenuSource(read: () => SettingItem[]): void {
+		this.nextSubmenus = read;
+	}
+
 	setItems(items: SettingItem[]): void {
+		this.nextSubmenus = undefined;
 		this.items.splice(0, this.items.length, ...items);
 		this.refresh();
 		this.restoreSubmenu(this);
@@ -134,6 +140,7 @@ export class SettingsPicker implements Component, Focusable {
 	}
 
 	private activate(item: SettingItem, previous?: Component): void {
+		if (item.submenu && this.nextSubmenus) item = this.nextSubmenus().find((entry) => entry.id === item.id) ?? item;
 		if (item.submenu) {
 			this.submenuItemId = item.id;
 			this.submenu = item.submenu(item.currentValue, (selectedValue, options) => {

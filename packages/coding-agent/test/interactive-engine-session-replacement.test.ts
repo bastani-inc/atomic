@@ -259,16 +259,14 @@ test("isolated host keeps its trust and reports the decision pending until the e
 	}
 });
 
-// A decision a project_trust hook can still decline is reported untrusted and pending: the host drops the project's
-// resources until it is made, and does not warn about a decision not made yet (#5693).
+// Resource permission is not a settled decision: the host drops the project's resources but does not warn (#5693).
 test("isolated host loads no project resources while the engine's decision can still decline, and does not warn yet (#5693)", async () => {
 	const harness = await createHarness();
 	try {
 		harness.settingsManager.setProjectTrusted(true);
 		const probe = createUnresponsiveEngineClient();
-		let report: { projectTrusted: boolean; projectTrustPending?: true } = {
-			projectTrusted: false,
-			projectTrustPending: true,
+		let report: { projectTrusted?: boolean; pendingProjectResourcesTrusted?: boolean } = {
+			pendingProjectResourcesTrusted: false,
 		};
 		probe.client.getState = async () => ({ ...createState(), ...report });
 		const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness) as never, async () => {

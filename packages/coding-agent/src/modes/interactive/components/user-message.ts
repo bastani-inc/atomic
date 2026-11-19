@@ -41,12 +41,6 @@ export class UserMessageComponent extends Container {
 		this.rebuild();
 	}
 
-	setMarkdownSettings(theme: MarkdownTheme, renderLatex: boolean): void {
-		this.markdownTheme = theme;
-		this.renderLatex = renderLatex;
-		this.rebuild();
-	}
-
 	setOutputPad(padding: number): void {
 		this.outputPad = padding;
 		this.rebuild();

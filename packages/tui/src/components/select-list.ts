@@ -59,18 +59,6 @@ export class SelectList implements Component {
 		this.layout = layout;
 	}
 
-	/** Replace an unfiltered menu without retargeting a click that is still in progress. */
-	setItems(items: SelectItem[], maxVisible: number, layout: SelectListLayoutOptions = {}): void {
-		if (this.mousePressedIndex !== undefined) {
-			const pressed = this.filteredItems[this.mousePressedIndex];
-			this.mousePressedIndex = pressed ? items.findIndex((item) => item.value === pressed.value) : -1;
-		}
-		this.items = this.filteredItems = items;
-		this.maxVisible = maxVisible;
-		this.layout = layout;
-		this.selectedIndex = 0;
-	}
-
 	setFilter(filter: string): void {
 		const prefix = filter.toLowerCase();
 		this.filteredItems = this.items.filter((item) => item.value.toLowerCase().startsWith(prefix));
@@ -133,11 +121,7 @@ export class SelectList implements Component {
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
 		const { startIndex, endIndex } = this.getVisibleRange();
 		const itemIndex = startIndex + event.y;
-		if (
-			(itemIndex < startIndex || itemIndex >= endIndex) &&
-			!(event.type === "click" && this.mousePressedIndex !== undefined)
-		)
-			return undefined;
+		if (itemIndex < startIndex || itemIndex >= endIndex) return undefined;
 
 		if (event.type === "press") {
 			this.mousePressedIndex = itemIndex;
@@ -150,7 +134,6 @@ export class SelectList implements Component {
 		if (event.type === "click") {
 			const clickedIndex = this.mousePressedIndex ?? itemIndex;
 			this.mousePressedIndex = undefined;
-			if (clickedIndex < 0) return { handled: true };
 			const changed = this.selectedIndex !== clickedIndex;
 			this.selectedIndex = clickedIndex;
 			if (changed) this.notifySelectionChange();

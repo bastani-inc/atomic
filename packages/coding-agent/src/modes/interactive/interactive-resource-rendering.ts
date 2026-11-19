@@ -1,4 +1,3 @@
-import { WindowedContainer } from "@bastani/atomic-tui";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import {
 	getInteractiveEngineResourceExtensions,
@@ -15,8 +14,6 @@ import {
 	type Text,
 	theme,
 } from "./interactive-mode-deps.ts";
-
-import { DiagnosticSection, type ResourceDetails } from "./interactive-resource-disclosure.ts";
 
 function formatList(values: string[]): string {
 	if (values.length <= 1) return values[0] ?? "";
@@ -115,7 +112,6 @@ function getOverlapLabels(mode: InteractiveModeBase, overlaps: readonly Resource
 }
 interface DisplayedOverlapNotice {
 	component: Text;
-	spacer: Spacer;
 	container: Container;
 	fingerprint: string;
 }
@@ -141,7 +137,6 @@ function getOverlapNoticeFingerprint(
 InteractiveModeBase.prototype.showLoadedResources = function (
 	this: InteractiveModeBase,
 	options?: {
-		preserveExpansion?: boolean;
 		extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
 		force?: boolean;
 		showDiagnosticsWhenQuiet?: boolean;
@@ -154,11 +149,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 	if (!showListing && !showDiagnostics) {
 		return;
 	}
-	const previousSections = options?.preserveExpansion ? [...targetContainer.children] : undefined;
-	if (targetContainer === this.resourceDisclosureContainer) {
-		targetContainer.clear();
-		if (targetContainer instanceof WindowedContainer) targetContainer.trackWindowStructure();
-	}
+	if (targetContainer === this.resourceDisclosureContainer) targetContainer.clear();
 
 	const skillsResult = this.session.resourceLoader.getSkills();
 	const promptsResult = this.session.resourceLoader.getPrompts();
@@ -203,12 +194,16 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			...this.session.resourceLoader.getAgentsFiles().agentsFiles,
 		];
 
-		const expandedSections: ResourceDetails = {};
+		const expandedSections: {
+			context?: string;
+			skills?: string;
+			prompts?: string;
+			extensions?: string;
+		} = {};
 		if (contextFiles.length > 0) {
-			expandedSections.context = contextFiles.map(({ path }) => ({
-				key: path,
-				text: theme.fg("dim", `  ${this.formatDisplayPath(path)}`),
-			}));
+			expandedSections.context = contextFiles
+				.map((contextFile) => theme.fg("dim", `  ${this.formatDisplayPath(contextFile.path)}`))
+				.join("\n");
 		}
 
 		const skills = skillsResult.skills;
@@ -254,7 +249,6 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			prompts,
 			extensions,
 			expandedSections,
-			previousSections,
 			targetContainer,
 		});
 	}
@@ -269,42 +263,34 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		if (overlapFingerprint && overlapLabels.length > 0) {
 			const sources = formatList(overlapLabels.map((label) => `\`${label}\``));
 			const verb = overlapLabels.length === 1 ? "provides" : "provide";
-			const displayed = displayedOverlapNotices.get(this);
-			const retained =
-				displayed?.fingerprint === overlapFingerprint && previousSections?.includes(displayed.component)
-					? displayed
-					: undefined;
-			const notice =
-				retained?.component ??
-				new ThemedText(
-					() =>
-						theme.fg(
-							"warning",
-							`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
-						),
-					0,
-					0,
-				);
-			const spacer = retained?.spacer ?? new Spacer(1);
+			const notice = new ThemedText(
+				() =>
+					theme.fg(
+						"warning",
+						`Extension overlap detected: ${sources} ${verb} resources already bundled with Atomic. Atomic kept its bundled versions; non-conflicting extension features remain available.`,
+					),
+				0,
+				0,
+			);
 			targetContainer.addChild(notice);
-			targetContainer.addChild(spacer);
 			displayedOverlapNotices.set(this, {
 				component: notice,
-				spacer,
 				container: targetContainer,
 				fingerprint: overlapFingerprint,
 			});
+			targetContainer.addChild(new Spacer(1));
 		}
 
 		const addDiagnostics = (name: string, diagnostics: readonly ResourceDiagnostic[]) => {
 			if (!diagnostics.length) return;
-			const section =
-				previousSections?.find(
-					(child): child is DiagnosticSection => child instanceof DiagnosticSection && child.name === name,
-				) ?? new DiagnosticSection(name);
-			section.update(() => this.formatDiagnostics(diagnostics, sourceInfos));
-			targetContainer.addChild(section);
-			targetContainer.addChild(section.spacer);
+			targetContainer.addChild(
+				new ThemedText(
+					() => `${theme.fg("warning", `[${name}]`)}\n${this.formatDiagnostics(diagnostics, sourceInfos)}`,
+					0,
+					0,
+				),
+			);
+			targetContainer.addChild(new Spacer(1));
 		};
 		addDiagnostics("Skill warnings", skillsResult.diagnostics);
 		addDiagnostics("Prompt conflicts", promptsResult.diagnostics);

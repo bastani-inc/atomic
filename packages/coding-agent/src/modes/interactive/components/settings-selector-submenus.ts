@@ -420,7 +420,7 @@ export class ThemeSubmenu extends Container {
 	}
 
 	private cancel(): void {
-		this.callbacks.onThemePreview?.(this.originalThemeSetting);
+		(this.callbacks.onThemePreviewCancel ?? this.callbacks.onThemePreview)?.(this.originalThemeSetting);
 		this.onDone();
 	}
 }

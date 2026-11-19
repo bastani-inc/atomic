@@ -89,6 +89,7 @@ export interface SettingsCallbacks {
 	onModelThinkingLevelRemove?: (provider: string, modelId: string) => void;
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
+	onThemePreviewCancel?: (originalTheme: string) => void;
 	onHideThinkingBlockChange: (hidden: boolean) => void;
 	onMermaidRenderingModeChange: (mode: MermaidRenderingMode) => void;
 	onLatexRenderingEnabledChange: (enabled: boolean) => void;

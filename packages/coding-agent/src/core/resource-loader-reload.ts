@@ -310,6 +310,7 @@ export async function prepareDefaultResourceLoaderReload(
 		const resolveSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePackageResourcePaths");
 		const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(loader, {
 			trustedBorrowedProjectLocalSources: state.trustedBorrowedProjectLocalSources,
+			useLoadedSettings: options?.useLoadedSettings,
 		});
 		endTimingSpan(resolveSpan);
 		// Kept on the loader so post-reload passes (extendResources) can still resolve

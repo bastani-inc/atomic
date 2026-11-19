@@ -66,7 +66,7 @@ export function createShowLoadedResourcesThis(options: {
 		getStartupExpansionState: () => (InteractiveMode as any).prototype.getStartupExpansionState.call(fakeThis),
 		shouldShowStartupDetails: () => (InteractiveMode as any).prototype.shouldShowStartupDetails.call(fakeThis),
 		buildScopeGroups: () => [],
-		formatScopeGroups: () => [{ key: "resource", text: "resource-list" }],
+		formatScopeGroups: () => "resource-list",
 		isPackageSource: (sourceInfo?: SourceInfo) =>
 			(InteractiveMode as any).prototype.isPackageSource.call(fakeThis, sourceInfo),
 		getShortPath: (p: string, sourceInfo?: SourceInfo) =>
@@ -86,7 +86,7 @@ export function createShowLoadedResourcesThis(options: {
 		) => (InteractiveMode as any).prototype.getCompactNonPackageExtensionLabel.call(fakeThis, p, index, allPaths),
 		getCompactExtensionLabels: (extensions: ExtensionFixture[]) =>
 			(InteractiveMode as any).prototype.getCompactExtensionLabels.call(fakeThis, extensions),
-		formatDiagnostics: () => [{ key: "diagnostic", text: "diagnostics" }],
+		formatDiagnostics: () => "diagnostics",
 		getBuiltInCommandConflictDiagnostics: () => [],
 		addResourceDisclosure: (disclosure: unknown) =>
 			(InteractiveMode as any).prototype.addResourceDisclosure.call(fakeThis, disclosure),

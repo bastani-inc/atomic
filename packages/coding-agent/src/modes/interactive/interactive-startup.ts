@@ -32,7 +32,7 @@ import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.t
 import {
 	APP_NAME,
 	APP_TITLE,
-	Container,
+	type Container,
 	checkForNewPiVersion,
 	composeStartupIdentity,
 	configureHttpDispatcher,
@@ -71,7 +71,6 @@ import {
 	updateProviderCountFromSnapshot,
 } from "./interactive-model-catalog-startup.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
-import { applyProjectSettingsToTranscript } from "./interactive-render-chat.ts";
 import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
@@ -118,7 +117,7 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 ): void {
 	if (this.startupNoticesShown) {
 		// Deferred startup asks again after extensions load: redraw What's New with their transformers, don't repeat it.
-		this.refreshStartupChangelog?.();
+		this.startupChangelogComponent?.invalidate();
 		return;
 	}
 	prepareStartupNotices(this);
@@ -134,25 +133,20 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 			targetContainer.addChild(new Spacer(1));
 		}
 		targetContainer.addChild(new DynamicBorder());
-		const content = new Container();
-		targetContainer.addChild(content);
-		this.refreshStartupChangelog = () => {
-			content.clear();
-			if (this.settingsManager.getCollapseChangelog()) {
-				const versionMatch = changelogMarkdown.match(
-					/##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
-				);
-				const latestVersion = versionMatch ? versionMatch[1] : this.version;
-				const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-				content.addChild(new Text(condensedText, 1, 0));
-			} else {
-				content.addChild(new ThemedText(() => theme.bold(theme.fg("accent", "What's New")), 1, 0));
-				content.addChild(new Spacer(1));
-				content.addChild(this.createChangelogMarkdown(changelogMarkdown.trim(), 1, 0));
-				content.addChild(new Spacer(1));
-			}
-		};
-		this.refreshStartupChangelog();
+		if (this.settingsManager.getCollapseChangelog()) {
+			const versionMatch = changelogMarkdown.match(
+				/##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
+			);
+			const latestVersion = versionMatch ? versionMatch[1] : this.version;
+			const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
+			targetContainer.addChild(new Text(condensedText, 1, 0));
+		} else {
+			targetContainer.addChild(new ThemedText(() => theme.bold(theme.fg("accent", "What's New")), 1, 0));
+			targetContainer.addChild(new Spacer(1));
+			this.startupChangelogComponent = this.createChangelogMarkdown(changelogMarkdown.trim(), 1, 0);
+			targetContainer.addChild(this.startupChangelogComponent);
+			targetContainer.addChild(new Spacer(1));
+		}
 		targetContainer.addChild(new DynamicBorder());
 	}
 
@@ -211,9 +205,8 @@ InteractiveModeBase.prototype.showManagedToolStatus = function (this: Interactiv
 	this.ui.requestRender();
 };
 
-function refreshResourceDisclosure(mode: InteractiveModeBase, options?: { preserveExpansion?: boolean }): void {
+function refreshResourceDisclosure(mode: InteractiveModeBase): void {
 	mode.showLoadedResources({
-		...options,
 		force: true,
 		showDiagnosticsWhenQuiet: true,
 		targetContainer: mode.resourceDisclosureContainer,
@@ -221,7 +214,8 @@ function refreshResourceDisclosure(mode: InteractiveModeBase, options?: { preser
 }
 
 export function attachInteractiveEngineResourceExtensionRefresh(mode: InteractiveModeBase): () => void {
-	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, () => {
+	return onInteractiveEngineResourceExtensionsChanged(mode.runtimeHost, (_extensions, forNextView) => {
+		if (forNextView) return;
 		mode.chatContainer.invalidate();
 		mode.ui.requestRender();
 		if (mode.resourceDisclosureContainer.children.length > 0) refreshResourceDisclosure(mode);
@@ -284,8 +278,8 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	// changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
 	// before bind so the first async catalog fetch can never be missed. No-op when
 	// the host is not isolated.
-	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
-		this.setupAutocompleteProvider();
+	onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, (_commands, forNextView) => {
+		this.setupAutocompleteProvider(forNextView ? { preserveSelection: true } : undefined);
 	});
 	attachInteractiveEngineResourceExtensionRefresh(this);
 	onInteractiveEngineProjectTrustChanged(this.runtimeHost, (resourcesChanged) => {
@@ -295,12 +289,13 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 			setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 			this.applyRuntimeSettings();
 			configureHttpDispatcher(this.settingsManager.getHttpIdleTimeoutMs());
-			void this.themeController.applyFromSettings();
+			const trusted = this.settingsManager.isProjectTrusted();
+			void this.themeController.applyFromSettings({ keepPreview: trusted });
 			if (this.isInitialized) {
-				this.refreshStartupChangelog?.();
-				applyProjectSettingsToTranscript(this);
-				refreshResourceDisclosure(this, { preserveExpansion: true });
-				this.setupAutocompleteProvider({ preserveSelection: true });
+				// Withholding resources removes any preliminary project data. Approval publishes to future views;
+				// it must not insert rows into a transcript the user may be selecting or searching.
+				if (!trusted) refreshResourceDisclosure(this);
+				this.setupAutocompleteProvider(trusted ? { preserveSelection: true } : undefined);
 			}
 		}
 		this.refreshProjectTrustWarning();

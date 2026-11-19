@@ -317,8 +317,8 @@ test(
 			await client.start();
 			const request = await holding;
 			const pending = await client.getState();
-			assert.equal(pending.projectTrusted, true);
-			assert.equal(pending.projectTrustPending, true);
+			assert.equal(Object.hasOwn(pending, "projectTrusted"), false, "older hosts treat this field as a decision");
+			assert.equal(pending.pendingProjectResourcesTrusted, true);
 			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, value: "Do not trust" });
 			await client.waitForInteractiveEngineResources();
 			assert.equal((await client.getState()).projectTrusted, true);
@@ -469,20 +469,20 @@ function decliningHookFixture(prefix: string) {
 // A project_trust hook can overturn a saved "Trust", so the decision is still open: the project's resources must not
 // load before it is made, and the host must not warn either (#5693).
 test(
-	"a saved trust that a project_trust hook can still decline is reported untrusted and pending until it decides (#5693)",
+	"a vetoable saved trust withholds resources without reporting a settled decision to older hosts (#5693)",
 	async () => {
 		const { root, client, holding } = decliningHookFixture("atomic-startup-rpc-hook-");
 		try {
 			await client.start();
 			const request = await holding;
 			const pending = await client.getState();
-			assert.equal(pending.projectTrusted, false);
-			assert.equal(pending.projectTrustPending, true);
+			assert.equal(Object.hasOwn(pending, "projectTrusted"), false, "older hosts treat this field as a decision");
+			assert.equal(pending.pendingProjectResourcesTrusted, false);
 			await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, confirmed: true });
 			await client.waitForInteractiveEngineResources();
 			const decided = await client.getState();
 			assert.equal(decided.projectTrusted, false);
-			assert.equal(decided.projectTrustPending, undefined);
+			assert.equal(decided.pendingProjectResourcesTrusted, undefined);
 		} finally {
 			await client.stop();
 			rmSync(root, { recursive: true, force: true });

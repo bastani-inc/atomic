@@ -56,12 +56,6 @@ export class SkillInvocationMessageComponent extends Box {
 		this.updateDisplay();
 	}
 
-	setMarkdownSettings(theme: MarkdownTheme, renderLatex: boolean): void {
-		this.markdownTheme = theme;
-		this.renderLatex = renderLatex;
-		this.updateDisplay();
-	}
-
 	setOutputPad(outputPad: number): void {
 		this.setPaddingX(outputPad);
 	}

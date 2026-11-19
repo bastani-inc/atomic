@@ -83,7 +83,7 @@ export function pendingProjectResourcesTrusted(input: {
 }): boolean {
 	if (!input.decide) return input.startedTrusted;
 	if (input.decided !== undefined) return input.decided;
-	return !input.hasTrustHook && input.saved === true;
+	return input.saved === true && !input.hasTrustHook;
 }
 
 /**

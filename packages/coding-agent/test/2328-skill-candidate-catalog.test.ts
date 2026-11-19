@@ -135,17 +135,14 @@ describe("issue #2328 skill candidate catalog", () => {
 		expect(collision?.winnerCandidateId).toMatch(/^skill_[a-f0-9]{20}$/);
 		expect(collision?.loserCandidateId).toMatch(/^skill_[a-f0-9]{20}$/);
 		initTheme("dark");
-		const rendered = InteractiveModeBase.prototype.formatDiagnostics
-			.call(
-				{
-					formatPathWithSource: (path: string) => path,
-					findSourceInfoForPath: () => undefined,
-				} as InteractiveModeBase,
-				loader.getSkills().diagnostics,
-				new Map(),
-			)
-			.map((row) => row.text)
-			.join("\n");
+		const rendered = InteractiveModeBase.prototype.formatDiagnostics.call(
+			{
+				formatPathWithSource: (path: string) => path,
+				findSourceInfoForPath: () => undefined,
+			} as InteractiveModeBase,
+			loader.getSkills().diagnostics,
+			new Map(),
+		);
 		expect(rendered).toContain(`(default /skill:review; exact /skill:${winner?.selector})`);
 		expect(rendered).toContain(`(/skill:${loser?.selector})`);
 		expect(rendered).not.toContain("(skipped)");

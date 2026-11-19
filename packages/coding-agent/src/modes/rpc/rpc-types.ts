@@ -278,16 +278,10 @@ export interface RpcSessionState {
 	messageCount: number;
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
-	/**
-	 * Authoritative engine trust state; absent on older RPC peers. With `projectTrustPending` it says only whether the
-	 * project's own resources may load yet.
-	 */
+	/** Authoritative engine trust state; absent while the engine is still deciding, and on older RPC peers. */
 	projectTrusted?: boolean;
-	/**
-	 * The engine is still deciding trust at startup (the project's, or an `-e` source's): `projectTrusted` is no decision
-	 * yet, only whether the project's own resources may load.
-	 */
-	projectTrustPending?: true;
+	/** Only while startup trust is pending: whether this folder's own resources may load. Absent on older peers. */
+	pendingProjectResourcesTrusted?: boolean;
 	/**
 	 * Internal to the interactive engine child: the trust decisions it made in its session, answers for this session only
 	 * included. They are never saved; the interactive host hands them to an engine it starts to replace this one.

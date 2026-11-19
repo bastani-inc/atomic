@@ -952,13 +952,6 @@ class SkillMessageContainer extends Container {
 		return this.skill.clickArea(width);
 	}
 
-	setMarkdownSettings(theme: MarkdownTheme, renderLatex: boolean): void {
-		for (const child of this.children) {
-			if (child instanceof UserMessageComponent || child instanceof SkillInvocationMessageComponent)
-				child.setMarkdownSettings(theme, renderLatex);
-		}
-	}
-
 	setOutputPad(outputPad: number): void {
 		for (const child of this.children) {
 			if ("setOutputPad" in child && typeof child.setOutputPad === "function") child.setOutputPad(outputPad);

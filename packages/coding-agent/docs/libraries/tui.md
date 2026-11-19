@@ -720,7 +720,7 @@ const provider = new CombinedAutocompleteProvider(
 editor.setAutocompleteProvider(provider);
 ```
 
-Replacing the provider normally closes the menu. To update its items without dropping the user's selection, call `editor.setAutocompleteProvider(provider, { preserveSelection: true })`. If the selected value is still present, it stays highlighted even if its position changes. A pending lookup runs again with the new provider, preserving whether the user explicitly pressed Tab.
+Replacing the built-in editor's provider normally closes its menu. To keep the current menu and use the new provider for the next lookup, call `editor.setAutocompleteProvider(provider, { preserveSelection: true })`. An open menu keeps the provider that offered its rows. If no menu has opened yet, a still-current lookup can retry with the new provider, preserving whether the user pressed Tab. Extension-provided editors receive the usual single provider argument.
 
 **Features:**
 - Type `/` to see slash commands

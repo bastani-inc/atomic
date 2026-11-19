@@ -2819,7 +2819,7 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
-		it("submits the newly available exact command if the user hasn't browsed the list (#5693)", async () => {
+		it("an open completion keeps its rows, and the next lookup offers the new exact command (#5693)", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const catalog = (...values: string[]): AutocompleteProvider => ({
 				getSuggestions: async () => ({
@@ -2836,6 +2836,11 @@ describe("Editor component", () => {
 			for (const ch of "/global") editor.handleInput(ch);
 			await flushAutocomplete();
 			editor.setAutocompleteProvider(catalog("/globalone", "/global", "/globaltwo"), { preserveSelection: true });
+			await flushAutocomplete();
+			editor.handleInput("\r");
+			assert.equal(submitted, "/globalone");
+			editor.setText("");
+			for (const ch of "/global") editor.handleInput(ch);
 			await flushAutocomplete();
 			editor.handleInput("\r");
 			assert.equal(submitted, "/global");

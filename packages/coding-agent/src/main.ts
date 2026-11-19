@@ -826,6 +826,8 @@ export async function main(argv: string[], options?: MainOptions) {
 			!isolateInteractiveHost &&
 			(trustPromptMode === "interactive" || engineEnv.child === "1") &&
 			(shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0);
+		if (deferStartupTrust && shouldResolveProjectTrust)
+			runtimeSettingsManager.trackEditsWhileProjectTrustPending(true);
 		let completeStartupReload: (() => Promise<void>) | undefined;
 		let startupTrustContext: typeof projectTrustContext;
 		// While a deferred startup decision is still to come, the settings read the project untrusted to load only what
@@ -908,6 +910,7 @@ export async function main(argv: string[], options?: MainOptions) {
 								: undefined,
 							onProjectTrustResolved: async () => {
 								startupTrustPending = false;
+								runtimeSettingsManager.trackEditsWhileProjectTrustPending(false);
 								await finalizeStartupStorage();
 								engineLiveness?.projectTrustResolved();
 							},
@@ -1065,6 +1068,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				!isolateInteractiveHost && !deferStartupTrust,
 			);
 			startupSession = created.session;
+			let hasStartupTrustHook: boolean | undefined;
 			services.projectTrust = {
 				get pending() {
 					return startupTrustPending;
@@ -1076,15 +1080,19 @@ export async function main(argv: string[], options?: MainOptions) {
 						// Without a session decision when startup began, one in the cache now was made by this startup.
 						decided: startupTrust.decide ? projectTrustByCwd.get(cwd) : undefined,
 						saved: storedProjectTrust,
-						// While deciding, the loaded extensions are the ones the decision runs: user, global and -e.
-						hasTrustHook: services.resourceLoader
-							.getExtensions()
-							.extensions.some((extension) => (extension.handlers.get("project_trust")?.length ?? 0) > 0),
+						// Check the bound hooks at the first authority report, not on every state poll.
+						get hasTrustHook() {
+							hasStartupTrustHook ??= services.resourceLoader
+								.getExtensions()
+								.extensions.some((extension) => (extension.handlers.get("project_trust")?.length ?? 0) > 0);
+							return hasStartupTrustHook;
+						},
 					});
 				},
 				abandon() {
 					// No decision is coming any more: the session stays as untrusted as its settings read.
 					startupTrustPending = false;
+					runtimeSettingsManager.trackEditsWhileProjectTrustPending(false);
 				},
 				decisions: projectTrustByCwd,
 				extensionSourceDecisions: borrowedExtensionSourceTrustByPath,

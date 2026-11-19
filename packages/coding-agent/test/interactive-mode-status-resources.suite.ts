@@ -58,7 +58,10 @@ function renderCompactExtensionLabels(extensions: ExtensionFixture[]): string[] 
 	return extensionsRow.split(", ");
 }
 
-async function createInventoryRuntime(resourceExtensions: RpcResourceExtension[]) {
+async function createInventoryRuntime(
+	resourceExtensions: RpcResourceExtension[],
+	trust?: () => { projectTrusted?: boolean; pendingProjectResourcesTrusted?: boolean },
+) {
 	const harness = await createHarness();
 	const local = new AgentSessionRuntime(
 		harness.session,
@@ -91,6 +94,7 @@ async function createInventoryRuntime(resourceExtensions: RpcResourceExtension[]
 				pendingMessageCount: 0,
 				queuedMessagesPaused: false,
 				resourceExtensions,
+				...trust?.(),
 			}),
 			requestInternal: async () => ({ models: [], scopedModels: [] }),
 			getCommands: async () => [],
@@ -189,14 +193,17 @@ describe("InteractiveMode.showLoadedResources", () => {
 	});
 
 	test.each(["startup", "reload"])(
-		"a settled fullscreen frame does not visit %s warnings above the viewport (#5693)",
+		"a settled fullscreen frame does not visit expanded %s prompts or warnings above the viewport (#5693)",
 		(source) => {
 			const mode = createShowLoadedResourcesThis({
 				quietStartup: false,
+				verbose: true,
+				useRealScopeGroups: true,
+				prompts: Array.from({ length: 1_024 }, (_, i) => ({ name: `prompt-${i}`, filePath: `/prompts/${i}.md` })),
 				skillDiagnostics: Array.from({ length: 10_000 }, (_, i) => ({ type: "warning", message: `warning ${i}` })),
 			});
 			const chat = new WindowedContainer();
-			const disclosure = new WindowedContainer();
+			const disclosure = new Container();
 			chat.addChild(disclosure);
 			mode.resourceDisclosureContainer = disclosure;
 			mode.chatContainer = chat;
@@ -207,7 +214,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 			});
 			for (let i = 0; i < 200; i++) chat.addChild(new Text(`history ${i}`, 0, 0));
 			let visits = 0;
+			let childRows = 0;
 			const countReads = (section: Container) => {
+				childRows += section.children.length;
 				for (const child of section.children) if (child instanceof Container) countReads(child);
 				section.children = new Proxy(section.children, {
 					get(target, key, receiver) {
@@ -226,74 +235,73 @@ describe("InteractiveMode.showLoadedResources", () => {
 			const next = frame();
 			expect(next.at(next.top + 29)?.trim()).toBe("history 199");
 			expect(visits).toBe(0);
+			// An offscreen disclosure needs its sections, not one mounted component per prompt or warning.
+			expect(childRows).toBeLessThan(20);
 		},
 	);
 
-	test("the visible diagnostic stays anchored when approval adds earlier resources and warnings (#5693)", () => {
-		const warnings = Array.from({ length: 60 }, (_, i) => ({
-			type: "warning" as const,
-			path: `/skills/warn${i}/SKILL.md`,
-			message: "description is required",
-		}));
-		const prompts: Array<{ name: string; filePath: string }> = [];
-		const mode = createShowLoadedResourcesThis({ quietStartup: false, skillDiagnostics: warnings, prompts });
-		mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
-		mode.formatPathWithSource = (path: string) => path;
-		mode.findSourceInfoForPath = () => undefined;
-		const disclosure = new WindowedContainer();
-		mode.resourceDisclosureContainer = disclosure;
-		const paint = (preserveExpansion: boolean) =>
-			InteractiveMode.prototype.showLoadedResources.call(mode, {
-				targetContainer: disclosure,
-				preserveExpansion,
-			});
-		const layout = (top: number, height: number) =>
-			disclosure.layoutWindow({ top, height, width: 80, followEnd: false, requestRender: () => {} });
-		paint(false);
-		const all = layout(0, 150);
-		const index = Array.from({ length: all.length }, (_, i) => all.at(i)).findIndex((line) =>
-			line?.includes("/warn30/"),
-		);
-		expect(index).toBeGreaterThan(0);
-		const held = layout(index, 5);
-		warnings.unshift({ type: "warning", path: "/project/SKILL.md", message: "description is required" });
-		prompts.push({ name: "approved", filePath: "/project/approved.md" });
-		paint(true);
-		const next = layout(held.top, 5);
-		expect(next.at(next.top)).toContain("/warn30/SKILL.md");
-	});
-
-	test("the first visible prompt stays anchored when project approval inserts earlier rows (#5693)", () => {
-		const prompts = Array.from({ length: 60 }, (_, i) => ({ filePath: `/user/marker${i}.md`, name: `marker${i}` }));
-		const mode = createShowLoadedResourcesThis({
-			quietStartup: false,
-			toolOutputExpanded: true,
-			prompts,
-			useRealScopeGroups: true,
-		});
-		const disclosure = new WindowedContainer();
-		mode.resourceDisclosureContainer = disclosure;
-		const paint = (preserveExpansion: boolean) =>
-			InteractiveMode.prototype.showLoadedResources.call(mode, {
-				force: true,
-				targetContainer: disclosure,
-				preserveExpansion,
-			});
-		const layout = (top: number, height: number) =>
-			disclosure.layoutWindow({ top, height, width: 80, followEnd: false, requestRender: () => {} });
-		paint(false);
-		const all = layout(0, 100);
-		const marker = Array.from({ length: all.length }, (_, i) => all.at(i)).findIndex((line) =>
-			line?.includes("/marker30"),
-		);
-		expect(marker).toBeGreaterThan(0);
-		const held = layout(marker, 5);
-		expect(held.at(held.top)).toContain("/marker30");
-		prompts.push({ filePath: "/project/earlier.md", name: "earlier" });
-		paint(true);
-		const after = layout(held.top, 5);
-		expect(after.at(after.top)).toContain("/marker30");
-	});
+	test.each(["/warn30/SKILL.md", "/marker30"])(
+		"keeps the first visible resource %s in the mounted disclosure across approval (#5693)",
+		async (anchor) => {
+			let trusted = false;
+			const { harness, runtime } = await createInventoryRuntime([], () =>
+				trusted ? { projectTrusted: true } : { pendingProjectResourcesTrusted: false },
+			);
+			const options = {
+				runtimeHost: runtime,
+				quietStartup: false,
+				toolOutputExpanded: true,
+				useRealScopeGroups: true,
+				prompts: Array.from({ length: 60 }, (_, i) => ({ filePath: `/user/marker${i}.md`, name: `marker${i}` })),
+				skillDiagnostics: Array.from({ length: 60 }, (_, i) => ({
+					type: "warning" as const,
+					path: `/skills/warn${i}/SKILL.md`,
+					message: "description is required",
+				})),
+			};
+			const mode = createShowLoadedResourcesThis(options);
+			mode.formatDiagnostics = InteractiveMode.prototype.formatDiagnostics;
+			mode.formatPathWithSource = (path: string) => path;
+			mode.findSourceInfoForPath = () => undefined;
+			mode.ui = { requestRender: () => {} };
+			const disclosure = new Container();
+			const chat = new WindowedContainer();
+			chat.addChild(disclosure);
+			mode.chatContainer = chat;
+			mode.resourceDisclosureContainer = disclosure;
+			mode.showLoadedResources = InteractiveMode.prototype.showLoadedResources;
+			const detach = attachInteractiveEngineResourceExtensionRefresh(mode);
+			try {
+				await runtime.initializeFromEngine();
+				mode.showLoadedResources({ force: true, targetContainer: disclosure });
+				const layout = (top: number, height: number) =>
+					chat.layoutWindow({ top, height, width: 100, followEnd: false, requestRender: () => {} });
+				const all = layout(0, 300);
+				const index = Array.from({ length: all.length }, (_, i) => all.at(i)).findIndex((line) =>
+					line?.includes(anchor),
+				);
+				expect(index).toBeGreaterThan(0);
+				const held = layout(index, 5);
+				expect(held.at(held.top)).toContain(anchor);
+				options.prompts = [{ filePath: "/project/earlier.md", name: "earlier" }, ...options.prompts];
+				options.skillDiagnostics = [
+					{ type: "warning", path: "/project/SKILL.md", message: "new diagnostic" },
+					...options.skillDiagnostics,
+				];
+				trusted = true;
+				await runtime.initializeFromEngine();
+				const next = layout(held.top, 5);
+				expect(next.at(next.top)).toContain(anchor);
+				expect(normalizeRenderedOutput(disclosure)).not.toContain("/earlier");
+				mode.showLoadedResources({ force: true, targetContainer: disclosure });
+				expect(normalizeRenderedOutput(disclosure)).toContain("/earlier");
+			} finally {
+				detach();
+				await runtime.dispose();
+				harness.cleanup();
+			}
+		},
+	);
 
 	test("shows full resource listing when expanded", () => {
 		const fakeThis = createShowLoadedResourcesThis({

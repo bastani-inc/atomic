@@ -252,6 +252,6 @@ InteractiveModeBase.prototype.setupAutocompleteProvider = function (
 	this.autocompleteProvider = provider;
 	this.defaultEditor.setAutocompleteProvider(provider, options);
 	if (this.editor !== this.defaultEditor) {
-		this.editor.setAutocompleteProvider?.(provider, options);
+		this.editor.setAutocompleteProvider?.(provider);
 	}
 };

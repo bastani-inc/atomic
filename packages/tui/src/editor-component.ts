@@ -58,8 +58,8 @@ export interface EditorComponent extends Component {
 	// Autocomplete support (optional)
 	// =========================================================================
 
-	/** Set the autocomplete provider. A catalog refresh can keep the open menu's selected value. */
-	setAutocompleteProvider?(provider: AutocompleteProvider, options?: { preserveSelection?: boolean }): void;
+	/** Set the autocomplete provider */
+	setAutocompleteProvider?(provider: AutocompleteProvider): void;
 
 	// =========================================================================
 	// Appearance (optional)

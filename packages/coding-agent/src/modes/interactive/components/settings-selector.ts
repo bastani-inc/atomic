@@ -37,6 +37,14 @@ export class SettingsSelectorComponent extends Container {
 		this.settingsList.setItems(buildSettingsItems(config, this.callbacks));
 	}
 
+	/** Keep this form and its current child untouched; a later child reads its own values and save targets on open. */
+	readSubmenusOnOpen(read: () => { config: SettingsConfig; callbacks: SettingsCallbacks }): void {
+		this.settingsList.setSubmenuSource(() => {
+			const { config, callbacks } = read();
+			return buildSettingsItems(config, callbacks);
+		});
+	}
+
 	getSettingsList(): SettingsPicker {
 		return this.settingsList;
 	}

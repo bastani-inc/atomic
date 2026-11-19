@@ -229,7 +229,7 @@ export function getInteractiveEngineResourceIssues(runtime: AgentSessionRuntime)
 
 export function onInteractiveEngineResourceExtensionsChanged(
 	runtime: AgentSessionRuntime,
-	listener: (extensions: readonly RpcResourceExtension[]) => void,
+	listener: (extensions: readonly RpcResourceExtension[], forNextView?: true) => void,
 ): () => void {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onResourceExtensionsChanged(listener) : () => {};
 }
@@ -256,7 +256,7 @@ export function getInteractiveEngineRemoteCommandCompletions(
 /** Subscribe to engine-child command catalog changes. No-op when not isolated. */
 export function onInteractiveEngineRemoteCommandsChanged(
 	runtime: AgentSessionRuntime,
-	listener: (commands: readonly RpcSlashCommand[]) => void,
+	listener: (commands: readonly RpcSlashCommand[], forNextView?: true) => void,
 ): () => void {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onRemoteCommandsChanged(listener) : () => {};
 }

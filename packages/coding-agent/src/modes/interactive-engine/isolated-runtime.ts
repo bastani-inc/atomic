@@ -70,7 +70,7 @@ export interface EngineResourceIssues {
 	errors: Array<{ path: string; error: string }>;
 	warnings: Array<{ path: string; warning: string }>;
 }
-type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[]) => void;
+type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[], forNextView?: true) => void;
 type QueueSnapshot = { steering: string[]; followUp: string[] };
 
 /** An extension error of the engine's session, as its RPC binding reports it on the event stream. */
@@ -178,6 +178,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private autoRetryEnabled = true;
 	/** Whether the engine reported a trust decision for its current session; it reports none while still deciding. */
 	private engineProjectTrustReported = false;
+	/** The next engine catalog for this session follows a startup view drawn without the folder's resources. */
+	private readonly restrictedStartupCatalogs = new WeakSet<AgentSession>();
 	/** The engine's trust decisions in this host session, handed to an engine started to replace it. */
 	private knownTrust: SessionTrustDecisions = { projects: {}, extensionSources: {} };
 	private readonly projectTrustListeners = new Set<(resourcesChanged: boolean) => void>();
@@ -229,6 +231,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			true,
 		);
 		this.adoptSessionStores(localRuntime);
+		localRuntime.session.settingsManager.trackEditsWhileProjectTrustPending(true);
 		this.client = client;
 		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.remoteModelCatalog = new RemoteModelCatalog(client);
@@ -426,8 +429,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (decided !== current || session !== super.session || this.engineProjectTrustReported) return;
 			if (session.settingsManager.isProjectTrusted() === trusted) return;
 			await session.settingsManager.setProjectTrustedAsync(trusted);
-			await session.settingsManager.reload();
-			await session.resourceLoader.reload();
+			// Withholding a folder did not invalidate user settings. The setter has loaded its project layer.
+			if (this.restrictedStartupCatalogs.has(session))
+				await session.resourceLoader.reload({ useLoadedSettings: true });
+			else {
+				await session.settingsManager.reload();
+				await session.resourceLoader.reload();
+			}
 			if (
 				this.disposed ||
 				session !== super.session ||
@@ -486,18 +494,24 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}
 			const session = super.session;
 			const trustBefore = [session.settingsManager.isProjectTrusted(), this.engineProjectTrustReported] as const;
-			if (
-				state.projectTrusted !== undefined &&
-				session.settingsManager.isProjectTrusted() !== state.projectTrusted
-			) {
+			const followsRestrictedCatalog = this.restrictedStartupCatalogs.has(session);
+			if (state.pendingProjectResourcesTrusted === false) this.restrictedStartupCatalogs.add(session);
+			else if (state.projectTrusted !== undefined) this.restrictedStartupCatalogs.delete(session);
+			const resourcesTrusted = state.projectTrusted ?? state.pendingProjectResourcesTrusted;
+			if (resourcesTrusted !== undefined && session.settingsManager.isProjectTrusted() !== resourcesTrusted) {
 				// The child owns trust hooks/decisions. The host only mirrors their result.
-				await session.settingsManager.setProjectTrustedAsync(state.projectTrusted);
-				await session.settingsManager.reload();
-				await session.resourceLoader.reload();
+				await session.settingsManager.setProjectTrustedAsync(resourcesTrusted);
+				if (followsRestrictedCatalog || state.pendingProjectResourcesTrusted !== undefined) {
+					await session.resourceLoader.reload({ useLoadedSettings: true });
+				} else {
+					await session.settingsManager.reload();
+					await session.resourceLoader.reload();
+				}
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
 			// A pending report keeps the project's resources out until the engine decides; it is no decision to warn about.
-			this.engineProjectTrustReported = state.projectTrusted !== undefined && state.projectTrustPending !== true;
+			this.engineProjectTrustReported = state.projectTrusted !== undefined;
+			if (this.engineProjectTrustReported) session.settingsManager.trackEditsWhileProjectTrustPending(false);
 			const resourcesChanged = trustBefore[0] !== session.settingsManager.isProjectTrusted();
 			if (resourcesChanged || trustBefore[1] !== this.engineProjectTrustReported) {
 				for (const listener of [...this.projectTrustListeners]) listener(resourcesChanged);
@@ -514,7 +528,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			session.agent.followUpMode = state.followUpMode;
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
-			this.updateResources(state);
+			this.updateResources(state, followsRestrictedCatalog);
 			this.remoteSessionName = state.sessionName;
 			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
@@ -537,7 +551,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.health.markCooperativeAbortSettled();
 			// Non-blocking refresh so isolated autocomplete lists engine-only extension
 			// commands after bind/restart/reload/new/resume/fork. See RemoteCommandCatalog.
-			this.remoteCommands.refresh();
+			this.remoteCommands.refresh(followsRestrictedCatalog || state.pendingProjectResourcesTrusted === false);
 		} catch (error) {
 			if (this.disposed && isRpcTransportFailure(error)) return;
 			throw error;
@@ -644,6 +658,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** The engine decides project trust: until it reports a decision, this host's trust is only its own lookup. */
 	override isProjectTrustPending(): boolean {
 		return !this.engineProjectTrustReported;
+	}
+	/** A catalog request started from a restricted startup view must not replace that view with a later catalog. */
+	captureStartupCatalog(): (() => boolean) | undefined {
+		const session = super.session;
+		if (!this.restrictedStartupCatalogs.has(session)) return undefined;
+		const trusted = session.settingsManager.isProjectTrusted();
+		return () =>
+			this.restrictedStartupCatalogs.has(session) && session.settingsManager.isProjectTrusted() === trusted;
 	}
 	/** The trust decisions the engine reported in this host session. */
 	override trustDecisions(): SessionTrustDecisions {
@@ -775,10 +797,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	private updateResources(
 		state: Pick<RpcSessionState, "resourceExtensions" | "resourceErrors" | "resourceWarnings">,
+		forNextView = false,
 	): void {
 		this.resourceIssues = { errors: state.resourceErrors ?? [], warnings: state.resourceWarnings ?? [] };
 		this.resourceExtensions = [...(state.resourceExtensions ?? [])];
-		for (const listener of [...this.resourceExtensionsListeners]) listener(this.resourceExtensions);
+		for (const listener of [...this.resourceExtensionsListeners]) {
+			if (forNextView) listener(this.resourceExtensions, true);
+			else listener(this.resourceExtensions);
+		}
 	}
 	async synchronize(): Promise<void> {
 		const generation = this.client.getGeneration();
@@ -787,7 +813,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
-		this.updateResources(state);
+		this.updateResources(state, this.restrictedStartupCatalogs.has(super.session));
 	}
 
 	setEngineCallbackActive(active: boolean): void {

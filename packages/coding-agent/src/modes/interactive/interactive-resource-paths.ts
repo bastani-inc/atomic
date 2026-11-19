@@ -2,7 +2,6 @@ import { getBuiltinExtensionEntryLabel } from "../../core/extensions/builtin-ext
 import { isPathInside } from "../../utils/path-inside.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { parseGitUrl, path, type SourceInfo, theme } from "./interactive-mode-deps.ts";
-import type { ResourceRow } from "./interactive-resource-disclosure.ts";
 
 InteractiveModeBase.prototype.getShortPath = function (
 	this: InteractiveModeBase,
@@ -297,28 +296,28 @@ InteractiveModeBase.prototype.formatScopeGroups = function (
 		formatPath: (item: { path: string; sourceInfo?: SourceInfo }) => string;
 		formatPackagePath: (item: { path: string; sourceInfo?: SourceInfo }, source: string) => string;
 	},
-): ResourceRow[] {
-	const lines: ResourceRow[] = [];
+): string {
+	const lines: string[] = [];
 
 	for (const group of groups) {
-		lines.push({ key: group.scope, text: `  ${theme.fg("accent", group.scope)}` });
+		lines.push(`  ${theme.fg("accent", group.scope)}`);
 
 		const sortedPaths = [...group.paths].sort((a, b) => a.path.localeCompare(b.path));
 		for (const item of sortedPaths) {
-			lines.push({ key: item.path, text: theme.fg("dim", `    ${options.formatPath(item)}`) });
+			lines.push(theme.fg("dim", `    ${options.formatPath(item)}`));
 		}
 
 		const sortedPackages = Array.from(group.packages.entries()).sort(([a], [b]) => a.localeCompare(b));
 		for (const [source, items] of sortedPackages) {
-			lines.push({ key: `${group.scope}:${source}`, text: `    ${theme.fg("mdLink", source)}` });
+			lines.push(`    ${theme.fg("mdLink", source)}`);
 			const sortedPackagePaths = [...items].sort((a, b) => a.path.localeCompare(b.path));
 			for (const item of sortedPackagePaths) {
-				lines.push({ key: item.path, text: theme.fg("dim", `      ${options.formatPackagePath(item, source)}`) });
+				lines.push(theme.fg("dim", `      ${options.formatPackagePath(item, source)}`));
 			}
 		}
 	}
 
-	return lines;
+	return lines.join("\n");
 };
 
 InteractiveModeBase.prototype.findSourceInfoForPath = function (
