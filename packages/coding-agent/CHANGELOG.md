@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed `atomic worker start`, `status`, `metrics` and `controller`, the standalone workflow worker entry point, and the worker fleet deployment examples. Stop worker services and autoscalers before upgrading. Ask Atomic to delegate work to subagents instead; there is no remote worker pool to configure.
+- Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH` and `ATOMIC_WORKFLOW_ARTIFACT_DIR` in launch scripts; startup warns once if they are still set. Other workflow and pool variables, including `ATOMIC_WORKFLOW_DEBUG` and `ATOMIC_DEBUG_POOLED_WATCH`, no longer enable tracing or classify new sessions. Extensions no longer receive `WORKFLOW_STAGE_SUBAGENT_GUARD_ENV`, `WORKFLOW_SESSION_METADATA_ENV`, `workflowSessionMetadataFromEnv`, or the `workflow`, `pooled-watch` and `pool` debug areas. Use `--debug` or `ATOMIC_DEBUG=1` for the supported areas.
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.

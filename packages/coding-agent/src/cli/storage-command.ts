@@ -38,6 +38,7 @@ import {
 } from "../core/storage/postgres-schema.js";
 import { StorageProvider, type StorageSelection } from "../core/storage/provider.js";
 import {
+	type CheckedSharedDatabase,
 	checkSharedDatabaseArguments,
 	isFileUrl,
 	isPostgresUrl,
@@ -67,12 +68,7 @@ import {
 	type TransferredIds,
 } from "../core/storage/transfer-files.js";
 import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } from "../core/storage-transfer.ts";
-import {
-	loadWorkerHostModule,
-	type WorkerDatabase,
-	type WorkerHostModule,
-	workerJournalSelection,
-} from "./worker-command.js";
+import { loadWorkerHostModule, type WorkerHostModule } from "./worker-command.js";
 
 export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 
@@ -171,6 +167,8 @@ Options:
 
 const HELP_HINT = `Use "${APP_NAME} storage --help" for usage.`;
 
+type MigrationDatabase = CheckedSharedDatabase & { readonly prefix?: string };
+
 export type StorageCommand =
 	| { readonly kind: "help" }
 	| { readonly kind: "status"; readonly json: boolean }
@@ -187,7 +185,7 @@ export type StorageCommand =
 	| {
 			readonly kind: "migrate";
 			/** `--db` and its credential; the journal this machine selects without it. */
-			readonly database?: WorkerDatabase;
+			readonly database?: MigrationDatabase;
 	  }
 	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
 	| { readonly kind: "consolidate" }
@@ -692,6 +690,20 @@ async function loadBrokerStateModule(): Promise<BrokerStateModule> {
 	return loader.import<BrokerStateModule>(modulePath);
 }
 
+/** Select an explicit migration target without reading credentials into settings or command output. */
+function migrateDatabaseSelection(database: MigrationDatabase, cwd: string): StorageSettingsSelection {
+	const postgres = isPostgresUrl(database.url);
+	const credentialFile = database.passwordFile ?? database.tokenFile;
+	return {
+		adapter: postgres ? POSTGRES_ADAPTER_PACKAGE : LIBSQL_ADAPTER_PACKAGE,
+		options: { url: database.url, ...(database.auth === undefined ? {} : { auth: database.auth }) },
+		...(credentialFile === undefined
+			? {}
+			: { secrets: { [postgres ? "password" : "authToken"]: { file: resolve(cwd, credentialFile) } } }),
+		...(database.prefix === undefined ? {} : { prefix: database.prefix }),
+	};
+}
+
 /**
  * `atomic storage migrate` (#5218): sets up or upgrades every store's tables in the shared database, as its owner role.
  * On PostgreSQL, tables an earlier release created in `public` move to schema `atomic` first.
@@ -702,14 +714,9 @@ async function migrate(
 	log: (line: string) => void,
 ): Promise<number> {
 	const { agentDir, cwd } = options;
-	const database = command.database === undefined ? undefined : { ...command.database };
-	if (database?.tokenFile !== undefined) database.tokenFile = resolve(cwd, database.tokenFile);
-	if (database?.passwordFile !== undefined) database.passwordFile = resolve(cwd, database.passwordFile);
-	const settings = database === undefined ? undefined : workerJournalSelection(database);
+	const settings = command.database === undefined ? undefined : migrateDatabaseSelection(command.database, cwd);
 	const selection =
-		settings === undefined
-			? effectiveJournalSelection(cwd, agentDir)
-			: selectStorage(settings as StorageSettingsSelection, "cli", "--db", "");
+		settings === undefined ? effectiveJournalSelection(cwd, agentDir) : selectStorage(settings, "cli", "--db", "");
 	if (selection.kind !== "adapter") {
 		log(
 			`Workflow runs here use ${describeStorageSelection(selection)}, which sets itself up on first use; there is nothing to migrate.`,
