@@ -22,12 +22,13 @@ export interface ChatMount {
 	records: Map<string, readonly AnchoredChatRecord[]>;
 	expected?: Map<string, string>;
 	orders?: Map<string, string | null>;
+	disposed?: boolean;
 }
 const mounts = new WeakMap<object, ChatMount>();
 export const CHAT_RECORD_FIRST_PAINT_MS = 100;
 function settlePresence(weak: WeakRef<ChatMount>, answer: boolean): boolean {
 	const m = weak.deref();
-	if (!m) return false;
+	if (!m || m.disposed) return false;
 	if (typeof m.present !== "boolean") m.present = answer;
 	return m.present;
 }
@@ -42,14 +43,18 @@ function discover(scope: ChatScope, weak: WeakRef<ChatMount>): Promise<boolean> 
 	}
 }
 export function chatMount(view: object, scope: ChatScope | undefined): ChatMount | undefined {
-	if (!scope) return undefined;
 	let mount = mounts.get(view);
+	if (!scope) {
+		if (mount) discardChatMount(view);
+		return undefined;
+	}
 	if (
 		!mount ||
 		mount.scope.store !== scope.store ||
 		mount.scope.owner.epoch !== scope.owner.epoch ||
 		mount.scope.owner.id !== scope.owner.id
 	) {
+		if (mount) discardChatMount(view);
 		const created: ChatMount = { scope, present: false, records: new Map() };
 		created.present = discover(scope, new WeakRef(created));
 		mount = created;
@@ -73,6 +78,7 @@ export function chatRecordsChanged(view: object, receipt: { anchor: string; id: 
 export function discardChatMount(view: object): void {
 	const mount = mounts.get(view);
 	mounts.delete(view);
+	if (mount) mount.disposed = true;
 	mount?.records.clear();
 	mount?.expected?.clear();
 	mount?.orders?.clear();
@@ -84,7 +90,7 @@ export async function readMountedAnchors(
 	orderTargets?: readonly string[] | (() => readonly string[]),
 ): Promise<ChatPageDecorations | undefined> {
 	try {
-		if (!(await mount.present)) return undefined;
+		if (!(await mount.present) || mount.disposed) return undefined;
 		const ids = typeof anchors === "function" ? anchors() : anchors;
 		// A later write can still be pending (or refused). Paint the records the store already acknowledged,
 		// without making that partial read the durable cache entry for this anchor.
@@ -93,6 +99,7 @@ export async function readMountedAnchors(
 		for (let i = 0; i < missing.length; i += BATCH) {
 			const batch = missing.slice(i, i + BATCH);
 			const rows = await mount.scope.store.read(mount.scope.owner, batch);
+			if (mount.disposed) return undefined;
 			const found = new Map<string, AnchoredChatRecord[]>();
 			for (const row of rows) {
 				const kept = found.get(row.anchor);
@@ -127,20 +134,16 @@ export async function readMountedAnchors(
 			}
 		const prompts = typeof orderTargets === "function" ? orderTargets() : orderTargets;
 		if (prompts?.length) {
-			const store = mount.scope.store as SessionChatRecords & {
-				readOrders?: (
-					owner: ChatRecordOwner,
-					prompts: readonly string[],
-				) => Promise<readonly { anchor: string; promptId: string }[]>;
-			};
-			if (store.readOrders) {
-				mount.orders ??= new Map();
-				const orders = mount.orders;
-				const missing = prompts.filter((id) => !orders.has(id));
-				try {
+			const store = mount.scope.store;
+			try {
+				if (store.readOrders) {
+					mount.orders ??= new Map();
+					const orders = mount.orders;
+					const missing = prompts.filter((id) => !orders.has(id));
 					for (let i = 0; i < missing.length; i += BATCH) {
 						const batch = missing.slice(i, i + BATCH);
 						const edges = await store.readOrders(mount.scope.owner, batch);
+						if (mount.disposed) return undefined;
 						const pending = new Set(mount.expected?.values());
 						for (const id of batch) if (!pending.has(id)) orders.set(id, null);
 						for (const { anchor, promptId } of edges) orders.set(promptId, anchor);
@@ -149,9 +152,9 @@ export async function readMountedAnchors(
 						const anchor = orders.get(promptId);
 						if (anchor) before.set(anchor, promptId);
 					}
-				} catch {
-					/* An optional edge lookup cannot hide a diagnostic that was read successfully. */
 				}
+			} catch {
+				/* An optional edge lookup cannot hide a diagnostic that was read successfully. */
 			}
 		}
 		return after.size || before.size ? { after, before } : undefined;
