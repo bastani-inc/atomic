@@ -556,7 +556,8 @@ interface SourceState {
  * The row that marks `source` for a rebuild while its index rows are removed so that its triggers can be installed
  * again (#5553). The source's own progress row is gone meanwhile, so that no build reads the index as complete and an
  * older build's backfill in progress stops at its next batch: that row is the only one older builds read. An older
- * build that opens the store meanwhile installs the index again itself, as over any table without one.
+ * build that opens the store meanwhile installs the index again itself, as over any table without one, and leaves
+ * this row: this build never trusts that index, which 0.9.87 may have indexed without degraded pins, and rebuilds it.
  */
 const rebuildRow = (source: IndexSource) => `${source.name}@rebuild`;
 
@@ -1222,14 +1223,18 @@ async function readSourceStates(
 		.filter((source) => present.has(source.table))
 		.map((source) => {
 			const row = progress.get(source.name);
-			// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
-			const foreign = source.version !== undefined && !progress.has(source.version);
+			const rebuild = progress.has(rebuildRow(source));
+			// A source whose triggers an older build installed is indexed again by collection, as after an upgrade: one
+			// without this build's version row, or one an older build installed while this build's rebuild of it was under
+			// way, which 0.9.87 may have indexed since (#5553).
+			const foreign =
+				(source.version !== undefined && !progress.has(source.version)) || (row !== undefined && rebuild);
 			// Rows an older build indexed with its statements past this build's own progress are not backfilled (#5553).
 			const own = source.own === undefined ? undefined : progress.get(source.own);
 			const ownBehind =
 				own !== undefined && row !== undefined && Number(own.backfilled_through) < Number(row.watermark);
-			// Marked for a rebuild: an older build that installed the index again since wrote the source's row (#5553).
-			const marked = row === undefined && progress.has(rebuildRow(source));
+			// Marked for a rebuild, which this build carries out in collection (#5553).
+			const marked = row === undefined && rebuild;
 			return {
 				source,
 				installed:

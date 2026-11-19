@@ -124,6 +124,17 @@ async function indexedPin(database: SqliteDatabase): Promise<string | null | und
 	return row === undefined ? undefined : row.degraded_from;
 }
 
+/** Whether the session index awaits this build's rebuild: its progress row is gone and this build's mark is there. */
+async function awaitsRebuild(database: SqliteDatabase): Promise<boolean> {
+	const progress = await database.get(
+		"SELECT 1 AS found FROM snapshot_index_sources WHERE source = 'session-entries'",
+	);
+	const marked = await database.get(
+		"SELECT 1 AS found FROM snapshot_index_sources WHERE source = 'session-entries@rebuild'",
+	);
+	return progress === undefined && marked !== undefined;
+}
+
 async function linked(database: SqliteDatabase, session: string, entry: string): Promise<boolean> {
 	return (
 		(await database.get(
@@ -277,5 +288,66 @@ describe("a released build sharing the store while this build rebuilds the sessi
 			assert.deepEqual(await store.getBlob(bundle.hash), bundle.data);
 			assert.equal(await indexedPin(mine), "S-lacked", "the pin is indexed");
 		});
+
+		for (const at of [2, 3]) {
+			test(`on ${driver}, 0.9.89 installing its index over the one this build is removing, after this build's transaction ${at}, and 0.9.87 indexing it its way, leave the bundle a pin keeps (#5553)`, async () => {
+				const mine = await connect(open);
+				const released = await connect(open);
+				const older = await connect(open);
+				const sessions = await SqlSessionStore.open(mine);
+				const bundle = textBlob("the bundle a partly restored worktree still needs");
+				await sessions.snapshotBlobs.putBlobs([bundle]);
+				const start = messageEntry("start");
+				const lacked = snapshotEntry(
+					"/repo",
+					"S-lacked",
+					syntheticSnapshot("S-lacked", [], { bundle: bundle.hash }),
+					start.id,
+				);
+				const derived = { ...snapshotEntry("/repo", "S-derived", undefined, lacked.id), degradedFrom: "S-lacked" };
+				await createSession(sessions, "pinned", [start, lacked, derived as SessionEntry]);
+				// Snapshot entries that name many blobs: an index of a few thousand rows, which this build removes in several
+				// transactions.
+				const wide: SessionEntry[] = [];
+				for (let index = 0; index < 150; index++) {
+					const patches = Array.from({ length: 20 }, (_, patch) => textBlob(`wide ${index} ${patch}`).hash);
+					wide.push(
+						snapshotEntry("/repo", `W${index}`, syntheticSnapshot(`W${index}`, patches), wide.at(-1)?.id ?? null),
+					);
+				}
+				await createSession(sessions, "wide", wide);
+				// The store as 0.9.87 left it: its triggers and its complete index, as after an upgrade from 0.9.87.
+				await dropSessionIndex(mine);
+				await (await release0987.SqlSnapshotBlobStore.open(older)).completeIndex();
+				let commits = 0;
+				const watched: SqliteDatabase = {
+					exec: (sql) => mine.exec(sql),
+					run: (sql, ...params) => mine.run(sql, ...params),
+					get: (sql, ...params) => mine.get(sql, ...params),
+					all: (sql, ...params) => mine.all(sql, ...params),
+					descriptor: mine.descriptor,
+					close: () => mine.close(),
+					transaction: async (callback, options) => {
+						const result = await mine.transaction(callback, options);
+						if (++commits === at) {
+							assert.ok(await awaitsRebuild(mine), "this build is removing the old index");
+							// A 0.9.89 process starts and installs its own index; then 0.9.87 collects and indexes it its way.
+							await release0989.SqlSnapshotBlobStore.open(released);
+							await (await release0987.SqlSnapshotBlobStore.open(older)).completeIndex();
+						}
+						return result;
+					},
+				};
+				const store = await SqlSnapshotBlobStore.open(watched);
+
+				await store.completeIndex();
+				const deleted = await store.collectGarbage({ graceSeconds: 0 });
+
+				assert.ok(commits > at, "the released builds ran during this build's collection");
+				assert.equal(deleted.includes(bundle.hash), false, "the bundle the pin keeps was collected");
+				assert.deepEqual(await store.getBlob(bundle.hash), bundle.data);
+				assert.equal(await indexedPin(mine), "S-lacked", "the pin is indexed");
+			});
+		}
 	}
 });
