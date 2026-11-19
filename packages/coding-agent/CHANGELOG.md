@@ -13,6 +13,14 @@
 - On Linux and macOS, worktree pool leases and session-open markers are aged by the shared filesystem's time when the clock reading finishes, as on Windows, so the cleanup of the reading's probe file no longer makes them look younger than they are. A change to this machine's wall clock during the reading is not counted as elapsed time ([#5674](https://github.com/bastani-inc/atomic/issues/5674)).
 - A worktree pool admission whose temporary record name is already taken leaves that file untouched and writes under a fresh name. On Linux and macOS it used to overwrite the other file and remove its name; on Windows the admission failed ([#5824](https://github.com/bastani-inc/atomic/issues/5824)).
 
+### Breaking Changes
+
+- Task cancellation receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+
+### Changed
+
+- Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.

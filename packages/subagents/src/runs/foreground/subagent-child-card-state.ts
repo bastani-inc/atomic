@@ -1,5 +1,6 @@
 import { type CustomEntry, type ExtensionContext, type SessionEntry, sliceHead } from "@bastani/atomic";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
+import { visibleWorktreeRecord } from "./run-worktrees.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
 import { reopenChildSession, type SessionStoreSource } from "./subagent-child-session.js";
 
@@ -489,8 +490,11 @@ export function subagentChildCardRecord(
 	taskId: string,
 ): SubagentChildIndexEntry | undefined {
 	const id = childId ?? childIdsByTaskId.get(taskId);
-	if (id !== undefined) return entries.get(id);
-	for (const entry of entries.values()) if (entry.taskId === taskId) return entry;
+	if (id !== undefined) {
+		const entry = entries.get(id);
+		return entry && visibleWorktreeRecord(entry);
+	}
+	for (const entry of entries.values()) if (entry.taskId === taskId) return visibleWorktreeRecord(entry);
 	return undefined;
 }
 

@@ -75,6 +75,7 @@ export class AgentTaskHost {
 				this.authorizeTaskLaunch();
 				this.binding.authorizeCommandLaunch?.(intent, origin);
 			},
+			onTaskFinishing: (ref, receipt, until) => this.binding.onTaskFinishing?.(ref, receipt, until),
 			onTaskSettled: (ref, receipt, timing) => this.binding.onTaskSettled?.(ref, receipt, timing),
 			onTaskCleanupQuarantined: (ref, resources) => this.binding.onTaskCleanupQuarantined?.(ref, resources),
 			defaultHeartbeatMs: () =>
@@ -108,9 +109,15 @@ export class AgentTaskHost {
 		operation: C.OperationId,
 		runner: AgentTaskRunnerFactory,
 		schedule?: (dispatch: () => Promise<void>) => void,
+		cleanupQueued?: (
+			taskId: C.TaskId,
+			cause: C.CancelCause,
+			intent: Promise<void> | undefined,
+			handoff: () => void,
+		) => Promise<void>,
 	): Promise<C.Result<{ taskId: C.TaskId; lease: TaskLease }, C.StartFailure>> {
 		const started = await runners.run({ factory: runner }, () =>
-			this.supervisor.startAgentTask(this.owner, intent, operation, schedule),
+			this.supervisor.startAgentTask(this.owner, intent, operation, schedule, cleanupQueued),
 		);
 		if (started.ok)
 			trackAdmittedAgentTask({ host: this, taskId: this.supervisor.taskReference(started.value).taskId });
