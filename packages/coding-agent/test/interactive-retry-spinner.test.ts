@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { Container, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { Container, getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -8,6 +8,7 @@ import type { AtomicWorkingLoader } from "../src/modes/interactive/components/at
 import type { CountdownTimer } from "../src/modes/interactive/components/countdown-timer.ts";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { setSummaryCancellable } from "../src/modes/interactive/interactive-summarization-retry-events.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const previousKeybindings = getKeybindings();
@@ -45,7 +46,8 @@ async function emit(mode: ReturnType<typeof makeMode>, event: AgentSessionEvent)
 }
 
 function rendered(mode: ReturnType<typeof makeMode>): string {
-	return stripVTControlCharacters(mode.statusContainer.render(100).join("\n"));
+	// The clickable key hint's markers are terminal sequences too.
+	return stripVTControlCharacters(stripTerminalSequences(mode.statusContainer.render(100).join("\n")));
 }
 
 for (const success of [true, false]) {
@@ -59,7 +61,7 @@ for (const success of [true, false]) {
 			delayMs: 3000,
 			errorMessage: "Rate limit exceeded",
 		});
-		assert.match(rendered(mode), /∀ Retrying \(1\/3\) in 3s/);
+		assert.match(rendered(mode), /∀ Retrying · rate limited · attempt 1\/3 in 3s {3}esc cancel/);
 		for (let frame = 0; frame < 10; frame++) {
 			vi.advanceTimersByTime(88);
 			assert.match(rendered(mode), /∀/);
@@ -102,9 +104,13 @@ test("a main chat bound during a backoff shows the remaining countdown, not a ne
 	vi.advanceTimersByTime(600);
 	mode.unsubscribe();
 	InteractiveMode.prototype.subscribeToAgent.call(mode as never);
-	assert.match(rendered(mode), /Retrying \(1\/3\) in 3s/);
+	assert.match(rendered(mode), /Retrying · busy · attempt 1\/3 in 3s/);
 	vi.advanceTimersByTime(400);
-	assert.match(rendered(mode), /Retrying \(1\/3\) in 2s/, "reattaching between ticks retains the same deadline");
+	assert.match(
+		rendered(mode),
+		/Retrying · busy · attempt 1\/3 in 2s/,
+		"reattaching between ticks retains the same deadline",
+	);
 	mode.unsubscribe();
 	await emit(mode, { type: "auto_retry_end", success: true, attempt: 1 });
 	assert.equal(mode.defaultEditor.onEscape, onEscape);
@@ -120,7 +126,8 @@ test("summary retries use Atomic's indicator and stop it when the next attempt b
 		delayMs: 3000,
 		errorMessage: "Rate limit exceeded",
 	});
-	assert.match(rendered(mode), /∀ Retrying summary/);
+	// Esc does not cancel a summary this chat did not start from the tree, so the line names no key.
+	assert.match(rendered(mode), /∀ Retrying summary · rate limited · attempt 1\/3 in 3s *$/m);
 	vi.advanceTimersByTime(1000);
 	assert.match(rendered(mode), /in 2s/);
 	await emit(mode, { type: "summarization_retry_attempt_start", source: "branchSummary" });
@@ -150,4 +157,61 @@ test("retry honors reduced motion and NO_COLOR while retaining the countdown", a
 	assert.match(rendered(mode), /in 2s/);
 	await emit(mode, { type: "auto_retry_end", success: true, attempt: 1 });
 	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("a retry names why it waits and returns to Working… when its countdown ends", async () => {
+	const mode = makeMode();
+	await emit(mode, {
+		type: "auto_retry_start",
+		attempt: 2,
+		maxAttempts: 3,
+		delayMs: 4000,
+		errorMessage: "Provider stream timed out after 300000ms without a new event (stream deadline exceeded)",
+	});
+	assert.match(rendered(mode), /∀ Retrying · response timed out · attempt 2\/3 in 4s {3}esc cancel/);
+	vi.advanceTimersByTime(3000);
+	assert.match(rendered(mode), /attempt 2\/3 in 1s/);
+	vi.advanceTimersByTime(1000);
+	assert.match(rendered(mode), /∀ Working… *$/m, "the next attempt is under way");
+	assert.doesNotMatch(rendered(mode), /Retrying|cancel/);
+	await emit(mode, { type: "auto_retry_end", success: true, attempt: 2 });
+	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("a summary retry names Esc where Esc cancels the summary", async () => {
+	const mode = makeMode();
+	setSummaryCancellable(mode as never, true);
+	await emit(mode, {
+		type: "summarization_retry_scheduled",
+		attempt: 1,
+		maxAttempts: 3,
+		delayMs: 2000,
+		errorMessage: "503 Service Unavailable",
+	});
+	assert.match(rendered(mode), /∀ Retrying summary · server error 503 · attempt 1\/3 in 2s {3}esc cancel/);
+	setSummaryCancellable(mode as never, false);
+	await emit(mode, { type: "summarization_retry_finished" });
+	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("the retry line names the key Esc's action is bound to, and Esc when that action has no key", async () => {
+	for (const [bindings, hint] of [
+		[{ "app.interrupt": "ctrl+g" }, "ctrl+g cancel"],
+		[{ "app.interrupt": [] }, "esc cancel"],
+	] as const) {
+		setKeybindings(new KeybindingsManager(bindings as never));
+		const mode = makeMode();
+		await emit(mode, {
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 2000,
+			errorMessage: "529 overloaded_error: Overloaded",
+		});
+		assert.match(
+			rendered(mode),
+			new RegExp(`∀ Retrying · overloaded · attempt 1/3 in 2s {3}${hint.replace("+", "\\+")} *$`, "m"),
+		);
+		await emit(mode, { type: "auto_retry_end", success: true, attempt: 1 });
+	}
 });

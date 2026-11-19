@@ -465,7 +465,7 @@ describe("the working line counts a turn from its start through its retries (#55
 	test("subagent chat opened while the subagent waits to retry: the next attempt counts from the turn's start (#5535)", async () => {
 		const chat = await subagentChatOpenedInRetryWait();
 		try {
-			assert.ok(chat.rows().some((row) => row.includes("retrying…")));
+			assert.ok(chat.rows().some((row) => row.includes("Retrying…")));
 			const rows = await nextAttempt(chat.emit, chat.rows);
 			assert.ok(
 				rows.some((row) => / \(7s · /.test(row)),
@@ -479,7 +479,7 @@ describe("the working line counts a turn from its start through its retries (#55
 	test("a subagent chat opened during the model switch retains the first request's time through the next attempt (#5535)", async () => {
 		const chat = await subagentChatOpenedInRetryWait(true);
 		try {
-			assert.match(chat.rows().join("\n"), /switching model/);
+			assert.match(chat.rows().join("\n"), /Switching model/);
 			const rows = await nextAttempt(chat.emit, chat.rows);
 			assert.match(rows.join("\n"), /\(7s · /);
 		} finally {
