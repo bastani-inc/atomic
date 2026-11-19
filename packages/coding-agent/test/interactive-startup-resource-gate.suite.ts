@@ -17,6 +17,7 @@ initTheme("dark");
 function createGateMode(): InteractiveMode {
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode;
 	Object.assign(mode, {
+		runtimeHost: { session: {} },
 		workingRunMeter: new WorkingRunMeter(),
 		chatContainer: new StartupChatContainer(),
 		resourceDisclosureContainer: new Container(),

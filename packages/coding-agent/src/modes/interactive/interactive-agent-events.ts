@@ -1,4 +1,5 @@
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
+import { isAgentSessionClosed } from "../../core/agent-session-events.ts";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
@@ -208,7 +209,9 @@ InteractiveModeBase.prototype.handleEvent = async function (
 ): Promise<void> {
 	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) return;
 	if (!this.isInitialized) {
+		const session = this.session;
 		await this.init();
+		if (this.isShuttingDown || isAgentSessionClosed(session)) return;
 	}
 
 	this.footer.invalidate();
