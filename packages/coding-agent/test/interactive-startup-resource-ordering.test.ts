@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Container, Text } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../src/core/extensions/index.js";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import {
@@ -403,15 +404,7 @@ test("isolated chat settings include only the builtin Mermaid transformer", () =
 			sessionManager: {
 				getCwd: () => "/project",
 			},
-			settingsManager: {
-				getShowImages: () => true,
-				getImageWidthCells: () => 60,
-				getMermaidRenderingMode: () => "streaming",
-				getLatexRenderingEnabled: () => true,
-				getFullscreenScrollbar: () => "auto",
-				getFullscreenWheelScrollLines: () => "auto",
-				getCodeBlockIndent: () => "  ",
-			},
+			settingsManager: SettingsManager.inMemory({ markdown: { mermaid: "streaming" } }),
 		},
 	});
 	Object.assign(mode, {

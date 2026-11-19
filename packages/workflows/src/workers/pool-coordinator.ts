@@ -316,6 +316,7 @@ function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
  */
 function remoteStageSnapshot(stage: StageSnapshot): PooledStageChatSnapshot {
 	return {
+		canPause: false,
 		sessionId: stage.sessionId,
 		status: stage.status,
 		publishedActivity: stage.chatActivity ?? "idle",

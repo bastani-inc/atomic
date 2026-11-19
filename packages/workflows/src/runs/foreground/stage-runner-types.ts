@@ -319,7 +319,7 @@ export interface InternalStageContext extends StageContext {
 	/** Internal: live coding-agent session when the adapter returned one. */
 	__agentSession(): AgentSession | undefined;
 	/**
-	 * Internal: the resident session's messages, or the adapter's; none while the session is released. Never throws,
+	 * Internal: the resident session's transcript (not its edited model context), or the adapter's messages; none while released. Never throws,
 	 * unlike `messages`, so the stage's chat and inspection surfaces can read it at any time (#4309).
 	 */
 	__residentMessages(): AgentSession["messages"];
@@ -329,6 +329,8 @@ export interface InternalStageContext extends StageContext {
 	__persistedSessionStore(): SessionStore | undefined;
 	/** Internal: synchronous; true when no message, turn, retry, pause, or queue work needs the live session. */
 	__idleForRelease(): boolean;
+	/** A retry owned by the stage rather than the SDK session, including a failed session creation. */
+	__waitsToRetry?(): boolean;
 	/** Internal: true while a message, the stage's own prompt included, holds or waits for the turn loop. */
 	__turnLoopBusy?(): boolean;
 	/** Internal: true when the stage's generation closed while the stage still ran (not by its own finish). */

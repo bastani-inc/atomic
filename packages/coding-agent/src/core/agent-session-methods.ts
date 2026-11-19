@@ -132,10 +132,14 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly systemPrompt: string;
 	readonly retryAttempt: number;
 	readonly retryStatus?: import("./session-retry-status.js").SessionRetryStatus;
+	/** Time of the current turn's first request, including waits and later attempts; absent between turns. */
+	readonly turnStartedAt?: number;
 	readonly isCompacting: boolean;
 	readonly compactionReason?: import("./agent-session-types.js").CompactionReason;
 	readonly compactionStartedAt?: number;
 	readonly messages: AgentMessage[];
+	/** The settled chat rows, including admitted messages whose save is still in flight. */
+	readonly transcriptMessages: AgentMessage[];
 	readonly steeringMode: "all" | "one-at-a-time";
 	readonly followUpMode: "all" | "one-at-a-time";
 	readonly sessionFile: string | undefined;
@@ -194,7 +198,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_emitQueueUpdate(): void;
 	_createRetryPromiseForAgentEnd(event: AgentEvent): void;
 	_findLastAssistantInMessages(messages: AgentMessage[]): AssistantMessage | undefined;
-	_processAgentEvent(event: AgentEvent): Promise<void>;
+	_processAgentEvent(event: AgentEvent, retryGeneration?: number): Promise<void>;
 	_applyInterruptAbortMessage(event: AgentEvent): void;
 	_applyProviderErrorGuidance(event: AgentEvent): void;
 	_resolveRetry(): void;
@@ -246,6 +250,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		reportDispatch?: (disposition: PromptDisposition) => void,
 		prepared?: boolean,
 		customStarter?: CustomMessage,
+		fallbackGeneration?: number,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
 	_runAgentContinuation(beforeContinue: () => Promise<void>, mode?: "continue" | "recovery" | "settle"): Promise<void>;
@@ -475,10 +480,12 @@ export interface AgentSessionPublicSurface
 		| "systemPrompt"
 		| "retryAttempt"
 		| "retryStatus"
+		| "turnStartedAt"
 		| "isCompacting"
 		| "compactionReason"
 		| "compactionStartedAt"
 		| "messages"
+		| "transcriptMessages"
 		| "steeringMode"
 		| "followUpMode"
 		| "sessionFile"
@@ -645,18 +652,22 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_retryAbortController: AbortController | undefined;
 	_retryAttempt: number;
 	_retryStatus?: import("./session-retry-status.js").SessionRetryStatus;
+	_turnStartedAt?: number;
 	_longStreamCutRetries: number;
 	_retryPromise: Promise<void> | undefined;
 	_retryResolve: (() => void) | undefined;
-	_retryCancelled: boolean;
+	_retryGeneration: number;
+	_agentRunRetryGeneration: number;
 	_bashAbortControllers: Map<string | symbol, Set<AbortController>>;
 	_pendingBashMessages: BashExecutionMessage[];
+	_runOnlyBashMessages?: WeakSet<object>;
 	_extensionRunner: ExtensionRunner;
 	_workflows?: SessionWorkflowsHandle;
 	_turnIndex: number;
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;
 	readonly _messagesAwaitingPersistence: WeakMap<object, Promise<void>>;
+	_transcriptAppend: { message: AgentMessage; previousLeaf: string | null } | undefined;
 	readonly _messagesWithFailedPersistence: WeakSet<object>;
 	_persistenceFailure: string | undefined;
 	_turnStopReason: string | undefined;
@@ -721,6 +732,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_baseSystemPromptOptions: NormalizedBuildSystemPromptOptions;
 	_systemPromptTransform?: (prompt: string) => string;
 	_contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
+	_requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;

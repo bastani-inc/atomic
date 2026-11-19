@@ -139,6 +139,14 @@ export interface SqliteDatabase extends SqliteExecutor {
 	readonly dialect?: StorageDialect;
 	/** Wake-ups through the database; present only on a database that delivers them (Postgres). */
 	readonly notifications?: StorageNotifications;
+	/**
+	 * The bytes this process may still write on the file system that holds the database's file (where a link to the file
+	 * points, and where its write-ahead log goes), as a SQLite or libSQL file database reports them. Absent, or resolving
+	 * undefined, when this process cannot see the database's disk (a server, memory) or the file system does not say.
+	 */
+	freeBytes?(): Promise<number | undefined>;
+	/** Opens a separate handle on this same database for reads. It has its own call queue; the caller must close it. */
+	openReader?(): Promise<SqliteDatabase>;
 	transaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,

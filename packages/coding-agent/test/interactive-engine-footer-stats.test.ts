@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, AssistantMessage, Model, ToolResultMessage, Usage } from "@bastani/atomic-ai/compat";
+import {
+	type Api,
+	type AssistantMessage,
+	fauxAssistantMessage,
+	type Model,
+	type ToolResultMessage,
+	type Usage,
+} from "@bastani/atomic-ai/compat";
 import { Container, setKeybindings } from "@bastani/atomic-tui";
 import { beforeAll, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
@@ -17,6 +24,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.js";
+import { createInteractiveSubmissionHost } from "./helpers/interactive-submission-host.js";
 import { stripAnsi } from "./helpers/visible-text.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
@@ -770,16 +778,18 @@ test("the isolated chat adopts the retry snapshot unless a newer event already e
 			retryAt: Date.now() + 2000,
 			errorMessage: "busy",
 		} as const;
-		probe.client.getState = async () => ({ ...createState(), retryStatus });
+		probe.client.getState = async () => ({ ...createState(), retryStatus, turnStartedAt: 1000 });
 		await runtime.initializeFromEngine();
 		assert.deepEqual(runtime.session.retryStatus, retryStatus);
+		assert.equal(runtime.session.turnStartedAt, 1000);
 		const read = Promise.withResolvers<RpcSessionState>();
 		probe.client.getState = () => read.promise;
 		const refreshing = runtime.initializeFromEngine();
-		probe.emit({ type: "agent_start" });
-		read.resolve({ ...createState(), retryStatus });
+		probe.emit({ type: "agent_start", turnStartedAt: 2000 });
+		read.resolve({ ...createState(), retryStatus, turnStartedAt: 1000 });
 		await refreshing;
 		assert.equal(runtime.session.retryStatus, undefined, "a stale snapshot cannot restart a finished wait");
+		assert.equal(runtime.session.turnStartedAt, 2000, "the next turn's origin wins over the stale snapshot");
 	} finally {
 		await harness.cleanup();
 	}
@@ -811,6 +821,52 @@ test("the isolated engine's main footer hides the model line during a retry's ba
 		footer.dispose();
 	} finally {
 		await harness.cleanup();
+	}
+});
+
+test("Esc in the main chat cancels a fallback before the engine starts the next request (#5564)", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createStatsEngineClient();
+		const commands = vi.spyOn(probe.client, "requestInternal");
+		const runtime = createRuntime(harness, probe);
+		const host = createInteractiveSubmissionHost(runtime.session);
+		probe.emit({ type: "model_fallback_start", from: "primary", to: "next", reason: "overloaded", attempt: 1 });
+		host.defaultEditor.onEscape?.();
+		assert.ok(commands.mock.calls.some(([command]) => command.type === "abort_retry"));
+		probe.emit({ type: "model_fallback_end", success: false });
+		assert.equal(runtime.session.isRetrying, false);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("Esc in the main chat reaches a failed request before the engine announces its backoff (#5564)", async () => {
+	const live = await createHarness({
+		settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
+		provider: "engine-script",
+	});
+	const mirror = await createHarness({ provider: "host-script" });
+	try {
+		const probe = createStatsEngineClient();
+		Object.assign(probe.client, { abortRetry: async () => live.session.abortRetry() });
+		const runtime = createRuntime(mirror, probe);
+		const host = createInteractiveSubmissionHost(runtime.session);
+		live.session.subscribe((event) => {
+			if (event.type === "agent_end") {
+				probe.emit(event);
+				host.defaultEditor.onEscape?.();
+			}
+		});
+		live.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fauxAssistantMessage("unexpected retry"),
+		]);
+		await live.session.prompt("stop at the failed attempt");
+		assert.equal(live.faux.state.callCount, 1);
+	} finally {
+		await mirror.cleanup();
+		await live.cleanup();
 	}
 });
 

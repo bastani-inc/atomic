@@ -17,6 +17,7 @@ export function workflowResumeSession(row: HostSessionPickerRow): SessionInfo {
 		firstMessage: row.firstMessage,
 		allMessagesText: row.allMessagesText ?? row.firstMessage,
 		resumeKind: "workflow",
+		...(row.resumeSelection === undefined ? {} : { resumeSelection: row.resumeSelection }),
 		...(row.name === undefined ? {} : { name: row.name }),
 		...(row.summary === undefined ? {} : { summary: row.summary }),
 		...(row.title === undefined ? {} : { title: row.title }),

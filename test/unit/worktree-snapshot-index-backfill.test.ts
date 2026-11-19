@@ -186,8 +186,11 @@ describe("a database written before the reference index existed is indexed befor
 			{ source: "journal-events", watermark: 0, backfilled_through: 0 },
 			{ source: "journal-runs", watermark: 0, backfilled_through: 0 },
 			{ source: "session-entries", watermark: 0, backfilled_through: 0 },
-			// The row that says the session entries' triggers are this build's (#5065).
-			{ source: "session-entries@degraded-pins", watermark: 0, backfilled_through: 0 },
+			// The row that says the session entries' triggers are this build's (#5065), published at once on SQLite as
+			// there is nothing to backfill (#5558).
+			{ source: "session-entries@degraded-pins", watermark: 1, backfilled_through: 1 },
+			// This build's own backfill progress, which an older build's backfill never advances (#5558).
+			{ source: "session-entries@own-progress", watermark: 0, backfilled_through: 0 },
 		]);
 	});
 
@@ -365,7 +368,13 @@ test("stores under a storage prefix index and collect their own tables only (#43
 		(await database.all<{ source: string }>("SELECT source FROM team_snapshot_index_sources ORDER BY source")).map(
 			(row) => row.source,
 		),
-		["journal-events", "journal-runs", "session-entries", "session-entries@degraded-pins"],
+		[
+			"journal-events",
+			"journal-runs",
+			"session-entries",
+			"session-entries@degraded-pins",
+			"session-entries@own-progress",
+		],
 	);
 });
 

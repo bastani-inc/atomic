@@ -936,13 +936,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			return entries;
 		});
 	}
-	/**
-	 * Replaces the run's state with a fold of its whole history. The history is read in turns (`turnBoundary`); the fold
-	 * runs in one, after the read, so no reader ever sees the run half rebuilt, and a catch-up stopped during the read
-	 * leaves the run as it was.
-	 */
-	private *rebuild(runId: string, stop?: AbortSignal): Operation<void> {
-		const entries = yield* this.entries(runId, undefined, stop);
+	/** Read the history in turns, then publish the direct or staged fold without exposing a half-rebuilt run. */
+	private *rebuild(runId: string, stop?: AbortSignal, checkHeader = false): Operation<void> {
+		// An explicit lookup may be a miss. Drop even an old cached projection without reading a missing history.
+		const missing = checkHeader && (yield* invoke(() => this.journal.getRun(runId))) === undefined;
+		const entries = missing ? [] : yield* this.entries(runId, undefined, stop);
 		if (entries.length > DIRECT_FOLD_EVENTS) return yield* this.rebuildStaged(runId, entries, stop);
 		void this.projection.deleteWorkflow(runId);
 		this.reconciledPendingStages.delete(runId);
@@ -1722,8 +1720,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	async readPendingStageMessageDeliveryCount(runId: string, messageId: string, logicalRunId = runId): Promise<number> {
 		return this.getPendingStageMessageDeliveryCount(runId, messageId, logicalRunId);
 	}
-	async hydrateWorkflow(runId: string): Promise<void> {
-		await this.serialize(runId, () => this.rebuild(runId), false);
+	async hydrateWorkflow(runId: string, options?: { readonly checkHeader?: boolean }): Promise<void> {
+		await this.serialize(runId, () => this.rebuild(runId, undefined, options?.checkHeader), false);
 	}
 	holdsIdleWorkflowLease(runId: string): boolean {
 		return this.leases.has(runId) && !this.takenUp.has(runId);
