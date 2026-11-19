@@ -80,6 +80,7 @@ interface HeldEntry {
 
 interface Reservation {
 	readonly key: string;
+	releaseOrder?: number;
 	ownerSessionId: string;
 	readonly childName: string;
 	group: string;
@@ -115,6 +116,7 @@ export interface RestoringRecipientSizes {
 }
 
 export interface ReserveOptions {
+	readonly releaseOrder?: number;
 	readonly dormant?: boolean;
 	readonly wake?: boolean;
 	/** The aliases given are all the child has, not additions to those reserved before. */
@@ -273,6 +275,12 @@ export class RestoringRecipients {
 		return this.reservations.get(key)?.ownerSessionId === ownerSessionId;
 	}
 
+	/** A diagnostic check only: never adopts an orphan, wakes the child, or extends held sends. */
+	isCurrentRelease(childName: string, owner: string, order: number): boolean {
+		const held = this.reservations.get(releasedReservationKey(childName));
+		return held !== undefined && held.ownerSessionId === owner && held.wake && held.gone === undefined && !this.orphans.has(held) && held.releaseOrder === order;
+	}
+
 	releasedOwner(childName: string): string | undefined {
 		return this.reservations.get(releasedReservationKey(childName))?.ownerSessionId;
 	}
@@ -287,6 +295,7 @@ export class RestoringRecipients {
 			if (host !== returnAddress) continue;
 			this.orphans.delete(reservation);
 			removeFromIndex(this.byOwner, reservation.ownerSessionId, reservation);
+			delete reservation.releaseOrder;
 			reservation.ownerSessionId = ownerSessionId;
 			addToIndex(this.byOwner, ownerSessionId, reservation);
 			// Nobody was asked to wake the child for the sends held meanwhile: the owner's next reservation asks.
@@ -354,6 +363,8 @@ export class RestoringRecipients {
 			addToIndex(this.byOwner, ownerSessionId, created);
 			for (const target of created.targets) addToIndex(this.byTarget, target, created);
 		}
+		if (options.releaseOrder !== undefined) reservation.releaseOrder = options.releaseOrder;
+		else delete reservation.releaseOrder;
 		reservation.group = group;
 		reservation.dormant = dormant;
 		reservation.wake = wake;

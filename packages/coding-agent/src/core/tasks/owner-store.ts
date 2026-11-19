@@ -105,6 +105,9 @@ export class OwnerTaskStore {
 	taskRecord(id: TaskId): TaskRecord | undefined {
 		return this.records.get(id);
 	}
+	isRunnerFinishing(id: TaskId): boolean {
+		return this.supervisor.isRunnerFinishing(this.owner, id);
+	}
 	get ownerBackgroundTasks(): TaskRecord[] {
 		return this.ownerTasks.filter((task) => this.inBackground(task));
 	}

@@ -169,6 +169,10 @@ export type SubscriptionLease = SubscriptionCapability;
 export type FakeRunnerContext = {
 	ref: C.NativeTaskRef;
 	signal: AbortSignal;
+	/** The runner chose its outcome. Late stops no longer change it while its directory is released. */
+	markFinishing?(outcome: C.TaskResult | { rejected: unknown }, released: Promise<void>): Promise<void> | undefined;
+	/** Session, output and recovery journal drained; the remaining sweep belongs to the batch. */
+	handoffDirectory?(): void;
 	reportActivity(report: C.ActivityReport): C.Result<C.ReportReceipt, C.ReportError>;
 	/** Bind existing child history while holding the admitted runner authority. */
 	bindTranscript(session: TaskTranscriptSource): void;
@@ -200,6 +204,12 @@ export type TrustedTaskHost = {
 	commandResources?: Pick<native.CommandResourceOptions, "terminationGraceMs">;
 	/** `timing` is the host's own record of the task: how long a command ran, from its launch to its settlement. */
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt, timing?: C.SettlementTiming): void;
+	/** Save a managed runner's recovery intent without delivering its notice in this process. */
+	onTaskFinishing?(
+		ref: C.NativeTaskRef,
+		receipt: C.SettlementReceipt,
+		released: Promise<void>,
+	): Promise<void> | undefined;
 	/** Once per task whose result settled before its process cleanup was confirmed; that cleanup continues. */
 	onTaskCleanupQuarantined?(ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]): void;
 	/** Heartbeat cadence for a launch that names none, fixed on its record at admission; omitted, none is recorded. */
@@ -239,6 +249,7 @@ type OwnerState = {
 	permits: Map<C.TaskId, HeldPermit>;
 	unconfirmedCleanups: Map<C.TaskId, C.ResourceFailure[]>;
 	admissionWatchers: Set<() => void>;
+	directoryHandoffs?: Set<() => void>;
 	releases: Set<Promise<void>>;
 	releaseFailures: Error[];
 	commandStarts: Map<C.OperationId, CommandStart>;
@@ -252,6 +263,8 @@ type TaskState = {
 	ref: C.NativeTaskRef;
 	operation: C.OperationId;
 	controller: AbortController;
+	finishing?: boolean;
+	directoryOnly?: boolean;
 	kind?: "command";
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
 	transcript?: TaskTranscriptSource;
@@ -747,7 +760,11 @@ function waitOutcome(value: native.WaitOutcome, launches: LaunchMetadata): C.Wai
 		: { kind: value.kind, taskId: value.taskId as C.TaskId, waitId: value.waitId as C.WaitId, reason: value.reason };
 }
 function cancelReceipt(value: native.CancelReceipt, launches: LaunchMetadata): C.CancelReceipt {
-	if (value.decision !== "already-settled" && value.decision !== "cancellation-requested")
+	if (
+		value.decision !== "already-settled" &&
+		value.decision !== "already-finishing" &&
+		value.decision !== "cancellation-requested"
+	)
 		throw new Error("Invalid cancellation decision");
 	return {
 		taskId: value.taskId as C.TaskId,
@@ -1535,6 +1552,12 @@ export class TaskSupervisor {
 		intent: C.AgentIntent,
 		operation: C.OperationId,
 		schedule?: (dispatch: () => Promise<void>) => void,
+		cleanupQueued?: (
+			taskId: C.TaskId,
+			cause: C.CancelCause,
+			intent: Promise<void> | undefined,
+			handoff: () => void,
+		) => Promise<void>,
 	): Promise<C.Result<TaskLease, C.StartFailure>> {
 		const state = this.#owner(owner);
 		state.host.binding.authorizeLaunch(intent);
@@ -1566,9 +1589,86 @@ export class TaskSupervisor {
 		};
 		this.#tasks.set(task, taskState);
 		state.tasks.set(id, task);
+		// A queued runner can already own a resource. Claim cleanup authority, not a dispatch slot:
+		// cancellation must release that resource without ever starting the runner.
+		const reserved =
+			cleanupQueued && mapped(this.#native.reserveTaskRunner(admitted.value), (lease) => lease, startErrors);
+		if (reserved && !reserved.ok) return reserved;
+		const signal = taskState.controller.signal;
+		const markFinishing = (runner: native.RunnerLease, result: C.TaskResult, until: Promise<void>) => {
+			const reserved = this.#native.markRunnerFinishing(runner, result);
+			if (!reserved.ok) return undefined;
+			taskState.finishing = true;
+			const span = state.launches.agentSpans.get(id);
+			const projected = taskResult(reserved.value.result, id, state.launches);
+			if (
+				projected.kind === "cancelled" &&
+				projected.cause === "pause" &&
+				result.kind === "cancelled" &&
+				result.released
+			)
+				projected.released = result.released;
+			return state.host.binding.onTaskFinishing?.(
+				taskState.ref,
+				{
+					completionId: reserved.value.completionId,
+					taskId: id,
+					cursor: cursor(reserved.value.cursor),
+					result: projected,
+					...(span ? { elapsedMs: C.spanElapsedMs(span) } : {}),
+				},
+				until,
+			);
+		};
+		const handoffDirectory = (runner: native.RunnerLease) => {
+			if (!this.#native.handoffRunnerDirectory(runner).ok) return;
+			taskState.directoryOnly = true;
+			for (const onHandoff of state.directoryHandoffs ?? []) onHandoff();
+		};
+		const acknowledge = (runner: native.RunnerLease, evidence: C.Cleanup) => {
+			const acknowledged = mapped(
+				this.#native.acknowledgeTaskCleanup(runner, evidence),
+				(receipt) => receipt,
+				reportErrors,
+			);
+			// Close normally drains its native watcher. A cancellation whose directory tail survived
+			// that close settles at this acknowledgement instead, after the watcher was disposed.
+			if (
+				acknowledged.ok &&
+				taskState.directoryOnly &&
+				state.closing.signal.aborted &&
+				!state.settledTasks.has(id)
+			) {
+				const settled = this.#native.taskSettlement(taskState.native);
+				if (settled.ok) this.#notifyTaskSettled(state, taskState.ref, settled.value, taskState.operation);
+			}
+			return acknowledged;
+		};
+		const stopQueued = () => {
+			if (!reserved || !cleanupQueued) return;
+			const released = Promise.withResolvers<void>();
+			const cause = signal.reason as C.CancelCause;
+			const intent = markFinishing(reserved.value, { kind: "cancelled", cause }, released.promise);
+			taskState.execution = cleanupQueued(id, cause, intent, () => handoffDirectory(reserved.value))
+				.finally(released.resolve)
+				.then(
+					(): C.Cleanup => ({ kind: "reaped" }),
+					(error): C.Cleanup => ({
+						kind: "failed",
+						resources: [{ resource: "queued-runner", code: "CleanupFailed", message: rejectionMessage(error) }],
+					}),
+				)
+				.then((evidence) => acknowledge(reserved.value, evidence));
+		};
+		if (reserved) signal.addEventListener("abort", stopQueued, { once: true });
 		const dispatch = AsyncResource.bind(async () => {
-			if (taskState.controller.signal.aborted) return;
-			const runner = mapped(this.#native.claimTaskRunner(admitted.value), (lease) => lease, startErrors);
+			if (signal.aborted) return;
+			if (reserved) {
+				signal.removeEventListener("abort", stopQueued);
+				const started = this.#native.dispatchReservedRunner(reserved.value);
+				if (!started.ok) throw new Error(`${started.error.code}: ${started.error.message}`);
+			}
+			const runner = reserved ?? mapped(this.#native.claimTaskRunner(admitted.value), (lease) => lease, startErrors);
 			if (!runner.ok) throw new Error(`${runner.error.code}: ${runner.error.message}`);
 			let execution: FakeExecution;
 			try {
@@ -1576,6 +1676,15 @@ export class TaskSupervisor {
 					{
 						ref: reference(taskState.ref),
 						signal: taskState.controller.signal,
+						handoffDirectory: () => handoffDirectory(runner.value),
+						markFinishing: (result, until) =>
+							markFinishing(
+								runner.value,
+								"rejected" in result
+									? { kind: "failed", code: "RunnerFailed", message: rejectionMessage(result.rejected) }
+									: result,
+								until,
+							),
 						bindTranscript: (session) => {
 							taskState.inherited ??= { throughId: session.getEntries().at(-1)?.id ?? null };
 							taskState.transcript = session;
@@ -1637,11 +1746,7 @@ export class TaskSupervisor {
 				});
 				// The task ended: nothing of its session's presentation outlives it.
 				clearTaskStatuses(taskState);
-				const acknowledged = mapped(
-					this.#native.acknowledgeTaskCleanup(runner.value, evidence),
-					(cleanup) => cleanup,
-					reportErrors,
-				);
+				const acknowledged = acknowledge(runner.value, evidence);
 				if (reported && !reported.ok && !(signal.aborted && reported.error.code === "ReportConflict"))
 					return reported;
 				return acknowledged;
@@ -1653,6 +1758,23 @@ export class TaskSupervisor {
 		// Setup is complete. Do not await execution; ready terminal microtasks may win observation.
 		await Promise.resolve();
 		return { ok: true, value: task };
+	}
+	/** A terminal observer is still waiting for cleanup, but this runner can no longer be stopped. */
+	onDirectoryHandoff(owner: OwnerLease, notify: () => void): () => void {
+		const state = this.#owner(owner);
+		state.directoryHandoffs ??= new Set();
+		state.directoryHandoffs.add(notify);
+		return () => {
+			state.directoryHandoffs?.delete(notify);
+		};
+	}
+	isBatchOwnedDirectory(owner: OwnerLease, taskId: C.TaskId): boolean {
+		const task = this.#owner(owner).tasks.get(taskId);
+		return task !== undefined && this.#task(task).directoryOnly === true;
+	}
+	isRunnerFinishing(owner: OwnerLease, taskId: C.TaskId): boolean {
+		const task = this.#owner(owner).tasks.get(taskId);
+		return task !== undefined && this.#task(task).finishing === true;
 	}
 	taskReference(task: TaskLease): C.NativeTaskRef {
 		return reference(this.#task(task).ref);
@@ -1814,6 +1936,8 @@ export class TaskSupervisor {
 		if (result.ok)
 			try {
 				for (const task of state.tasks.values()) {
+					// The task's normal report path still publishes after the batch releases its Git processes.
+					if (this.#task(task).directoryOnly) continue;
 					const completed = await this.#task(task).execution;
 					if (completed && !completed.ok)
 						throw new Error(`Runner protocol failed: ${completed.error.code}: ${completed.error.message}`);

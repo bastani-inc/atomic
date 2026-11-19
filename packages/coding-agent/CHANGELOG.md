@@ -26,14 +26,19 @@
 - `history://` searches session transcripts only. Existing `history://workflows` links explain the removal; old workflow stores are left untouched. Use `history://sessions` to recall the conversation.
 - Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to convert an old definition into a project or global skill that runs with codemode and subagents. Nothing is written automatically at startup.
 - `/resume` now lists sessions only. The agent panel, `/tasks` and terminal program status no longer show workflow runs. `/settings` and `atomic config` no longer offer workflow options. To continue work, resume the parent session and inspect its subagents in `/tasks`.
-- Source checkouts no longer include the `@bastani/workflows` extension or its builtin workflow definitions. If you linked that directory into another host, remove the link. To reuse a definition, ask Atomic to convert it into a skill that uses codemode and subagents.
+- Source checkouts no longer include the `@bastani/workflows` extension or its builtin workflow definitions. If you linked that directory into another host, remove the link. To reuse a definition, ask Atomic to convert it to a skill and run the skill with codemode and subagents. The original file stays untouched.
 - Atomic no longer ships the `workflow` tool, `/workflows`, `/workflow-authoring`, or the F2 workflow shortcut. Typing either removed command shows a migration notice instead of sending a prompt to the model. Ask Atomic to convert an old workflow into a skill that uses codemode and subagents. The original file stays untouched. Use `/tasks` to inspect background work and `/resume` to reopen a saved session, not a workflow run.
+- Task cancellation receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Added
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
 - Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
+
+### Changed
+
+- Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 
 ### Fixed
 

@@ -27,12 +27,15 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 	const watched = host.watchOwnerTasks();
 	if (!watched.ok) throw new Error(`${watched.error.code}: ${watched.error.message}`);
 	const watch = watched.value;
+	const { supervisor, owner } = host.ownerBinding;
+	const off = watch.snapshot.tasks.some((task) => task.kind === "agent" && task.execution.kind !== "settled")
+		? supervisor.onDirectoryHandoff?.(owner, () => watch.onReconcile(watch.snapshot, []))
+		: undefined;
 	try {
 		await cancel(
 			watch.snapshot.tasks.filter((task) => task.kind === "agent" && task.execution.kind !== "settled"),
 			"pause",
 		);
-		const { supervisor, owner } = host.ownerBinding;
 		// Already-started native setup may briefly launch during the transition. Wait for
 		// every admitted lease before cancelling shells and certifying the final snapshot.
 		await supervisor.drainCommandAdmissions(owner);
@@ -47,10 +50,11 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 				if (
 					snapshot.tasks.some(
 						(task) =>
-							task.cleanup.kind === "active" ||
-							task.cleanup.kind === "draining" ||
-							(task.cleanup.kind === "quarantined" && stopped.has(task.ref.taskId)) ||
-							(task.execution.kind !== "settled" && task.cleanup.kind !== "failed"),
+							!(task.kind === "agent" && supervisor.isBatchOwnedDirectory?.(owner, task.ref.taskId)) &&
+							(task.cleanup.kind === "active" ||
+								task.cleanup.kind === "draining" ||
+								(task.cleanup.kind === "quarantined" && stopped.has(task.ref.taskId)) ||
+								(task.execution.kind !== "settled" && task.cleanup.kind !== "failed")),
 					)
 				)
 					return;
@@ -64,6 +68,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 			watch.onReconcile(watch.snapshot, []);
 		});
 	} finally {
+		off?.();
 		watch.dispose();
 	}
 }

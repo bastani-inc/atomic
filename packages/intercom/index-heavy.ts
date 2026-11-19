@@ -1,3 +1,4 @@
+import { releaseObservation } from "./broker/released-child-receipts.js";
 import { registerSubagentReplyCapability } from "./subagent-reply-capability.js";
 import {
   INTERCOM_SESSION_IDENTITY_ENTRY,
@@ -1386,7 +1387,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const request = payload;
     const activeClient = client;
     request.completion = activeClient?.isConnected()
-      ? activeClient.acknowledgeReleasedChildWake(request.childName)
+      ? releaseObservation(request)
+        ? activeClient.acknowledgeReleasedChildWake(request.childName, request)
+        : activeClient.acknowledgeReleasedChildWake(request.childName)
       : Promise.resolve();
   });
   pi.events.on(SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, (payload) => {

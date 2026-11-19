@@ -11,6 +11,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - Removed the workflow-only API from `IntercomClient`: `registerPendingStageRoute`, `registerPendingStageRouteAcknowledged`, `withdrawPendingStageRoute`, `claimWorkflowInvocation`, `registerLiveWorkflowStageRoute`, `respondPendingStageMessage`, `respondPendingStageNotification`, `sendPendingStageNotification`, the `multiplexesPendingStageRoutes` option, `IntercomPendingStageRouteRefusedError`, `SessionDirectory.workflowStages` and `workflowFutureStages`, and the `liveRoute` of a hosted session with its `liveRouteRefusal`. `StageRecipientReleasedError`, `isStageRecipientReleasedError` and the `recipient_stage_released` code are removed from `@bastani/intercom`, and Intercom no longer raises `IntercomBrokerSuccessorTimeoutError`, which only workflow route connections did.
 - Sessions of Atomic 0.9.x and 0.10.0 keep messaging each other through whichever broker is running: the protocol range is unchanged. A 0.10.0 broker answers a 0.9.x session's workflow requests with refusals that session already handles and never closes its connection over one; a running 0.9.x stage's live route is acknowledged without creating a route, and sends to its `workflow:` path are refused. A 0.10.0 session on a 0.9.x broker sends no workflow request and ignores the workflow rows that broker lists. See [Mixed versions and workflows](https://atomic.bastani.dev/intercom/operations#mixed-versions-and-workflows).
 
+### Fixed
+
+- Reconnecting to Intercom no longer leaves a false reservation warning for a released subagent when the broker can confirm it still holds sends for that release. Checking the hold does not extend it or send another wake ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
+
 ## [0.9.90] - 2026-11-19
 
 ### Added
