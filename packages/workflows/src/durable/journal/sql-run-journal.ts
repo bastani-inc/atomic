@@ -668,17 +668,36 @@ export class SqlRunJournal implements RunJournal {
 					seq: journalCounter(row[c.runId], "seq", row[c.seq]),
 					at: Number(row[c.at]),
 				});
-			for (let after: string | undefined; ; ) {
-				const page = await this.database.all<RunVersionRow>(
+			const readPage = (reader: SqliteExecutor, after?: string) =>
+				reader.all<RunVersionRow>(
 					`${select}${after === undefined ? "" : ` WHERE runs.${c.runId} > ?`} ORDER BY runs.${c.runId} LIMIT ?`,
 					...(after === undefined ? [] : [after]),
 					pageRuns,
 				);
-				for (const row of page) add(row);
-				if (page.length < pageRuns) break;
-				after = page.at(-1)![c.runId];
+			const nextPage = async () => {
 				if (local) await new Promise<void>((resolve) => setImmediate(resolve));
 				stop?.throwIfAborted();
+			};
+			const first = await readPage(this.database);
+			if (first.length < pageRuns) {
+				for (const row of first) add(row);
+			} else {
+				// Reread even the first page in the snapshot: a writer may have deleted one of its runs and created
+				// another beyond the cursor. Combining those pages would list runs that never coexisted.
+				await nextPage();
+				await this.database.transaction(
+					async (reader) => {
+						for (let after: string | undefined; ; ) {
+							stop?.throwIfAborted();
+							const page = await readPage(reader, after);
+							for (const row of page) add(row);
+							if (page.length < pageRuns) break;
+							after = page.at(-1)![c.runId];
+							await nextPage();
+						}
+					},
+					{ readOnly: true },
+				);
 			}
 			for (const row of (await this.legacy?.versions(this.database)) ?? []) add(row);
 			return versions;

@@ -3,6 +3,7 @@ import { describe, test } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { isLiveRunningWorkflow } from "../../packages/workflows/src/durable/resume-eligibility.js";
 import { latestStageSessionCheckpoints } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { CheckpointShipping } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
 import { poolWorkerCommit } from "../../packages/workflows/src/workers/pool-commit.js";
@@ -12,8 +13,14 @@ import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
-	describe.skipIf(backend.skipReason !== undefined)(`a retry after a lost checkpoint receipt on ${name}`, () => {
-		test.each([41, 42, 43])("a session retried at %i keeps its journal time (#5480)", async (retryAt) => {
+	describe.skipIf(backend.skipReason !== undefined)(`folding local checkpoint receipts on ${name}`, () => {
+		test.each([
+			{ label: "folding the first shipment keeps the newer acknowledged root live", retryAt: undefined },
+			...[41, 42, 43].map((retryAt) => ({
+				label: `a session retried at ${retryAt} keeps its journal time`,
+				retryAt,
+			})),
+		])("$label (#5480)", async ({ retryAt }) => {
 			const scope = await backend.openScope();
 			const close: (() => Promise<void>)[] = [() => scope.close()];
 			try {
@@ -55,7 +62,7 @@ for (const backend of storageBackends) {
 					},
 				});
 				const old = session("old", 42),
-					latest = session("new", 42);
+					latest = session("new", retryAt === undefined ? old.completedAt + 180_000 : 42);
 				for (const checkpoint of [old, latest])
 					await queue.commit(lease, attempt, `create-${checkpoint.sessionId}`, {
 						kind: "session-create",
@@ -79,7 +86,7 @@ for (const backend of storageBackends) {
 				});
 				close.push(() => shipping.close());
 				await shipping.hold(attempt, 60_000);
-				let lose = true;
+				let lose = retryAt !== undefined;
 				const commit = poolWorkerCommit({
 					send: async (mutation) => {
 						const receipt = await shipping.commit(attempt, mutation, async () =>
@@ -101,16 +108,30 @@ for (const backend of storageBackends) {
 					return direct;
 				};
 				const retry = { kind: "checkpoint" as const, checkpoint: old };
-				await assert.rejects(commit(retry), /lost receipt/);
+				if (retryAt === undefined) await commit(retry);
+				else await assert.rejects(commit(retry), /lost receipt/);
 				await shipping.flush(attempt);
 				await commit({ kind: "checkpoint", checkpoint: latest });
 				assert.equal(views(), latest.sessionId);
-				await commit({ ...retry, checkpoint: { ...old, completedAt: retryAt } });
-				assert.equal(views(), retryAt >= latest.completedAt ? old.sessionId : latest.sessionId);
-				await reader.retainCheckpoints("root", { ids: [], prefixes: [`${work.scope}:`] });
-				views();
+				if (retryAt !== undefined) {
+					await commit({ ...retry, checkpoint: { ...old, completedAt: retryAt } });
+					assert.equal(views(), retryAt >= latest.completedAt ? old.sessionId : latest.sessionId);
+					await reader.retainCheckpoints("root", { ids: [], prefixes: [`${work.scope}:`] });
+					views();
+				} else assert.equal(reader.getWorkflow("root")?.updatedAt, latest.completedAt);
 				await reader.catchUpWorkflow("root");
 				assert.equal(views(), latest.sessionId);
+				if (retryAt === undefined) {
+					const root = reader.getWorkflow("root")!;
+					assert.deepEqual(
+						[
+							root.updatedAt,
+							reader.toMetadata("root")?.updatedAt,
+							isLiveRunningWorkflow(root, latest.completedAt),
+						],
+						[latest.completedAt, latest.completedAt, true],
+					);
+				}
 				await shipping.flush(attempt);
 				await reader.catchUpWorkflow("root");
 				const fresh = await JournalDurableBackend.open(journal, { ownsJournal: false, runs: ["root"] });

@@ -706,6 +706,8 @@ interface JournalWorkflowRecord {
 	 * A lost reply can delay a receipt past its checkpoint's shipment and past another checkpoint's receipt.
 	 */
 	noted?: Set<string>;
+	/** The last pending receipt in that order, so folding FIFO shipments need not scan the remaining receipts. */
+	lastNotedKey?: string;
 	/** Receipts in order and the journal's best completion-time candidate before applying those receipts. */
 	notedByLookup?: Map<string, { keys: Set<string>; folded?: DurableToolCheckpoint | DurableStageCheckpoint }>;
 }
@@ -716,6 +718,10 @@ function checkpointLookupGroup(c: DurableCheckpoint): string {
 
 function removeNoted(rec: JournalWorkflowRecord, key: string, c: DurableCheckpoint): boolean {
 	if (!rec.noted?.delete(key)) return false;
+	if (rec.lastNotedKey === key) {
+		rec.lastNotedKey = undefined;
+		for (const pending of rec.noted) rec.lastNotedKey = pending;
+	}
 	const identity = checkpointLookupGroup(c);
 	const group = rec.notedByLookup!.get(identity)!;
 	group.keys.delete(key);
@@ -996,7 +1002,11 @@ class JournalProjection {
 			if (outOfOrder || retimed) for (const id of group.keys) this.indexLookups(rec, rec.checkpoints.get(id)!, true);
 		}
 		const checkpoint = shipped ?? this.index(rec, recorded);
-		if (checkpoint !== undefined) this.recordInHandle(rec, checkpoint);
+		if (checkpoint !== undefined) {
+			// A shipment precedes every receipt still waiting, even when their clocks disagree.
+			const last = shipped && rec.lastNotedKey !== undefined ? rec.checkpoints.get(rec.lastNotedKey) : undefined;
+			this.recordInHandle(rec, checkpoint, last?.completedAt);
+		}
 	}
 
 	/**
@@ -1019,6 +1029,7 @@ class JournalProjection {
 		const key = checkpointKey(checkpoint);
 		rec.noted ??= new Set();
 		rec.noted.add(key);
+		rec.lastNotedKey = key;
 		rec.notedByLookup ??= new Map();
 		const group = rec.notedByLookup.get(identity);
 		if (group) group.keys.add(key);
@@ -1040,14 +1051,18 @@ class JournalProjection {
 	}
 
 	/** Sets the run's handle as recording `checkpoint`, the run's latest, sets it. */
-	private recordInHandle(rec: JournalWorkflowRecord, checkpoint: DurableCheckpoint): void {
+	private recordInHandle(
+		rec: JournalWorkflowRecord,
+		checkpoint: DurableCheckpoint,
+		updatedAt = checkpoint.completedAt,
+	): void {
 		// A run still `running` that recorded its definition completed in its current attempt is completed: the store
 		// refused its terminal status write (#5133).
 		const completed = rec.handle.status === "running" && completedRunAttempt(checkpoint) === rec.attempt;
 		rec.handle = {
 			...rec.handle,
 			completedCheckpoints: rec.checkpoints.size + rec.released,
-			updatedAt: checkpoint.completedAt,
+			updatedAt,
 			...(completed ? { status: "completed" as const } : {}),
 		};
 	}
@@ -1063,6 +1078,7 @@ class JournalProjection {
 		rec.released += rec.checkpoints.size - pending.length;
 		if (pending.length) rec.handle = { ...rec.handle, completedCheckpoints: rec.released };
 		rec.noted = undefined;
+		rec.lastNotedKey = undefined;
 		rec.notedByLookup = undefined;
 		rec.checkpoints.clear();
 		rec.sortedCheckpoints = undefined;
@@ -1398,6 +1414,8 @@ class JournalProjection {
 			if (value === undefined) into.delete(workflowId);
 			else into.set(workflowId, value);
 		};
+		// A direct rebuild removes the old catalog entry and appends the rebuilt one.
+		this.workflows.delete(workflowId);
 		take(this.workflows, staged.workflows);
 		take(this.pendingReceipts, staged.pendingReceipts);
 		this.stickyReceipts.adopt(workflowId, staged.stickyReceipts);
