@@ -7,6 +7,7 @@ import {
 } from "../durable/store-backend.js";
 import type { DurableCheckpoint, ResumableWorkflowEntry } from "../durable/types.js";
 import { isResolvedRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import {
 	durableWorkflowSession,
 	toWorkflowPickerRow,
@@ -21,7 +22,7 @@ import {
 	prepareWorkflowResumeCatalog,
 	type WorkflowRunControlDeps,
 } from "./workflow-durable-resume-command.js";
-import { captureWorkflowOwnerResources } from "./workflow-owner-resources.js";
+import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { collectResumePickerLiveRuns } from "./workflow-resume-picker-rows.js";
 import { handleRunControlCommand } from "./workflow-run-control-command.js";
@@ -153,6 +154,26 @@ async function savedRunOverviews(
 
 export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): WorkflowResumeProvider {
 	const resolveOwner = () => deps.owner ?? captureWorkflowOwnerResources();
+	// Keep each listed version with the live run that produced it; dropping that run drops the pins as well.
+	const settlingVersions = new WeakMap<RunSnapshot, Map<number, Promise<number>>>();
+	const pinSavingAttempts = (owner: WorkflowOwnerResources): void => {
+		for (const id of owner.jobs.runIds()) {
+			const run = owner.store.run(id);
+			if (run?.status !== "failed") continue;
+			const job = owner.jobs.get(id);
+			const backend = availableStoreDurableBackend(owner.store, id);
+			const listed = backend?.getWorkflow(id)?.updatedAt;
+			if (job === undefined || backend === undefined || listed === undefined) continue;
+			const versions = settlingVersions.get(run) ?? new Map<number, Promise<number>>();
+			if (versions.has(listed)) continue;
+			// Do not hold up the catalog. Only a pick of this version needs to join the job's final save.
+			versions.set(
+				listed,
+				job.promise.then(() => backend.getWorkflow(id)?.updatedAt ?? listed),
+			);
+			settlingVersions.set(run, versions);
+		}
+	};
 	const reportedResourceWarnings = new Set<string>();
 	const ensureResourcesLoaded = async (ctx: PiCommandContext | undefined): Promise<void> => {
 		try {
@@ -169,6 +190,8 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 	return {
 		async listResumeEntries(target?: string): Promise<readonly PiHostSessionPickerRow[]> {
 			const owner = resolveOwner();
+			// A failed job may finish before the catalog that saw its running version returns.
+			pinSavingAttempts(owner);
 			const activeCtx = deps.context();
 			await ensureResourcesLoaded(activeCtx);
 			const runtime = deps.runtimeForContext(activeCtx);
@@ -206,6 +229,8 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 			const visible = formatItems();
 			// Overview reads can outlast an attempt; keep the version that produced the row, not a later handle.
 			const selections = new Map(visible.map(({ session }) => [session.id, session.resumeSelection]));
+			// Also capture a failure first published while the catalog was loading.
+			pinSavingAttempts(owner);
 			// Direct /resume resolves across sessions and all stored roots, not just the rows offered in the picker.
 			const match = resolveRunIdTarget(cleanTarget ?? "", catalog.inspectableIds ?? []);
 			const matchedIds = match.kind === "ambiguous" ? match.matches : isResolvedRunId(match) ? [match.runId] : [];
@@ -263,14 +288,10 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 					reportedError = message;
 				},
 			};
-			await handleRunControlCommand(
-				"resume",
-				tokens,
-				commandCtx,
-				reporter,
-				{ ...deps, owner },
-				selection?.updatedAt,
-			);
+			const listedRun = owner.store.run(targetId);
+			const settled = listedRun && selection && settlingVersions.get(listedRun)?.get(selection.updatedAt);
+			const expectedUpdatedAt = settled === undefined ? selection?.updatedAt : await settled;
+			await handleRunControlCommand("resume", tokens, commandCtx, reporter, { ...deps, owner }, expectedUpdatedAt);
 			if (reportedError !== undefined) {
 				throw new Error(formatPickerResumeError(targetId, reportedError));
 			}

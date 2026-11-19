@@ -6,6 +6,7 @@ import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resu
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createGraphStageActions } from "../../packages/workflows/src/extension/workflow-graph-stage-actions.js";
+import { createWorkflowResumeProvider } from "../../packages/workflows/src/extension/workflow-resume-provider.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker, currentJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -26,11 +27,15 @@ test.each([
 	"graph action as resources load",
 	"graph root key",
 	"graph with a later journal write",
+	"picker after the listed job saves",
+	"picker as the catalog returns",
+	"picker with a later journal write",
 	"listed prefix as save finishes",
 	"durable prefix before first checkpoint",
 	"default job tracker",
 ] as const)("%s uses the failed workflow's final save for resume (#5527, #5569)", async (route) => {
 	const graphRoute = route.startsWith("graph ");
+	const pickerRoute = route.startsWith("picker ");
 	const store = createStore();
 	const backend = await createMemoryTestBackend();
 	configureTestStoreBackend(store, backend);
@@ -50,7 +55,7 @@ test.each([
 				return { result: await ctx.tool("after-guard", {}, async () => "resumed") };
 			}
 			await ctx.tool("settled-sibling", {}, async () => ++siblings);
-			if (graphRoute) {
+			if (graphRoute || pickerRoute) {
 				if (++attempts === 1) return ctx.exit({ status: "failed", resumable: true });
 				return { result: "resumed" };
 			}
@@ -118,7 +123,7 @@ test.each([
 				await oldJob.promise;
 				return observed;
 			});
-		} else {
+		} else if (!pickerRoute) {
 			// Hold the save until the resume request reaches the job it must wait for.
 			const get = jobs.get.bind(jobs);
 			vi.spyOn(jobs, "get").mockImplementation((id) => {
@@ -168,8 +173,41 @@ test.each([
 				graph.dispose();
 			}
 		};
-		const resumed = await (graphRoute
-			? resumeFromGraph()
+		const resumeFromPicker = async () => {
+			const ctx = { cwd: process.cwd(), hasUI: false, ui: { notify() {} } };
+			const provider = createWorkflowResumeProvider({
+				pi: {},
+				owner,
+				overlay: { open() {}, close() {}, toggle() {} },
+				context: () => ctx,
+				runtimeForContext: () => runtime,
+				ensureWorkflowResourcesLoaded() {},
+			});
+			if (route === "picker as the catalog returns") {
+				const prepare = runtime.prepareDurableCatalog!.bind(runtime);
+				vi.spyOn(runtime, "prepareDurableCatalog").mockImplementationOnce(async () => {
+					const catalog = await prepare();
+					finishPersistence.resolve();
+					await oldJob.promise;
+					return catalog;
+				});
+			}
+			const row = (await provider.listResumeEntries()).find((entry) => entry.id === runId);
+			assert.ok(row?.resumeSelection);
+			finishPersistence.resolve();
+			await oldJob.promise;
+			if (route === "picker with a later journal write") await backend.commitWorkflowStatus(runId, "failed");
+			await provider.resumeFromPicker(runId, ctx, row.resumeSelection);
+		};
+		if (route === "picker with a later journal write") {
+			await assert.rejects(resumeFromPicker(), /changed since it was listed/);
+			assert.equal(attempts, 1);
+			return;
+		}
+		const resumed = await (graphRoute || pickerRoute
+			? pickerRoute
+				? resumeFromPicker()
+				: resumeFromGraph()
 			: route === "live continuation"
 				? runtime.resumeFailedRun(runId)
 				: route === "listed prefix as save finishes"
@@ -186,12 +224,12 @@ test.each([
 							)
 						: runtime.resumeDurableWorkflow(target, { definition }));
 		if (route === "graph with a later journal write") {
-			assert.equal(resumed.ok, false);
+			assert.ok(resumed && !resumed.ok);
 			assert.match(resumed.message, /changed while resume was pending/);
 			assert.equal(attempts, 1);
 			return;
 		}
-		assert.equal(resumed.ok, true, JSON.stringify(resumed));
+		if (!pickerRoute) assert.ok(resumed?.ok, JSON.stringify(resumed));
 		const terminalStateWaitMs = TEST_TIMEOUT_MS / 2;
 		await vi.waitFor(() => assert.equal(store.run(runId)?.status, "completed"), { timeout: terminalStateWaitMs });
 		assert.equal(attempts, 2);
