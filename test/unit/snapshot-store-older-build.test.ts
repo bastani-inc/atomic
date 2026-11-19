@@ -67,45 +67,41 @@ function largeBlob(): { readonly hash: string; readonly data: Uint8Array } {
 }
 
 describe("an older build on a snapshot store this build wrote (#5065)", () => {
-	test("an older build refuses a database where this build stored a chunked blob through its sessions only (#5065)", async () => {
+	// Releases 0.9.88 to 0.9.90 marked the workflow journal's schema when they stored a chunked blob, so that 0.9.87 refused
+	// the journal instead of reading such a blob as empty (#5065). Workflows were removed in 0.10.0: chunked blobs no
+	// longer write to an earlier release's journal tables, which stay as that release left them.
+	const journalTables = async (database: SqliteDatabase) =>
+		(
+			await database.all<SqliteRow & { name: string }>(
+				"SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'wf\\_%' ESCAPE '\\' ORDER BY name",
+			)
+		).map((row) => row.name);
+
+	test("a chunked blob stored through the sessions creates no workflow journal table", async () => {
 		const database = await open();
-		// Shared or team storage before any workflow run: this build has opened the session store and no journal.
 		const sessions = await SqlSessionStore.open(database);
 		const blob = largeBlob();
 		await sessions.snapshotBlobs.putBlobs([blob]);
 
-		// 0.9.87 would create the journal at version 1, store the same bytes (kept as this build's chunked header) and
-		// read them back empty.
-		const read = await readAsRelease0987(database, blob.hash, blob.data);
-
-		assert.ok(
-			"refused" in read,
-			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
-		);
+		assert.deepEqual(await journalTables(database), []);
 		assert.deepEqual(await sessions.snapshotBlobs.getBlob(blob.hash), blob.data);
 	});
 
-	test("a chunked blob stored through the sessions upgrades a journal an older build created (#5065)", async () => {
+	test("a chunked blob stored through the sessions leaves a journal an older build created at its version", async () => {
 		const database = await open();
-		// An older build created the journal first: its tables, at schema version 1.
+		// An older build created the journal first, at schema version 1.
 		await readAsRelease0987(database, "unknown");
-		// This build then opens only the session store and stores a chunked blob.
+		const before = await journalTables(database);
 		const sessions = await SqlSessionStore.open(database);
 		const blob = largeBlob();
 		await sessions.snapshotBlobs.putBlobs([blob]);
 
-		const read = await readAsRelease0987(database, blob.hash);
-
-		assert.ok(
-			"refused" in read,
-			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
-		);
-		// The journal's own upgrade ran, so its version 2 tables are there too.
-		assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'wf_event_chunks'"));
+		assert.deepEqual(await database.all("SELECT schema_version FROM wf_meta"), [{ schema_version: 1 }]);
+		assert.deepEqual(await journalTables(database), before);
 		assert.deepEqual(await sessions.snapshotBlobs.getBlob(blob.hash), blob.data);
 	});
 
-	test("an older build refuses a database where collection moved a legacy blob to chunks, never reading it as empty (#5327)", async () => {
+	test("collection moving a legacy blob to chunks leaves the workflow journal's tables alone (#5327)", async () => {
 		const database = await open();
 		await SqlSessionStore.open(database);
 		await database.exec(`DROP INDEX snapshot_blobs_age; DROP TABLE snapshot_blobs;
@@ -121,11 +117,7 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 			Number((await database.get("SELECT chunks FROM snapshot_blobs WHERE hash = ?", hash))?.chunks),
 			Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES),
 		);
-		const read = await readAsRelease0987(database, hash);
-		assert.ok(
-			"refused" in read,
-			`0.9.87 read the moved blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
-		);
+		assert.deepEqual(await journalTables(database), []);
 		assert.deepEqual(await sessions.snapshotBlobs.getBlob(hash), data);
 	});
 
