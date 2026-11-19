@@ -12,6 +12,7 @@ import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { hasAssistantVisibleContent, interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { retryCancelHint, retryWaitFromEvent, retryWaitMessage } from "./components/retry-status-line.ts";
 import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
@@ -22,7 +23,6 @@ import {
 	AssistantMessageComponent,
 	CountdownTimer,
 	keyText,
-	keyTextHint,
 	Loader,
 	type Message,
 	pickWhimsicalWorkingMessage,
@@ -707,8 +707,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			const pending = this.session.retryStatus;
 			const now = Date.now();
 			const until = pending?.type === "auto_retry_start" ? pending.retryAt : now + event.delayMs;
-			const retryMessage = (seconds: number) =>
-				`Retrying (${event.attempt}/${event.maxAttempts}) in ${seconds}s... (${keyTextHint("app.interrupt", "Cancel")})`;
+			const wait = retryWaitFromEvent({ ...event, retryAt: until });
+			const cancel = retryCancelHint();
+			const retryMessage = (seconds: number) => retryWaitMessage(wait, seconds, cancel);
 			this.retryLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,
