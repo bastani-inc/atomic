@@ -13,7 +13,7 @@ import { storageBackends } from "../helpers/storage-backends.js";
 for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
 	describe.skipIf(backend.skipReason !== undefined)(`a retry after a lost checkpoint receipt on ${name}`, () => {
-		test("folding the retried event keeps the worker's newer unshipped session in every view (#5480)", async () => {
+		test.each([41, 42, 43])("a session retried at %i keeps its journal time (#5480)", async (retryAt) => {
 			const scope = await backend.openScope();
 			const close: (() => Promise<void>)[] = [() => scope.close()];
 			try {
@@ -60,7 +60,12 @@ for (const backend of storageBackends) {
 					await queue.commit(lease, attempt, `create-${checkpoint.sessionId}`, {
 						kind: "session-create",
 						checkpoint: { ...checkpoint, checkpointId: `${checkpoint.checkpointId}:create`, completedAt: 0 },
-						header: { id: checkpoint.sessionId, version: 4, createdAt: "2026-01-01T00:00:00Z", cwd: "/project" },
+						header: {
+							id: checkpoint.sessionId,
+							version: 4,
+							createdAt: "2026-01-01T00:00:00Z",
+							cwd: "/project",
+						},
 						entries: [],
 					});
 				const reader = await JournalDurableBackend.open(journal, { ownsJournal: false, runs: ["root"] });
@@ -100,8 +105,8 @@ for (const backend of storageBackends) {
 				await shipping.flush(attempt);
 				await commit({ kind: "checkpoint", checkpoint: latest });
 				assert.equal(views(), latest.sessionId);
-				await commit(retry);
-				views();
+				await commit({ ...retry, checkpoint: { ...old, completedAt: retryAt } });
+				assert.equal(views(), retryAt >= latest.completedAt ? old.sessionId : latest.sessionId);
 				await reader.retainCheckpoints("root", { ids: [], prefixes: [`${work.scope}:`] });
 				views();
 				await reader.catchUpWorkflow("root");

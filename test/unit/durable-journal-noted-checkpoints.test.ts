@@ -141,6 +141,23 @@ test("folding an older retry restores pending task, answer and tool lookups with
 	assertReadsAsJournal();
 });
 
+test("a retimed tool receipt gives way to the already folded winner when its journal time is restored (#5480)", async () => {
+	const first = toolResult("folded", "same", 45);
+	const whilePending = toolResult("during", "other", 49);
+	const canonical = toolResult("retried", "same", 42);
+	const other = toolResult("retried-other", "other", 42);
+	await writer.commitCheckpoint(first);
+	await reader.catchUpWorkflow("root");
+	for (const c of [whilePending, canonical, other]) await writer.commitCheckpoint(c);
+	reader.noteRecordedCheckpoint({ ...canonical, completedAt: 50 });
+	reader.noteRecordedCheckpoint({ ...other, completedAt: 50 });
+	assert.equal(reader.getToolOutput("root", "same"), "retried");
+	await reader.catchUpWorkflow("root");
+	for (const hash of ["same", "other"])
+		assert.deepEqual(reader.getToolCheckpoint("root", hash), writer.getToolCheckpoint("root", hash));
+	assertReadsAsJournal();
+});
+
 test("a later noted result keeps its stage when an earlier noted result ships (#4768)", async () => {
 	const first = taskResult("first", 1_000);
 	const second = taskResult("second", 2_000);
