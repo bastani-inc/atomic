@@ -34,7 +34,11 @@ export interface WorkflowResumeProviderDeps extends WorkflowRunControlDeps {
 
 export interface WorkflowResumeProvider {
 	listResumeEntries(target?: string): Promise<readonly PiHostSessionPickerRow[]>;
-	resumeFromPicker(target: string, ctx?: WorkflowResumeCommandContext): Promise<void>;
+	resumeFromPicker(
+		target: string,
+		ctx?: WorkflowResumeCommandContext,
+		selection?: PiHostSessionPickerRow["resumeSelection"],
+	): Promise<void>;
 	deleteResumeEntry(runId: string): Promise<void>;
 }
 
@@ -199,26 +203,38 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 								: undefined,
 					},
 				);
-			const visibleIds = new Set(formatItems().map((item) => item.session.id));
+			const visible = formatItems();
+			// Overview reads can outlast an attempt; keep the version that produced the row, not a later handle.
+			const selections = new Map(visible.map(({ session }) => [session.id, session.resumeSelection]));
 			// Direct /resume resolves across sessions and all stored roots, not just the rows offered in the picker.
 			const match = resolveRunIdTarget(cleanTarget ?? "", catalog.inspectableIds ?? []);
 			const matchedIds = match.kind === "ambiguous" ? match.matches : isResolvedRunId(match) ? [match.runId] : [];
 			const hidden = matchedIds.flatMap((id) => {
-				const handle = visibleIds.has(id) ? undefined : backend?.getWorkflow(id);
+				const handle = selections.has(id) ? undefined : backend?.getWorkflow(id);
 				return handle === undefined
 					? []
 					: [durableWorkflowSession(handle, "durable", Date.now(), owner.store.run(id), backend)];
 			});
-			if (visibleIds.size === 0) return hidden.map(toWorkflowPickerRow);
+			if (selections.size === 0) return hidden.map(toWorkflowPickerRow);
 			const overviewCheckpoints = await savedRunOverviews(
 				backend,
-				[...resumable, ...catalog.completed].filter((entry) => visibleIds.has(entry.workflowId)),
+				[...resumable, ...catalog.completed].filter((entry) => selections.has(entry.workflowId)),
 				cleanTarget,
 			);
-			return [...formatItems(overviewCheckpoints), ...hidden].map(toWorkflowPickerRow);
+			return [
+				...formatItems(overviewCheckpoints).map((item) => ({
+					...toWorkflowPickerRow(item),
+					resumeSelection: selections.get(item.session.id),
+				})),
+				...hidden.map(toWorkflowPickerRow),
+			];
 		},
 
-		async resumeFromPicker(target: string, rawCtx?: WorkflowResumeCommandContext): Promise<void> {
+		async resumeFromPicker(
+			target: string,
+			rawCtx?: WorkflowResumeCommandContext,
+			selection?: PiHostSessionPickerRow["resumeSelection"],
+		): Promise<void> {
 			const trimmed = target.trim();
 			if (!trimmed) {
 				throw new Error("Workflow run not found: (empty)");
@@ -247,7 +263,14 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 					reportedError = message;
 				},
 			};
-			await handleRunControlCommand("resume", tokens, commandCtx, reporter, { ...deps, owner });
+			await handleRunControlCommand(
+				"resume",
+				tokens,
+				commandCtx,
+				reporter,
+				{ ...deps, owner },
+				selection?.updatedAt,
+			);
 			if (reportedError !== undefined) {
 				throw new Error(formatPickerResumeError(targetId, reportedError));
 			}

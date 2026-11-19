@@ -311,7 +311,7 @@ export function createRpcCommandHandler({
 			case "resume_workflow_from_picker": {
 				try {
 					return createRpcSuccessResponse(id, command.type, {
-						handled: await resumeWorkflowFromPicker(session, command.target),
+						handled: await resumeWorkflowFromPicker(session, command.target, command.selection),
 					});
 				} catch (error: unknown) {
 					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);

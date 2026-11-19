@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Type } from "typebox";
 import { onTestFinished, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
+import { createEngineHostPair } from "../../packages/coding-agent/test/helpers/in-process-engine-pair.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-session-routing.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -25,7 +27,7 @@ import { openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js"
 useTemporaryAgentDir();
 const id = "abcd1234-1111-4333-8444-555555555555";
 
-async function publicResumeFixture() {
+async function publicResumeFixture(reblock = false) {
 	const cwd = await mkdtemp(join(tmpdir(), "workflow-resume-lookup-"));
 	const { journal, database } = await openSqlSnapshotJournal(join(cwd, "journal.sqlite"));
 	const backend = await JournalDurableBackend.open(journal, { runs: [], ownsJournal: false });
@@ -49,7 +51,20 @@ async function publicResumeFixture() {
 	};
 	const ctx = { cwd, hasUI: false, sessionManager: { getSessionId: () => "lookup-session" }, ui: { notify() {} } };
 	const executeBody = vi.fn(async () => ({}));
-	const definition = workflow({ name: "lookup", description: "", inputs: {}, outputs: {}, run: executeBody });
+	const definition = workflow({
+		name: "lookup",
+		description: "",
+		inputs: {},
+		outputs: { status: Type.Optional(Type.String()) },
+		run: async (ctx) => {
+			await executeBody();
+			if (reblock) {
+				await ctx.tool("before-block", {}, async () => true);
+				return { status: "needs_human" };
+			}
+			return {};
+		},
+	});
 	const runtime = createExtensionRuntime({ cwd, definitions: [definition], ...owner });
 	const deps = {
 		pi: {},
@@ -98,6 +113,69 @@ test("interactive /resume checks hidden stored roots for prefix collisions befor
 	assert.match(errors[1] ?? "", /not resumable/);
 	assert.equal(executeBody.mock.calls.length, 0);
 });
+
+test.each(["between listing and picking", "during the pick's lookup"] as const)(
+	"an isolated host cannot resume a newer block %s (#5569)",
+	async (when) => {
+		const { backend, runtime, deps, ctx, mode, provider, errors, executeBody, definition } =
+			await publicResumeFixture(true);
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: definition.name,
+			inputs: {},
+			createdAt: 1,
+			status: "blocked",
+			resumable: true,
+		});
+		await backend.releaseWorkflow(id);
+		const execute = makeExecuteWorkflowTool(runtime, () => undefined, deps.ensureWorkflowResourcesLoaded, deps.owner);
+		const pair = await createEngineHostPair({
+			engineExtensions: [
+				(pi) => {
+					pi.registerWorkflowRunControl({
+						...createSessionRunControl({ ...deps.owner, context: () => ctx, execute }),
+						...provider,
+					});
+				},
+			],
+		});
+		onTestFinished(() => pair.cleanup());
+		mode.runtimeHost = pair.runtime;
+		const lookup = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const getRows = pair.runtime.getWorkflowResumeEntries.bind(pair.runtime);
+		vi.spyOn(pair.runtime, "getWorkflowResumeEntries").mockImplementation(async (target) => {
+			const rows = await getRows(target);
+			assert.ok(rows.some((row) => row.id === id));
+			if (when === "between listing and picking") lookup.resolve();
+			else
+				vi.spyOn(deps, "ensureWorkflowResourcesLoaded").mockImplementationOnce(async () => {
+					lookup.resolve();
+					await release.promise;
+				});
+			return rows;
+		});
+		if (when === "between listing and picking")
+			vi.spyOn(SessionManager, "listAll").mockImplementationOnce(async () => {
+				await release.promise;
+				return [];
+			});
+		const picking = InteractiveModeBase.prototype.handleResumeTarget.call(mode, id);
+		try {
+			await lookup.promise;
+			const competing = await runtime.resumeDurableWorkflow(id, { definition });
+			assert.ok(competing.ok, competing.message);
+			await deps.owner.jobs.get(id)?.promise;
+			assert.equal(deps.owner.store.run(id)?.status, "blocked");
+			assert.equal(executeBody.mock.calls.length, 1);
+		} finally {
+			release.resolve();
+			await picking;
+		}
+		assert.equal(executeBody.mock.calls.length, 1);
+		assert.match(errors.join("\n"), /changed.*refresh|stale.*refresh/i);
+	},
+);
 
 test("a local run without progress cannot hide a stored prefix collision from the resume command (#5569)", async () => {
 	const { backend, deps, ctx, errors, definition, executeBody } = await publicResumeFixture();

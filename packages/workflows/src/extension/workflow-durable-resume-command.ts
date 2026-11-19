@@ -285,6 +285,7 @@ export interface WorkflowResumeCatalog {
 export const ACCEPT_ENTRY_CHANGES_FLAG = "--accept-entry-changes";
 
 export interface DurableResumeCommandOptions {
+	readonly expectedUpdatedAt?: number;
 	readonly acceptEntryChanges?: boolean;
 }
 

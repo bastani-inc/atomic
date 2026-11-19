@@ -1,5 +1,6 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { staleResumeSelectionMessage } from "../durable/resume-runtime.js";
 import { DurableBackendNotInitializedError, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
@@ -46,6 +47,7 @@ export async function handleRunControlCommand(
 	ctx: PiCommandContext,
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowRunControlDeps,
+	expectedUpdatedAt?: number,
 ): Promise<boolean> {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
 	deps = { ...deps, owner };
@@ -229,7 +231,10 @@ export async function handleRunControlCommand(
 		// The flag may stand anywhere among the arguments: the rest are the run, its stage and the message.
 		const acceptEntryChanges = rest.includes(ACCEPT_ENTRY_CHANGES_FLAG);
 		const args = acceptEntryChanges ? rest.filter((token) => token !== ACCEPT_ENTRY_CHANGES_FLAG) : rest;
-		const resumeOptions: DurableResumeCommandOptions = acceptEntryChanges ? { acceptEntryChanges: true } : {};
+		const resumeOptions: DurableResumeCommandOptions = {
+			...(acceptEntryChanges ? { acceptEntryChanges: true } : {}),
+			...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt }),
+		};
 		const durableResume = (workflowId: string | undefined, catalog?: WorkflowResumeCatalog) =>
 			handleDurableResume(workflowId, ctx, reporter, deps, catalog, resumeOptions);
 		const target = args[0];
@@ -352,6 +357,13 @@ export async function handleRunControlCommand(
 			} catch (error) {
 				fail(`Failed to resolve workflow resume target: ${error instanceof Error ? error.message : String(error)}`);
 				return true;
+			}
+			if (expectedUpdatedAt !== undefined) {
+				await backend.hydrateWorkflow(target, { checkHeader: true });
+				if (backend.getWorkflow(target)?.updatedAt !== expectedUpdatedAt) {
+					fail(staleResumeSelectionMessage(target));
+					return true;
+				}
 			}
 			const localResolution = resolveRunId(target, store);
 			const localBeforePreparation = isResolvedRunId(localResolution) ? store.run(localResolution.runId) : undefined;
@@ -536,6 +548,13 @@ export async function handleRunControlCommand(
 		}
 		let result: Awaited<ReturnType<typeof resumeRun>>;
 		try {
+			if (
+				expectedUpdatedAt !== undefined &&
+				requireStoreDurableBackend(store, stageRunId).getWorkflow(stageRunId)?.updatedAt !== expectedUpdatedAt
+			) {
+				fail(staleResumeSelectionMessage(stageRunId));
+				return true;
+			}
 			result = await resumeRun(stageRunId, { ...owner, stageId, message, actor: "user" });
 		} catch (error) {
 			fail(`Failed to resume run ${stageRunId}: ${error instanceof Error ? error.message : String(error)}`);

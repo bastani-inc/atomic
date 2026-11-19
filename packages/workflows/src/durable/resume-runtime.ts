@@ -67,7 +67,12 @@ export type ResumeDurableResult =
 			error?: JournalCatalogError | ForkError | ResumeError;
 	  };
 
+export function staleResumeSelectionMessage(id: string): string {
+	return `Workflow ${id} changed since it was listed; refresh the workflow list and try again.`;
+}
+
 export interface ResumeDurableDeps {
+	readonly expectedUpdatedAt?: number;
 	readonly registry: WorkflowRegistry;
 	/** Base run options forwarded to the detached runner (store, persistence, …). */
 	readonly baseRunOpts: RunOpts & { readonly jobs?: JobTracker };
@@ -220,6 +225,8 @@ export async function resumeDurableWorkflow(
 			return alreadyRunningResult(handle.name, id);
 		selected = resumableEntryFromHandle(handle);
 	}
+	if (deps.expectedUpdatedAt !== undefined && handle?.updatedAt !== deps.expectedUpdatedAt)
+		return { ok: false, reason: "stale", message: staleResumeSelectionMessage(id) };
 	const resolved = selected;
 	if (hasForkClaim(backend, id))
 		return {
@@ -472,7 +479,7 @@ async function resumeDurableWorkflowClaimed(
 				"running",
 				undefined,
 				undefined,
-				resolved.updatedAt,
+				deps.expectedUpdatedAt ?? resolved.updatedAt,
 				adopting ? requestedOwner : undefined,
 			);
 			// #5149: an aborted adoption is rolled back too, restoring its status and its previous owner.
@@ -666,10 +673,15 @@ async function resumeIntoFork(
 			reason: "different_project",
 			message: "Workflow resume cancelled; the source run was not changed.",
 		};
+	const selectionChanged =
+		deps.expectedUpdatedAt === undefined ? undefined : new Error(staleResumeSelectionMessage(handle.workflowId));
 	let fork: Awaited<ReturnType<typeof forkDurableRun>>;
 	try {
 		fork = await forkDurableRun(deps.durableBackend, {
 			source: "cli",
+			validateSource: (source) => {
+				if (selectionChanged !== undefined && source.updatedAt !== deps.expectedUpdatedAt) throw selectionChanged;
+			},
 			runId: handle.workflowId,
 			cwd: currentCwd,
 			carryMessages: "all",
@@ -680,6 +692,8 @@ async function resumeIntoFork(
 			isLiveRun: (runId) => hasActiveLiveRun(deps.baseRunOpts.store, runId),
 		});
 	} catch (error) {
+		if (selectionChanged !== undefined && error === selectionChanged)
+			return { ok: false, reason: "stale", message: selectionChanged.message };
 		if (!isForkError(error)) throw error;
 		return { ok: false, reason: "fork_failed", message: error.message, error };
 	}
@@ -688,6 +702,7 @@ async function resumeIntoFork(
 		fork.runId,
 		{
 			...deps,
+			expectedUpdatedAt: undefined,
 			confirmCrossProjectFork: undefined,
 			resolveDefinition: async () => fork.definition,
 			onBeforeResume:
