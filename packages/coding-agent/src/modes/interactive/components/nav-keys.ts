@@ -30,7 +30,7 @@ export interface NavKey {
 	readonly label: string;
 }
 
-/** Colors a hint line or key overlay is painted with, so the workflow graph can use its own theme. */
+/** Colors a hint line or key overlay is painted with. */
 export interface NavKeyStyle {
 	dim(text: string): string;
 	text(text: string): string;

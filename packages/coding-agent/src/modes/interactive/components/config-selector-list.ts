@@ -17,14 +17,13 @@ import { theme } from "../theme/theme.js";
 import { toggleProjectResource } from "./config-selector-project-scope.ts";
 import { type NavKey, navActionText, renderNavHintLine } from "./nav-keys.ts";
 
-export type ResourceType = "extensions" | "skills" | "prompts" | "themes" | "workflows";
+export type ResourceType = "extensions" | "skills" | "prompts" | "themes";
 
 const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
 	extensions: "Extensions",
 	skills: "Skills",
 	prompts: "Prompts",
 	themes: "Themes",
-	workflows: "Workflows",
 };
 
 export interface ResourceItem {
@@ -134,7 +133,6 @@ export function buildGroups(resolved: ResolvedPaths, agentDir: string): Resource
 	addToGroup(resolved.skills, "skills");
 	addToGroup(resolved.prompts, "prompts");
 	addToGroup(resolved.themes, "themes");
-	addToGroup(resolved.workflows, "workflows");
 	// Sort groups: packages first, then top-level; user before project
 	const groups = Array.from(groupMap.values());
 	groups.sort((a, b) => {
@@ -142,7 +140,7 @@ export function buildGroups(resolved: ResolvedPaths, agentDir: string): Resource
 		if (a.scope !== b.scope) return a.scope === "user" ? -1 : 1;
 		return a.source.localeCompare(b.source);
 	});
-	const typeOrder: Record<ResourceType, number> = { extensions: 0, skills: 1, prompts: 2, themes: 3, workflows: 4 };
+	const typeOrder: Record<ResourceType, number> = { extensions: 0, skills: 1, prompts: 2, themes: 3 };
 	for (const group of groups) {
 		group.subgroups.sort((a, b) => typeOrder[a.type] - typeOrder[b.type]);
 		for (const subgroup of group.subgroups) {
@@ -478,7 +476,7 @@ export class ResourceList implements Component, Focusable {
 		const arrayKey = item.resourceType;
 		const pattern = this.getResourcePattern(item);
 		const configured = settings[arrayKey];
-		const paths = Array.isArray(configured) ? configured : (configured?.paths ?? []);
+		const paths = configured ?? [];
 		const updated = paths.filter((entry) => {
 			const stripped = /^[!+-]/.test(entry) ? entry.slice(1) : entry;
 			return stripped !== pattern;
@@ -488,14 +486,12 @@ export class ResourceList implements Component, Focusable {
 			if (arrayKey === "extensions") this.settingsManager.setProjectExtensionPaths(updated);
 			else if (arrayKey === "skills") this.settingsManager.setProjectSkillPaths(updated);
 			else if (arrayKey === "prompts") this.settingsManager.setProjectPromptTemplatePaths(updated);
-			else if (arrayKey === "themes") this.settingsManager.setProjectThemePaths(updated);
-			else this.settingsManager.setProjectWorkflowPaths(updated);
+			else this.settingsManager.setProjectThemePaths(updated);
 		} else {
 			if (arrayKey === "extensions") this.settingsManager.setExtensionPaths(updated);
 			else if (arrayKey === "skills") this.settingsManager.setSkillPaths(updated);
 			else if (arrayKey === "prompts") this.settingsManager.setPromptTemplatePaths(updated);
-			else if (arrayKey === "themes") this.settingsManager.setThemePaths(updated);
-			else this.settingsManager.setWorkflowPaths(updated);
+			else this.settingsManager.setThemePaths(updated);
 		}
 	}
 	private togglePackageResource(item: ResourceItem, enabled: boolean): void {

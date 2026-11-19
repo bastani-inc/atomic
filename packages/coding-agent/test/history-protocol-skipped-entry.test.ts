@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { describe, it, vi } from "vitest";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
-import type { WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 import type { InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 
@@ -59,49 +58,11 @@ describe("history:// searches say which entry ran past the time budget (#5250)",
 			[`x.dot.${"ü😀.".repeat(12)}`, [560, 700, 750, 40_000]],
 		] as const) {
 			const store = await storeWith(id);
-			const workflows: WorkflowRunHistory = {
-				listRuns: async () => [],
-				listProjectRuns: async () => [
-					{
-						runId: "run-a",
-						name: "flow",
-						status: "completed",
-						startedAt: BASE,
-						elapsedMs: 1,
-						activeStages: [],
-						awaitingInput: [],
-						awaitingInputCount: 0,
-					},
-				],
-				getRun: async (runId) => ({
-					runId,
-					name: "flow",
-					status: "completed",
-					startedAt: BASE,
-					endedAt: BASE + 1,
-					inputs: {},
-					stages: [{ id: "one", name: "one", status: "completed", sessionId: id }],
-				}),
-			};
-			const noRuns: WorkflowRunHistory = {
-				listRuns: async () => [],
-				listProjectRuns: async () => [],
-				getRun: async (runId) => {
-					throw new Error(`no run ${runId}`);
-				},
-			};
-			for (const first of [
-				"history://sessions",
-				`history://sessions/${id}`,
-				"history://workflows/run-a",
-				"history://workflows",
-				"history://",
-			])
+			for (const first of ["history://sessions", `history://sessions/${id}`, "history://"])
 				for (const bytes of budgets) {
 					const router = createHistoryRouter({
 						cwd: PROJECT,
 						sessionStore: () => store,
-						workflows: () => (first === "history://" ? noRuns : workflows),
 						budget: { bytes },
 					});
 					const output = (await router.search!(first, request())) ?? "";

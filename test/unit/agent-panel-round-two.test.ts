@@ -6,7 +6,6 @@ import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
 	dismissedAgentPanelItems,
-	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore, setTaskTurnInterrupted } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
@@ -22,7 +21,6 @@ import { dismissedTasks } from "../../packages/coding-agent/src/modes/interactiv
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
-	AGENT_PANEL_REFRESH_WINDOW_MS,
 	agentPanelRows,
 	bindAgentPanel,
 	showAgentPanel,
@@ -45,14 +43,14 @@ const plain: AgentPanelStyle = {
 
 const row = (id: string, state: AgentPanelItem["state"] = "running"): AgentPanelItem => ({
 	id,
-	kind: "workflow",
+	kind: "agent",
 	state,
 	name: id,
 	task: "repair the spawn lock",
 	elapsedMs: 1_000,
 });
 
-test("workflow panel elapsed advances every second through repeated cached projections (#5239)", () => {
+test("extension agent elapsed time advances every second through repeated cached projections (#5239)", () => {
 	let now = 100_000;
 	const date = vi.spyOn(Date, "now").mockImplementation(() => now);
 	const hub = new AgentPanelSourceHub();
@@ -219,33 +217,6 @@ test("a focused paused panel has no recurring repaint timer (#5239)", async () =
 	}
 });
 
-test("a finished workflow opened outside the panel leaves it without another source event (#5239)", async () => {
-	initTheme("dark");
-	vi.useFakeTimers();
-	const hub = new AgentPanelSourceHub();
-	hub.register({ items: () => [row("run:opened", "done")], subscribe: () => () => {}, open: () => true });
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	let widget: object | undefined;
-	const dispose = bindAgentPanel(session, {
-		setWidget(_key: string, value: object | undefined) {
-			widget = value;
-		},
-		requestRender() {},
-	} as never);
-	try {
-		vi.advanceTimersByTime(31_000);
-		assert.ok(widget);
-		assert.equal(vi.getTimerCount(), 0);
-		assert.equal(openAgentPanelItem(session, "run:opened"), true);
-		await vi.advanceTimersByTimeAsync(AGENT_PANEL_REFRESH_WINDOW_MS);
-		assert.equal(widget, undefined);
-	} finally {
-		dispose();
-		hub.dispose();
-		vi.useRealTimers();
-	}
-});
-
 test("newly scrolled panel rows show their elapsed time on the first frame (#5239)", async () => {
 	initTheme("dark");
 	const fixture = taskFixture();
@@ -294,41 +265,6 @@ test("newly scrolled panel rows show their elapsed time on the first frame (#523
 
 test("finished rows the panel keeps read dim after thirty seconds (#5239)", () => {
 	assert.equal(AGENT_PANEL_FADE_MS, 30_000);
-});
-
-test("a source's viewed flag drops the finished workflow row (#5239)", async () => {
-	initTheme("dark");
-	vi.useFakeTimers();
-	const hub = new AgentPanelSourceHub();
-	let viewed = false;
-	let changed = () => {};
-	hub.register({
-		items: () => [{ ...row("run:viewed", "stopped"), viewed }],
-		subscribe: (listener) => {
-			changed = listener;
-			return () => {};
-		},
-	});
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	let widget: object | undefined;
-	const dispose = bindAgentPanel(session, {
-		setWidget(_key: string, value: object | undefined) {
-			widget = value;
-		},
-		requestRender() {},
-	} as never);
-	try {
-		vi.advanceTimersByTime(31_000);
-		assert.ok(widget);
-		viewed = true;
-		changed();
-		await vi.advanceTimersByTimeAsync(AGENT_PANEL_REFRESH_WINDOW_MS);
-		assert.equal(widget, undefined);
-	} finally {
-		dispose();
-		hub.dispose();
-		vi.useRealTimers();
-	}
 });
 
 test("an interrupted-but-running subagent is treated as live for x in the panel and stays in /tasks until stopped (#5239)", async () => {

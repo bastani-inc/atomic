@@ -34,9 +34,6 @@ export interface SettingsConfig {
 	availableClassifierModels?: ClassifierModel<ClassifierApi>[];
 	decisionModel?: string;
 	decisionModelScope?: "global" | "project";
-	/** `workflows.autoAdvanceAfterSteer`. */
-	autoAdvanceAfterSteer?: boolean;
-	autoAdvanceAfterSteerScope?: "global" | "project";
 	availableCompactorModels?: CompactorModel[];
 	compactionModel?: string;
 	compactionModelScope?: "global" | "project";
@@ -83,7 +80,6 @@ export interface SettingsCallbacks {
 	onCacheWarmingChange: (mode: CacheWarmingMode) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
 	onDecisionModelChange?: (model: string) => void;
-	onAutoAdvanceAfterSteerChange?: (enabled: boolean) => void;
 	onCompactionModelChange?: (model: string) => void;
 	onModelThinkingLevelChange?: (provider: string, modelId: string, level: ThinkingLevel) => void;
 	onModelThinkingLevelRemove?: (provider: string, modelId: string) => void;
