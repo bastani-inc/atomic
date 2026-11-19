@@ -658,9 +658,32 @@ const COLLECTION_PHASES: Record<SnapshotCollectionPhase, string> = {
 	record: "recording its outcome for",
 };
 
+const COLLECTION_RETRY =
+	"collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.";
+
+/** The non-empty messages of `cause` and of the errors it wraps, outermost first: at most eight. */
+function causeMessages(cause: unknown): string[] {
+	const messages: string[] = [];
+	let current = cause;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const message = dataProperty(current, "message");
+		if (typeof message === "string" && message.trim() !== "") messages.push(message.trim());
+		current = dataProperty(current, "cause");
+	}
+	return messages;
+}
+
 /**
- * Collecting unreferenced snapshot blobs failed; the storage failure is the `cause`. No blob a retained snapshot
- * references was deleted, and running the collection again is safe, so it is retryable.
+ * How SQLite names the trigger or view that stops it renaming a table: one that no longer compiles, such as one that
+ * refers to a dropped table, as in `error in trigger <name>: no such table: main.<table>`. Drivers add their own prefix.
+ */
+const BROKEN_SCHEMA_OBJECT = /\berror in (trigger|view) (.+?)(?: after [a-z ]+)?: /u;
+
+/**
+ * Collecting unreferenced snapshot blobs failed; the storage failure is the `cause`, and the summary ends with its
+ * innermost reason, the database's own words. No blob a retained snapshot references was deleted, and running the
+ * collection again is safe, so it is retryable. When SQLite names a trigger or view that stops the move of the chunk
+ * table to the row layout at its rename (#5541), the hint names it and says to fix or drop it (#5622).
  */
 export class WorkspaceCollectionError extends WorkspaceError implements WorkspaceCollectionErrorFields {
 	override readonly name = "WorkspaceCollectionError" as const;
@@ -671,10 +694,19 @@ export class WorkspaceCollectionError extends WorkspaceError implements Workspac
 	declare readonly deleted: number;
 
 	constructor(fields: WorkspaceCollectionErrorFields, cause?: Error) {
+		const messages = causeMessages(cause);
+		const reason = messages.at(-1);
+		// The sweep is the only phase that renames a table: the chunk table's move ends it.
+		const blocker =
+			fields.phase === "sweep"
+				? messages.map((message) => BROKEN_SCHEMA_OBJECT.exec(message)).find((match) => match !== null)
+				: undefined;
 		super({
 			code: "collection-failed",
-			summary: `Snapshot blob collection failed while ${COLLECTION_PHASES[fields.phase]} ${fields.table}`,
-			hint: "No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
+			summary: `Snapshot blob collection failed while ${COLLECTION_PHASES[fields.phase]} ${fields.table}${reason === undefined ? "" : `: ${reason}`}`,
+			hint: blocker
+				? `A trigger or view that refers to a missing table blocks moving the snapshot chunk table to its new layout until it is fixed or dropped: SQLite renames no table while one exists. Fix the ${blocker[1]} ${blocker[2]}, or drop it with DROP ${blocker[1]!.toUpperCase()} "${blocker[2]!.replaceAll('"', '""')}", and the next collection finishes the move. No blob a retained snapshot needs was deleted, and snapshots keep working meanwhile; ${COLLECTION_RETRY}`
+				: `No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; ${COLLECTION_RETRY}`,
 			fields: { table: fields.table, phase: fields.phase, deleted: fields.deleted },
 			retryable: true,
 			cause,

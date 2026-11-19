@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.ts";
 import {
 	unreadablePathError,
 	unwritablePathError,
@@ -919,11 +920,85 @@ describe("WorkspaceCollectionError (#4355)", () => {
 	const cause = new Error("database is locked");
 	const error = new WorkspaceCollectionError({ table: "team_snapshot_blobs", phase: "sweep", deleted: 4 }, cause);
 
-	test("renders what failed, where, its code and what to do", () => {
+	test("renders what failed, where, the storage failure's reason, its code and what to do", () => {
 		assert.equal(
 			error.message,
-			"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs (collection-failed). No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
+			"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: database is locked (collection-failed). No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
 		);
+	});
+
+	test("shows the reason of the innermost failure a storage error wraps, as a remote database reports it (#5622)", () => {
+		const storage = new StorageUnavailableError(
+			{ adapter: "libsql", location: "https://db.example" },
+			new Error("SQLITE_FULL: SQLite error: database or disk is full", {
+				cause: new Error("SQLite error: database or disk is full"),
+			}),
+		);
+		for (const phase of ["claim", "index", "sweep", "record"] as const) {
+			const failed = new WorkspaceCollectionError({ table: "snapshot_blobs", phase, deleted: 0 }, storage);
+			assert.match(failed.summary, /snapshot_blobs: SQLite error: database or disk is full$/u);
+			assert.match(
+				failed.hint,
+				/^No blob a retained snapshot needs was deleted\. Check that the database is writable/u,
+			);
+		}
+		assert.equal(
+			new WorkspaceCollectionError({ table: "snapshot_blobs", phase: "sweep", deleted: 0 }).summary,
+			"Snapshot blob collection failed while deleting unreferenced blobs from snapshot_blobs",
+		);
+	});
+
+	test("names the trigger or view SQLite reports when one that refers to a missing table blocks the chunk table move (#5622)", () => {
+		const remote = new StorageUnavailableError(
+			{ adapter: "libsql", location: "https://db.example" },
+			new Error("SQLITE_UNKNOWN: SQLite error: error in trigger audit_log: no such table: main.audit", {
+				cause: new Error("SQLite error: error in trigger audit_log: no such table: main.audit"),
+			}),
+		);
+		const local = new StorageUnavailableError(
+			{ adapter: "node-sqlite", location: "/data/atomic.sqlite" },
+			new Error("error in view report view: no such table: main.sales"),
+			"error in view report view: no such table: main.sales (SQLite code 1)",
+		);
+		for (const [cause, summary, hint] of [
+			[
+				remote,
+				"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: SQLite error: error in trigger audit_log: no such table: main.audit",
+				'Fix the trigger audit_log, or drop it with DROP TRIGGER "audit_log", and the next collection finishes the move.',
+			],
+			[
+				local,
+				"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: error in view report view: no such table: main.sales",
+				'Fix the view report view, or drop it with DROP VIEW "report view", and the next collection finishes the move.',
+			],
+			[
+				new Error('error in view 売上"q after rename: no such column: total'),
+				'Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs: error in view 売上"q after rename: no such column: total',
+				'Fix the view 売上"q, or drop it with DROP VIEW "売上""q", and the next collection finishes the move.',
+			],
+		] as const) {
+			const blocked = new WorkspaceCollectionError(
+				{ table: "team_snapshot_blobs", phase: "sweep", deleted: 2 },
+				cause,
+			);
+			assert.equal(blocked.summary, summary);
+			assert.equal(
+				blocked.hint,
+				`A trigger or view that refers to a missing table blocks moving the snapshot chunk table to its new layout until it is fixed or dropped: SQLite renames no table while one exists. ${hint} No blob a retained snapshot needs was deleted, and snapshots keep working meanwhile; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.`,
+			);
+			assert.equal(blocked.message, `${summary} (collection-failed). ${blocked.hint}`);
+			assert.deepEqual(blocked.fields, { table: "team_snapshot_blobs", phase: "sweep", deleted: 2 });
+			const rehydrated = rehydrateWorkspaceError(
+				JSON.parse(JSON.stringify(serializeWorkspaceError(blocked))) as SerializedWorkspaceError,
+			) as WorkspaceCollectionError;
+			assert.equal(rehydrated.message, blocked.message);
+			assert.equal(rehydrated.hint, blocked.hint);
+			// Only the sweep, which ends with the move, renames a table.
+			assert.match(
+				new WorkspaceCollectionError({ table: "team_snapshot_blobs", phase: "index", deleted: 0 }, cause).hint,
+				/^No blob a retained snapshot needs was deleted\. Check that the database is writable/u,
+			);
+		}
 	});
 
 	test("carries its fields, the storage failure as its cause, and is retryable", () => {
