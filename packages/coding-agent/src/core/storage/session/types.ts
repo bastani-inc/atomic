@@ -345,6 +345,53 @@ export interface SessionSearchIndex {
 	): Promise<readonly number[] | undefined>;
 }
 
+/** The most candidates one task-reference duplicate query takes. */
+export const SESSION_TASK_REFERENCE_CANDIDATES = 100;
+/** The most earlier sequences one task-reference duplicate page returns. */
+export const SESSION_TASK_REFERENCE_DUPLICATES_PAGE = 64;
+
+/**
+ * A task reference saved at `seq`: the entry itself (`<entry id>`), or one content block of it
+ * (`<entry id>:<contentIndex>`). The store reads the entry ID at `seq` itself, so the caller never sends one.
+ */
+export interface SessionTaskReferenceCandidate {
+	/** The stored sequence of the entry the reference was read from. */
+	readonly seq: number;
+	/** The content block the reference names; absent for a reference to the entry itself. */
+	readonly contentIndex?: number;
+	/**
+	 * For a reference to the entry itself, the length of its ID's ASCII `:<digits>` suffix, when it has one: an earlier
+	 * entry whose ID is the rest names the same reference through that content block. Ignored with `contentIndex`.
+	 */
+	readonly suffixChars?: number;
+}
+
+export interface SessionTaskReferenceDuplicateQuery {
+	/** The epoch the candidates were read in; another epoch is a `SessionConflictError`. */
+	readonly epoch: string;
+	/**
+	 * The watermark the candidates were read at. Every candidate's `seq` is at most this. Entries appended after it are
+	 * allowed; a store whose history ends before it, or which has no entry at a candidate's `seq`, conflicts.
+	 */
+	readonly throughSeq: number;
+	/** Only earlier sequences after this one: the previous page's `nextAfterSeq`. Default 0. */
+	readonly afterSeq?: number;
+	/** At most {@link SESSION_TASK_REFERENCE_CANDIDATES}. */
+	readonly candidates: readonly SessionTaskReferenceCandidate[];
+	/** At most, and by default, {@link SESSION_TASK_REFERENCE_DUPLICATES_PAGE}. */
+	readonly limit?: number;
+}
+
+export interface SessionTaskReferenceDuplicatePage {
+	/**
+	 * Ascending and distinct: each sequence before some candidate's `seq` whose entry may name the same reference, by
+	 * its entry ID alone. The entry's kind and blocks are not checked: the caller verifies each one.
+	 */
+	readonly seqs: readonly number[];
+	/** Present when more sequences follow: the `afterSeq` of the next page. */
+	readonly nextAfterSeq?: number;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
 	/**
@@ -405,6 +452,15 @@ export interface SessionStore {
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
 	readResumeAt?(sessionId: string, leafId: string, throughSeq: number): Promise<SessionResume>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
+	/**
+	 * Earlier entries that may save the same task reference as each candidate, found through the store's entry-ID index
+	 * without reading or sending entry bodies or IDs. Resolves with `undefined` when the store cannot answer from an
+	 * index now; the caller then verifies candidates from entry metadata itself. Absent when the store never can.
+	 */
+	findTaskReferenceDuplicateCandidates?(
+		sessionId: string,
+		query: SessionTaskReferenceDuplicateQuery,
+	): Promise<SessionTaskReferenceDuplicatePage | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;
 	list(query: SessionListQuery): AsyncIterable<SessionSummary>;
