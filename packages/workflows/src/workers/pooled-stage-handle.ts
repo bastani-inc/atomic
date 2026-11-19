@@ -158,6 +158,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private streaming: StreamingMessage;
 	private currentStatus: StageControlStatus = "running";
 	private streamingNow = false;
+	private retryPending = false;
+	private pauseSupported = true;
 	/** When the stage's turn started, read from the worker's snapshot and the events since. */
 	private turnStart = new StageTurnStart();
 	private pendingRetry: StageRetryWait;
@@ -241,6 +243,12 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	get isStreaming(): boolean {
 		return this.streamingNow;
+	}
+	get canPause(): boolean {
+		return this.pauseSupported && !this.reconnecting && !this.disposed && this.ended === undefined;
+	}
+	get isRetrying(): boolean {
+		return this.retryPending;
 	}
 	get isWaitingToRetry(): boolean {
 		return this.pendingRetry === "backoff";
@@ -446,6 +454,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.currentStatus = "paused";
 		this.pendingRetry = undefined;
 		this.streamingNow = false;
+		this.retryPending = false;
 	}
 	async resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
 		this.throwIfClosed();
@@ -484,6 +493,7 @@ export class PooledStageHandle implements StageControlHandle {
 
 	/** Releases sends waiting on the current watch; the next watch gets a fresh signal. */
 	private leaveWatch(): void {
+		this.retryPending = false;
 		this.turnStart = new StageTurnStart();
 		this.publishedActivity = undefined;
 		this.pendingRetry = undefined;
@@ -813,6 +823,8 @@ export class PooledStageHandle implements StageControlHandle {
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
+		this.retryPending = snapshot.retryPending === true;
+		this.pauseSupported = snapshot.canPause !== false;
 		this.turnStart = new StageTurnStart(snapshot.turn);
 		this.publishedActivity = snapshot.publishedActivity;
 		this.pendingRetry = snapshot.modelSwitch ?? (snapshot.waitingToRetry ? "backoff" : undefined);
@@ -873,7 +885,16 @@ export class PooledStageHandle implements StageControlHandle {
 				this.streamingNow = true;
 				this.currentStatus = "running";
 				return;
+			case "model_fallback_start":
+				this.retryPending = true;
+				return;
+			case "auto_retry_end":
+			case "model_fallback_end":
+			case "agent_settled":
+				this.retryPending = false;
+				return;
 			case "agent_end":
+				this.retryPending = event.retryPending === true;
 				this.streamingNow = false;
 				this.streaming = undefined;
 				return;
