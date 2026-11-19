@@ -87,6 +87,7 @@ By default, Atomic gives the model these tools:
 - `search` - search file contents
 - `ask_user_question` - ask structured questions in the TUI
 - `todo` - manage file-based todos
+- `codemode` - compose permitted tool calls in a script
 
 On native Windows, `powershell` is also enabled when a PowerShell executable is available.
 
