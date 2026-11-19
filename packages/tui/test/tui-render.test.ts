@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -142,8 +142,23 @@ describe("TUI render scheduling", () => {
 	});
 });
 
+/**
+ * The TUI appends its redraw log off the render path, so the event loop never waits on the disk: a line lands after the
+ * frame that logged it, by however long the file system takes on a loaded machine.
+ */
+const REDRAW_LOG_WRITE_WAIT_MS = 5_000;
+
+async function readLogOnceItMatches(logPath: string, expected: RegExp): Promise<string> {
+	const deadline = Date.now() + REDRAW_LOG_WRITE_WAIT_MS;
+	for (;;) {
+		const text = existsSync(logPath) ? readFileSync(logPath, "utf-8") : "";
+		if (expected.test(text) || Date.now() >= deadline) return text;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
 describe("TUI debug logging", () => {
-	it("writes redraw logs to the provided directory", async () => {
+	it("writes redraw logs to the provided directory (#5513)", async () => {
 		const logDir = mkdtempSync(join(tmpdir(), "pi-tui-log-"));
 		try {
 			await withEnv({ PI_TUI_DEBUG_REDRAW: "1" }, async () => {
@@ -155,11 +170,12 @@ describe("TUI debug logging", () => {
 				tui.start();
 				await terminal.waitForRender();
 
-				assert.match(readFileSync(join(logDir, "pi-tui-debug.log"), "utf-8"), /fullRender: first render/);
+				const firstRender = /fullRender: first render/;
+				assert.match(await readLogOnceItMatches(join(logDir, "pi-tui-debug.log"), firstRender), firstRender);
 				tui.stop();
 			});
 		} finally {
-			rmSync(logDir, { recursive: true, force: true });
+			rmSync(logDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 		}
 	});
 });

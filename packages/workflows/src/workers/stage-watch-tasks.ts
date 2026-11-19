@@ -1,11 +1,15 @@
 import {
 	findTaskMessageError,
 	getOwnerTaskStore,
+	isTaskTurnInterrupted,
 	type OwnerTaskStore,
 	ownerTaskViewSource,
+	type PublishedChatActivity,
+	sessionWaitsToRetry,
 	type TaskId,
 	TaskMessageError,
 	type TaskViewSource,
+	taskResumedTurns,
 	watchOwnerTaskStoreBinding,
 } from "@bastani/atomic";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
@@ -19,8 +23,29 @@ export function snapshotStageTasks(source: TaskViewSource): PooledStageTasks {
 	// Every task of the stage's owner: the watcher's views list the stage's own, and each worker's view its shells.
 	const tasks = [...(source.ownerTasks ?? source.tasks)];
 	const background = (source.ownerBackgroundTasks ?? source.backgroundTasks).map((task) => task.ref.taskId);
+	const chatActivity: [TaskId, PublishedChatActivity][] = [];
+	for (const task of tasks) {
+		if (task.kind !== "agent" || task.execution.kind === "settled") continue;
+		const session = source.followTaskTranscript(task.ref.taskId)?.session;
+		const chat = session?.chatSession;
+		if (chat && sessionWaitsToRetry(chat)) chatActivity.push([task.ref.taskId, "retrying"]);
+		else if (chat?.retryStatus?.type === "model_fallback_start") chatActivity.push([task.ref.taskId, "switching"]);
+		else if (session?.isRunning?.()) chatActivity.push([task.ref.taskId, "working"]);
+	}
 	return {
-		tasks,
+		...(chatActivity.length ? { chatActivity } : {}),
+		tasks: tasks.map((task) => {
+			if (task.kind !== "agent") return task;
+			const interrupted = isTaskTurnInterrupted(task);
+			const resumed = taskResumedTurns(task);
+			return !interrupted && resumed === undefined
+				? task
+				: {
+						...task,
+						...(interrupted ? { turnInterrupted: true as const } : {}),
+						...(resumed === undefined ? {} : { resumedTurns: resumed }),
+					};
+		}),
 		background,
 		settlement: [...source.settlementOrder].map(([id, sequence]) => [id, sequence.toString()] as const),
 		activity: background.flatMap((id) => {
@@ -46,8 +71,6 @@ export async function runStageTaskAction(
 	action: PooledTaskAction,
 ): Promise<PooledTaskReply> {
 	switch (action.kind) {
-		case "foreground":
-			return { kind: "foreground", result: await source.foregroundTask(taskId) };
 		case "cancel":
 			return { kind: "cancel", result: await source.cancelTask(taskId) };
 		case "input":

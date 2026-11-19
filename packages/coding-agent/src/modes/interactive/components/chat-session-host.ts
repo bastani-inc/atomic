@@ -2,6 +2,7 @@ import type { Component, Focusable, TuiMouseEvent, TuiMouseEventResult } from "@
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
+import type { PublishedChatActivity } from "../../../core/session-retry-status.js";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
@@ -83,12 +84,6 @@ export type {
 	ChatSessionSubmitMode,
 	ChatSessionViewportSettings,
 } from "./chat-session-host-types.ts";
-
-/** The earlier of a run's start, read from its session's messages, and the start of the turn it goes on from. */
-function earliestStart(runStartedAt: number | undefined, turnStartedAt: number | undefined): number | undefined {
-	if (turnStartedAt === undefined) return runStartedAt;
-	return runStartedAt === undefined ? turnStartedAt : Math.min(runStartedAt, turnStartedAt);
-}
 
 export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never> implements Component, Focusable {
 	focused = true;
@@ -252,7 +247,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.seenFirstRawUser = false;
 		this.state.firstUserEntryExactText = undefined;
 		this.state.firstUserEntry = undefined;
-		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
+		this.state.statusMessage = "";
+		if (this.state.noticeMessage !== this.state.lastWarningMessage) this.state.noticeMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
 		this.state.unconfirmedQueuedMessages = [];
@@ -415,7 +411,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	hydrateRetryWait(messages?: readonly MeteredRunMessage[], turnStartedAt?: number): void {
 		if (this.state.disposed) return;
 		const run = messages === undefined ? undefined : runInProgress(messages);
-		const startedAt = earliestStart(run?.startedAt, turnStartedAt);
+		const startedAt = turnStartedAt ?? run?.startedAt;
 		if (startedAt !== undefined) {
 			this.state.workingRunMeter.awaitRetry(startedAt, run?.settledTokens ?? 0);
 			this.state.retryContinuesRun = true;
@@ -431,10 +427,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 * that saw the turn's failed request keeps its own count. The move ends as `model_fallback_start` shows it does,
 	 * with that request's `agent_start` or the switch's `model_fallback_end`.
 	 */
-	hydrateModelSwitch(turnStartedAt: number): void {
+	hydrateModelSwitch(turnStartedAt?: number, messages?: readonly MeteredRunMessage[]): void {
 		if (this.state.disposed) return;
-		if (!this.state.retryContinuesRun) {
-			this.state.workingRunMeter.awaitRetry(turnStartedAt, 0);
+		if (turnStartedAt !== undefined && !this.state.retryContinuesRun) {
+			this.state.workingRunMeter.awaitRetry(turnStartedAt, messages ? runInProgress(messages).settledTokens : 0);
 			this.state.retryContinuesRun = true;
 		}
 		showChatSessionModelSwitch(this.state);
@@ -506,8 +502,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return renderChatSessionPendingMessages(this.state, width);
 	}
 
-	renderWorkingStatus(width: number): string[] {
-		return renderChatSessionWorkingStatus(this.state, width);
+	renderWorkingStatus(width: number, published?: PublishedChatActivity): string[] {
+		return renderChatSessionWorkingStatus(this.state, width, published);
 	}
 
 	renderUsage(width: number): string[] {
@@ -531,13 +527,23 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return (this.taskSource?.backgroundTasks.length ?? 0) > 0;
 	}
 
+	private footerTaskSource(): TaskViewSource | undefined {
+		const agent = this.state.getAgentSession?.();
+		const session = agent ?? this.state.getChatBoxSession?.();
+		const store = session && getOwnerTaskStore(session);
+		return (
+			(agent ? undefined : this.state.getTaskSource?.()) ?? (store ? ownerTaskViewSource(store) : this.taskSource)
+		);
+	}
+
 	renderTaskFooter(width: number): string[] {
-		if (this.taskSource === undefined) return [];
-		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
+		const source = this.footerTaskSource();
+		return source ? renderTaskFooter(source, width) : [];
 	}
 	renderFooter(width: number, navigationActive = false): string[] {
 		const footer = renderChatSessionFooter(
 			this.state,
+			() => this.footerTaskSource(),
 			width,
 			navigationActive || (this.hasTaskInspector && !this.taskInspectorFullscreen),
 		);
@@ -675,11 +681,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	statusText(): string {
-		return this.state.statusMessage;
+		return this.state.noticeMessage || this.state.statusMessage;
 	}
 
 	showWarning(message: string): void {
-		this.state.statusMessage = message;
+		this.state.noticeMessage = message;
 		this.state.lastWarningMessage = message;
 		this.state.requestRender?.();
 	}
@@ -775,11 +781,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (!this.state.workingLifecycleActive) startChatSessionWorkingLifecycle(this.state);
 		if (this.state.workingRunMeter.snapshot() === undefined) {
 			const run = runInProgress(messages, streaming);
-			this.state.workingRunMeter.resume(
-				earliestStart(run.startedAt, turnStartedAt),
-				run.settledTokens,
-				run.requesting,
-			);
+			this.state.workingRunMeter.resume(turnStartedAt ?? run.startedAt, run.settledTokens, run.requesting);
 			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
 		}
 		if (this.state.workingMessage === undefined) {

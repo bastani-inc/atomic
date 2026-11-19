@@ -13,6 +13,7 @@ import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.js";
+import "../../packages/coding-agent/src/modes/interactive/interactive-prompt-turn.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-runtime.js";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.js";
 import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
@@ -72,7 +73,7 @@ afterEach(() => {
 });
 
 /** The main chat's event handling, rendering its status row. */
-function mainChat() {
+function mainChat(prepare?: (mode: InteractiveModeBase) => void) {
 	const statusContainer = new Container();
 	const settingsManager = {
 		getShowTerminalProgress: () => false,
@@ -124,6 +125,7 @@ function mainChat() {
 		updatePendingMessagesDisplay() {},
 		showError() {},
 	}) as InteractiveModeBase;
+	prepare?.(mode);
 	return {
 		emit: (event: AgentSessionEvent) => mode.handleEvent(event),
 		status: () => plain(statusContainer.render(100)).filter((line) => line.trim().length > 0),
@@ -201,6 +203,53 @@ async function answerSecondAttempt(
 }
 
 describe("the working line counts a turn from its start through its retries (#5535)", () => {
+	test.each(["success", "cancel"])(
+		"main chat keeps the final row after a retried prompt settles: %s (#5535)",
+		async (outcome) => {
+			let submit!: () => Promise<void>;
+			const chat = mainChat((mode) => {
+				let observer: ((event: AgentSessionEvent) => void) | undefined;
+				Object.assign(mode.session, {
+					isStreaming: false,
+					subscribe(listener: (event: AgentSessionEvent) => void) {
+						observer = listener;
+						return () => {
+							observer = undefined;
+						};
+					},
+					resumeQueuedMessages: async () => {},
+					async prompt() {
+						const source = {
+							...chat,
+							emit: async (event: AgentSessionEvent) => {
+								observer?.(event);
+								await chat.emit(event);
+							},
+						};
+						await failFirstAttempt(source);
+						if (outcome === "success") await answerSecondAttempt(source);
+						else {
+							now = 8_000;
+							await chat.emit({
+								type: "auto_retry_end",
+								success: false,
+								attempt: 1,
+								finalError: "Retry cancelled",
+							});
+						}
+					},
+				});
+				submit = () => mode.runUserPromptTurn("Retry this turn");
+			});
+			try {
+				await submit();
+				assert.match(chat.status().join("\n"), / for 8s/);
+			} finally {
+				chat.dispose();
+			}
+		},
+	);
+
 	for (const [name, open] of [
 		["main chat", mainChat],
 		["subagent or stage chat", attachedChat],
@@ -472,7 +521,7 @@ describe("the working line counts a turn from its start through its retries (#55
 	});
 
 	/** A subagent's chat opened at 5 s while the subagent waits to retry the request it sent at 1 s. */
-	async function subagentChatOpenedInRetryWait() {
+	async function subagentChatOpenedInRetryWait(switching = false) {
 		now = 5_000;
 		const history = SessionManager.inMemory();
 		for (const message of waitingTurn()) await history.appendMessage(message);
@@ -482,10 +531,11 @@ describe("the working line counts a turn from its start through its retries (#55
 				listeners.add(listener);
 				return () => listeners.delete(listener);
 			},
-			isRunning: () => false,
+			isRunning: () => switching,
 			chatSession: {
-				retryAttempt: 1,
-				isStreaming: false,
+				...(switching ? { retryStatus: FALLBACK_START, turnStartedAt: 1_000 } : {}),
+				retryAttempt: switching ? 0 : 1,
+				isStreaming: switching,
 				sessionManager: history,
 				state: {},
 				getContextUsage: () => undefined,
@@ -526,6 +576,17 @@ describe("the working line counts a turn from its start through its retries (#55
 				rows.some((row) => / \(7s · /.test(row)),
 				`the next attempt counts from the turn's start: ${rows.filter((row) => row.includes("∀")).join(" | ")}`,
 			);
+		} finally {
+			await chat.dispose();
+		}
+	});
+
+	test("a subagent chat opened during the model switch retains the first request's time through the next attempt (#5535)", async () => {
+		const chat = await subagentChatOpenedInRetryWait(true);
+		try {
+			assert.match(chat.rows().join("\n"), /switching model/);
+			const rows = await nextAttempt(chat.emit, chat.rows);
+			assert.match(rows.join("\n"), /\(7s · /);
 		} finally {
 			await chat.dispose();
 		}

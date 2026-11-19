@@ -247,10 +247,11 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	}
 	let changed = false;
 	switch (type) {
-		case "agent_start":
+		case "agent_start": {
 			// The attempt after a retry's wait or a model fallback continues its turn, and its time and tokens with it.
-			if (state.retryContinuesRun) state.workingRunMeter.continueRun();
-			else state.workingRunMeter.start();
+			const { turnStartedAt } = event as Extract<AgentSessionEvent, { type: "agent_start" }>;
+			if (state.retryContinuesRun) state.workingRunMeter.continueRun(turnStartedAt);
+			else state.workingRunMeter.start(turnStartedAt);
 			state.retryContinuesRun = false;
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
@@ -262,6 +263,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			changed = true;
 			state.compactionPromptStarted?.();
 			break;
+		}
 		case "agent_end": {
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
 			const interrupted = state.interruptedTurnSnapshot;

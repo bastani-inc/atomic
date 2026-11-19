@@ -120,7 +120,6 @@ function treeSource(
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		foregroundTask: async () => ({ ok: true, value: { kind: "foreground" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,
 		writeTaskInput: async () => ({ ok: true, value: { acceptedBytes: 0 } }),
@@ -595,6 +594,27 @@ describe("a live subagent's chat box (#4640)", () => {
 		idle.page.dispose();
 	});
 
+	test("a subagent chat opened while the session switches models shows the switch until the next request (#5572)", async () => {
+		const phase = {
+			type: "model_fallback_start",
+			from: "primary",
+			to: "fallback",
+			reason: "not found",
+			attempt: 1,
+		} as const;
+		const { page, live } = await livePage({
+			chatSession: { ...(await liveChatSession()), retryStatus: phase },
+			isRunning: () => true,
+		});
+		try {
+			assert.match(text(page.render(100, 20)), /∀ switching model…/);
+			for (const listener of live.listeners) listener({ type: "agent_start" });
+			assert.doesNotMatch(text(page.render(100, 20)), /switching model…/);
+		} finally {
+			page.dispose();
+		}
+	});
+
 	test("a chat opened while its subagent waits to retry shows `retrying…` on the usage row until the next attempt (#5483)", async () => {
 		// Between attempts the session is not streaming, but its retry has started and not ended.
 		const waiting = { ...(await liveChatSession()), retryAttempt: 1 } as ChatBoxSession;
@@ -1003,7 +1023,6 @@ describe("a subagent's task view (#4640)", () => {
 			recentActivity: note("recentActivity", []),
 			activityOmitted: note("activityOmitted", true),
 			subscribe: note("subscribe", () => {}),
-			foregroundTask: note("foregroundTask", Promise.resolve({ ok: true as const, value: { kind: "fg" } })),
 			cancelTask: note("cancelTask", Promise.resolve({ ok: true as const, value: undefined })),
 			stdinAvailable: note("stdinAvailable", true),
 			writeTaskInput: note("writeTaskInput", Promise.resolve({ ok: true as const, value: { acceptedBytes: 3 } })),
@@ -1020,7 +1039,6 @@ describe("a subagent's task view (#4640)", () => {
 		assert.equal(child.activityOmitted(id), true);
 		const listener = () => {};
 		assert.equal(typeof child.subscribe(listener), "function");
-		assert.deepEqual(await child.foregroundTask(id), { ok: true, value: { kind: "fg" } });
 		assert.deepEqual(await child.cancelTask(id), { ok: true, value: undefined });
 		assert.equal(child.stdinAvailable(id), true);
 		assert.deepEqual(await child.writeTaskInput(id, "abc"), { ok: true, value: { acceptedBytes: 3 } });
@@ -1034,7 +1052,6 @@ describe("a subagent's task view (#4640)", () => {
 			"recentActivity:child-shell",
 			"activityOmitted:child-shell",
 			`subscribe:${String(listener)}`,
-			"foregroundTask:child-shell",
 			"cancelTask:child-shell",
 			"stdinAvailable:child-shell",
 			"writeTaskInput:child-shell,abc",

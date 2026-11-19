@@ -161,9 +161,10 @@ export {
 	isTaskTurnInterrupted,
 	OwnerTaskStore,
 	type TaskActivity,
+	taskResumedTurns,
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
-export { belongsToSession, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
+export { belongsToSession, scopedBackgroundTasks, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
 export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
@@ -839,6 +840,12 @@ export {
 	WORKFLOW_SESSION_METADATA_ENV,
 	workflowSessionMetadataFromEnv,
 } from "./core/session-manager-classification.ts";
+export {
+	type PublishedChatActivity,
+	retryStatusUpdate,
+	type SessionRetryStatus,
+	sessionWaitsToRetry,
+} from "./core/session-retry-status.js";
 export {
 	findSessionStartError,
 	isRetryableSessionStartError,
