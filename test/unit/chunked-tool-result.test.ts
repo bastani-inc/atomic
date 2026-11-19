@@ -40,6 +40,23 @@ test("a saved tool result is read field by field: its call, tool, outcome and du
 	});
 });
 
+test("a saved result cannot answer a different call whose identifier is its prefix (#5593)", async () => {
+	const result = (toolCallId: string) =>
+		JSON.stringify({
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "read",
+				content: [{ type: "text", text: "x".repeat(1_100_000) }],
+			},
+		});
+	const id = "t".repeat(1024) + "-distinct";
+	assert.equal((await chunkedToolResult(chunks(result(id), 65536)))?.toolCallId, id);
+	// An id larger than the maximum entire call entry cannot identify a call from a normal page.
+	assert.equal(await chunkedToolResult(chunks(result("t".repeat(1_048_577)), 65536)), undefined);
+});
+
 test("a saved row that is not a tool result reads as none, after its first bytes (#5593)", async () => {
 	const reply = JSON.stringify({
 		type: "message",

@@ -4,6 +4,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { readContentLines, type SavedReadImage } from "./chunked-read-lines.js";
 import { type Reader, read, skip, stringValue } from "./chunked-resume-projection.js";
 import { bindSavedReadLines } from "./saved-read-summary.js";
+import { SESSION_HISTORY_PAGE_BYTES } from "./types.js";
 
 /**
  * What a tool card needs of a saved tool result too large to read whole: which call it answers, under which tool
@@ -25,16 +26,19 @@ export interface ChunkedToolResult {
 
 /** Keys are compared exactly; any longer key is not one read here. */
 const KEY_CHARS = 32;
-/** Identities and names are short: a longer value is not kept whole and matches no call. */
+/** Ordinary scalar metadata is short. An explicitly linked call can fill the page that holds its assistant entry. */
 const VALUE_CHARS = 1024;
 const ENTRY_KEYS = new Set(["type", "id", "parentId", "timestamp"]);
 const MESSAGE_KEYS = new Set(["role", "toolCallId", "toolName", "isError", "durationMs", "timestamp"]);
 const READ_DETAILS = new Set(["widthPx", "heightPx", "bytes", "imageUnsupportedByModel"]);
 
-function* scalar(first: Token): Reader<string | number | boolean | null | undefined> {
+function* scalar(first: Token, limit = VALUE_CHARS): Reader<string | number | boolean | null | undefined> {
 	switch (first.name) {
-		case "startString":
-			return yield* stringValue(VALUE_CHARS);
+		case "startString": {
+			// Never let an oversized identifier impersonate a different call using its prefix.
+			const value = yield* stringValue(limit + 1);
+			return value.length > limit ? undefined : value;
+		}
 		case "numberValue":
 			return Number(first.value);
 		case "trueValue":
@@ -83,7 +87,7 @@ function* fields(
 		) {
 			selected.details = yield* fields(READ_DETAILS);
 		} else if (keys.has(key)) {
-			selected[key] = yield* scalar(first);
+			selected[key] = yield* scalar(first, key === "toolCallId" ? SESSION_HISTORY_PAGE_BYTES : VALUE_CHARS);
 			if (kind && key === kind[0] && selected[key] !== kind[1]) return OTHER;
 		} else yield* skip(first);
 	}
