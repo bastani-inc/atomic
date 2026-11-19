@@ -5093,6 +5093,15 @@ for (const ownerless of [false, true]) {
 			assert.equal(text(byTask), text(result), "the task ID is addressable before its first durable record");
 			const foreign = harness({ ownerless });
 			assert.match(text(await foreign.call({ action: "resume", id: newTaskId })), /Unknown subagent/);
+			vi.resetModules();
+			const replacement = await import("../../packages/subagents/src/runs/foreground/subagent-run-control.js");
+			const generationResult = await replacement.controlSubagentChildren(
+				h.deps,
+				h.ctx,
+				{ action: "resume", id: newTaskId },
+				AbortSignal.abort(),
+			);
+			assert.equal(text(generationResult), text(result), "a replacement module observes the original task handle");
 			const plain = await answeredWithin(h.call({ action: "resume", id: childId }));
 			assert.ok(plain, "reloading the owner did not leave resume waiting for the pending save");
 			assert.equal(text(plain), text(result));
@@ -5113,6 +5122,44 @@ for (const ownerless of [false, true]) {
 		}
 		await h.waitForLatest(childId, (record) => record.terminalStatus === "ok");
 		assert.equal(h.runs.length, 2);
+	});
+}
+
+for (const source of ["wake", "direct resume"] as const) {
+	test(`a replacement control waits for the previous generation's ${source} to admit the child instead of reopening it twice (#5560)`, async () => {
+		const h = harness();
+		const childId = "generation:0";
+		const dispatcher = await releasedWithWakes(h, "generation");
+		await settled(h, resumedTaskId(await h.call({ action: "resume", id: childId, message: "finish up" })));
+		await h.waitForLatest(childId, (record) => record.terminalStatus === "ok");
+		const starting = gateRestoreOf(h, "subagent-worker-generation");
+		const finish = Promise.withResolvers<void>();
+		const before = h.runs.length;
+		h.finishOn.set("previous caller", finish);
+		const original =
+			source === "wake"
+				? wakeWithResult(h, dispatcher, childId, finish)
+				: h.call({ action: "resume", id: childId, message: "previous caller" });
+		try {
+			await starting.reached;
+			vi.resetModules();
+			const replacement = await import("../../packages/subagents/src/runs/foreground/subagent-run-control.js");
+			const pending = replacement.controlSubagentChildren(h.deps, h.ctx, {
+				action: "resume",
+				id: childId,
+				message: "never delivered",
+			});
+			starting.gate.resolve();
+			const answer = await answeredWithin(pending);
+			assert.ok(answer, "the replacement caller doesn't wait for the woken run");
+			assert.match(text(answer), /is already running as task/);
+		} finally {
+			starting.gate.resolve();
+			finish.resolve();
+			await original;
+		}
+		await h.waitForLatest(childId, (record) => record.terminalStatus === "ok");
+		assert.equal(h.runs.length, before + 1, "one admission for the child");
 	});
 }
 

@@ -192,7 +192,11 @@ interface ActiveRestoration {
 	knownPreviousIntercomId?: string;
 }
 
-const activeRestorations = new Map<string, ActiveRestoration>();
+// The restore owns its entry until release. A reloaded stage uses its existing owner and must join that same restore.
+const ACTIVE_RESTORATIONS = Symbol.for("@bastani/subagents/active-restorations@1");
+const processRestores = globalThis as { [ACTIVE_RESTORATIONS]?: Map<string, ActiveRestoration> };
+const activeRestorations = processRestores[ACTIVE_RESTORATIONS] ?? new Map<string, ActiveRestoration>();
+processRestores[ACTIVE_RESTORATIONS] = activeRestorations;
 
 /**
  * A restoration of this child that has not relaunched it yet: it settles once the child runs again or could not be
