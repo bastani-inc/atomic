@@ -8,6 +8,7 @@ import { selectSessionStorageWithSettings } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
+import type { SnapshotChunkMoveSpace } from "../worktree-snapshot/blob-store.ts";
 import { openAdapterSelectionDatabase } from "./adapter-open.js";
 import type { SqliteDatabase, SqliteRow } from "./database.js";
 import {
@@ -49,11 +50,12 @@ import {
 	TEAM_PROFILE_ENV,
 } from "./selection.js";
 
-/** A shard file the catalog registers that cannot be used: it is gone, or it exists and does not open as a database. */
-async function unavailableShardFiles(
+/** Read each registered shard once to check its availability and pending layout work. */
+async function inspectShardFiles(
 	shards: readonly { readonly id: number; readonly path: string; readonly kind: "native" | "adopted" }[],
 	directory: string,
-): Promise<JournalStoreStatus["unavailable"]> {
+) {
+	const moves: { path: string; space: SnapshotChunkMoveSpace }[] = [];
 	const unavailable: JournalStoreStatus["unavailable"][number][] = [];
 	const refused = (
 		shard: { readonly id: number; readonly kind: "native" | "adopted" },
@@ -87,6 +89,9 @@ async function unavailableShardFiles(
 			const database = await openNodeSqliteDatabase(path, { readOnly: true });
 			try {
 				await database.get("SELECT count(*) FROM sqlite_master");
+				const { SqlSnapshotBlobStore } = await import("../worktree-snapshot/blob-store.ts");
+				const space = await SqlSnapshotBlobStore.pendingChunkMove(database).catch(() => undefined);
+				if (space) moves.push({ path, space });
 			} finally {
 				await database.close();
 			}
@@ -94,7 +99,7 @@ async function unavailableShardFiles(
 			refused(shard, path, "shard-open-failed", cause as Error);
 		}
 	}
-	return unavailable;
+	return { unavailable, ...(moves.length ? { snapshotChunkMoves: moves } : {}) };
 }
 
 /** What the journal store's catalog lists, read without changing it. */
@@ -112,7 +117,7 @@ async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string
 		shards: shards.length - adopted.length,
 		adopted: adopted.length,
 		runs: Number(runs!.count),
-		unavailable: await unavailableShardFiles(shards, directory),
+		...(await inspectShardFiles(shards, directory)),
 		skipped: skipped.map((record) => ({ path: record.path, reason: record.reason })),
 	};
 }
@@ -135,6 +140,8 @@ export interface StorageProbe {
 	readonly noDatabaseHook?: true;
 	/** The domain whose identical selection was already checked. */
 	readonly sameAs?: StorageStatusDomain;
+	/** The snapshot chunk table still uses the old layout. Read without starting a move. */
+	readonly snapshotChunkMove?: SnapshotChunkMoveSpace;
 }
 
 export interface DomainStatus {
@@ -174,6 +181,7 @@ export interface JournalStoreStatus {
 		/** The driver's reason, for a file that cannot be opened. */
 		readonly detail?: string;
 	}[];
+	readonly snapshotChunkMoves?: readonly { readonly path: string; readonly space: SnapshotChunkMoveSpace }[];
 	/** Journals the store considered adopting and skipped, with the `JournalAdoptError` code. */
 	readonly skipped: readonly { readonly path: string; readonly reason: string }[];
 }
@@ -614,12 +622,22 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 		const key = storageSelectionKey(selection, agentDir);
 		const earlier = checked.get(key);
 		if (earlier !== undefined && inspect === undefined) return { ...earlier.probe, sameAs: earlier.domain };
-		const probe = await probeSelection(
+		let snapshotChunkMove: SnapshotChunkMoveSpace | undefined;
+		const inspectChunks = domain !== "intercom" && (selection.kind === "sqlite" || selection.kind === "adapter");
+		const result = await probeSelection(
 			selection,
 			{ agentDir, domain },
-			inspect,
+			inspectChunks
+				? async (database) => {
+						if (inspect) await inspect(database);
+						if (database.dialect?.name === "postgres") return;
+						const { SqlSnapshotBlobStore } = await import("../worktree-snapshot/blob-store.ts");
+						snapshotChunkMove = await SqlSnapshotBlobStore.pendingChunkMove(database, selection.prefix);
+					}
+				: inspect,
 			options.probeTimeoutMs ?? STORAGE_PROBE_TIMEOUT_MS,
 		);
+		const probe = snapshotChunkMove === undefined ? result : { ...result, snapshotChunkMove };
 		if (earlier === undefined) checked.set(key, { domain, probe });
 		return probe;
 	};
