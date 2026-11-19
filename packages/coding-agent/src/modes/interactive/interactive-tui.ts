@@ -557,10 +557,21 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		this.repairOverlayFocus();
 		// An overlay may yield before declining a mouse report. Never replay that report into a gesture that
 		// outlived its modal owner, even if the same overlay has since regained focus.
+		let finishDrag: (() => void) | undefined;
 		if (isMouseInput) {
+			let pendingEnd: { report: string; pending(): boolean } | undefined;
 			const gestures = new Map<string, (() => boolean) | undefined>();
 			for (const report of parseMouseSequences(data) ?? []) {
 				if ((report.button & 64) !== 0) continue;
+				const freeMotion = (report.button & 32) !== 0 && (report.button & 3) === 3;
+				if (!finishDrag && report.data.startsWith("\x1b[<") && (report.isRelease || freeMotion)) {
+					const end = this.pendingDragEnd(report.x, report.y, report.isRelease ? report.button : undefined);
+					if (end) {
+						// If normal replay can't end this drag, settle it without replaying into a different owner.
+						finishDrag = end.finish;
+						pendingEnd = { report: report.data, pending: end.pending };
+					}
+				}
 				const press = !report.isRelease && (report.button & (32 | 3)) === 0;
 				gestures.set(report.data, press ? this.guardMousePress(report.x, report.y) : undefined);
 			}
@@ -568,6 +579,11 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 				const focus = this.getPointerFocus();
 				const listener = viewportListener;
 				viewportListener = (report) => {
+					if (pendingEnd?.report === report) {
+						const pending = pendingEnd.pending();
+						pendingEnd = undefined;
+						if (!pending) return undefined;
+					}
 					if (gestures.has(report) && (this.getPointerFocus() !== focus || gestures.get(report)?.() === false))
 						return undefined;
 					return listener(report);
@@ -587,26 +603,27 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 						if (handled === true) {
 							this.forwardSelectionMouseInput(viewportListener, data, focused);
 							tui.requestImmediateRender();
-							return;
-						}
-						this.declineAsyncViewportInput(viewportListener, data, focused);
+						} else this.declineAsyncViewportInput(viewportListener, data, focused);
+						finishDrag?.();
 					},
-					() => this.declineAsyncViewportInput(viewportListener, data, focused),
+					() => {
+						this.declineAsyncViewportInput(viewportListener, data, focused);
+						finishDrag?.();
+					},
 				);
 				return { consume: true };
 			}
 			if (result === true) {
 				this.forwardSelectionMouseInput(viewportListener, data, focused);
 				tui.requestImmediateRender();
+				finishDrag?.();
 				return { consume: true };
 			}
 		}
 
-		if (this.handleOverlayUnhandledInput(data, focused)) {
-			tui.requestImmediateRender();
-			return { consume: true };
-		}
-		this.replayViewportInput(viewportListener, data);
+		if (this.handleOverlayUnhandledInput(data, focused)) tui.requestImmediateRender();
+		else this.replayViewportInput(viewportListener, data);
+		finishDrag?.();
 		return { consume: true };
 	}
 }

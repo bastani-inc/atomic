@@ -601,6 +601,65 @@ describe("an asynchronous overlay handler", () => {
 		}
 	});
 
+	test("a captured release still ends the drag when a confirmation interrupts its replay (#5532)", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		const events: string[] = [];
+		try {
+			mountFocusedOverlay(
+				fixture,
+				Object.assign(new AsyncOverlay(), {
+					handleMouse(event: TuiMouseEvent) {
+						events.push(event.type);
+						return { handled: true, capture: event.type === "press" };
+					},
+				}),
+			);
+			fixture.terminal.input("\x1b[<0;2;40M");
+			await settle(fixture);
+			fixture.terminal.input("\x1b[<32;3;40M");
+			await settle(fixture);
+			fixture.terminal.input("\x1b[<0;3;40m");
+			fixture.tui.showOverlay(new Text("Confirm?", 0, 0)).hide();
+			await settle(fixture);
+			expect(events).toEqual(["press", "drag", "release"]);
+		} finally {
+			fixture.stop();
+		}
+	});
+
+	test("a delayed button-up cannot release a newer drag after free motion ended the first one", async () => {
+		const fixture = createFixture({ mountOverlay: false });
+		const events: string[] = [];
+		const delayed = Promise.withResolvers<boolean>();
+		try {
+			mountFocusedOverlay(
+				fixture,
+				Object.assign(new AsyncOverlay(), {
+					handleInput: (data: string) => (data === "\x1b[<0;2;40m" ? delayed.promise : Promise.resolve(false)),
+					handleMouse(event: TuiMouseEvent) {
+						events.push(event.type);
+						return { handled: true, capture: event.type === "press" };
+					},
+				}),
+			);
+			fixture.terminal.input("\x1b[<0;2;40M");
+			await settle(fixture);
+			fixture.terminal.input("\x1b[<0;2;40m");
+			fixture.terminal.input("\x1b[<35;3;40M");
+			await settle(fixture);
+			fixture.terminal.input("\x1b[<0;4;40M");
+			await settle(fixture);
+			delayed.resolve(false);
+			await settle(fixture);
+			expect(events).toEqual(["press", "release", "press"]);
+			fixture.terminal.input("\x1b[<0;4;40m");
+			await settle(fixture);
+			expect(events).toEqual(["press", "release", "press", "release", "click"]);
+		} finally {
+			fixture.stop();
+		}
+	});
+
 	test("an asynchronous mouse press cannot select the different row painted before replay", async () => {
 		const fixture = createFixture({ mountOverlay: false });
 		const clicks: string[] = [];

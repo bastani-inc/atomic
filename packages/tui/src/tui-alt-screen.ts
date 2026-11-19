@@ -1262,6 +1262,38 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionDragged = false;
 	}
 
+	private finishCapturedDrag(event: TuiMouseEvent, target: TuiMouseDispatchTarget): void {
+		this.clearComponentMouseGesture();
+		this.lastClick = undefined;
+		// Cleanup may repaint the control, but must not take focus back from a dialog.
+		if (this.dispatchMouseToTarget(event, target)?.render) this.requestRender();
+	}
+
+	/** If an overlay consumes or delays button-up, finish only the drag that was active when the report arrived. */
+	protected pendingDragEnd(x: number, y: number, button?: number): { pending(): boolean; finish(): void } | undefined {
+		const drag = this.scrollbarDrag ?? (this.mouseCapture && this.mousePressPoint);
+		if (!drag) return undefined;
+		// A pending input reply must not keep a finished scrollbar's view alive.
+		const original = new WeakRef(drag);
+		const pending = () => {
+			const current = this.scrollbarDrag ?? (this.mouseCapture && this.mousePressPoint);
+			return current !== undefined && original.deref() === current;
+		};
+		return {
+			pending,
+			finish: () => {
+				if (!pending()) return;
+				if (this.scrollbarDrag) this.stopScrollbarDrag();
+				else if (this.mouseCapture && this.mousePressPoint) {
+					this.finishCapturedDrag(
+						this.createMouseEvent("release", button ?? this.mousePressPoint.button, x, y),
+						this.mouseCapture,
+					);
+				}
+			},
+		};
+	}
+
 	private handleMouseEvent(raw: SgrMouseEvent): void {
 		const isMotion = (raw.button & 32) !== 0;
 		const type: TuiMouseEvent["type"] = raw.release
@@ -1291,8 +1323,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					const release = missedRelease
 						? this.createMouseEvent("release", missedRelease.button, raw.x, raw.y)
 						: event;
-					// Cleanup may repaint the control, but must not take focus back from a dialog.
-					if (this.dispatchMouseToTarget(release, this.mouseCapture)?.render) this.requestRender();
+					this.finishCapturedDrag(release, this.mouseCapture);
+					return;
 				}
 			}
 			this.clearComponentMouseGesture();
