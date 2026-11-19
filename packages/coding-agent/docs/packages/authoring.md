@@ -98,7 +98,7 @@ If no app manifest (`atomic`, or legacy `pi`) is present, Atomic auto-discovers 
 - `prompts/` loads `.md` files
 - `themes/` loads `.json` files
 
-For reusable procedures, ship a [skill](/skills). Existing package workflow files are not executed. The agent can locate them from older `workflows` or `workflow` manifest entries or directories and read them as recipes when requested.
+For reusable procedures, ship a [skill](/skills). Existing package workflow modules are never imported or executed. In a trusted project, ask the agent to [convert one to a skill](/orchestration/migrating-workflows). It locates the file through the older `workflows` or `workflow` manifest entry or directory. A project-installed package yields a project skill; a globally installed package yields a global skill. Conversion leaves the package untouched.
 
 ## Dependencies
 

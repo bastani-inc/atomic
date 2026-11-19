@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to read an old definition as text and carry out its steps with codemode and subagents.
+- Workflow definitions are no longer loadable resources. Atomic ignores the old `workflows` and `intercom.showUnknownTargetWarnings` settings. Package manifests and package filters no longer load workflows; package a skill for repeated use instead. Existing files can stay in place: ask the agent to convert an old definition into a project or global skill that runs with codemode and subagents. Nothing is written automatically at startup.
 - SDK hosts no longer receive `ResolvedPaths.workflows`, and resource loaders no longer expose `getWorkflowResources()` or `refreshWorkflowResources()`. `SettingsManager` no longer offers workflow path or auto-advance getters and setters.
 - A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 
