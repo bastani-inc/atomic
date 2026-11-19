@@ -1230,6 +1230,42 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		}
 	});
 
+	for (const change of ["removed", "zero-height"] as const) {
+		test(`an extension's ${change} button gets no click before the next paint (#5696)`, async () => {
+			const label = ["[ Approve ]"];
+			const button = extensionButton(label);
+			const panel = new Container();
+			panel.addChild(new Text("Approval request", 0, 0));
+			panel.addChild(button);
+			const chat = await mountChat(100, 60, { messageRenderers: { approval: () => panel } });
+			try {
+				mode(chat).addMessageToChat({
+					role: "custom",
+					customType: "approval",
+					content: "approve?",
+					display: true,
+					timestamp: 1,
+				});
+				chat.tui.renderNow();
+				const row = chat.rowOf(/\[ Approve \]/);
+				const column = chat.columnOf(row, "Approve");
+				chat.press(column, row);
+				setTimeout(() => {
+					if (change === "removed") panel.removeChild(button);
+					else label.length = 0;
+					chat.tui.requestRender();
+				}, 1);
+				vi.advanceTimersByTime(1);
+				assert.match(chat.screen()[row]!, /\[ Approve \]/, "the requested repaint is still pending");
+				chat.release(column, row);
+				chat.settle();
+				assert.equal(button.clicks, 0);
+			} finally {
+				chat.tui.stop();
+			}
+		});
+	}
+
 	test("a click on the title row of a tool block its renderer draws opens it, and a control below takes its own click (#5696)", async () => {
 		const call = extensionButton(["\u25cf Deploy(staging)"]);
 		const result = extensionButton(["[ Roll back ]"]);

@@ -36,13 +36,10 @@ export class StartupChatContainer extends WindowedContainer {
 	 */
 	override handleMouse(event: TuiMouseEvent): ContainerMouseResult {
 		if (event.type !== "press" && !isSingleLeftClick(event)) return super.handleMouse(event);
-		// A control drawn inside a block, such as an extension's button, takes its click first, as it did before a click
-		// on any row of a block toggled it; only a click it leaves toggles the block. A tool block's title row toggles first,
-		// as it always did.
 		const titleRow = event.type === "click" && isBlockTitleRow(this, event.width, event.y);
-		const inside = event.type === "click" && !titleRow ? super.handleMouse(event) : undefined;
-		if (inside?.handled) return inside;
-		const handled = handleTranscriptBlockClick(
+		// Resolve the block before dispatching to its contents: its live click area refreshes the child rows,
+		// so a button removed since the last paint no longer receives the click.
+		const block = handleTranscriptBlockClick(
 			this,
 			this,
 			event,
@@ -53,8 +50,9 @@ export class StartupChatContainer extends WindowedContainer {
 				if (expanded && view?.isFollowingEnd) view.scrollTo(view.scrollTop, { disableFollow: true });
 			},
 		);
-		if (handled) return handled;
-		return event.type === "click" && !titleRow ? inside : super.handleMouse(event);
+		if (titleRow && block) return block;
+		const inside = super.handleMouse(event);
+		return inside?.handled ? inside : (block ?? inside);
 	}
 
 	countedChildren(): number {
