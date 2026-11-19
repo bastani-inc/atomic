@@ -104,11 +104,10 @@ export function createParallelPrimitive(input: {
 			: undefined;
 		// In an older run a cached worker must settle and admit its successor just as it did before fork records.
 		// Start its normal task path synchronously; only a worker that needs to run live waits for the record.
-		const forkPoints = forkRecord !== undefined && reservesKeys ? await forkRecord : undefined;
 		const failFastEnabled = options.failFast !== false;
 		const legacyForkRecord = reservesKeys ? undefined : forkRecord;
 		let recordFailure: unknown;
-		legacyForkRecord?.catch((error: unknown) => {
+		forkRecord?.catch((error: unknown) => {
 			recordFailure = error;
 		});
 		const parallelScope: ParallelFailFastScope = {
@@ -141,15 +140,29 @@ export function createParallelPrimitive(input: {
 			options.failFast,
 			async (step, index) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
+				// The worker has a slot now. Read its authored fields now too, even if its session must wait
+				// for the fork record. Later mutations only affect workers that are still queued.
 				const task = stepOptions(step);
+				const name = step.name;
 				const source = sources.find(task);
-				const launched =
-					source === undefined
-						? task
-						: legacyForkRecord === undefined
-							? withForkPoint(task, forkPoints?.get(source.slot))
-							: { ...task, durableForkPoint: async () => (await legacyForkRecord).get(source.slot) };
-				return await input.task(step.name, launched, parallelScope, replayKeys?.[index]);
+				if (forkRecord !== undefined && reservesKeys) {
+					const points = await forkRecord;
+					input.runtime.exit.throwIfWorkflowExitSelected();
+					return await input.task(
+						name,
+						withForkPoint(task, source === undefined ? undefined : points.get(source.slot)),
+						parallelScope,
+						replayKeys?.[index],
+					);
+				}
+				return await input.task(
+					name,
+					source !== undefined && legacyForkRecord !== undefined
+						? { ...task, durableForkPoint: async () => (await legacyForkRecord).get(source.slot) }
+						: task,
+					parallelScope,
+					replayKeys?.[index],
+				);
 			},
 			async (error) => {
 				if (!failFastEnabled) return;
@@ -179,7 +192,7 @@ export function createParallelPrimitive(input: {
 			},
 		);
 		// Even an all-cached replay keeps its launch point for a future live restart.
-		return legacyForkRecord === undefined ? tasks : (await Promise.all([tasks, legacyForkRecord]))[0];
+		return forkRecord === undefined ? tasks : (await Promise.all([tasks, forkRecord]))[0];
 	};
 }
 

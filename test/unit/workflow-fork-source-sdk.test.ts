@@ -181,6 +181,27 @@ test("one parallel can fork the same session ID in two different stores (#5481)"
 	assert.deepEqual(requests, [["original"], ["original", "left"], ["original", "copy only", "right"]]);
 });
 
+test("a fork record does not delay reading the prompt of a worker that already has a slot (#5481)", async () => {
+	const requests = await requestsFor(async (ctx) => {
+		const source = await ctx.task("source", { prompt: "original" });
+		const first = { name: "first", prompt: "first at admission" };
+		const second = { name: "second", prompt: "not yet admitted" };
+		const group = ctx.parallel([first, second], {
+			context: "fork",
+			forkFromSessionId: source.sessionId,
+			concurrency: 1,
+			task: "fallback",
+		});
+		first.prompt = "too late for first";
+		second.prompt = "second at admission";
+		await group;
+	});
+	assert.deepEqual(
+		requests.map((turns) => turns.at(-1)),
+		["original", "first at admission", "second at admission"],
+	);
+});
+
 test("a queued forked worker reads its authored prompt on admission (#5481)", async () => {
 	const requests = await requestsFor(async (ctx) => {
 		const source = await ctx.task("source", { prompt: "original" });
