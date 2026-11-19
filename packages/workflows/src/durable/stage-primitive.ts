@@ -21,7 +21,7 @@ import type {
 import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
-import { withLaunchForkPoint } from "./stage-fork-point.js";
+import { launchForkSourceOf, withForkPoint, withLaunchForkPoint } from "./stage-fork-point.js";
 import { activeStageTopology, durableStageCheckpointMetadata, forkPointStageTopology } from "./stage-topology.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableReleasedStageResume, DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
@@ -545,6 +545,11 @@ export function createDurableTaskPrimitive(input: {
 		if (replayed !== undefined) {
 			await input.recordCachedTask?.(name, replayKey, replayed.checkpoint, stageFailFastScope);
 			return replayed.result;
+		}
+		if (stageFailFastScope?.forkPointsBeforeLiveTask !== undefined) {
+			const points = await stageFailFastScope.forkPointsBeforeLiveTask;
+			const source = launchForkSourceOf(options);
+			if (source !== undefined) options = withForkPoint(options, points.get(source));
 		}
 		const supersedesRecordedResult =
 			restartFromPrompt && input.backend.getStageOutput(input.workflowId, replayKey) !== undefined;

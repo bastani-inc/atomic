@@ -32,7 +32,7 @@ export async function mapParallelSteps<T>(
 	steps: readonly WorkflowTaskStep[],
 	concurrency: number | undefined,
 	failFast: boolean | undefined,
-	mapper: (step: WorkflowTaskStep) => Promise<T>,
+	mapper: (step: WorkflowTaskStep, index: number) => Promise<T>,
 	onFirstFailure?: (error: unknown) => void | Promise<void>,
 	control?: {
 		readonly beforeDequeue?: () => void;
@@ -87,7 +87,7 @@ export async function mapParallelSteps<T>(
 			if (step === undefined) return;
 			try {
 				control?.beforeMap?.();
-				results[index] = await mapper(step);
+				results[index] = await mapper(step, index);
 			} catch (error) {
 				if (isControlSignal(error)) {
 					selectControlSignal(error);

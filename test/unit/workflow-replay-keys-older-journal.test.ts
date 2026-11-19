@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -237,6 +239,64 @@ async function checkForkReplay(
 }
 
 describe("a resumed run replays its results under the replay keys its journal recorded them with (#5481)", () => {
+	test("concurrent one-slot parallels keep their own queued results from an older journal (#5481)", async () => {
+		// Main (7ddc735b77) ran this workflow with SDK sessions and a local model. The right group's first
+		// request waited for the left group's second request, so the two b results were recorded left, then right.
+		const path = journalPath();
+		const fixture = new URL("../fixtures/parallel-queued-workers.sqlite.gz", import.meta.url);
+		await writeFile(path, gunzipSync(await readFile(fixture)));
+		const runId = "bbecc935-6885-4248-a470-d0e20552596d";
+		const outputs: string[][] = [];
+		const definition = workflow({
+			name: runId,
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const groups = await Promise.all([
+					ctx.parallel(
+						[
+							{ name: "a", prompt: "QUEUE_TEST_L1" },
+							{ name: "b", prompt: "QUEUE_TEST_L2" },
+						],
+						{ concurrency: 1, context: "fork", forkFromSessionId: "8bf15ac4-1cb7-4e29-9be5-4e376df8b499" },
+					),
+					ctx.parallel(
+						[
+							{ name: "c", prompt: "QUEUE_TEST_R1" },
+							{ name: "b", prompt: "QUEUE_TEST_R2" },
+						],
+						{ concurrency: 1 },
+					),
+				]);
+				outputs.push(...groups.map((group) => group.map((step) => step.text)));
+				return {};
+			},
+		});
+		const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
+		try {
+			const prompt = vi.fn(async () => "unexpected live task");
+			const result = await run(
+				definition,
+				{},
+				{
+					runId,
+					store: createStore(),
+					durableBackend: backend,
+					adapters: { prompt: { prompt } },
+				},
+			);
+			assert.equal(result.status, "completed", result.error);
+			assert.equal(prompt.mock.calls.length, 0);
+			assert.deepEqual(outputs, [
+				["reply L1", "reply L2"],
+				["reply R1", "reply R2"],
+			]);
+		} finally {
+			await backend.close();
+		}
+	});
+
 	test("a forked parallel and a same-named task replay in call order from an older journal (#5481)", async () => {
 		await checkForkReplay(["first b", "second b"], async (ctx, replay, source) => {
 			const fork = {
@@ -250,6 +310,30 @@ describe("a resumed run replays its results under the replay keys its journal re
 				: Promise.all([ctx.task("b", { ...fork, prompt: "first b" })]);
 			const [[first], second] = await Promise.all([group, ctx.task("b", { prompt: "second b" })]);
 			return [first!.text, second.text];
+		});
+	});
+
+	test("a standalone task keeps its slot before a queued same-named worker from an older journal (#5481)", async () => {
+		await checkForkReplay(["first", "queued", "standalone"], async (ctx, replay, source) => {
+			const fork = {
+				context: "fork" as const,
+				forkFromSessionId: source.getSessionId(),
+				sessionStore: source.getSessionStore(),
+			};
+			const group = replay
+				? ctx.parallel(
+						[
+							{ name: "b", prompt: "first" },
+							{ name: "b", prompt: "queued" },
+						],
+						{ ...fork, concurrency: 1 },
+					)
+				: (async () => [
+						await ctx.task("b", { ...fork, prompt: "first" }),
+						await ctx.task("b", { ...fork, prompt: "queued" }),
+					])();
+			const [workers, solo] = await Promise.all([group, ctx.task("b", { prompt: "standalone" })]);
+			return [...workers.map((worker) => worker.text), solo.text];
 		});
 	});
 

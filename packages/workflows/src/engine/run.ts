@@ -1294,13 +1294,25 @@ async function executeRun(
 			?.intercomGroup;
 	};
 	let observedTaskTailQuit: WorkflowGracefulQuitSignal | undefined;
+	let forkReplayTurn: Promise<void> | undefined;
 	const durableTask = createDurableTaskPrimitive({
 		workflowId: runId,
 		backend: durableBackend,
 		nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
 		durableIntercomGroup,
 		task: taskRunners.task,
-		recordCachedTask: recordCachedStage,
+		recordCachedTask: (name, key, checkpoint, scope) => {
+			// An older fork launch claims its ready slots synchronously. Let other calls in this turn claim
+			// theirs before a cached worker's metadata write blocks whenRunning. Concurrent groups publish
+			// their cached workers in admission order, independently of any fork-point write.
+			if (scope?.forkPointsBeforeLiveTask !== undefined) {
+				forkReplayTurn ??= Promise.resolve().then(() => {
+					forkReplayTurn = undefined;
+				});
+			}
+			const record = () => recordCachedStage(name, key, checkpoint, scope);
+			return scope !== undefined && forkReplayTurn !== undefined ? forkReplayTurn.then(record) : record();
+		},
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordLiveCheckpoint:
 			mapRestoredOptions === undefined

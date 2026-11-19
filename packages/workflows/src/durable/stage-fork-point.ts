@@ -43,10 +43,17 @@ interface ForkableStageOptions {
  * The session a step with `options` forks without a fork point of its own: the source whose state at launch is its
  * fork point. Undefined for a step that does not fork, names its entry, or already has its launch's fork point.
  */
-export function launchForkSourceOf(options: ForkableStageOptions | undefined): string | undefined {
-	if (options?.context !== "fork" || options.forkFromEntryId !== undefined || options.forkFromEmptySource === true)
+export function launchForkSourceOf(
+	options: ForkableStageOptions | undefined,
+	defaults?: ForkableStageOptions,
+): string | undefined {
+	if (
+		(options?.context ?? defaults?.context) !== "fork" ||
+		(options?.forkFromEntryId ?? defaults?.forkFromEntryId) !== undefined ||
+		(options?.forkFromEmptySource ?? defaults?.forkFromEmptySource) === true
+	)
 		return undefined;
-	return options.forkFromSessionId;
+	return options?.forkFromSessionId ?? defaults?.forkFromSessionId;
 }
 
 /** `options` forking its source at `point`; unchanged for a source that was not open at launch. */
@@ -90,8 +97,7 @@ function fanOutEntries(output: unknown): readonly ForkSourceRecord[] | undefined
  * The caller takes the key from the run's separate fan-out counter at launch, so a
  * replayed fan-out reads the record of its first launch. The returned points are those of the record: an earlier
  * launch's when it has one, or the sources' points now, written to the run before the promise settles. It rejects
- * when the journal cannot take the record; no step of the fan-out may start then, so no two of them can start from
- * different points.
+ * when the journal cannot take the record; no live step of the fan-out may start then.
  */
 export function recordFanOutForkPoints(
 	run: DurableLaunchRun,

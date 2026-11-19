@@ -442,22 +442,47 @@ describe("a parallel's launch fixes its steps' identities and fork point (#5481)
 		assert.deepEqual(await stepConversation(store, launchStage(backend, run, source)), ["before launch"]);
 	});
 
-	test("a parallel whose fork point record cannot be written starts none of its steps and is launched again whole (#5481)", async () => {
-		const { backend, source, parallel, forking } = await launchRun();
-		const unavailable = failForkRecordOnce(backend, { written: false });
-		const startedAt: (string | undefined)[] = [];
-		const step = async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
-			startedAt.push(options.forkFromEntryId);
-			await source.appendMessage(userMessage(`after ${name} started`));
+	test.each([
+		{ reservesStepKeys: true, failFast: true },
+		{ reservesStepKeys: false, failFast: false },
+	])(
+		"a parallel whose fork point record cannot be written starts none of its steps and is launched again whole (launch keys: $reservesStepKeys, failFast: $failFast, #5481)",
+		async ({ reservesStepKeys, failFast }) => {
+			const { backend, source, parallel, forking } = await launchRun();
+			const unavailable = failForkRecordOnce(backend, { written: false });
+			const startedAt: (string | undefined)[] = [];
+			const step = async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+				startedAt.push(options.forkFromEntryId);
+				await source.appendMessage(userMessage(`after ${name} started`));
+				return { stageName: name, text: name };
+			};
+			const launch = () => parallel(step, { reservesStepKeys })(STEP_PAIR, { ...forking, failFast });
+			await assert.rejects(launch(), (error) => error === unavailable);
+			assert.deepEqual(startedAt, []);
+
+			await source.appendMessage(userMessage("before the run resumes"));
+			const relaunchPoint = source.getLeafId();
+			await launch();
+			assert.deepEqual(startedAt, [relaunchPoint, relaunchPoint]);
+		},
+	);
+
+	test("an older parallel that only replays cached steps still saves its fork point for a live restart (#5481)", async () => {
+		const { parallel, source, forking } = await launchRun();
+		const seen: (string | undefined)[] = [];
+		const step: StepWork = async (name, options) => {
+			seen.push(options.forkFromEntryId);
 			return { stageName: name, text: name };
 		};
-		await assert.rejects(parallel(step)(STEP_PAIR, forking), (error) => error === unavailable);
-		assert.deepEqual(startedAt, []);
-
-		await source.appendMessage(userMessage("before the run resumes"));
-		const relaunchPoint = source.getLeafId();
-		await parallel(step)(STEP_PAIR, forking);
-		assert.deepEqual(startedAt, [relaunchPoint, relaunchPoint]);
+		const olderParallel = () => parallel(step, { reservesStepKeys: false });
+		// Pre-launch-record journal: cached task results, but no record of the source.
+		await olderParallel()(STEP_PAIR, { concurrency: 1 });
+		const before = source.getLeafId();
+		await olderParallel()(STEP_PAIR, forking);
+		assert.deepEqual(seen, [undefined, undefined], "the old results replay without a live task");
+		await source.appendMessage(userMessage("after the cached replay"));
+		await olderParallel()(STEP_PAIR, { ...forking, durableRestartFromPrompt: true });
+		assert.deepEqual(seen.slice(2), [before, before]);
 	});
 
 	test("a parallel whose fork point record was written though the write failed forks every step at the recorded point (#5481)", async () => {
@@ -558,6 +583,7 @@ async function launchRun(options: { readonly empty?: boolean } = {}) {
 		hooks: {
 			readonly runId?: string;
 			readonly tracker?: GraphFrontierTracker;
+			readonly reservesStepKeys?: boolean;
 			readonly afterLiveResult?: () => Promise<void>;
 		} = {},
 	) => {
@@ -576,7 +602,12 @@ async function launchRun(options: { readonly empty?: boolean } = {}) {
 			task: step,
 			...(hooks.afterLiveResult ? { afterLiveResult: hooks.afterLiveResult } : {}),
 		});
-		return createParallelPrimitive({ runtime, task, durable: { backend, workflowId, nextReplayKey } });
+		return createParallelPrimitive({
+			runtime,
+			task,
+			durable: { backend, workflowId, nextReplayKey },
+			reservesStepKeys: hooks.reservesStepKeys,
+		});
 	};
 	/** `ctx.chain` of the run, with `step` as each step's work; built again, it is the run resumed. */
 	const chain = (step: StepWork) => {

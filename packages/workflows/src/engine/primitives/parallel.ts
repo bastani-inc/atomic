@@ -60,7 +60,15 @@ export function createParallelPrimitive(input: {
 		const resolveAutoGroup = <T extends { group?: string | true }>(value: T): T =>
 			value.group === true && autoGroup ? { ...value, group: autoGroup } : value;
 		const resolvedOptions = resolveAutoGroup(normalizedOptions);
-		const resolvedSteps = normalizedSteps.map(resolveAutoGroup);
+		const forkSources = new Map<WorkflowTaskStep, string>();
+		const resolvedSteps = normalizedSteps.map((step) => {
+			const resolved = resolveAutoGroup(step);
+			if ((resolved.context ?? resolvedOptions.context) !== "fork") return resolved;
+			const launched = { ...resolved };
+			const source = launchForkSourceOf(launched, resolvedOptions);
+			if (source !== undefined) forkSources.set(launched, source);
+			return launched;
+		});
 		const fallback = parallelFallbackTask(resolvedSteps, resolvedOptions);
 		const stepOptions = (step: WorkflowTaskStep): WorkflowTaskExecutionOptions =>
 			taskWithSharedDefaults(
@@ -79,43 +87,49 @@ export function createParallelPrimitive(input: {
 		const stageIdsBeforeParallel = new Set(
 			input.runtime.activeStore.run(input.runtime.runId)?.stages.map((stage) => stage.id) ?? [],
 		);
-		const launchedSteps = resolvedSteps.map((step) => ({ ...step }));
 		const durable = input.durable;
-		// One fork point for the whole parallel: a step that waits for a slot, or starts after the run resumed, forks
-		// where its source was now. No step starts before the point is recorded.
-		const forkSources = new Map(launchedSteps.map((step) => [step, launchForkSourceOf(stepOptions(step))]));
-		const sourceIds = [...new Set([...forkSources.values()].filter((id): id is string => id !== undefined))];
-		// An older run took keys as workers acquired slots. Before the fork-record await, claim only the
-		// slots the parallel would have filled synchronously; queued steps still take their keys at dequeue.
-		const reserveCount =
-			input.reservesStepKeys !== false
-				? launchedSteps.length
-				: sourceIds.length === 0
-					? 0
-					: (positiveConcurrency(resolvedOptions.concurrency) ?? launchedSteps.length);
-		const replayKeys = new Map(
-			durable === undefined
-				? []
-				: launchedSteps
+		const sourceIds = [...new Set(forkSources.values())];
+		const reservesKeys = input.reservesStepKeys !== false;
+		// In an older fork launch only the slots filled now may claim before the write; queued steps still
+		// take their keys at dequeue. A marked launch reserves one key per occurrence, even for repeated step objects.
+		const reserveCount = reservesKeys
+			? resolvedSteps.length
+			: sourceIds.length === 0
+				? 0
+				: (positiveConcurrency(resolvedOptions.concurrency) ?? resolvedSteps.length);
+		const replayKeys =
+			durable === undefined || reserveCount === 0
+				? undefined
+				: resolvedSteps
 						.slice(0, reserveCount)
-						.map((step) => [step, reserveTaskReplayKey(durable.nextReplayKey, step.name)] as const),
-		);
+						.map((step) => reserveTaskReplayKey(durable.nextReplayKey, step.name));
+		const forkRecord =
+			durable !== undefined && sourceIds.length > 0
+				? recordFanOutForkPoints(
+						durable,
+						nextFanOutKey(`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`),
+						sourceIds,
+					)
+				: undefined;
+		// In an older run a cached worker must settle and admit its successor just as it did before fork records.
+		// Start its normal task path synchronously; only a worker that needs to run live waits for the record.
 		const forkPoints =
-			sourceIds.length === 0
-				? new Map<string, ForkPoint>()
+			forkRecord !== undefined && reservesKeys
+				? await forkRecord
 				: durable === undefined
 					? liveForkPoints(sourceIds)
-					: await recordFanOutForkPoints(
-							durable,
-							// Named by its steps, hashed so a parallel of many or long step names gets a short record key.
-							nextFanOutKey(`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`),
-							sourceIds,
-						);
+					: undefined;
 		const failFastEnabled = resolvedOptions.failFast !== false;
+		const legacyForkRecord = reservesKeys ? undefined : forkRecord;
+		let recordFailure: unknown;
+		legacyForkRecord?.catch((error: unknown) => {
+			recordFailure = error;
+		});
 		const parallelScope: ParallelFailFastScope = {
 			failed: false,
 			activeStages: new Map<string, ParallelFailFastStage>(),
 			parentIds: parallelParentIds,
+			forkPointsBeforeLiveTask: legacyForkRecord,
 		};
 		const everyStepCompleted = (): boolean => {
 			const run = input.runtime.activeStore.run(input.runtime.runId);
@@ -135,18 +149,18 @@ export function createParallelPrimitive(input: {
 			});
 		};
 
-		return mapParallelSteps(
-			launchedSteps,
+		const tasks = mapParallelSteps(
+			resolvedSteps,
 			resolvedOptions.concurrency,
 			resolvedOptions.failFast,
-			async (step) => {
+			async (step, index) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
 				const source = forkSources.get(step);
 				return await input.task(
 					step.name,
-					withForkPoint(stepOptions(step), source === undefined ? undefined : forkPoints.get(source)),
+					withForkPoint(stepOptions(step), source === undefined ? undefined : forkPoints?.get(source)),
 					parallelScope,
-					replayKeys.get(step),
+					replayKeys?.[index],
 				);
 			},
 			async (error) => {
@@ -156,9 +170,15 @@ export function createParallelPrimitive(input: {
 				await Promise.all([...parallelScope.activeStages.values()].map((stage) => stage.skip()));
 			},
 			{
-				beforeDequeue: input.runtime.exit.throwIfWorkflowExitSelected,
+				beforeDequeue: () => {
+					// A failed fork record stops the whole launch, even with failFast: false.
+					if (recordFailure !== undefined) throw recordFailure;
+					input.runtime.exit.throwIfWorkflowExitSelected();
+				},
 				beforeMap: input.runtime.exit.throwIfWorkflowExitSelected,
-				isControlSignal: (error) => findWorkflowExitSignal(error, input.runtime.exit.exitScope) !== undefined,
+				isControlSignal: (error) =>
+					(recordFailure !== undefined && error === recordFailure) ||
+					findWorkflowExitSignal(error, input.runtime.exit.exitScope) !== undefined,
 				selectSettledFailure: (failures) => {
 					if (
 						!everyStepCompleted() ||
@@ -170,6 +190,8 @@ export function createParallelPrimitive(input: {
 				},
 			},
 		);
+		// Even an all-cached replay keeps its launch point for a future live restart.
+		return legacyForkRecord === undefined ? tasks : (await Promise.all([tasks, legacyForkRecord]))[0];
 	};
 }
 
