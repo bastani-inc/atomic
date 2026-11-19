@@ -67,7 +67,8 @@ test("single-file builds give adapters the live host modules through virtual mod
 	loadAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 
-/** A `"type": "module"` adapter package whose own `.js` and `.mjs` files import `@bastani/atomic/workflows`. */
+// The three type:module adapters below still export `openRunJournal`, a hook of earlier releases that the loader accepts
+// and no store calls; each test calls it itself to run the adapter's own imports.
 
 test("concurrent imports of a type:module helper both wait for its top-level await (#3972)", async () => {
 	const agentDir = makeTempDirectory("storage-module-type-concurrent-");
@@ -92,7 +93,7 @@ test("concurrent imports of a type:module helper both wait for its top-level awa
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
+			{ agentDir, domain: "sessions" },
 			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.deepEqual(await Promise.all([adapter.openRunJournal(), adapter.openRunJournal()]), ["run", "run"]);
@@ -130,7 +131,7 @@ test("type:module adapter modules that import each other load without waiting on
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
+			{ agentDir, domain: "sessions" },
 			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.equal(await adapter.openRunJournal(), "done");
@@ -170,7 +171,7 @@ test("a type:module helper and a TypeScript module that import each other load w
 	try {
 		const adapter = (await loadStorageAdapter(
 			join(adapterDir, "adapter.js"),
-			{ agentDir, domain: "journal" },
+			{ agentDir, domain: "sessions" },
 			{ "@bastani/atomic/storage": {} },
 		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
 		assert.equal(await adapter.openRunJournal(), "done");
@@ -178,11 +179,6 @@ test("a type:module helper and a TypeScript module that import each other load w
 		removeTempDirectory(agentDir);
 	}
 });
-
-/**
- * The type:module adapter loaded by the built `@bastani/atomic/storage`, with a resolvable installed copy of Atomic
- * beside it whose workflows module lacks the host's `MARK`.
- */
 
 test("the standalone broker loads host modules from the app bundle on first import only (#3856)", async () => {
 	const storage = { name: "storage" };
