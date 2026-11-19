@@ -27,12 +27,15 @@ import {
 	CHAT_SESSION_SWITCHING_MODEL_STATUS,
 	type ChatSessionHostState,
 	isChatSessionBusyStatus,
+	isChatSessionRetryStatus,
 } from "./chat-session-host-state.ts";
 import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { clickableKeyTextHint } from "./nav-keys.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
+import { retrySecondsLeft, retryWaitMessage } from "./retry-status-line.ts";
 import { taskDisplayText } from "./task-row.js";
 import { toolGroupRoleKey } from "./tool-group-tracker.ts";
 import { isClickExpandableBlock, sameRows, withBlockRenderTime } from "./transcript-block-clicks.ts";
@@ -208,6 +211,25 @@ const publishedWorkingMessages = {
 	switching: CHAT_SESSION_SWITCHING_MODEL_STATUS,
 } satisfies Record<Exclude<PublishedChatActivity, "idle">, string>;
 
+/**
+ * The working line of work that waits between turns: a retry, a model switch or a resume. A retry this chat saw start,
+ * or read from its session, counts down to its next attempt, and names the key that cancels it where Esc does.
+ */
+function chatSessionBusyMessage<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	published: Exclude<PublishedChatActivity, "idle"> | undefined,
+): string {
+	const status = published === undefined ? state.statusMessage : publishedWorkingMessages[published];
+	if (!isChatSessionRetryStatus(status)) return status;
+	const wait = (state.statusMessage === status ? state.retryWait : undefined) ?? {};
+	// Only the chat's owner knows whether its Esc reaches the retry; a summary is not part of the turn Esc interrupts.
+	const cancellable = wait.subject !== "summary" && state.canCancelRetry?.() === true;
+	const cancel = cancellable
+		? clickableKeyTextHint(state.getActionKeyDisplay?.("app.interrupt") ?? "esc", " cancel")
+		: undefined;
+	return retryWaitMessage(wait, retrySecondsLeft(wait), cancel);
+}
+
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
@@ -219,11 +241,10 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	// A retry, a model switch or a resume waits between turns; it is the chat's working line until the work resumes.
 	// The worker attempt can retire without sending a final session event to a chat that stayed open.
 	if (published === "idle") return [];
-	const publishedMessage = published && publishedWorkingMessages[published];
-	if (!state.compacting && (publishedMessage || isChatSessionBusyStatus(state.statusMessage))) {
+	if (!state.compacting && (published !== undefined || isChatSessionBusyStatus(state.statusMessage))) {
 		return new WorkingStatusComponent({
 			frame: state.workingFrame,
-			message: publishedMessage ?? state.statusMessage,
+			message: chatSessionBusyMessage(state, published),
 			palette,
 			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,

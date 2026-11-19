@@ -43,6 +43,7 @@ import {
 	userMessageSignature,
 } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import { type RetryWait, retryWaitFromEvent } from "./retry-status-line.ts";
 
 export type { CompactionReason } from "../../../core/agent-session-types.js";
 
@@ -60,20 +61,22 @@ function endRetriedTurn<TExtraEntry extends ChatTranscriptEntryLike>(state: Chat
 }
 
 /**
- * A retry waits out its backoff: `retrying…` is the working line until the next attempt's `agent_start`, or the
- * retry's `auto_retry_end`, clears it.
+ * A retry waits out its backoff: `Retrying · <reason> · attempt 1/3 in 2s`, with what the chat knows of `wait`, is
+ * the working line until the next attempt's `agent_start`, or the retry's `auto_retry_end`, clears it.
  */
 export function showChatSessionRetryWait<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
+	wait: RetryWait = {},
 ): void {
 	state.sdkBusy = true;
 	state.workingMessage = undefined;
 	state.statusMessage = CHAT_SESSION_RETRYING_STATUS;
+	state.retryWait = wait;
 	stopChatSessionWorkingLifecycle(state);
 }
 
 /**
- * A move to a fallback model: `switching model…` is the working line until the next model's `agent_start`, or the
+ * A move to a fallback model: `Switching model…` is the working line until the next model's `agent_start`, or the
  * switch's `model_fallback_end`, clears it.
  */
 export function showChatSessionModelSwitch<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -94,7 +97,7 @@ export function compactionStatusMessage(reason: CompactionReason): string {
 		case "overflow":
 			return "Context overflow detected. Auto-compacting...";
 		case "branchSummary":
-			return "summarizing branch…";
+			return "Summarizing branch…";
 	}
 }
 
@@ -404,6 +407,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "summarization_retry_scheduled":
 			state.sdkBusy = true;
 			state.statusMessage = CHAT_SESSION_RETRYING_SUMMARY_STATUS;
+			state.retryWait = retryWaitFromEvent(
+				event as Extract<AgentSessionEvent, { type: "summarization_retry_scheduled" }>,
+				"summary",
+			);
 			changed = true;
 			break;
 		case "summarization_retry_attempt_start": {
@@ -420,7 +427,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			changed = true;
 			break;
 		case "auto_retry_start":
-			showChatSessionRetryWait(state);
+			showChatSessionRetryWait(
+				state,
+				retryWaitFromEvent(event as Extract<AgentSessionEvent, { type: "auto_retry_start" }>),
+			);
 			state.retryContinuesRun = true;
 			changed = true;
 			break;

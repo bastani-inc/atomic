@@ -110,13 +110,13 @@ test("ChatSessionHost gives factual retry, fallback, error, cancellation, and co
 	// Work still under way is the chat's working line; an error or a cancellation follows its transcript.
 	const cases = [
 		[
-			{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1, errorMessage: "network" },
-			"retrying…",
+			{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 60_000, errorMessage: "network error" },
+			"Retrying · network error · attempt 1/2 in 1m 0s",
 			"working line",
 		],
 		[
 			{ type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 },
-			"switching model…",
+			"Switching model…",
 			"working line",
 		],
 		[

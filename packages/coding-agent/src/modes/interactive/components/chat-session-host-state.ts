@@ -26,15 +26,17 @@ import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
 import type { ParkedTaskRows } from "./parked-rows.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
+import type { RetryWait } from "./retry-status-line.ts";
 import { SavedRendererInstances } from "./saved-renderer-instances.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 /** The chat's status while work it started is still under way; the chat shows it as its working line. */
-export const CHAT_SESSION_RESUMING_STATUS = "resuming…";
-export const CHAT_SESSION_RETRYING_STATUS = "retrying…";
-export const CHAT_SESSION_SWITCHING_MODEL_STATUS = "switching model…";
-export const CHAT_SESSION_RETRYING_SUMMARY_STATUS = "retrying summary…";
+export const CHAT_SESSION_RESUMING_STATUS = "Resuming…";
+/** A retry's wait; with the retry's details the line reads `Retrying · <reason> · attempt 1/3 in 2s` instead. */
+export const CHAT_SESSION_RETRYING_STATUS = "Retrying…";
+export const CHAT_SESSION_SWITCHING_MODEL_STATUS = "Switching model…";
+export const CHAT_SESSION_RETRYING_SUMMARY_STATUS = "Retrying summary…";
 const BUSY_STATUS_MESSAGES: ReadonlySet<string> = new Set([
 	CHAT_SESSION_RESUMING_STATUS,
 	CHAT_SESSION_RETRYING_STATUS,
@@ -45,6 +47,11 @@ const BUSY_STATUS_MESSAGES: ReadonlySet<string> = new Set([
 /** Whether a status message stands for work under way rather than a notice or an error for the transcript. */
 export function isChatSessionBusyStatus(message: string): boolean {
 	return BUSY_STATUS_MESSAGES.has(message);
+}
+
+/** Whether a status message is a retry's wait, which counts down to the next attempt. */
+export function isChatSessionRetryStatus(message: string): boolean {
+	return message === CHAT_SESSION_RETRYING_STATUS || message === CHAT_SESSION_RETRYING_SUMMARY_STATUS;
 }
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
@@ -119,6 +126,9 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly workingRunMeter = new WorkingRunMeter();
 	/** A retry or a model fallback this host saw start waits for the next attempt, which continues the turn's run. */
 	retryContinuesRun = false;
+	/** What the chat knows of the retry its working line shows while the status is a retry's wait. */
+	retryWait: RetryWait | undefined = undefined;
+	readonly canCancelRetry: (() => boolean) | undefined;
 	workingLifecycleActive: boolean;
 	workingLifecycleGeneration = 0;
 	disposed = false;
@@ -262,6 +272,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.isPaused = opts.isPaused;
 		this.isDisabled = opts.isDisabled;
 		this.isBashRunningOverride = opts.isBashRunning;
+		this.canCancelRetry = opts.canCancelRetry;
 		this.showWarning = opts.showWarning;
 		this.showStatus = opts.showStatus;
 		this.actions = opts.actions;

@@ -67,7 +67,7 @@ const labels: Readonly<Record<CompactionReason, string>> = {
 	manual: "Compacting context...",
 	threshold: "Auto-compacting...",
 	overflow: "Context overflow detected. Auto-compacting...",
-	branchSummary: "summarizing branch…",
+	branchSummary: "Summarizing branch…",
 };
 
 describe("chat session compaction status", () => {
@@ -150,7 +150,7 @@ test("rehydrates reason-specific labels for every compaction reason", () => {
 			assert.equal(host.statusText(), "");
 			assert.equal(host.isCompacting(), false);
 			assert.match(rendered, /Working…/);
-			assert.doesNotMatch(rendered, /summarizing branch…/);
+			assert.doesNotMatch(rendered, /Summarizing branch…/);
 		} else {
 			assert.equal(host.statusText(), label);
 			assert.match(rendered, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -201,11 +201,12 @@ test("live events and re-attach hydration use the same status mapping and busy s
 		reattachedHost.hydrateCompactionStatus(reason);
 
 		assert.equal(liveHost.statusText(), compactionStatusMessage(reason));
+		assert.equal(liveHost.statusText(), labels[reason]);
 		assert.equal(liveHost.isCompacting(), reason !== "branchSummary");
 		if (reason === "branchSummary") {
 			assert.equal(reattachedHost.statusText(), "");
 			assert.equal(reattachedHost.isCompacting(), false);
-			assert.doesNotMatch(reattachedHost.renderBody(100, 3).join("\n"), /summarizing branch…/);
+			assert.doesNotMatch(reattachedHost.renderBody(100, 3).join("\n"), /Summarizing branch…/);
 		} else {
 			assert.equal(reattachedHost.statusText(), compactionStatusMessage(reason));
 			assert.equal(reattachedHost.isCompacting(), true);
@@ -226,7 +227,7 @@ test("branch-summary hydration leaves the ordinary working spinner available", (
 	const rendered = host.renderWorkingStatus(100).map(stripHintMarkers).join("\n");
 	assert.match(rendered, /∀/);
 	assert.match(rendered, /Working…/);
-	assert.doesNotMatch(rendered, /summarizing branch…/);
+	assert.doesNotMatch(rendered, /Summarizing branch…/);
 	host.dispose();
 });
 

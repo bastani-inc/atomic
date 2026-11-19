@@ -368,6 +368,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			},
 			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
+			// The inspector takes Esc for this chat: it cancels the retry the subagent waits on, unless a question holds it.
+			canCancelRetry: () => !this.takesEscape() && this.interruptible(),
 			workingTokenCount: () => source.tasks.find((task) => task.ref.taskId === taskId)?.metrics?.tokenCount,
 			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
 			isDisabled: () => source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined,
@@ -883,7 +885,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const chatSession = session.chatSession;
 		if (chatSession && sessionWaitsToRetry(chatSession)) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.hydrateRetryWait(messages, chatSession.turnStartedAt);
+			const retry = chatSession.retryStatus;
+			this.chat.hydrateRetryWait(
+				messages,
+				chatSession.turnStartedAt,
+				retry?.type === "auto_retry_start" ? retry : undefined,
+			);
 		} else if (chatSession?.retryStatus?.type === "model_fallback_start") {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.hydrateModelSwitch(chatSession.turnStartedAt, messages);
