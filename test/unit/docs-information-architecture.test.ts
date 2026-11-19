@@ -397,8 +397,6 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 		"/background-tasks",
 		"/guides/intercom",
 		"/guides/team-setup",
-		"/guides/worker-hosts",
-		"/guides/worker-fleets-postgres",
 		"/computer-use",
 	],
 	"/skills": ["/skills/authoring"],
@@ -664,7 +662,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			52,
+			50,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
@@ -977,7 +975,7 @@ describe("docs references and assets (#2847)", () => {
 				"Connection states and recovery",
 				"How Connection Works",
 				"How It Works",
-				"Workflow and Subagent Notifications",
+				"Subagent Notifications",
 				"Running Intercom across machines",
 				"Keyboard Shortcuts",
 				"Limitations",
@@ -1005,8 +1003,6 @@ describe("docs references and assets (#2847)", () => {
 				"Not connected or waiting for lazy admission",
 				"Recoverable disconnect",
 				"Reconnect backoff",
-				"Exhausted workflow-stage warm-up",
-				"Terminal stage delivery failure",
 				"Destination-side admission failure",
 				"Broker restart or concurrent startup",
 				"Broker started by an older Atomic",
@@ -1016,8 +1012,6 @@ describe("docs references and assets (#2847)", () => {
 				"Subagent that is starting",
 				"Subagent being restored after a restart",
 				"Subagent that ended or dropped off",
-				"Workflow stage whose session was replaced or released",
-				"Queued for a workflow stage that has not started",
 				"Subagent released while it waits",
 				"Queued for an offline session",
 			],
