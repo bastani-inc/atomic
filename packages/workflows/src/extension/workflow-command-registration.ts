@@ -135,7 +135,15 @@ export function registerWorkflowSlashCommand(
 					reporter.error(`Could not load workflow definitions: ${safeErrorReason(error)}`);
 					return;
 				}
-				if (deps.restoreSessionRuns) await deps.restoreSessionRuns(ctx);
+				try {
+					await deps.restoreSessionRuns?.(ctx);
+				} catch (error) {
+					// Saved runs that cannot be read must not hide the live ones: list those and say what is missing.
+					const notice = `Could not reopen saved workflow runs: ${safeErrorReason(error)}`;
+					if (ctx.hasUI === false || workflowPolicyFromContext(ctx).mode === "non_interactive")
+						reporter.info(notice);
+					else ctx.ui.notify(notice, "warning");
+				}
 				await handleWorkflowsCommand(args, ctx, reporter, {
 					overlay,
 					store: owner.store,

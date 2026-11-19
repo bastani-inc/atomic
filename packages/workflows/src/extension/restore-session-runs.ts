@@ -3,10 +3,13 @@ import { durableWorkflowRunSnapshots } from "../durable/completed-catalog.js";
 import { uncommittedBlockKind } from "../durable/restored-block.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { bindRunDurableBackend } from "../durable/run-owner-backend.js";
+import type { DurableWorkflowHandle } from "../durable/types.js";
 import { normalizeSessionEntries, type SessionEntry } from "../shared/persistence-restore.js";
 import { findRunBlockedMetadata } from "../shared/persistence-restore-helpers.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+
+const RESTING_STATUSES: readonly string[] = ["blocked", "failed", "paused"];
 
 /** Reopen the session's saved graphs without admitting an executor or writing to the journal. */
 export async function restoreSessionRuns(
@@ -27,28 +30,28 @@ export async function restoreSessionRuns(
 		knownIds ??
 		catalog?.inspectableIds ??
 		[...(catalog?.resumable ?? []), ...(catalog?.completed ?? [])].map((row) => row.workflowId);
-	const keep = new Set<string>();
-	const snapshots: RunSnapshot[] = [];
+	const restored: { readonly handle: DurableWorkflowHandle; readonly runs: readonly RunSnapshot[] }[] = [];
 	for (const id of ids) {
 		if (!current()) return;
 		const existing = store.run(id);
 		if (existing && !existing.restored) continue;
-		const block = findRunBlockedMetadata(records.get(id) ?? [], id);
+		const recorded = findRunBlockedMetadata(records.get(id) ?? [], id);
 		if (catalog !== undefined) {
 			const candidate = backend.getWorkflow(id);
-			if (candidate?.modelOwner !== owner || (!block && !["blocked", "failed", "paused"].includes(candidate.status)))
-				continue;
+			if (candidate?.modelOwner !== owner || (!recorded && !RESTING_STATUSES.includes(candidate.status))) continue;
 		}
 		await backend.hydrateWorkflow(id);
 		let handle = backend.getLoadableWorkflow(id);
-		if (handle?.modelOwner !== owner || (!block && !["blocked", "failed", "paused"].includes(handle.status)))
-			continue;
+		if (handle?.modelOwner !== owner || (!recorded && !RESTING_STATUSES.includes(handle.status))) continue;
 		const checkpoints = await readDurableCheckpoints(backend, id);
 		handle = backend.getLoadableWorkflow(id);
 		if (handle?.modelOwner !== owner) continue;
+		// A session block from an earlier occurrence than the journal's latest pause or block is not this run's state.
+		const block = recorded && (recorded.runGeneration ?? 0) >= (handle.runGeneration ?? 0) ? recorded : undefined;
 		const uncommitted = uncommittedBlockKind(backend, handle, block);
-		if (handle.status === "running" && uncommitted === undefined) continue;
+		if (uncommitted === undefined && !RESTING_STATUSES.includes(handle.status)) continue;
 		const graph = durableWorkflowRunSnapshots(backend, handle, checkpoints);
+		const runs: RunSnapshot[] = [];
 		for (const run of graph) {
 			const root = run.id === id;
 			const blocked = root && (uncommitted !== undefined || handle.status === "blocked");
@@ -69,11 +72,21 @@ export async function restoreSessionRuns(
 					: {}),
 			};
 			if (root) bindRunDurableBackend(snapshot, backend);
-			keep.add(run.id);
-			snapshots.push(snapshot);
+			runs.push(snapshot);
 		}
+		restored.push({ handle, runs });
 	}
 	if (!current()) return;
+	// Another writer can end, claim or adopt a run while later runs are read: publish only what the journal still says.
+	const published = restored
+		.filter(({ handle }) => {
+			const latest = backend.getLoadableWorkflow(handle.workflowId);
+			return (
+				latest?.modelOwner === owner && latest.status === handle.status && latest.updatedAt === handle.updatedAt
+			);
+		})
+		.flatMap(({ runs }) => runs);
+	const keep = new Set(published.map((run) => run.id));
 	store.batch(() => {
 		for (const run of [...store.runs()])
 			if (
@@ -82,7 +95,7 @@ export async function restoreSessionRuns(
 				(knownIds === undefined || knownIds.includes(run.rootRunId ?? run.id))
 			)
 				store.removeRun(run.id);
-		const missing = snapshots.filter((run) => !store.run(run.id) || store.run(run.id)?.restored);
+		const missing = published.filter((run) => !store.run(run.id) || store.run(run.id)?.restored);
 		beforeRestore?.(missing);
 		for (const run of missing) store.recordRunStart(run);
 	});

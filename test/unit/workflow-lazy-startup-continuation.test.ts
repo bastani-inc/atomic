@@ -7,6 +7,8 @@ import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { settleStartupWorkflowRecoveries } from "../../packages/workflows/src/extension/extension-lifecycle.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import factory, {
@@ -1366,6 +1368,281 @@ export default workflow({
 			const output = sent.at(-1)?.content ?? "";
 			for (const name of ["ours-blocked", "ours-paused", "ours-failed"]) assert.ok(output.includes(name), output);
 			assert.doesNotMatch(output, /not-ours/);
+		});
+	}
+
+	for (const change of ["completes", "is adopted by another session", "blocks again"] as const) {
+		test(`/workflows does not list a run that ${change} while it reopens another run (#5591)`, async () => {
+			const backend = getDurableBackend() as InMemoryDurableBackend;
+			const status = change === "is adopted by another session" ? "paused" : "blocked";
+			const first = testRunId("moved-while-listing");
+			const second = testRunId("listed-after-it");
+			for (const [workflowId, name] of [
+				[first, "first-workflow"],
+				[second, "second-workflow"],
+			] as const)
+				await backend.commitWorkflowRegistration({
+					workflowId,
+					name,
+					status,
+					modelOwner: "owner",
+					inputs: {},
+					createdAt: 1,
+					completedCheckpoints: 1,
+					resumable: true,
+				});
+			if (change === "blocks again")
+				await backend.commitWorkflowStatus(first, "blocked", undefined, true, undefined, 1);
+			const entries: SessionEntry[] =
+				change !== "is adopted by another session"
+					? [
+							{
+								id: "block",
+								type: "custom",
+								customType: "workflow.run.blocked",
+								data: {
+									runId: first,
+									runGeneration: 1,
+									blockAttempt: "0:",
+									failedStageId: "build",
+									error: "provider outage",
+									failureKind: "provider",
+									failureRecoverability: "recoverable",
+									failureDisposition: "active_blocked",
+									resumable: true,
+									ts: 2,
+								},
+							},
+						]
+					: [];
+			const { commands, handlers, sent, tool } = registerFactory({ disableAsyncDiscovery: true });
+			const ctx = {
+				cwd: originalCwd,
+				hasUI: false,
+				sessionManager: { getSessionId: () => "owner", getEntries: () => entries },
+				ui: { notify() {} },
+			};
+			await startSession(handlers, { reason: "startup" }, ctx);
+			// /workflows reads the first run, then another writer moves it while the second run is still being read.
+			const prepareCatalog = backend.prepareWorkflowCatalog.bind(backend);
+			const hydrate = backend.hydrateWorkflow.bind(backend);
+			let listing = false;
+			backend.prepareWorkflowCatalog = async () => {
+				const catalog = await prepareCatalog();
+				listing = true;
+				return { ...catalog, inspectableIds: [first, second] };
+			};
+			backend.hydrateWorkflow = async (id) => {
+				if (listing && id === second) {
+					listing = false;
+					if (change === "completes") await backend.commitWorkflowStatus(first, "completed");
+					else if (change === "blocks again") {
+						assert.ok(await backend.commitWorkflowStatusTransition(first, ["blocked"], "running"));
+						await backend.commitWorkflowStatus(first, "blocked", undefined, true, undefined, 2);
+					} else
+						assert.ok(
+							await backend.commitWorkflowStatusTransition(
+								first,
+								["paused"],
+								"running",
+								undefined,
+								true,
+								backend.getWorkflow(first)?.updatedAt,
+								"new-owner",
+							),
+						);
+				}
+				return hydrate(id);
+			};
+			await commands.find((command) => command.name === "workflows")!.options.handler("", ctx);
+			const output = sent.at(-1)?.content ?? "";
+			assert.match(output, /second-workflow/, "the unchanged run is still reopened");
+			if (change === "blocks again") {
+				const row = store.run(first);
+				assert.ok(
+					row === undefined || (row.runGeneration === 2 && row.error !== "provider outage"),
+					`the earlier block is not shown for the newer one: ${JSON.stringify(row)}`,
+				);
+				return;
+			}
+			assert.doesNotMatch(output, /first-workflow/, "the moved run is not offered from its old state");
+			assert.equal(store.run(first), undefined);
+			if (change === "completes") {
+				const status = await tool.execute(
+					"status",
+					{ action: "status", runId: first, format: "json" },
+					undefined,
+					undefined,
+					ctx as never,
+				);
+				const detail = (status.details as { detail?: { status?: string; resumable?: boolean } }).detail;
+				assert.equal(detail?.status, "completed");
+				assert.equal(detail?.resumable, false);
+			}
+		});
+	}
+
+	test("a run blocked in this session that has since completed is not reopened (#5591)", async () => {
+		const backend = getDurableBackend();
+		const runId = testRunId("completed-elsewhere");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "completed-elsewhere",
+			status: "running",
+			modelOwner: "owner",
+			inputs: {},
+			createdAt: 1,
+		});
+		await backend.commitWorkflowStatus(runId, "blocked", undefined, true, undefined, 1);
+		assert.ok(await backend.commitWorkflowStatusTransition(runId, ["blocked"], "running"));
+		await backend.commitWorkflowStatus(runId, "completed", undefined, false, undefined, 1);
+		const entries: SessionEntry[] = [
+			{
+				id: "block",
+				type: "custom",
+				customType: "workflow.run.blocked",
+				data: {
+					runId,
+					runGeneration: 1,
+					blockAttempt: "0:",
+					failedStageId: "build",
+					error: "provider outage",
+					failureKind: "provider",
+					failureRecoverability: "recoverable",
+					failureDisposition: "active_blocked",
+					resumable: true,
+					ts: 2,
+				},
+			},
+		];
+		const { commands, handlers, sent } = registerFactory({ disableAsyncDiscovery: true });
+		const ctx = {
+			cwd: originalCwd,
+			hasUI: false,
+			sessionManager: { getSessionId: () => "owner", getEntries: () => entries },
+			ui: { notify() {} },
+		};
+		await startSession(handlers, { reason: "startup" }, ctx);
+		assert.equal(store.run(runId), undefined, "session start does not reopen it");
+		await commands.find((command) => command.name === "workflows")!.options.handler("", ctx);
+		assert.equal(store.run(runId), undefined);
+		assert.equal(sent.at(-1)?.content, "No workflows in this session.");
+	});
+
+	test("a session's block from an earlier occurrence never replaces the journal's newer block (#5591)", async () => {
+		const backend = getDurableBackend();
+		const runId = testRunId("blocked-again");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "blocked-again",
+			status: "running",
+			modelOwner: "owner",
+			inputs: {},
+			createdAt: 1,
+		});
+		await backend.commitWorkflowStatus(runId, "blocked", undefined, true, undefined, 1);
+		assert.ok(await backend.commitWorkflowStatusTransition(runId, ["blocked"], "running"));
+		await backend.commitWorkflowStatus(runId, "blocked", undefined, true, undefined, 3);
+		const entries: SessionEntry[] = [
+			{
+				id: "first-block",
+				type: "custom",
+				customType: "workflow.run.blocked",
+				data: {
+					runId,
+					runGeneration: 1,
+					blockAttempt: "0:",
+					failedStageId: "first-stage",
+					error: "first attempt error",
+					failureKind: "provider",
+					failureRecoverability: "recoverable",
+					failureDisposition: "active_blocked",
+					resumable: true,
+					ts: 2,
+				},
+			},
+		];
+		const { commands, handlers, sent, tool } = registerFactory({ disableAsyncDiscovery: true });
+		const ctx = {
+			cwd: originalCwd,
+			hasUI: false,
+			sessionManager: { getSessionId: () => "owner", getEntries: () => entries },
+			ui: { notify() {} },
+		};
+		await startSession(handlers, { reason: "startup" }, ctx);
+		await commands.find((command) => command.name === "workflows")!.options.handler("", ctx);
+		assert.match(sent.at(-1)?.content ?? "", /blocked-again/, "the journal's block is listed");
+		const view = store.run(runId);
+		assert.equal(view?.status, "blocked");
+		assert.equal(view?.runGeneration, 3, "the row keeps the journal block's notice and panel identity");
+		assert.equal(view?.failedStageId, undefined);
+		assert.notEqual(view?.error, "first attempt error");
+		const status = await tool.execute(
+			"status",
+			{ action: "status", runId, format: "json" },
+			undefined,
+			undefined,
+			ctx as never,
+		);
+		const text = status.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+		assert.match(text, /"status": "blocked"/);
+		assert.doesNotMatch(text, /first attempt error|first-stage/);
+	});
+
+	for (const hasUI of [false, true]) {
+		test(`/workflows ${hasUI ? "in the terminal" : "headless"} still shows live runs when the journal cannot be read (#5591)`, async () => {
+			const dir = mkdtempSync(join(tmpdir(), "workflows-closed-journal-"));
+			const journal = await resolveRunJournal({ journal: { path: join(dir, "journal.sqlite") } });
+			const backend = await JournalDurableBackend.open(journal);
+			setDurableBackend(backend);
+			try {
+				const notices: Array<{ message: string; level?: string }> = [];
+				const opened: unknown[] = [];
+				const { commands, handlers, sent } = registerFactory({ disableAsyncDiscovery: true });
+				const ctx = {
+					cwd: originalCwd,
+					hasUI,
+					sessionManager: { getSessionId: () => "owner", getEntries: () => [] },
+					ui: {
+						notify: (message: string, level?: string) => notices.push({ message, level }),
+						custom: async (...args: unknown[]) => {
+							opened.push(args);
+							return undefined;
+						},
+						setWidget: () => undefined,
+						setStatus: () => undefined,
+					},
+				};
+				await startSession(handlers, { reason: "startup" }, ctx);
+				const liveId = testRunId("live-while-journal-closed");
+				store.recordRunStart({
+					id: liveId,
+					name: "live-workflow",
+					status: "running",
+					inputs: {},
+					toolNodes: [],
+					stages: [],
+					startedAt: Date.now(),
+				});
+				await journal.close();
+				await commands.find((command) => command.name === "workflows")!.options.handler("", ctx);
+				if (hasUI) {
+					assert.equal(opened.length, 1, "the live run opens");
+					const notice = notices.find((entry) => /Could not reopen saved workflow runs/.test(entry.message));
+					assert.ok(notice, JSON.stringify(notices));
+					assert.equal(notice.level, "warning");
+				} else {
+					assert.match(sent.at(-1)?.content ?? "", /live-workflow/);
+					assert.ok(
+						sent.some((message) => /Could not reopen saved workflow runs/.test(message.content ?? "")),
+						JSON.stringify(sent),
+					);
+				}
+			} finally {
+				store.clear();
+				await backend.close().catch(() => undefined);
+				rmSync(dir, { recursive: true, force: true });
+			}
 		});
 	}
 
