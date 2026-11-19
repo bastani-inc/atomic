@@ -79,6 +79,41 @@ it.each(["native memory", "local file", "local memory"])(
 
 for (const backend of storageBackends) {
 	describe.skipIf(backend.skipReason !== undefined)(`catalog consistency: ${backend.name}`, () => {
+		it("a single-run export does not fetch unrelated catalog headers (#5537)", async () => {
+			const scope = await backend.openScope();
+			const directory = makeTempDirectory("atomic-selected-run-");
+			try {
+				const database = await scope.connect();
+				const reader = await SqlRunJournal.open(database, { prefix: scope.prefix });
+				try {
+					await reader.createRun(header);
+					await reader.createRun({ ...header, runId: "unselected" });
+					let fetchedOther = false;
+					const restore = observeSqlReads(database, {
+						after: (rows) => {
+							if (rows.some((row) => row.run_id === "unselected")) fetchedOther = true;
+						},
+					});
+					try {
+						const result = await exportWorkflowRuns(
+							{ kind: "database", prefix: scope.prefix, location: "catalog", open: async () => database },
+							directory,
+							{ runs: [header.runId] },
+						);
+						expect(result.written).toEqual([header.runId]);
+						expect(fetchedOther).toBe(false);
+					} finally {
+						restore();
+					}
+				} finally {
+					await reader.close();
+				}
+			} finally {
+				await scope.close();
+				removeTempDirectory(directory);
+			}
+		});
+
 		it.each(["run versions", "named export"])(
 			"%s cannot include a later commit without its predecessor (#5537)",
 			async (view) => {

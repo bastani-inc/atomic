@@ -7,6 +7,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { seedCatalogSeries } from "../helpers/seed-catalog-series.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
@@ -30,21 +31,26 @@ for (const backend of storageBackends) {
 						[],
 					);
 					const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
-					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10240)
-						INSERT INTO ${table}(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
+					await seedCatalogSeries(
+						database,
+						1,
+						10_240,
+						`INSERT INTO ${table}(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
 						SELECT 's-' || i, '/project/' || i, created_at,
 						'{"id":"s-' || i || '","version":${SESSION_FORMAT_VERSION},"cwd":"/project/' || i || '","createdAt":"2026-11-18T00:00:00Z"}',
 						internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision
-						FROM n CROSS JOIN ${table} AS seed WHERE seed.id = 'seed'`);
+						FROM n CROSS JOIN ${table} AS seed WHERE seed.id = 'seed'`,
+					);
 					const all = database.all.bind(database);
 					let fullScans = 0;
 					let directoryReads = 0;
 					let yielded = false;
 					let turn: NodeJS.Immediate | undefined;
+					const directoryQuery = (sql: string) =>
+						sql.includes(table) && /catalog_chars|catalog_complete|SELECT DISTINCT cwd FROM/.test(sql);
 					const restore = observeSqlReads(database, {
 						before: async (sql, params) => {
-							const directory = sql.includes("catalog_chars") && sql.includes(table);
-							if (directory) {
+							if (directoryQuery(sql)) {
 								if (directoryReads > 0) expect(yielded, "directory pages yield before another read").toBe(true);
 								directoryReads++;
 								const postgres = dialectOf(database).name === "postgres";
@@ -59,7 +65,7 @@ for (const backend of storageBackends) {
 							}
 						},
 						after: (_rows, sql) => {
-							if (sql.includes("catalog_chars") && sql.includes(table) && directoryReads === 1)
+							if (directoryQuery(sql) && directoryReads === 1)
 								turn = setImmediate(() => {
 									yielded = true;
 								});
@@ -71,6 +77,7 @@ for (const backend of storageBackends) {
 						expect(listed).toEqual([]);
 						expect(directoryReads).toBeGreaterThan(0);
 						expect(fullScans).toBeLessThanOrEqual(1);
+						if (database.descriptor.adapter !== "node-sqlite") expect(directoryReads).toBe(1);
 					} finally {
 						if (turn !== undefined) clearImmediate(turn);
 						restore();

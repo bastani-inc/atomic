@@ -253,6 +253,7 @@ async function openExportSource(
 	t: Tables,
 	shardId: number | undefined,
 	open?: () => Promise<SqliteDatabase>,
+	selectedRunId?: string,
 ): Promise<ExportSource | UnreadableSource> {
 	if (open === undefined && !existsSync(path))
 		return { path, reason: "the journal file no longer exists", oldFormat: false };
@@ -273,13 +274,17 @@ async function openExportSource(
 			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}
-		const runs = await readSqlCatalog<JournalRunTableRow>(database, {
-			sql: `SELECT * FROM ${t.runs}`,
-			inSnapshot: open === undefined,
-			pageRows: 4096,
-			key: "run_id",
-			size: "length(run_id) + length(name) + length(cwd) + length(status) + length(header_json)",
-		});
+		// An explicit single run needs an indexed lookup, not a scan of unrelated headers.
+		const runs =
+			selectedRunId !== undefined
+				? await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} WHERE run_id = ?`, selectedRunId)
+				: await readSqlCatalog<JournalRunTableRow>(database, {
+						sql: `SELECT * FROM ${t.runs}`,
+						inSnapshot: open === undefined,
+						pageRows: 4096,
+						key: "run_id",
+						size: "length(run_id) + length(name) + length(cwd) + length(status) + length(header_json)",
+					});
 		return {
 			path,
 			database,
@@ -465,6 +470,7 @@ export async function exportWorkflowRuns(
 						t,
 						undefined,
 						storage.kind === "database" ? storage.open : undefined,
+						options.runs?.length === 1 ? options.runs[0] : undefined,
 					);
 					if ("database" in opened) single = opened;
 					// A named database that cannot be read fails the export: an empty export would pass for a backup.

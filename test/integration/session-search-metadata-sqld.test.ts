@@ -10,6 +10,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { observeSqlReads } from "../helpers/observe-sql-reads.js";
+import { seedCatalogSeries } from "../helpers/seed-catalog-series.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 const MESSAGES = 700_000;
@@ -39,19 +40,21 @@ for (const backend of storageBackends) {
 					const postgres = dialectOf(database).name === "postgres";
 					if (postgres) await database.exec(`ALTER TABLE ${tables.entries} DISABLE TRIGGER USER`);
 					try {
-						await database.run(
-							`WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-							INSERT INTO ${tables.entries}(session_id, seq, entry_id, entry_json, chunks)
-							SELECT 'big', i, 'm-' || i, '{"type":"message","id":"m-' || i || '","parentId":null,"timestamp":"${AT}","message":{"role":"user","content":"m-' || i || '","timestamp":${Date.parse(AT)}}}', 0 FROM n`,
+						await seedCatalogSeries(
+							database,
+							2,
 							MESSAGES,
+							`INSERT INTO ${tables.entries}(session_id, seq, entry_id, entry_json, chunks)
+							SELECT 'big', i, 'm-' || i, '{"type":"message","id":"m-' || i || '","parentId":null,"timestamp":"${AT}","message":{"role":"user","content":"m-' || i || '","timestamp":${Date.parse(AT)}}}', 0 FROM n`,
 						);
 					} finally {
 						if (postgres) await database.exec(`ALTER TABLE ${tables.entries} ENABLE TRIGGER USER`);
 					}
-					await database.run(
-						`WITH RECURSIVE n(i) AS (SELECT 2 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-						INSERT INTO ${tables.searchTexts}(session_id, seq, text_json) SELECT 'big', i, '"m-' || i || '"' FROM n`,
+					await seedCatalogSeries(
+						database,
+						2,
 						MESSAGES,
+						`INSERT INTO ${tables.searchTexts}(session_id, seq, text_json) SELECT 'big', i, '"m-' || i || '"' FROM n`,
 					);
 					await database.run(
 						`UPDATE ${tables.sessions} SET last_seq = ?, message_count = ?, revision = 'bulk' WHERE id = 'big'`,

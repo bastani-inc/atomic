@@ -2,11 +2,17 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect } from "../dialect.js";
-import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
+import {
+	SessionBlobError,
+	StorageError,
+	StorageInvalidTextError,
+	StoragePayloadTooLargeError,
+	StorageSchemaVersionError,
+} from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
-import { readSqlCatalog, readSqlCatalogPages, reduceSqlCatalog } from "../sql-catalog.js";
+import { readSqlCatalog, reduceSqlCatalog } from "../sql-catalog.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
 	SessionConflictError,
@@ -1063,53 +1069,53 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async distinctCwds(query: SessionListQuery): Promise<string[]> {
-		const directories = new Set<string>();
-		let complete = !query.withoutSearchText;
-		// The paced listing starts with the indexed scan, without a synchronous DISTINCT over the whole store.
-		// One DISTINCT scan handles ordinary catalogs. If it does not fit, continue by the indexed session ID,
-		// not by an unindexed cwd cursor that would recompute DISTINCT over the table for every page.
-		if (complete)
-			for await (const page of readSqlCatalogPages<SqliteRow & { cwd: string; directory_count: number | bigint }>(
-				this.database,
-				{
-					sql: `SELECT cwd, count(*) OVER () AS directory_count FROM (SELECT DISTINCT cwd FROM ${this.tables.sessions}) AS directories`,
-					key: "cwd",
-					size: "length(cwd)",
-					signal: query.signal,
-					assertOpen: () => this.assertOpen(),
-				},
-			)) {
-				for (const row of page) directories.add(row.cwd);
-				complete = page.length === Number(page[0]!.directory_count);
-				break;
-			}
-		if (!complete) {
-			await yieldTurn();
-			const { value: found } = await reduceSqlCatalog<SqliteRow & { id: string; cwd: string }, Set<string>>(
-				this.database,
-				{
-					sql: `SELECT id, cwd FROM ${this.tables.sessions}`,
-					key: "id",
-					size: "length(id) + length(cwd)",
-					skipProbe: true,
-					signal: query.signal,
-					assertOpen: () => this.assertOpen(),
-					pageRows: query.withoutSearchText
-						? this.listingScanRows(LISTING_CWD_PAGE)
-						: this.database.descriptor.adapter === "node-sqlite"
-							? 1024
-							: 4_096,
-				},
-				() => new Set(),
-				(found, page) => {
-					for (const row of page) found.add(row.cwd);
-				},
-			);
+		// Ordinary server catalogs often fit in one bounded response. The paced local listing starts with the
+		// indexed scan instead, without a synchronous DISTINCT over the whole store.
+		if (!query.withoutSearchText) {
 			this.assertListing(query);
-			return [...found];
+			const limit = this.database.descriptor.adapter === "node-sqlite" ? 256 : 16_384;
+			try {
+				// Pack a fitting set once rather than decoding one wire row per spelling. Six bytes per code
+				// point cover UTF-8 and JSON escapes; four more cover quotes, comma and whitespace.
+				const row = await this.database.get<SqliteRow & { directories: string | null }>(
+					`WITH dirs AS MATERIALIZED (SELECT DISTINCT cwd FROM ${this.tables.sessions} LIMIT ?)
+					SELECT CASE WHEN count(*) < ? AND 2 + coalesce(sum(6 * length(cwd) + 4), 0) <= ?
+					THEN (SELECT CAST(${this.dialect.jsonGroupArray("cwd")} AS TEXT) FROM dirs) END AS directories FROM dirs`,
+					limit,
+					limit,
+					SESSION_READ_PAGE_CHARS,
+				);
+				this.assertListing(query);
+				if (row?.directories != null) return JSON.parse(row.directories) as string[];
+			} catch (error) {
+				this.assertListing(query);
+				// A server can cap the aggregate value itself, not just the whole response.
+				if (!(error instanceof StoragePayloadTooLargeError)) throw error;
+			}
+			await yieldTurn();
 		}
+		const { value: found } = await reduceSqlCatalog<SqliteRow & { id: string; cwd: string }, Set<string>>(
+			this.database,
+			{
+				sql: `SELECT id, cwd FROM ${this.tables.sessions}`,
+				key: "id",
+				size: "length(id) + length(cwd)",
+				skipProbe: true,
+				signal: query.signal,
+				assertOpen: () => this.assertOpen(),
+				pageRows: query.withoutSearchText
+					? this.listingScanRows(LISTING_CWD_PAGE)
+					: this.database.descriptor.adapter === "node-sqlite"
+						? 1024
+						: 4_096,
+			},
+			() => new Set(),
+			(found, page) => {
+				for (const row of page) found.add(row.cwd);
+			},
+		);
 		this.assertListing(query);
-		return [...directories];
+		return [...found];
 	}
 
 	/** The most sessions one statement of a paced listing scans: fewer when the statement holds the event loop. */

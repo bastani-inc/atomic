@@ -14,6 +14,7 @@ import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/sto
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { seedCatalogSeries } from "../helpers/seed-catalog-series.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
@@ -32,12 +33,16 @@ for (const backend of storageBackends) {
 						[],
 					);
 					const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
-					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 33000)
-						INSERT INTO ${table}(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
+					await seedCatalogSeries(
+						database,
+						1,
+						33_000,
+						`INSERT INTO ${table}(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
 						SELECT 's-' || i, '/project/' || i, created_at,
 						'{"id":"s-' || i || '","version":${SESSION_FORMAT_VERSION},"cwd":"/project/' || i || '","createdAt":"2026-11-18T00:00:00Z"}',
 						internal, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, summary_state, revision
-						FROM n CROSS JOIN ${table} AS seed WHERE seed.id = 'seed'`);
+						FROM n CROSS JOIN ${table} AS seed WHERE seed.id = 'seed'`,
+					);
 					for (const withoutSearchText of [false, true]) {
 						const ids: string[] = [];
 						for await (const summary of store.list({ cwd: "/project", withoutSearchText })) ids.push(summary.id);
@@ -346,10 +351,14 @@ for (const backend of storageBackends) {
 				const database = await scope.connect();
 				const journal = await SqlRunJournal.open(database, { prefix: scope.prefix });
 				try {
-					await database.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 150000)
-						INSERT INTO ${runJournalTables(scope.prefix).runs}(run_id, name, cwd, created_at, status, header_json)
+					await seedCatalogSeries(
+						database,
+						1,
+						150_000,
+						`INSERT INTO ${runJournalTables(scope.prefix).runs}(run_id, name, cwd, created_at, status, header_json)
 						SELECT 'run-' || i, 'run', '/project', 1, 'running',
-						'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`);
+						'{"runId":"run-' || i || '","name":"run","cwd":"/project","createdAt":1,"status":"running"}' FROM n`,
+					);
 					const runs = await journal.listRuns();
 					expect(runs.map((run) => run.runId)).toEqual(
 						Array.from({ length: 150_000 }, (_, i) => `run-${i + 1}`).sort(),
