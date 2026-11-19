@@ -49,7 +49,7 @@ interface RunWorktrees {
 		number,
 		{ taskId: () => string | undefined; ready: Promise<string | undefined>; signal: AbortSignal; status?: string }
 	>;
-	/** Children stopped resumably (paused, quit, owner closed, stage paused): their worktree is kept while it has unsaved work. */
+	/** Children stopped resumably (paused, quit, owner closed): their worktree is kept while it has unsaved work. */
 	readonly stopped: Set<number>;
 	readonly removed: Set<number>;
 	/** The run returned: nothing more is launched by it, so worktrees go once no execution holds them. */

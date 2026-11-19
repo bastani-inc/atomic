@@ -34,8 +34,6 @@ import {
 	recordSubagentChildHeldToolResults,
 	SUBAGENT_CHILD_GONE_STATUS,
 	SUBAGENT_CHILD_RELEASED_STATUS,
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
 	type SubagentChildStillRunningCall,
@@ -382,13 +380,9 @@ export function planReleasedChildWake(
 }
 
 /** Statuses after which a child takes nothing more. */
-const ENDED: ReadonlySet<string | undefined> = new Set([
-	"killed",
-	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
-	SUBAGENT_CHILD_GONE_STATUS,
-]);
+const ENDED: ReadonlySet<string | undefined> = new Set(["killed", SUBAGENT_CHILD_GONE_STATUS]);
 /** Statuses run control set: results wait in the record for `resume`, and messages do not wake the child. */
-const STOPPED: ReadonlySet<string | undefined> = new Set(["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS]);
+const STOPPED: ReadonlySet<string | undefined> = new Set(["paused", "quit"]);
 
 /**
  * Whether a wake may still relaunch a child with this latest record: it is released or has ended on its own, and run
@@ -461,7 +455,7 @@ export function wakeFailureOf(error: Error, childId: string): ReleasedChildError
  * hands the batch's results and the failure to `actions.fail` before it fails, so nothing it carried is lost.
  */
 export function handleReleasedChildWakes(
-	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
+	ctx: Pick<ExtensionContext, "sessionManager">,
 	actions: ReleasedChildWakeActions,
 	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
 	maxConcurrent?: number,

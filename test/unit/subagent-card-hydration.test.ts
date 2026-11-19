@@ -217,11 +217,6 @@ test("a rebuilt session hydrates every background launch card from its child rec
 			{ state: "terminal", terminalStatus: "quit" },
 			/⏸ Agent\(hyquit · task for hyquit\) ⎿ Quit · paused · awaiting resume/,
 		],
-		[
-			"hystagepause",
-			{ state: "terminal", terminalStatus: "stage-paused" },
-			/⏸ Agent\(hystagepause · task for hystagepause\) ⎿ Paused with its workflow stage · awaiting resume/,
-		],
 		["hydone", { state: "terminal", terminalStatus: "ok" }, /● Agent\(hydone · task for hydone\) ⎿ Done/],
 		["hyfail", { state: "terminal", terminalStatus: "error" }, /✗ Agent\(hyfail · task for hyfail\) ⎿ Failed/],
 		["hykill", { state: "terminal", terminalStatus: "killed" }, /◼ Agent\(hykill · task for hykill\) ⎿ Stopped/],
@@ -229,11 +224,6 @@ test("a rebuilt session hydrates every background launch card from its child rec
 			"hygone",
 			{ state: "terminal", terminalStatus: "gone" },
 			/✗ Agent\(hygone · task for hygone\) ⎿ Failed · gone after a restart/,
-		],
-		[
-			"hystage",
-			{ state: "terminal", terminalStatus: "stage-closed" },
-			/✗ Agent\(hystage · task for hystage\) ⎿ Failed · its workflow stage ended/,
 		],
 	];
 	for (const [runId] of states) {
@@ -468,19 +458,19 @@ test("an expanded card of a running child shows messages it saves after the card
 	await store.close();
 });
 
-test("a workflow stage transcript hydrates its launch cards from the stage session's records (#3760)", async () => {
+test("a transcript opened outside its owning session hydrates its launch cards from that session's records (#3760)", async () => {
 	initTheme("dark");
 	const store = new MemorySessionStore();
 	const parent = await SessionManager.create(store, process.cwd());
-	const stage = await SessionManager.create(store, process.cwd());
-	const t = new TranscriptBuilder(stage, process.cwd());
+	const owner = await SessionManager.create(store, process.cwd());
+	const t = new TranscriptBuilder(owner, process.cwd());
 	await t.launch("hystg", "task-hystg");
 	await t.record({ childId: "hystg:0", runId: "hystg", state: "running", taskId: "task-hystg" });
 	await t.record({
 		childId: "hystg:0",
 		runId: "hystg",
 		state: "terminal",
-		terminalStatus: "stage-closed",
+		terminalStatus: "gone",
 		taskId: "task-hystg",
 	});
 	bindSubagentChildCards({ sessionManager: parent });
@@ -513,9 +503,9 @@ test("a workflow stage transcript hydrates its launch cards from the stage sessi
 		}),
 	});
 	try {
-		assert.equal(await host.loadSession(store, stage.getSessionId()), true);
+		assert.equal(await host.loadSession(store, owner.getSessionId()), true);
 		const body = () => stripVTControlCharacters(host.renderBody(140, 200).join("\n")).replace(/\s+/g, " ");
-		const text = await eventually(body, /✗ Agent\(hystg · task for hystg\) ⎿ Failed · its workflow stage ended/);
+		const text = await eventually(body, /✗ Agent\(hystg · task for hystg\) ⎿ Failed · gone after a restart/);
 		assert.doesNotMatch(text, /Launched in background/);
 	} finally {
 		host.dispose();
