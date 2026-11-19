@@ -4,7 +4,7 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { type RowRange, rowsFrom, setRendererClickTarget } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
@@ -19,6 +19,7 @@ export class CustomEntryComponent extends Container {
 		super();
 		this.entry = entry;
 		this.renderer = renderer;
+		setRendererClickTarget(this, { container: this, top: 0, firstRow: 1 });
 		this.outputPad = outputPad;
 		this.rebuild();
 	}

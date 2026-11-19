@@ -553,9 +553,8 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 	await renameWithRetry(temporary, file);
 }
 
-async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
+async function createRecord(file: string, record: PoolSlotRecord, retry = true): Promise<boolean> {
 	const temporary = `${file}.${randomUUID()}.tmp`;
-	const windows = process.platform === "win32";
 	const data = JSON.stringify(record);
 	let created = false;
 	let published = false;
@@ -563,11 +562,13 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 	try {
 		// Let the runtime apply its actual umask at creation and write through the handle granted there.
 		try {
-			await writeFile(temporary, data, { mode: 0o600, flag: windows ? "wx" : "w" });
+			await writeFile(temporary, data, { mode: 0o600, flag: "wx" });
 			created = true;
 		} catch (error) {
 			const { code, syscall } = error as NodeJS.ErrnoException;
 			created = code !== "EEXIST" && syscall !== "open";
+			// Another holder's file has the drawn name: neither write to nor remove it, and draw a fresh name once.
+			if (code === "EEXIST" && retry) return await createRecord(file, record, false);
 			throw error;
 		}
 		const binding = windowsTemporaryFiles();
@@ -582,7 +583,7 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 		}
 	} finally {
 		try {
-			if (created || !windows) await rm(temporary, { force: true });
+			if (created) await rm(temporary, { force: true });
 		} catch (error) {
 			const { code } = error as NodeJS.ErrnoException;
 			const refused = code === "EPERM" || code === "EACCES" || code === "EBUSY";

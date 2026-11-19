@@ -12,7 +12,8 @@ import type {
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 
 /**
  * Classification with a chat model served by llama.cpp's `llama-server`.
@@ -232,7 +233,8 @@ async function post(request: RequestContext, path: string, body: unknown, observ
 		const transformed = await options?.onPayload?.(payload, model);
 		if (transformed !== undefined) payload = transformed;
 	}
-	const requestFetch = options?.fetch ?? globalThis.fetch;
+	const retryTransport = ProviderRetryTransport.for(options);
+	const requestFetch = retryTransport?.fetch ?? options?.fetch ?? globalThis.fetch;
 	const headers =
 		providerHeadersToRecord(
 			getIdentityHeaders(model, options?.identity),
@@ -265,6 +267,7 @@ async function post(request: RequestContext, path: string, body: unknown, observ
 			}
 		},
 		{ maxRetries: options?.maxRetries ?? 2, maxRetryDelayMs: options?.maxRetryDelayMs, signal: options?.signal },
+		retryTransport,
 	);
 	if (observe) {
 		await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
@@ -454,7 +457,7 @@ export const classify: ClassifierFunction<ClassifierOptions> = async (model, con
 		return output;
 	} catch (error) {
 		output.answers = {};
-		output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 		output.errorMessage = formatProviderError(normalizeProviderError(error), `${LABEL} error`);
 		return output;
 	}
