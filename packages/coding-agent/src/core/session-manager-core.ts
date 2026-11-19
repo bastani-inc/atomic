@@ -980,14 +980,6 @@ export class SessionManager {
 		const saved = tail.some((entry) => own.has(entry.id));
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
 		if (target && saved) this.restoreOpened({ resume: target }, this.sessionFile);
-		if (target && !saved && tail.length > 0) {
-			const stop =
-				error instanceof SessionConflictError
-					? error
-					: new SessionConflictError(this.sessionId, expectSeq, read.lastSeq);
-			if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
-			throw stop;
-		}
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
 		for (const [i, entry] of tail.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
@@ -1000,7 +992,9 @@ export class SessionManager {
 		this.lastSeq = read.lastSeq;
 		if (saved) return true;
 		const conflict = error instanceof SessionConflictError;
-		if (foreign || (conflict && tail.length === 0)) {
+		// The prepared target describes the old watermark. Keep our original leaf when it lost the race,
+		// but acknowledge the observed tail before reporting the conflict so a retry can prepare a fresh target.
+		if ((target && tail.length > 0) || foreign || (conflict && tail.length === 0)) {
 			const stop = conflict ? error : new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
 			if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
 			throw stop;

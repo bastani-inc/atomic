@@ -135,6 +135,28 @@ test("the source window stays visible while a historical branch write is pending
 	}
 });
 
+test("a peer append conflicts once when moving to an archived branch, and retry reopens the selected conversation (#5554)", async () => {
+	const { open } = await fixture([
+		user("root", null),
+		user("old", "root"),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+	]);
+	const local = await open();
+	const peer = await open();
+	await peer.appendMessage({ role: "user", content: "other writer", timestamp: 2 });
+	await assert.rejects(local.recordBranch("old"), { name: "SessionConflictError" });
+	assert.equal(local.getLeafId(), "current");
+	await local.recordBranch("old");
+	for (const view of [local, await open()]) {
+		assert.equal(view.getLeafId(), "old");
+		assert.deepEqual(
+			view.buildSessionContext().messages.map((m) => m.role === "user" && m.content),
+			["root", "old"],
+		);
+	}
+});
+
 for (const tier of ["native", "paged", "legacy"] as const) {
 	test(`a stale local branch uses its original watermark with a ${tier} source (#5554)`, async () => {
 		const { store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
