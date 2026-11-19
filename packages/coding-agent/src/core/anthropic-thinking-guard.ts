@@ -69,11 +69,14 @@ export function markThinkingBeforeRemovedForkBoundary<T>(message: T, removed: un
 	if (!isObject(message) || message.role !== "assistant" || !Array.isArray(message.content)) return message;
 	if (!message.content.length || !message.content.every((block) => readReplayThinkingBlock(block) !== undefined))
 		return message;
-	// Built-in parent notices carry text. Don't traverse user-like content to guess whether an arbitrary notice emits.
+	// Built-in parent notices start with a visible label. If neither end proves that a notice
+	// would emit, leave the turn alone rather than searching arbitrary user-like content.
 	if (
 		!isObject(removed) ||
 		(removed.role !== "toolResult" &&
-			(removed.excludeFromContext === true || typeof removed.content !== "string" || !removed.content.trim()))
+			(removed.excludeFromContext === true ||
+				typeof removed.content !== "string" ||
+				(!removed.content.at(0)?.trim() && !removed.content.at(-1)?.trim())))
 	)
 		return message;
 	return { ...message, [removedForkBoundary]: true };
