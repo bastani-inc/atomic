@@ -170,6 +170,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly liveRowOrigin: ((seq: number) => string | undefined) | undefined;
 	/** The component each row drew, for keeping a stateful one when its row is retired. Weak: rows own nothing. */
 	private readonly renderedRows = new WeakMap<object, Component>();
+	onUnplacedWidget?: () => void;
 	editor: EditorComponent | undefined;
 	optimisticUserSignatureCounts = new Map<string, number>();
 	/**
@@ -300,6 +301,11 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 				const component = callbacks.renderEntry(this, entry);
 				if (store) this.renderedRows.set(entry, component);
 				if (key) store?.remember(key, [component]);
+				else if (this.onUnplacedWidget && store?.needsOriginal(component)) {
+					const preserve = this.onUnplacedWidget;
+					this.onUnplacedWidget = undefined;
+					preserve();
+				}
 				return component;
 			},
 			(entry, index) => callbacks.transcriptCacheKey(this, entry, index),

@@ -982,6 +982,22 @@ function readArchivedPage(
 	}, loadArchiveSnapshot);
 }
 
+/** A raw item cursor names an occurrence in the window from which it was issued. A receipt-less custom source
+ * retaining its live transcript for an unplaced widget must keep that original window available to the cursor:
+ * looking it up in a later, compacted window would skip rows or repeat the new tail. Construct only on this legacy path. */
+export function retainTaskWindowReader(session: TaskTranscriptSource, taskId: TaskId): (cursor: string) => PageResult {
+	const entries = session.getEntries().slice(),
+		id = session.getSessionId(),
+		before = session.getEarlierCursor?.();
+	const cut: TaskTranscriptSource = {
+		getSessionId: () => id,
+		getEntries: () => entries,
+		getEarlierCursor: () => before,
+		readHistory: session.readHistory,
+	};
+	return (cursor) => transcriptView(cut, taskId, entries, cursor);
+}
+
 /** The page of a task's transcript ending before `cursor`, read from `entries`, its session's history. */
 function transcriptView(
 	session: TaskTranscriptSource,

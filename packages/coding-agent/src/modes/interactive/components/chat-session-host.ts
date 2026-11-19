@@ -270,6 +270,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	hasUnplacedWidget(): boolean {
 		return this.state.hasUnplacedWidget();
 	}
+	/** Called once, only if an actually drawn widget lacks a saved occurrence. */
+	onUnplacedWidget(preserve?: () => void): void {
+		this.state.onUnplacedWidget = preserve;
+	}
 
 	/** Keep painted occurrences when a saved context is replaced; never infer a stored position from text. */
 	parkedRows(current: number): ParkedTaskRows | undefined {

@@ -28,6 +28,7 @@ import {
 	launchedTaskViewSource,
 	liveTaskRowOrigin,
 	readTaskPageForView,
+	retainTaskWindowReader,
 	savedBoundaryCursor,
 	type TaskTranscriptView,
 	type TaskViewResult,
@@ -265,6 +266,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private readonly requestRender: () => void;
 	private followed?: TaskTranscriptSource;
 	private followedSessionId?: string;
+	private legacyWindow?: ReturnType<typeof retainTaskWindowReader>;
+	private legacyWindowActive = false;
 	private unsubscribe?: () => void;
 	private cursor?: string;
 	private newerCursor?: string;
@@ -703,6 +706,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.latestRead?.abort();
 		this.boundaryReads.abort();
 		this.savedPages.length = 0;
+		this.legacyWindow = undefined;
 		this.#notices.reset();
 		this.unsubscribePrompts();
 		this.unsubscribe?.();
@@ -806,6 +810,21 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.newerCursor = undefined;
 		this.liveHistoryStart = undefined;
 		this.cursor = page.value.nextCursor;
+		this.legacyWindow = undefined;
+		this.legacyWindowActive = false;
+		this.chat.onUnplacedWidget?.(
+			session &&
+				!session.getEntrySeq &&
+				!session.entryReceipt &&
+				session.readHistory &&
+				session.getEarlierCursor &&
+				this.cursor &&
+				!this.cursor.includes(":")
+				? () => {
+						this.legacyWindow = retainTaskWindowReader(session, this.taskId);
+					}
+				: undefined,
+		);
 		const messages = page.value.messages;
 		if (page.value.savedWindow && !session) this.attachSavedPage(page.value, "latest");
 		else
@@ -863,6 +882,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				if (!session.getEntrySeq && !session.entryReceipt && this.chat.hasUnplacedWidget()) {
 					// With neither occurrence capability, only the original live transcript can place this stateful
 					// widget. Keep that view, including its new boundary. Never guess by text or display it twice.
+					this.legacyWindowActive = true;
 					this.behind = false;
 					this.parkOnLoad = false;
 				} else if (this.chat.bodyScrollFromBottom() === 0 && this.newerCursor === undefined) void this.load();
@@ -1019,7 +1039,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			deliverAdjacent(
 				new WeakRef(this),
 				request,
-				readTaskPageForView(this.source, this.taskId, cursor, request.controller.signal),
+				this.legacyWindowActive && this.legacyWindow && !cursor.includes(":")
+					? this.legacyWindow(cursor)
+					: readTaskPageForView(this.source, this.taskId, cursor, request.controller.signal),
 			);
 		} catch (error) {
 			this[finishAdjacent](request, { ok: false, error: { message: failureText(error) } });

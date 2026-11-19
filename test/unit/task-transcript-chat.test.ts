@@ -418,7 +418,8 @@ test.each([
 	"a live task chat keeps a stateful card's instance across a compaction and when the card is read again (keep %s, receipts %s, #5593)",
 	async (keep, withReceipts) => {
 		const session = SessionManager.inMemory();
-		for (let i = 0; i < 60; i++) await session.appendMessage({ role: "user", content: `turn ${i}`, timestamp: i });
+		const turns = withReceipts ? 60 : 400;
+		for (let i = 0; i < turns; i++) await session.appendMessage({ role: "user", content: `turn ${i}`, timestamp: i });
 		let event: ((e: AgentSessionEvent) => void) | undefined;
 		// What a session's save receipt reports: the stored sequence of the entry each emitted message became.
 		const receipts = new WeakMap<object, number>();
@@ -443,10 +444,12 @@ test.each([
 				};
 			},
 		};
-		let built = 0;
+		let built = 0,
+			liveChat: ChatSessionHost | undefined;
 		const host = await openTranscript(source, {
 			height: 30,
 			environment: {
+				createChat: (opts) => (liveChat = new ChatSessionHost(opts)),
 				getChatRenderSettings: () => ({
 					getCustomMessageRenderer: (name) =>
 						name === "stateful-card"
@@ -547,6 +550,31 @@ test.each([
 			}
 			assert.equal(await readBack(), "1", "reading the card again does not create another instance");
 			assert.equal(built, 1);
+			if (!withReceipts) {
+				host.inspector.handleInput(CTRL_HOME);
+				for (let i = 0; i < 80 && !host.text().includes("turn 0"); i++) {
+					await flush();
+					host.frame();
+				}
+				assert.ok(liveChat);
+				const labels = liveChat
+					.renderBodyRows(80, 0, liveChat.bodyRowCount(80))
+					.map(
+						(row) => /\b(turn \d+|after card \d+|widget incarnation)\b/.exec(stripVTControlCharacters(row))?.[1],
+					)
+					.filter((x) => x !== undefined);
+				assert.deepEqual(
+					labels,
+					[
+						...Array.from({ length: turns }, (_, i) => `turn ${i}`),
+						"widget incarnation",
+						"after card 0",
+						"after card 1",
+						"after card 2",
+					],
+					"older navigation visits the original live window without holes or repeated rows",
+				);
+			}
 		} finally {
 			await control?.dispose();
 			await host.dispose();
