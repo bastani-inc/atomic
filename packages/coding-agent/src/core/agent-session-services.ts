@@ -61,6 +61,8 @@ export interface CreateAgentSessionServicesOptions {
 	allowModelNetwork?: boolean;
 	/** Standalone RPC's existing eager refresh supplies any list needed during selection. */
 	standaloneRpc?: boolean;
+	/** Only consulted when a list is missing. Other providers keep the existing background refresh. */
+	selectionProviders?: () => readonly string[] | undefined;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -202,8 +204,8 @@ async function prepareOwnedAgentSessionServices(
 			authPath: join(agentDir, "auth.json"),
 			modelsPath: join(agentDir, "models.json"),
 			allowModelNetwork: options.standaloneRpc ? false : options.allowModelNetwork,
+			deferModelListFetch: true,
 		}));
-	if (options.standaloneRpc) await modelRuntime.refreshRpcStartupCatalog("before-selection");
 	endTimingSpan(modelRuntimeSpan);
 	const settingsSpan = startTimingSpan("createAgentSessionServices.settingsManager");
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
@@ -247,6 +249,10 @@ async function prepareOwnedAgentSessionServices(
 		endTimingSpan(providerSpan);
 		const catalogRestoreSpan = startTimingSpan("createAgentSessionServices.restoreModelCatalogs");
 		await modelRuntime.refresh({ allowNetwork: false });
+		if (options.standaloneRpc)
+			await modelRuntime.refreshRpcStartupCatalog("before-selection", options.selectionProviders);
+		else if (modelRuntime.needsMissingModelLists())
+			await modelRuntime.fetchMissingModelLists({ providers: options.selectionProviders?.() });
 		endTimingSpan(catalogRestoreSpan);
 		diagnostics.push(
 			...applyExtensionFlagValues(

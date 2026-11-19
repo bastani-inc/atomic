@@ -67,6 +67,7 @@ import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from ".
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { startupProjectTrust } from "./core/project-trust-state.ts";
+import { providerOfModelReference } from "./core/removed-providers.ts";
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
@@ -900,6 +901,17 @@ export async function main(argv: string[], options?: MainOptions) {
 			settingsManager: runtimeSettingsManager,
 			allowModelNetwork: startupModelNetwork(parsed, appMode, engineEnv.child === "1"),
 			standaloneRpc: appMode === "rpc" && shouldStartRpcCatalogRefresh(offlineMode, engineEnv.child === "1"),
+			selectionProviders: () => {
+				if (parsed.provider) return [parsed.provider];
+				if (parsed.model) {
+					const provider = providerOfModelReference(parsed.model);
+					return provider ? [provider] : undefined;
+				}
+				if ((parsed.models ?? runtimeSettingsManager.getEnabledModels())?.length) return undefined;
+				const provider =
+					sessionManager.buildSessionContext().model?.provider ?? runtimeSettingsManager.getDefaultProvider();
+				return provider ? [provider] : appMode === "rpc" ? [] : undefined;
+			},
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions: deferExtensions
 				? { deferExtensions: true, deferResources: true }

@@ -18,6 +18,8 @@ export interface CreateModelRuntimeOptions {
 	modelRefreshTimeoutMs?: number;
 	/** Stops create() waiting for model lists from the network; it then resolves with the cached catalogs. */
 	signal?: AbortSignal;
+	/** @internal Session hosts restore caches now but wait for provider registrations before reading a missing list. */
+	deferModelListFetch?: boolean;
 	/** Skip the initial catalog and availability refresh. Static models remain available. */
 	refreshOnCreate?: boolean;
 	/** Base URL of the models.dev catalog (`<url>/api.json`) refreshes read. Default: `ATOMIC_MODEL_CATALOG_URL`, else https://models.dev. */

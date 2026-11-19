@@ -62,7 +62,7 @@ import {
 	withFastModelVariants,
 } from "./fast-model-variants.ts";
 import { ModelConfig } from "./model-config.ts";
-import { AccountModelListStore, type ModelListRead, modelListKey, sharedModelListReads } from "./model-list-reads.ts";
+import { AccountModelLists } from "./model-list-reads.ts";
 import { POST_LOGOUT_AUTH_CHECK_TIMEOUT_MS } from "./model-refresh-timeout.ts";
 import {
 	addRuntimeApiKeyProvider,
@@ -91,7 +91,13 @@ import {
 	resolveConfiguredModelHeadersAsync,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
-import { withDiscoveredModels, withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
+import {
+	CatalogRefreshBatch,
+	withDiscoveredModels,
+	withPersonalizedCatalog,
+	withRemoteCatalog,
+} from "./remote-catalog-provider.ts";
+import { resolveConfigValueWithoutCommand } from "./resolve-config-value.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
@@ -117,19 +123,6 @@ function availabilityCredentialInputs(credential: Credential | undefined) {
 	if (credential?.type !== "oauth") return credential;
 	const { access: _access, refresh: _refresh, expires: _expires, ...inputs } = credential;
 	return inputs;
-}
-
-/**
- * Wait for a read with the caller's own cancellation. The read stops when its last waiter stops waiting, so a read no
- * caller waits for any more does no network work.
- */
-function joinModelListRead(read: ModelListRead, signal: AbortSignal | undefined): Promise<boolean> {
-	if (read.settled) return read.promise;
-	read.waiters += 1;
-	return raceWithAbortSignal(read.promise, operationSignal(signal)).finally(() => {
-		read.waiters -= 1;
-		if (read.waiters === 0 && !read.settled) read.controller.abort();
-	});
 }
 
 /** Credentials changed successfully, but local model state could not be synchronized. */
@@ -187,22 +180,13 @@ export class ModelRuntime implements Models {
 	private readonly compositionErrors = new Map<string, string>();
 	private readonly fastModelVariantDiagnostics = new Map<string, readonly FastModelVariantDiagnostic[]>();
 	private readonly modelsPath: string | undefined;
-	private readonly modelsStore: AccountModelListStore;
 	private readonly modelsStoreKey: string | ModelsStore;
-	private modelListReads: Map<string, ModelListRead> | undefined;
+	private readonly accountLists: AccountModelLists;
+	private availabilityInitialized = false;
 	private readonly modelNetworkEnabled: boolean;
 	/** Deadline for reading a missing account model list; undefined when this runtime never reads one by itself. */
 	private missingModelListTimeoutMs: number | undefined;
-	/** Providers whose account model list this runtime found cached, or whose read has settled and was restored. */
-	private readonly modelListsSettled = new Map<string, string>();
-	/** Per provider: this runtime's restore of a list another runtime on its models store read. */
-	private readonly modelListRestores = new Map<string, Promise<void>>();
-
-	private readonly modelListReader = Symbol("model list reader");
-	private rpcStartupRefreshStarted = false;
-	private rpcStartupMissing: Set<string> | undefined;
-	/** Providers whose missing list this runtime's read got from the account, for the current credential. */
-	private readonly missingModelListsRead = new Map<string, string>();
+	private rpcStartupReads: { providers: Set<string>; catalog: CatalogRefreshBatch } | undefined;
 	private config: ModelConfig;
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
@@ -234,15 +218,12 @@ export class ModelRuntime implements Models {
 		this.config = config;
 		this.modelsPath = modelsPath;
 		this.modelsStoreKey = modelsStoreKey;
-		this.modelsStore = new AccountModelListStore(
-			modelsStore,
-			(key) => this.existingModelListRead(key),
-			(provider, signal) => this.modelListCredentialKey(provider, signal),
-		);
+		this.accountLists = new AccountModelLists(modelsStore);
+
 		this.modelNetworkEnabled = modelNetworkEnabled;
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
-		this.models = createModels({ credentials, modelsStore: this.modelsStore });
+		this.models = createModels({ credentials, modelsStore });
 		this.streaming = new ModelRuntimeStreaming(
 			this.models,
 			(model, overrides) => this.getRequestAuth(model, overrides),
@@ -277,10 +258,7 @@ export class ModelRuntime implements Models {
 			if (provider.id === "openrouter") {
 				return withPersonalizedCatalog(
 					provider,
-					(catalog, context) => {
-						runtime?.useModelListCredential(provider.id, context.credential);
-						return personalizeOpenRouterCatalog(catalog, context);
-					},
+					personalizeOpenRouterCatalog,
 					catalogBaseUrl,
 					builtinModelDataGeneratedAt,
 				);
@@ -289,10 +267,8 @@ export class ModelRuntime implements Models {
 			// GitHub Copilot adds the models the account's own list offers beyond the catalog.
 			return provider.id === "github-copilot"
 				? withDiscoveredModels(withCatalog, async (catalog, context) => {
-						const key = runtime?.useModelListCredential(provider.id, context.credential);
 						const found = await discoverGitHubCopilotModels(catalog, context);
-						if (key && found !== undefined && !context.signal.aborted)
-							runtime?.missingModelListsRead.set(provider.id, key);
+						if (found !== undefined && !context.signal.aborted) runtime?.accountLists.answered(provider.id);
 						return found;
 					})
 				: withCatalog;
@@ -326,7 +302,8 @@ export class ModelRuntime implements Models {
 						modelRuntime.refresh({ allowNetwork: false, signal: controller.signal }),
 						controller.signal,
 					).catch(() => undefined);
-				await modelRuntime.fetchMissingModelLists({ signal: options.signal });
+				if (!options.deferModelListFetch && modelRuntime.needsMissingModelLists())
+					await modelRuntime.fetchMissingModelLists({ signal: options.signal });
 			}
 		} finally {
 			if (timeout) clearTimeout(timeout);
@@ -361,7 +338,8 @@ export class ModelRuntime implements Models {
 					(provider) =>
 						provider.refreshModels !== undefined &&
 						provider.refreshModelsAuth === "credential" &&
-						(!selected || selected.has(provider.id)),
+						(!selected || selected.has(provider.id)) &&
+						this.needsAccountList(provider.id),
 				)
 				.map((provider) => this.awaitModelList(provider.id, timeoutMs, waitSignal).catch(() => undefined)),
 		);
@@ -372,60 +350,26 @@ export class ModelRuntime implements Models {
 		return this.fetchMissingModelLists({ providers: providerId ? [providerId] : undefined, signal });
 	}
 
-	/** Rejects when `signal` aborts first; the provider is then checked again by the next caller. */
+	private needsAccountList(id: string): boolean {
+		return (
+			this.accountLists.needsRead(id) && (!this.availabilityInitialized || this.snapshot.configuredProviders.has(id))
+		);
+	}
+
+	needsMissingModelLists(provider?: string): boolean {
+		if (this.missingModelListTimeoutMs === undefined) return false;
+		const candidates = provider
+			? [this.models.getProvider(normalizeProviderId(provider))]
+			: this.models.getProviders();
+		return candidates.some((p) => p?.refreshModelsAuth === "credential" && this.needsAccountList(p.id));
+	}
+
 	private async awaitModelList(providerId: string, timeoutMs: number, signal: AbortSignal): Promise<void> {
-		// Not configured: a credential saved later is checked again.
-		if (!(await this.models.checkAuth(providerId, { signal }))) return;
-		const key = await raceWithAbortSignal(this.modelListCredentialKey(providerId, signal), signal);
-		if (!key || this.modelListsSettled.get(providerId) === key) return;
-		if (this.missingModelListsRead.get(providerId) !== key) this.missingModelListsRead.delete(providerId);
-		let read = this.existingModelListRead(key);
-		if (!read) {
-			const entry = await raceWithAbortSignal(this.modelsStore.read(providerId, { signal }), signal);
-			signal.throwIfAborted();
-			if (entry !== undefined) {
-				this.modelListsSettled.set(providerId, key);
-				return;
-			}
-			this.modelListReads ??= sharedModelListReads(this.modelsStoreKey, true)!;
-			read = this.modelListReads.get(key);
-			if (!read) {
-				read = this.startModelListRead(providerId, key, timeoutMs);
-				this.modelListReads.set(key, read);
-			}
-		}
-		const listRead = await joinModelListRead(read, signal);
-		// Another runtime on this store read the list: restore what it cached, once for every caller here.
-		if (read.reader !== this.modelListReader) {
-			let restore = this.modelListRestores.get(key);
-			if (!restore) {
-				restore = this.refreshAccountList(providerId, false, signal)
-					.then(async () => {
-						if (listRead && read.entry && (await this.modelsStore.isCurrent(providerId, read.entry, signal)))
-							this.missingModelListsRead.set(providerId, key);
-					})
-					.finally(() => this.modelListRestores.delete(key));
-				this.modelListRestores.set(key, restore);
-			}
-			await raceWithAbortSignal(restore, operationSignal(signal));
-		}
-		signal.throwIfAborted();
-		this.modelListsSettled.set(providerId, key);
-	}
-
-	private existingModelListRead(key: string): ModelListRead | undefined {
-		this.modelListReads ??= sharedModelListReads(this.modelsStoreKey, false);
-		return this.modelListReads?.get(key);
-	}
-
-	private async modelListCredentialKey(providerId: string, signal?: AbortSignal): Promise<string | undefined> {
-		const credential = await this.credentials.read(providerId, { signal });
-		signal?.throwIfAborted();
-		if (credential?.type === "oauth") return modelListKey(providerId, credential);
-		const resolved = await this.models.getAuth(providerId, { signal });
-		return resolved?.auth.apiKey
-			? modelListKey(providerId, { type: "api_key", key: resolved.auth.apiKey })
-			: undefined;
+		await this.accountLists.probeIfUnobserved(providerId, signal);
+		if (!this.accountLists.needsRead(providerId)) return;
+		await this.accountLists.read(this.modelsStoreKey, providerId, signal, timeoutMs, (readSignal) =>
+			this.refreshAccountList(providerId, true, readSignal),
+		);
 	}
 
 	/** The normal provider refresh and atomic write, without consulting other providers' catalogs or credentials. */
@@ -435,84 +379,41 @@ export class ModelRuntime implements Models {
 		await this.refreshProviderAvailability(provider, signal, true);
 	}
 
-	private startModelListRead(providerId: string, key: string, timeoutMs: number): ModelListRead {
-		const controller = new AbortController();
-		const read: ModelListRead = {
-			promise: Promise.resolve(false),
-			reader: this.modelListReader,
-			controller,
-			waiters: 0,
-			settled: false,
-		};
-		read.promise = this.modelsStore.scope.run({ provider: providerId, key, read }, async () => {
-			try {
-				await this.refreshAccountList(
-					providerId,
-					true,
-					AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]),
-				);
-			} catch {
-				// Fall back to the bundled catalog or the cache.
+	/** Wait only for missing lists before selection; all other registered providers retain RPC's background refresh. */
+	async refreshRpcStartupCatalog(
+		phase: "before-selection" | "background",
+		selectionProviders?: () => readonly string[] | undefined,
+	): Promise<void> {
+		if (!this.modelNetworkEnabled) return;
+		if (phase === "background") {
+			const completed = this.rpcStartupReads;
+			this.rpcStartupReads = undefined;
+			if (!completed) await this.refresh();
+			else {
+				try {
+					await completed.catalog.run(() =>
+						this.runRefresh({}, ++this.refreshSequence, false, completed.providers),
+					);
+				} finally {
+					completed.catalog.clear();
+				}
 			}
-			read.settled = true;
-			return this.missingModelListsRead.get(providerId) === key;
-		});
-		return read;
-	}
-
-	/** Standalone RPC already refreshes all configured catalogs once. Move that same pass before selection only
-	 * when it needs a missing account list; otherwise leave it in the background. */
-	async refreshRpcStartupCatalog(phase: "before-selection" | "background"): Promise<void> {
-		if (this.rpcStartupRefreshStarted || !this.modelNetworkEnabled) return;
-		const signal = phase === "before-selection" ? AbortSignal.timeout(15_000) : undefined;
-		if (signal) {
-			const candidates = this.models
-				.getProviders()
-				.filter((provider) => provider.refreshModelsAuth === "credential");
-			const missing = await Promise.all(
-				candidates.map(async ({ id }) => {
-					try {
-						if (
-							(await this.models.checkAuth(id, { signal })) &&
-							(await raceWithAbortSignal(this.modelsStore.read(id, { signal }), signal)) === undefined
-						)
-							return id;
-					} catch {
-						/* An unreadable cache does not block RPC startup. */
-					}
-					return undefined;
-				}),
-			);
-			if (signal.aborted || missing.every((id) => id === undefined)) return;
-			this.rpcStartupMissing = new Set(missing.filter((id): id is string => id !== undefined));
+			return;
 		}
-		this.rpcStartupRefreshStarted = true;
-		try {
-			const refresh = this.refresh({ allowNetwork: true, signal });
-			if (signal) await raceWithAbortSignal(refresh, signal).catch(() => undefined);
-			else await refresh;
-		} finally {
-			this.rpcStartupMissing = undefined;
-		}
-	}
-
-	private useModelListCredential(providerId: string, credential?: Credential): string | undefined {
-		if (credential && this.rpcStartupMissing?.has(providerId)) {
-			const key = modelListKey(providerId, credential);
-			if (key) this.modelListsSettled.set(providerId, key);
-			return key;
-		}
-		const scope = this.modelsStore.scope.getStore();
-		if (!credential || scope?.provider !== providerId) return undefined;
-		const actual = modelListKey(providerId, credential);
-		if (!actual) return undefined;
-		if (scope.key !== actual) {
-			// OAuth renewal can replace the token between the cache probe and the request.
-			if (this.modelListReads?.get(scope.key) === scope.read) this.modelListReads.delete(scope.key);
-			scope.key = actual;
-			this.modelListReads?.set(actual, scope.read);
-		}
-		return actual;
+		let missing = this.models
+			.getProviders()
+			.filter((p) => p.refreshModelsAuth === "credential" && this.needsAccountList(p.id));
+		if (!missing.length) return;
+		const selected = selectionProviders?.()?.map(normalizeProviderId);
+		if (selected) missing = missing.filter((p) => selected.includes(p.id));
+		if (!missing.length) return;
+		const timeoutMs = this.missingModelListTimeoutMs ?? 15_000;
+		const signal = AbortSignal.timeout(timeoutMs);
+		const catalog = new CatalogRefreshBatch();
+		this.rpcStartupReads = { catalog, providers: new Set(missing.map((p) => p.id)) };
+		await catalog.run(() =>
+			Promise.all(missing.map((p) => this.awaitModelList(p.id, timeoutMs, signal).catch(() => undefined))),
+		);
 	}
 
 	/**
@@ -521,11 +422,7 @@ export class ModelRuntime implements Models {
 	 * missing from an old cache. A credential change for the provider clears it.
 	 */
 	hasReadMissingModelList(providerId: string): boolean {
-		providerId = normalizeProviderId(providerId);
-		const key = this.missingModelListsRead.get(providerId);
-		if (!key) return false;
-		const current = this.credentials.peek(providerId);
-		return current ? modelListKey(providerId, current) === key : this.modelListsSettled.get(providerId) === key;
+		return this.accountLists.hasFreshAnswer(normalizeProviderId(providerId));
 	}
 	private rebuildBuiltinProviders(): void {
 		configureBuiltinProviders(this.builtins, this.defaultBuiltins, process.env, (providerId) =>
@@ -584,7 +481,21 @@ export class ModelRuntime implements Models {
 	 * function references the caller registered.
 	 */
 	private publishProvider(provider: Provider): void {
-		this.models.setProvider(this.withDerivedFastModels(provider));
+		this.models.setProvider(
+			this.accountLists.observe(this.withDerivedFastModels(provider), () => {
+				const configured =
+					this.extensionProviders.get(provider.id)?.apiKey ?? this.config.getProvider(provider.id)?.apiKey;
+				const key =
+					configured !== undefined
+						? resolveConfigValueWithoutCommand(configured)
+						: provider.id === "openrouter"
+							? process.env.OPENROUTER_API_KEY
+							: provider.id === "github-copilot"
+								? process.env.COPILOT_GITHUB_TOKEN
+								: undefined;
+				return key ? { type: "api_key", key } : undefined;
+			}),
+		);
 	}
 	private recomposeProvider(providerId: string): void {
 		this.composeProvider(providerId);
@@ -682,6 +593,7 @@ export class ModelRuntime implements Models {
 		});
 		if (seq !== this.availabilityRefreshSeq || inputsGeneration !== this.catalogInputsGeneration) return false;
 		this.snapshot = createModelRuntimeSnapshot([...this.models.getModels()], [...available], checks, credentials);
+		this.availabilityInitialized = true;
 		this.availabilityCredentials.clear();
 		this.recordAvailabilityCredentials([...this.snapshot.auth.keys(), ...this.snapshot.storedProviders]);
 		if (errorSeq === this.availabilityErrorSeq) this.availabilityError = undefined;
@@ -842,13 +754,11 @@ export class ModelRuntime implements Models {
 		providerId?: string,
 		options?: AuthOperationOptions,
 	): Promise<readonly ModelTypeMap[TType][]> {
-		if (this.missingModelListTimeoutMs !== undefined)
-			await this.fetchMissingModelListsFor(providerId, options?.signal);
+		if (this.needsMissingModelLists(providerId)) await this.fetchMissingModelListsFor(providerId, options?.signal);
 		return this.models.getAvailableOfType(type, providerId, options);
 	}
 	async getAllAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly AnyModel[]> {
-		if (this.missingModelListTimeoutMs !== undefined)
-			await this.fetchMissingModelListsFor(providerId, options?.signal);
+		if (this.needsMissingModelLists(providerId)) await this.fetchMissingModelListsFor(providerId, options?.signal);
 		return this.models.getAllAvailable(providerId, options);
 	}
 
@@ -856,8 +766,7 @@ export class ModelRuntime implements Models {
 		return this.models.checkAuth(providerId, options);
 	}
 	async getAvailable(providerId?: string, options?: AuthOperationOptions): Promise<readonly Model<Api>[]> {
-		if (this.missingModelListTimeoutMs !== undefined)
-			await this.fetchMissingModelListsFor(providerId, options?.signal);
+		if (this.needsMissingModelLists(providerId)) await this.fetchMissingModelListsFor(providerId, options?.signal);
 		if (providerId) {
 			const errorSeq = ++this.availabilityErrorSeq;
 			try {
@@ -995,7 +904,7 @@ export class ModelRuntime implements Models {
 			}
 		}
 		if (changedProviderIds.size === 0) return;
-		for (const providerId of changedProviderIds) this.missingModelListsRead.delete(providerId);
+		for (const providerId of changedProviderIds) this.accountLists.invalidate(providerId);
 		this.markCatalogInputsChanged();
 		this.snapshotGeneration += 1;
 		this.snapshot = this.withCredentialAvailability(this.snapshot, snapshot, changedProviderIds);
@@ -1200,7 +1109,7 @@ export class ModelRuntime implements Models {
 	/** Reload credentials changed by the authoritative isolated engine and update auth status snapshots. */
 	async reloadCredentials(options: { refreshAvailability?: boolean } = {}): Promise<void> {
 		await this.credentials.reload();
-		this.missingModelListsRead.clear();
+		this.accountLists.clear();
 		this.markCatalogInputsChanged();
 		if (options.refreshAvailability === false) {
 			const credentials = await this.credentials.list();
@@ -1229,8 +1138,8 @@ export class ModelRuntime implements Models {
 	}
 
 	private enqueueCredentialOperation<T>(providerId: string, signal: AbortSignal, task: () => Promise<T>): Promise<T> {
-		// The list read for the provider's previous credential says nothing about the next one.
-		this.missingModelListsRead.delete(providerId);
+		// The previous credential's catalog and advice no longer describe the active account.
+		this.accountLists.invalidate(providerId);
 		const previous = this.credentialOperations.get(providerId) ?? Promise.resolve();
 		let markStarted: (() => void) | undefined;
 		const started = new Promise<void>((resolve) => {
@@ -1384,7 +1293,7 @@ export class ModelRuntime implements Models {
 	/** Apply authoritative auth state returned by an isolated engine mutation. */
 	applyExternalProviderAuthStatus(providerId: string, status: AuthStatus): void {
 		providerId = normalizeProviderId(providerId);
-		this.missingModelListsRead.delete(providerId);
+		this.accountLists.invalidate(providerId);
 		this.markCatalogInputsChanged();
 		this.snapshotGeneration += 1;
 		const remainingAuth =
@@ -1573,6 +1482,7 @@ export class ModelRuntime implements Models {
 		options: ModelsRefreshOptions,
 		sequence: number,
 		discardIfSuperseded = false,
+		alreadyRefreshed?: ReadonlySet<string>,
 	): Promise<ModelsRefreshResult> {
 		const config = await ModelConfig.load(this.modelsPath);
 		if (discardIfSuperseded && sequence !== this.refreshSequence) {
@@ -1586,6 +1496,11 @@ export class ModelRuntime implements Models {
 			this.updateModelSnapshot();
 		} else this.rebuildProviders();
 		const refreshOptions = { ...options, allowNetwork: options.allowNetwork ?? this.isNetworkRefreshEnabled() };
+		if (alreadyRefreshed)
+			refreshOptions.providers = this.models
+				.getProviders()
+				.map((p) => p.id)
+				.filter((id) => !alreadyRefreshed.has(id));
 		const result = await this.models.refresh(refreshOptions);
 		const errors = new Map(result.errors);
 		this.updateModelSnapshot();

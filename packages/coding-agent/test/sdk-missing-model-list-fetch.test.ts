@@ -195,6 +195,47 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assert.equal(fetchSpy.mock.calls.length, 0);
 	});
 
+	it("does no extra store or credential lookups when the original refresh found a cached list (#5685)", async () => {
+		const calls = async (allowModelNetwork?: boolean) => {
+			const credentials = AuthStorage.inMemory({ openrouter: { type: "api_key", key: "fixture" } });
+			const read = vi.spyOn(credentials, "read");
+			const peek = vi.spyOn(credentials, "peek");
+			const cache = vi.fn(async () => ({ models: [], checkedAt: 1 }));
+			const runtime = await ModelRuntime.create({
+				credentials,
+				modelsPath: null,
+				allowModelNetwork,
+				modelsStore: { read: cache, write: async () => {}, delete: async () => {} },
+			});
+			for (let i = 0; i < 3; i++) await runtime.getAvailable("openrouter");
+			return [cache.mock.calls.length, read.mock.calls.length, peek.mock.calls.length];
+		};
+		assert.deepEqual(await calls(), await calls(false));
+	});
+
+	it("probes a skipped initial refresh once without applying the cached catalog or inspecting more auth (#5685)", async () => {
+		const open = async (allowModelNetwork?: boolean) => {
+			const credentials = AuthStorage.inMemory({ openrouter: { type: "api_key", key: "fixture" } });
+			const cache = vi.fn(async () => ({ models: [], checkedAt: 1 }));
+			const auth = vi.spyOn(credentials, "read");
+			const runtime = await ModelRuntime.create({
+				credentials,
+				modelsPath: null,
+				modelsStore: { read: cache, write: async () => {}, delete: async () => {} },
+				refreshOnCreate: false,
+				allowModelNetwork,
+			});
+			for (let i = 0; i < 3; i++) await runtime.getAvailable("openrouter");
+			return {
+				reads: cache.mock.calls.length,
+				auth: auth.mock.calls.length,
+				snapshotSize: runtime.getAvailableSnapshot().length,
+			};
+		};
+		const mainPath = await open(false);
+		assert.deepEqual(await open(), { ...mainPath, reads: mainPath.reads + 1 });
+	});
+
 	it("restores cached models even when an explicit network refresh is cancelled (#5685)", async () => {
 		const credentials = AuthStorage.inMemory({ [PROVIDER]: API_KEY });
 		serveAccountList();
@@ -255,11 +296,13 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		const controller = new AbortController();
 		const started = Promise.withResolvers<void>();
 		const held = Promise.withResolvers<undefined>();
+		let probes = 0;
 		const modelRuntime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
 			modelsPath: null,
 			modelsStore: {
 				read: () => {
+					probes++;
 					started.resolve();
 					return held.promise;
 				},
@@ -285,6 +328,8 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 			held.resolve(undefined);
 		}
 		await listing;
+		assert.ok((await modelRuntime.getAvailable(PROVIDER)).some((model) => model.id === CATALOG_MODEL_ID));
+		assert.equal(probes, 1);
 		assert.equal(fetchSpy.mock.calls.length, 0);
 	});
 
@@ -439,6 +484,60 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		);
 	});
 
+	it("lists the active account's model again after a runtime key changes back (#5685)", async () => {
+		const ids = ["openai/gpt-4o", "openai/gpt-4o-mini"];
+		await withEndpoint(
+			async (url) => {
+				writeFileSync(runtimePaths().modelsPath, JSON.stringify({ providers: { openrouter: { baseUrl: url } } }));
+				const runtime = await ModelRuntime.create({
+					...runtimePaths(),
+					credentials: AuthStorage.inMemory(),
+					catalogBaseUrl: url,
+				});
+				for (const index of [0, 1, 0]) {
+					await runtime.setRuntimeApiKey("openrouter", `fixture-${index}`, {});
+					assert.deepEqual(
+						(await runtime.getAvailable("openrouter")).map((m) => m.id),
+						[ids[index]],
+					);
+				}
+			},
+			(req, res) => {
+				if (req.url === "/models/user")
+					res.end(JSON.stringify({ data: [{ id: ids[req.headers.authorization?.endsWith("1") ? 1 : 0] }] }));
+				else res.writeHead(404).end();
+			},
+		);
+	});
+
+	it("does not carry account advice across a replacement of the original reader's row (#5685)", async () => {
+		serveAccountList();
+		const runtime = await ModelRuntime.create({
+			...runtimePaths(),
+			credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
+		});
+		await runtime.refresh({ providers: [PROVIDER] });
+		assert.ok(runtime.getModel(PROVIDER, ACCOUNT_MODEL_ID));
+		writeFileSync(join(agentDir, "models-store.json"), JSON.stringify({ [PROVIDER]: { models: [], checkedAt: 1 } }));
+		const { session, modelFallbackMessage } = await startSession(ACCOUNT_MODEL_ID, runtime);
+		session.dispose();
+		assertMentions(modelFallbackMessage, "update --models");
+	});
+
+	it("starts a session on its cached provider without waiting for another account's missing list (#5685)", async () => {
+		const credentials = AuthStorage.inMemory({
+			[PROVIDER]: API_KEY,
+			openrouter: { type: "api_key", key: "fixture" },
+		});
+		writeFileSync(join(agentDir, "models-store.json"), JSON.stringify({ [PROVIDER]: { models: [], checkedAt: 1 } }));
+		const network = blockNetwork();
+		const runtime = await ModelRuntime.create({ ...runtimePaths(), credentials, refreshOnCreate: false });
+		const { session } = await startSession(CATALOG_MODEL_ID, runtime);
+		session.dispose();
+		assert.equal(session.model?.id, CATALOG_MODEL_ID);
+		assert.equal(network.mock.calls.length, 0);
+	});
+
 	it("does not inspect another provider's credentials during scoped discovery (#5685)", async () => {
 		const credentials = AuthStorage.inMemory({ openrouter: { type: "api_key", key: "fixture" } });
 		const runtime = await ModelRuntime.create({ modelsPath: null, credentials, refreshOnCreate: false });
@@ -502,6 +601,44 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assertMentions(afterSwitch.fallbackMessage, "update --models");
 	});
 
+	it("a fresh process restores a tagged row without executing a key command or giving account advice (#5685)", async () => {
+		serveAccountList();
+		const credentials = AuthStorage.inMemory({ [PROVIDER]: API_KEY });
+		await ModelRuntime.create({ ...runtimePaths(), credentials });
+		vi.stubEnv("COPILOT_GITHUB_TOKEN", "");
+		writeFileSync(
+			runtimePaths().modelsPath,
+			JSON.stringify({
+				providers: {
+					[PROVIDER]: {
+						apiKey: `!node -e "require('node:fs').appendFileSync('helper-runs','x');process.stdout.write('fixture')"`,
+					},
+				},
+			}),
+		);
+		const normal = await ModelRuntime.create({
+			...runtimePaths(),
+			credentials: AuthStorage.inMemory(),
+			allowModelNetwork: false,
+		});
+		const expected = (await normal.getAvailable(PROVIDER)).map((m) => m.id).sort();
+		assert.ok(expected.includes(ACCOUNT_MODEL_ID));
+		const fixture = fileURLToPath(new URL("./fixtures/model-list-command-cache.ts", import.meta.url));
+		const { stdout } = await promisify(execFile)(
+			bunExecutable(),
+			["--no-env-file", fixture, runtimePaths().modelsPath],
+			{
+				cwd: agentDir,
+				env: { ...process.env, HOME: agentDir, ATOMIC_CODING_AGENT_DIR: agentDir, COPILOT_GITHUB_TOKEN: "" },
+			},
+		);
+		const result = JSON.parse(stdout);
+		assert.equal(existsSync(join(agentDir, "helper-runs")), false);
+		assert.equal(result.requests, 0);
+		assert.deepEqual(result.ids, expected);
+		assertMentions(result.fallbackMessage, "update --models");
+	});
+
 	it("releases file-store bookkeeping when the last runtime is collected (#5685)", async () => {
 		const fixture = fileURLToPath(new URL("./fixtures/model-list-path-retention.ts", import.meta.url));
 		const { stdout } = await promisify(execFile)(bunExecutable(), ["--no-env-file", fixture, agentDir], {
@@ -542,6 +679,39 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 			);
 		},
 	);
+
+	it("reads only the missing provider before RPC selection and shares the public catalog with the background pass (#5685)", async () => {
+		const paths: string[] = [];
+		await withEndpoint(
+			async (url) => {
+				vi.stubEnv("GITHUB_COPILOT_BASE_URL", url);
+				writeFileSync(runtimePaths().modelsPath, JSON.stringify({ providers: { openrouter: { baseUrl: url } } }));
+				writeFileSync(
+					join(agentDir, "models-store.json"),
+					JSON.stringify({ openrouter: { models: [], checkedAt: 1 } }),
+				);
+				const runtime = await ModelRuntime.create({
+					...runtimePaths(),
+					catalogBaseUrl: url,
+					allowModelNetwork: false,
+					credentials: AuthStorage.inMemory({
+						[PROVIDER]: API_KEY,
+						openrouter: { type: "api_key", key: "fixture" },
+					}),
+				});
+				await runtime.refreshRpcStartupCatalog("before-selection");
+				assert.ok(runtime.getModel(PROVIDER, ACCOUNT_MODEL_ID));
+				assert.deepEqual(paths, ["/api.json", "/models"]);
+				await runtime.refreshRpcStartupCatalog("background");
+				assert.deepEqual(paths, ["/api.json", "/models", "/models/user"]);
+			},
+			(req, res) => {
+				paths.push(req.url!);
+				if (req.url === "/api.json") res.writeHead(404).end();
+				else res.end(JSON.stringify(req.url === "/models" ? ACCOUNT_LIST : { data: [] }));
+			},
+		);
+	});
 
 	it("leaves interactive startup to its background refresh and reads missing lists in every other CLI mode (#5685)", () => {
 		const session = { help: false, listModels: undefined };

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	type AnyModel,
 	getModelType,
@@ -100,6 +101,19 @@ interface CatalogDownload {
 	waiters: number;
 }
 const inflightCatalogs = new Map<string, CatalogDownload>();
+const batchCatalogs = new AsyncLocalStorage<Map<string, CatalogDownload>>();
+
+/** A single RPC refresh can span selection and background startup. Share only its public catalog download, not
+ * provider credentials or account responses, across the two phases. */
+export class CatalogRefreshBatch {
+	private readonly downloads = new Map<string, CatalogDownload>();
+	run<T>(refresh: () => Promise<T>): Promise<T> {
+		return batchCatalogs.run(this.downloads, refresh);
+	}
+	clear(): void {
+		this.downloads.clear();
+	}
+}
 
 /**
  * The models.dev catalog, mapped with the same transform the build uses for the bundled catalog. With `etag`, the
@@ -112,7 +126,8 @@ export async function loadRemoteCatalog(
 ): Promise<RemoteCatalog> {
 	const key = `${catalogBaseUrl}\n${etag ?? ""}`;
 	signal.throwIfAborted();
-	let download = inflightCatalogs.get(key);
+	const batch = batchCatalogs.getStore();
+	let download = batch?.get(key) ?? inflightCatalogs.get(key);
 	if (!download || download.controller.signal.aborted) {
 		const controller = new AbortController();
 		download = { controller, promise: downloadRemoteCatalog(catalogBaseUrl, etag, controller.signal), waiters: 0 };
@@ -124,6 +139,7 @@ export async function loadRemoteCatalog(
 				if (inflightCatalogs.get(key) === current) inflightCatalogs.delete(key);
 			});
 	}
+	batch?.set(key, download);
 	download.waiters++;
 	try {
 		return await untilAborted(download.promise, signal);
