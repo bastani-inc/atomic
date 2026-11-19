@@ -35,13 +35,7 @@ import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js"
 import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
-import {
-	getCurrentSubagentDepth,
-	type IntercomEventBus,
-	isWorkflowStageOrchestrationContext,
-	type RunSyncOptions,
-	workflowSessionMetadataFromContext,
-} from "../../shared/types.js";
+import { getCurrentSubagentDepth, type IntercomEventBus, type RunSyncOptions } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
@@ -123,16 +117,12 @@ export interface SubagentAwaitIntercomPeerRequest {
 }
 
 export {
-	holdDormantRunSubagentChildren,
 	holdRunningSubagentChildren,
 	releaseEarlyChildHolds,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 	type SubagentReleaseRestoringChildRequest,
 	type SubagentReserveRestoringChildRequest,
-	WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT,
-	type WorkflowDormantRunSubagentHold,
-	type WorkflowDormantRunSubagentHoldRequest,
 } from "./subagent-child-hold.js";
 
 export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "config" | "discoverAgents" | "runtime"> & {
@@ -194,7 +184,7 @@ interface ActiveRestoration {
 	knownPreviousIntercomId?: string;
 }
 
-// The restore owns its entry until release. A reloaded stage uses its existing owner and must join that same restore.
+// The restore owns its entry until release. A reloaded session uses its existing owner and must join that same restore.
 const ACTIVE_RESTORATIONS = Symbol.for("@bastani/subagents/active-restorations@1");
 const processRestores = globalThis as { [ACTIVE_RESTORATIONS]?: Map<string, ActiveRestoration> };
 const activeRestorations = processRestores[ACTIVE_RESTORATIONS] ?? new Map<string, ActiveRestoration>();
@@ -761,8 +751,6 @@ async function relaunchChild(
 		...(redispatch ? { redispatchDetachedCalls: true } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
-		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
-		workflowSessionMetadata: workflowSessionMetadataFromContext(ctx),
 		...(record.intercomTarget ? { intercomSessionName: record.intercomTarget } : {}),
 		...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		...(bridge?.active && bridge.orchestratorTarget && !redispatch
@@ -782,7 +770,6 @@ async function relaunchChild(
 		...(inheritedModel ? { currentModel: inheritedModel } : {}),
 		...(inherited.thinkingLevel ? { currentThinkingLevel: inherited.thinkingLevel } : {}),
 	};
-	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 	const runtime = resolveSubagentExecutorRuntimeDeps(deps.runtime);
 	// It waits for a slot in its run, as its original launch did: its own scheduler, a sibling's (#4856), or, with no
@@ -896,7 +883,6 @@ async function startQueuedChild(
 ): Promise<SubagentChildRestoreOutcome> {
 	const supervisorAuthorization = queued.usesIntercom ? hold?.authorization : undefined;
 	if (!supervisorAuthorization) await hold?.release();
-	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	const response = await queued.start({

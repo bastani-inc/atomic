@@ -222,6 +222,35 @@ function restoreDeps(parent: Parent, launched: RunSyncOptions[]): SubagentChildR
 	};
 }
 
+test("session recovery leaves a former workflow stage's saved children alone", async () => {
+	const cwd = makeTempDirectory("subagent-retired-stage-");
+	const parent = parentSession(cwd);
+	const host = taskHost("recovery");
+	try {
+		await parent.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			version: 1,
+			childId: "previous:0",
+			runId: "previous",
+			index: 0,
+			agent: "worker",
+			state: "running",
+			cwd,
+			owner: {
+				kind: "workflow-stage",
+				sessionId: parent.sessionManager.getSessionId(),
+				workflowRunId: "old",
+				workflowStageId: "one",
+				workflowStageName: "One",
+			},
+		});
+		assert.deepEqual(await restoreSubagentChildren(restoreDeps(parent, []), parent.ctx(host)), []);
+		assert.equal(records(parent).length, 1);
+	} finally {
+		await host.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
 test("a background child is recorded at launch and stays restorable when its owner closes (#3760)", async () => {
 	const cwd = makeTempDirectory("subagent-child-record-");
 	try {

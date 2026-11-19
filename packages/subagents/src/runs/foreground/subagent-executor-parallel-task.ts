@@ -18,7 +18,6 @@ import type {
 	SubagentState,
 	SubagentToolResult,
 } from "../../shared/types.js";
-import { workflowSessionMetadataFromContext } from "../../shared/types-depth.js";
 import { mapConcurrent } from "../../shared/utils.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
@@ -54,7 +53,6 @@ interface ForegroundParallelRunInput {
 	maxOutput?: MaxOutputConfig;
 	paramsCwd: string;
 	parentDepth?: number;
-	workflowStageSubagentGuard?: boolean;
 	availableModels: ModelInfo[];
 	knownModelProviders: string[];
 	resolveCandidateModel: CandidateModelResolver;
@@ -256,8 +254,6 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			outputPath,
 			outputMode: behavior?.outputMode,
 			parentDepth: input.parentDepth,
-			workflowStageSubagentGuard: input.workflowStageSubagentGuard,
-			workflowSessionMetadata: workflowSessionMetadataFromContext(input.ctx),
 			controlConfig: input.controlConfig,
 			onControlEvent: input.onControlEvent,
 			intercomSessionName: childIntercomTarget,

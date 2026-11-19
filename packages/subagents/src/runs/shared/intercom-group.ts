@@ -8,7 +8,7 @@ export function normalizeAutoGroupSentinel(group: string | true | undefined): st
 	return sentinel === "true" || sentinel === "auto" ? true : group;
 }
 
-/** Runtime joins are intentionally inherited before static child policy and stage context. */
+/** Runtime joins are intentionally inherited before static child policy. */
 function runtimeIntercomGroup(sessionId: string | undefined): string | undefined {
 	return readRuntimeIntercomGroup(sessionId);
 }
@@ -18,27 +18,24 @@ interface ChildGroupPolicy {
 	childGroup(requested: string | undefined): string;
 }
 
-interface OrchestrationCarrier {
-	orchestrationContext?: { intercomGroup?: string } | undefined;
+interface ChildGroupContext {
 	subagentPolicy?: { intercomGroup?: string } | undefined;
 	sessionManager?: { getSessionId(): string } | undefined;
 	intercomPolicy?: ChildGroupPolicy | undefined;
 }
 
 /**
- * Read the live joined group before the admitted child or static stage group. The runtime env
+ * Read the live joined group before the admitted child group. The runtime env
  * entry is a deliberate exception to the no-process-env rule for admission capabilities: it
  * carries only the current group so children launched after `join` follow their parent.
  */
-export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
+export function inheritedIntercomGroup(ctx: ChildGroupContext | undefined): string | undefined {
 	const policy = ctx?.intercomPolicy;
 	if (policy !== undefined) return policy.home;
 	const runtimeGroup = runtimeIntercomGroup(ctx?.sessionManager?.getSessionId());
 	if (runtimeGroup !== undefined) return runtimeGroup;
 	const policyGroup = ctx?.subagentPolicy?.intercomGroup;
-	if (typeof policyGroup === "string" && policyGroup.trim().length > 0) return policyGroup.trim();
-	const group = ctx?.orchestrationContext?.intercomGroup;
-	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
+	return typeof policyGroup === "string" && policyGroup.trim().length > 0 ? policyGroup.trim() : undefined;
 }
 
 export function resolveChildIntercomGroup(

@@ -74,7 +74,7 @@ test(
 		);
 		const sink = createSubagentChildRecordSink(
 			{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
-			{ sessionManager: owner, orchestrationContext: undefined },
+			{ sessionManager: owner },
 		);
 		const launch = async (index: number) => {
 			const child = await SessionManager.create(new MemorySessionStore(), env.root);

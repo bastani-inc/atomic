@@ -3,8 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
-import { DEFAULT_PROMPT_GUIDANCE as subagentGuidance } from "../../packages/subagents/src/extension/prompt-guidance.js";
-import { SUBAGENT_TOOL_DESCRIPTION } from "../../packages/subagents/src/extension/tool-description.js";
 import {
 	WORKFLOW_TOOL_DESCRIPTION,
 	DEFAULT_PROMPT_GUIDANCE as workflowGuidance,
@@ -19,8 +17,8 @@ async function readRepositoryFile(path: string): Promise<string> {
 	return (await readText(resolve(repositoryRoot, path))).replaceAll("\r\n", "\n");
 }
 
-const combinedGuidance = [...workflowGuidance, ...subagentGuidance].join("\n");
-const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n${SUBAGENT_TOOL_DESCRIPTION}`;
+const combinedGuidance = workflowGuidance.join("\n");
+const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}`;
 
 const workflowDocumentationPaths = [
 	"packages/coding-agent/docs/workflows.md",
@@ -115,9 +113,6 @@ describe("agent-decided workflow execution guidance", () => {
 	test("refines the workflow-or-inline call with session memory and the user's stated preferences (#4648)", () => {
 		expect(WORKFLOW_TOOL_DESCRIPTION).toContain(
 			"Judge the task's shape first, then refine the call with session memory (`history://` sessions and workflow runs) and the user's stated preferences; missing, sparse, or mostly inline workflow history is not by itself a reason to work inline.",
-		);
-		expect(subagentGuidance.join("\n")).toContain(
-			"Judge the task's shape first and refine with session memory (`history://` sessions and workflow runs) and the user's stated preferences; no workflow history, or history of only inline runs, does not mean every task should run inline.",
 		);
 	});
 	test("defaults non-trivial structured work to a workflow and names the fit signals", () => {
@@ -588,54 +583,6 @@ describe("agent-decided workflow execution guidance", () => {
 		}
 	});
 
-	test("keeps subagents complementary without universal delegation", () => {
-		for (const phrase of [
-			"focused specialist work inside workflows",
-			"Launch with workflow run using the registered workflow name",
-			"single subagent",
-			"parallel tasks",
-			"debugger subagent for actual failures",
-		]) {
-			expect(modelVisibleRouting).toContain(phrase);
-		}
-
-		expect(modelVisibleRouting).toContain("workflows are the default for non-trivial structured work");
-		for (const obsoletePolicy of [
-			"all non-trivial operations should be delegated",
-			"spawn a debugger subagent first",
-			"Prefer async mode for every subagent launch",
-		]) {
-			expect(modelVisibleRouting).not.toContain(obsoletePolicy);
-		}
-	});
-
-	test("applies model and Intercom policy to every subagent orchestrator", () => {
-		const guidance = subagentGuidance.join("\n");
-
-		for (const phrase of [
-			"each named agent use its declared model and fallback policy",
-			"omit the explicit model argument",
-			"documented task requirement",
-			"Do not choose an ad hoc model merely for diversity",
-			'`model: "auto"`, which the builtin agents declare, runs the user\'s configured default model',
-			"or the current session's model when no default is configured",
-			'subagent({ action: "models" })',
-			"Pin only a returned fullId",
-			"thinking level listed for that entry",
-			"no catalog model fits",
-			"leave the child unpinned",
-			"Do not inspect credentials",
-			"Workflow stages automatically receive their invocation-scoped Intercom group",
-			"inherit the launching session's group",
-			"single, parallel, and follow-up work",
-			"Do not create or propagate group identifiers",
-			"explicit group only for an intentional topology override",
-			"contact_supervisor available for cross-group escalation",
-		]) {
-			expect(guidance).toContain(phrase);
-		}
-	});
-
 	test("retains custom workflow authoring references without workflow-first mandates", async () => {
 		const documentation = (await Promise.all(workflowDocumentationPaths.map(readRepositoryFile))).join("\n");
 
@@ -945,28 +892,22 @@ describe("agent-decided workflow execution guidance", () => {
 	}
 });
 
-describe("peer-to-peer agent coordination guidance", () => {
-	const surfaces = [
-		["subagent", subagentGuidance.join("\n")],
-		["workflow", workflowGuidance.join("\n")],
-	] as const;
-	for (const [surface, text] of surfaces) {
-		test(`${surface} guidance makes unbounded peer-to-peer swarm communication the default`, () => {
-			assert.match(text, /Default to peer-to-peer \(swarm\)/);
-			assert.match(
-				text,
-				/There are no limits on communication between agents; it is encouraged whenever you need to\./,
-			);
-			assert.match(text, /the supervisor is not a message relay/);
-			assert.doesNotMatch(text, /do not coordinate spontaneously/i);
-			assert.doesNotMatch(text, /bound the exchange/i);
-		});
-		test(`${surface} guidance scales the swarm to hundreds or thousands of self-organizing agents`, () => {
-			assert.match(
-				text,
-				/for very complex work or when the user asks for heavy parallelism, run hundreds or thousands of agents/,
-			);
-			assert.match(text, /self-organize into teams .*child workflows\) and coordinate peer-to-peer/);
-		});
-	}
+describe("workflow peer coordination guidance", () => {
+	const text = workflowGuidance.join("\n");
+	test("makes unbounded peer-to-peer swarm communication the default", () => {
+		assert.match(text, /Default to peer-to-peer \(swarm\)/);
+		assert.match(
+			text,
+			/There are no limits on communication between agents; it is encouraged whenever you need to\./,
+		);
+		assert.match(text, /the supervisor is not a message relay/);
+		assert.doesNotMatch(text, /do not coordinate spontaneously|bound the exchange/i);
+	});
+	test("scales the swarm to hundreds or thousands of self-organizing agents", () => {
+		assert.match(
+			text,
+			/for very complex work or when the user asks for heavy parallelism, run hundreds or thousands of agents/,
+		);
+		assert.match(text, /self-organize into teams .*child workflows\) and coordinate peer-to-peer/);
+	});
 });

@@ -37,21 +37,6 @@ describe("subagent delegation boundary", () => {
 		assert.equal(isSubagentChildSession(fanoutChild), true);
 	});
 
-	test("a workflow-stage session with no admitted depth may still delegate", () => {
-		const stageSession = {
-			subagentPolicy: { ...childPolicy },
-			orchestrationContext: {
-				kind: "workflow-stage" as const,
-				workflowRunId: "run-1",
-				workflowStageId: "stage-1",
-				workflowStageName: "Stage",
-				constraints: { disableWorkflowTool: true as const },
-			},
-		};
-		assert.equal(getCurrentSubagentDepth(stageSession), 0);
-		assert.equal(isSubagentChildSession(stageSession), false);
-	});
-
 	test("a malformed depth is treated as top level rather than silently blocking", () => {
 		const negative = { subagentPolicy: { ...childPolicy, depth: -1 } };
 		const fractional = { subagentPolicy: { ...childPolicy, depth: 1.5 } };
