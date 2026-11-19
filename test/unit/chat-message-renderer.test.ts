@@ -1,15 +1,34 @@
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
 	ChatTranscriptComponent,
 	chatEntriesFromAgentMessages,
 	LiveChatEntriesController,
+	renderChatMessageEntry,
 	ScrollableComponentViewport,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 describe("chat message renderer utilities", () => {
+	test("rendering a page fragment independently keeps the error its task view already showed (#5651)", () => {
+		initTheme("dark", false);
+		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
+		const live = new LiveChatEntriesController(entries);
+		live.prependMessages(
+			[{ ...fauxAssistantMessage("earlier"), stopReason: "error", errorMessage: "provider failed" }],
+			[0],
+		);
+		const component = renderChatMessageEntry(entries[0], {
+			ui: { requestRender() {} },
+			cwd: process.cwd(),
+			toolOutputExpanded: false,
+		});
+		assert.match(component.render(80).join("\n"), /Error: provider failed/);
+	});
+
 	test("pairs assistant tool calls with later tool results while preserving args", () => {
 		const messages: AgentMessage[] = [
 			{

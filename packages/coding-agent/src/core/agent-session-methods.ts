@@ -140,9 +140,6 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly messages: AgentMessage[];
 	/** The settled chat rows, including admitted messages whose save is still in flight. */
 	readonly transcriptMessages: AgentMessage[];
-	/** While a reply awaits its message-end notification, an attaching chat seeds it as streaming. */
-	readonly pendingReplySnapshot?: { messages: AgentMessage[]; streamingMessage: AssistantMessage };
-	_readTranscriptMessages(streaming?: AgentMessage): AgentMessage[];
 	readonly steeringMode: "all" | "one-at-a-time";
 	readonly followUpMode: "all" | "one-at-a-time";
 	readonly sessionFile: string | undefined;
@@ -489,7 +486,6 @@ export interface AgentSessionPublicSurface
 		| "compactionStartedAt"
 		| "messages"
 		| "transcriptMessages"
-		| "pendingReplySnapshot"
 		| "steeringMode"
 		| "followUpMode"
 		| "sessionFile"

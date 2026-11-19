@@ -18,37 +18,6 @@ export interface CacheMiss {
 	modelChanged: boolean;
 	cacheExpired: boolean;
 }
-export interface ReplyNoticeContext {
-	previousDrops: number;
-	miss?: CacheMiss;
-}
-
-export function countDroppedThinkingBlocks(message: AssistantMessage): number {
-	return (message.diagnostics ?? []).reduce((count, diagnostic) => {
-		if (diagnostic.type !== "anthropic_input_transformations") return count;
-		const dropped = diagnostic.details?.droppedBlockCount;
-		return count + (typeof dropped === "number" && dropped > 0 ? dropped : 0);
-	}, 0);
-}
-
-/** The session publishes message_end after saving the reply. Compare it with the preceding request, never itself. */
-export function committedReplyNoticeContext(
-	entries: SessionEntry[],
-	reply: AssistantMessage,
-	models: ModelPriceSource,
-): ReplyNoticeContext {
-	const end = entries.findLastIndex((entry) => entry.type === "message" && entry.message.role === "assistant");
-	const preceding = entries.slice(0, end < 0 ? entries.length : end);
-	const previous = preceding.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
-	return {
-		previousDrops:
-			previous?.type === "message" && previous.message.role === "assistant"
-				? countDroppedThinkingBlocks(previous.message)
-				: 0,
-		miss: detectCacheMiss(preceding, reply, models),
-	};
-}
-
 export interface CacheWasteTotals {
 	missedTokens: number;
 	missedCost: number;

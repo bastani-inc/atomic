@@ -11,11 +11,7 @@ import {
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
-import {
-	type ChatMessageEntry,
-	type ChatMessageRenderOptions,
-	renderChatMessageEntry,
-} from "./chat-message-renderer.ts";
+import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
 import {
 	hasChatSessionTransientModal,
 	setEditorBorderColor,
@@ -127,7 +123,6 @@ interface TranscriptTokenCache {
 	lastSettledEntry: ChatTranscriptEntryLike | undefined;
 	settledCount: number;
 	meter: AgentTokenMeter;
-	pendingReplyOutput?: number;
 }
 
 const transcriptTokenCaches = new WeakMap<object, TranscriptTokenCache>();
@@ -135,14 +130,13 @@ const transcriptTokenCaches = new WeakMap<object, TranscriptTokenCache>();
 /** Start at the session's settled count; subsequent live messages are counted normally. */
 export function restoreChatSessionTokens<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
-	snapshot: AgentTokenMeterSnapshot & { readonly pendingReplyOutput?: number },
+	snapshot: AgentTokenMeterSnapshot,
 ): void {
 	transcriptTokenCaches.set(state, {
 		firstEntry: state.transcript[0],
 		lastSettledEntry: state.transcript.at(-1),
 		settledCount: state.transcript.length,
 		meter: new AgentTokenMeter([], snapshot),
-		pendingReplyOutput: snapshot.pendingReplyOutput,
 	});
 }
 
@@ -176,7 +170,6 @@ function readTranscriptTokens<TExtraEntry extends ChatTranscriptEntryLike>(
 			}
 			if (!sawStreaming) {
 				cache.meter.settled(entry.message);
-				cache.pendingReplyOutput = undefined;
 			}
 		}
 		if (!sawStreaming) {
@@ -187,7 +180,7 @@ function readTranscriptTokens<TExtraEntry extends ChatTranscriptEntryLike>(
 	}
 	return {
 		settledTokens: cache.meter.total(),
-		streamingTokens: streaming === undefined ? 0 : (cache.pendingReplyOutput ?? agentTokenTotal([], streaming)),
+		streamingTokens: streaming === undefined ? 0 : agentTokenTotal([], streaming),
 	};
 }
 
@@ -442,7 +435,7 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)
 				: { ...chatMessageRenderOptions(state, isStreaming), toolOutputExpanded: expanded };
-		const component = renderChatMessageEntry(
+		const component = state.liveChat.renderEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
 		);

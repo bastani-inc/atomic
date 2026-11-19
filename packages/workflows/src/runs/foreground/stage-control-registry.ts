@@ -387,18 +387,14 @@ export interface StageChatTarget {
 export interface StageContextMeter extends AgentTokenMeterSnapshot {
 	/** Whether the last settled row in the request context is a user message or tool result. */
 	readonly requestSide: boolean;
-	/** Final output of the reply shown as streaming until its save is published; not included in outputTokens. */
-	readonly pendingReplyOutput?: number;
 }
 
 /** Read the display history once. A reopened meter starts from the resident context, not restored display-only rows. */
-export function stageChatHistory(
-	handle: StageControlHandle,
-	messages = handle.messages,
-): {
+export function stageChatHistory(handle: StageControlHandle): {
 	messages: AgentSession["messages"];
 	contextMeter?: StageContextMeter;
 } {
+	const messages = handle.messages;
 	const contextMeter = handle.contextMeter?.(messages);
 	return contextMeter ? { messages, contextMeter } : { messages };
 }
@@ -491,26 +487,6 @@ export function isLatestStageRelease(source?: ReleasedStageSource): boolean {
 	if (!source?.record) return true;
 	const record = source.record.identity.deref();
 	return record !== undefined && sources.records.get(record)?.get(source.key) === source.generation;
-}
-
-/** Seed a reply awaiting its message-end notification as streaming rather than as another settled row. */
-export function stageChatSnapshot(handle: StageControlHandle) {
-	const session = handle.agentSession;
-	const pending = session?.pendingReplySnapshot;
-	const history = stageChatHistory(handle, pending?.messages);
-	if (pending && history.contextMeter && session.messages.includes(pending.streamingMessage)) {
-		const { outputTokens } = new AgentTokenMeter([pending.streamingMessage]).snapshot();
-		history.contextMeter = {
-			...history.contextMeter,
-			outputTokens: history.contextMeter.outputTokens - outputTokens,
-			pendingReplyOutput: outputTokens,
-		};
-	}
-	return {
-		...history,
-		streamingMessage:
-			pending?.streamingMessage ?? session?.agent?.state.streamingMessage ?? handle.streamingMessage?.(),
-	};
 }
 
 /** Whether the stage's session waits out an automatic retry's backoff: its retry has started and its next attempt has not. */

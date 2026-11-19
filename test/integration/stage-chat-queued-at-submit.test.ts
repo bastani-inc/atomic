@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { SessionManager } from "@bastani/atomic";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/index.js";
@@ -82,7 +81,7 @@ for (const { lane, key, row, queue } of lanes) {
 }
 
 test.each(["before", "after"] as const)(
-	"opening a stage chat %s the prompt is saved or after reopening storage preserves the displayed order (#5613, #5668)",
+	"opening a stage chat %s the prompt is saved but before its acknowledgement shows it once (#5613)",
 	async (when) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -120,16 +119,6 @@ test.each(["before", "after"] as const)(
 			release.resolve();
 			await turn;
 			assert.equal(count(reopened), 1);
-			const saved = await SessionManager.open(manager.getSessionStore(), manager.getSessionId());
-			const savedRows = saved
-				.buildSessionProjection("transcript")
-				.messages.flatMap((message) =>
-					[prompt, notice].filter(
-						(value) => "content" in message && JSON.stringify(message.content).includes(value),
-					),
-				);
-			assert.deepEqual(savedRows, [prompt, notice]);
-			assert.deepEqual(rows(fixture.mount()), [prompt, notice]);
 		} finally {
 			release.resolve();
 			await turn;

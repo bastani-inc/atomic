@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
-import { inChatOrder, sessionEntryToContextMessages } from "../session-manager-history.ts";
+import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { PublishedChatActivity } from "../session-retry-status.js";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
@@ -43,6 +43,29 @@ export interface TaskTranscriptView {
 	readonly compactionReason?: CompactionReason;
 	readonly compactionStartedAt?: number;
 	readonly activeToolStarts?: readonly ToolExecutionStart[];
+}
+
+/** @internal Index positions only; a worker does not send a second copy of the provider error. */
+export interface TaskTranscriptFragments {
+	readonly fromEarlier?: { readonly entryId: string; readonly noticeIndex: number | null };
+	readonly intoLater?: { readonly entryId: string; readonly messageIndices: readonly number[] };
+}
+
+const fragmentsByResult = new WeakMap<TaskViewResult<TaskTranscriptView>, TaskTranscriptFragments>();
+
+/** @internal Only the page producer and its worker transport know which durable entries the window cuts. */
+export function bindTaskTranscriptFragments(
+	result: TaskViewResult<TaskTranscriptView>,
+	fragments: TaskTranscriptFragments,
+): void {
+	fragmentsByResult.set(result, fragments);
+}
+
+/** @internal Foreign SDK page objects keep their existing contract, without property probes. */
+export function taskTranscriptFragments(
+	result: TaskViewResult<TaskTranscriptView>,
+): TaskTranscriptFragments | undefined {
+	return fragmentsByResult.get(result);
 }
 
 /** How an open transcript of a task follows it: through its live session, or by reading it again. */
@@ -438,47 +461,55 @@ function transcriptView(
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
 ): TaskViewResult<TaskTranscriptView> {
-	const ordered = inChatOrder(entries);
-	const page = taskTranscriptPage(taskId, session.getSessionId(), ordered, cursor);
+	let fromEarlier: string | undefined;
+	let intoLater: string | undefined;
+	const page = taskTranscriptPage(taskId, session.getSessionId(), entries, cursor, (first, last) => {
+		fromEarlier = first;
+		intoLater = last;
+	});
 	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
 	const items = page.ok ? page.value.items : [];
 	const entryIds = new Set(items.map((item) => item.source.entryId));
 	const itemIds = new Set(items.map((item) => item.id));
-	const messages = ordered.flatMap<AgentMessage>((entry) => {
-		if (!entryIds.has(entry.id)) return [];
-		if (entry.type !== "message") return sessionEntryToContextMessages(entry);
-		const message = entry.message;
-		if (message.role === "assistant") {
-			const lastBlock = message.content.findLastIndex(
-				(block) => block.type === "text" || block.type === "thinking" || block.type === "toolCall",
-			);
-			const terminal =
-				message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length";
-			return [
-				{
-					...message,
-					// Only the fragment containing the final indexed block owns the turn's terminal notice.
-					...(terminal && lastBlock >= 0 && !itemIds.has(`${entry.id}:${lastBlock}`)
-						? { stopReason: "stop" as const, errorMessage: undefined }
-						: {}),
-					content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
-				},
-			];
+	let leading: { entryId: string; noticeIndex: number | null } | undefined;
+	let trailing: { entryId: string; messageIndices: number[] } | undefined;
+	let nextMessageIndex = 0;
+	const messages = entries.flatMap<AgentMessage>((entry) => {
+		const id = entry.id;
+		if (!entryIds.has(id)) return [];
+		if (entry.type !== "message") {
+			const projected = sessionEntryToContextMessages(entry);
+			nextMessageIndex += projected.length;
+			return projected;
 		}
-		return [message];
+		const index = nextMessageIndex++;
+		const message = entry.message;
+		if (message.role !== "assistant") return [message];
+		if ((fromEarlier === id || intoLater === id) && message.stopReason === "error") {
+			if (fromEarlier === id && !leading) {
+				// An error fragment with a tool call shows its error on the tool, not on the assistant.
+				const hasTool = items.some((item) => item.source.entryId === id && item.kind === "tool-call");
+				leading = { entryId: id, noticeIndex: hasTool ? null : index };
+			}
+			if (intoLater === id) {
+				trailing ??= { entryId: id, messageIndices: [] };
+				trailing.messageIndices.push(index);
+			}
+		}
+		return [{ ...message, content: message.content.filter((_, blockIndex) => itemIds.has(`${id}:${blockIndex}`)) }];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
 	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
 	const activeToolStarts =
 		cursor === undefined && session.chatSession !== undefined ? activeToolExecutionStarts(session.chatSession) : [];
-	return {
-		ok: true,
-		value: {
-			messages,
-			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
-			...(compactionReason === undefined ? {} : { compactionReason }),
-			...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
-			...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
-		},
+	const value: TaskTranscriptView = {
+		messages,
+		...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
+		...(compactionReason === undefined ? {} : { compactionReason }),
+		...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
+		...(activeToolStarts.length === 0 ? {} : { activeToolStarts }),
 	};
+	const result = { ok: true, value } as const;
+	if (leading || trailing) bindTaskTranscriptFragments(result, { fromEarlier: leading, intoLater: trailing });
+	return result;
 }

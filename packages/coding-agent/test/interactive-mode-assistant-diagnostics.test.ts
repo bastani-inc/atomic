@@ -70,7 +70,7 @@ describe("InteractiveMode assistant diagnostics", () => {
 		expect(disabled.chatContainer.children).toHaveLength(0);
 	});
 
-	test("replays a saved thinking-drop count once without disclosing diagnostic details (#5681)", () => {
+	test("does not replay persisted Anthropic thinking-drop diagnostics", () => {
 		initTheme("dark");
 		const chatContainer = new Container();
 		const entry: SessionEntry = {
@@ -102,13 +102,7 @@ describe("InteractiveMode assistant diagnostics", () => {
 
 		renderSessionEntries.call(mode, [entry]);
 		const output = stripAnsi(chatContainer.render(120).join("\n"));
-		expect(output.match(/Anthropic dropped 1 thinking block \(details in session\)/g)).toHaveLength(1);
-		expect(output).not.toContain("prefix_binding_mismatch");
-		expect(output).not.toContain("messages.2.content.0");
-		mode.settingsManager.getShowCacheMissNotices = () => false;
-		chatContainer.clear();
-		renderSessionEntries.call(mode, [entry]);
-		expect(stripAnsi(chatContainer.render(120).join("\n"))).not.toContain("Anthropic dropped");
+		expect(output).not.toContain("Anthropic dropped");
 	});
 	test("shows a saved reply's service tier warning once when the session is rebuilt (#3529)", () => {
 		initTheme("dark");

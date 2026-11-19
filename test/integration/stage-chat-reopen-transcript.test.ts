@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { AgentTokenMeter, initTheme } from "@bastani/atomic";
+import { initTheme } from "@bastani/atomic";
 import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
@@ -26,7 +26,10 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 type Fixture = Awaited<ReturnType<typeof createStageSkillFixture>>;
 
 /** Open the stage as another process's chat does: through a worker watch whose snapshot seeds a mirror handle. */
-function openWorkerView(fixture: Pick<Fixture, "registry" | "runId" | "stageId">) {
+function withWorkerView<T>(
+	fixture: Pick<Fixture, "registry" | "runId" | "stageId">,
+	use: (mirror: PooledStageHandle) => T,
+): T {
 	const attempt = { workId: "work", generation: 1 };
 	const watch = "watch-1" as WatchId;
 	let mirror: PooledStageHandle | undefined;
@@ -34,8 +37,6 @@ function openWorkerView(fixture: Pick<Fixture, "registry" | "runId" | "stageId">
 		fixture.registry,
 		() => attempt,
 		(message) => {
-			if (message.kind === "stage-events")
-				mirror?.receive({ kind: "events", events: structuredClone(message.events) });
 			if (message.kind !== "stage-command-result" || message.snapshot === undefined) return;
 			const snapshot = structuredClone(message.snapshot);
 			// Reading needs no transport: nothing here delivers to the stage.
@@ -52,26 +53,13 @@ function openWorkerView(fixture: Pick<Fixture, "registry" | "runId" | "stageId">
 		},
 	);
 	const target = { runId: fixture.runId, stageId: fixture.stageId };
-	watches.serve({ kind: "stage-command", commandId: 1, attempt, op: "watch", watch, ...target });
-	assert.ok(mirror, "the watch answers with a snapshot");
-	return {
-		mirror,
-		close() {
-			watches.serve({ kind: "stage-command", commandId: 2, attempt, op: "unwatch", watch });
-			mirror?.dispose();
-		},
-	};
-}
-
-function withWorkerView<T>(
-	fixture: Pick<Fixture, "registry" | "runId" | "stageId">,
-	use: (mirror: PooledStageHandle) => T,
-): T {
-	const worker = openWorkerView(fixture);
 	try {
-		return use(worker.mirror);
+		watches.serve({ kind: "stage-command", commandId: 1, attempt, op: "watch", watch, ...target });
+		assert.ok(mirror, "the watch answers with a snapshot");
+		return use(mirror);
 	} finally {
-		worker.close();
+		watches.serve({ kind: "stage-command", commandId: 2, attempt, op: "unwatch", watch });
+		mirror?.dispose();
 	}
 }
 
@@ -237,76 +225,6 @@ test.each([
 		}
 	},
 );
-
-test("a stage opened while its reply is being saved keeps the reply once on either host (#5660)", async () => {
-	const reply = "Reply held at its final save";
-	const entered = Promise.withResolvers<void>();
-	const release = Promise.withResolvers<void>();
-	const fixture = await createStageSkillFixture({
-		extensionFactories: [
-			(pi) => {
-				pi.on("message_end", async ({ message }) => {
-					if (
-						message.role === "assistant" &&
-						message.content.some((part) => part.type === "text" && part.text === reply)
-					) {
-						entered.resolve();
-						await release.promise;
-					}
-				});
-			},
-		],
-	});
-	const response = fauxAssistantMessage(reply);
-	response.usage = { ...response.usage, input: 100, output: 1, totalTokens: 101 };
-	fixture.stage.session.agent.streamFunction = () => {
-		const stream = createAssistantMessageEventStream();
-		stream.push({ type: "done", reason: "stop", message: structuredClone(response) });
-		stream.end();
-		return stream;
-	};
-	const turn = fixture.handle.prompt("Produce a reply");
-	let worker: ReturnType<typeof openWorkerView> | undefined;
-	try {
-		await entered.promise;
-		const attached = fixture.mount();
-		worker = openWorkerView(fixture);
-		const pooled = fixture.mount({ handle: worker.mirror });
-		const counts = () => [attached, pooled].map((view) => text(view).split(reply).length - 1);
-		assert.deepEqual(counts(), [1, 1], "the reply is already visible");
-		const billed = new AgentTokenMeter(fixture.stage.session.messages).total();
-		const meters = () => [attached, pooled].map((view) => text(view).match(/[↑↓] [\d.kM]+ tokens/u)?.[0]);
-		assert.deepEqual(
-			meters(),
-			[`↓ ${billed} tokens`, `↓ ${billed} tokens`],
-			"the pending reply's billed output counts once",
-		);
-		const ended = Promise.withResolvers<void>();
-		worker.mirror.subscribe((event) => {
-			if (event.type === "agent_end") ended.resolve();
-		});
-		release.resolve();
-		await turn;
-		await ended.promise;
-		assert.deepEqual(counts(), [1, 1], "saving settles the displayed reply");
-		assert.equal(meters()[0], `↓ ${billed} tokens`, "saving does not add the output a second time");
-		const settled = worker.mirror.contextMeter();
-		assert.ok(settled);
-		assert.equal(settled.outputTokens + settled.latestInputTokens, billed, "later worker attachments count it once");
-		const next = Promise.withResolvers<void>();
-		worker.mirror.subscribe((event) => {
-			if (event.type === "agent_end") next.resolve();
-		});
-		await fixture.handle.prompt("Produce the same reply again");
-		await next.promise;
-		assert.deepEqual(counts(), [2, 2], "a distinct reply with the same text still appears");
-	} finally {
-		release.resolve();
-		await turn;
-		worker?.close();
-		await fixture.cleanup();
-	}
-});
 
 const histories = [
 	{ history: "a plain history", retried: false },

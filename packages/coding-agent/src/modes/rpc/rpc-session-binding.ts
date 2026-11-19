@@ -2,7 +2,6 @@ import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
-import { committedReplyNoticeContext, createCacheMissModelSource } from "../../core/cache-stats.ts";
 import type { ProjectTrustContext } from "../../core/extensions/index.js";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
@@ -249,22 +248,7 @@ export class RpcSessionBinding {
 			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineLine);
 		}
 		this.unsubscribe = session.subscribe((event) => {
-			// The terminal's session mirror may still end at the previous turn. Read the reply's history at its owner.
-			if (
-				this.customUi &&
-				event.type === "message_end" &&
-				event.message.role === "assistant" &&
-				session.settingsManager.getShowCacheMissNotices()
-			) {
-				this.output({
-					...event,
-					replyNotices: committedReplyNoticeContext(
-						session.sessionManager.buildContextEntries(),
-						event.message,
-						createCacheMissModelSource(session.modelRuntime),
-					),
-				});
-			} else this.output(toJsonEvent(event));
+			this.output(toJsonEvent(event));
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {

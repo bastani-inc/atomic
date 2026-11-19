@@ -1,6 +1,5 @@
 import type { Usage } from "@bastani/atomic-ai";
 import type { AgentSessionEvent } from "../core/agent-session.js";
-import type { ReplyNoticeContext } from "../core/cache-stats.ts";
 
 type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T;
 type ToJsonAssistantMessageEvent<T> = T extends { type: "toolcall_start"; partial: unknown }
@@ -16,10 +15,7 @@ type JsonMessageUpdateEvent = {
 };
 
 /** Session event shape emitted by the JSON and RPC stdout protocols. */
-export type JsonAgentSessionEvent =
-	| Exclude<AgentSessionEvent, { type: "message_update" | "message_end" }>
-	| JsonMessageUpdateEvent
-	| (Extract<AgentSessionEvent, { type: "message_end" }> & { replyNotices?: ReplyNoticeContext });
+export type JsonAgentSessionEvent = Exclude<AgentSessionEvent, { type: "message_update" }> | JsonMessageUpdateEvent;
 
 function toJsonAssistantMessageEvent(
 	event: MessageUpdateEvent["assistantMessageEvent"],

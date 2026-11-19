@@ -64,8 +64,6 @@ export interface SessionEntryBase {
 
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
-	/** The first display-only notice saved after this prompt was shown but before it was saved. */
-	displayBefore?: string;
 	message: AgentMessage;
 }
 

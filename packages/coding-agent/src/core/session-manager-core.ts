@@ -167,7 +167,6 @@ export class SessionManager {
 		| { readonly sessionId: string; readonly store: SessionStore; readonly release: () => Promise<void> }
 		| undefined;
 	private mutation: Promise<void> = Promise.resolve();
-	private readonly displayedPromptLeaves = new WeakMap<object, string | null>();
 	/** Custom entries written with a message, in its own store write, by the message they go with. */
 	private readonly messageCompanions = new WeakMap<object, () => MessageCompanionEntry | undefined>();
 	private fileEntries: FileEntry[] = [];
@@ -804,29 +803,10 @@ export class SessionManager {
 		});
 	}
 
-	/** @internal The branch position at which listeners received this user prompt. */
-	notePromptDisplayed(message: object): void {
-		this.displayedPromptLeaves.set(message, this.leafId);
-	}
-
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id. */
 	appendMessage(message: Message | CustomMessage | BashExecutionMessage): Promise<string> {
 		return this.runMutation(async () => {
 			const entry = createMessageEntry(message, this.byId, this.leafId);
-			const displayedAt = this.displayedPromptLeaves.get(message);
-			if (displayedAt !== undefined && displayedAt !== this.leafId) {
-				// Only move across display-only notices committed since admission, never across model input or branches.
-				let cursor = this.leafId;
-				let firstNotice: string | undefined;
-				while (cursor !== null && cursor !== displayedAt) {
-					const previous = this.byId.get(cursor);
-					if (previous?.type !== "custom_message" || !previous.display || !previous.excludeFromContext) break;
-					firstNotice = cursor;
-					cursor = previous.parentId;
-				}
-				if (cursor === displayedAt && firstNotice !== undefined) entry.displayBefore = firstNotice;
-			}
-			this.displayedPromptLeaves.delete(message);
 			const companion = this.messageCompanions.get(message);
 			this.messageCompanions.delete(message);
 			const custom = companion?.();

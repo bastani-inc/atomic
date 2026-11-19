@@ -26,6 +26,8 @@ import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/int
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import type { TaskTranscriptEnvironment } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
+import { runStageTaskAction } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { makeTestTui } from "../support/fake-tui.js";
@@ -190,14 +192,53 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 	}
 });
 
-test("paging a long failed reply shows its error only after the last block (#5651)", async () => {
+test.each(["local", "worker"] as const)(
+	"paging a long failed reply in the %s transcript shows its error only after the last block (#5651)",
+	async (location) => {
+		const session = SessionManager.inMemory();
+		await session.appendMessage({
+			...assistant(
+				Array.from({ length: 101 }, (_, i) => ({ type: "text", text: `part-${String(i).padStart(3, "0")}` })),
+				"error",
+			),
+			errorMessage: "request failed here",
+		});
+		const host = await openTranscript(session, {
+			height: 480,
+			source: (owner) => {
+				if (location === "local") return owner;
+				const worker = new PooledStageTaskSource(async (id, action) =>
+					structuredClone(await runStageTaskAction(owner, id, action)),
+				);
+				return Object.assign(Object.create(owner) as TaskViewSource, {
+					readTaskTranscript: worker.readTaskTranscript.bind(worker),
+				});
+			},
+		});
+		try {
+			host.inspector.handleInput(CTRL_HOME);
+			host.frame();
+			await flush();
+			const body = host.text();
+			assert.match(body, /part-000[\s\S]*part-100[\s\S]*request failed here/);
+			assert.equal(body.split("request failed here").length - 1, 1);
+		} finally {
+			await host.dispose();
+		}
+	},
+);
+
+test("paging back to an unfinished read keeps its failure even when the reply ends on the next page (#5651)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({
 		...assistant(
-			Array.from({ length: 101 }, (_, i) => ({ type: "text", text: `part-${String(i).padStart(3, "0")}` })),
+			[
+				{ type: "toolCall", id: "read-first", name: "read", arguments: { path: "unfinished-file" } },
+				...Array.from({ length: 101 }, (_, i) => ({ type: "text" as const, text: `part-${i}` })),
+			],
 			"error",
 		),
-		errorMessage: "request failed here",
+		errorMessage: "provider stopped the read",
 	});
 	const host = await openTranscript(session, { height: 480 });
 	try {
@@ -205,8 +246,118 @@ test("paging a long failed reply shows its error only after the last block (#565
 		host.frame();
 		await flush();
 		const body = host.text();
-		assert.match(body, /part-000[\s\S]*part-100[\s\S]*request failed here/);
-		assert.equal(body.split("request failed here").length - 1, 1);
+		assert.match(body, /✗ Read\(unfinished-file\) · failed\s+⎿\s+provider stopped the read/);
+		assert.match(body, /part-100[\s\S]*Error: provider stopped the read/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("when a source repeats a row, only the reply split by the page loses its earlier notice (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ ...assistant([], "error"), errorMessage: "short error" });
+	await session.appendMessage({
+		...assistant(
+			Array.from({ length: 101 }, () => ({ type: "text" as const, text: "long reply" })),
+			"error",
+		),
+		errorMessage: "long error",
+	});
+	const [short, long] = session.getEntries();
+	const host = await openTranscript(
+		{ getSessionId: () => session.getSessionId(), getEntries: () => [short, long, short] },
+		{ height: 480 },
+	);
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(host.text().match(/Error: short error/g)?.length, 2);
+		assert.equal(host.text().match(/Error: long error/g)?.length, 1);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a tool on the final page doesn't erase the only standalone provider error on the previous page (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({
+		...assistant(
+			[
+				...Array.from({ length: 101 }, (_, i) => ({ type: "text" as const, text: `part-${i}` })),
+				{ type: "toolCall", id: "last", name: "read", arguments: { path: "last-file" } },
+			],
+			"error",
+		),
+		errorMessage: "provider stopped",
+	});
+	const host = await openTranscript(session, { height: 480 });
+	try {
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(host.text().match(/Error: provider stopped/g)?.length, 1);
+		assert.match(host.text(), /✗ Read\(last-file\) · failed/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("a provider error updated between page reads is not a repeated notice (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	const reply = {
+		...assistant(
+			Array.from({ length: 101 }, () => ({ type: "text" as const, text: "row" })),
+			"error",
+		),
+		errorMessage: "initial failure",
+	};
+	await session.appendMessage(reply);
+	const host = await openTranscript(session, { height: 480 });
+	try {
+		assert.match(host.text(), /Error: initial failure/);
+		reply.errorMessage = "updated failure";
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.match(host.text(), /Error: updated failure[\s\S]*Error: initial failure/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("paging back still works with a source that accepts only its existing page fields (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 101; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	const host = await openTranscript(session, {
+		source: (source) =>
+			Object.assign(Object.create(source) as TaskViewSource, {
+				async readTaskTranscript(id: TaskId, cursor?: string) {
+					const page = await source.readTaskTranscript(id, cursor);
+					if (!page.ok) return page;
+					const guarded = Proxy.revocable(
+						{ ...page.value, nextCursor: page.value.nextCursor },
+						{
+							getOwnPropertyDescriptor(target, key) {
+								if (!Reflect.has(target, key)) {
+									guarded.revoke();
+									throw new Error(`Unknown page field: ${String(key)}`);
+								}
+								return Reflect.getOwnPropertyDescriptor(target, key);
+							},
+						},
+					);
+					return { ok: true, value: guarded.proxy };
+				},
+			}),
+	});
+	try {
+		assert.match(host.text(), /M-100/);
+		host.inspector.handleInput(CTRL_HOME);
+		host.frame();
+		await flush();
+		assert.equal(firstMessage(host.frame()), "M-000");
 	} finally {
 		await host.dispose();
 	}

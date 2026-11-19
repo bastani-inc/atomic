@@ -327,6 +327,7 @@ export class LiveChatEntriesController {
 	private carriedToolBreak = false;
 	private pendingToolIndexes = new Map<string, number>();
 	private tracker: ToolGroupTracker;
+	private hiddenTerminalNotices?: WeakSet<ChatMessageEntry>;
 	private groupBash: boolean;
 	private declare readonly entries: LiveChatEntry[];
 	constructor(entries: LiveChatEntry[], options: { readonly groupBash?: boolean } = {}) {
@@ -403,9 +404,15 @@ export class LiveChatEntriesController {
 		this.reindexPendingTools();
 	}
 	/** Adds earlier history ahead of every entry, keeping a stream in progress and its pending tools in place. */
-	prependMessages(messages: readonly AgentMessage[]): void {
+	prependMessages(messages: readonly AgentMessage[], continuedReplies?: readonly number[]): void {
 		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
 		if (entries.length === 0) return;
+		if (continuedReplies?.length) {
+			this.hiddenTerminalNotices ??= new WeakSet();
+			const fragments = new Set(continuedReplies.map((index) => messages[index]));
+			for (const entry of entries)
+				if (entry.kind === "assistant" && fragments.has(entry.message)) this.hiddenTerminalNotices.add(entry);
+		}
 		this.entries.unshift(...entries);
 		if (this.streamingAssistantIndex !== undefined) this.streamingAssistantIndex += entries.length;
 		this.reindexPendingTools();
@@ -433,6 +440,10 @@ export class LiveChatEntriesController {
 		}
 		this.streamingAssistantIndex = undefined;
 		this.reindexPendingTools();
+	}
+	/** Only this mounted chat knows which later error it has already drawn. */
+	renderEntry(entry: ChatMessageEntry, options: ChatMessageRenderOptions): Component {
+		return renderEntry(entry, options, this.hiddenTerminalNotices?.has(entry) === true);
 	}
 	appendUserText(text: string): void {
 		this.entries.push({ role: "user", kind: "user", text });
@@ -779,6 +790,13 @@ export function applyToolEntryState(component: ToolEntryStateTarget, entry: Tool
 	if (entry.groupRole) component.setGroupRole(entry.groupRole);
 }
 export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMessageRenderOptions): Component {
+	return renderEntry(entry, options, false);
+}
+function renderEntry(
+	entry: ChatMessageEntry,
+	options: ChatMessageRenderOptions,
+	hideTerminalNotice: boolean,
+): Component {
 	const messageEntry = entry as ChatMessageEntry;
 	const markdownTheme = options.markdownTheme ?? getMarkdownTheme();
 	switch (messageEntry.kind) {
@@ -803,6 +821,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				messageEntry.messageId,
 				messageEntry.timestamp,
 				messageEntry.interruptedActivity,
+				hideTerminalNotice,
 			);
 		case "tool": {
 			if (options.createToolComponent) {

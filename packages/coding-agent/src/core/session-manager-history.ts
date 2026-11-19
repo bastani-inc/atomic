@@ -196,34 +196,6 @@ function boundaryCoveredIndex(path: SessionEntry[], boundary: CompactionEntry, b
 	return covered >= 0 ? covered : boundaryIndex - 1;
 }
 
-/** Preserve admission order where a display-only notice overtook an already displayed prompt's write. */
-export function inChatOrder(entries: SessionEntry[]): SessionEntry[] {
-	let prompts: Map<string, SessionEntry[]> | undefined;
-	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message.role !== "user" || entry.displayBefore === undefined) continue;
-		prompts ??= new Map();
-		const group = prompts.get(entry.displayBefore) ?? [];
-		group.push(entry);
-		prompts.set(entry.displayBefore, group);
-	}
-	if (!prompts) return entries;
-	const emitted = new Set<SessionEntry>();
-	const ordered: SessionEntry[] = [];
-	for (const entry of entries) {
-		if (emitted.has(entry)) continue;
-		if (entry.type === "message" && entry.displayBefore !== undefined) emitted.add(entry);
-		if (entry.type === "custom_message" && entry.display && entry.excludeFromContext) {
-			for (const prompt of prompts.get(entry.id) ?? []) {
-				if (emitted.has(prompt)) continue;
-				ordered.push(prompt);
-				emitted.add(prompt);
-			}
-		}
-		ordered.push(entry);
-	}
-	return ordered;
-}
-
 /** Return the active branch entries after applying the latest compaction boundary. */
 export function buildContextEntries(
 	entries: SessionEntry[],
@@ -236,13 +208,13 @@ export function buildContextEntries(
 	if (!leaf) return [];
 	const path = normalizeDerivedSessionEntries(branch ?? getBranchPath(leaf.id, byId));
 	const boundary = getLatestCompactionBoundaryEntry(path);
-	if (!boundary) return inChatOrder(path);
+	if (!boundary) return path;
 	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
 	const firstKeptIndex = path.findIndex(
 		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
 	);
 	const retainedStart = firstKeptIndex >= 0 ? firstKeptIndex : boundaryCoveredIndex(path, boundary, boundaryIndex) + 1;
-	return inChatOrder([boundary, ...path.slice(retainedStart, boundaryIndex), ...path.slice(boundaryIndex + 1)]);
+	return [boundary, ...path.slice(retainedStart, boundaryIndex), ...path.slice(boundaryIndex + 1)];
 }
 
 /**

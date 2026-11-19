@@ -414,45 +414,6 @@ describe("InteractiveMode compaction events", () => {
 		expect(text.match(/Compaction: 1,234 tokens billed/g)).toHaveLength(1);
 	});
 
-	it.each(["fullscreen", "regular"])(
-		"resuming the %s chat keeps cache misses and thinking drops beside their replies (#5681)",
-		(display) => {
-			const reply = (text: string, input: number, cacheRead: number, drops: number) => {
-				const message = fauxAssistantMessage(text);
-				message.usage = { ...message.usage, input, cacheRead };
-				message.diagnostics = [
-					{ type: "anthropic_input_transformations", timestamp: 1, details: { droppedBlockCount: drops } },
-				];
-				return message;
-			};
-			const { mode, chatContainer, entries } = makeMode(
-				[
-					reply("Warmed reply", 0, 40_000, 0),
-					reply("First reply", 30_000, 0, 2),
-					userMsg("Between replies"),
-					reply("Second reply", 20_000, 0, 2),
-					userMsg("After replies"),
-				],
-				true,
-			);
-			Object.assign(mode.ui, { mode: display });
-			mode.renderSessionEntries(entries);
-			const rows = renderedText(chatContainer).match(
-				/Warmed reply|First reply|Between replies|Second reply|After replies|Prompt cache miss: [\d,]+ tokens re-billed|dropped \d thinking blocks/g,
-			);
-			expect(rows).toEqual([
-				"Warmed reply",
-				"First reply",
-				"dropped 2 thinking blocks",
-				"Prompt cache miss: 30,000 tokens re-billed",
-				"Between replies",
-				"Second reply",
-				"Prompt cache miss: 20,000 tokens re-billed",
-				"After replies",
-			]);
-		},
-	);
-
 	it("renders billed compaction usage after the live boundary when notices are enabled", async () => {
 		const { mode, chatContainer } = makeMode(persistedContextMessages, true);
 

@@ -156,7 +156,6 @@ export class PooledStageHandle implements StageControlHandle {
 	private readonly drainedListeners = new Set<() => void>();
 	private settled: AgentMessage[] = [];
 	private contextTokens?: AgentTokenMeter;
-	private pendingReplyOutput?: number;
 	private requestSide = false;
 	private toolExecutions = new StageToolExecutionBuffer();
 	private queued = new StageQueuedUserMessageBuffer();
@@ -286,13 +285,7 @@ export class PooledStageHandle implements StageControlHandle {
 		return this.settled;
 	}
 	contextMeter(): StageContextMeter | undefined {
-		return (
-			this.contextTokens && {
-				...this.contextTokens.snapshot(),
-				requestSide: this.requestSide,
-				...(this.pendingReplyOutput === undefined ? {} : { pendingReplyOutput: this.pendingReplyOutput }),
-			}
-		);
+		return this.contextTokens && { ...this.contextTokens.snapshot(), requestSide: this.requestSide };
 	}
 	streamingMessage(): StreamingMessage {
 		return this.streaming;
@@ -834,7 +827,6 @@ export class PooledStageHandle implements StageControlHandle {
 		this.settled = [...history.messages];
 		this.contextTokens = history.contextMeter && new AgentTokenMeter([], history.contextMeter);
 		this.requestSide = history.contextMeter?.requestSide ?? false;
-		this.pendingReplyOutput = history.contextMeter?.pendingReplyOutput;
 	}
 
 	private adopt(snapshot: PooledStageChatSnapshot): void {
@@ -932,10 +924,7 @@ export class PooledStageHandle implements StageControlHandle {
 					this.contextTokens.settled(event.message);
 					this.requestSide = event.message.role === "user" || event.message.role === "toolResult";
 				}
-				if (event.message.role === "assistant") {
-					this.streaming = undefined;
-					this.pendingReplyOutput = undefined;
-				}
+				if (event.message.role === "assistant") this.streaming = undefined;
 				return;
 		}
 	}

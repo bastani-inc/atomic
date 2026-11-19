@@ -6,7 +6,7 @@ import {
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@bastani/atomic-tui";
-import { stageChatSnapshot, stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
+import { stageChatHistory, stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
 import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
@@ -453,9 +453,10 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
 	if (!handle) return;
-	const { messages, contextMeter, streamingMessage } = stageChatSnapshot(handle);
+	const { messages, contextMeter } = stageChatHistory(handle);
 	ctx.chatHost.appendMessages(messages, contextMeter);
-	ctx.chatHost.hydrateStreamingAssistantMessage(streamingMessage);
+	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
+	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
 	const active = activeLiveHandle(ctx);
 	if (!active) return;
 	const turnStartedAt = active.turnStartedAt ?? active.agentSession?.turnStartedAt;
@@ -463,7 +464,7 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	if (stageWaitsToRetry(active)) ctx.chatHost.hydrateRetryWait(messages, turnStartedAt);
 	else if (status?.type === "model_fallback_start") ctx.chatHost.hydrateModelSwitch(turnStartedAt, messages);
 	else if (active.isStreaming)
-		ctx.chatHost.hydrateRunningTurn(messages, streamingMessage, turnStartedAt, contextMeter?.requestSide);
+		ctx.chatHost.hydrateRunningTurn(messages, streaming, turnStartedAt, contextMeter?.requestSide);
 	else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
 }
 

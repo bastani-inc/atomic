@@ -139,24 +139,9 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		},
 		transcriptMessages: {
 			get(this: AgentSession) {
-				return this._readTranscriptMessages();
-			},
-		},
-		pendingReplySnapshot: {
-			get(this: AgentSession) {
-				const reply = this._transcriptAppend?.message ?? this.messages.at(-1);
-				if (reply?.role !== "assistant" || !this._messagesAwaitingPersistence.has(reply)) return undefined;
-				return { messages: this._readTranscriptMessages(reply), streamingMessage: reply };
-			},
-		},
-		_readTranscriptMessages: {
-			value(this: AgentSession, streaming?: AgentMessage) {
 				const saving = this._transcriptAppend;
 				// Only a context edit or a save in flight sets the transcript apart from the context, which is read as it is.
-				if (saving === undefined && !this.sessionManager.hasContextEdits())
-					return streaming === undefined
-						? this.messages
-						: this.messages.filter((message) => message !== streaming);
+				if (saving === undefined && !this.sessionManager.hasContextEdits()) return this.messages;
 				const beforeSave =
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
 				const projection = this.sessionManager.buildSessionProjection("transcript", beforeSave);
@@ -164,8 +149,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				// The context also shows rows the store does not have: admitted ones still saving and ones whose save failed.
 				const pending = this.messages.filter(
 					(message) =>
-						message !== streaming &&
-						(this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message)),
+						this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message),
 				);
 				if (pending.length === 0 && beforeSave === undefined) return finalizeTranscript(this, projection);
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
@@ -175,7 +159,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				if (beforeSave !== undefined) {
 					for (const message of this.messages) {
 						const id = this._entryIdsByMessage.get(message);
-						if (message !== streaming && id !== undefined && !saved.has(id)) tail.add(message);
+						if (id !== undefined && !saved.has(id)) tail.add(message);
 					}
 				}
 				for (const message of tail) {

@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { inChatOrder, sessionEntryToContextMessages } from "../session-manager-history.ts";
+import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { Failure, Result } from "./contracts.js";
 import { type TaskLease, type TaskTranscriptSource, taskTranscriptSource } from "./supervisor.js";
 
@@ -45,7 +45,7 @@ export async function readTaskTranscript(
 	const history = await session.loadHistory();
 	if (history.unavailable !== undefined)
 		return { ok: false, error: { code: "TranscriptUnavailable", message: history.unavailable } };
-	return taskTranscriptPage(taskId, session.getSessionId(), inChatOrder(history.entries), cursor);
+	return taskTranscriptPage(taskId, session.getSessionId(), history.entries, cursor);
 }
 
 /** Synchronous history read lets an in-process viewer subscribe without an await gap. */
@@ -56,7 +56,7 @@ export function readTaskTranscriptSnapshot(
 	const bound = taskTranscriptSource(task);
 	if (!bound.ok) return bound;
 	const { session, taskId } = bound.value;
-	return taskTranscriptPage(taskId, session.getSessionId(), inChatOrder(session.getEntries()), cursor);
+	return taskTranscriptPage(taskId, session.getSessionId(), session.getEntries(), cursor);
 }
 
 /** The page of `entries`, the history of task `taskId`'s session `sessionId`, that ends before `cursor`. */
@@ -65,6 +65,7 @@ export function taskTranscriptPage(
 	sessionId: string,
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor?: string,
+	onSplitEntries?: (fromEarlier: string | undefined, intoLater: string | undefined) => void,
 ): Result<TaskTranscriptPage, Failure<TranscriptError>> {
 	const scope = `${taskId}\n${sessionId}\n`;
 	let before: string | undefined;
@@ -136,6 +137,15 @@ export function taskTranscriptPage(
 	const end = found < 0 ? items.length : found;
 	const start = Math.max(0, end - PAGE_ITEMS);
 	const page = items.slice(start, end);
+	// Use the existing index: ignored content blocks are not page boundaries.
+	if (onSplitEntries && (start > 0 || end < items.length) && page.length > 0) {
+		const first = page[0]!.source.entryId;
+		const last = page[page.length - 1]!.source.entryId;
+		onSplitEntries(
+			items[start - 1]?.source.entryId === first ? first : undefined,
+			items[end]?.source.entryId === last ? last : undefined,
+		);
+	}
 	return {
 		ok: true,
 		value: {

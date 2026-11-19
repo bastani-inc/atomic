@@ -335,11 +335,7 @@ export async function _processAgentEvent(
 		await this._emitExtensionEvent(event);
 		if (event.type === "agent_start") this._undeliveredAgentStarts -= 1;
 		if (event.type === "agent_end" && this.isRetrying) this._emit({ ...event, retryPending: true });
-		else if (event.type !== "message_end" && !repeatsShownInput(this, event)) {
-			if (event.type === "message_start" && event.message.role === "user")
-				this.sessionManager.notePromptDisplayed(event.message);
-			this._emit(event);
-		}
+		else if (event.type !== "message_end" && !repeatsShownInput(this, event)) this._emit(event);
 	} finally {
 		// Agent-core has consumed this protected input already. Its durability
 		// boundary cannot be skipped by a fallible extension or session listener.
@@ -397,10 +393,6 @@ export async function _processAgentEvent(
 		if (entryId) {
 			this._entryIdsByMessage.set(event.message, entryId);
 			noteMessageSaved(this, event.message);
-			if (event.message.role === "user") {
-				const entry = this.sessionManager.getEntry(entryId);
-				if (entry?.type === "message" && entry.displayBefore !== undefined) this._refreshFinalizedContext();
-			}
 		}
 		if (entryId && event.message.role === "custom") {
 			const pendingIndex = this._pendingNextTurnMessages.indexOf(event.message);

@@ -64,13 +64,10 @@ export function finalizeProjectedMessages(session: AgentSession, messages: Agent
 export function _refreshFinalizedContext(this: AgentSession): void {
 	const unpersisted = this.agent.state.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
 	const projected = projectSessionMessages(this);
-	if (unpersisted.length > 0) {
-		// A store write may be visible before its acknowledgement. Don't append a second copy of that input.
-		const pending = new Set(unpersisted);
-		for (const message of projected) pending.delete(message);
-		for (const message of unpersisted) if (pending.has(message)) projected.push(message);
-	}
-	this.agent.state.messages = finalizeProjectedMessages(this, projected);
+	this.agent.state.messages = finalizeProjectedMessages(
+		this,
+		unpersisted.length === 0 ? projected : [...projected, ...unpersisted],
+	);
 }
 
 /** Refresh the public finalized transcript from the canonical session projection. */

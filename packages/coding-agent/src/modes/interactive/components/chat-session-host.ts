@@ -179,10 +179,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	handleTaskInput(data: string): boolean {
 		return this.taskInspector?.handleInput(data) === true;
 	}
-	appendMessages(
-		messages: readonly AgentSnapshotMessage[],
-		settledTokens?: AgentTokenMeterSnapshot & { readonly pendingReplyOutput?: number },
-	): void {
+	appendMessages(messages: readonly AgentSnapshotMessage[], settledTokens?: AgentTokenMeterSnapshot): void {
 		const hadFirstUser = this.state.seenFirstRawUser;
 		if (!hadFirstUser && messages.length > 0) {
 			const firstUser = firstRawUserExactText(messages);
@@ -199,14 +196,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
-	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
+	prependMessages(messages: readonly AgentSnapshotMessage[], continuedReplies?: readonly number[]): void {
 		const firstUser = firstRawUserExactText(messages);
 		if (firstUser.seenUser) {
 			this.state.seenFirstRawUser = true;
 			this.state.firstUserEntryExactText = firstUser.exactText;
 		}
 		const previousCount = countableTranscriptLength(this.state);
-		this.state.liveChat.prependMessages(messages);
+		this.state.liveChat.prependMessages(messages, continuedReplies);
 		if (firstUser.seenUser || this.state.firstUserEntry === undefined) {
 			syncFirstUserEntry(this.state);
 		}

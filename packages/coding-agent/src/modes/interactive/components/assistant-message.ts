@@ -33,6 +33,7 @@ export class AssistantMessageComponent extends Container {
 	private messageId?: string;
 	private timestamp?: string;
 	private interruptedActivity: readonly string[];
+	private readonly hideTerminalNotice: boolean;
 	private markdownSlots: MarkdownSlot[] = [];
 
 	constructor(
@@ -48,6 +49,7 @@ export class AssistantMessageComponent extends Container {
 		messageId?: string,
 		timestamp?: string,
 		interruptedActivity: readonly string[] = [],
+		hideTerminalNotice = false,
 	) {
 		super();
 
@@ -60,6 +62,7 @@ export class AssistantMessageComponent extends Container {
 		this.messageId = messageId;
 		this.timestamp = timestamp;
 		this.interruptedActivity = interruptedActivity;
+		this.hideTerminalNotice = hideTerminalNotice;
 		// Container for text/thinking content
 		this.contentContainer = new Container();
 		this.addChild(this.contentContainer);
@@ -223,6 +226,7 @@ export class AssistantMessageComponent extends Container {
 		// Length stops can happen before a tool call is complete, so surface them here too.
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		this.hasToolCalls = hasToolCalls;
+		if (this.hideTerminalNotice) return;
 		if (message.stopReason === "length") {
 			this.contentContainer.addChild(new Spacer(1));
 			this.contentContainer.addChild(

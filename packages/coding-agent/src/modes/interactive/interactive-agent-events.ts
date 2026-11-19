@@ -1,10 +1,5 @@
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
-import {
-	committedReplyNoticeContext,
-	createCacheMissModelSource,
-	detectCacheMiss,
-	formatCacheMissNotice,
-} from "../../core/cache-stats.ts";
+import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -410,20 +405,8 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 
-		case "message_end": {
+		case "message_end":
 			if (event.message.role === "user") break;
-			const noticesEnabled = event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices();
-			const notices = !noticesEnabled
-				? undefined
-				: "replyNotices" in event
-					? event.replyNotices
-					: !(this.runtimeHost instanceof IsolatedInteractiveRuntime) && event.message.role === "assistant"
-						? committedReplyNoticeContext(
-								this.sessionManager.buildContextEntries(),
-								event.message,
-								createCacheMissModelSource(this.session.modelRuntime),
-							)
-						: undefined;
 			this.workingRunMeter.settled(event.message);
 			if (this.streamingComponent && event.message.role === "assistant") {
 				this.streamingMessage = event.message;
@@ -472,25 +455,22 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					for (const [, component] of this.pendingTools.entries()) {
 						component.setArgsComplete();
 					}
-					this.maybeShowAssistantDiagnostics(this.streamingMessage, notices?.previousDrops);
+					this.maybeShowAssistantDiagnostics(this.streamingMessage);
 				}
 				this.streamingComponent = undefined;
 				this.streamingMessage = undefined;
 				this.footer.invalidate();
 			}
-			if (event.message.role === "assistant" && noticesEnabled) {
-				const miss = notices
-					? notices.miss
-					: detectCacheMiss(
-							this.sessionManager.getEntries(),
-							event.message,
-							createCacheMissModelSource(this.session.modelRuntime),
-						);
+			if (event.message.role === "assistant" && this.settingsManager.getShowCacheMissNotices()) {
+				const miss = detectCacheMiss(
+					this.sessionManager.getEntries(),
+					event.message,
+					createCacheMissModelSource(this.session.modelRuntime),
+				);
 				if (miss) this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 			}
 			this.ui.requestRender();
 			break;
-		}
 
 		case "tool_execution_start": {
 			recordMainPendingTool(this, event.toolCallId, event.toolName);

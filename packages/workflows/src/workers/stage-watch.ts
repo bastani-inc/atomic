@@ -9,7 +9,6 @@ import {
 	type StageControlHandle,
 	type StageControlRegistry,
 	stageChatHistory,
-	stageChatSnapshot,
 	stageWaitsToRetry,
 } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
@@ -818,9 +817,10 @@ function commandCatalog(handle: StageControlHandle): SessionCommandCatalog | und
 }
 
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {
-	const { streamingMessage, ...history } = stageChatSnapshot(handle);
+	const streamingMessage = handle.agentSession?.agent?.state.streamingMessage;
 	const turn = handle.turnState?.();
 	const status = handle.agentSession?.retryStatus ?? handle.modelSwitch;
+	const history = stageChatHistory(handle);
 	return {
 		sessionId: handle.sessionId,
 		status: handle.status,

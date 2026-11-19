@@ -1,12 +1,7 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
-import {
-	collectCacheMisses,
-	countDroppedThinkingBlocks,
-	createCacheMissModelSource,
-	formatCacheMissNotice,
-} from "../../core/cache-stats.ts";
+import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
@@ -67,6 +62,14 @@ import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-start
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
 
+function countDroppedThinkingBlocks(message: AssistantMessage): number {
+	return (message.diagnostics ?? []).reduce((count, diagnostic) => {
+		if (diagnostic.type !== "anthropic_input_transformations") return count;
+		const dropped = diagnostic.details?.droppedBlockCount;
+		return count + (typeof dropped === "number" && dropped > 0 ? dropped : 0);
+	}, 0);
+}
+
 function addServiceTierWarnings(mode: InteractiveModeBase, message: AssistantMessage): void {
 	for (const warning of serviceTierWarnings(message)) {
 		mode.chatContainer.addChild(new Spacer(1));
@@ -77,33 +80,29 @@ function addServiceTierWarnings(mode: InteractiveModeBase, message: AssistantMes
 InteractiveModeBase.prototype.maybeShowAssistantDiagnostics = function (
 	this: InteractiveModeBase,
 	message: AssistantMessage,
-	previousDrops?: number,
 ): void {
 	addServiceTierWarnings(this, message);
 	if (!this.settingsManager.getShowCacheMissNotices()) return;
 
 	const count = countDroppedThinkingBlocks(message);
 	if (count === 0) return;
-	if (previousDrops === undefined) {
-		const previous = this.sessionManager
-			.getBranch()
-			.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
-		previousDrops =
-			previous?.type === "message" && previous.message.role === "assistant"
-				? countDroppedThinkingBlocks(previous.message)
-				: 0;
+	let previousCount = 0;
+	// The live message_end notification precedes persistence of this response.
+	const branch = this.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			previousCount = countDroppedThinkingBlocks(entry.message);
+			break;
+		}
 	}
-	const notice = thinkingDropNotice(count, previousDrops);
-	if (notice) {
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg("warning", notice), 1, 0));
-	}
+	if (count <= previousCount) return;
+	const noun = count === 1 ? "thinking block" : "thinking blocks";
+	this.chatContainer.addChild(new Spacer(1));
+	this.chatContainer.addChild(
+		new Text(theme.fg("warning", `Anthropic dropped ${count} ${noun} (details in session)`), 1, 0),
+	);
 };
-
-function thinkingDropNotice(count: number, previousCount: number): string | undefined {
-	if (count <= previousCount) return undefined;
-	return `Anthropic dropped ${count} thinking ${count === 1 ? "block" : "blocks"} (details in session)`;
-}
 
 // Weak keys leave cleared/rebuilt transcripts collectible without separate lifecycle state.
 // Only persistent diagnostic statuses participate; ordinary chat/status is never evicted.
@@ -760,7 +759,6 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 
 type TranscriptStep =
 	| { readonly kind: "entry"; readonly entry: ChatMessageEntry }
-	| { readonly kind: "replyNotice"; readonly text: string; readonly spaced: boolean }
 	| { readonly kind: "custom"; readonly entry: CustomEntry }
 	| { readonly kind: "cost"; readonly type: "compaction" | "branch_summary"; readonly usage: Usage };
 
@@ -774,10 +772,6 @@ function planTranscript(
 	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult },
 ): TranscriptStep[] {
 	const steps: TranscriptStep[] = [];
-	const misses = mode.settingsManager.getShowCacheMissNotices()
-		? collectCacheMisses(sessionEntries, createCacheMissModelSource(mode.session.modelRuntime))
-		: undefined;
-	let previousDrops = 0;
 	const grouping = mainToolGrouping(mode);
 	resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
@@ -793,9 +787,7 @@ function planTranscript(
 		}
 		firstMessage = false;
 		breakMainToolGroup(mode);
-		const replyNotices: TranscriptStep[] = [];
 		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta, { tracker: grouping.tracker })) {
-			if (replyNotices.length > 0 && entry.kind !== "tool") steps.push(...replyNotices.splice(0));
 			if (entry.kind === "tool" && entry.isPartial !== false) {
 				const startedAt = grouping.starts.get(entry.toolCallId);
 				if (startedAt !== undefined) {
@@ -808,18 +800,8 @@ function planTranscript(
 				grouping.carriedBreak = assistantCallBreaks(entry.message.content, grouping.carriedBreak).trailing;
 			else if (entry.kind !== "tool") grouping.carriedBreak = false;
 			steps.push({ kind: "entry", entry });
-			if (misses && entry.kind === "assistant") {
-				const count = countDroppedThinkingBlocks(entry.message);
-				const drop = thinkingDropNotice(count, previousDrops);
-				previousDrops = count;
-				if (drop && entry.message.stopReason !== "aborted" && entry.message.stopReason !== "error")
-					replyNotices.push({ kind: "replyNotice", text: drop, spaced: true });
-				const miss = misses.get(entry.message);
-				if (miss) replyNotices.push({ kind: "replyNotice", text: formatCacheMissNotice(miss), spaced: false });
-			}
 			if (options.populateHistory && entry.kind === "user") mode.editor.addToHistory?.(entry.text);
 		}
-		steps.push(...replyNotices);
 		messageBuffer = [];
 	};
 	for (const entry of sessionEntries) {
@@ -848,11 +830,6 @@ function planTranscript(
 }
 
 function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, latest = true): void {
-	if (step.kind === "replyNotice") {
-		if (step.spaced) mode.chatContainer.addChild(new Spacer(1));
-		mode.chatContainer.addChild(new Text(theme.fg("warning", step.text), 1, 0));
-		return;
-	}
 	if (step.kind === "custom") {
 		mode.addCustomEntryToChat(step.entry);
 		return;
@@ -947,6 +924,14 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
 	}
 	for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
+	if (this.settingsManager.getShowCacheMissNotices()) {
+		for (const miss of collectCacheMisses(
+			sessionEntries,
+			createCacheMissModelSource(this.session.modelRuntime),
+		).values()) {
+			this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
+		}
+	}
 	restoreDeferredEchoes(this, pendingEchoes);
 	this.ui.requestRender();
 };
