@@ -10,6 +10,7 @@ import {
 	validateReleaseRequest,
 } from "./publish-release-gates.js";
 
+const FINAL_INSPECTION_GRACE_MS = 30_000;
 const request = "--version V [--kind release|prerelease]";
 const commands = {
 	validate: `${request} [--base REF]`,
@@ -61,7 +62,9 @@ async function run(args: string[], interrupted: AbortSignal) {
 	const timeout = flags["timeout-ms"] === undefined ? max : Number(arg("timeout-ms"));
 	if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > max)
 		throw new Error(`--timeout-ms must be between 1 and ${max}.`);
-	const signal = AbortSignal.any([interrupted, AbortSignal.timeout(timeout)]);
+	const polling = command === "wait-required-checks" || command === "wait-publish-run";
+	const hardTimeout = polling ? timeout + FINAL_INSPECTION_GRACE_MS : timeout;
+	const signal = AbortSignal.any([interrupted, AbortSignal.timeout(hardTimeout)]);
 	const boundary = createReleaseBoundary(cwd, { requiredCheckTimeoutMs: timeout, publishTimeoutMs: timeout });
 	try {
 		if (command === "check-changelog-diff") return await checkChangelogDiff(cwd, baseRef, signal);

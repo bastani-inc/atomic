@@ -863,6 +863,30 @@ test("release-0.9.15 CI regression polls through delayed materialization and tim
 	assert.match(timedOut.summary, /timed out after 20 ms/u);
 });
 
+test("CI that passes between the last interval and the deadline permits the release", async () => {
+	const clock = fakeClock();
+	const result = await pollRequiredChecks({
+		expected: expectedCi,
+		signal: new AbortController().signal,
+		clock,
+		intervalMs: 30_000,
+		timeoutMs: 35_000,
+		inspect: async () =>
+			ciSnapshot({
+				observations: [
+					{
+						context: "test (linux)",
+						appId: 15368,
+						state: clock.elapsed() >= 32_000 ? "success" : "pending",
+						sequence: 10,
+					},
+				],
+			}),
+	});
+	assert.equal(result.status, "passed", result.summary);
+	assert.equal(clock.elapsed(), 35_000);
+});
+
 test("absent CI and publish evidence block after 45 and 60 minutes respectively", async () => {
 	const signal = new AbortController().signal;
 	const ciClock = fakeClock();
@@ -894,7 +918,7 @@ test("a 59-minute pending publish window can pass in the final minute or block a
 				clock,
 				signal: new AbortController().signal,
 				timeoutMs: ms,
-				inspect: async () => (appears && clock.elapsed() >= 59.5 * 60_000 ? [publishRun()] : []),
+				inspect: async () => (appears && clock.elapsed() >= 60 * 60_000 - 1_000 ? [publishRun()] : []),
 			});
 		const first = await wait(59 * 60_000);
 		assert.equal(first.status, "failed");

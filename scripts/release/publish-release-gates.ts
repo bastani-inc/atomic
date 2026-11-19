@@ -317,8 +317,8 @@ async function pollGate(
 			pending = result;
 			const remaining = timeoutMs - (clock.now() - startedAt);
 			if (remaining <= 0) break;
+			// Waking at the deadline still gets one inspection before a pending result times out.
 			await clock.sleep(Math.min(intervalMs, remaining), signal);
-			if (clock.now() - startedAt >= timeoutMs) break;
 		}
 	} catch (error) {
 		// The hard CLI deadline also cancels a GitHub read or sleep. Retain the last
