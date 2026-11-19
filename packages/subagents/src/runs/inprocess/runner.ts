@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -35,6 +35,7 @@ import {
 	spanElapsedMs,
 	type TaskElapsedSpan,
 	watchHeldPromptAttention,
+	withTaskTranscriptArchive,
 } from "@bastani/atomic";
 import {
 	type Api,
@@ -94,7 +95,7 @@ import {
 } from "../shared/cancellation-recovery.js";
 import { finishElapsedSpan } from "../shared/elapsed.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
-import { createInProcessChildPromptBehavior } from "./prompt-behavior.js";
+import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
 import {
 	SessionStartBudget,
 	type SessionStartProgress,
@@ -1059,6 +1060,75 @@ async function readSessionFileEntries(file: string, sessionId: string): Promise<
 	return entries;
 }
 
+/** Only a split failure needs to identify the saved reply from which the page took its blocks. */
+function withArchivedPages(
+	source: TranscriptSource,
+	file: string | undefined,
+	sessionId: string,
+	store: ReturnType<SessionManager["getSessionStore"]> | undefined,
+	unsaved?: SessionEntry,
+): TranscriptSource {
+	if (store)
+		return withTaskTranscriptArchive(source, async (project, loadSnapshot) => {
+			let records: SessionEntry[];
+			let entries: SessionEntry[];
+			let version: string | undefined;
+			try {
+				const loaded = await loadSnapshot(store, sessionId);
+				records = [...loaded.snapshot.entries];
+				entries = withUnsavedAnswer(records, unsaved);
+				version = loaded.generation;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					ok: false,
+					error: {
+						message: message.startsWith("History unavailable:")
+							? message
+							: await historyUnavailable(undefined, error),
+					},
+				};
+			}
+			return project(
+				entries,
+				records.length,
+				async () => version && createHash("sha256").update(`store:${version}`).digest("base64url"),
+			);
+		});
+	if (file === undefined) return source;
+	return withTaskTranscriptArchive(source, async (project) => {
+		let records: SessionEntry[];
+		let entries: SessionEntry[];
+		try {
+			// Release the file before projecting the page: a writer may need to rename over it on Windows.
+			records = await readSessionFileEntries(file, sessionId);
+			entries = withUnsavedAnswer(records, unsaved);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				ok: false,
+				error: {
+					message: message.startsWith("History unavailable:") ? message : await historyUnavailable(file, error),
+				},
+			};
+		}
+		return project(
+			entries,
+			records.length,
+			// A projector that only understands file generations must not equate two independent reads.
+			async () => randomUUID(),
+			(_generation, row) => {
+				// Identify only the selected, captured row. Reopening its path here can block a rename on Windows.
+				try {
+					return createHash("sha256").update(JSON.stringify(records[row])).digest("base64url");
+				} catch {
+					return undefined;
+				}
+			},
+		);
+	});
+}
+
 /** The entry a task view shows for a final answer its child's session could not save (#5210). */
 function unsavedAnswerEntry(manager: SessionManager, answer: AssistantMessage): SessionEntry {
 	return {
@@ -1097,6 +1167,7 @@ function settledTranscript(
 	const sessionFile = manager.getSessionFile();
 	// #5210: a final answer its session could not save is still shown, after what it saved, unless the session holds it.
 	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
+	const last = kept.at(-1);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
 	const store =
@@ -1115,9 +1186,10 @@ function settledTranscript(
 				: [...(fallbackEntries ?? [])];
 		return withUnsavedAnswer(entries, unsaved);
 	};
-	return {
+	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
+		...(last?.type === "message" && last.message.role === "assistant" ? { settledReply: last.message } : {}),
 		loadHistory: async () => {
 			try {
 				return { entries: await read() };
@@ -1133,6 +1205,7 @@ function settledTranscript(
 		},
 		...(commands === undefined ? {} : { commands: () => commands }),
 	};
+	return withArchivedPages(source, sessionFile, sessionId, store, unsaved);
 }
 
 /** One copy of each skill every settled child keeps, however many children loaded it. */
@@ -1188,7 +1261,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 		sessionFile === undefined && typeof manager.getSessionStore === "function"
 			? manager.getSessionStore()
 			: undefined;
-	return {
+	const source: TranscriptSource = {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
 		...(store === undefined && sessionFile === undefined
@@ -1214,6 +1287,7 @@ function releasedTranscript(manager: SessionManager, commands: TranscriptCommand
 				}),
 		...(commands === undefined ? {} : { commands: () => commands }),
 	};
+	return withArchivedPages(source, sessionFile, sessionId, store);
 }
 
 function nativeStatus(value: ChildStatus): NativeAgentStatus {
@@ -2236,6 +2310,8 @@ export class SubagentControlRuntime {
 					throw new Error("Skills not found: subagent");
 				}
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
+				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
+				const systemPromptTransform = createInProcessChildSystemPromptTransform(admitted.policy, skillInjection);
 				startBudget.enter("creating-session");
 				created = await beforeStartDeadline(
 					createAgentSession({
@@ -2264,7 +2340,8 @@ export class SubagentControlRuntime {
 						settingsManager,
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 						sessionManager,
-						...createInProcessChildPromptBehavior(admitted.policy, skillInjection),
+						...promptBehavior,
+						systemPromptTransform,
 					}),
 					// The attempt already failed; a session that comes up after its deadline is never used.
 					(late) => late.session.dispose().catch(() => undefined),

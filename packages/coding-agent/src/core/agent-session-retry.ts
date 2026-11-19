@@ -10,6 +10,7 @@ import {
 	resolveFallbackModel as resolveConfiguredFallbackModel,
 	resolveFallbackModelWithoutCredentials,
 } from "./fallback-models.ts";
+import { selectFirstPromptModel } from "./first-prompt-model.ts";
 import { NoUsableModelError, type SkippedModel } from "./model-credential-filter.ts";
 import {
 	isContentFilterRefusal,
@@ -22,6 +23,23 @@ import {
 } from "./model-fallback-failures.ts";
 import { isLongStreamCut, LONG_STREAM_CUT_ADVICE, nextRetryDecision, repeatsLongStreamCut } from "./retry-policy.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
+
+export function ensureRetryPromise(session: AgentSession): void {
+	session._retryPromise ??= new Promise((resolve) => {
+		session._retryResolve = resolve;
+	});
+}
+
+export function retryIsCurrent(session: AgentSession, generation: number): boolean {
+	return !session._agentRunAbortRequested && session._retryGeneration === generation;
+}
+
+/** Leave the agent_end handler before starting another run, without giving a cancelled turn a new request. */
+function scheduleRetry(session: AgentSession, generation: number, run: () => void): void {
+	setTimeout(() => {
+		if (retryIsCurrent(session, generation)) run();
+	}, 0);
+}
 
 function modelLabel(model: Model<Api> | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "unknown model";
@@ -224,13 +242,16 @@ async function applyFallbackThinkingLevel(this: AgentSession, level: ThinkingLev
 }
 
 /** Capture the user-selected model before the first fallback in a turn. */
-export function _beginFallbackModelScope(this: AgentSession): void {
-	const currentModel = this.agent.state.model ?? this.model;
+export function _beginFallbackModelScope(
+	this: AgentSession,
+	currentModel = this.agent.state.model ?? this.model,
+	thinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel,
+): void {
 	if (this._fallbackOriginModel !== undefined || currentModel === undefined) return;
 	this._fallbackScopeGeneration = (this._fallbackScopeGeneration ?? 0) + 1;
 	this._fallbackOriginGeneration = this._fallbackScopeGeneration;
 	this._fallbackOriginModel = currentModel;
-	this._fallbackOriginThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
+	this._fallbackOriginThinkingLevel = thinkingLevel;
 	this._fallbackRestoreError = undefined;
 }
 
@@ -301,7 +322,55 @@ export async function _settleFallbackModelScope(this: AgentSession): Promise<boo
 	});
 }
 
-/** Handle retryable errors with exponential backoff. */
+/** Finish recording a committed model choice even if Esc cancels the request that was going to use it. */
+async function selectFallback(
+	session: AgentSession,
+	from: Model<Api>,
+	fromLevel: ThinkingLevel,
+	to: Model<Api>,
+	toLevel: ThinkingLevel,
+	reason: string,
+	skipped: SkippedModel[],
+	generation: number,
+): Promise<void> {
+	await session.sessionManager.appendModelChange(to.provider, to.id, {
+		requested: modelLabel(session._fallbackOriginModel ?? from),
+		from: modelLabel(from),
+		reason,
+		...(skipped.length ? { skipped } : {}),
+	});
+	session.agent.state.model = to;
+	const thinkingChanged = await applyFallbackThinkingLevel.call(session, toLevel);
+	if (session._retryAttempt > 0 && retryIsCurrent(session, generation)) {
+		const attempt = Math.max(0, session._retryAttempt - 1);
+		session._retryAttempt = 0;
+		session._longStreamCutRetries = 0;
+		session._emit({ type: "auto_retry_end", success: true, attempt });
+	}
+	if (retryIsCurrent(session, generation)) {
+		_beginFallbackModelScope.call(session, from, fromLevel);
+		session._fallbackAttemptedKeys.add(fallbackKey(from, fromLevel));
+		session._fallbackAttemptedKeys.add(fallbackKey(to, toLevel));
+		session._emit({
+			type: "model_fallback_start",
+			from: modelLabel(from),
+			to: modelLabel(to),
+			...(from.reasoning && fromLevel !== undefined ? { fromThinkingLevel: fromLevel } : {}),
+			...(to.reasoning ? { toThinkingLevel: toLevel } : {}),
+			reason,
+			attempt: session._fallbackAttemptedKeys.size - 1,
+		});
+	}
+	if (thinkingChanged) {
+		session._emit({ type: "thinking_level_changed", level: toLevel });
+		void session._extensionRunner?.emit({ type: "thinking_level_select", level: toLevel, previousLevel: fromLevel });
+	}
+	session._refreshBaseSystemPromptFromActiveTools();
+	session._emitModelChanged(to, from, "fallback");
+	await session._emitModelSelect(to, from, "fallback");
+	await session._recordSystemPromptForModelSwitch();
+}
+
 export async function _trySwitchToFallbackModel(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	const currentModel = this.agent.state.model ?? this.model;
 	if (this._fallbackModels.length === 0 || currentModel === undefined) return false;
@@ -356,59 +425,22 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		// selected. An exhausted or unresolvable chain has no start to close.
 
 		// Keep the failed attempt in raw history while durably omitting it from model projection.
+		const generation = this._retryGeneration;
+		ensureRetryPromise(this); // Unresolved overflow may reach fallback without a same-model retry.
 		await this._omitTrailingAssistantAttempt();
-		// The change records the model the turn asked for and why it moved on, so a session read later says which
-		// model ran in its place (#4223).
-		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, {
-			requested: modelLabel(this._fallbackOriginModel ?? fromModel),
-			from: modelLabel(fromModel),
-			reason: message.errorMessage || "Retryable model error",
-			...(skipped.length > 0 ? { skipped } : {}),
-		});
-		_beginFallbackModelScope.call(this);
-		this.agent.state.model = nextModel;
-		const thinkingChanged = await applyFallbackThinkingLevel.call(this, nextLevel);
-		this._fallbackAttemptedKeys.add(fallbackKey(currentModel, currentThinkingLevel));
-		if (this._retryAttempt > 0) {
-			this._emit({
-				type: "auto_retry_end",
-				success: true,
-				attempt: Math.max(0, this._retryAttempt - 1),
-			});
-		}
-		this._fallbackAttemptedKeys.add(key);
-		this._emit({
-			type: "model_fallback_start",
-			from: modelLabel(fromModel),
-			to: `${nextModel.provider}/${nextModel.id}`,
-			// Levels for reasoning models, so a notice can show each model's level beside its ID (#4269).
-			...(fromModel.reasoning && currentThinkingLevel !== undefined
-				? { fromThinkingLevel: currentThinkingLevel }
-				: {}),
-			...(nextModel.reasoning ? { toThinkingLevel: nextLevel } : {}),
-			reason: message.errorMessage || "Retryable model error",
-			attempt: this._fallbackAttemptedKeys.size - 1,
-		});
-		if (thinkingChanged) {
-			this._emit({ type: "thinking_level_changed", level: nextLevel });
-			void this._extensionRunner?.emit({
-				type: "thinking_level_select",
-				level: nextLevel,
-				previousLevel: currentThinkingLevel,
-			});
-		}
-
-		this._refreshBaseSystemPromptFromActiveTools();
-		this._emitModelChanged(nextModel, fromModel, "fallback");
-		await this._emitModelSelect(nextModel, fromModel, "fallback");
-		// The fallback model is told which model it is.
-		await this._recordSystemPromptForModelSwitch();
-		this._retryAttempt = 0;
-		this._longStreamCutRetries = 0;
-
+		if (!retryIsCurrent(this, generation)) return true;
+		await selectFallback(
+			this,
+			fromModel,
+			currentThinkingLevel,
+			nextModel,
+			nextLevel,
+			message.errorMessage || "Retryable model error",
+			skipped,
+			generation,
+		);
 		const fallbackGeneration = this._fallbackOriginGeneration;
-		setTimeout(() => {
-			if (this._agentRunAbortRequested) return;
+		scheduleRetry(this, generation, () => {
 			void this.agent.continue().catch(async (error: unknown) => {
 				const finalError = error instanceof Error ? error.message : String(error);
 				if (this._fallbackOriginGeneration === fallbackGeneration) {
@@ -425,11 +457,13 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 						}
 					}
 				}
-				this._retryAttempt = 0;
-				this._longStreamCutRetries = 0;
-				this._resolveRetry();
+				if (retryIsCurrent(this, generation)) {
+					this._retryAttempt = 0;
+					this._longStreamCutRetries = 0;
+					this._resolveRetry();
+				}
 			});
-		}, 0);
+		});
 		return true;
 	}
 	if (this._fallbackOriginModel !== undefined) {
@@ -464,52 +498,42 @@ export async function _selectModelWithCredentials(this: AgentSession): Promise<v
 		if (modelsAreEqual(nextModel, currentModel)) continue;
 
 		const reason = `No API key found for ${currentModel.provider}`;
-		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, {
-			requested: modelLabel(this._fallbackOriginModel ?? currentModel),
-			from: modelLabel(currentModel),
-			reason,
-			skipped,
-		});
-		_beginFallbackModelScope.call(this);
-		this.agent.state.model = nextModel;
-		const thinkingChanged = await applyFallbackThinkingLevel.call(this, nextLevel);
-		this._fallbackAttemptedKeys.add(fallbackKey(currentModel, currentThinkingLevel));
-		this._fallbackAttemptedKeys.add(fallbackKey(nextModel, nextLevel));
-		this._emit({
-			type: "model_fallback_start",
-			from: modelLabel(currentModel),
-			to: modelLabel(nextModel),
-			...(currentModel.reasoning && currentThinkingLevel !== undefined
-				? { fromThinkingLevel: currentThinkingLevel }
-				: {}),
-			...(nextModel.reasoning ? { toThinkingLevel: nextLevel } : {}),
-			reason,
-			attempt: this._fallbackAttemptedKeys.size - 1,
-		});
-		if (thinkingChanged) {
-			this._emit({ type: "thinking_level_changed", level: nextLevel });
-			void this._extensionRunner?.emit({
-				type: "thinking_level_select",
-				level: nextLevel,
-				previousLevel: currentThinkingLevel,
-			});
+		const generation = this._retryGeneration;
+		ensureRetryPromise(this);
+		try {
+			await selectFallback(
+				this,
+				currentModel,
+				currentThinkingLevel,
+				nextModel,
+				nextLevel,
+				reason,
+				skipped,
+				generation,
+			);
+		} finally {
+			if (retryIsCurrent(this, generation)) this._resolveRetry();
 		}
-		this._refreshBaseSystemPromptFromActiveTools();
-		this._emitModelChanged(nextModel, currentModel, "fallback");
-		await this._emitModelSelect(nextModel, currentModel, "fallback");
-		await this._recordSystemPromptForModelSwitch();
 		return;
+	}
+	// No configured model can run this prompt. Only now can the session need its private Copilot lookup.
+	const selection = selectFirstPromptModel(this);
+	if (selection) {
+		const generation = this._retryGeneration;
+		const advice = await selection;
+		if (this._disposed || !retryIsCurrent(this, generation) || this.model !== currentModel) return;
+		if (advice) {
+			const error = new NoUsableModelError(skipped);
+			error.message = `${advice}\n\n${error.message}`;
+			throw error;
+		}
 	}
 	throw new NoUsableModelError(skipped);
 }
 
 export async function _handleRetryableError(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	if (this._agentRunAbortRequested) return false;
-	// The retry was cancelled after this attempt failed, before its backoff started: it stays cancelled.
-	if (this._retryCancelled) {
-		this._retryCancelled = false;
-		return false;
-	}
+	const generation = this._retryGeneration;
 	const settings = this.settingsManager.getRetrySettings();
 	const retryableError = this._isRetryableError?.(message) ?? true;
 	const fallbackableError = this._isFallbackableError?.(message) ?? retryableError;
@@ -537,11 +561,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 
 	// Retry promise is created synchronously in _handleAgentEvent for agent_end.
 	// Keep a defensive fallback here in case a future refactor bypasses that path.
-	if (!this._retryPromise) {
-		this._retryPromise = new Promise((resolve) => {
-			this._retryResolve = resolve;
-		});
-	}
+	ensureRetryPromise(this);
 
 	// One shared policy decides the bounded same-model budget and its backoff, so
 	// main chat and workflow stages cannot drift apart on the same settings. The
@@ -578,7 +598,8 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 
 	const delayMs = decision.delayMs;
 
-	this._retryAbortController = new AbortController();
+	const backoff = new AbortController();
+	this._retryAbortController = backoff;
 	this._emit({
 		type: "auto_retry_start",
 		attempt: this._retryAttempt,
@@ -591,31 +612,19 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	await this._omitTrailingAssistantAttempt();
 
 	// Wait with exponential backoff (abortable)
-	if (this._agentRunAbortRequested) this._retryAbortController.abort();
 	try {
-		await sleep(delayMs, this._retryAbortController.signal);
+		await sleep(delayMs, backoff.signal);
 	} catch {
-		// Aborted during sleep - emit end event so UI can clean up
-		finishCancelledRetry.call(this);
-		this._retryAbortController = undefined;
-		this._resolveRetry();
 		return false;
+	} finally {
+		if (this._retryAbortController === backoff) this._retryAbortController = undefined;
 	}
-	this._retryAbortController = undefined;
 
-	// Retry via continue() - use setTimeout to break out of event handler chain
-	setTimeout(() => {
-		// A retry cancelled after its backoff, before this next attempt, stays cancelled too.
-		const cancelled = this._retryCancelled;
-		this._retryCancelled = false;
-		if (this._agentRunAbortRequested || cancelled) {
-			finishCancelledRetry.call(this);
-			return;
-		}
+	scheduleRetry(this, generation, () => {
 		this.agent.continue().catch(() => {
 			// Retry failed - will be caught by next agent_end
 		});
-	}, 0);
+	});
 
 	return true;
 }
@@ -633,11 +642,19 @@ function finishCancelledRetry(this: AgentSession): void {
 }
 
 export function abortRetry(this: AgentSession): void {
-	// Out of its backoff, a pending retry has no timer to abort: its failure is still being handled, or its next attempt
-	// is about to start. It reads the cancellation there.
-	if (this._retryPromise !== undefined && this._retryAbortController === undefined) this._retryCancelled = true;
+	if (this.isRetrying) abortTurnRetries.call(this);
+}
+
+/** A whole-turn interrupt also prevents a first request that fails late from starting a retry. */
+export function abortTurnRetries(this: AgentSession): void {
+	this._retryGeneration = (this._retryGeneration ?? 0) + 1;
+	// The next attempt may already be preparing its request when an interactive or RPC interrupt arrives.
+	if (this.isRetrying && this.agent.state.isStreaming) this.agent.abort();
 	this._retryAbortController?.abort();
 	finishCancelledRetry.call(this);
+	if (this._fallbackOriginGeneration !== undefined) {
+		finishFallbackModelScope.call(this, { success: false, from: modelLabel(this.model) });
+	}
 	this._resolveRetry();
 }
 

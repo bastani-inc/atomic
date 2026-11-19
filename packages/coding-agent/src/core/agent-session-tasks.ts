@@ -18,7 +18,7 @@ import {
 	type TaskCompletionEnvelope,
 	TaskCompletionOutbox,
 } from "./tasks/completion.js";
-import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
+import { type CommandOutputExcerpt, commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import type { TaskCompletionSource } from "./tasks/completion-ordering.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
@@ -122,7 +122,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 							entry.message.content.some((block) => block.type === "text" && block.text.trim()),
 					)
 			: undefined;
-		let output =
+		let output: string | CommandOutputExcerpt | undefined =
 			response?.type === "message" && response.message.role === "assistant"
 				? response.message.content
 						.filter((block) => block.type === "text")

@@ -9,6 +9,7 @@ import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import { SessionManager } from "../session-manager.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
 import { renderHtmlInputs } from "./render-inputs.js";
+import { type SavedAgentCard, savedAgentCards } from "./saved-agent-cards.js";
 import { captureHtmlHistory, encodeSessionData, sessionDataBytes } from "./session-data.js";
 
 /**
@@ -126,7 +127,7 @@ function generateThemeVars(themeName?: string): string {
 }
 
 /** The fixed HTML before and after the streamed session data. */
-async function htmlTemplate(themeName?: string): Promise<readonly [string, string]> {
+async function htmlTemplate(themeName?: string, cards?: SavedAgentCard[]): Promise<readonly [string, string, boolean]> {
 	const templateDir = await getExportTemplateDirAsync();
 	const [template, templateCss, templateJs, markedJs, markedCjkFriendlyJs, hljsJs] = await Promise.all(
 		[
@@ -147,6 +148,28 @@ async function htmlTemplate(themeName?: string): Promise<readonly [string, strin
 	const containerBg = themeExport.cardBg ?? derivedExportColors.cardBg;
 	const infoBg = themeExport.infoBg ?? derivedExportColors.infoBg;
 
+	let viewer = templateJs;
+	let includesCards = false;
+	const toolRow = /function renderToolCall\(call\) \{\r?\n +const result = findToolResult\(call\.id\);/;
+	const startRows = "        const fragment = document.createDocumentFragment();";
+	const paintedRows = "        messagesEl.appendChild(fragment);";
+	const initialRender = "      // Initial render";
+	if (
+		cards &&
+		toolRow.test(viewer) &&
+		[startRows, paintedRows, initialRender].every((slot) => viewer.includes(slot))
+	) {
+		const cardViewer = await readFile(join(templateDir, "saved-agent-viewer.js"), "utf8").catch(() => undefined);
+		if (cardViewer) {
+			viewer = viewer
+				.replace(toolRow, "function renderToolCall(call, result = findToolResult(call.id)) {")
+				.replace(startRows, () => `${startRows}\n        acceptedCards = null;`)
+				.replace(paintedRows, () => `${paintedRows}\n        paintSavedAgentCards();`)
+				.replace(initialRender, () => `${cardViewer}\n${initialRender}`);
+			includesCards = true;
+		}
+	}
+
 	// Build the CSS with theme variables injected
 	const css = templateCss
 		.replace("{{THEME_VARS}}", () => themeVars)
@@ -160,11 +183,11 @@ async function htmlTemplate(themeName?: string): Promise<readonly [string, strin
 	const fill = (part: string) =>
 		part
 			.replace("{{CSS}}", () => css)
-			.replace("{{JS}}", () => templateJs)
+			.replace("{{JS}}", () => viewer)
 			.replace("{{MARKED_JS}}", () => markedJs)
 			.replace("{{MARKED_CJK_FRIENDLY_JS}}", () => markedCjkFriendlyJs)
 			.replace("{{HIGHLIGHT_JS}}", () => hljsJs);
-	return [fill(prefix), fill(suffix)];
+	return [fill(prefix), fill(suffix), includesCards];
 }
 
 /**
@@ -176,8 +199,15 @@ export async function exportSessionToHtml(
 	state?: AgentState,
 	options?: ExportOptions | string,
 ): Promise<string> {
-	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
+	return writeSessionHtml(sm, state, typeof options === "string" ? { outputPath: options } : options || {});
+}
 
+async function writeSessionHtml(
+	sm: SessionManager,
+	state: AgentState | undefined,
+	opts: ExportOptions,
+	cards?: SavedAgentCard[],
+) {
 	const sessionFile = sm.getSessionFile();
 	const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
 	const source = await captureHtmlHistory(sm).catch((error: Error) => {
@@ -189,9 +219,13 @@ export async function exportSessionToHtml(
 		systemPrompt: state?.systemPrompt,
 		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
 	};
-	const [prefix, suffix] = await htmlTemplate(opts.themeName);
+	const [prefix, suffix, includesCards] = await htmlTemplate(opts.themeName, cards);
 	inputs?.freezeInputs();
-	const metadataJson = JSON.stringify({ leafId: source.leafId, ...presentation });
+	const metadataJson = JSON.stringify({
+		leafId: source.leafId,
+		...presentation,
+		savedAgentCards: includesCards ? cards : undefined,
+	});
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
@@ -245,7 +279,7 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	}
 
 	try {
-		return await exportSessionToHtml(sm, undefined, { ...opts, outputPath });
+		return await writeSessionHtml(sm, undefined, { ...opts, outputPath }, savedAgentCards(sm, sm.getEntries()));
 	} finally {
 		await sm.getSessionStore().close();
 	}

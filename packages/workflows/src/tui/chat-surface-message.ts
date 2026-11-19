@@ -6,7 +6,7 @@ import type { WorkflowInputValues } from "../shared/types.js";
 import { renderDispatchConfirm } from "./dispatch-confirm.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { renderRunDetail } from "./run-detail.js";
-import { renderStatusList } from "./status-list.js";
+import { renderSavedStatusList } from "./status-list.js";
 import type { WorkflowListEntry } from "./workflow-list.js";
 import { renderWorkflowList } from "./workflow-list.js";
 
@@ -148,7 +148,7 @@ export function renderChatSurfacePlainText(
 			return [rendered, `run id: ${payload.runId}`, `inputs: ${formatPlainRecord(payload.inputs)}`].join("\n");
 		}
 		case "status": {
-			const rendered = renderStatusList(payload.runs, {
+			const rendered = renderSavedStatusList(payload.runs, {
 				width,
 				now,
 				...themed,
@@ -284,7 +284,7 @@ function renderPayload(payload: ChatSurfacePayload, theme: GraphTheme, width: nu
 				width,
 			});
 		case "status":
-			return renderStatusList(payload.runs, {
+			return renderSavedStatusList(payload.runs, {
 				theme,
 				width,
 				now,

@@ -79,6 +79,62 @@ test.each(["abort", "dispose", "signal"] as const)(
 	},
 );
 
+test.each([
+	{ scenario: "no replacement", resumes: [undefined] },
+	{ scenario: "a replacement", resumes: ["replacement objective"] },
+	{ scenario: "an interrupted replacement", resumes: ["superseded objective", undefined] },
+])(
+	"resuming with $scenario during failed-session shutdown never sends an interrupted objective to its fallback (#5564)",
+	async ({ resumes }) => {
+		const retiring = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const requests: string[] = [];
+		const ctx = createStageContext(
+			makeOpts({
+				stageOptions: { model: "first/primary", fallbackModels: ["second/fallback"] },
+				adapters: {
+					agentSession: {
+						async create(options) {
+							const primary = String(options.model) === "first/primary";
+							const { session } = makeMockSession({
+								async prompt(text) {
+									requests.push(text);
+									if (primary) throw new Error("model not found");
+									return "done";
+								},
+							});
+							return Object.assign(session, {
+								extensionRunner: {
+									hasHandlers: (name: string) => name === "session_shutdown" && primary,
+									async emit() {
+										retiring.resolve();
+										await release.promise;
+									},
+								},
+							});
+						},
+					},
+				},
+			}),
+		) as InternalStageContext;
+		const turn = ctx.prompt("old objective");
+		try {
+			await retiring.promise;
+			for (const replacement of resumes) {
+				await ctx.__requestPause();
+				await ctx.__resume(replacement);
+			}
+			release.resolve();
+			await turn;
+			const last = resumes.at(-1);
+			assert.deepEqual(requests, last === undefined ? ["old objective"] : ["old objective", last]);
+		} finally {
+			release.resolve();
+			await ctx.__dispose();
+		}
+	},
+);
+
 // #3020: a session that fails during binding never reaches the controller's ownership slot.
 test("failed extension binding drains initialization cleanup before exposing the failure", async () => {
 	const failure = new Error("Unknown model: initialization failed");

@@ -4,6 +4,20 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.90] - 2026-11-19
+
+### Added
+
+- In fullscreen mode, a click on a key in the intercom session list's and message dialog's hint rows, such as `Enter: Send` or `Escape: Close`, presses that key
+
+### Fixed
+
+- The bundled intercom skill now teaches answering a sender outside your groups (up to 3 messages within 30 minutes of its latest message, and the refusal once that path closes), and no longer tells the model that Intercom works on one machine only: with multi-node routing, sessions on machines that share storage message each other, and ungrouped sessions join their project group.
+- A finished workflow run's pending-stage route that the workflows extension withdraws is no longer registered again after a broker reconnect, and its route connection closes once no other run's route uses it, so a long session no longer keeps one connection per finished run. Transferring a nested workflow to another host now releases its stage route without disconnecting the parent or siblings. An older broker still retires routes when their connection closes ([#5492](https://github.com/bastani-inc/atomic/issues/5492), [#5561](https://github.com/bastani-inc/atomic/issues/5561))
+- A delayed announcement or reconnect no longer registers an earlier workflow stage’s chat route over its successor. Unless replaced, the released stage keeps its listed ID while answering asks in order and after its chat closes again ([#5577](https://github.com/bastani-inc/atomic/issues/5577)).
+
+## [0.9.90-alpha.1] - 2026-11-19
+
 ### Added
 
 - In fullscreen mode, a click on a key in the intercom session list's and message dialog's hint rows, such as `Enter: Send` or `Escape: Close`, presses that key

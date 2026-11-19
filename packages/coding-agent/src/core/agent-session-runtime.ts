@@ -255,6 +255,14 @@ export class AgentSessionRuntime {
 	}
 
 	/**
+	 * While the startup decision is still to be made: whether the project's own resources may load already, because its
+	 * own decision is made or nothing can turn it untrusted. Other open questions, such as an `-e` source's, do not count.
+	 */
+	pendingProjectResourcesTrusted(): boolean {
+		return this.services.projectTrust?.pending === true && this.services.projectTrust.resourcesTrusted === true;
+	}
+
+	/**
 	 * Startup failed before `completeStartup` decided the project's trust, for example because an extension failed to
 	 * start. No decision is coming, so the session stays as untrusted as its settings read.
 	 */

@@ -1,3 +1,4 @@
+import { displayRunStatus } from "./display-run-status.js";
 import { effectiveRunStatus } from "./returned-run-status.js";
 import { runStageIndex } from "./run-stage-index.js";
 import type { RunSnapshot, RunStatus } from "./store-types.js";
@@ -16,8 +17,12 @@ const TERMINAL_OR_BLOCKED = new Set<RunStatus>(["completed", "failed", "killed",
  * `rootRunId` and `parentRunId`. Effective terminal and blocked statuses are
  * authoritative, even when a stale prompt marker remains in a snapshot.
  */
-export function runIndicatorStatus(run: RunSnapshot, allRuns: readonly RunSnapshot[] = [run]): RunIndicatorStatus {
-	const status = effectiveRunStatus(run);
+export function runIndicatorStatus(
+	run: RunSnapshot,
+	allRuns: readonly RunSnapshot[] = [run],
+	statusOf = displayRunStatus,
+): RunIndicatorStatus {
+	const status = statusOf(run);
 	if (TERMINAL_OR_BLOCKED.has(status)) return status;
 	if (runHasPendingInput(run)) return "awaiting_input";
 
@@ -37,10 +42,11 @@ export function runIndicatorStatus(run: RunSnapshot, allRuns: readonly RunSnapsh
  */
 export function createRunIndicatorStatusResolver(
 	allRuns: readonly RunSnapshot[],
+	statusOf = displayRunStatus,
 ): (run: RunSnapshot) => RunIndicatorStatus {
 	let runsWithPendingDescendants: Set<string> | undefined;
 	return (run) => {
-		const status = effectiveRunStatus(run);
+		const status = statusOf(run);
 		if (TERMINAL_OR_BLOCKED.has(status)) return status;
 		if (runHasPendingInput(run)) return "awaiting_input";
 		runsWithPendingDescendants ??= ancestorsOfPendingInputRuns(allRuns);
@@ -59,7 +65,7 @@ export function resolveRunIndicatorStatuses(
 	runs: readonly RunSnapshot[],
 	allRuns: readonly RunSnapshot[],
 ): Readonly<Record<string, RunIndicatorStatus>> {
-	const statusOf = createRunIndicatorStatusResolver(allRuns);
+	const statusOf = createRunIndicatorStatusResolver(allRuns, effectiveRunStatus);
 	const statuses: Record<string, RunIndicatorStatus> = {};
 	for (const run of runs) statuses[run.id] = statusOf(run);
 	return statuses;

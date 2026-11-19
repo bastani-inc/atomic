@@ -40,6 +40,7 @@ import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
+import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -244,6 +245,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private followedSessionId?: string;
 	private unsubscribe?: () => void;
 	private cursor?: string;
+	readonly #notices = new TaskTranscriptNotices();
 	private loading = false;
 	private reloadPending = false;
 	private loadingEarlier = false;
@@ -343,6 +345,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
 			},
 		});
+		pagedNotices.set(this.chat, this.#notices);
 		this.restoreDraft();
 		this.restoreUndelivered();
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
@@ -595,6 +598,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.#notices.reset();
 		this.unsubscribePrompts();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -682,7 +686,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		this.followedSessionId = nextSessionId;
 		this.cursor = page.value.nextCursor;
-		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
+		const messages = page.value.messages;
+		this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged });
+		this.#notices.adopt(page, messages, this.cursor !== undefined);
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -721,14 +727,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const chatSession = session.chatSession;
 		if (chatSession && sessionWaitsToRetry(chatSession)) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.hydrateRetryWait();
+			this.chat.hydrateRetryWait(messages, chatSession.turnStartedAt);
 		} else if (chatSession?.retryStatus?.type === "model_fallback_start") {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.applyAgentEvent(chatSession.retryStatus);
+			this.chat.hydrateModelSwitch(chatSession.turnStartedAt, messages);
 		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
-			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.(), chatSession?.turnStartedAt);
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()
@@ -756,12 +762,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					return;
 				}
 				this.cursor = page.value.nextCursor;
-				this.chat.prependMessages(page.value.messages);
+				const messages = page.value.messages;
+				this.#notices.adopt(page, messages, this.cursor !== undefined);
+				this.chat.prependMessages(messages);
 			} catch (error) {
 				if (this.disposed) return;
 				this.cursor = undefined;
 				this.status = error instanceof Error ? error.message : String(error);
 			} finally {
+				if (this.cursor === undefined) this.#notices.finishPaging();
 				this.loadingEarlier = false;
 				this.requestRender();
 			}

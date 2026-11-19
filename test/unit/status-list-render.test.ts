@@ -241,6 +241,23 @@ describe("renderStatusList — populated", () => {
 		assert.match(plain, /single\s+\[●\]/);
 	});
 
+	test("a live card reads a recorded block once and keeps the execution status when the field is unavailable (#5534)", () => {
+		for (const available of [false, true]) {
+			const target = makeRun({ id: "waiting-stage" });
+			let reads = 0;
+			Object.defineProperty(target, "blockedAt", {
+				get() {
+					reads++;
+					if (!available) throw new Error("field not loaded");
+					return 0;
+				},
+			});
+			const card = renderStatusList([target], { width: 120, now: 30 });
+			assert.ok(card.includes(available ? "↑ blocked" : "● running"));
+			assert.equal(reads, 1);
+		}
+	});
+
 	test("precomputed indicatorStatuses drive the indicator without the full run collection (restored payloads)", () => {
 		const theme = deriveGraphTheme({});
 		const root = makeRun({ id: "root-restored", name: "root-restored", status: "running" });

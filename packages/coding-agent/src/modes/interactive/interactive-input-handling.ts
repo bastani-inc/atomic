@@ -156,6 +156,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 		if (!this.session.isStreaming && interruptBlockedInteractiveEngine(this.runtimeHost)) return;
 		if (this.session.isStreaming || this.session.agent.hasQueuedMessages() || this.session.queuedMessagesPaused) {
 			pauseAndAbortInteractiveSession(this, { restoreQueuedMessages: true });
+		} else if (this.session.isRetrying) {
+			this.session.abortRetry();
 		} else if (this.session.isBashRunning) {
 			this.session.abortBash();
 		} else if (this.isBashMode) {

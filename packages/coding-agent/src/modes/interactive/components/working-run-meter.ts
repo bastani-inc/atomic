@@ -56,31 +56,42 @@ export function runInProgress(
 	streaming?: MeteredRunMessage,
 ): { readonly startedAt: number | undefined; readonly settledTokens: number; readonly requesting: boolean } {
 	let start = messages.length;
+	// A failed answer the run went on from, with a retry or a fallback model, belongs to the run: only a new prompt
+	// after it, a message that is neither an answer nor a tool's result, says that its turn ended there.
+	let promptFollows = false;
 	while (start > 0) {
 		const message = messages[start - 1]!;
 		if (
 			message.role === "assistant" &&
 			message.stopReason !== undefined &&
-			!RUN_CONTINUING_STOP_REASONS.has(message.stopReason)
+			!RUN_CONTINUING_STOP_REASONS.has(message.stopReason) &&
+			(promptFollows || !isFailedAttempt(message))
 		)
 			break;
+		if (message.role !== "assistant" && message.role !== "toolResult") promptFollows = true;
 		start -= 1;
 	}
 	let startedAt: number | undefined;
 	let settledTokens = 0;
-	for (const message of messages.slice(start)) {
+	const turn = messages.slice(start);
+	for (const message of turn) {
 		if (startedAt === undefined && isTimestamp(message.timestamp)) startedAt = message.timestamp;
 		if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
 	}
 	if (startedAt === undefined && isTimestamp(streaming?.timestamp)) startedAt = streaming.timestamp;
-	const last = messages.at(-1);
-	const requesting =
-		!hasContent(streaming) && start < messages.length && (last?.role === "user" || last?.role === "toolResult");
+	const last = turn.at(-1);
+	const requesting = !hasContent(streaming) && (last?.role === "user" || last?.role === "toolResult");
 	return { startedAt, settledTokens, requesting };
 }
 
 function isTimestamp(value: number | undefined): value is number {
 	return typeof value === "number" && value > 0;
+}
+
+/** An answer a session retries or moves to a fallback model: a failed request, or a completion that came back empty. */
+function isFailedAttempt(message: MeteredMessage): boolean {
+	if (message.stopReason === "error") return true;
+	return (message.stopReason === "stop" || message.stopReason === "toolUse") && !hasContent(message);
 }
 
 function hasContent(message: MeteredMessage | undefined): boolean {
@@ -96,12 +107,23 @@ function hasContent(message: MeteredMessage | undefined): boolean {
 	});
 }
 
-export class AgentTokenMeter {
-	private outputTokens = 0;
-	private latestInputTokens = 0;
+export interface AgentTokenMeterSnapshot {
+	readonly outputTokens: number;
+	readonly latestInputTokens: number;
+}
 
-	constructor(messages: readonly MeteredMessage[] = []) {
+export class AgentTokenMeter {
+	private outputTokens: number;
+	private latestInputTokens: number;
+
+	constructor(messages: readonly MeteredMessage[] = [], snapshot?: AgentTokenMeterSnapshot) {
+		this.outputTokens = snapshot?.outputTokens ?? 0;
+		this.latestInputTokens = snapshot?.latestInputTokens ?? 0;
 		for (const message of messages) this.settled(message);
+	}
+
+	snapshot(): AgentTokenMeterSnapshot {
+		return { outputTokens: this.outputTokens, latestInputTokens: this.latestInputTokens };
 	}
 
 	settled(message: MeteredMessage): void {
@@ -167,18 +189,68 @@ export class WorkingRunMeter {
 	private streamingMessage: MeteredMessage | undefined;
 	private cachedStreamingTokens: number | undefined;
 	private requesting = false;
+	/** Whether the last answer this run settled failed, so that the turn goes on with a retry or a fallback model. */
+	private lastAttemptFailed = false;
+	/** The run {@link stop} ended last: the next attempt of its turn, after a retry or a model fallback, continues it. */
+	private endedRun:
+		| { readonly startedAt: number; readonly settledTokens: number; readonly attemptFailed: boolean }
+		| undefined;
 	private readonly now: () => number;
 
 	constructor(now: () => number = Date.now) {
 		this.now = now;
 	}
 
-	start(): void {
-		this.startedAt = this.now();
+	start(startedAt = this.now()): void {
+		this.startedAt = startedAt;
 		this.settledTokens = 0;
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
 		this.requesting = false;
+		this.lastAttemptFailed = false;
+		this.endedRun = undefined;
+	}
+
+	/**
+	 * Start the next attempt of the turn whose run {@link stop} ended last, as a retry or a fallback model does: the
+	 * elapsed time and the tokens keep counting from the turn's start. With no ended run it starts a run.
+	 */
+	continueRun(startedAt?: number): void {
+		const run = this.endedRun;
+		if (run === undefined || (startedAt !== undefined && startedAt !== run.startedAt)) {
+			this.start(startedAt);
+			return;
+		}
+		this.resume(run.startedAt, run.settledTokens);
+	}
+
+	/** Record the run of a turn that waits to retry, for a chat that opened during the wait: its next attempt continues it. */
+	awaitRetry(startedAt: number, settledTokens: number): void {
+		this.endedRun = { startedAt: Math.min(startedAt, this.now()), settledTokens, attemptFailed: true };
+	}
+
+	/**
+	 * Whether the run {@link stop} ended last ended on a failed answer. Only then does a model fallback continue its
+	 * turn: a session that has no key for its model moves to a fallback before the turn's first request, and that turn
+	 * starts its own count.
+	 */
+	endedOnFailedAttempt(): boolean {
+		return this.endedRun?.attemptFailed === true;
+	}
+
+	/**
+	 * The turn of the run {@link stop} ended last is over: its retry or model switch ended without a next attempt. No
+	 * later attempt continues it; the next request starts a turn of its own.
+	 */
+	endTurn(): void {
+		this.endedRun = undefined;
+	}
+
+	/** The run {@link stop} ended last, counted up to now: a turn that ends while it waits to retry ends now. */
+	endedRunSnapshot(): WorkingRunSnapshot | undefined {
+		const run = this.endedRun;
+		if (run === undefined) return undefined;
+		return { elapsedMs: Math.max(0, this.now() - run.startedAt), tokens: run.settledTokens };
 	}
 
 	requestStarted(): void {
@@ -194,6 +266,7 @@ export class WorkingRunMeter {
 
 	settled(message: MeteredMessage): void {
 		if (message.role !== "assistant") return;
+		this.lastAttemptFailed = isFailedAttempt(message);
 		this.settledTokens += meteredOutputTokens(message);
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
@@ -206,9 +279,16 @@ export class WorkingRunMeter {
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = 0;
 		this.requesting = requesting;
+		this.lastAttemptFailed = false;
 	}
 
 	stop(): void {
+		if (this.startedAt !== undefined)
+			this.endedRun = {
+				startedAt: this.startedAt,
+				settledTokens: this.settledTokens,
+				attemptFailed: this.lastAttemptFailed,
+			};
 		this.startedAt = undefined;
 		this.streamingMessage = undefined;
 		this.cachedStreamingTokens = undefined;

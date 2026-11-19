@@ -39,6 +39,8 @@ export interface GraphStageActions {
 	fork?(rootRunId: string, stageId: string): Promise<GraphStageActionResult>;
 
 	pauseRun?(runId: string): Promise<GraphStageActionResult>;
+	/** Whether a stopped run can continue using the action owner's live and durable state. */
+	canResumeRun?(runId: string): boolean;
 	resumeRun?(runId: string): Promise<GraphStageActionResult>;
 	quitRun?(runId: string): Promise<GraphStageActionResult>;
 }

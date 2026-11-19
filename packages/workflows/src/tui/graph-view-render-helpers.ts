@@ -273,12 +273,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const stop = this._focusedStageStoppable(focused) ? [this._stopNavKey(stopText)] : [];
 		const pauseText = mode === "full" ? "pause run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "pause";
 		const resumeText = mode === "full" ? "resume run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "resume";
-		const pauseOrResume: NavKey[] =
-			this._runPausable(run) && !this._keyShadowed("p")
-				? [{ keys: "p", label: pauseText }]
-				: this._runResumable(run) && !this._keyShadowed("r")
-					? [{ keys: "r", label: resumeText }]
-					: [];
+		const pauseOrResume: NavKey[] = [];
+		if (this._runPausable(run) && !this._keyShadowed("p")) pauseOrResume.push({ keys: "p", label: pauseText });
+		if (this._runResumable(run) && !this._keyShadowed("r")) pauseOrResume.push({ keys: "r", label: resumeText });
 		const quitRunName = sanitizeToolTitleText(sliceHead(run.name, 24)).trim() || run.id;
 		const quitNameBudget =
 			mode === "full" ? 12 : mode === "compact" ? 10 : mode === "tight" ? 7 : mode === "minimal" ? 6 : 0;

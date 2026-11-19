@@ -178,7 +178,11 @@ export interface WorkflowRunControl {
 	 */
 	waitForSettled(runId: string): Promise<void>;
 	listResumeEntries?(target?: string): Promise<readonly HostSessionPickerRow[]>;
-	resumeFromPicker?(target: string, ctx: ExtensionCommandContext): Promise<void>;
+	resumeFromPicker?(
+		target: string,
+		ctx: ExtensionCommandContext,
+		selection?: HostSessionPickerRow["resumeSelection"],
+	): Promise<void>;
 	deleteResumeEntry?(runId: string): Promise<void>;
 }
 

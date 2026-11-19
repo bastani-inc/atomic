@@ -8,6 +8,7 @@ import type {
 	Usage,
 	UserMessage,
 } from "@bastani/atomic-ai/compat";
+import type { HostSessionPickerRow } from "./extensions/ui-types.js";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "./storage/session/types.js";
@@ -376,6 +377,7 @@ export interface SessionInfo {
 	/** Synthetic selector rows: the row's dim second line, in place of age · messages · summary. */
 	detail?: string;
 	resumeKind?: "workflow";
+	resumeSelection?: HostSessionPickerRow["resumeSelection"];
 	canDelete?: boolean;
 }
 
