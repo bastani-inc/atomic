@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A delayed wake confirmation no longer reports `hold-failed` after reconnect has reserved the same release. A refusal for a child that still has no reservation is reported as before ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
+- A delayed wake refusal no longer shows `hold-failed` when Intercom confirms that reconnect restored the same released subagent. A child whose hold was dropped still reports the failure, as do older brokers that cannot verify the hold ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
 
 ## [0.9.90] - 2026-11-19
 

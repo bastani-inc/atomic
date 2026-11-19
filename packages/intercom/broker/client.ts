@@ -1,6 +1,8 @@
 import { EventEmitter } from "events";
 import net from "net";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
+import { releaseObservation, type ReleaseObservation, type ReleaseStamp, type VerifyRelease } from "./released-child-receipts.js";
+
 import { writeMessage, createMessageReader, type JsonWireValue } from "./framing.js";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { directBrokerSocketPath, getAgentDir, getBrokerSocketPathAsync } from "./paths.js";
@@ -474,6 +476,8 @@ const PENDING_STAGE_ROUTE_REFUSAL_CODES: ReadonlySet<string> = new Set<PendingSt
 	"invalid_possible_stage_roster",
 ]);
 
+type ObserveReleaseReply = (stamp: ReleaseStamp, error?: Error) => void;
+
 export class IntercomClient extends EventEmitter {
 	private readonly returnAddress: string;
 	private readonly preferredSessionId: string | undefined;
@@ -538,8 +542,10 @@ export class IntercomClient extends EventEmitter {
   }>();
   private pendingRestoringRecipientRequests = new Map<
     string,
-    { resolve(published?: boolean): void; reject(error: Error): void }
+    { resolve(published?: boolean): void; reject(error: Error): void; observe?: ObserveReleaseReply; verify?: boolean }
   >();
+  private releaseRegistration?: string;
+  private verifyRelease?: VerifyRelease;
   private pendingHostedSessionRequests = new Map<
     string,
     { resolve(sessions: readonly HostedSessionAssignment[]): void; reject(error: Error): void }
@@ -749,6 +755,10 @@ export class IntercomClient extends EventEmitter {
     this._messageSource = messageSource ?? readSubagentMessageSource();
     this._groups = normalizeGroups(session.groups, session.group);
     this.registrationExpectedRouting = expectedRouting;
+    // A reconnect by this owner shares its fingerprint, never the registration secret itself.
+    this.releaseRegistration = typeof supervisorOwnerToken === "string"
+      ? createHash("sha256").update(supervisorOwnerToken).digest("hex") : undefined;
+    this.verifyRelease = undefined;
 
     return new Promise((resolve, reject) => {
       const socket = net.connect(socketPath);
@@ -801,6 +811,8 @@ export class IntercomClient extends EventEmitter {
         }
         this._sessionId = null;
         this._supervisorSessionId = null;
+        this.releaseRegistration = undefined;
+        this.verifyRelease = undefined;
         this.brokerAcknowledgesReceipt = false;
         this.brokerAcknowledgesPendingStageRoutes = false;
         this.brokerWithdrawsPendingStageRoutes = false;
@@ -1337,8 +1349,17 @@ export class IntercomClient extends EventEmitter {
         const pending = this.pendingRestoringRecipientRequests.get(requestId);
         if (!pending) return;
         this.pendingRestoringRecipientRequests.delete(requestId);
-        if (parsed === undefined) pending.resolve(published !== false);
-        else pending.reject(releasedChildErrorFor(parsed));
+        const error = parsed === undefined ? undefined : releasedChildErrorFor(parsed);
+        if (pending.observe && this._sessionId !== null) {
+          const stamp = brokerMessage.releaseStamp as { broker?: unknown; order?: unknown } | undefined;
+          if (stamp && typeof stamp.broker === "string" && typeof stamp.order === "number" &&
+              Number.isSafeInteger(stamp.order) && stamp.order > 0) {
+            this.releaseRegistration ??= randomUUID();
+            pending.observe({ broker: stamp.broker, order: stamp.order, owner: this._sessionId, registration: this.releaseRegistration }, error);
+          }
+        }
+        if (error === undefined) pending.resolve(pending.verify ? brokerMessage.current === true : published !== false);
+        else pending.reject(error);
         break;
       }
       case "restoring_recipient_ack": {
@@ -1353,7 +1374,7 @@ export class IntercomClient extends EventEmitter {
         const pending = this.pendingRestoringRecipientRequests.get(requestId);
         if (!pending) return;
         this.pendingRestoringRecipientRequests.delete(requestId);
-        if (error === undefined) pending.resolve(published !== false);
+        if (error === undefined) pending.resolve(!pending.verify && published !== false);
         else pending.reject(new Error(error));
         break;
       }
@@ -1811,12 +1832,21 @@ export class IntercomClient extends EventEmitter {
    */
   async reserveReleasedChildren(children: readonly ReleasedChildReservation[]): Promise<void> {
     this.requireBrokerProtocol("reserve_released_children");
-    const wireChildren = children.map((child) => ({
-      childName: child.childName,
-      ...(child.group === undefined ? {} : { group: child.group }),
-      ...(child.aliases === undefined ? {} : { aliases: [...child.aliases] }),
-      wake: child.wake,
-    }));
+    let observations: Map<object, ReleaseObservation> | undefined;
+    const wireChildren = children.map((child) => {
+      const wire = {
+        childName: child.childName,
+        ...(child.group === undefined ? {} : { group: child.group }),
+        ...(child.aliases === undefined ? {} : { aliases: [...child.aliases] }),
+        wake: child.wake,
+      };
+      const receipt = wire.wake ? releaseObservation(child) : undefined;
+      if (receipt && receipt.childName === wire.childName) {
+        observations ??= new Map();
+        observations.set(wire, receipt);
+      }
+      return wire;
+    });
     const frames: (typeof wireChildren)[] = [];
     for (let start = 0; start < wireChildren.length; start += RELEASED_CHILD_FRAME_MAX) {
       const frame = wireChildren.slice(start, start + RELEASED_CHILD_FRAME_MAX);
@@ -1825,8 +1855,28 @@ export class IntercomClient extends EventEmitter {
       frames.push(frame);
     }
     for (const frame of frames) {
-      await this.restoringRecipientRequest({ type: "reserve_released_children", children: frame });
+      const receipts = observations && frame.flatMap((child) => {
+        const receipt = observations?.get(child);
+        return receipt ? [receipt] : [];
+      });
+      await this.restoringRecipientRequest({ type: "reserve_released_children", children: frame }, !receipts?.length ? undefined : (stamp, error) => {
+        if (error) return;
+        const verify = this.liveReleaseVerifier();
+        for (const receipt of receipts) receipt.repair = { stamp, verify };
+      });
     }
+  }
+
+  /** A saved receipt must not keep this client alive or run a new frame on a replacement connection. */
+  private liveReleaseVerifier(): WeakRef<VerifyRelease> {
+    if (!this.verifyRelease) {
+      const socket = this.socket;
+      this.verifyRelease = (childName, { broker, order }) =>
+        socket !== null && this.socket === socket && !socket.destroyed && !this.disconnecting
+          ? this.restoringRecipientRequest({ type: "verify_released_child", childName, broker, order }, undefined, true)
+          : Promise.resolve(false);
+    }
+    return new WeakRef(this.verifyRelease);
   }
 
   /**
@@ -1877,13 +1927,16 @@ export class IntercomClient extends EventEmitter {
    * session holds a reservation for the child, and with a `not_owner` `ReleasedChildReservationError` when another
    * session owns it.
    */
-  acknowledgeReleasedChildWake(childName: string): Promise<void> {
+  acknowledgeReleasedChildWake(childName: string, occurrence?: object): Promise<void> {
     try {
       this.requireBrokerProtocol("acknowledge_released_child_wake");
     } catch (error) {
       return Promise.reject(toError(error));
     }
-    return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName }).then(() => undefined);
+    const receipt = occurrence && releaseObservation(occurrence);
+    return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName }, receipt?.childName === childName ? (stamp, error) => {
+      if (error) receipt.refusal = { error: new WeakRef(error), stamp };
+    } : undefined).then(() => undefined);
   }
 
   acknowledgeReleasedChildReply(reply: ReleasedChildReply, accepted: boolean, deliverToChild = false): boolean {
@@ -1998,8 +2051,8 @@ export class IntercomClient extends EventEmitter {
     });
   }
 
-  /** Resolves false when the broker reserved with `published: false` (#5352), true for every other success. */
-  private restoringRecipientRequest(frame: Record<string, unknown>): Promise<boolean> {
+  /** An ordinary ACK returns publication status. A read-only release check requires an explicit positive answer. */
+  private restoringRecipientRequest(frame: Record<string, unknown>, observe?: ObserveReleaseReply, verify = false): Promise<boolean> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -2010,14 +2063,16 @@ export class IntercomClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!this.pendingRestoringRecipientRequests.delete(requestId)) return;
-        void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
+        if (verify) resolve(false);
+        else void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
       }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
       this.pendingRestoringRecipientRequests.set(requestId, {
+        observe, verify,
         resolve: (published = true) => { clearTimeout(timeout); resolve(published); },
         reject: (error) => { clearTimeout(timeout); reject(error); },
       });
       try {
-        writeMessage(socket, { ...frame, requestId });
+        writeMessage(socket, { ...frame, requestId, ...(observe ? { releaseStamp: true } : {}) });
       } catch (error) {
         clearTimeout(timeout);
         this.pendingRestoringRecipientRequests.delete(requestId);

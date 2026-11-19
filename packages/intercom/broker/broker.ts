@@ -488,6 +488,7 @@ class IntercomBroker {
   private unclassifiedConnections = new Map<net.Socket, number>();
   private server: net.Server;
   private readonly instanceId = randomUUID();
+  private releaseOrder = 0;
   private shutdownTimer: NodeJS.Timeout | null = null;
   private watchdog: BrokerWatchdog | undefined;
   private boundSocketInode: number | undefined;
@@ -2658,8 +2659,10 @@ class IntercomBroker {
           break;
         }
         const published: Promise<boolean>[] = [];
+        // Stamp installation, not the later completion of route publication.
+        const order = clientMessage.releaseStamp === true ? ++this.releaseOrder : undefined;
         for (const child of validation.children) {
-          published.push(this.reserveReleasedChild(currentId, owner.registrationGroup, child));
+          published.push(this.reserveReleasedChild(currentId, owner.registrationGroup, child, order));
           this.releasedAskerReplies.attach(child.childName, currentId);
           // #4751: a failed ask kept for the child wakes it again, so it is delivered.
           if (
@@ -2677,8 +2680,21 @@ class IntercomBroker {
             type: "released_children_ack",
             requestId,
             ...(visible.every(Boolean) ? {} : { published: false }),
+            ...(order === undefined ? {} : { releaseStamp: { broker: this.instanceId, order } }),
           }),
         );
+        break;
+      }
+
+      case "verify_released_child": {
+        const { requestId, childName, order } = clientMessage;
+        if (typeof requestId !== "string" || typeof childName !== "string" || typeof order !== "number") {
+          throw new Error("Invalid verify_released_child message");
+        }
+        // Unlike a reservation or wake, a check cannot adopt an orphan or change anyone's hold deadline.
+        const current = clientMessage.broker === this.instanceId && currentId !== null &&
+          this.sessions.get(currentId)?.socket === socket && this.restoringRecipients.isCurrentRelease(childName, currentId, order);
+        writeMessageIfOpen(socket, { type: "released_children_ack", requestId, current });
         break;
       }
 
@@ -2750,6 +2766,7 @@ class IntercomBroker {
             type: "released_children_ack",
             requestId: clientMessage.requestId,
             refusal: refusal ?? { code: "unknown_released_child", childName },
+            ...(clientMessage.releaseStamp === true ? { releaseStamp: { broker: this.instanceId, order: ++this.releaseOrder } } : {}),
           });
           break;
         }
@@ -3628,7 +3645,7 @@ class IntercomBroker {
     childName: string,
     group: string,
     aliases: readonly string[],
-    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true; readonly holdMs?: number },
+    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true; readonly holdMs?: number; readonly releaseOrder?: number },
   ): Promise<boolean> {
     const wake = this.restoringRecipients.reserve(key, ownerSessionId, childName, group, aliases, options);
     const published = this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {
@@ -3640,14 +3657,14 @@ class IntercomBroker {
   }
 
   /** Resolves true once senders on other brokers can find the reservation, false while its write is retried. */
-  private reserveReleasedChild(ownerSessionId: string, ownerGroup: string, child: ParsedReleasedChild): Promise<boolean> {
+  private reserveReleasedChild(ownerSessionId: string, ownerGroup: string, child: ParsedReleasedChild, releaseOrder?: number): Promise<boolean> {
     return this.reserveRestoringRecipient(
       releasedReservationKey(child.childName),
       ownerSessionId,
       child.childName,
       normalizeGroup(child.group ?? ownerGroup),
       child.aliases,
-      { dormant: true, wake: child.wake, replaceAliases: true },
+      { dormant: true, wake: child.wake, replaceAliases: true, releaseOrder },
     );
   }
 
