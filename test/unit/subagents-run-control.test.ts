@@ -96,6 +96,7 @@ import {
 	subagentChildCardRecord,
 	subagentChildCardTask,
 	subagentChildIndexEntry,
+	subagentChildRecordNeedsRead,
 	subagentChildRecordOf,
 	subagentChildRecordsMerging,
 	watchSubagentChildCard,
@@ -166,6 +167,7 @@ import {
 	WORKFLOW_STAGE_END_CHILDREN_STATE as WORKFLOWS_STAGE_END_CHILDREN_STATE,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
 import { createStore as createWorkflowStore } from "../../packages/workflows/src/shared/store.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { drained, waitForWakeCompletion } from "../helpers/wake-completion.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -7719,6 +7721,65 @@ test(
 		await saveUnsavedSubagentChildRecords(h.deps.pi, owner);
 		assert.deepEqual(subagentChildRecordOf(owner, record.childId), saved.at(-1));
 		assert.equal(childRecordsIn(h.sessionManager).length, saved.length);
+	},
+	LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS,
+);
+
+test(
+	"a finished child's record read for an action that does not record it again is let go once that action answers (#5554)",
+	async () => {
+		const h = harness();
+		const { record, taskId: launchTaskId } = await h.launch("letgo1");
+		await h.call({ action: "quit", id: record.childId });
+		await settled(h, launchTaskId);
+		const finishing = await h.call({ action: "resume", id: record.childId, message: "finish up" });
+		await settled(h, resumedTaskId(finishing));
+		const finished = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+		await h.sessionManager.appendCompaction("clear", null, 10, CLEAR);
+		assert.deepEqual(childRecordsIn(h.sessionManager), [], "the window keeps no record of the finished child");
+		const owner = h.sessionManager.getSessionId();
+		// Each full record an action reads from the session after the clear, held weakly.
+		const read: WeakRef<object>[] = [];
+		const readArchived = h.sessionManager.readArchivedChildRecord.bind(h.sessionManager);
+		h.sessionManager.readArchivedChildRecord = async (entryId) => {
+			const entry = await readArchived(entryId);
+			if (entry?.type === "custom" && typeof entry.data === "object" && entry.data !== null)
+				read.push(new WeakRef(entry.data));
+			return entry;
+		};
+		const uncollected = async () => {
+			await collectGarbage();
+			return read.filter((ref) => ref.deref() !== undefined).length;
+		};
+
+		const pause = await h.call({ action: "pause", id: record.childId });
+		assert.match(text(pause), /worker \(letgo1:0, subagent-worker-letgo1\) is not running \(ok\)/);
+		assert.equal(read.length, 1, "pause read the finished child's full record");
+		assert.equal(await uncollected(), 0, "the record pause read is not kept once it answered");
+		assert.equal(subagentChildRecordNeedsRead(owner, record.childId), true, "it is read again when next asked for");
+
+		const interrupted = new AbortController();
+		interrupted.abort();
+		const refused = await h.call({ action: "resume", id: record.childId, message: "not now" }, interrupted.signal);
+		assert.equal(refused.isError, true);
+		assert.match(
+			text(refused),
+			/^Interrupted before worker \(letgo1:0, subagent-worker-letgo1\) took the resume: it was withdrawn/,
+		);
+		assert.equal(read.length, 2, "the refused resume read the record again");
+		assert.equal(await uncollected(), 0, "the record a refused resume read is not kept once it answered");
+		assert.equal(subagentChildRecordNeedsRead(owner, record.childId), true);
+
+		// A resume that runs it again reads it once more, and its new records are merged over that record.
+		const resumed = await h.call({ action: "resume", id: record.childId, message: "one more check" });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		const resumedTask = resumedTaskId(resumed);
+		await settled(h, resumedTask);
+		await h.waitForLatest(record.childId, (candidate) => candidate.taskId === resumedTask);
+		const saved = childRecordsIn(h.sessionManager).filter((candidate) => candidate.childId === record.childId);
+		assert.equal(saved.at(-1)?.terminalStatus, "ok");
+		assert.equal(saved.at(-1)?.task, ORIGINAL_TASK, "the latest saved record is whole on its own");
+		assert.deepEqual(saved.at(-1)?.inherited, finished.inherited);
 	},
 	LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS,
 );
