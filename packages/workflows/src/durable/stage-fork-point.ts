@@ -83,11 +83,11 @@ function fanOutEntries(output: unknown): readonly ForkSourceRecord[] | undefined
 }
 
 /**
- * Where each of `sessionIds` was when a fan-out named `launchName` was launched, by session id: its entry then, or
+ * Where each of `sessionIds` was when the fan-out with `launchKey` was launched, by session id: its entry then, or
  * `null` when it had no entries. A source that is not open in this process has no point; a step forking it copies it
  * as stored when it starts (#5481).
  *
- * The fan-out's record key is taken from the run's replay keys when this is called, at the fan-out's launch, so a
+ * The caller takes the key from the run's separate fan-out counter at launch, so a
  * replayed fan-out reads the record of its first launch. The returned points are those of the record: an earlier
  * launch's when it has one, or the sources' points now, written to the run before the promise settles. It rejects
  * when the journal cannot take the record; no step of the fan-out may start then, so no two of them can start from
@@ -95,10 +95,10 @@ function fanOutEntries(output: unknown): readonly ForkSourceRecord[] | undefined
  */
 export function recordFanOutForkPoints(
 	run: DurableLaunchRun,
-	launchName: string,
+	launchKey: string,
 	sessionIds: readonly string[],
 ): Promise<ReadonlyMap<string, ForkPoint>> {
-	const key = `${run.nextReplayKey(launchName)}${FAN_OUT_FORK_SOURCES_SUFFIX}`;
+	const key = `${launchKey}${FAN_OUT_FORK_SOURCES_SUFFIX}`;
 	const recorded = fanOutRecord(run, key);
 	if (recorded !== undefined) return Promise.resolve(recorded);
 	const entries = [...new Set(sessionIds)].flatMap((sessionId): ForkSourceRecord[] => {

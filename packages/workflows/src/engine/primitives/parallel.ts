@@ -7,9 +7,9 @@ import {
 	recordFanOutForkPoints,
 	withForkPoint,
 } from "../../durable/stage-fork-point.js";
-import { reserveTaskReplayKey } from "../../durable/stage-primitive.js";
+import { createStageReplayKeyGenerator, reserveTaskReplayKey } from "../../durable/stage-primitive.js";
 import { findWorkflowExitSignal } from "../../runs/foreground/executor-abort.js";
-import { mapParallelSteps } from "../../runs/foreground/executor-direct-helpers.js";
+import { mapParallelSteps, positiveConcurrency } from "../../runs/foreground/executor-direct-helpers.js";
 import {
 	parallelFallbackTask,
 	replaceTaskPlaceholder,
@@ -41,6 +41,8 @@ export function createParallelPrimitive(input: {
 	 */
 	readonly reservesStepKeys?: boolean;
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
+	// Keep the journal format, but count fan-outs separately: any string is a valid authored stage name.
+	const nextFanOutKey = createStageReplayKeyGenerator(input.runtime.runId);
 	return async (
 		steps: readonly WorkflowTaskStep[],
 		options: WorkflowParallelOptions = {},
@@ -79,18 +81,25 @@ export function createParallelPrimitive(input: {
 		);
 		const launchedSteps = resolvedSteps.map((step) => ({ ...step }));
 		const durable = input.durable;
-		const replayKeys = new Map(
-			launchedSteps.map((step) => [
-				step,
-				durable === undefined || input.reservesStepKeys === false
-					? undefined
-					: reserveTaskReplayKey(durable.nextReplayKey, step.name),
-			]),
-		);
 		// One fork point for the whole parallel: a step that waits for a slot, or starts after the run resumed, forks
 		// where its source was now. No step starts before the point is recorded.
 		const forkSources = new Map(launchedSteps.map((step) => [step, launchForkSourceOf(stepOptions(step))]));
 		const sourceIds = [...new Set([...forkSources.values()].filter((id): id is string => id !== undefined))];
+		// An older run took keys as workers acquired slots. Before the fork-record await, claim only the
+		// slots the parallel would have filled synchronously; queued steps still take their keys at dequeue.
+		const reserveCount =
+			input.reservesStepKeys !== false
+				? launchedSteps.length
+				: sourceIds.length === 0
+					? 0
+					: (positiveConcurrency(resolvedOptions.concurrency) ?? launchedSteps.length);
+		const replayKeys = new Map(
+			durable === undefined
+				? []
+				: launchedSteps
+						.slice(0, reserveCount)
+						.map((step) => [step, reserveTaskReplayKey(durable.nextReplayKey, step.name)] as const),
+		);
 		const forkPoints =
 			sourceIds.length === 0
 				? new Map<string, ForkPoint>()
@@ -99,7 +108,7 @@ export function createParallelPrimitive(input: {
 					: await recordFanOutForkPoints(
 							durable,
 							// Named by its steps, hashed so a parallel of many or long step names gets a short record key.
-							`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`,
+							nextFanOutKey(`parallel:${durableHash(resolvedSteps.map((step) => step.name))}`),
 							sourceIds,
 						);
 		const failFastEnabled = resolvedOptions.failFast !== false;

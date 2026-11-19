@@ -50,17 +50,20 @@ export function forkLaunchOfTasks(
 	toolCallId: string | undefined,
 ): ForkLaunch {
 	const callIds = taskCallIds && taskCallIds.length > 0 ? taskCallIds.map((id) => id ?? toolCallId) : [toolCallId];
-	const launches = callIds.map((callId, index): ForkedChildLaunch => {
-		const ofCall = (other: string | undefined): boolean => other === callId;
-		return {
-			...(callId === undefined ? {} : { toolCallId: callId }),
-			ordinal: callIds.slice(0, index).filter(ofCall).length + 1,
-			count: callIds.filter(ofCall).length,
-		};
+	const counts = new Map<string | undefined, number>();
+	const ordinals = callIds.map((callId) => {
+		const ordinal = (counts.get(callId) ?? 0) + 1;
+		counts.set(callId, ordinal);
+		return ordinal;
 	});
 	return {
-		toolCallIds: [...new Set(callIds.filter((id): id is string => id !== undefined))],
-		childLaunch: (index) => launches[index] ?? { ordinal: index + 1, count: launches.length },
+		toolCallIds: [...counts.keys()].filter((id): id is string => id !== undefined),
+		childLaunch: (index) => {
+			const ordinal = ordinals[index];
+			if (ordinal === undefined) return { ordinal: index + 1, count: callIds.length };
+			const callId = callIds[index];
+			return { ...(callId === undefined ? {} : { toolCallId: callId }), ordinal, count: counts.get(callId)! };
+		},
 	};
 }
 

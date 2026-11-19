@@ -124,6 +124,7 @@ export interface ExecutionContextData {
 	onUpdate?: (r: SubagentToolResult) => void;
 	agents: AgentConfig[];
 	parallelAgentConfigs?: AgentConfig[];
+	parallelTaskLimitError?: SubagentToolResult;
 	runId: string;
 	shareEnabled: boolean;
 	sessionRoot: string;

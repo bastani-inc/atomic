@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, describe, test, vi } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
@@ -9,6 +10,7 @@ import { LAUNCH_REPLAY_KEYS_CHECKPOINT_NAME } from "../../packages/workflows/src
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { WorkflowRunContext } from "../../packages/workflows/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -188,7 +190,104 @@ async function writePreviousReleaseJournal(runId: string, path: string): Promise
 	}
 }
 
+async function checkForkReplay(
+	expected: string[],
+	program: (ctx: WorkflowRunContext, replay: boolean, source: SessionManager) => Promise<string[]>,
+): Promise<void> {
+	const path = journalPath();
+	const runId = "fork-replay";
+	const source = SessionManager.inMemory();
+	await source.appendMessage({ role: "user", timestamp: 1, content: "source" });
+	for (const replay of [false, true]) {
+		const calls: string[] = [];
+		const answer = async (text: string) => {
+			calls.push(text);
+			return text;
+		};
+		const outputs: string[] = [];
+		const definition = workflow({
+			name: runId,
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				outputs.push(...(await program(ctx, replay, source)));
+				return {};
+			},
+		});
+		const backend = await JournalDurableBackend.open(await openSqlRunJournal(path));
+		try {
+			const result = await run(
+				definition,
+				{},
+				{
+					runId,
+					store: createStore(),
+					durableBackend: backend,
+					adapters: { prompt: { prompt: answer }, complete: { complete: answer } },
+				},
+			);
+			assert.equal(result.status, "completed", result.error);
+			assert.deepEqual(outputs, expected);
+			assert.deepEqual(calls.sort(), replay ? [] : [...expected].sort());
+		} finally {
+			await backend.close();
+		}
+	}
+}
+
 describe("a resumed run replays its results under the replay keys its journal recorded them with (#5481)", () => {
+	test("a forked parallel and a same-named task replay in call order from an older journal (#5481)", async () => {
+		await checkForkReplay(["first b", "second b"], async (ctx, replay, source) => {
+			const fork = {
+				context: "fork" as const,
+				forkFromSessionId: source.getSessionId(),
+				sessionStore: source.getSessionStore(),
+			};
+			// Before launch records, a parallel immediately called task for each worker with a slot.
+			const group = replay
+				? ctx.parallel([{ name: "b", prompt: "first b" }], fork)
+				: Promise.all([ctx.task("b", { ...fork, prompt: "first b" })]);
+			const [[first], second] = await Promise.all([group, ctx.task("b", { prompt: "second b" })]);
+			return [first!.text, second.text];
+		});
+	});
+
+	test("a forked parallel leaves every authored stage name available in an older journal (#5481)", async () => {
+		await checkForkReplay(["group", "first answer", "second answer"], async (ctx, replay, source) => {
+			const fork = {
+				context: "fork" as const,
+				forkFromSessionId: source.getSessionId(),
+				sessionStore: source.getSessionStore(),
+			};
+			const [worker] = replay
+				? await ctx.parallel([{ name: "worker", prompt: "group" }], fork)
+				: [await ctx.task("worker", { ...fork, prompt: "group" })];
+			const stageName = "parallel:h892fb3f00c2598ceea720fc08111c95e";
+			return [
+				worker!.text,
+				String(await ctx.stage(stageName).complete("first answer")),
+				String(await ctx.stage(stageName).complete("second answer")),
+			];
+		});
+	});
+
+	test("a standalone task between two same-named parallels keeps its place across the first launch-record write (#5481)", async () => {
+		await checkForkReplay(["first", "second", "third"], async (ctx, _replay, source) => {
+			const fork = {
+				context: "fork" as const,
+				forkFromSessionId: source.getSessionId(),
+				sessionStore: source.getSessionStore(),
+			};
+			const [[first], second, [third]] = await Promise.all([
+				ctx.parallel([{ name: "b", prompt: "first" }], fork),
+				ctx.task("b", { prompt: "second" }),
+				ctx.parallel([{ name: "b", prompt: "third" }], fork),
+			]);
+			return [first!.text, second.text, third!.text];
+		});
+	});
+
 	for (const group of ["chain", "parallel"] as const) {
 		test(`a run a previous release recorded replays each task's own result after a failed ${group} (#5481)`, async () => {
 			const path = journalPath();

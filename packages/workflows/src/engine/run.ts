@@ -47,6 +47,7 @@ import {
 	durableRecordedToolResults,
 	durableWaitingStages,
 	latestStageSessionCheckpoints,
+	reserveTaskReplayKey,
 	resumingStageChats,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
@@ -1397,10 +1398,13 @@ async function executeRun(
 	});
 	// A task's key can follow keys a launch took: no task starts before the run's record of that is durable, and none
 	// starts once the record failed, which fails the run.
-	const gatedTask: typeof durableTask = (...args) =>
-		whenRunning(() =>
-			launchKeysRecord === undefined ? durableTask(...args) : launchKeysRecord.then(() => gatedTask(...args)),
-		);
+	const gatedTask: typeof durableTask = (name, options, scope, reserved) =>
+		whenRunning(() => {
+			if (launchKeysRecord === undefined) return durableTask(name, options, scope, reserved);
+			// Waiting for the launch record must not let a later parallel take this task's key first.
+			const key = reserved ?? reserveTaskReplayKey(stageReplayKeyGenerator, name);
+			return launchKeysRecord.then(() => gatedTask(name, options, scope, key));
+		});
 	const chain = createChainPrimitive({
 		runtime,
 		task: gatedTask,

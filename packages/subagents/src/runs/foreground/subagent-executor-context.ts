@@ -19,6 +19,7 @@ import {
 	DEFAULT_ARTIFACT_CONFIG,
 	getCurrentSubagentDepth,
 	isSubagentChildSession,
+	resolveTopLevelParallelMaxTasks,
 	SUBAGENT_CHILD_DELEGATION_BLOCKED_MESSAGE,
 	type SubagentRunMode,
 	type SubagentToolResult,
@@ -31,6 +32,7 @@ import {
 	validateExecutionInput,
 	withForkContext,
 } from "./subagent-executor-input.js";
+import { parallelTaskLimitError } from "./subagent-executor-parallel.js";
 import {
 	BURST_PREPARED_TASKS,
 	BURST_TASK_DISCOVERY_CWD,
@@ -149,15 +151,25 @@ export async function prepareExecutionContext(input: {
 			effectiveParams = { ...effectiveParams, task: `${readInstruction}\n\n${effectiveParams.task ?? ""}` };
 	}
 
+	// Check the expanded count before attributing any children. The parallel path reports this error at
+	// the same point as before, after the common session and artifact checks.
+	const limitError = hasTasks
+		? parallelTaskLimitError(
+				effectiveParams.tasks!.length,
+				resolveTopLevelParallelMaxTasks(deps.config.parallel?.maxTasks),
+			)
+		: undefined;
 	let sessionManagerForIndex: (idx?: number) => Promise<SessionManager | undefined>;
 	try {
 		sessionManagerForIndex = createForkContextResolver(
 			ctx.sessionManager,
 			effectiveParams.context,
-			forkLaunchOfTasks(
-				effectiveParams.tasks?.map((task) => (task as BurstTaskParam)[BURST_TASK_LAUNCH_CALL_ID]),
-				input.toolCallId,
-			),
+			effectiveParams.context === "fork" && !limitError
+				? forkLaunchOfTasks(
+						effectiveParams.tasks?.map((task) => (task as BurstTaskParam)[BURST_TASK_LAUNCH_CALL_ID]),
+						input.toolCallId,
+					)
+				: undefined,
 		).sessionManagerForIndex;
 	} catch (error) {
 		return { error: toExecutionErrorResult(effectiveParams, error) };
@@ -211,6 +223,7 @@ export async function prepareExecutionContext(input: {
 		onUpdate: onUpdateWithContext,
 		agents,
 		...(parallelAgentConfigs ? { parallelAgentConfigs } : {}),
+		...(limitError ? { parallelTaskLimitError: limitError } : {}),
 		runId,
 		shareEnabled,
 		sessionRoot,

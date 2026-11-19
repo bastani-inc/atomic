@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/compat";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
@@ -13,6 +13,7 @@ import type {
 	ExecutorDeps,
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import * as forkContext from "../../packages/subagents/src/shared/fork-context.js";
 import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
 
 /**
@@ -144,6 +145,50 @@ function answersAfterLaunchingTurn(messages: AgentMessage[], launchingCallId: st
 	}
 	return answers;
 }
+
+test("attributing interleaved forked children takes linear work and counts only each call's children (#5481)", () => {
+	let visits = 0;
+	class CallIds extends Array<string | undefined> {}
+	// Array operations on this input also produce counted arrays, including scans of a copied prefix.
+	CallIds.prototype.filter = new Proxy(Array.prototype.filter, {
+		apply(filter, ids: CallIds, args) {
+			visits += ids.length;
+			return Reflect.apply(filter, ids, args);
+		},
+	});
+	const ids = new CallIds();
+	for (let i = 0; i < 128; i++) ids.push(undefined, "sibling");
+	const launch = forkContext.forkLaunchOfTasks(ids, "owner");
+	for (let i = 0; i < ids.length; i++) {
+		assert.deepEqual(launch.childLaunch!(i), {
+			toolCallId: i % 2 === 0 ? "owner" : "sibling",
+			ordinal: Math.floor(i / 2) + 1,
+			count: 128,
+		});
+	}
+	assert.ok(visits <= 10 * ids.length, `${visits} call-ID visits for ${ids.length} tasks`);
+});
+
+test("fresh and over-limit launches do not build any fork attribution (#5481)", async () => {
+	const { children, execute } = harness(await parentSession());
+	const attribution = vi.spyOn(forkContext, "forkLaunchOfTasks");
+	try {
+		for (const context of ["fresh", "fork"] as const) {
+			const result = await execute("many", {
+				tasks: [{ agent: "echo", task: "not admitted", count: 8000 }],
+				context,
+			});
+			assert.match(JSON.stringify(result.content), /Too many parallel tasks \(8000 after count expansion\)/);
+			assert.equal(children.size, 0);
+			assert.equal(attribution.mock.calls.length, 0);
+		}
+		await execute("fresh", { agent: "echo", task: "fresh", context: "fresh" });
+		assert.ok(children.has("fresh"));
+		assert.equal(attribution.mock.calls.length, 0);
+	} finally {
+		attribution.mockRestore();
+	}
+});
 
 test("a forked child launched by a subagent call forks at the turn holding that call and answers it as its own (#5481)", async () => {
 	const parent = await parentSession();

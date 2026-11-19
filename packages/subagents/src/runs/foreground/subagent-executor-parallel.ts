@@ -16,7 +16,6 @@ import {
 	type ArtifactPaths,
 	isWorkflowStageOrchestrationContext,
 	resolveTopLevelParallelConcurrency,
-	resolveTopLevelParallelMaxTasks,
 	type SingleResult,
 	type SubagentToolResult,
 	wrapForkTask,
@@ -146,14 +145,12 @@ export async function runParallelPath(
 	const allProgress: AgentProgress[] = [];
 	const allArtifactPaths: ArtifactPaths[] = [];
 	const tasks = params.tasks!;
-	const maxParallelTasks = resolveTopLevelParallelMaxTasks(deps.config.parallel?.maxTasks);
 	const parallelConcurrency = resolveTopLevelParallelConcurrency(
 		params.concurrency,
 		deps.config.parallel?.concurrency,
 	);
 
-	const limitError = parallelTaskLimitError(tasks.length, maxParallelTasks);
-	if (limitError) return limitError;
+	if (data.parallelTaskLimitError) return data.parallelTaskLimitError;
 
 	const agentConfigs: AgentConfig[] = data.parallelAgentConfigs ? [...data.parallelAgentConfigs] : [];
 	if (!data.parallelAgentConfigs) {
