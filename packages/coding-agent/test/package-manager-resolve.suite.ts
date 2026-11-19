@@ -115,6 +115,26 @@ describe("DefaultPackageManager", () => {
 			expect(result.extensions.map((extension) => extension.path)).not.toContain(recipe);
 		});
 
+		it("matches native extension casing in legacy workflow directories", async () => {
+			const global = join(agentDir, "workflows");
+			const project = join(tempDir, ".atomic", "workflows");
+			const pkg = join(tempDir, "old-package");
+			const convention = join(pkg, "workflow", "nested");
+			for (const dir of [global, project, convention]) mkdirSync(dir, { recursive: true });
+			const always = join(global, "baseline.ts");
+			const mixed = [
+				join(project, "compile.TS"),
+				join(global, "check.Js"),
+				join(convention, "release.MJS"),
+				join(convention, "plan.CJS"),
+			];
+			for (const file of [always, ...mixed]) writeFileSync(file, "throw new Error('read as text only');");
+			settingsManager.setPackages([pkg]);
+
+			const found = (await packageManager.resolve()).legacyWorkflowFiles.map((file) => file.path).sort();
+			expect(found).toEqual((process.platform === "win32" ? [always, ...mixed] : [always]).sort());
+		});
+
 		it("should resolve skill paths from settings", async () => {
 			const skillDir = join(agentDir, "skills", "my-skill");
 			mkdirSync(skillDir, { recursive: true });

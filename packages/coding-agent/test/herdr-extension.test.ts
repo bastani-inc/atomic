@@ -162,6 +162,7 @@ test("settings opt-out is respected and environment is captured at activation ra
 			runner.setUIContext({ ...noOpUIContext }, "tui");
 			try {
 				await runner.emit({ type: "session_start" });
+				if (!optedOut) await fake.waitFor(1);
 				await runner.emit({ type: "agent_start" });
 				if (!optedOut) await fake.waitFor(2);
 			} finally {

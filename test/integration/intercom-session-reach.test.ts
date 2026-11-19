@@ -335,8 +335,13 @@ test(
 			c.client.hostSessions([stage("into-a", homeA)]),
 			(error: Error & { code?: string }) => error.code === "invalid_hosted_session",
 		);
-		const [hosted] = await c.client.hostSessions([stage("in-a-workflow", `workflow:${randomUUID()}`)]);
-		assert.ok(hosted, "a session in a workflow group is hosted");
+		await assert.rejects(
+			c.client.hostSessions([stage("in-a-former-workflow-group", `workflow:${randomUUID()}`)]),
+			(error: Error & { code?: string }) => error.code === "invalid_hosted_session",
+			"a workflow: group is an ordinary group, outside this host's reach",
+		);
+		const [hosted] = await c.client.hostSessions([stage("in-home", homeC)]);
+		assert.ok(hosted, "a session in a group the host reaches is hosted");
 		const asHosted = await c.client.send(idA, { text: "as a hosted session", hostedSender: hosted.sessionId });
 		assert.equal(asHosted.delivered, false);
 		assert.match(asHosted.reason ?? "", /can only reply to an ask it received/);

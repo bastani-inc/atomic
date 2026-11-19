@@ -277,7 +277,8 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		},
 		60000,
 	);
-	test("atomic storage migrate as the owner sets every store up, after which the runtime role opens them all without DDL (#5218)", async () => {
+
+	test("atomic storage migrate sets sessions and Intercom up for the runtime role without granting it DDL (#5218)", async () => {
 		await withRoles(async (_scope, roles) => {
 			// The runtime role cannot set the schema up, and is told who can.
 			const refused = await migrateAs(roles, "runtime");
@@ -291,7 +292,11 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			assert.match(migrated.out, /set up for this version/);
 			await grantRuntime(await roles.open("owner"), roles);
 			const statements: string[] = [];
-			await openEveryStore(async () => recording(await roles.open("runtime"), statements), PREFIX);
+			const open = async () => recording(await roles.open("runtime"), statements);
+			await (await SqlSessionStore.open(await open(), { prefix: PREFIX })).close();
+			const broker = await openIntercomBrokerState({ prefix: PREFIX, openDatabase: open });
+			await broker.bus.close();
+			await broker.state.close();
 			assert.deepEqual(statements.flatMap(ddl), []);
 			// Again, as after an upgrade with nothing new: still nothing to change.
 			const again = await migrateAs(roles, "owner");
@@ -486,8 +491,8 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			const owner = await roles.open("owner");
 			const refusal = async () => {
 				const error = await SqlSessionStore.open(await roles.open("runtime"), { prefix: PREFIX }).then(
-					async (journal) => {
-						await journal.close();
+					async (store) => {
+						await store.close();
 						return undefined;
 					},
 					(caught: Error) => caught,
