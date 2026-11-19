@@ -1426,6 +1426,10 @@ export class SqlSessionStore implements SessionStore {
 				"targetId",
 				"label",
 				"stageAdmissionKey",
+				"root",
+				"snapshotId",
+				"degradedFrom",
+				"captureMs",
 			].map((key) => [key, j(key)] as const);
 			const messageKeys = ["role", "provider", "model", "usage", "toolCallId"];
 			const dataKeys = [
@@ -1511,6 +1515,8 @@ export class SqlSessionStore implements SessionStore {
 					"snapshot",
 					`CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "snapshot")} THEN '{}' ELSE NULL END`,
 				],
+				["restore", `CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "restore")} THEN 1 END`],
+				["unrestored", `CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "unrestored")} THEN 1 END`],
 				["compactionDetails", j("details", "strategy")],
 				[
 					"toolCalls",

@@ -31,10 +31,12 @@ import {
 } from "./session-manager-entries.ts";
 import { SessionDeletedError, SessionEntryError } from "./session-manager-errors.js";
 import {
+	applyContextEdit,
 	buildContextEntries,
 	buildSessionIndex,
 	buildSessionProjection,
 	buildSessionTree,
+	collectContextEdits,
 	getBranchPath,
 	isLeafMoveEntry,
 	LEAF_MOVE_ENTRY_TYPE,
@@ -95,6 +97,7 @@ import {
 } from "./storage/session/errors.js";
 import { historyChunks, historyPages } from "./storage/session/history-pages.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import {
 	addEntryToHistoryTotals,
@@ -193,10 +196,13 @@ export class SessionManager {
 	private historyStartSeq = 1;
 
 	private entrySeqs = new Map<string, number>();
+	/** Entries whose original payload is no longer in the live window; keep their original tool-call count for billing. */
+	private readonly editedPayloads = new Map<string, number>();
 	private historyEpoch: string | undefined;
 	private lastEntryId: string | null = null;
 	private compactionSeq = 0;
-	private recoveryState: SessionRecoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
+	private recoveryState: SessionRecoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
+	private admissionKeys = new SessionKeyDigests();
 
 	private omittedTotals: SessionHistoryTotals | undefined;
 
@@ -262,13 +268,15 @@ export class SessionManager {
 		this.historyEpoch = resume.epoch;
 		this.lastEntryId = resume.lastEntryId;
 		this.compactionSeq = resume.compaction?.seq ?? 0;
-		this.recoveryState = resume.recovery;
+		this.recoveryState = { ...resume.recovery, admissionDigests: "" };
+		this.admissionKeys = new SessionKeyDigests(resume.recovery.admissionDigests);
 		this.historyStartSeq = held.length < resume.lastSeq ? (resume.branch[0]?.seq ?? resume.lastSeq + 1) : 1;
 		if (held.length < resume.lastSeq && this.historyStartSeq === 1) this.historyStartSeq = 2;
 		this.omittedTotals = held.length < resume.lastSeq ? resume.omitted : undefined;
 		const path = [...resume.state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.branchLinks = new Map(path.slice(1).map((held, i) => [held.entry.id, path[i]!.entry.id]));
 		this.leafId = resume.leafId;
+		if (held.some(({ entry }) => entry.type === "context_edit")) this.releaseEditedPayloads();
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
 
@@ -284,6 +292,7 @@ export class SessionManager {
 			readonly links: ReadonlyMap<string, string>;
 		},
 	): void {
+		this.editedPayloads.clear();
 		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
 		this.lastSeq = lastSeq;
@@ -294,7 +303,8 @@ export class SessionManager {
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
 		this.compactionSeq = 0;
-		this.recoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
+		this.recoveryState = { admissionDigests: "", intercomDeliveredIds: [] };
+		this.admissionKeys = new SessionKeyDigests();
 		this.omittedTotals = partial?.omitted;
 		this.branchLinks = partial?.links;
 		this.historyLoad = undefined;
@@ -305,11 +315,11 @@ export class SessionManager {
 	}
 
 	hasFullHistory(): boolean {
-		return this.historyStartSeq <= 1;
+		return this.historyStartSeq <= 1 && this.editedPayloads.size === 0;
 	}
 
 	loadFullHistory(): Promise<void> {
-		if (this.historyStartSeq <= 1) return Promise.resolve();
+		if (this.hasFullHistory()) return Promise.resolve();
 		this.historyLoad ??= this.hydrateHistory().finally(() => {
 			this.historyLoad = undefined;
 		});
@@ -325,7 +335,7 @@ export class SessionManager {
 		const held = new Map<number, SessionEntry>();
 		for (const entry of this.getEntries()) {
 			const seq = this.entrySeqs.get(entry.id);
-			if (seq !== undefined) held.set(seq, entry);
+			if (seq !== undefined && !this.editedPayloads.has(entry.id)) held.set(seq, entry);
 		}
 		for (let start = Math.max(1, fromSeq); start <= watermark; ) {
 			const entry = held.get(start);
@@ -364,7 +374,9 @@ export class SessionManager {
 		await this.forEachStoredEntry(1, (entry, seq) => held.set(seq, entry));
 		if (this.store !== store || this.sessionId !== sessionId || this.historyEpoch !== historyEpoch) return;
 		const leafId = this.leafId;
-		for (const entry of this.getEntries()) held.set(this.entrySeqs.get(entry.id)!, entry);
+		for (const entry of this.getEntries())
+			if (!this.editedPayloads.has(entry.id)) held.set(this.entrySeqs.get(entry.id)!, entry);
+		this.editedPayloads.clear();
 		const ordered = [...held].sort((a, b) => a[0] - b[0]);
 		this.fileEntries = [this.fileEntries[0]!, ...ordered.map(([, entry]) => entry)];
 		this.entrySeqs = new Map(ordered.map(([seq, entry]) => [entry.id, seq]));
@@ -407,7 +419,10 @@ export class SessionManager {
 		return this.lastSeq;
 	}
 	getSessionRecoveryState(): SessionRecoveryState {
-		return this.recoveryState;
+		return { ...this.recoveryState, admissionDigests: this.admissionKeys.serialize() };
+	}
+	getAdmissionKeys(): Pick<SessionKeyDigests, "has"> {
+		return this.admissionKeys;
 	}
 	async findEntrySeq(id: string): Promise<number | undefined> {
 		const held = this.entrySeqs.get(id);
@@ -433,7 +448,11 @@ export class SessionManager {
 	}
 
 	getOmittedHistoryTotals(): SessionHistoryTotals | undefined {
-		return this.omittedTotals;
+		let difference = 0;
+		for (const [id, count] of this.editedPayloads) difference += count - this.storedCalls(this.byId.get(id));
+		if (!difference) return this.omittedTotals;
+		const totals = this.omittedTotals ?? EMPTY_SESSION_HISTORY_TOTALS;
+		return { ...totals, toolCalls: totals.toolCalls + difference };
 	}
 
 	/**
@@ -749,6 +768,44 @@ export class SessionManager {
 			this.leafId = entry.id;
 		}
 		if (entries.some((entry) => entry.type === "compaction")) this.releaseEarlierWindow();
+		if (entries.some((entry) => entry.type === "context_edit")) this.releaseEditedPayloads();
+	}
+
+	private storedCalls(entry: SessionEntry | undefined): number {
+		return entry?.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)
+			? entry.message.content.filter((block) => block.type === "toolCall").length
+			: 0;
+	}
+
+	private releaseEditedPayloads(): void {
+		const edits = collectContextEdits(this.buildContextEntries());
+		if (!edits.size) return;
+		const leaf = this.leafId;
+		this.fileEntries = this.fileEntries.map((entry) => {
+			if (entry.type === "session") return entry;
+			if (
+				entry.type === "context_edit" &&
+				edits.has(entry.targetId) &&
+				edits.get(entry.targetId)?.id !== entry.id &&
+				entry.replacement !== null
+			) {
+				this.editedPayloads.set(entry.id, 0);
+				return { ...entry, replacement: null };
+			}
+			const edit = edits.get(entry.id);
+			if (!edit) return entry;
+			if (!this.editedPayloads.has(entry.id)) this.editedPayloads.set(entry.id, this.storedCalls(entry));
+			if (entry.type === "message")
+				return {
+					...entry,
+					message: applyContextEdit([entry.message], edit)[0] ?? { ...entry.message, content: [] },
+				};
+			if (entry.type === "custom_message")
+				return { ...entry, content: (edit.replacement?.content ?? []) as typeof entry.content };
+			return entry;
+		});
+		this._buildIndex();
+		this.leafId = leaf;
 	}
 
 	/** Retire the old window in the same mutation as the boundary. Never reread after a committed append: a read
@@ -763,6 +820,7 @@ export class SessionManager {
 			: entries;
 		const resume = sessionResumeOf(this.recordHeader(), linked, this.leafId ?? undefined);
 		if (!resume.compaction) return;
+		this.admissionKeys.mergeEncoded(resume.recovery.admissionDigests);
 		const keep = new Set([...resume.branch, ...resume.state].map(({ entry }) => entry.id));
 		const boundarySeq = this.entrySeqs.get(resume.compaction.entry.id)!;
 		const start = this.entrySeqs.get(resume.branch[0]!.entry.id)!;
@@ -774,6 +832,11 @@ export class SessionManager {
 			if (keep.has(entry.id)) retained.push(entry);
 			else {
 				totals = addEntryToHistoryTotals(totals, entry);
+				const original = this.editedPayloads.get(entry.id);
+				if (original !== undefined) {
+					totals = { ...totals, toolCalls: totals.toolCalls + original - this.storedCalls(entry) };
+					this.editedPayloads.delete(entry.id);
+				}
 				const seq = this.entrySeqs.get(entry.id)!;
 				if (
 					entry.type === "message" &&
@@ -1219,7 +1282,7 @@ export class SessionManager {
 
 	async readEntry(id: string): Promise<SessionEntry | undefined> {
 		const held = this.byId.get(id);
-		if (held) return held;
+		if (held && !this.editedPayloads.has(id)) return held;
 		const seq = await this.findEntrySeq(id);
 		if (seq !== undefined) {
 			for await (const { items } of this.readHistory({ fromSeq: seq, toSeq: seq })) {
@@ -1345,6 +1408,14 @@ export class SessionManager {
 	}
 
 	private async requireBranchTarget(id: string): Promise<void> {
+		if (this.editedPayloads.size && id !== this.leafId && this.store.readResume) {
+			const resume = await this.store.readResume(this.sessionId, id);
+			if (resume.leafId !== id) throw new SessionEntryError(id, "missing");
+			if (resume.lastSeq !== this.lastSeq || (this.historyEpoch !== undefined && resume.epoch !== this.historyEpoch))
+				throw new SessionConflictError(this.sessionId, this.lastSeq, resume.lastSeq);
+			this.restoreOpened({ resume }, this.sessionFile);
+			return;
+		}
 		const seq = this.entrySeqs.get(id);
 		if (
 			!this.hasFullHistory() &&

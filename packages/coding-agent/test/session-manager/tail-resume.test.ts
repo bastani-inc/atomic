@@ -228,6 +228,56 @@ it("a seeded private session yields while storing its input and initially owns o
 	}
 });
 
+it("a resume does not retain previous system instructions or superseded model settings (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	for (let i = 0; i < 32; i++) {
+		await writer.appendModelChange("test", `model-${i}`);
+		await writer.appendThinkingLevelChange(i % 2 ? "high" : "low");
+		await writer.appendMessage({ role: "system", content: `instruction ${i}`, timestamp: i });
+	}
+	await writer.appendCompaction("cleared", null, 100, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	const kept = manager.getEntries();
+	expect(kept.filter((e) => e.type === "model_change")).toHaveLength(1);
+	expect(kept.filter((e) => e.type === "thinking_level_change")).toHaveLength(1);
+	expect(kept.filter((e) => e.type === "message" && e.message.role === "system")).toHaveLength(0);
+	const full = [...(await store.load(writer.getSessionId())).entries];
+	expect(manager.buildSessionProjection()).toEqual(
+		buildSessionProjection(full, writer.getLeafId(), undefined, writer.getSessionId()),
+	);
+});
+
+it("a live window does not retain one identical checkout reference per old turn (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const root = "/project";
+	const snapshot = {
+		id: "one",
+		root,
+		tree: "t",
+		chain: [],
+		omitted: [],
+		filters: null,
+		bundle: null,
+	} as unknown as import("../../src/core/worktree-snapshot/types.js").WorktreeSnapshot;
+	await writer.appendWorktreeSnapshot(root, snapshot.id, snapshot);
+	for (let i = 0; i < 100; i++)
+		await writer.appendWorktreeSnapshot(root, snapshot.id, undefined, undefined, undefined, undefined, i);
+	await writer.appendCompaction("cleared", null, 100, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	for (const view of [writer, manager]) {
+		expect(view.getEntries().filter((e) => e.type === "worktree_snapshot").length).toBeLessThanOrEqual(3);
+		expect(view.getLatestWorktreeSnapshots().get(root)).toEqual(snapshot);
+		expect(
+			view
+				.getEntries()
+				.filter((e) => e.type === "worktree_snapshot")
+				.at(-1)?.captureMs,
+		).toBe(99);
+	}
+});
+
 describe("SessionManager resume from the latest compaction (#5249)", () => {
 	it("resumes with the same context, name, labels, model, thinking level and usage as a whole read (#5249)", async () => {
 		const store = await sqlStore();

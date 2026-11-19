@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - Sessions and extensions start at the current context window. Replace `history: "full"` with `for await (const page of manager.readHistory())` to visit older entries in `page.items`, or use `await manager.readEntry(id)` to look up one entry. Starting an extension no longer loads the whole conversation ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous. Newly assigned session and entry IDs are limited to 4,096 UTF-8 bytes ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
 ### Added

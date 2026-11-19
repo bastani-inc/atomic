@@ -409,4 +409,5 @@ export type ReadonlySessionManager = Pick<
 	| "readHistoryChunks"
 	| "getLastSeq"
 	| "getSessionRecoveryState"
+	| "getAdmissionKeys"
 >;

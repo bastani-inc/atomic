@@ -541,7 +541,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
 - `buildContextEntries()` - Active branch entries after the latest compaction boundary
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)
-- `getEntries()` - Entries the manager currently holds, excluding the header
+- `getEntries()` - Entries the manager currently holds, excluding the header. A context edit releases the target’s superseded content from this live view. To read the originally recorded entry, use `readHistory()` or `readEntry(id)`
 - `hasFullHistory()` - Whether every stored entry is held
 - `readHistory({ fromSeq?, toSeq?, direction?, signal? }?)` - Iterate pages between the inclusive bounds. Use `direction: "backward"` to start with the latest page and page toward the start; entries within each page always stay in append order. A page has `items` and, when there are more, `nextCursor`. To resume a stopped read, pass `{ cursor: nextCursor }` without new bounds. Items are `{ seq, entry }` except that an entry over 1 MiB is an oversized reference with `kind: "oversized"`, `seq` and `bytes`, not a truncated entry. A replaced or recreated session is rejected rather than mixing generations
 - `readHistoryChunks(reference, { offset?, signal? }?)` - Read an oversized entry’s original encoded bytes in chunks of at most 64 KiB. Track the number of bytes consumed to resume at a byte offset; use a streaming text decoder when decoding UTF-8
@@ -551,7 +551,8 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held. Subagent launch and restoration tolerate a `SessionManager` without `getEntrySeq` or `findEntrySeq`, falling back to `findEntrySeq`, full-history `getEntries()`, or `getBranch()`
 - `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
 - `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones a `{ history: "tail" }` manager does not hold in pages and keeping none of them. Resolves with the last sequence visited
-- `getSessionRecoveryState()` - Persisted admission keys, delivered Intercom message ids and pooled workflow delivery ids (`deliveryOpIds`) used to prevent duplicate deliveries after resume
+- `getAdmissionKeys().has(key)` - Test a persisted admission key synchronously. A resume keeps packed 128-bit digests, not original admission-key strings. The decision to admit or reject a duplicate is unchanged
+- `getSessionRecoveryState()` - Packed admission-key digests, delivered Intercom message IDs and pooled workflow delivery IDs used to prevent duplicate deliveries after resume
 - `getHeader()` - Session header metadata
 - `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
 - `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named

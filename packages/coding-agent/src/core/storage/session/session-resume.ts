@@ -1,5 +1,6 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
+import { SessionKeyDigests } from "./key-digests.js";
 import type {
 	SessionCompactionPoint,
 	SessionEntryRange,
@@ -21,8 +22,8 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
-/** Version 5 added `acks`; an index saved by an earlier build fails `isSessionResumeIndex` and is rebuilt. */
-const RESUME_INDEX_VERSION = 5;
+/** Version 6 separates covered system/setting entries from the state restored to a live window. */
+const RESUME_INDEX_VERSION = 6;
 
 export interface SessionResumeIndex {
 	readonly version: typeof RESUME_INDEX_VERSION;
@@ -33,7 +34,7 @@ export interface SessionResumeIndex {
 	readonly firstChildren: Readonly<Record<string, number>>;
 	readonly models: readonly (readonly [number, string])[];
 	readonly assistants: readonly number[];
-	readonly admissions: readonly string[];
+	readonly admissions: string;
 	readonly delivered: readonly string[];
 	readonly deliveryOps: readonly string[];
 	readonly settled: readonly string[];
@@ -60,6 +61,11 @@ export interface SessionResumeIndex {
 	readonly state: string;
 	readonly universal: readonly number[];
 	readonly lastStateSeq: number;
+	readonly settingsHistory: string;
+	readonly lastSettingSeq: number;
+	readonly snapshotRefs: string;
+	readonly lastSnapshotRef: number;
+	readonly hasRestoreHistory: boolean;
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
 }
@@ -256,7 +262,7 @@ class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
 	readonly fields: Record<string, readonly (readonly [number, readonly string[]])[]>;
 	readonly firstChildren: Record<string, number>;
-	readonly admissions: Set<string>;
+	readonly admissions: SessionKeyDigests;
 	readonly delivered: Set<string>;
 	readonly deliveryOps: Set<string>;
 	readonly settled: Set<string>;
@@ -268,7 +274,7 @@ class ResumeProtocols {
 		this.latest = { ...previous?.latest };
 		this.fields = { ...previous?.fields };
 		this.firstChildren = { ...previous?.firstChildren };
-		this.admissions = new Set(previous?.admissions ?? []);
+		this.admissions = new SessionKeyDigests(previous?.admissions);
 		this.delivered = new Set(previous?.delivered ?? []);
 		this.deliveryOps = new Set(previous?.deliveryOps ?? []);
 		this.settled = new Set(previous?.settled ?? []);
@@ -419,7 +425,7 @@ class ResumeProtocols {
 			latest: this.latest,
 			fields: this.fields,
 			firstChildren: this.firstChildren,
-			admissions: [...this.admissions],
+			admissions: this.admissions.serialize(),
 			delivered: [...this.delivered],
 			deliveryOps: [...this.deliveryOps],
 			settled: [...this.settled],
@@ -463,6 +469,11 @@ export function foldSessionResume(
 	const universal = [...(previous?.universal ?? [])];
 	let state = previous?.state ?? "";
 	let lastStateSeq = previous?.lastStateSeq ?? 0;
+	let settingsHistory = previous?.settingsHistory ?? "";
+	let lastSettingSeq = previous?.lastSettingSeq ?? 0;
+	let snapshotRefs = previous?.snapshotRefs ?? "";
+	let lastSnapshotRef = previous?.lastSnapshotRef ?? 0;
+	let hasRestoreHistory = previous?.hasRestoreHistory ?? false;
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
 	let needsBranchRebuild = previous?.needsBranchRebuild ?? false;
@@ -492,6 +503,8 @@ export function foldSessionResume(
 		else if (entry.type === "branch_summary") summarySeq = undefined;
 		const branchActive = activeSeq?.(seq) ?? true;
 		if (entry.type === "model_change") models.push([seq, `${entry.provider}/${entry.modelId}`]);
+		if (branchActive && (entry.type === "model_change" || entry.type === "thinking_level_change"))
+			protocols.keepLatest(`setting:${entry.type}`, seq);
 		if (entry.type === "message" && entry.message?.role === "assistant") {
 			const key = `${entry.message.provider}/${entry.message.model}`;
 			const ranges = branchRanges({ jumps }, parentSeq);
@@ -503,15 +516,40 @@ export function foldSessionResume(
 			if (branchActive) assistants.splice(0, assistants.length, seq);
 		}
 		protocols.apply(entry, seq, branchActive);
+		const plainSnapshot =
+			entry.type === "worktree_snapshot" && !entry.restore && !entry.unrestored && !entry.degradedFrom;
+		if (entry.type === "worktree_snapshot" && branchActive) {
+			if (!plainSnapshot) hasRestoreHistory = true;
+			else {
+				// With no restore/pin transitions, only the last occurrence of each checkout/record can affect
+				// its latest snapshot or ordered fallback heads. The record itself is retained independently.
+				protocols.keepLatest(`snapshot-ref:${JSON.stringify([entry.root, entry.snapshotId])}`, seq);
+				if (entry.captureMs != null) protocols.keepLatest(`snapshot-capture:${entry.root}`, seq);
+			}
+		}
 		if (!isSessionHistoryEntry(entry)) {
 			if (
 				(entry.type === "worktree_snapshot" && entry.snapshot !== undefined) ||
 				(entry.type === "custom" && entry.customType.startsWith("event_subscription"))
 			)
 				universal.push(seq);
-			const delta = (seq - lastStateSeq).toString(36);
-			state = state === "" ? delta : `${state}.${delta}`;
-			lastStateSeq = seq;
+			if (
+				entry.type === "model_change" ||
+				entry.type === "thinking_level_change" ||
+				(entry.type === "message" && entry.message.role === "system")
+			) {
+				const delta = (seq - lastSettingSeq).toString(36);
+				settingsHistory = settingsHistory === "" ? delta : `${settingsHistory}.${delta}`;
+				lastSettingSeq = seq;
+			} else if (plainSnapshot && entry.type === "worktree_snapshot" && entry.snapshot === undefined) {
+				const delta = (seq - lastSnapshotRef).toString(36);
+				snapshotRefs = snapshotRefs === "" ? delta : `${snapshotRefs}.${delta}`;
+				lastSnapshotRef = seq;
+			} else {
+				const delta = (seq - lastStateSeq).toString(36);
+				state = state === "" ? delta : `${state}.${delta}`;
+				lastStateSeq = seq;
+			}
 		}
 		totals = addEntryToHistoryTotals(totals, entry);
 		if (entry.type === "message" && entry.message?.role === "assistant" && countedUsage(entry.message.usage)) {
@@ -537,6 +575,11 @@ export function foldSessionResume(
 		state,
 		universal,
 		lastStateSeq,
+		settingsHistory,
+		lastSettingSeq,
+		snapshotRefs,
+		lastSnapshotRef,
+		hasRestoreHistory,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
 	};
@@ -548,6 +591,7 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	return (
 		index.version === RESUME_INDEX_VERSION &&
 		!index.needsBranchRebuild &&
+		typeof index.admissions === "string" &&
 		Array.isArray(index.deliveryOps) &&
 		typeof index.epoch === "string" &&
 		index.seq === lastSeq &&
@@ -558,6 +602,11 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		Array.isArray(index.acks) &&
 		typeof index.state === "string" &&
 		typeof index.lastStateSeq === "number" &&
+		typeof index.settingsHistory === "string" &&
+		typeof index.lastSettingSeq === "number" &&
+		typeof index.snapshotRefs === "string" &&
+		typeof index.lastSnapshotRef === "number" &&
+		typeof index.hasRestoreHistory === "boolean" &&
 		typeof index.totals === "object" &&
 		index.totals !== null
 	);
@@ -631,7 +680,7 @@ export function latestCompactionOf(
 	return undefined;
 }
 
-export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): number[] {
+export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number, windowOnly = false): number[] {
 	const ranges = branchRanges(index, index.leafSeq);
 	const lastAssistant = index.assistants.findLast((at) => onBranch(ranges, at));
 	const retained = [
@@ -640,7 +689,7 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): num
 		lastAssistant,
 		...index.intents.map(([, seq]) => seq),
 		...Object.entries(index.latest).flatMap(([key, seqs]) =>
-			key.startsWith("model-transition:") ? seqs.filter((seq) => onBranch(ranges, seq)) : seqs,
+			key.startsWith("model-transition:") ? (windowOnly ? [] : seqs.filter((seq) => onBranch(ranges, seq))) : seqs,
 		),
 		...Object.values(index.fields).flatMap((items) => items.map(([at]) => at)),
 		...Object.values(index.firstChildren),
@@ -656,6 +705,17 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): num
 			if (onBranch(ranges, seq) || index.universal.includes(seq)) seqs.add(seq);
 		}
 	}
+	const includeHistory = (deltas: string) => {
+		if (!deltas) return;
+		let at = 0;
+		for (const delta of deltas.split(".")) {
+			at += Number.parseInt(delta, 36);
+			if (at >= fromSeq) break;
+			if (onBranch(ranges, at)) seqs.add(at);
+		}
+	};
+	if (!windowOnly) includeHistory(index.settingsHistory);
+	if (!windowOnly || index.hasRestoreHistory) includeHistory(index.snapshotRefs);
 	for (const [intentSeq, ackSeq] of index.acks) if (seqs.has(intentSeq) && ackSeq < fromSeq) seqs.add(ackSeq);
 	return [...seqs].sort((left, right) => left - right);
 }
@@ -797,7 +857,7 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 	const acks = index.acks.filter(([intentSeq, ackSeq]) => inTail(intentSeq) && !inTail(ackSeq));
 	const state = [
 		...new Set([
-			...stateSeqsBefore(index, Number.MAX_SAFE_INTEGER).filter((seq) => !inTail(seq)),
+			...stateSeqsBefore(index, Number.MAX_SAFE_INTEGER, true).filter((seq) => !inTail(seq)),
 			...acks.map(([, ackSeq]) => ackSeq),
 		]),
 	].sort((left, right) => left - right);
@@ -834,7 +894,7 @@ export function sessionResumeFrom(
 			returned.some((held) => held.seq === index.latestAssistantSeq),
 		),
 		recovery: {
-			admissionKeys: index.admissions,
+			admissionDigests: index.admissions,
 			intercomDeliveredIds: index.delivered,
 			deliveryOpIds: index.deliveryOps,
 		},
