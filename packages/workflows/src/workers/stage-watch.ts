@@ -4,7 +4,6 @@ import {
 	isAgentSessionBusyError,
 	type SessionCommandCatalog,
 	type SessionEntry,
-	type SessionStore,
 } from "@bastani/atomic";
 import {
 	type StageControlHandle,
@@ -213,8 +212,8 @@ export class WorkerStageWatches {
 		private readonly control: () => string = () => "running",
 		/** What the airlock reads from the attempt beyond its stage handles. */
 		private readonly options: {
-			/** The attempt's store (including its shipping barrier) before a stage has attached its live session. */
-			readonly sessionStore?: () => SessionStore;
+			/** The stage session's committed entries, for a handle whose session is not attached yet. */
+			readonly entries?: (sessionId: string) => Promise<readonly SessionEntry[] | undefined>;
 			/** Whether the stage started a turn in this attempt. */
 			readonly turnStarted?: (handle: StageControlHandle) => boolean;
 			/** Where the current attempt's stages wait for human input: its store and stage UI broker. */
@@ -345,17 +344,12 @@ export class WorkerStageWatches {
 			...((session?.getSessionRecoveryState?.().deliveryOpIds ?? []) as readonly DeliveryOpId[]),
 			...deliveredOps(session?.getEntries() ?? []),
 		];
-		if (session !== undefined || handle.sessionId === undefined || !this.options.sessionStore) return new Set(live);
-		const store = this.options.sessionStore();
-		if (!store.readResume) throw new TypeError(`Session store ${store.descriptor.adapter} must implement readResume`);
-		return store.readResume(handle.sessionId).then(
-			(resume) =>
-				new Set(
-					(resume.recovery.deliveryOpIds ??
-						deliveredOps(
-							[...resume.branch, ...resume.state].map(({ entry }) => entry),
-						)) as readonly DeliveryOpId[],
-				),
+		const load = this.options.entries;
+		// An attached session holds every entry it replayed; only a stage that has not attached its
+		// session yet needs the committed entries, so nothing here waits on the session store then.
+		if (session !== undefined || handle.sessionId === undefined || load === undefined) return new Set(live);
+		return load(handle.sessionId).then(
+			(committed) => new Set([...live, ...deliveredOps(committed ?? [])]),
 			() => new Set(live),
 		);
 	}

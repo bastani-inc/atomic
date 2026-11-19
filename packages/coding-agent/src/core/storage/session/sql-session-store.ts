@@ -38,6 +38,7 @@ import {
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
+	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
@@ -63,12 +64,7 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import {
-	assertSessionWritable,
-	validateSessionEntries,
-	validateSessionHeader,
-	validateSessionText,
-} from "./validation.js";
+import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
  * The newest sessions schema this build reads and writes. Version 2 stores long entries in chunks (#4954), which a build
@@ -646,6 +642,109 @@ export class SqlSessionStore implements SessionStore {
 			const { texts, epoch } = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, header.id, entries, 0, texts);
 			return { lastSeq: entries.length, epoch };
+		}, SESSION_TRANSACTION);
+	}
+
+	async createFork(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		source: ForkArchiveSource,
+	): Promise<(SessionWriteResult & { remainingBlobs?: readonly string[] }) | undefined> {
+		// Use the original connection's snapshot. A different handle may share its queue; never wait
+		// for a separately scheduled read from inside a write transaction on that queue.
+		if (source.store !== this) return undefined;
+		this.assertOpen();
+		validateSessionHeader(header);
+		validateSessionEntries(entries);
+		return this.transaction(async (tx) => {
+			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id))
+				throw new SessionExistsError(header.id);
+			const donor = await this.historyHead(tx, source.sessionId);
+			if (source.epoch !== undefined && donor.epoch !== source.epoch)
+				throw new SessionConflictError(source.sessionId, 0, donor.lastSeq);
+			const { texts, epoch } = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
+			await this.insertEntries(tx, header.id, entries, 0, texts);
+			for (const [i, entry] of entries.entries()) {
+				const ref = source.receipts.get(entry.id);
+				if (!ref) continue;
+				if (source.sessionId !== ref.sessionId || donor.epoch !== ref.epoch || donor.lastSeq < ref.seq)
+					throw new SessionConflictError(ref.sessionId, ref.seq, donor.lastSeq);
+				const original = await tx.get<SqliteRow & { chunks: number }>(
+					`SELECT chunks FROM ${this.tables.entries} WHERE session_id=? AND seq=? AND entry_id=?`,
+					ref.sessionId,
+					ref.seq,
+					entry.id,
+				);
+				if (!original) throw new SessionConflictError(ref.sessionId, ref.seq, donor.lastSeq);
+				await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id=? AND seq=?`, header.id, i + 1);
+				await tx.run(
+					`INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) SELECT ?, ?, entry_id,entry_json,chunks FROM ${this.tables.entries} WHERE session_id=? AND seq=?`,
+					header.id,
+					i + 1,
+					ref.sessionId,
+					ref.seq,
+				);
+				for (let part = 0; part < original.chunks; part++) {
+					const { changes } = await tx.run(
+						`INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) SELECT ?, ?, idx, data FROM ${this.tables.entryChunks} WHERE session_id=? AND seq=? AND idx=?`,
+						header.id,
+						i + 1,
+						ref.sessionId,
+						ref.seq,
+						part,
+					);
+					if (changes !== 1)
+						throw new StorageUnavailableError(
+							this.descriptor,
+							new Error(`Missing chunk of session entry ${ref.seq}`),
+						);
+				}
+			}
+			const remainingBlobs: string[] = [];
+			for (const hash of source.hashes) {
+				if (
+					this.getBlob !== SqlSessionStore.prototype.getBlob ||
+					this.putBlob !== SqlSessionStore.prototype.putBlob
+				) {
+					remainingBlobs.push(hash);
+					continue;
+				}
+				const blob = await tx.get<SqliteRow & { bytes: number; chunks: number }>(
+					`SELECT bytes,chunks FROM ${this.tables.blobs} WHERE session_id=? AND hash=?`,
+					source.sessionId,
+					hash,
+				);
+				if (!blob) {
+					remainingBlobs.push(hash);
+					continue;
+				}
+				const columns = this.legacyBlobData ? ", data" : "";
+				const { changes } = await tx.run(
+					`INSERT INTO ${this.tables.blobs} (session_id,hash,bytes,chunks${columns}) SELECT ?,hash,bytes,chunks${columns} FROM ${this.tables.blobs} WHERE session_id=? AND hash=?${this.legacyBlobData ? " AND (chunks<>-1 OR length(data)=bytes)" : ""}`,
+					header.id,
+					source.sessionId,
+					hash,
+				);
+				if (changes !== 1)
+					throw new SessionBlobError("blob-incomplete", { sessionId: source.sessionId, hash, bytes: blob.bytes });
+				for (let part = 0; part < blob.chunks; part++) {
+					const copied = await tx.run(
+						`INSERT INTO ${this.tables.blobChunks} (session_id,hash,idx,data) SELECT ?,hash,idx,data FROM ${this.tables.blobChunks} WHERE session_id=? AND hash=? AND idx=? AND length(data)=?`,
+						header.id,
+						source.sessionId,
+						hash,
+						part,
+						Math.min(SESSION_BLOB_CHUNK_BYTES, blob.bytes - part * SESSION_BLOB_CHUNK_BYTES),
+					);
+					if (copied.changes !== 1)
+						throw new SessionBlobError("blob-incomplete", {
+							sessionId: source.sessionId,
+							hash,
+							bytes: blob.bytes,
+						});
+				}
+			}
+			return { lastSeq: entries.length, epoch, remainingBlobs };
 		}, SESSION_TRANSACTION);
 	}
 
@@ -2169,8 +2268,6 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		if (row.header_json.includes('"forkWindowOf"'))
-			assertSessionWritable(JSON.parse(row.header_json) as SessionRecordHeader);
 		const state =
 			row.summary_state === undefined ? undefined : (JSON.parse(String(row.summary_state)) as StoredSummaryState);
 		if (row.last_seq !== options.expectSeq || (options.epoch !== undefined && state?.epoch !== options.epoch)) {

@@ -315,32 +315,6 @@ export function registerSessionStoreConformance(
 				},
 			);
 
-			check(
-				"a private workflow fork dependency can be read but its inputs and ownership cannot be rewritten (#5594)",
-				async (store, reload) => {
-					const record = {
-						...header(),
-						forkWindowOf: "stage-copy",
-						internal: true as const,
-						workflow: { runId: "fork", stageId: "window", stageName: "Saved fork context" },
-					};
-					const kept = message("input", "replay");
-					await store.create(record, [kept]);
-					store = await reload(store);
-					await assert.rejects(
-						store.append(record.id, [message("extra", "later")], { expectSeq: 1 }),
-						/read-only workflow fork context/,
-					);
-					await assert.rejects(
-						store.replace(record.id, header(), [], { expectSeq: 1 }),
-						/read-only workflow fork context/,
-					);
-					await assert.rejects(store.updateHeader!(header(), { expectSeq: 1 }), /read-only workflow fork context/);
-					assert.equal((await store.readHeader(record.id))?.forkWindowOf, "stage-copy");
-					assert.deepEqual((await store.readRange!(record.id, 1, 1)).entries, [kept]);
-				},
-			);
-
 			check("admits only one of two writers using the same sequence", async (store, reload) => {
 				await store.create(header(), []);
 				const attempts = await Promise.allSettled([

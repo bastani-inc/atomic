@@ -418,7 +418,7 @@ export async function chunkedBranchState(chunks: () => AsyncIterable<Uint8Array>
 /** Identity and parent of a historical entry, plus its hash when it is a tool-output receipt. Never collect the receipt's inline bytes here. */
 export async function chunkedForkLink(
 	chunks: () => AsyncIterable<Uint8Array>,
-): Promise<{ id?: string; parentId?: string | null; hash?: string }> {
+): Promise<{ id?: string; parentId?: string | null; timestamp?: string; hash?: string; anchor: boolean }> {
 	const selected = object(
 		await read(
 			chunks(),
@@ -426,6 +426,7 @@ export async function chunkedForkLink(
 				return yield* readValue(yield, {
 					id: "string",
 					parentId: "string",
+					timestamp: "string",
 					type: "short",
 					customType: "short",
 					data: { hash: "short" },
@@ -440,7 +441,9 @@ export async function chunkedForkLink(
 	return {
 		id: typeof selected.id === "string" ? selected.id : undefined,
 		parentId: typeof selected.parentId === "string" ? selected.parentId : null,
+		timestamp: typeof selected.timestamp === "string" ? selected.timestamp : undefined,
 		hash: typeof hash === "string" ? hash : undefined,
+		anchor: selected.type === "custom" && selected.customType === "atomic.fork-anchor",
 	};
 }
 

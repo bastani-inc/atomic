@@ -12,6 +12,7 @@ import type { SessionStats } from "./agent-session-types.js";
 import { calculateContextTokens, estimateProjectedContextTokens } from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
+import { forkTranscriptBoundary } from "./fork-transcript-boundary.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import { applyContextEdit, collectContextEdits } from "./session-manager-history.ts";
 import { inlineToolOutput, withoutInlineToolOutput } from "./session-tool-output.ts";
@@ -237,8 +238,10 @@ export async function exportToJsonl(
 			await writeLine(file, JSON.stringify(header));
 			// Re-chain parentIds to form a linear sequence
 			let prevId: string | null = null;
-			for await (const entry of branchEntries) {
-				if (entry.type === "custom" && entry.customType === "atomic.fork-anchor") continue;
+			const projectBoundary = forkTranscriptBoundary(snapshotEntries);
+			for await (const stored of branchEntries) {
+				const entry = projectBoundary(stored);
+				if (!entry) continue;
 				await writeLine(file, JSON.stringify({ ...entry, parentId: prevId }));
 				prevId = entry.id;
 			}

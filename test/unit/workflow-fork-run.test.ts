@@ -1199,9 +1199,9 @@ async function threeSessions(seed: string, gated: "load" | "create") {
 		enter = resolve;
 	});
 	const operations = { load: 0, create: 0 };
-	const load = MemorySessionStore.prototype.readEntrySizes.bind(sessions);
+	const load = MemorySessionStore.prototype.load.bind(sessions);
 	const create = MemorySessionStore.prototype.create.bind(sessions);
-	vi.spyOn(sessions, "readEntrySizes").mockImplementation(async (...args) => {
+	vi.spyOn(sessions, "load").mockImplementation(async (...args) => {
 		if (++operations.load === 1 && gated === "load") {
 			enter();
 			await gate;
@@ -1271,11 +1271,7 @@ test("a lost lease stops the session copy before the next session is created, an
 	try {
 		const forking = fork();
 		await entered;
-		assert.equal(
-			operations.load,
-			4,
-			"all three source generations were read under the claim and the first checked again before publication",
-		);
+		assert.equal(operations.load, 3, "every session was read under the claim");
 		await stealLease();
 		const renewals = renew.mock.calls.length;
 		open();
@@ -1556,7 +1552,7 @@ test("a session missing from the store the caller passed is a ForkSessionNotFoun
 	assert.equal((await backend.journal.listRuns()).length, 1);
 	const failing = new MemorySessionStore();
 	const outage = Object.assign(new Error("Storage unavailable: sessions"), { name: "StorageUnavailableError" });
-	vi.spyOn(failing, "readEntrySizes").mockRejectedValueOnce(outage);
+	vi.spyOn(failing, "load").mockRejectedValueOnce(outage);
 	const unavailable = await forkDurableRun(backend, {
 		source: "sdk",
 		runId,
@@ -1571,7 +1567,7 @@ test("a session missing from the store the caller passed is a ForkSessionNotFoun
 		[unavailable.code, unavailable.retryable, unavailable.sessionId, unavailable.runId, unavailable.cause],
 		["session-unavailable", true, "missing-session", runId, outage],
 	);
-	vi.spyOn(failing, "readEntrySizes").mockRejectedValueOnce(
+	vi.spyOn(failing, "load").mockRejectedValueOnce(
 		new StorageUnavailableError({ adapter: "libsql", location: "sessions" }, new Error("reset")),
 	);
 	const coreOutage = await forkDurableRun(backend, {
@@ -1583,9 +1579,7 @@ test("a session missing from the store the caller passed is a ForkSessionNotFoun
 		sourceSessionStore: failing,
 	}).catch((failure: Error) => failure);
 	assert.ok(coreOutage instanceof ForkSessionUnavailableError, String(coreOutage));
-	vi.spyOn(failing, "readEntrySizes").mockRejectedValueOnce(
-		new StorageRollbackError(new Error("write"), new Error("rollback")),
-	);
+	vi.spyOn(failing, "load").mockRejectedValueOnce(new StorageRollbackError(new Error("write"), new Error("rollback")));
 	const rolledBack = await forkDurableRun(backend, {
 		source: "sdk",
 		runId,
@@ -1596,7 +1590,7 @@ test("a session missing from the store the caller passed is a ForkSessionNotFoun
 	}).catch((failure: Error) => failure);
 	assert.ok(rolledBack instanceof ForkSessionUnavailableError, String(rolledBack));
 	const lookalike = { name: "SessionNotFoundError", message: "not an Error" };
-	vi.spyOn(failing, "readEntrySizes").mockRejectedValueOnce(lookalike);
+	vi.spyOn(failing, "load").mockRejectedValueOnce(lookalike);
 	const passedThrough = await forkDurableRun(backend, {
 		source: "sdk",
 		runId,
@@ -1607,7 +1601,7 @@ test("a session missing from the store the caller passed is a ForkSessionNotFoun
 	}).catch((failure: Error) => failure);
 	assert.equal(passedThrough, lookalike, "a rejection that is not an Error is passed through as it is");
 	const bug = new TypeError("not a session store failure");
-	vi.spyOn(failing, "readEntrySizes").mockRejectedValueOnce(bug);
+	vi.spyOn(failing, "load").mockRejectedValueOnce(bug);
 	const propagated = await forkDurableRun(backend, {
 		source: "sdk",
 		runId,

@@ -12,7 +12,6 @@ import {
 	workspaceSessionCwdAsync,
 } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
-import { registerLiveStageSession } from "../../shared/live-stage-sessions.js";
 import { warnRemovedRoutingOption } from "../../shared/removed-routing-warning.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
@@ -105,8 +104,6 @@ export async function stripWorkflowOnlyOptions(
 		context,
 		forkFromSessionId,
 		forkFromEntryId,
-		forkFromEmptySource,
-		durableForkPoint,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
 		resumeInsideCall: _resumeInsideCall,
@@ -153,9 +150,7 @@ export async function stripWorkflowOnlyOptions(
 			cwd,
 			classification,
 			undefined,
-			durableForkPoint !== undefined
-				? await durableForkPoint()
-				: (forkFromEntryId ?? (forkFromEmptySource === true ? null : undefined)),
+			forkFromEntryId,
 		);
 	} else if (sessionOptions.sessionManager === undefined) {
 		if (sessionStore !== undefined) {
@@ -170,7 +165,6 @@ export async function stripWorkflowOnlyOptions(
 	}
 	const manager = sessionOptions.sessionManager;
 	if (manager !== undefined) {
-		registerLiveStageSession(manager);
 		const mappings = [...manager.getWorktreeRootMappings(), ...currentWorktreeRootMappings()];
 		const notKept = await recordRestoredWorktreeContext(
 			manager,

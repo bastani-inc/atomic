@@ -22,8 +22,6 @@ export interface SessionRecordHeader {
 	readonly parentSessionId?: string;
 	/** The parent ID refers to the source store, not necessarily a session that can be opened in this store. */
 	readonly parentInOtherStore?: true;
-	/** A durable workflow fork's private replay window, owned by this stage's copied session ID. */
-	readonly forkWindowOf?: string;
 	readonly internal?: true;
 	readonly workflow?: SessionWorkflowMetadata;
 }
@@ -303,8 +301,25 @@ export interface SessionSearchIndex {
 	): Promise<readonly number[] | undefined>;
 }
 
+export interface ForkArchiveSource {
+	readonly store: SessionStore;
+	readonly sessionId: string;
+	readonly epoch?: string;
+	readonly hashes: readonly string[];
+	/** Source positions of archived receipts. The entries supplied to createFork contain only their identifying fields. */
+	readonly receipts: ReadonlyMap<string, OversizedSessionEntry>;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
+	/** Create a new child, substituting the original encoded receipt bytes at the marked entry positions.
+	 * Return undefined, without publishing anything, when this source or destination is not supported. */
+	createFork?(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		source: ForkArchiveSource,
+		location?: string,
+	): Promise<(SessionWriteResult & { readonly remainingBlobs?: readonly string[] }) | undefined>;
 	/**
 	 * Which running sessions have this store's sessions open (#4971). Absent when the store keeps none: markers are then
 	 * files under the agent directory, seen only by processes that share it.

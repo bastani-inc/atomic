@@ -25,7 +25,6 @@ import { branchStatePages } from "./branch-state-pages.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
-	ReadOnlyForkWindowError,
 	SessionConflictError,
 	SessionExistsError,
 	SessionFormatVersionError,
@@ -37,7 +36,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import type { SessionHistorySource } from "./history-pages.js";
+import { readSessionHistoryChunks, type SessionHistorySource } from "./history-pages.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -68,6 +67,7 @@ import {
 	summarizeSession,
 } from "./session-summary.js";
 import type {
+	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionCompactionPoint,
 	SessionEntriesPage,
@@ -88,12 +88,7 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import {
-	assertSessionWritable,
-	validateSessionEntries,
-	validateSessionHeader,
-	validateSessionText,
-} from "./validation.js";
+import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 interface SessionFileState {
 	readonly stamp: string;
@@ -631,6 +626,89 @@ export class JsonlSessionStore implements SessionStore {
 			if (this.selectedFile?.id === header.id) this.selectedFile = { id: header.id, path };
 			return { lastSeq: entries.length, epoch: epochOf(stats, state.headerStamp) };
 		}, true);
+	}
+
+	async createFork(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		source: ForkArchiveSource,
+		location?: string,
+	): Promise<SessionWriteResult> {
+		validateSessionHeader(header);
+		validateSessionEntries(entries);
+		const path = location === undefined ? this.locationFor(header) : resolve(location);
+		await mkdir(dirname(path), { recursive: true });
+		const temporary = `${path}.${randomUUID()}.tmp`;
+		const handle = await open(temporary, "wx+");
+		try {
+			const spans: number[] = [];
+			const line = this.encode(header, []);
+			let size = Buffer.byteLength(line);
+			let witness: Buffer;
+			try {
+				await handle.writeFile(line);
+				for (const entry of entries) {
+					const start = size;
+					const ref = source.receipts.get(entry.id);
+					if (ref) {
+						for await (const part of readSessionHistoryChunks(source.store, ref)) {
+							await handle.writeFile(part);
+							size += part.byteLength;
+						}
+					} else {
+						const text = JSON.stringify(entry);
+						await handle.writeFile(text);
+						size += Buffer.byteLength(text);
+					}
+					spans.push(start, size);
+					await handle.writeFile("\n");
+					size++;
+				}
+				witness = await witnessAt(handle, size);
+			} finally {
+				await handle.close();
+			}
+			// Reading a source through this directory's own queue must finish before taking its write lock.
+			return await this.run(async () => {
+				if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
+				try {
+					await link(temporary, path);
+				} catch (cause) {
+					if ((cause as NodeJS.ErrnoException).code === "EEXIST") throw new SessionExistsError(header.id);
+					throw cause;
+				}
+				const headerStamp = JSON.stringify(header);
+				const stats = await this.remember(path, {
+					headerStamp,
+					headerId: header.id,
+					lastSeq: entries.length,
+					lastEntryId: entries.at(-1)?.id,
+					terminated: true,
+					torn: false,
+					witness,
+					summaryState: applySessionSummaryEntries(undefined, entries).state,
+				});
+				const epoch = epochOf(stats, headerStamp);
+				await this.keepIndex(path, {
+					identity: `${stats.dev}:${stats.ino}`,
+					birthtimeNs: String(stats.birthtimeNs),
+					headerStamp,
+					fileSize: size,
+					mtimeNs: String(stats.mtimeNs),
+					size,
+					witness,
+					terminated: true,
+					torn: false,
+					spans,
+					ids: entries.map((e) => idHash(e.id)),
+					index: { ...foldSessionResume(undefined, entries), epoch },
+					sidecarSize: 0,
+				});
+				return { lastSeq: entries.length, epoch };
+			}, true);
+		} finally {
+			await unlink(temporary);
+		}
 	}
 
 	append(
@@ -1653,7 +1731,6 @@ export class JsonlSessionStore implements SessionStore {
 			} catch (cause) {
 				if (signal?.aborted && cause === signal.reason) throw cause;
 				if (
-					cause instanceof ReadOnlyForkWindowError ||
 					cause instanceof SessionConflictError ||
 					cause instanceof SessionExistsError ||
 					cause instanceof SessionNotFoundError ||
@@ -2054,7 +2131,6 @@ export class JsonlSessionStore implements SessionStore {
 		const located = await this.locate(sessionId);
 		if (!located) throw new SessionNotFoundError(sessionId);
 		const { path, header, stored, stats } = located;
-		assertSessionWritable(header);
 		if (!isCurrentSessionHeader(stored)) throw new SessionFormatVersionError(path, stored.version);
 		let state = located.state;
 		if (!state) {

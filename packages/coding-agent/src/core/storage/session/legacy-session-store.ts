@@ -10,6 +10,7 @@ import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-sessio
 import { findSessionCompaction, readSessionTail } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
@@ -105,6 +106,21 @@ export class LegacySessionStore implements SessionStore {
 
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		return this.inner.create(header, entries);
+	}
+
+	async createFork(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		source: ForkArchiveSource,
+		location?: string,
+	) {
+		if (!this.inner.createFork) return undefined;
+		return this.inner.createFork(
+			header,
+			entries,
+			source.store === this ? { ...source, store: this.inner } : source,
+			location,
+		);
 	}
 
 	async append(

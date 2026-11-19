@@ -10,6 +10,8 @@ import { isAbsolute, resolve } from "node:path";
 import {
 	assertSessionBlobStore,
 	copySessionBlobs,
+	getSessionLeafId,
+	type SessionEntry,
 	SessionManager,
 	type SessionStore,
 	sessionBlobHashes,
@@ -80,7 +82,6 @@ import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
-import { type ForkSourceRecord, forkSourceRecordWithSessions } from "./stage-fork-point.js";
 import { type ForkPointTopology, forkPointCheckpointKey } from "./stage-topology.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
@@ -533,22 +534,15 @@ function sessionStoreFailure(error: unknown): "not-found" | "unavailable" | unde
 
 type SessionContext = { readonly runId: string; readonly stagePath?: string };
 
-async function locateSession(store: SessionStore, sessionId: string, withLeaf: boolean) {
-	if (!store.readEntrySizes)
-		throw new TypeError(`Session store ${store.descriptor.adapter} must implement readEntrySizes`);
-	const head = await store.readEntrySizes(sessionId, 1, 0);
-	const leafId = withLeaf ? (await SessionManager.open(store, sessionId)).getLeafId() : undefined;
-	return { store, head, leafId };
-}
-async function loadSession(sessions: SourceSessions, sessionId: string, context: SessionContext, withLeaf = false) {
+async function loadSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
 	try {
-		return await locateSession(sessions.store, sessionId, withLeaf);
+		return { ...(await sessions.store.load(sessionId)), store: sessions.store };
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
 		const details = { sessionId, ...context, storage: storageScope(sessions.store.descriptor) };
 		if (failure === "unavailable") throw new ForkSessionUnavailableError(details, { cause: error as Error });
 		if (failure !== "not-found") throw error;
-		const pooled = await loadPoolSession(sessions, sessionId, context, withLeaf);
+		const pooled = await loadPoolSession(sessions, sessionId, context);
 		if (pooled !== undefined) return pooled;
 		throw new ForkSessionNotFoundError(
 			{ ...details, storeSource: sessions.owned ? "project" : "supplied" },
@@ -557,19 +551,14 @@ async function loadSession(sessions: SourceSessions, sessionId: string, context:
 	}
 }
 
-async function loadPoolSession(
-	sessions: SourceSessions,
-	sessionId: string,
-	context: SessionContext,
-	withLeaf: boolean,
-) {
+async function loadPoolSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
 	const storage = journalStorage(sessions.backend.journal);
 	try {
 		sessions.pool ??= {
 			store: await poolSessionStore(sessions.backend, sessions.rootRunId, sessions.resources),
 		};
 		const store = sessions.pool.store;
-		return store === undefined ? undefined : await locateSession(store, sessionId, withLeaf);
+		return store === undefined ? undefined : { ...(await store.load(sessionId)), store };
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
 		if (failure === "not-found") return undefined;
@@ -652,17 +641,12 @@ export async function* durableForkPoints(
 				continue;
 			}
 			sessions ??= await sourceSessionStoreFor(journalBackend, source.handle, options, options.cwd ?? process.cwd());
-			const snapshot = await loadSession(
-				sessions,
-				record.sessionId,
-				{
-					runId: source.runId,
-					stagePath: record.stagePath,
-				},
-				true,
-			);
+			const snapshot = await loadSession(sessions, record.sessionId, {
+				runId: source.runId,
+				stagePath: record.stagePath,
+			});
 			// The session's leaf: its last entry, unless `/tree` recorded a move to an earlier one (#3325).
-			const entryId = snapshot.leafId ?? undefined;
+			const entryId = getSessionLeafId(snapshot.entries) ?? undefined;
 			yield {
 				stagePath: record.stagePath,
 				sessionId: record.sessionId,
@@ -1066,7 +1050,6 @@ function completedStageGroups(prefix: readonly CheckpointEvent[]): ReadonlySet<s
 class ForkIdentities {
 	private readonly ids: Map<string, string>;
 	readonly sessions = new Map<string, { readonly id: string; readonly file: string | undefined }>();
-	readonly windows = new Map<string, { readonly id: string; readonly leaf: string | null }>();
 
 	constructor(
 		readonly sourceRunId: string,
@@ -1151,21 +1134,9 @@ function forkCheckpoint(checkpoint: DurableCheckpoint, ids: ForkIdentities): Dur
 	if (checkpoint.kind === "ui") return forkUiCheckpoint(checkpoint, ids);
 	if (checkpoint.kind === "tool") {
 		const toolTopology = checkpoint.topology;
-		// A record of where a forked stage's source was names the source's session, which the fork copies under a new id.
-		const forkSources = forkSourceRecordWithSessions(checkpoint.argsHash, checkpoint.output, (record) => {
-			const selected = ids.windows.get(
-				JSON.stringify([record.sessionId, record.windowSessionId ?? record.sessionId, record.entryId]),
-			);
-			return {
-				sessionId: ids.session(record.sessionId)!,
-				entryId: selected ? selected.leaf : record.entryId,
-				...(selected ? { windowSessionId: selected.id } : {}),
-			};
-		});
 		return {
 			...checkpoint,
 			workflowId: ids.forkRunId,
-			...(forkSources === undefined ? {} : { output: forkSources }),
 			...(toolTopology?.run === undefined
 				? {}
 				: { topology: { ...toolTopology, run: ids.runTopology(toolTopology.run) } }),
@@ -1441,14 +1412,7 @@ export async function forkDurableRun<
 			const sessionId = checkpoint.kind === "stage" ? stageSessionId(checkpoint) : undefined;
 			return sessionId === undefined ? [] : [{ sessionId, checkpoint: checkpoint as DurableStageCheckpoint }];
 		});
-		const forkWindows: ForkSourceRecord[] = [];
-		for (const checkpoint of selection.checkpoints)
-			if (checkpoint.kind === "tool")
-				forkSourceRecordWithSessions(checkpoint.argsHash, checkpoint.output, (record) => {
-					forkWindows.push(record);
-					return record;
-				});
-		const copied = await copySessions(source, sessionCheckpoints, ids, request, cleanup, claim, forkWindows);
+		const copied = await copySessions(source, sessionCheckpoints, ids, request, cleanup, claim);
 		let retainCopies = false;
 		try {
 			request.signal?.throwIfAborted();
@@ -1563,8 +1527,10 @@ export async function forkDurableRun<
 type SessionSnapshots = Map<
 	string,
 	{
-		readonly head: { readonly epoch: string; readonly lastSeq: number };
+		readonly entries: readonly SessionEntry[];
+		/** The store that holds the source session, and the hashes of the blobs its copy brings along. */
 		readonly store: SessionStore;
+		readonly hashes: readonly string[];
 		readonly checkpoint: DurableStageCheckpoint;
 	}
 >;
@@ -1591,8 +1557,8 @@ async function readSessions(
 				continue;
 			}
 			claim.throwIfLost();
-			const { store, head } = await loadSession(sourceStore, sessionId, { runId: source.runId });
-			snapshots.set(sessionId, { store, head, checkpoint });
+			const { entries, store } = await loadSession(sourceStore, sessionId, { runId: source.runId });
+			snapshots.set(sessionId, { entries, store, hashes: sessionBlobHashes(store, entries), checkpoint });
 		}
 		request.signal?.throwIfAborted();
 		await claim.assertHeld();
@@ -1617,9 +1583,8 @@ async function copySessions(
 	request: ResolvedForkRequest,
 	cleanup: ForkCleanup,
 	claim: SourceClaim,
-	windows: readonly ForkSourceRecord[],
 ): Promise<readonly CopiedSessions[]> {
-	if (sessions.length === 0 && !windows.length) return [];
+	if (sessions.length === 0) return [];
 	await claim.assertHeld();
 	const { snapshots, sources } = await readSessions(source, sessions, request, cleanup, claim);
 	const copied: CopiedSessions[] = [];
@@ -1660,16 +1625,11 @@ async function copySessions(
 	try {
 		// The fork's pool tables are found before anything is copied.
 		if ([...snapshots.values()].some(({ checkpoint }) => pooled(checkpoint))) await destinationFor(true);
-		for (const [sessionId, { store, head, checkpoint }] of snapshots) {
+		for (const [sessionId, { entries, store, hashes, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			claim.throwIfLost();
 			const stageRun = checkpoint.topology?.run?.runId;
 			const destination = await destinationFor(pooled(checkpoint));
-			const entries = (await SessionManager.readForkedBranch(store, sessionId, { checkpoint: true })) ?? [];
-			const read = await store.readEntrySizes!(sessionId, 1, 0);
-			if (read.epoch !== head.epoch || read.lastSeq !== head.lastSeq)
-				throw new Error("The source session changed while its fork was being copied");
-			const hashes = sessionBlobHashes(store, entries);
 			const id = randomUUID();
 			const runId = stageRun === undefined ? ids.forkRunId : ids.run(stageRun);
 			assertSessionBlobStore(destination.store, id, hashes.length);
@@ -1681,7 +1641,6 @@ async function copySessions(
 					createdAt: new Date().toISOString(),
 					cwd: request.cwd,
 					parentSessionId: sessionId,
-					...(store !== destination.store ? { parentInOtherStore: true as const } : {}),
 					internal: true,
 					workflow: {
 						runId,
@@ -1696,48 +1655,6 @@ async function copySessions(
 				await SessionManager.open(destination.store, id, request.cwd, { history: "tail" })
 			).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
-		}
-		for (const record of windows) {
-			request.signal?.throwIfAborted();
-			claim.throwIfLost();
-			if (record.entryId === null) continue;
-			const sourceId = record.windowSessionId ?? record.sessionId;
-			const key = JSON.stringify([record.sessionId, sourceId, record.entryId]);
-			if (ids.windows.has(key)) continue;
-			const stage = snapshots.get(record.sessionId);
-			if (!stage) continue;
-			const dest = await destinationFor(pooled(stage.checkpoint));
-			const store = stage.store;
-			if (record.windowSessionId !== undefined) {
-				const dependency = await store.readHeader(sourceId);
-				if (
-					dependency?.internal !== true ||
-					dependency.workflow?.runId !== source.runId ||
-					dependency.forkWindowOf !== record.sessionId
-				)
-					throw new Error("This saved fork context does not belong to the selected source stage");
-			}
-			const entries = await SessionManager.readForkedBranch(store, sourceId, record.entryId);
-			if (!entries) throw new Error(`The saved fork point does not exist in its source session`);
-			const id = randomUUID(),
-				runId = ids.forkRunId,
-				hashes = sessionBlobHashes(store, entries);
-			assertSessionBlobStore(dest.store, id, hashes.length);
-			dest.copies.push({ id, runId });
-			await dest.store.create(
-				{
-					id,
-					version: 4,
-					createdAt: new Date().toISOString(),
-					cwd: request.cwd,
-					internal: true,
-					forkWindowOf: ids.session(record.sessionId),
-					workflow: { runId, stageId: id, stageName: "Saved fork context" },
-				},
-				entries,
-			);
-			await copySessionBlobs(store, sourceId, dest.store, id, hashes);
-			ids.windows.set(key, { id, leaf: entries.at(-1)?.id ?? null });
 		}
 		await closeSourceSessions(sources, cleanup);
 		return copied;

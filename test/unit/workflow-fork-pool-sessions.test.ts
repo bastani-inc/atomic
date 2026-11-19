@@ -222,7 +222,7 @@ test("a pool session store that cannot be read fails the fork as a retryable For
 		{ adapter: "pool-journal", location: "pool" },
 		new Error("database is locked"),
 	);
-	vi.spyOn(SqlSessionStore.prototype, "readEntrySizes").mockRejectedValue(failure);
+	vi.spyOn(SqlSessionStore.prototype, "load").mockRejectedValue(failure);
 	const closes = vi.spyOn(SqlSessionStore.prototype, "close");
 	const destination = new MemorySessionStore();
 	await assert.rejects(
@@ -273,7 +273,7 @@ test("a pooled reader close failure is reported once with its typed cleanup step
 test("an unexpected pool reader exception propagates instead of being recast as unavailable storage (#4321)", async () => {
 	const { backend, runId, directory } = await pooledSource("fork-pool-unexpected-failure");
 	const failure = new TypeError("reader invariant failed");
-	vi.spyOn(SqlSessionStore.prototype, "readEntrySizes").mockRejectedValue(failure);
+	vi.spyOn(SqlSessionStore.prototype, "load").mockRejectedValue(failure);
 	const closes = vi.spyOn(SqlSessionStore.prototype, "close");
 	const destination = new MemorySessionStore();
 	await assert.rejects(

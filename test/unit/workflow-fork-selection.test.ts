@@ -711,7 +711,7 @@ test("an unreadable session carries its cause, run and stage in the ForkSessionN
 		stage(sourceId, "stage:saved", "saved", "stage:saved:1", { output: "saved", sessionId: "lost" }),
 	]);
 	const failure = Object.assign(new Error("Session not found: lost"), { name: "SessionNotFoundError" });
-	vi.spyOn(sessions, "readEntrySizes").mockRejectedValue(failure);
+	vi.spyOn(sessions, "load").mockRejectedValue(failure);
 	const points = await (async () => {
 		for await (const point of durableForkPoints(backend, sourceId, { sourceSessionStore: sessions })) return point;
 	})().catch((problem: Error) => problem);
@@ -1144,7 +1144,7 @@ test("a session shared by several checkpoints is read once and copied under the 
 			{ ...first, workflowId: sourceId },
 			{ ...second, workflowId: sourceId },
 		]);
-		const load = vi.spyOn(sessions, "readResume");
+		const load = vi.spyOn(sessions, "load");
 		const create = vi.spyOn(sessions, "create");
 		const fork = await forkDurableRun(backend, {
 			...request(sourceId),

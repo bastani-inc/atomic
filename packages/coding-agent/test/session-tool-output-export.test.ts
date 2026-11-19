@@ -146,6 +146,56 @@ test("transcript and share exports hide structural fork anchors and keep their v
 	assert.equal(data.entries.find((entry) => entry.id === last)?.parentId, before);
 });
 
+test.each([false, true])(
+	"fork export preserves an uncovered turn when the cut has a visible predecessor: %s (#5594)",
+	async (hasPredecessor) => {
+		const directory = temporaryDirectory("atomic-visible-fork-cut-");
+		const store = await sqlStore(directory, "source");
+		const manager = await SessionManager.create(store, process.cwd());
+		const first = hasPredecessor
+			? await manager.appendMessage({ role: "user", timestamp: 0, content: "covered" })
+			: null;
+		const cut = await manager.appendCustomEntry("atomic.fork-anchor");
+		const turn = await manager.appendMessage({ role: "user", timestamp: 1, content: "while clearing" });
+		const boundary = await manager.appendCompaction(
+			"cleared",
+			null,
+			100,
+			{
+				strategy: "verbatim-lines",
+				promptVersion: 7,
+				parameters: { query: "clear" },
+				form: "cleared",
+				stats: {
+					linesBefore: 1,
+					linesDeleted: 1,
+					linesKept: 0,
+					rangeCount: 0,
+					tokensBefore: 100,
+					tokensAfter: 0,
+					percentReduction: 100,
+				},
+			},
+			undefined,
+			cut,
+		);
+		const expected = manager.buildSessionContext().messages;
+		const harness = await createHarness({ sessionManager: manager });
+		harnesses.push(harness);
+		const path = await harness.session.exportToJsonl(join(directory, "fork.jsonl"));
+		const lines = fileLines(path)
+			.slice(1)
+			.map((s) => JSON.parse(s));
+		assert.deepEqual(
+			lines.map((line) => line.id),
+			[first ?? cut, turn, boundary],
+		);
+		assert.equal(lines.at(-1).coveredThroughEntryId, first ?? cut);
+		const reopened = await SessionManager.importFromJsonl(path, directory, await sqlStore(directory, "target"));
+		assert.deepEqual(reopened.buildSessionContext().messages, expected);
+	},
+);
+
 test("an export carries the blob inline and an import into another database restores it (#4379)", async () => {
 	const directory = temporaryDirectory("atomic-tool-output-export-");
 	const { path, sessionId } = await exported(directory);

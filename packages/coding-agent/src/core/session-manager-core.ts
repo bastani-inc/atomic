@@ -94,6 +94,7 @@ import {
 	SessionNotFoundError,
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
+import { createForkArchive } from "./storage/session/fork-archive.js";
 import { firstHistoryCursor, historyChunks, historyPages } from "./storage/session/history-pages.js";
 import { bindSessionFile, JsonlSessionStore, withForkFileWindow } from "./storage/session/jsonl-session-store.js";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
@@ -1694,7 +1695,11 @@ export class SessionManager {
 		});
 	}
 
-	private async installFork(leafId: string, path: SessionEntry[]): Promise<string | undefined> {
+	private async installFork(
+		leafId: string,
+		path: SessionEntry[],
+		receipts = new Map<string, OversizedSessionEntry>(),
+	): Promise<string | undefined> {
 		const result = createBranchedSessionState({
 			leafId,
 			cwd: this.cwd,
@@ -1715,12 +1720,16 @@ export class SessionManager {
 					? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
 					: store.locationFor(record)
 				: undefined;
-		const created = await (store instanceof JsonlSessionStore
-			? store.create(record, entries, location)
-			: store.create(record, entries));
-		await copySessionBlobs(this.store, this.sessionId, store, record.id, hashes);
+		assertSessionBlobStore(store, record.id, hashes.length);
+		await createForkArchive(
+			store,
+			record,
+			entries,
+			{ store: this.store, sessionId: this.sessionId, epoch: this.historyEpoch, hashes, receipts },
+			location,
+		);
 		this.store = store;
-		this.restore({ header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch }, location);
+		this.restoreOpened(await readStoredSession(store, record.id, undefined), location);
 		return this.sessionFile;
 	}
 
@@ -1745,74 +1754,48 @@ export class SessionManager {
 		return source.forkWindow(await source.contextBranch(leafId), leafId, point === undefined ? "session" : "branch");
 	}
 
-	/** Capture only the store positions of this launch's window. A child waiting to run never holds the parent's
-	 * conversation, and a later append or clear cannot make it branch from a different turn. */
+	/** Keep a launch point, not the live parent or a list of the entries that happen to be resident now. */
 	captureFork(leafId: string): () => Promise<SessionManager> {
-		const path = this.getBranch(leafId);
-		if (path.at(-1)?.id !== leafId) throw new SessionEntryError(leafId, "missing");
-		const ranges: [number, number][] = [];
-		for (const entry of forkContextPath(path, this.sessionId)) {
-			const seq = this.entrySeqs.get(entry.id);
-			if (seq === undefined) throw new SessionEntryError(entry.id, "missing");
-			const range = ranges.at(-1);
-			if (range && range[1] === seq - 1) range[1] = seq;
-			else ranges.push([seq, seq]);
-		}
 		return SessionManager.capturedFork(
 			this.store,
-			this.recordHeader(),
+			this.sessionId,
 			this.cwd,
 			this.sessionDir,
 			this.historyEpoch,
 			this.lastSeq,
-			ranges,
+			leafId,
 		);
 	}
 
 	private static capturedFork(
 		store: SessionStore,
-		header: SessionRecordHeader,
+		sessionId: string,
 		cwd: string,
 		sessionDir: string,
 		epoch: string | undefined,
 		watermark: number,
-		ranges: readonly (readonly [number, number])[],
+		leafId: string,
 	): () => Promise<SessionManager> {
 		return async () => {
-			const read = store.readRange;
-			if (!read)
-				throw new TypeError(
-					`Session store ${store.descriptor.adapter} must implement readRange to fork a captured window`,
-				);
-			const records: SessionEntry[] = [];
-			const pageSize = 64;
-			for (const [low, high] of ranges)
-				for (let start = low; start <= high; start += pageSize) {
-					const end = Math.min(high, start + pageSize - 1);
-					const page = await read.call(store, header.id, start, end);
-					if (
-						(epoch !== undefined && page.epoch !== epoch) ||
-						page.lastSeq < watermark ||
-						page.entries.length !== end - start + 1
-					)
-						throw new SessionConflictError(header.id, watermark, page.lastSeq);
-					records.push(...page.entries);
-					if (end < high) await new Promise<void>((resolve) => setImmediate(resolve));
-				}
+			const opened = await readStoredSession(store, sessionId, { leafId });
+			const { resume } = opened;
+			if ((epoch !== undefined && resume.epoch !== epoch) || resume.lastSeq < watermark)
+				throw new SessionConflictError(sessionId, watermark, resume.lastSeq);
+			if (resume.leafId !== leafId) throw new SessionEntryError(leafId, "missing");
+			const source = new SessionManager(store, cwd, sessionDir);
+			source.restoreOpened(opened);
+			const receipts = new Map<string, OversizedSessionEntry>();
 			const entries = await includeNamedForkOutputs(
-				forkContextPath(records, header.id),
+				forkContextPath(source.getBranch(), sessionId),
 				store,
-				header.id,
-				records.at(-1)?.id ?? null,
-				epoch,
+				sessionId,
+				leafId,
+				resume.epoch,
 				watermark,
 				"branch",
+				receipts,
 			);
-			const leaf = entries.at(-1);
-			if (!leaf) throw new Error("The captured fork window is empty");
-			const source = new SessionManager(store, cwd, sessionDir);
-			source.restore({ header, entries, lastSeq: entries.length });
-			await source.installFork(leaf.id, entries);
+			await source.installFork(leafId, entries, receipts);
 			return source;
 		};
 	}
@@ -1821,6 +1804,7 @@ export class SessionManager {
 		path: SessionEntry[],
 		leafId: string | null,
 		scope: "branch" | "session" = "branch",
+		receipts?: Map<string, OversizedSessionEntry>,
 	): Promise<SessionEntry[]> {
 		return includeNamedForkOutputs(
 			forkContextPath(path, this.sessionId),
@@ -1830,6 +1814,7 @@ export class SessionManager {
 			this.historyEpoch,
 			this.lastSeq,
 			scope,
+			receipts,
 		);
 	}
 
@@ -1869,19 +1854,25 @@ export class SessionManager {
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
+			const receipts = new Map<string, OversizedSessionEntry>();
 			const source = {
 				store: this.store,
 				sessionId: this.sessionId,
-				entries: await this.forkWindow(this.getBranch(), this.getLeafId(), "session"),
+				epoch: this.historyEpoch,
+				entries: await this.forkWindow(this.getBranch(), this.getLeafId(), "session", receipts),
 			};
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
 			manager.markForkOrigin(source.store);
 			const hashes = sessionBlobHashes(source.store, source.entries);
 			assertSessionBlobStore(store, manager.sessionId, hashes.length);
-			manager.fileEntries.push(...source.entries);
-			await manager.initialize();
-			await copySessionBlobs(source.store, source.sessionId, store, manager.sessionId, hashes);
-			manager._buildIndex();
+			await createForkArchive(
+				store,
+				manager.recordHeader(),
+				source.entries,
+				{ store: source.store, sessionId: source.sessionId, epoch: source.epoch, hashes, receipts },
+				manager.sessionFile,
+			);
+			manager.restoreOpened(await readStoredSession(store, manager.sessionId, undefined), manager.sessionFile);
 			return manager;
 		});
 	}
@@ -2112,7 +2103,6 @@ export class SessionManager {
 					window.epoch,
 					window.lastSeq,
 					"session",
-					window.compaction?.seq,
 				);
 				return { id, entries };
 			});

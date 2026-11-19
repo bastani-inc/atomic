@@ -60,34 +60,6 @@ for (const sessionId of ["shared-id", ""]) {
 	});
 }
 
-test("post-mortem stage inspection streams a giant saved message instead of opening the whole transcript (#5594)", async () => {
-	const store = new MemorySessionStore();
-	const t = new Date(0).toISOString();
-	for (const [id, tail] of [
-		["blank", ""],
-		["usable", "界"],
-	] as const) {
-		await store.create({ id, version: 4, createdAt: t, cwd: "/p" }, [
-			{
-				id: "entry",
-				parentId: null,
-				timestamp: t,
-				type: "message",
-				message: { role: "user", content: " ".repeat(1_100_000) + tail, timestamp: 1 },
-			},
-		]);
-	}
-	const full = vi.spyOn(store, "load").mockRejectedValue(new Error("whole stage transcript requested"));
-	try {
-		assert.equal(await isReopenableSession(store, "blank"), false);
-		assert.equal(await isReopenableSession(store, "usable"), true);
-		assert.equal(full.mock.calls.length, 0);
-	} finally {
-		full.mockRestore();
-		await store.close();
-	}
-});
-
 test("transcript validation does not create missing or blank sessions", async () => {
 	const store = new MemorySessionStore();
 	assert.equal(await isReopenableSession(store, "missing"), false);

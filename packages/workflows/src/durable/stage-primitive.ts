@@ -21,7 +21,6 @@ import type {
 import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
-import { withLaunchForkPoint } from "./stage-fork-point.js";
 import { activeStageTopology, durableStageCheckpointMetadata, forkPointStageTopology } from "./stage-topology.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableReleasedStageResume, DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
@@ -360,15 +359,8 @@ export function createDurableStagePrimitive(input: {
 		const durableStageId =
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
 		const durableIntercomGroup = topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, durableStageId);
-		const launchOptions = withLaunchForkPoint({
-			backend: input.backend,
-			workflowId: input.workflowId,
-			replayKey,
-			options,
-			resuming: resumeSessionId !== undefined,
-		});
 		const liveOptions: StageOptions = {
-			...(launchOptions ?? {}),
+			...(options ?? {}),
 			durableReplayKey: replayKey,
 			...(durableStageId !== undefined ? { durableStageId } : {}),
 			...(topology !== undefined ? { durableParentIds: [...topology.parentIds] } : {}),
@@ -494,11 +486,6 @@ function withStageWriteBarrier(stage: StageContext, beforeCall?: () => void | Pr
 
 export const TASK_RESULT_CHECKPOINT_CONTROL_PREFIX = "task-checkpoint:";
 
-/** The next replay key of a task named `name` among the run's replay keys `nextReplayKey`. */
-export function reserveTaskReplayKey(nextReplayKey: (stageName: string) => string, name: string): string {
-	return nextReplayKey(`task:${name}`);
-}
-
 export function createDurableTaskPrimitive(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
@@ -529,15 +516,13 @@ export function createDurableTaskPrimitive(input: {
 	name: string,
 	options: WorkflowTaskOptions,
 	stageFailFastScope?: ParallelFailFastScope,
-	reservedReplayKey?: string,
 ) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
 		options: WorkflowTaskOptions,
 		stageFailFastScope?: ParallelFailFastScope,
-		reservedReplayKey?: string,
 	): Promise<WorkflowTaskResult> => {
-		const replayKey = reservedReplayKey ?? reserveTaskReplayKey(input.nextReplayKey, name);
+		const replayKey = input.nextReplayKey(`task:${name}`);
 		const restartFromPrompt = options.durableRestartFromPrompt === true;
 		const replayed = restartFromPrompt
 			? undefined
@@ -555,13 +540,7 @@ export function createDurableTaskPrimitive(input: {
 		const durableIntercomGroup =
 			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);
 		const taskOptions: WorkflowTaskOptions = {
-			...withLaunchForkPoint({
-				backend: input.backend,
-				workflowId: input.workflowId,
-				replayKey,
-				options,
-				resuming: session?.sessionId !== undefined,
-			})!,
+			...options,
 			durableReplayKey: replayKey,
 			...(topology !== undefined
 				? {

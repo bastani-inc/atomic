@@ -12,6 +12,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { readSessionHistoryChunks } from "./history-pages.js";
 import {
 	foldSessionResume,
 	foreignResumeIds,
@@ -34,6 +35,7 @@ import {
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
+	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionCompactionPoint,
@@ -56,12 +58,7 @@ import type {
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
-import {
-	assertSessionWritable,
-	validateSessionEntries,
-	validateSessionHeader,
-	validateSessionText,
-} from "./validation.js";
+import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
@@ -286,6 +283,64 @@ export class MemorySessionStore implements SessionStore {
 		const record = this.encodeSession(header, entries);
 		this.records.set(header.id, record);
 		return { lastSeq: entries.length, epoch: record.index.epoch };
+	}
+
+	async createFork(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		source: ForkArchiveSource,
+	): Promise<SessionWriteResult & { remainingBlobs?: readonly string[] }> {
+		this.assertOpen();
+		validateSessionHeader(header);
+		validateSessionEntries(entries);
+		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+		const record = this.encodeSession(header, entries);
+		const projected = record.entries[0]!;
+		const chunks: Uint8Array[] = [];
+		let size = 0;
+		for (const [i, entry] of entries.entries()) {
+			const ref = source.receipts.get(entry.id);
+			const start = record.starts[i]!;
+			const end = record.starts[i + 1] === undefined ? record.totalBytes : record.starts[i + 1]! - 1;
+			let bytes: Uint8Array;
+			if (ref) {
+				// This is the memory store's final owned backing, not a decoded or concatenated second copy.
+				bytes = new Uint8Array(ref.bytes);
+				let offset = 0;
+				for await (const part of readSessionHistoryChunks(source.store, ref)) {
+					bytes.set(part, offset);
+					offset += part.length;
+				}
+			} else bytes = projected.subarray(start, end);
+			chunks.push(bytes);
+			record.starts[i] = size;
+			size += bytes.length + 1;
+		}
+		record.entries = chunks;
+		record.totalBytes = Math.max(0, size - 1);
+		this.assertOpen();
+		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+		let remainingBlobs: string[] | undefined;
+		if (
+			source.store instanceof MemorySessionStore &&
+			source.store.getBlob === MemorySessionStore.prototype.getBlob &&
+			this.putBlob === MemorySessionStore.prototype.putBlob
+		) {
+			const donor = source.store.stored(source.sessionId);
+			if (!donor || (source.epoch !== undefined && donor.index.epoch !== source.epoch))
+				throw new SessionConflictError(source.sessionId, 0, donor?.lastSeq ?? 0);
+			remainingBlobs = [];
+			const owned = new Map<string, Uint8Array>();
+			for (const hash of source.hashes) {
+				// Store-owned bytes are immutable; public reads always return copies.
+				const data = source.store.blobs.get(source.sessionId)?.get(hash);
+				if (data) owned.set(hash, data);
+				else remainingBlobs.push(hash);
+			}
+			if (owned.size) this.blobs.set(header.id, owned);
+		}
+		this.records.set(header.id, record);
+		return { lastSeq: entries.length, epoch: record.index.epoch, remainingBlobs };
 	}
 
 	async append(
@@ -957,7 +1012,6 @@ export class MemorySessionStore implements SessionStore {
 	private forWrite(sessionId: string, options: SessionWriteOptions, expected?: StoredSession): StoredSession {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
-		assertSessionWritable(decodeHeader(record));
 		if (expected !== undefined && record !== expected)
 			throw new SessionConflictError(sessionId, options.expectSeq, record.lastSeq);
 		if (

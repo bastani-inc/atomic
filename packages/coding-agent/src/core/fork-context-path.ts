@@ -8,7 +8,9 @@ import {
 } from "./session-manager-history.ts";
 import type { SessionEntry } from "./session-manager-types.ts";
 import { TOOL_OUTPUT_ENTRY_TYPE } from "./session-tool-output.ts";
+import { SessionConflictError } from "./storage/session/errors.js";
 import { historyChunks, historyPages, type SessionHistorySource } from "./storage/session/history-pages.js";
+import type { OversizedSessionEntry } from "./storage/session/types.js";
 import { TOOL_DEACTIVATION_ENTRY_TYPE } from "./tool-deactivation.ts";
 
 const forkSettings = new Set(["workspace_binding", TOOL_DEACTIVATION_ENTRY_TYPE, "codemode-store"]);
@@ -24,14 +26,14 @@ export async function includeNamedForkOutputs(
 	epoch: string | undefined,
 	through: number,
 	scope: "branch" | "session",
-	boundarySeq?: number,
+	archives?: Map<string, OversizedSessionEntry>,
 ): Promise<SessionEntry[]> {
-	const boundary = getLatestCompactionBoundaryEntry(entries);
-	if (!leaf || !boundary) return entries;
+	if (!leaf || (scope === "branch" && !getLatestCompactionBoundaryEntry(entries))) return entries;
 	const wanted = new Set<string>();
 	const scan = (value: unknown): void => {
 		if (typeof value === "string") {
-			for (const hit of value.matchAll(/tool-output:\/\/([0-9a-f]{64})(?![0-9a-f])/gu)) wanted.add(hit[1]!);
+			for (const hit of value.matchAll(/tool-output:\/\/([0-9a-f]{64})(?=$|[\s'"`()[\]{}<>,.:;!?])/gu))
+				wanted.add(hit[1]!);
 		} else if (value && typeof value === "object") {
 			for (const v of Object.values(value)) scan(v);
 		}
@@ -50,12 +52,9 @@ export async function includeNamedForkOutputs(
 	}
 	if (!wanted.size) return entries;
 	const found: SessionEntry[] = [];
+	const positions = new Map(entries.map((entry) => [entry.id, 0]));
 	let next: string | null = leaf;
-	let beforeBoundary = scope === "session" && boundarySeq !== undefined;
-	search: for await (const { items } of historyPages(store, sessionId, epoch, through, {
-		direction: "backward",
-		...(beforeBoundary && boundarySeq !== undefined ? { toSeq: boundarySeq - 1 } : {}),
-	})) {
+	search: for await (const { items } of historyPages(store, sessionId, epoch, through, { direction: "backward" })) {
 		for (let i = items.length - 1; i >= 0; i--) {
 			const item = items[i]!;
 			const links =
@@ -64,15 +63,65 @@ export async function includeNamedForkOutputs(
 					: await (await import("./storage/session/chunked-resume-projection.js")).chunkedForkLink(() =>
 							historyChunks(store, sessionId, epoch, item, {}),
 						);
+			if (links.id !== undefined && positions.has(links.id)) positions.set(links.id, item.seq);
 			const ancestor = links.id === next;
-			if (ancestor && links.id === boundary.id) beforeBoundary = true;
-			if (!ancestor && !(scope === "session" && beforeBoundary)) continue;
+			if (!ancestor && scope === "branch") continue;
 			if (links.hash && wanted.has(links.hash)) {
-				const candidate =
-					"entry" in item
-						? item.entry
-						: (await store.readRange!(sessionId, item.seq, item.seq, item.epoch)).entries[0];
+				let candidate: SessionEntry | undefined;
+				if ("entry" in item && archives) {
+					const size = await store.readEntrySizes!(sessionId, item.seq, item.seq);
+					if (
+						(epoch !== undefined && size.epoch !== epoch) ||
+						size.sizes[0]?.seq !== item.seq ||
+						size.lastSeq < through
+					)
+						throw new SessionConflictError(sessionId, through, size.lastSeq);
+					const { id, parentId, timestamp } = item.entry;
+					archives.set(id, {
+						kind: "oversized",
+						sessionId,
+						epoch: size.epoch,
+						seq: item.seq,
+						bytes: size.sizes[0].bytes,
+					});
+					candidate = {
+						type: "custom",
+						customType: TOOL_OUTPUT_ENTRY_TYPE,
+						id,
+						parentId,
+						timestamp,
+						data: { hash: links.hash },
+					};
+				} else if ("entry" in item) candidate = item.entry;
+				else if (
+					archives &&
+					links.id !== undefined &&
+					"timestamp" in links &&
+					typeof links.timestamp === "string"
+				) {
+					archives.set(links.id, item);
+					candidate = {
+						type: "custom",
+						customType: TOOL_OUTPUT_ENTRY_TYPE,
+						id: links.id,
+						parentId: links.parentId ?? null,
+						timestamp: links.timestamp,
+						data: { hash: links.hash },
+					};
+				} else {
+					const range = await store.readRange!(sessionId, item.seq, item.seq, item.epoch);
+					if (
+						range.epoch !== item.epoch ||
+						range.startSeq !== item.seq ||
+						range.lastSeq < through ||
+						range.entries.length !== 1 ||
+						range.entries[0]!.id !== links.id
+					)
+						throw new SessionConflictError(sessionId, through, range.lastSeq);
+					candidate = range.entries[0];
+				}
 				if (candidate && hashOf(candidate) === links.hash) {
+					positions.set(candidate.id, item.seq);
 					found.push(candidate);
 					wanted.delete(links.hash);
 				}
@@ -81,15 +130,34 @@ export async function includeNamedForkOutputs(
 			if (!wanted.size || (!next && scope === "branch")) break search;
 		}
 	}
-	// A named historical receipt is archived with its original links. It need not become part of the active branch.
 	if (!found.length) return entries;
-	const restored = new Set(found.map((entry) => entry.id));
-	return [
-		...found.reverse(),
-		...entries.filter(
-			(entry) => !(entry.type === "custom" && entry.customType === "atomic.fork-anchor" && restored.has(entry.id)),
-		),
-	];
+	// Receipts that don't anchor the active branch are independent archive entries. If a boundary
+	// names a receipt, replacing its anchor at the front of the file would sever earlier settings.
+	const archived = new Map(found.reverse().map((entry) => [entry.id, entry]));
+	const branch: SessionEntry[] = [];
+	for (const entry of entries) {
+		const receipt = entry.type === "custom" && entry.customType === "atomic.fork-anchor" && archived.get(entry.id);
+		if (!receipt) {
+			branch.push(entry);
+			continue;
+		}
+		archived.delete(entry.id);
+		if (receipt.parentId !== null && receipt.parentId !== entry.parentId)
+			branch.push({ ...entry, id: receipt.parentId });
+		branch.push(receipt);
+	}
+	// Keep detached receipts after their retained source parents: an indexed historical open at
+	// the receipt can only follow parents that have already been written. The active leaf stays last.
+	const detached = [...archived.values()];
+	if (!detached.length) return branch;
+	const ordered: SessionEntry[] = [];
+	let i = 0;
+	for (const entry of branch) {
+		const position = entry === branch.at(-1) ? Infinity : (positions.get(entry.id) ?? 0);
+		while (i < detached.length && positions.get(detached[i]!.id)! < position) ordered.push(detached[i++]!);
+		ordered.push(entry);
+	}
+	return ordered;
 }
 
 /** A new child inherits request content, not the source's admission authority or its recoverable operations.
@@ -121,7 +189,9 @@ export function forkContextPath(path: SessionEntry[], sourceSessionId: string): 
 	const retained: SessionEntry[] = [];
 	for (const source of path) {
 		let entry: SessionEntry | undefined = source;
-		if (!window.has(source.id) && source.type === "message") {
+		if (source.type === "message" && source.message.role === "bashExecution" && source.message.excludeFromContext) {
+			entry = undefined;
+		} else if (!window.has(source.id) && source.type === "message") {
 			// A previous assistant can have selected the effective model even without a model change entry. Keep
 			// the setting, never its covered answer or reasoning.
 			entry =
@@ -160,11 +230,7 @@ export function forkContextPath(path: SessionEntry[], sourceSessionId: string): 
 				entry = undefined;
 		} else if (source.type === "custom_message") {
 			if (!window.has(source.id) || source.excludeFromContext) entry = undefined;
-			else if (
-				source.protectedReconciliation ||
-				source.stageAdmissionKey ||
-				/^(intercom|subagent|workflow|task)[._:-]/.test(source.customType)
-			) {
+			else if (source.protectedReconciliation || source.stageAdmissionKey) {
 				entry = {
 					type: "custom_message",
 					id: source.id,

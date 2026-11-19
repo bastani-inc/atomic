@@ -47,13 +47,6 @@ export class StoreClosedError extends Error {
 	}
 }
 
-export class ReadOnlyForkWindowError extends Error {
-	constructor(sessionId: string) {
-		super(`Session ${sessionId} is a read-only workflow fork context`);
-		this.name = "ReadOnlyForkWindowError";
-	}
-}
-
 export class SessionNotFoundError extends Error {
 	readonly sessionId: string;
 

@@ -509,13 +509,13 @@ describe("completed workflow inspection", () => {
 		});
 		const entered = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<void>();
-		const read = sessionStore.readRange.bind(sessionStore);
-		vi.spyOn(sessionStore, "readRange")
-			.mockImplementationOnce(read)
+		const load = sessionStore.load.bind(sessionStore);
+		vi.spyOn(sessionStore, "load")
+			.mockImplementationOnce(load)
 			.mockImplementationOnce(async (...args) => {
 				entered.resolve();
 				await finish.promise;
-				return read(...args);
+				return load(...args);
 			});
 		const inspecting = openCompleted(
 			id,

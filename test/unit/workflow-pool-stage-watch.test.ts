@@ -7,7 +7,7 @@ import {
 	buildSkillCatalog,
 	createSyntheticSourceInfo,
 } from "@bastani/atomic";
-import { test, vi } from "vitest";
+import { test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -855,35 +855,17 @@ test("an answer reaches only the prompt it names, on the attempt the worker hold
 test("a replacement whose replayed session already holds an op reports it and admits it at most once (#3996)", async () => {
 	const registry = createStageControlRegistry();
 	const sent: Sent[] = [];
-	const sessions = new MemorySessionStore();
-	const timestamp = new Date(0).toISOString();
-	await sessions.create({ id: "replayed-session", version: 4, cwd: "/p", createdAt: timestamp }, [
-		{
-			id: "before",
-			parentId: null,
-			timestamp,
-			type: "custom",
-			customType: "atomic-pooled-delivery-op",
-			data: { op: "op-before-kill" },
-		},
-		{
-			id: "clear",
-			parentId: "before",
-			timestamp,
-			type: "compaction",
-			summary: "clear",
-			firstKeptEntryId: null,
-			tokensBefore: 100,
-			details: { strategy: "verbatim-lines" },
-		},
-	]);
-	const full = vi.spyOn(sessions, "load").mockRejectedValue(new Error("whole attempt transcript loaded"));
 	const watches = new WorkerStageWatches(
 		registry,
 		() => ({ workId: "work", generation: 2 }),
 		(message) => sent.push({ ...message, id: 0 } as Sent),
 		() => "running",
-		{ sessionStore: () => sessions },
+		{
+			// The committed session of the replaced attempt, before this attempt attached its own.
+			entries: async () => [
+				{ type: "custom", customType: "atomic-pooled-delivery-op", data: { op: "op-before-kill" } } as never,
+			],
+		},
 	);
 	const stage = deliverableStage(true);
 	registry.register({
@@ -909,8 +891,6 @@ test("a replacement whose replayed session already holds an op reports it and ad
 	const again = await deliver(sent, watches, 2, "op-before-kill", "steer", 2);
 	assert.deepEqual(again, { action: "handled", refusal: undefined }, "the op is not admitted a second time");
 	assert.deepEqual(stage.admitted, []);
-	assert.equal(full.mock.calls.length, 0);
-	await sessions.close();
 });
 
 test.each([

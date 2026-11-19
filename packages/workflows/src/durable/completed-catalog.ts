@@ -36,7 +36,6 @@ import {
 	RUN_TIMING_CHECKPOINT_NAME,
 	RUN_USAGE_CHECKPOINT_NAME,
 } from "./run-timing.js";
-import { FAN_OUT_FORK_SOURCES_SUFFIX, FORK_SOURCE_CHECKPOINT_SUFFIX } from "./stage-fork-point.js";
 import { FORK_POINT_CHECKPOINT_SUFFIX } from "./stage-topology.js";
 import { isSubscriptionCheckpointHash } from "./subscription-records.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
@@ -53,8 +52,6 @@ function isReservedRunCheckpointHash(argsHash: string): boolean {
 		isChildRunUsageCheckpointName(argsHash) ||
 		argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME ||
 		argsHash.endsWith(FORK_POINT_CHECKPOINT_SUFFIX) ||
-		argsHash.endsWith(FORK_SOURCE_CHECKPOINT_SUFFIX) ||
-		argsHash.endsWith(FAN_OUT_FORK_SOURCES_SUFFIX) ||
 		isSubscriptionCheckpointHash(argsHash)
 	);
 }

@@ -8,10 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- A delayed stage can fork at its saved launch entry without reopening the parent's entire conversation. Inspecting a completed stage reads the stage's own saved session ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
-
-### Fixed
-
 - After a context clear, an interrupted workflow remains reachable without keeping its saved inputs and stage outputs in chat memory ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
 ## [0.9.90] - 2026-11-19

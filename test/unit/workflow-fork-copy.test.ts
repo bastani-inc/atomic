@@ -839,7 +839,7 @@ test("fork points list sessions lazily, open the source store once and close onl
 			topology: { version: 1, stageId: "p", parentIds: [], occurrenceKey: "p" },
 		}),
 	]);
-	const loads = vi.spyOn(sessions, "readResume");
+	const loads = vi.spyOn(sessions, "load");
 	const closes = vi.spyOn(sessions, "close");
 	const points = [];
 	for await (const point of durableForkPoints(backend, sourceId, { sourceSessionStore: sessions })) points.push(point);
@@ -856,7 +856,7 @@ test("fork points list sessions lazily, open the source store once and close onl
 		{ stagePath: "x", completedAt: 1 },
 		{ stagePath: "x#3", completedAt: 1 },
 	]);
-	assert.equal(loads.mock.calls.length, 2);
+	assert.equal(loads.mock.calls.length, 3);
 	assert.equal(closes.mock.calls.length, 0, "a borrowed store stays open");
 });
 
