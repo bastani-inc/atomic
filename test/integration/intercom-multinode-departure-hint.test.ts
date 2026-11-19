@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { BROKER_LEASE_STALE_AFTER_MS } from "../../packages/intercom/broker/multinode-state-store.js";
 import {
 	TwoBrokerHarness,
@@ -24,10 +24,11 @@ const TEST_TIMEOUT_MS = 90_000;
 
 let harness: TwoBrokerHarness;
 
-beforeAll(async () => {
+// Each broker parks its first matching presence read only.
+beforeEach(async () => {
 	harness = await TwoBrokerHarness.start(HARNESS_OPTIONS);
 }, REAL_BROKERS_HOOK_TIMEOUT_MS);
-afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
+afterEach(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 
 const unique = (label: string): string => `${label}-${randomUUID().slice(0, 8)}`;
 
@@ -87,6 +88,68 @@ test(
 			const failure = back.received.find((frame) => frame.message.replyTo === askId);
 			assert.equal(failure?.message.replyError, `Session "${recipient.name}" ended before replying`);
 		}, WAIT);
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a queued reply to an away asker does not delay a reply to a live asker or the replier's departure (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const group = unique("queued-reply");
+		const away = await harness.connect("a", unique("away"), { group });
+		const live = await harness.connect("a", unique("live"), { group });
+		const replier = await harness.connect("b", unique("replier"), { group });
+		const awayId = away.sessionId;
+		const replierId = replier.sessionId;
+		const firstAsk = randomUUID();
+		const secondAsk = randomUUID();
+		for (const [asker, messageId] of [
+			[away, firstAsk],
+			[live, secondAsk],
+		] as const) {
+			const sent = await asker.client.send(replierId, { messageId, text: "which port?", expectsReply: true });
+			assert.equal(sent.delivered, true, sent.reason);
+		}
+		await away.client.disconnect({ resumable: true });
+		away.disconnected = true;
+		await vi.waitFor(async () => {
+			const peers = await replier.client.listSessions();
+			assert.equal(
+				peers.some((session) => session.id === awayId),
+				false,
+			);
+		}, WAIT);
+
+		harness.holdPresenceRead(away.returnAddress);
+		try {
+			const first = await replier.client.send(awayId, {
+				replyTo: firstAsk,
+				text: "3000",
+				requirePendingReply: true,
+			});
+			assert.equal(first.queued, true, first.reason);
+
+			const replyId = randomUUID();
+			const second = await replier.client.send(live.sessionId, {
+				messageId: replyId,
+				replyTo: secondAsk,
+				text: "4000",
+				requirePendingReply: true,
+			});
+			assert.equal(second.delivered, true, second.reason);
+			assert.equal(live.messagesWithId(replyId).length, 1);
+
+			const listed = async () => (await live.client.listSessions()).some((session) => session.id === replierId);
+			assert.equal(await listed(), true);
+			await harness.disconnect(replier);
+			await vi.waitFor(async () => assert.equal(await listed(), false), {
+				timeout: DEPARTED_WITHIN_MS,
+				interval: 25,
+			});
+		} finally {
+			harness.releasePresenceRead();
+		}
 	},
 	TEST_TIMEOUT_MS,
 );

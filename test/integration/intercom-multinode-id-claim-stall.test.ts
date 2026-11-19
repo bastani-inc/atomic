@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, test } from "vitest";
+import { afterAll, beforeAll, test, vi } from "vitest";
 import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
 import {
 	TwoBrokerHarness,
@@ -10,11 +10,11 @@ import {
 
 /**
  * #5607: with multi-node routing, a session that registers again asks for its Intercom id back, and its broker waits a
- * bounded time for the shared database to confirm the id. A broker that stops running meanwhile does not count that
- * time as the database's, but a long stall must still leave the session's client time to register before it gives up.
+ * bounded time for the shared database to confirm the id. A broker that stalls must read a ready confirmation,
+ * but not delay a fresh id when there is no confirmation and the client's registration deadline is running.
  */
 
-const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { nodes: ["a"], stallableIdClaims: true };
+const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { nodes: ["a"], stallableIdClaims: true, parkableRegistrations: true };
 /** Spawning a real broker process is the structural cost of this suite. */
 const REAL_BROKERS_HOOK_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs(HARNESS_OPTIONS);
 /**
@@ -55,6 +55,39 @@ test(
 
 		assert.equal(harness.idClaimStalled(original.returnAddress), true, "the broker stalled while it claimed the id");
 		assert.notEqual(back.sessionId, id, "an id the database never confirmed is not granted");
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a returning session still registers when its broker accepts late, stalls during the id check and waits for presence (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const original = await harness.connect("a", unique("returning"));
+		const id = original.sessionId;
+		await original.client.disconnect({ resumable: true });
+		original.disconnected = true;
+
+		// The client starts its 10 s wait while the broker is busy with an unrelated registration.
+		const other = randomUUID();
+		harness.stallIdClaim(other, 1_450);
+		const busy = harness.connect("a", unique("other"), { returnAddress: other, preferredSessionId: randomUUID() });
+		try {
+			await vi.waitFor(() => assert.ok(harness.idClaimStalled(other)), { timeout: 15_000, interval: 10 });
+			harness.stallIdClaim(original.returnAddress, 2_800);
+			harness.holdRegistration(original.name);
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
+			assert.ok(harness.idClaimStalled(original.returnAddress));
+			await harness.registrationParked(original.name);
+			assert.notEqual(back.sessionId, id);
+		} finally {
+			harness.releaseRegistration();
+			await busy;
+		}
 	},
 	TEST_TIMEOUT_MS,
 );

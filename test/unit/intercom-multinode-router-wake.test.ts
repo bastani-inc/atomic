@@ -2039,8 +2039,9 @@ describe("an Intercom id bound to the return address that registered it", () => 
 			answer = resolve;
 		});
 		vi.spyOn(knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			const binding = await bind(...args);
 			await answered;
-			return bind(...args);
+			return binding;
 		});
 
 		const claim = node.router.claimSessionId(id, "return-1");
@@ -2054,7 +2055,7 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		// Then this broker stalls, and the database answers meanwhile. Once the broker runs again, the timers that came due
 		// run first, and only then is the answer read.
 		stallEventLoop(STALL_PAST_BOUND_MS);
-		await vi.advanceTimersByTimeAsync(100);
+		vi.advanceTimersByTime(100); // Run the due timer, not the next event-loop turn.
 		answer();
 
 		assert.equal(await claim, true, "what the database answered during the stall is read before the bound passes");

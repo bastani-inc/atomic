@@ -142,19 +142,13 @@ export const REGISTRATION_STEP_ATTEMPTS = 30;
  */
 export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
 /**
- * The longest a registration that asks for its id back waits for the shared database to bind it, before the presence
- * wait: both together stay within the client's 10 s. Past it the session gets a fresh id, never an unchecked one.
- * #5607: counted in this broker's running time (`runningTimeBound`), so a stall of its own is not taken for the
- * database not answering, within `SESSION_ID_CLAIM_WALL_LIMIT_MS`.
+ * #5607: at the original wall-clock deadline, poll once for a binding already waiting for the broker. Without one,
+ * register with a fresh id: the client's deadline was running before the broker read its request, and the presence
+ * wait is still ahead.
  */
 export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
 /**
- * #5607: however long this broker stalls, the claim ends once this much time has passed: with the presence wait after
- * it, registration still answers within the client's 10 s.
- */
-const SESSION_ID_CLAIM_WALL_LIMIT_MS = 4_500;
-/**
- * #5607: the most a stall of this broker may add to the other `runningTimeBound`s over the plain wall-clock bound each
+ * #5607: the most a stall of this broker may add to a `runningTimeBound` over the plain wall-clock bound it
  * replaced, so a sender waiting on one still has its answer in time.
  */
 const RUNNING_TIME_STALL_ALLOWANCE_MS = 2_500;
@@ -649,23 +643,27 @@ export class MultiNodeRouter {
 	 */
 	async claimSessionId(sessionId: string, returnAddress: string): Promise<boolean> {
 		if (this.closed) return false;
-		let cancelBound: (() => void) | undefined;
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		let afterPoll: ReturnType<typeof setImmediate> | undefined;
 		try {
 			return await Promise.race([
 				this.state.knownSessions
 					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
 					.then((result) => result.status === "bound"),
 				new Promise<boolean>((resolve) => {
-					cancelBound = runningTimeBound(SESSION_ID_CLAIM_BOUND_MS, SESSION_ID_CLAIM_WALL_LIMIT_MS, () =>
-						resolve(false),
-					);
+					deadline = setTimeout(() => {
+						afterPoll = setImmediate(() => resolve(false));
+						afterPoll.unref?.();
+					}, SESSION_ID_CLAIM_BOUND_MS);
+					deadline.unref?.();
 				}),
 			]);
 		} catch (error) {
 			this.report(error);
 			return false;
 		} finally {
-			cancelBound?.();
+			clearTimeout(deadline);
+			if (afterPoll !== undefined) clearImmediate(afterPoll);
 		}
 	}
 
@@ -2450,7 +2448,7 @@ export class MultiNodeRouter {
 			} else this.host.write(request.socket, queuedFrame(message.id, request.attemptId, inserted.position));
 			// #5607: only the send that wrote the row looks again; its place came with the write, so the look costs no
 			// statement more than queuing did before.
-			if (inserted !== undefined) await this.wakeHolderOf(target.identity, row.sequence);
+			if (inserted !== undefined) void this.wakeHolderOf(target.identity, row.sequence);
 			return;
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
