@@ -784,18 +784,18 @@ async function constructAgentSession(
 		},
 		onPayload: async (payload, model) => {
 			const sourceMessages = lastConvertedLlmMessages;
-			const replayGuardedPayload = sourceMessages
-				? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)
-				: payload;
 			const runner = extensionRunnerRef.current;
-			let finalPayload: unknown;
-			if (!runner?.hasHandlers("before_provider_request")) {
-				finalPayload = replayGuardedPayload;
-			} else {
-				const extensionPayload = await runner.emitBeforeProviderRequest(replayGuardedPayload);
-				finalPayload = sourceMessages
-					? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
-					: extensionPayload;
+			let finalPayload = payload;
+			if (runner?.hasHandlers("before_provider_request")) {
+				const guarded = sourceMessages
+					? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)
+					: payload;
+				finalPayload = await runner.emitBeforeProviderRequest(guarded);
+			}
+			if (sourceMessages) {
+				const forkedChild =
+					subagentPolicy !== undefined && sessionManager.getHeader()?.parentSessionId !== undefined;
+				finalPayload = restoreAnthropicReplayThinkingBlocks(finalPayload, sourceMessages, model, forkedChild);
 			}
 			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
 			markLifecycleTiming("before-provider-request");
