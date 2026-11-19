@@ -169,9 +169,7 @@ const {
 const { resolveSessionStore, selectSessionStorage } = await import(
 	"../../packages/coding-agent/src/core/session-storage.js"
 );
-const { collectStorageStatus } = await import(
-	"../../packages/coding-agent/src/core/storage/storage-status.js"
-);
+const { collectStorageStatus } = await import("../../packages/coding-agent/src/core/storage/storage-status.js");
 
 const { sweepReleasedHistory } = await import(
 	"../../packages/coding-agent/src/core/storage/session/released-history-files.js"
