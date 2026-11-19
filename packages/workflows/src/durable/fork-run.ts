@@ -1665,7 +1665,7 @@ async function copySessions(
 			claim.throwIfLost();
 			const stageRun = checkpoint.topology?.run?.runId;
 			const destination = await destinationFor(pooled(checkpoint));
-			const entries = (await SessionManager.readForkedBranch(store, sessionId)) ?? [];
+			const entries = (await SessionManager.readForkedBranch(store, sessionId, { checkpoint: true })) ?? [];
 			const read = await store.readEntrySizes!(sessionId, 1, 0);
 			if (read.epoch !== head.epoch || read.lastSeq !== head.lastSeq)
 				throw new Error("The source session changed while its fork was being copied");

@@ -37,6 +37,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import type { SessionHistorySource } from "./history-pages.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -56,7 +57,6 @@ import {
 	type SessionResumeIndex,
 	selectResumeLeaf,
 	sessionResumeFrom,
-	sessionResumeOf,
 	sessionResumePlan,
 	sessionTailFrom,
 	stateSeqsBefore,
@@ -126,6 +126,11 @@ interface JsonlIndex {
 	readonly ids: readonly number[];
 	readonly index: SessionResumeIndex;
 	readonly sidecarSize: number;
+}
+
+interface FileWindowInput {
+	readonly handle: FileHandle;
+	readonly legacy?: StoredSessionHeader;
 }
 
 interface IndexedSession {
@@ -525,6 +530,9 @@ const LOCK_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
 
 /** The name a session's file is created with: its creation time, then its id or the key of its id. */
 const SESSION_FILE_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z_(.+)\.jsonl$/;
+
+/** Internal exact-file input for a fork, not a way to open a live or writable session by ID. */
+export const withForkFileWindow = Symbol("forkFileWindow");
 
 export class JsonlSessionStore implements SessionStore {
 	private queue: Promise<void> = Promise.resolve();
@@ -1042,18 +1050,57 @@ export class JsonlSessionStore implements SessionStore {
 
 	/** Read the window of this exact export file, not another file in the directory with the same session ID.
 	 * An export is an input: do not create or rewrite a sidecar beside it. */
-	readFileWindow(file: string): Promise<SessionResume> {
+	[withForkFileWindow]<T>(
+		file: string,
+		use: (resume: SessionResume, history: SessionHistorySource) => Promise<T>,
+	): Promise<T> {
 		return this.run(async () => {
 			const path = resolve(file);
-			const stored = await this.readFirstLine(path);
-			if (!isCurrentSessionHeader(stored)) {
-				const imported = await this.readSnapshot(path, stored);
-				return sessionResumeOf(imported.header, imported.entries);
+			const handle = await open(path, "r");
+			try {
+				const stats = await handle.stat({ bigint: true });
+				const stored = await readFirstLineFrom(handle, HEADER_READ_CHUNK_BYTES, 0);
+				const header = await this.readHeaderAt(path, stored);
+				const input: FileWindowInput = { handle, legacy: isCurrentSessionHeader(stored) ? undefined : stored };
+				const jsonl = await this.buildIndex(path, JSON.stringify(header), stats, input);
+				const resume = await this.windowFromIndex(path, header, jsonl, jsonl.index, input);
+				const { epoch, lastSeq } = resume;
+				const result = await use(resume, {
+					descriptor: this.descriptor,
+					readEntrySizes: async (_id, from, to) => ({
+						epoch,
+						lastSeq,
+						sizes: seqRange(from, Math.min(lastSeq, to, from + SESSION_HISTORY_PAGE_ENTRIES - 1)).map((seq) => ({
+							seq,
+							bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+						})),
+					}),
+					readEntryChunk: (ref, offset) =>
+						readFrom(
+							handle,
+							spanStart(jsonl, ref.seq) + offset,
+							Math.min(
+								SESSION_HISTORY_CHUNK_BYTES,
+								spanEnd(jsonl, ref.seq) - spanStart(jsonl, ref.seq) - offset,
+							),
+						),
+					readRange: async (_id, from, to) => ({
+						epoch,
+						lastSeq,
+						startSeq: from,
+						entries: (await this.entriesAt(path, jsonl, seqRange(from, Math.min(lastSeq, to)), input)).map(
+							(held) => held.entry,
+						),
+					}),
+				});
+				const after = await handle.stat({ bigint: true });
+				if (stats.size !== after.size || stats.mtimeNs !== after.mtimeNs || stats.ctimeNs !== after.ctimeNs)
+					throw new SessionConflictError(header.id, lastSeq, lastSeq);
+				return result;
+			} finally {
+				await handle.close();
 			}
-			const header = await this.readHeaderAt(path, stored);
-			const jsonl = await this.buildIndex(path, JSON.stringify(header), await stat(path, { bigint: true }));
-			return this.windowFromIndex(path, header, jsonl);
-		});
+		}, false);
 	}
 
 	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
@@ -1093,10 +1140,11 @@ export class JsonlSessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		jsonl: JsonlIndex,
 		index = jsonl.index,
+		input?: FileWindowInput,
 	): Promise<SessionResume> {
 		const plan = sessionResumePlan(index);
 		const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
-		const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state]);
+		const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state], input);
 		const inBranch = new Set(branchSeqs);
 		const branch = read.filter((held) => inBranch.has(held.seq));
 		const state = read.filter((held) => !inBranch.has(held.seq));
@@ -1182,17 +1230,22 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	private async buildIndex(path: string, headerStamp: string, stats: BigIntStats): Promise<JsonlIndex> {
+	private async buildIndex(
+		path: string,
+		headerStamp: string,
+		stats: BigIntStats,
+		input?: FileWindowInput,
+	): Promise<JsonlIndex> {
 		const identity = `${stats.dev}:${stats.ino}`;
 		const birthtimeNs = String(stats.birthtimeNs);
 		const epoch = epochOf(stats, headerStamp);
-		const topology = await this.foldFile(path, epoch, () => true);
+		const topology = await this.foldFile(path, epoch, () => true, input);
 		const ranges =
 			topology.index.jumps.length === 0 ? undefined : branchRanges(topology.index, topology.index.leafSeq);
 		const folded =
 			ranges === undefined
 				? topology
-				: await this.foldFile(path, epoch, (seq) => ranges.some(([low, high]) => seq >= low && seq <= high));
+				: await this.foldFile(path, epoch, (seq) => ranges.some(([low, high]) => seq >= low && seq <= high), input);
 		return {
 			identity,
 			birthtimeNs,
@@ -1200,7 +1253,13 @@ export class JsonlSessionStore implements SessionStore {
 			fileSize: Number(stats.size),
 			mtimeNs: String(stats.mtimeNs),
 			size: folded.size,
-			witness: await readWitness(path, folded.size),
+			witness: input
+				? await readFrom(
+						input.handle,
+						Math.max(0, folded.size - WITNESS_BYTES),
+						Math.min(folded.size, WITNESS_BYTES),
+					)
+				: await readWitness(path, folded.size),
 			terminated: folded.terminated,
 			torn: folded.torn,
 			spans: folded.spans,
@@ -1214,6 +1273,7 @@ export class JsonlSessionStore implements SessionStore {
 		path: string,
 		epoch: string,
 		activeSeq: (seq: number) => boolean,
+		pinned?: FileWindowInput,
 	): Promise<{
 		readonly index: SessionResumeIndex;
 		readonly spans: number[];
@@ -1233,18 +1293,19 @@ export class JsonlSessionStore implements SessionStore {
 			index = foldSessionResume(index, batch, (id) => ids.get(id), activeSeq);
 			batch = [];
 		};
-		const take = (start: number, line: Buffer) => {
-			const text = line.toString("utf8");
-			if (!text.trim()) return;
-			const entry = JSON.parse(text) as SessionEntry;
+		const take = (start: number, length: number, raw: SessionEntry) => {
+			const entry = pinned?.legacy ? upgradeLegacySessionEntry(pinned.legacy, raw, spans.length / 2 + 1, path) : raw;
 			validateSessionEntryStructure([entry], path);
-			spans.push(start, start + line.length);
+			spans.push(start, start + length);
 			hashes.push(idHash(entry.id));
 			batch.push(entry);
 			ids.set(entry.id, spans.length / 2);
 			if (batch.length >= INDEX_BATCH_ENTRIES) flush();
 		};
-		const input = createReadStream(path, { highWaterMark: SCAN_WINDOW_BYTES });
+		const input = createReadStream(path, {
+			highWaterMark: SCAN_WINDOW_BYTES,
+			...(pinned ? { fd: pinned.handle, autoClose: false, start: 0 } : {}),
+		});
 		let parts: Buffer[] = [];
 		let lineStart = 0;
 		let position = 0;
@@ -1257,7 +1318,10 @@ export class JsonlSessionStore implements SessionStore {
 					const line = parts.length === 1 ? (parts[0] as Buffer) : Buffer.concat(parts);
 					parts = [];
 					if (header) header = false;
-					else take(lineStart, line);
+					else {
+						const text = line.toString("utf8");
+						if (text.trim()) take(lineStart, line.length, JSON.parse(text) as SessionEntry);
+					}
 					from = newline + 1;
 					lineStart = position + from;
 				}
@@ -1265,7 +1329,7 @@ export class JsonlSessionStore implements SessionStore {
 				position += chunk.length;
 			}
 		} finally {
-			input.destroy();
+			if (!pinned) input.destroy();
 		}
 		const rest = parts.length === 0 ? undefined : Buffer.concat(parts);
 		if (rest === undefined || header) {
@@ -1278,11 +1342,7 @@ export class JsonlSessionStore implements SessionStore {
 			reportTornLine(path);
 			return { index, spans, ids: hashes, size: lineStart, terminated: true, torn: true };
 		}
-		validateSessionEntryStructure([unterminated], path);
-		spans.push(lineStart, position);
-		hashes.push(idHash(unterminated.id));
-		batch.push(unterminated);
-		ids.set(unterminated.id, spans.length / 2);
+		take(lineStart, position - lineStart, unterminated);
 		flush();
 		return { index, spans, ids: hashes, size: position, terminated: false, torn: false };
 	}
@@ -1398,11 +1458,16 @@ export class JsonlSessionStore implements SessionStore {
 		else this.indexes.set(path, next);
 	}
 
-	private async entriesAt(path: string, jsonl: JsonlIndex, seqs: readonly number[]): Promise<SessionStoredEntry[]> {
+	private async entriesAt(
+		path: string,
+		jsonl: JsonlIndex,
+		seqs: readonly number[],
+		input?: FileWindowInput,
+	): Promise<SessionStoredEntry[]> {
 		const wanted = [...new Set(seqs.filter((seq) => seq >= 1 && seq <= jsonl.index.seq))].sort((a, b) => a - b);
 		const entries: SessionStoredEntry[] = [];
 		if (wanted.length === 0) return entries;
-		const file = await open(path, "r");
+		const file = input?.handle ?? (await open(path, "r"));
 		try {
 			let index = 0;
 			while (index < wanted.length) {
@@ -1422,12 +1487,16 @@ export class JsonlSessionStore implements SessionStore {
 				for (let position = index; position < next; position++) {
 					const seq = wanted[position] as number;
 					const line = bytes.subarray(spanStart(jsonl, seq) - from, spanEnd(jsonl, seq) - from);
-					entries.push({ seq, entry: JSON.parse(line.toString("utf8")) as SessionEntry });
+					const raw = JSON.parse(line.toString("utf8")) as SessionEntry;
+					entries.push({
+						seq,
+						entry: input?.legacy ? upgradeLegacySessionEntry(input.legacy, raw, seq, path) : raw,
+					});
 				}
 				index = next;
 			}
 		} finally {
-			await file.close();
+			if (!input) await file.close();
 		}
 		return entries;
 	}

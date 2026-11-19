@@ -238,6 +238,7 @@ export async function exportToJsonl(
 			// Re-chain parentIds to form a linear sequence
 			let prevId: string | null = null;
 			for await (const entry of branchEntries) {
+				if (entry.type === "custom" && entry.customType === "atomic.fork-anchor") continue;
 				await writeLine(file, JSON.stringify({ ...entry, parentId: prevId }));
 				prevId = entry.id;
 			}

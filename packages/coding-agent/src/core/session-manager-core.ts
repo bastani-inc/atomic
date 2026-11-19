@@ -6,7 +6,7 @@ import { yieldToEventLoop } from "../utils/event-loop.js";
 
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
-import { forkContextPath } from "./fork-context-path.js";
+import { forkContextPath, includeNamedForkOutputs } from "./fork-context-path.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
@@ -96,7 +96,7 @@ import {
 	StorageUnavailableError,
 } from "./storage/session/errors.js";
 import { historyChunks, historyPages } from "./storage/session/history-pages.js";
-import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
+import { JsonlSessionStore, withForkFileWindow } from "./storage/session/jsonl-session-store.js";
 import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import {
@@ -1578,36 +1578,40 @@ export class SessionManager {
 		return this.runMutation(async () => {
 			const path =
 				options?.history === "tail"
-					? forkContextPath(await this.contextBranch(leafId), this.sessionId)
+					? await this.forkWindow(await this.contextBranch(leafId), leafId)
 					: await this.fullBranch(leafId);
-			const result = createBranchedSessionState({
-				leafId,
-				cwd: this.cwd,
-				parentSessionId: this.sessionId,
-				workflow: classifiedWorkflowMetadata(this.getHeader()),
-				path,
-				labelsById: this.labelsById,
-				labelTimestampsById: this.labelTimestampsById,
-			});
-			const header = result.fileEntries[0] as SessionHeader;
-			const entries = getEntriesWithoutHeader(result.fileEntries);
-			const record = this.recordHeader(header);
-			const hashes = sessionBlobHashes(this.store, entries);
-			const store = await this.storeForNewSession();
-			const location =
-				store instanceof JsonlSessionStore
-					? this.sessionDir
-						? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
-						: store.locationFor(record)
-					: undefined;
-			const created = await (store instanceof JsonlSessionStore
-				? store.create(record, entries, location)
-				: store.create(record, entries));
-			await copySessionBlobs(this.store, this.sessionId, store, record.id, hashes);
-			this.store = store;
-			this.restore({ header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch }, location);
-			return this.sessionFile;
+			return this.installFork(leafId, path);
 		});
+	}
+
+	private async installFork(leafId: string, path: SessionEntry[]): Promise<string | undefined> {
+		const result = createBranchedSessionState({
+			leafId,
+			cwd: this.cwd,
+			parentSessionId: this.sessionId,
+			workflow: classifiedWorkflowMetadata(this.getHeader()),
+			path,
+			labelsById: this.labelsById,
+			labelTimestampsById: this.labelTimestampsById,
+		});
+		const header = result.fileEntries[0] as SessionHeader;
+		const entries = getEntriesWithoutHeader(result.fileEntries);
+		const record = this.recordHeader(header);
+		const hashes = sessionBlobHashes(this.store, entries);
+		const store = await this.storeForNewSession();
+		const location =
+			store instanceof JsonlSessionStore
+				? this.sessionDir
+					? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
+					: store.locationFor(record)
+				: undefined;
+		const created = await (store instanceof JsonlSessionStore
+			? store.create(record, entries, location)
+			: store.create(record, entries));
+		await copySessionBlobs(this.store, this.sessionId, store, record.id, hashes);
+		this.store = store;
+		this.restore({ header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch }, location);
+		return this.sessionFile;
 	}
 
 	/**
@@ -1619,15 +1623,16 @@ export class SessionManager {
 	static async readForkedBranch(
 		store: SessionStore,
 		sessionId: string,
-		entryId?: string,
+		point?: string | { readonly checkpoint: true },
 	): Promise<SessionEntry[] | undefined> {
+		const entryId = typeof point === "string" ? point : undefined;
 		const source = await SessionManager.open(store, sessionId, undefined, {
 			history: "tail",
 			...(entryId === undefined ? {} : { leafId: entryId }),
 		});
 		const leafId = entryId ?? source.getLeafId();
 		if (leafId === null || source.getEntry(leafId) === undefined) return undefined;
-		return forkContextPath(await source.contextBranch(leafId), source.getSessionId());
+		return source.forkWindow(await source.contextBranch(leafId), leafId, point === undefined ? "session" : "branch");
 	}
 
 	/** Capture only the store positions of this launch's window. A child waiting to run never holds the parent's
@@ -1684,14 +1689,38 @@ export class SessionManager {
 					records.push(...page.entries);
 					if (end < high) await new Promise<void>((resolve) => setImmediate(resolve));
 				}
-			const entries = forkContextPath(records, header.id);
+			const entries = await includeNamedForkOutputs(
+				forkContextPath(records, header.id),
+				store,
+				header.id,
+				records.at(-1)?.id ?? null,
+				epoch,
+				watermark,
+				"branch",
+			);
 			const leaf = entries.at(-1);
 			if (!leaf) throw new Error("The captured fork window is empty");
 			const source = new SessionManager(store, cwd, sessionDir);
 			source.restore({ header, entries, lastSeq: entries.length });
-			await source.createBranchedSession(leaf.id, { history: "tail" });
+			await source.installFork(leaf.id, entries);
 			return source;
 		};
+	}
+
+	private forkWindow(
+		path: SessionEntry[],
+		leafId: string | null,
+		scope: "branch" | "session" = "branch",
+	): Promise<SessionEntry[]> {
+		return includeNamedForkOutputs(
+			forkContextPath(path, this.sessionId),
+			this.store,
+			this.sessionId,
+			leafId,
+			this.historyEpoch,
+			this.lastSeq,
+			scope,
+		);
 	}
 
 	private async fullBranch(leafId: string): Promise<SessionEntry[]> {
@@ -1733,7 +1762,7 @@ export class SessionManager {
 			const source = {
 				store: this.store,
 				sessionId: this.sessionId,
-				entries: forkContextPath(this.getBranch(), this.sessionId),
+				entries: await this.forkWindow(this.getBranch(), this.getLeafId(), "session"),
 			};
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
 			manager.markForkOrigin(source.store);
@@ -1958,16 +1987,29 @@ export class SessionManager {
 			exactDirectory: true,
 			scanExisting: false,
 		});
-		let source: SessionResume;
+		let source: { id: string; entries: SessionEntry[] };
 		try {
-			source = await sourceStore.readFileWindow(resolvePath(sourcePath));
+			source = await sourceStore[withForkFileWindow](resolvePath(sourcePath), async (window, history) => {
+				const selected = [...window.state.filter(({ onBranch }) => onBranch), ...window.branch]
+					.sort((a, b) => a.seq - b.seq)
+					.map(({ entry }) => entry);
+				const id = window.header.id;
+				const entries = await includeNamedForkOutputs(
+					forkContextPath(selected, id),
+					history,
+					id,
+					window.leafId,
+					window.epoch,
+					window.lastSeq,
+					"session",
+					window.compaction?.seq,
+				);
+				return { id, entries };
+			});
 		} finally {
 			await sourceStore.close();
 		}
-		const selected = [...source.state.filter(({ onBranch }) => onBranch), ...source.branch]
-			.sort((a, b) => a.seq - b.seq)
-			.map(({ entry }) => entry);
-		const { entries, blobs } = takeInlineToolOutput(forkContextPath(selected, source.header.id), source.header.id);
+		const { entries, blobs } = takeInlineToolOutput(source.entries, source.id);
 		const store =
 			typeof sessionDir === "string"
 				? await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false })
@@ -1981,7 +2023,7 @@ export class SessionManager {
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
 			const manager = new SessionManager(store, targetCwd, directory, {
 				...options,
-				parentSession: source.header.id,
+				parentSession: source.id,
 			});
 			manager.markForkOrigin(sourceStore);
 			assertSessionBlobStore(store, manager.sessionId, blobs.length);

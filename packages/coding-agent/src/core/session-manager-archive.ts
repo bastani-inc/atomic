@@ -8,6 +8,7 @@ import type {
 	SessionWorkflowMetadata,
 } from "./session-manager-types.ts";
 import { createSessionId } from "./session-manager-validation.ts";
+import { TOOL_OUTPUT_ENTRY_TYPE } from "./session-tool-output.ts";
 
 export interface BranchedSessionStateInput {
 	leafId: string;
@@ -82,7 +83,9 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 								? null
 								: (replacementByLabelId.get(entry.firstKeptEntryId) ?? entry.firstKeptEntryId),
 					}
-				: { ...entry, parentId: pathParentId },
+				: entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
+					? entry
+					: { ...entry, parentId: pathParentId },
 		);
 		pathParentId = entry.id;
 	}

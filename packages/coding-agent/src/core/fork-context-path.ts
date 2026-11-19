@@ -1,9 +1,96 @@
-import { applyContextEdit, buildContextEntries, collectContextEdits } from "./session-manager-history.ts";
+import { convertToLlm } from "./messages.js";
+import {
+	applyContextEdit,
+	buildContextEntries,
+	buildSessionProjection,
+	collectContextEdits,
+	getLatestCompactionBoundaryEntry,
+} from "./session-manager-history.ts";
 import type { SessionEntry } from "./session-manager-types.ts";
 import { TOOL_OUTPUT_ENTRY_TYPE } from "./session-tool-output.ts";
+import { historyChunks, historyPages, type SessionHistorySource } from "./storage/session/history-pages.js";
 import { TOOL_DEACTIVATION_ENTRY_TYPE } from "./tool-deactivation.ts";
 
 const forkSettings = new Set(["workspace_binding", TOOL_DEACTIVATION_ENTRY_TYPE, "codemode-store"]);
+
+/** A fork at a specific point can inherit only ancestor receipts. An unqualified current-leaf fork can also
+ * keep a named output that the same session stored on another branch before the boundary. Neither copies
+ * receipts just because they exist, or reads past its captured watermark. */
+export async function includeNamedForkOutputs(
+	entries: SessionEntry[],
+	store: SessionHistorySource,
+	sessionId: string,
+	leaf: string | null,
+	epoch: string | undefined,
+	through: number,
+	scope: "branch" | "session",
+	boundarySeq?: number,
+): Promise<SessionEntry[]> {
+	const boundary = getLatestCompactionBoundaryEntry(entries);
+	if (!leaf || !boundary) return entries;
+	const wanted = new Set<string>();
+	const scan = (value: unknown): void => {
+		if (typeof value === "string") {
+			for (const hit of value.matchAll(/tool-output:\/\/([0-9a-f]{64})(?![0-9a-f])/gu)) wanted.add(hit[1]!);
+		} else if (value && typeof value === "object") {
+			for (const v of Object.values(value)) scan(v);
+		}
+	};
+	for (const m of convertToLlm(
+		buildSessionProjection(entries, entries.at(-1)?.id, undefined, sessionId, entries).messages,
+	))
+		scan(m.content);
+	const hashOf = (entry: SessionEntry): string | undefined =>
+		entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
+			? (entry.data as { hash?: string } | undefined)?.hash
+			: undefined;
+	for (const entry of entries) {
+		const hash = hashOf(entry);
+		if (hash) wanted.delete(hash);
+	}
+	if (!wanted.size) return entries;
+	const found: SessionEntry[] = [];
+	let next: string | null = leaf;
+	let beforeBoundary = scope === "session" && boundarySeq !== undefined;
+	search: for await (const { items } of historyPages(store, sessionId, epoch, through, {
+		direction: "backward",
+		...(beforeBoundary && boundarySeq !== undefined ? { toSeq: boundarySeq - 1 } : {}),
+	})) {
+		for (let i = items.length - 1; i >= 0; i--) {
+			const item = items[i]!;
+			const links =
+				"entry" in item
+					? { id: item.entry.id, parentId: item.entry.parentId, hash: hashOf(item.entry) }
+					: await (await import("./storage/session/chunked-resume-projection.js")).chunkedForkLink(() =>
+							historyChunks(store, sessionId, epoch, item, {}),
+						);
+			const ancestor = links.id === next;
+			if (ancestor && links.id === boundary.id) beforeBoundary = true;
+			if (!ancestor && !(scope === "session" && beforeBoundary)) continue;
+			if (links.hash && wanted.has(links.hash)) {
+				const candidate =
+					"entry" in item
+						? item.entry
+						: (await store.readRange!(sessionId, item.seq, item.seq, item.epoch)).entries[0];
+				if (candidate && hashOf(candidate) === links.hash) {
+					found.push(candidate);
+					wanted.delete(links.hash);
+				}
+			}
+			if (ancestor) next = links.parentId ?? null;
+			if (!wanted.size || (!next && scope === "branch")) break search;
+		}
+	}
+	// A named historical receipt is archived with its original links. It need not become part of the active branch.
+	if (!found.length) return entries;
+	const restored = new Set(found.map((entry) => entry.id));
+	return [
+		...found.reverse(),
+		...entries.filter(
+			(entry) => !(entry.type === "custom" && entry.customType === "atomic.fork-anchor" && restored.has(entry.id)),
+		),
+	];
+}
 
 /** A new child inherits request content, not the source's admission authority or its recoverable operations.
  * Model-visible content from a notice is still the same provider input, but is no longer a deliverable card. */
@@ -17,6 +104,8 @@ export function forkContextPath(path: SessionEntry[], sourceSessionId: string): 
 	const toolResults = new Set<string>();
 	for (const entry of path) {
 		if (!window.has(entry.id)) continue;
+		if (entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE && entry.parentId !== null)
+			anchors.add(entry.parentId);
 		if (entry.type === "compaction") {
 			if (entry.firstKeptEntryId !== null) anchors.add(entry.firstKeptEntryId);
 			if (entry.coveredThroughEntryId !== undefined) anchors.add(entry.coveredThroughEntryId);
@@ -111,7 +200,19 @@ export function forkContextPath(path: SessionEntry[], sourceSessionId: string): 
 			};
 		if (!entry) continue;
 		const parentId = retained.at(-1)?.id ?? null;
-		retained.push(entry.parentId === parentId ? entry : { ...entry, parentId });
+		if (entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE) {
+			// The receipt's parent can lie outside an already trimmed window. Preserve the receipt verbatim and
+			// bridge that omitted parent, not the parent's lifecycle state, into this branch.
+			if (entry.parentId !== null && entry.parentId !== parentId)
+				retained.push({
+					type: "custom",
+					customType: "atomic.fork-anchor",
+					id: entry.parentId,
+					parentId,
+					timestamp: entry.timestamp,
+				});
+			retained.push(entry);
+		} else retained.push(entry.parentId === parentId ? entry : { ...entry, parentId });
 	}
 	return retained.length
 		? retained

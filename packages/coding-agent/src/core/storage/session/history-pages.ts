@@ -11,6 +11,8 @@ import {
 	type SessionStore,
 } from "./types.js";
 
+export type SessionHistorySource = Pick<SessionStore, "descriptor" | "readEntrySizes" | "readEntryChunk" | "readRange">;
+
 function cursorScope(sessionId: string, epoch: string): string {
 	return createHash("sha256")
 		.update(JSON.stringify([sessionId, epoch]))
@@ -20,7 +22,7 @@ function cursorScope(sessionId: string, epoch: string): string {
 /** A lazy sequence of pages of the generation and watermark the caller observed. Metadata is sized before any
  * payload read. A new generation is rejected by readRange inside the same snapshot that reads the payload. */
 export async function* historyPages(
-	store: SessionStore,
+	store: SessionHistorySource,
 	sessionId: string,
 	epoch: string | undefined,
 	watermark: number,
@@ -117,7 +119,7 @@ export function readSessionHistoryChunks(
 }
 
 export async function* historyChunks(
-	store: SessionStore,
+	store: SessionHistorySource,
 	sessionId: string,
 	epoch: string | undefined,
 	reference: OversizedSessionEntry,

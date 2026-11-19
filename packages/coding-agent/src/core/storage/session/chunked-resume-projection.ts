@@ -380,6 +380,35 @@ export async function chunkedBranchState(chunks: () => AsyncIterable<Uint8Array>
 	return entry as unknown as SessionEntry;
 }
 
+/** Identity and parent of a historical entry, plus its hash when it is a tool-output receipt. Never collect the receipt's inline bytes here. */
+export async function chunkedForkLink(
+	chunks: () => AsyncIterable<Uint8Array>,
+): Promise<{ id?: string; parentId?: string | null; hash?: string }> {
+	const selected = object(
+		await read(
+			chunks(),
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					id: "string",
+					parentId: "string",
+					type: "short",
+					customType: "short",
+					data: { hash: "short" },
+				});
+			})(),
+		),
+	);
+	const hash =
+		selected.type === "custom" && selected.customType === "atomic.tool-output"
+			? object(selected.data).hash
+			: undefined;
+	return {
+		id: typeof selected.id === "string" ? selected.id : undefined,
+		parentId: typeof selected.parentId === "string" ? selected.parentId : null,
+		hash: typeof hash === "string" ? hash : undefined,
+	};
+}
+
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */
 export async function chunkedResumeProjection(
 	stub: SqliteRow,
