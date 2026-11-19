@@ -6,7 +6,8 @@ usage() {
 Usage: wait-for-text.sh -t target -p pattern [options]
 
 Poll a tmux pane for text and exit when found before the deadline. A zero
-second timeout does not inspect the pane.
+second timeout does not inspect the pane. The deadline relies on the system's
+sleep: if the OS cannot start or run sleep on time, the helper may return late.
 
 The search includes echoed input and scrollback. For command completion, use a
 unique marker whose full text does not appear in the command sent to tmux.
@@ -92,20 +93,32 @@ remaining_cs() {
 }
 before_deadline() { remaining_cs >/dev/null; }
 
-scratch=$(mktemp -d)
+scratch=""
 worker=""
 stop_worker() {
   if [[ -n "$worker" ]]; then
-    : >"$scratch/stopped"
+    # The shell reports a failed write; losing scratch must not prevent group cleanup.
+    : >"$scratch/stopped" || :
     kill -KILL -- "-$worker" 2>/dev/null || :
+    # Windows delivers a group signal to its current members. A Windows child
+    # created during that delivery can otherwise live past the helper's exit.
+    case $OSTYPE in
+      msys*|cygwin*)
+        while builtin kill -0 -- "-$worker" 2>/dev/null; do
+          kill -KILL -- "-$worker" 2>/dev/null || break
+        done ;;
+    esac
     worker=""
   fi
 }
-trap 'stop_worker; rm -rf -- "$scratch"' EXIT
+trap 'stop_worker; if [[ -n "$scratch" ]]; then rm -rf -- "$scratch"; fi' EXIT
 # Stop an owned group immediately, or remember the signal until its PID is saved.
 # A second interrupt must not cut off the first one's cleanup.
 cancelled=0
 trap 'trap "" HUP INT TERM; cancelled=1; stop_worker' HUP INT TERM
+# Let mktemp report the path it created, even if the caller's whole group is interrupted.
+scratch=$(trap '' HUP INT TERM; exec mktemp -d)
+(( ! cancelled )) || exit 1
 : >"$scratch/pane"
 
 poll() {

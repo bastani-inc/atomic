@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -255,6 +255,17 @@ echo working
 		assert.match(result.stderr, /Last 1000 lines from s:\nworking\n$/u);
 	});
 
+	test("wait-for-text removes scratch when interrupted just after allocation (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-allocation");
+		writeFileSync(
+			bashEnv,
+			`trap 'if [[ $BASH_SUBSHELL == 0 && -n \${scratch:-} && -d $scratch && ! -f $HOME/allocated ]]; then echo "$scratch" >"$HOME/allocated"; builtin kill -TERM "$$"; fi' DEBUG\n`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready"], { BASH_ENV: bashEnv });
+		assert.notEqual(result.exitCode, 0);
+		assert.equal(existsSync(readFileSync(join(dir, "allocated"), "utf8").trim()), false);
+	});
+
 	test("wait-for-text cancels its worker even if interrupted during launch (#5566)", () => {
 		const bashEnv = join(dir, "interrupt-launch");
 		// Interrupt this shell at launch and again just before it stops its own worker.
@@ -274,6 +285,14 @@ trap interrupt DEBUG
 		assert.ok(existsSync(join(dir, "interrupted-again")));
 		assert.notEqual(result.exitCode, 0);
 		assert.ok(result.elapsedMs < 6_000, `worker still held the pipes for ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text stops a running capture even when it cannot record cancellation (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-capture");
+		writeFileSync(bashEnv, `tmux() { rm -rf -- "$scratch"; builtin kill -TERM "$$"; exec /bin/sleep 8; }\n`);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
+		assert.notEqual(result.exitCode, 0);
+		assert.ok(result.elapsedMs < 6_000, `capture still held the pipes for ${Math.round(result.elapsedMs)} ms`);
 	});
 
 	test("wait-for-text does not poll after cancellation races worker startup (#5566)", () => {
