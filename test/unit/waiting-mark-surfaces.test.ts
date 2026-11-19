@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { TUI } from "@bastani/atomic-tui";
-import { beforeAll, test } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
+	TASK_COMPLETION_MESSAGE_TYPE,
 	type TaskCompletionEnvelope,
 	taskCompletionNotice,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type { Sequence, TaskRecord, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { STATUS_MARKERS } from "../../packages/coding-agent/src/modes/interactive/components/notice-line.js";
 import { renderBoardRow } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
 import {
@@ -16,8 +20,9 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { TaskRow } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
+import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
-import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { getEditorTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import {
 	renderSubagentToolCall,
@@ -32,8 +37,12 @@ import {
 	workflowBlockTheme,
 } from "../../packages/workflows/src/extension/workflow-tool-block.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
 import savedNotices from "../fixtures/saved-subagent-notices.json" with { type: "json" };
+import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { setupRun } from "./stage-chat-view-helpers.js";
 
 beforeAll(() => {
 	initTheme("dark");
@@ -219,6 +228,68 @@ test("a stopped subagent's title-only notice does not take its outcome from the 
 		);
 	}
 });
+
+test.each([
+	{
+		title: "Subagent triage stopped (QA): paused · awaiting resume: Review docs",
+		expected: "⏸ triage stopped (QA): paused · awaiting resume",
+	},
+	{
+		title: `Subagent triage stopped: released while waiting on bash (ci): ${"x".repeat(240)}`,
+		expected: "◌ triage stopped: is waiting on bash (ci)",
+	},
+	{
+		title: "Subagent triage stopped: paused · awaiting resume: Review docs",
+		agentName: "triage\tstopped:",
+		expected: "⏸ triage stopped: paused · awaiting resume",
+	},
+])(
+	"main and detached stage chats reopen '$expected' from the saved title (#5690)",
+	async ({ title, expected, ...identity }) => {
+		await withNodeSqliteDatabase(async (db) => {
+			const writer = await SqlSessionStore.open(db.database);
+			const session = await SessionManager.create(writer, process.cwd());
+			const notification = { ...savedNotices.pause088, ...identity, title };
+			await session.appendCustomMessageEntry(TASK_COMPLETION_MESSAGE_TYPE, title, true, { notification });
+			const sessionId = session.getSessionId();
+			await writer.close();
+
+			const reader = await SqlSessionStore.open(await db.reopen());
+			const main = new ChatSessionHost({ style: themedChatHostStyle(), editorTheme: getEditorTheme() });
+			const store = createStore();
+			setupRun(store, "run-1", "stage-a", "completed");
+			store.recordStageSession("run-1", "stage-a", { sessionId });
+			const stage = new StageChatView({
+				store,
+				sessionStore: reader,
+				graphTheme: deriveGraphTheme({}),
+				runId: "run-1",
+				stageId: "stage-a",
+				workflowName: "review",
+				onDetach() {},
+				onClose() {},
+			});
+			try {
+				assert.equal(await main.loadSession(reader, sessionId), true);
+				const notice = (rows: string[]) =>
+					rows.map((row) => stripVTControlCharacters(row).trim()).find((row) => row.includes("triage"));
+				const stageRow = await vi.waitFor(() => {
+					const row = notice(stage.render(120));
+					assert.ok(row, "stage loads its archived notice");
+					return row;
+				});
+				assert.deepEqual(
+					{ main: notice(main.renderBody(120, 25)), stage: stageRow },
+					{ main: expected, stage: expected },
+				);
+			} finally {
+				stage.dispose();
+				main.dispose();
+				await reader.close();
+			}
+		});
+	},
+);
 
 test("the saved result distinguishes a release from punctuation and release wording in a name (#5563)", () => {
 	const released = completionNoticeFromDetails(savedNotices.punctuated088Details);

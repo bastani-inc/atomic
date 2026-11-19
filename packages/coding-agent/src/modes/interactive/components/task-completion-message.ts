@@ -2,7 +2,14 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
-import { releasedWaitingOn, type TaskCompletionNotice, type TaskNoticeLine } from "../../../core/tasks/completion.js";
+import { formatTimeoutSeconds } from "../../../core/tasks/cancel-reason.js";
+import {
+	completionTitleDescription,
+	completionTitleText,
+	releasedWaitingOn,
+	type TaskCompletionNotice,
+	type TaskNoticeLine,
+} from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import type { TaskTranscriptHistory, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
@@ -137,8 +144,19 @@ function agentNoticeOutcome(status: NoticeLineSpec["status"], line: TaskNoticeLi
 const RELEASE_WORDING = "released while waiting on ";
 const PAUSE_WORDING = "paused · awaiting resume";
 const QUIT_WORDING = "quit · paused, awaiting resume";
-const STOP_BEFORE_DESCRIPTION =
-	/ (?:killed \(non-resumable\)|timed out(?: after \S+ seconds?)?|stopped(?: \([^()]+\)| by a pause)?|interrupted by (?:a restart|a pause)):$/u;
+const AGENT_STOP_SUFFIX =
+	/ (?:killed \(non-resumable\)|timed out(?: after (\S+) seconds?)?|stopped(?: \((?:task owner closed|session closed|workflow stage closed|Atomic shut down)\))?|interrupted by a restart):$/u;
+
+/** A named agent's stop followed by the colon introducing its task, in the legacy writer's spelling. */
+function stoppedAgentName(label: string): string | undefined {
+	const stop = AGENT_STOP_SUFFIX.exec(label);
+	if (!stop) return undefined;
+	if (stop[1] !== undefined) {
+		const ms = Number(stop[1]) * 1000;
+		if (!Number.isFinite(ms) || stop[0] !== ` timed out after ${formatTimeoutSeconds(ms)}:`) return undefined;
+	}
+	return label.slice(0, stop.index);
+}
 
 /** Before notices had a line, the title held the outcome, followed by `: <task description>` or a final period. */
 function legacyStopWording(title: string, result: unknown, agentName: string | undefined): string | undefined {
@@ -164,9 +182,18 @@ function legacyStopWording(title: string, result: unknown, agentName: string | u
 			title,
 		);
 	if (!prefix || prefix[1]?.includes(": ")) return undefined;
-	// The separating space can also be the space of `: <description>`. A name may itself end in a colon,
-	// so rule it out only when a stop in the saved title already introduced the description.
-	if (prefix[1] && prefix[1] !== agentName && STOP_BEFORE_DESCRIPTION.test(prefix[1])) return undefined;
+	// The space before the matched wording can belong to `: <description>`. Prefer that reading only
+	// if the entire title could have been written for the stopped child, including its saved name.
+	if (prefix[1]) {
+		const name = stoppedAgentName(prefix[1]);
+		const description = title.slice("Subagent ".length + prefix[1].length + 1);
+		if (
+			name !== undefined &&
+			name === completionTitleText(agentName ?? name) &&
+			description === completionTitleDescription(description)
+		)
+			return undefined;
+	}
 	if (prefix[2] !== RELEASE_WORDING) return prefix[2];
 	const calls = /^(a tool call|.+?\))(?:: |\.$)/su.exec(title.slice(prefix[0].length))?.[1];
 	return calls ? RELEASE_WORDING + calls : undefined;
