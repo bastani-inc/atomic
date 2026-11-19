@@ -6,7 +6,13 @@ import {
 	requireStoreDurableBackend,
 } from "../durable/store-backend.js";
 import type { DurableCheckpoint, ResumableWorkflowEntry } from "../durable/types.js";
-import { toWorkflowPickerRow, workflowResumeSelectorItems } from "../tui/workflow-resume-selector.js";
+import { isResolvedRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import type { RunSnapshot } from "../shared/store-types.js";
+import {
+	durableWorkflowSession,
+	toWorkflowPickerRow,
+	workflowResumeSelectorItems,
+} from "../tui/workflow-resume-selector.js";
 import type { PiCommandContext, PiEventContext } from "./public-types.js";
 import type { PiHostSessionPickerRow } from "./wiring.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
@@ -16,7 +22,7 @@ import {
 	prepareWorkflowResumeCatalog,
 	type WorkflowRunControlDeps,
 } from "./workflow-durable-resume-command.js";
-import { captureWorkflowOwnerResources } from "./workflow-owner-resources.js";
+import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { collectResumePickerLiveRuns } from "./workflow-resume-picker-rows.js";
 import { handleRunControlCommand } from "./workflow-run-control-command.js";
@@ -29,7 +35,11 @@ export interface WorkflowResumeProviderDeps extends WorkflowRunControlDeps {
 
 export interface WorkflowResumeProvider {
 	listResumeEntries(target?: string): Promise<readonly PiHostSessionPickerRow[]>;
-	resumeFromPicker(target: string, ctx?: WorkflowResumeCommandContext): Promise<void>;
+	resumeFromPicker(
+		target: string,
+		ctx?: WorkflowResumeCommandContext,
+		selection?: PiHostSessionPickerRow["resumeSelection"],
+	): Promise<void>;
 	deleteResumeEntry(runId: string): Promise<void>;
 }
 
@@ -144,6 +154,26 @@ async function savedRunOverviews(
 
 export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): WorkflowResumeProvider {
 	const resolveOwner = () => deps.owner ?? captureWorkflowOwnerResources();
+	// Keep each listed version with the live run that produced it; dropping that run drops the pins as well.
+	const settlingVersions = new WeakMap<RunSnapshot, Map<number, Promise<number>>>();
+	const pinSavingAttempts = (owner: WorkflowOwnerResources): void => {
+		for (const id of owner.jobs.runIds()) {
+			const run = owner.store.run(id);
+			if (run?.status !== "failed") continue;
+			const job = owner.jobs.get(id);
+			const backend = availableStoreDurableBackend(owner.store, id);
+			const listed = backend?.getWorkflow(id)?.updatedAt;
+			if (job === undefined || backend === undefined || listed === undefined) continue;
+			const versions = settlingVersions.get(run) ?? new Map<number, Promise<number>>();
+			if (versions.has(listed)) continue;
+			// Do not hold up the catalog. Only a pick of this version needs to join the job's final save.
+			versions.set(
+				listed,
+				job.promise.then(() => backend.getWorkflow(id)?.updatedAt ?? listed),
+			);
+			settlingVersions.set(run, versions);
+		}
+	};
 	const reportedResourceWarnings = new Set<string>();
 	const ensureResourcesLoaded = async (ctx: PiCommandContext | undefined): Promise<void> => {
 		try {
@@ -160,6 +190,8 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 	return {
 		async listResumeEntries(target?: string): Promise<readonly PiHostSessionPickerRow[]> {
 			const owner = resolveOwner();
+			// A failed job may finish before the catalog that saw its running version returns.
+			pinSavingAttempts(owner);
 			const activeCtx = deps.context();
 			await ensureResourcesLoaded(activeCtx);
 			const runtime = deps.runtimeForContext(activeCtx);
@@ -195,17 +227,39 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 					},
 				);
 			const visible = formatItems();
-			if (visible.length === 0) return [];
-			const visibleIds = new Set(visible.map((item) => item.session.id));
+			// Overview reads can outlast an attempt; keep the version that produced the row, not a later handle.
+			const selections = new Map(visible.map(({ session }) => [session.id, session.resumeSelection]));
+			// Also capture a failure first published while the catalog was loading.
+			pinSavingAttempts(owner);
+			// Direct /resume resolves across sessions and all stored roots, not just the rows offered in the picker.
+			const match = resolveRunIdTarget(cleanTarget ?? "", catalog.inspectableIds ?? []);
+			const matchedIds = match.kind === "ambiguous" ? match.matches : isResolvedRunId(match) ? [match.runId] : [];
+			const hidden = matchedIds.flatMap((id) => {
+				const handle = selections.has(id) ? undefined : backend?.getWorkflow(id);
+				return handle === undefined
+					? []
+					: [durableWorkflowSession(handle, "durable", Date.now(), owner.store.run(id), backend)];
+			});
+			if (selections.size === 0) return hidden.map(toWorkflowPickerRow);
 			const overviewCheckpoints = await savedRunOverviews(
 				backend,
-				[...resumable, ...catalog.completed].filter((entry) => visibleIds.has(entry.workflowId)),
+				[...resumable, ...catalog.completed].filter((entry) => selections.has(entry.workflowId)),
 				cleanTarget,
 			);
-			return formatItems(overviewCheckpoints).map(toWorkflowPickerRow);
+			return [
+				...formatItems(overviewCheckpoints).map((item) => ({
+					...toWorkflowPickerRow(item),
+					resumeSelection: selections.get(item.session.id),
+				})),
+				...hidden.map(toWorkflowPickerRow),
+			];
 		},
 
-		async resumeFromPicker(target: string, rawCtx?: WorkflowResumeCommandContext): Promise<void> {
+		async resumeFromPicker(
+			target: string,
+			rawCtx?: WorkflowResumeCommandContext,
+			selection?: PiHostSessionPickerRow["resumeSelection"],
+		): Promise<void> {
 			const trimmed = target.trim();
 			if (!trimmed) {
 				throw new Error("Workflow run not found: (empty)");
@@ -234,7 +288,10 @@ export function createWorkflowResumeProvider(deps: WorkflowResumeProviderDeps): 
 					reportedError = message;
 				},
 			};
-			await handleRunControlCommand("resume", tokens, commandCtx, reporter, { ...deps, owner });
+			const listedRun = owner.store.run(targetId);
+			const settled = listedRun && selection && settlingVersions.get(listedRun)?.get(selection.updatedAt);
+			const expectedUpdatedAt = settled === undefined ? selection?.updatedAt : await settled;
+			await handleRunControlCommand("resume", tokens, commandCtx, reporter, { ...deps, owner }, expectedUpdatedAt);
 			if (reportedError !== undefined) {
 				throw new Error(formatPickerResumeError(targetId, reportedError));
 			}
