@@ -64,14 +64,10 @@ function changingStore(session: object, initial: TaskRecord[]) {
 	};
 }
 
-const settle = async () => {
-	for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve));
-};
-
 test("the interactive engine sends the host the panel's agent and subagent counts, apart from its other rows", async () => {
 	const harness = await createHarness();
 	const keybindings = new KeybindingsManager();
-	const lines: string[] = [];
+	let nextState = Promise.withResolvers<PanelState>();
 	const runtime = new AgentSessionRuntime(
 		harness.session,
 		{
@@ -91,25 +87,19 @@ test("the interactive engine sends the host the panel's agent and subagent count
 		output: () => {},
 		pendingExtensionRequests: new Map(),
 		customUi: new EngineCustomUiService(() => {}, keybindings),
-		writeEngineLine: (line) => lines.push(line),
+		writeEngineLine(line) {
+			const message = parseInteractiveEngineMessage(line.trim());
+			if (message?.type === "engine_agent_panel_state") nextState.resolve(message);
+		},
 		requestShutdown: () => {},
 	});
-	/** The panel state the engine last wrote, as the host parses it. */
-	const lastPanelState = (): PanelState | undefined =>
-		lines
-			.map((line) => parseInteractiveEngineMessage(line.trim()))
-			.filter((message): message is PanelState => message?.type === "engine_agent_panel_state")
-			.at(-1);
-	const hostHint = () => {
-		const state = lastPanelState();
-		assert.ok(state, "the engine wrote a panel state");
-		return mainComposerHintSegments(keybindings, () => engineAgentPanelCounts(state));
-	};
+	const hostHint = (state: PanelState) => mainComposerHintSegments(keybindings, () => engineAgentPanelCounts(state));
 	try {
 		await binding.rebindSession();
+		nextState = Promise.withResolvers<PanelState>();
 		const replace = changingStore(harness.session, [runningAgent]);
-		await settle();
-		assert.deepEqual(lastPanelState(), {
+		const running = await nextState.promise;
+		assert.deepEqual(running, {
 			type: "engine_agent_panel_state",
 			total: 1,
 			agents: 1,
@@ -117,7 +107,7 @@ test("the interactive engine sends the host the panel's agent and subagent count
 			shells: 0,
 			subagents: 1,
 		});
-		assert.deepEqual(hostHint(), ["↓ 1 agent", "? keys"]);
+		assert.deepEqual(hostHint(running), ["↓ 1 agent", "? keys"]);
 
 		// A running workflow run is a row of the panel but not an agent: the counts tell the two apart.
 		let workflowRows: AgentPanelItem[] = [];
@@ -129,10 +119,11 @@ test("the interactive engine sends the host the panel's agent and subagent count
 				return () => {};
 			},
 		});
+		nextState = Promise.withResolvers<PanelState>();
 		workflowRows = [{ id: "run:w", kind: "workflow", state: "running", name: "ralph", task: "stage review" }];
 		workflowsChanged();
-		await settle();
-		assert.deepEqual(lastPanelState(), {
+		const withWorkflow = await nextState.promise;
+		assert.deepEqual(withWorkflow, {
 			type: "engine_agent_panel_state",
 			total: 2,
 			agents: 1,
@@ -140,13 +131,16 @@ test("the interactive engine sends the host the panel's agent and subagent count
 			shells: 0,
 			subagents: 1,
 		});
-		assert.deepEqual(hostHint(), ["↓ 1 agent", "? keys"]);
+		assert.deepEqual(hostHint(withWorkflow), ["↓ 1 agent", "? keys"]);
+		nextState = Promise.withResolvers<PanelState>();
 		workflowRows = [];
 		workflowsChanged();
+		await nextState.promise;
 
+		nextState = Promise.withResolvers<PanelState>();
 		replace([finishedAgent]);
-		await settle();
-		assert.deepEqual(lastPanelState(), {
+		const finished = await nextState.promise;
+		assert.deepEqual(finished, {
 			type: "engine_agent_panel_state",
 			total: 0,
 			agents: 0,
@@ -154,7 +148,7 @@ test("the interactive engine sends the host the panel's agent and subagent count
 			shells: 0,
 			subagents: 1,
 		});
-		assert.deepEqual(hostHint(), ["/tasks to see subagents", "? keys"]);
+		assert.deepEqual(hostHint(finished), ["/tasks to see subagents", "? keys"]);
 	} finally {
 		binding.disposeSubscriptions();
 		await harness.cleanup();

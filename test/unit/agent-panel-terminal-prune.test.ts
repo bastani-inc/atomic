@@ -517,6 +517,7 @@ describe("the isolated host's hint", () => {
 			const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 			bindOwnerTaskStore(session, fixture.store);
 			let hostCounts: AgentPanelCounts | undefined;
+			const idle = Promise.withResolvers<void>();
 			// What the engine sends the host, as the host reads it.
 			const dispose = bindAgentPanel(session, { setWidget() {}, requestRender() {} } as never, (counts) => {
 				const message = parseInteractiveEngineMessage(
@@ -524,21 +525,16 @@ describe("the isolated host's hint", () => {
 				);
 				assert.ok(message?.type === "engine_agent_panel_state");
 				hostCounts = engineAgentPanelCounts(message);
+				if (hostCounts.total === 0) idle.resolve();
 			});
 			try {
-				const settle = async () => {
-					for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
-					fixture.store.drain();
-					for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setTimeout(resolve, 20));
-				};
-				await settle();
 				const isolated = () => mainComposerHintSegments(keybindings, () => hostCounts!);
 				const inProcess = () => mainComposerHintSegments(keybindings, session);
 				assert.deepEqual(inProcess(), ["↓ 2 agents", "? keys"]);
 				assert.deepEqual(isolated(), inProcess());
 				await fixture.settle(0);
 				await fixture.settle(1);
-				await settle();
+				await idle.promise;
 				assert.deepEqual(inProcess(), ["/tasks to see subagents", "? keys"]);
 				assert.deepEqual(isolated(), inProcess());
 			} finally {
