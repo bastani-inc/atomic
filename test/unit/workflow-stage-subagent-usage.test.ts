@@ -68,7 +68,7 @@ function reply(
 
 describe("subagent usage inside a stage (#5053)", () => {
 	test(
-		"a foreground subagent's model calls are charged to the stage that launched it (#5053)",
+		"a subagent's model calls are charged to the stage that launched it (#5053)",
 		async () => {
 			const directory = makeTempDirectory("stage-subagent-usage-5053-");
 			directories.push(directory);
@@ -97,10 +97,21 @@ describe("subagent usage inside a stage (#5053)", () => {
 				streamSimple: (model, context) => {
 					const stream = createAssistantMessageEventStream();
 					const caller = firstUserText(context.messages).startsWith(STAGE_PROMPT) ? "stage" : "child";
+					const stageCall = caller === "stage" ? stageCalls++ : -1;
+					// The stage launches the child, then waits for it by the task id its launch returned.
+					const launchedTaskId = /"taskId":"([^"]+)"/.exec(
+						context.messages
+							.flatMap((entry) =>
+								entry.role === "toolResult"
+									? entry.content.map((block) => (block.type === "text" ? block.text : ""))
+									: [],
+							)
+							.join("\n"),
+					)?.[1];
 					const message =
 						caller === "child"
 							? reply(model, [{ type: "text", text: "child done" }], 2)
-							: stageCalls++ === 0
+							: stageCall === 0
 								? reply(
 										model,
 										[
@@ -114,13 +125,25 @@ describe("subagent usage inside a stage (#5053)", () => {
 													context: "fresh",
 													output: false,
 													progress: false,
-													wait: { kind: "foreground", budgetMs: 60_000 },
 												},
 											},
 										],
 										1,
 									)
-								: reply(model, [{ type: "text", text: "stage done" }], 1);
+								: stageCall === 1 && launchedTaskId
+									? reply(
+											model,
+											[
+												{
+													type: "toolCall",
+													id: "wait",
+													name: "subagent",
+													arguments: { action: "wait", id: launchedTaskId, budgetMs: 60_000 },
+												},
+											],
+											1,
+										)
+									: reply(model, [{ type: "text", text: "stage done" }], 1);
 					spent.push({ caller, cost: message.usage.cost.total });
 					stream.push({ type: "start", partial: message });
 					stream.push({ type: "done", reason: message.stopReason === "toolUse" ? "toolUse" : "stop", message });
