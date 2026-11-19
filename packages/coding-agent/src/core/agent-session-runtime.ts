@@ -254,11 +254,11 @@ export class AgentSessionRuntime {
 	}
 
 	/**
-	 * While the decision is still to be made: whether it can still come out untrusted, because a project_trust hook can
-	 * overturn the saved decision or there is none. Until it is made, such a project's resources wait for it.
+	 * While the startup decision is still to be made: whether the project's own resources may load already, because its
+	 * own decision is made or nothing can turn it untrusted. Other open questions, such as an `-e` source's, do not count.
 	 */
-	projectTrustMayBeDeclined(): boolean {
-		return this.services.projectTrust?.pending === true && this.services.projectTrust.mayBeDeclined;
+	pendingProjectResourcesTrusted(): boolean {
+		return this.services.projectTrust?.pending === true && this.services.projectTrust.resourcesTrusted;
 	}
 
 	/**

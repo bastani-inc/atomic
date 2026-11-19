@@ -101,17 +101,16 @@ function trustDecisionsState(decisions: SessionTrustDecisions | undefined): Pick
 
 /**
  * The engine's project trust. While startup is still deciding, the settings read untrusted only to load what the
- * decision needs, which is no decision (see isProjectTrustPending). A decision nothing can turn untrusted is not
- * reported, so the interactive host keeps the trust it looked up and loads the project once. One that can still come
- * out untrusted is reported untrusted and pending: the host loads none of the project's resources before it is made,
- * and warns only once it is.
+ * decision needs, which is no decision (see isProjectTrustPending). The report then says, marked pending, whether the
+ * project's own resources may load yet: the interactive host loads them once the project's decision allows it, and
+ * none while that decision can still come out untrusted, and warns only once startup has decided.
  */
 function projectTrustState(
 	runtimeHost: AgentSessionRuntime,
 	trusted: boolean,
 ): Pick<RpcSessionState, "projectTrusted" | "projectTrustPending"> {
 	if (!runtimeHost.isProjectTrustPending?.()) return { projectTrusted: trusted };
-	return runtimeHost.projectTrustMayBeDeclined?.() ? { projectTrusted: false, projectTrustPending: true } : {};
+	return { projectTrusted: runtimeHost.pendingProjectResourcesTrusted?.() === true, projectTrustPending: true };
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {

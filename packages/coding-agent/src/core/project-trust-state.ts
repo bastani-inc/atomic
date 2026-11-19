@@ -11,10 +11,10 @@ export interface SessionProjectTrust {
 	 */
 	readonly pending: boolean;
 	/**
-	 * While `pending`: whether the decision can still come out untrusted (see projectTrustMayBeDeclined). The project's
-	 * resources wait for such a decision.
+	 * While `pending`: whether the project's own resources may load already (see pendingProjectResourcesTrusted). They
+	 * wait while the project's decision can still come out untrusted.
 	 */
-	readonly mayBeDeclined: boolean;
+	readonly resourcesTrusted: boolean;
 	/** Ends a decision that was still to be made but will not be: startup failed before it could make it. */
 	abandon(): void;
 	/**
@@ -64,19 +64,26 @@ export function startupProjectTrust(input: {
 }
 
 /**
- * Whether a project trust decision still to be made can come out untrusted. `--approve` or `--no-approve`, or a decision
- * made earlier in this session, settles it before anything else runs. Otherwise a project_trust hook answers before
- * the saved decision does, so only a saved "trust" that no hook could overturn is certain; without a saved decision
- * the prompt or `defaultProjectTrust` can decline.
+ * While a deferred startup decision is still to be made, whether the project's own resources may load already. Each
+ * source of resources follows its own decision, so other open questions, such as an `-e` source's, do not hold the
+ * project back. A project with no decision to make keeps the trust it started with: `--approve` or `--no-approve`, a
+ * decision made earlier in this session, or nothing that needs trust. A project that has been decided follows its
+ * decision. Before that, a project_trust hook answers ahead of the saved decision, so only a saved "trust" that no hook
+ * could overturn is certain. Anything else can still come out untrusted, and the project's resources wait for it.
  */
-export function projectTrustMayBeDeclined(input: {
-	readonly override: boolean | undefined;
-	readonly sessionDecision: boolean | undefined;
+export function pendingProjectResourcesTrusted(input: {
+	/** startupProjectTrust's `decide`: the project's decision is made during this startup. */
+	readonly decide: boolean;
+	/** startupProjectTrust's `trusted`: the trust the session started with. */
+	readonly startedTrusted: boolean;
+	/** The decision this startup made for the project, once made. */
+	readonly decided: boolean | undefined;
 	readonly saved: boolean | null;
 	readonly hasTrustHook: boolean;
 }): boolean {
-	const settled = input.override ?? input.sessionDecision ?? (input.hasTrustHook ? undefined : input.saved);
-	return settled !== true;
+	if (!input.decide) return input.startedTrusted;
+	if (input.decided !== undefined) return input.decided;
+	return !input.hasTrustHook && input.saved === true;
 }
 
 /**
