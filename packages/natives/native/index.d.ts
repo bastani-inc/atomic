@@ -109,6 +109,16 @@ export declare class TaskSupervisor {
   readTaskOutput(task: TaskLease, range: OutputRange): Promise<{ok:true,value:OutputPage}|{ok:false,error:TaskFailure}>
   /** Claim once after host dispatch setup; operation replay never grants a second runner. */
   claimTaskRunner(task: TaskLease): {ok:true,value:RunnerLease}|{ok:false,error:TaskFailure}
+  /** Claim responsibility for cleanup at admission without marking a queued task as started. */
+  reserveTaskRunner(task: TaskLease): {ok:true,value:RunnerLease}|{ok:false,error:TaskFailure}
+  dispatchReservedRunner(runner: RunnerLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
+  /**
+   * Reserve the notice identity without publishing settlement. The cursor identifies this observation,
+   * not a terminal event: watchers and waits receive the final cursor only after cleanup.
+   */
+  markRunnerFinishing(runner: RunnerLease, result: TaskResult): {ok:true,value:SettlementReceipt}|{ok:false,error:TaskFailure}
+  /** The runner released its owned resources; only the batch's directory work still delays publication. */
+  handoffRunnerDirectory(runner: RunnerLease): {ok:true,value:undefined}|{ok:false,error:TaskFailure}
   taskReference(task: TaskLease): {ok:true,value:NativeTaskRef}|{ok:false,error:TaskFailure}
   /** Read-only identity of a Unix command's process group. It grants no signal authority. */
   taskProcessGroup(task: TaskLease): {ok:true,value:number|null}|{ok:false,error:TaskFailure}
