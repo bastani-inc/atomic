@@ -240,6 +240,8 @@ Response:
 
 `resourceErrors` lists the extensions that failed to load in the last startup or reload, and `resourceWarnings` lists their load warnings, such as an extension registering the same tool name twice.
 
+While the session waits to retry or switch models, `retryStatus` carries the `auto_retry_start` or `model_fallback_start` event. For a retry, `retryAt` gives the countdown deadline in Unix epoch milliseconds. Use this field rather than `isStreaming` to show a wait: a session can remain streaming throughout a backoff. The field is absent once the next request starts or the wait ends.
+
 When `isCompacting` is `true`, `compactionReason` identifies the compaction. The optional `compactionStartedAt` gives its start time in Unix epoch milliseconds, so an attaching client can show elapsed time. These fields are absent when no compaction is active.
 
 The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the model's token budget. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { type HeldPrompt, heldPromptInput, heldPrompts, taskPromptHost } from "../src/core/extensions/held-prompts.js";
@@ -479,7 +478,7 @@ test("space or enter on a Needs input task opens the subagent transcript, and â†
 	const plain = () =>
 		inspector
 			.renderViewport(80, 24)
-			.map((line) => stripVTControlCharacters(line).trimEnd())
+			.map((line) => stripTerminalSequences(line).trimEnd())
 			.join("\n");
 
 	const inputPromise = track(

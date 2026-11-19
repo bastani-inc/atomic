@@ -13,15 +13,24 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import {
+	purgeSuppressedWorkflowRuns,
+	resumeDurableWorkflow,
+} from "../../packages/workflows/src/durable/resume-runtime.js";
+import { run } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import {
 	registerPendingStageIntercomBridge,
 	TERMINAL_INVOCATION_ROUTE_RETENTION,
 } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createDurableResumeRuntime } from "../../packages/workflows/src/extension/runtime-durable-resume.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { claimExternalRunRoute } from "../../packages/workflows/src/shared/external-run-routes.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
@@ -179,7 +188,7 @@ afterEach(async () => {
 	setDurableBackend(undefined);
 });
 
-test("a session that keeps running workflows keeps a bounded number of Intercom route connections (#5492)", async () => {
+test("a session bounds the routes of finished workflows and closes them when the runs are deleted (#5492, #5561)", async () => {
 	const observer = new IntercomClient("terminal-route-retention-observer");
 	observer.on("error", () => {});
 	await observer.connect({
@@ -251,9 +260,16 @@ test("a session that keeps running workflows keeps a bounded number of Intercom 
 	}).catch((error: Error) => {
 		throw new Error(`${error.message}; ${observed} connected after ${runCount} finished runs`);
 	});
+
+	for (const id of runIds) assert.ok((await backend.deleteWorkflowIfInactive(id)).ok);
+	assert.deepEqual(new Set(purgeSuppressedWorkflowRuns(backend, store)), new Set(runIds));
+	await bridge.flush();
+	await until("only the host and observer after deleting the finished runs", async () =>
+		(await connectedSessions()) === 2 ? true : undefined,
+	);
 });
 
-async function connectedObserver(name: string) {
+async function connectedObserver(name: string, groups: string[] = []) {
 	const observer = new IntercomClient(name);
 	observer.on("error", () => {});
 	await observer.connect({
@@ -264,10 +280,11 @@ async function connectedObserver(name: string) {
 		startedAt: Date.now(),
 		lastActivity: Date.now(),
 		group: "default",
-		groups: ["default"],
+		groups: ["default", ...groups],
 	});
 	cleanups.push(() => observer.disconnect().catch(() => {}));
 	return {
+		probe: async (target: string) => (await observer.send(target, { text: "probe" })).reason ?? "",
 		sessions: async (): Promise<number> => {
 			const status = await observer.brokerStatus();
 			assert.ok(status, "the broker answers its status");
@@ -275,6 +292,214 @@ async function connectedObserver(name: string) {
 		},
 	};
 }
+
+async function hostRoutes(store: ReturnType<typeof createStore>) {
+	const id = crypto.randomUUID();
+	const host = hostFixture(id, id);
+	intercom(host.pi as never);
+	await host.start();
+	cleanups.push(() => host.shutdown());
+	const bridge = registerPendingStageIntercomBridge(host.pi as never, store);
+	cleanups.push(bridge);
+	await bridge.flush();
+	return bridge;
+}
+
+async function runInOtherJournal() {
+	const own = await JournalTestBackend.create();
+	const selected = await JournalTestBackend.create();
+	const store = createStore();
+	configureTestStoreBackend(store, selected);
+	const nested = workflow({
+		name: "nested",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.tool("step", {}, async () => 1);
+			return {};
+		},
+	});
+	const def = workflow({
+		name: "other-journal",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.workflow(nested);
+			return {};
+		},
+	});
+	const sessionStore = new MemorySessionStore();
+	cleanups.push(() => sessionStore.close());
+	const id = crypto.randomUUID();
+	const observer = await connectedObserver("journal-observer", [`workflow:${id}`]);
+	const result = await run(def, {}, { runId: id, store, durableBackend: own, adapters: { sessionStore } });
+	assert.equal(result.status, "completed", result.error);
+	const bridge = await hostRoutes(store);
+	const target = `workflow:${id}/future`;
+	assert.match(await observer.probe(target), /terminated with status completed/);
+	const runtime = createDurableResumeRuntime({
+		store,
+		registry: createRegistry([def]),
+		runtimeCwd: repoRoot,
+		baseRunOpts: () => ({ adapters: { sessionStore } }),
+		adapters: { sessionStore },
+		ensureReady: async () => selected,
+	});
+	const [child] = store.childRuns(id);
+	assert.ok(child);
+	await runtime.prepareDurableCatalog!();
+	return { own, store, id, childId: child.id, bridge, observer, target, runtime };
+}
+
+test("opening a completed run keeps its own journal for subsequent inspection (#5561)", async () => {
+	const { own, id, bridge, observer, target, runtime } = await runInOtherJournal();
+	assert.equal((await runtime.inspectDurableWorkflow(id)).kind, "found");
+	const opened = await runtime.openCompletedDurableWorkflow!(id, own.listCompletedWorkflows());
+	assert.ok(opened.ok, opened.message);
+	await bridge.flush();
+	assert.equal((await runtime.inspectDurableWorkflow(id)).kind, "found");
+	assert.match(await observer.probe(target), /terminated with status completed/);
+});
+
+test("refreshing a different journal retires a run deleted from its own journal (#5561)", async () => {
+	const { own, store, id, childId, bridge, observer, target, runtime } = await runInOtherJournal();
+	assert.equal(
+		store.run(childId)?.status,
+		"completed",
+		"the child is stored under its surviving root, not as a separate journal row",
+	);
+	assert.equal(await observer.sessions(), 3);
+	assert.ok((await own.deleteWorkflowIfInactive(id)).ok);
+	await runtime.prepareDurableCatalog!();
+	await bridge.flush();
+	assert.equal(store.run(id), undefined);
+	assert.equal(store.run(childId), undefined);
+	await until("the deleted run's connection to close", async () =>
+		(await observer.sessions()) === 2 ? true : undefined,
+	);
+	assert.match(await observer.probe(target), /not found/i);
+});
+
+test("a refused resume keeps the original finishers reachable after reopening the journal (#5561)", async () => {
+	const backend = await JournalTestBackend.create();
+	const ids = Array.from({ length: TERMINAL_INVOCATION_ROUTE_RETENTION + 1 }, () => crypto.randomUUID());
+	const [oldest, next] = ids;
+	const def = workflow({ name: "resume", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
+	for (const [i, id] of ids.entries())
+		await backend.commitWorkflowRegistration({
+			workflowId: id,
+			name: def.name,
+			inputs: {},
+			status: "failed",
+			createdAt: 1,
+			updatedAt: i + 10,
+			finishSequence: i + 10,
+			runGeneration: 3,
+			resumable: true,
+		});
+	const refused = await resumeDurableWorkflow(oldest!, {
+		registry: createRegistry([def]),
+		durableBackend: backend,
+		baseRunOpts: { adapters: {}, store: createStore() },
+		jobs: Object.assign(createJobTracker(), {
+			register() {
+				throw new Error("admission refused");
+			},
+		}),
+	});
+	assert.equal(refused.ok, false);
+	assert.match(refused.message, /admission refused/);
+	const reopened = await backend.reopen();
+	const store = createStore();
+	configureTestStoreBackend(store, reopened);
+	for (const id of ids) {
+		await reopened.hydrateWorkflow(id);
+		for (const snapshot of durableWorkflowRunSnapshots(reopened, reopened.getWorkflow(id)!))
+			store.recordRunStart(snapshot);
+	}
+	const observer = await connectedObserver(
+		"resume-observer",
+		[oldest, next].map((id) => `workflow:${id}`),
+	);
+	await hostRoutes(store);
+	assert.match(await observer.probe(`workflow:${oldest}/future`), /not found/i);
+	assert.match(await observer.probe(`workflow:${next}/future`), /terminated with status failed/);
+	assert.equal(reopened.getWorkflow(oldest!)?.finishSequence, 10);
+	assert.equal(reopened.getWorkflow(oldest!)?.runGeneration, 3, "a refused claim is not a new block or pause");
+});
+
+test("a successor takes a nested route without disconnecting the parent on the shared connection (#5561)", async () => {
+	const root = crypto.randomUUID();
+	const child = crypto.randomUUID();
+	const group = `workflow:${root}`;
+	const backend = await JournalTestBackend.create();
+	const store = createStore();
+	configureTestStoreBackend(store, backend);
+	await backend.commitWorkflowRegistration({
+		workflowId: root,
+		name: "root",
+		status: "failed",
+		inputs: {},
+		createdAt: 1,
+	});
+	const finished = { status: "failed" as const, inputs: {}, startedAt: 1, endedAt: 2, toolNodes: [] };
+	store.recordRunStart({
+		...finished,
+		id: root,
+		name: "root",
+		stages: [
+			{
+				id: "boundary",
+				name: "workflow:child",
+				status: "completed",
+				parentIds: [],
+				toolEvents: [],
+				replayKey: "child:1",
+				workflowChildRun: { alias: "child", workflow: "child", runId: child },
+			},
+		],
+	});
+	store.recordRunStart({
+		...finished,
+		id: child,
+		name: "child",
+		stages: [],
+		parentRunId: root,
+		parentStageId: "boundary",
+		rootRunId: root,
+	});
+	const observer = await connectedObserver("nested-observer", [group]);
+	const bridge = await hostRoutes(store);
+	assert.equal(await observer.sessions(), 3);
+	assert.match(await observer.probe(`${group}/${child}/future`), /terminated with status failed/);
+	const successor = new IntercomClient("nested-successor", { multiplexesPendingStageRoutes: true });
+	successor.on("error", () => {});
+	await successor.connect({
+		name: "nested-successor",
+		group,
+		groups: [group],
+		model: "test-model",
+		cwd: repoRoot,
+		startedAt: Date.now(),
+		lastActivity: Date.now(),
+		pid: process.pid,
+	});
+	cleanups.push(() => successor.disconnect());
+	successor.on("pending_stage_message", ({ requestId }: { requestId: string }) =>
+		successor.respondPendingStageMessage(requestId, { outcome: "refused", reason: "answered by successor" }),
+	);
+	cleanups.push(
+		claimExternalRunRoute(store, child, { notifyUndeliverable: async () => false, deliversQueued: () => false }),
+	);
+	bridge.refresh();
+	await bridge.flush();
+	await successor.registerPendingStageRouteAcknowledged(child, group, crypto.randomUUID(), []);
+	assert.equal(await observer.probe(`${group}/${child}/future`), "answered by successor");
+	assert.match(await observer.probe(`${group}/future`), /terminated with status failed/);
+	assert.equal(await observer.sessions(), 4);
+});
 
 test("a route retired while the Intercom runtime is still loading is not connected once it loads (#5492)", async () => {
 	const observer = await connectedObserver("terminal-route-loading-observer");

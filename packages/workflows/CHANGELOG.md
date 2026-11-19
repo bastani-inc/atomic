@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- In fullscreen mode, a click on a key in a stage chat's hint row, the workflow graph's hint line, the stage switcher, a question card or a blocker's action line presses that key
+
 ### Changed
 
 - Updated the bundled `unslop` and `teach` skills to the current cursor/plugins pstack text. `unslop` keeps the same rule numbers but states each rule in one line, and `teach` drops repeated wording from its steps while still asking `why` to stay narrow. `unslop` stays available to the model.
@@ -16,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The first workflow-history read in a process no longer freezes Atomic for seconds on a large workflow journal. `history://workflows`, `search history://`, `/workflows` and `/resume` read the stored runs in short turns, so typing, rendering and streaming keep going, and the history tool's time budget ends its wait on time. A run with many thousands of checkpoints after its last status change is listed in small steps too. Callers that ask for the stored runs together share one read ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
+- `/workflows`, `/resume` and workflow history no longer fail on a libSQL server whose workflow journal holds on the order of a hundred thousand runs. The server refused the one response that carried every run's latest version, which went over its 10 MB limit; the versions are now read 4,096 runs at a time ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
+- A task that runs on a local worker reads its own latest result again when the worker catches up on the run's journal before its host has shipped that result there. The worker read an earlier result of the same task instead, such as one a prompt restart replaced, and kept reading it after the newer result was shipped. The worker also counts such a result once when its checkpoint selection changes, resumes the newer of two stage sessions completed in the same millisecond even when a lost acknowledgement is retried, and drops a checkpoint's worktree snapshot if its blobs were collected before shipping ([#5480](https://github.com/bastani-inc/atomic/issues/5480))
 - Resuming a workflow immediately after a tool failure now waits for the previous attempt to finish saving its state, instead of sometimes refusing the resume as stale or already running ([#5527](https://github.com/bastani-inc/atomic/issues/5527)).
 - The `/workflows` sheet shows one more row now that the main chat no longer leaves a blank row above the prompt.
 - The workflow's card in the chat, expanded, marks a stage suspended while it waits with the dim `◌` waiting mark a released subagent has, instead of the pause mark `⏸`; a paused stage keeps `⏸` ([#5489](https://github.com/bastani-inc/atomic/issues/5489))
@@ -29,6 +36,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Restoring a blocked workflow keeps it blocked in the agent panel without briefly showing it as running. A new block gets its own notice even if it happens in the same millisecond as the previous block ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
 - On Windows, a Git command or worktree setup hook that a workflow stops for its timeout or output size has its process tree terminated once. Atomic no longer terminates it again when the command's exit arrives, or when its timeout comes after an output overflow ([#5601](https://github.com/bastani-inc/atomic/issues/5601))
 - Resuming a failed workflow releases the stage session it replaces. Open chat panes follow the resumed stage in the same conversation. If a chat turn is still running on that stage, wait for it to finish or press Esc in its chat, then resume again ([#5559](https://github.com/bastani-inc/atomic/issues/5559)).
+- Intercom keeps the stage routes of the 32 most recently finished workflow invocations even when several finish together. A resumed invocation counts from its latest finish; a refused resume does not change its place. Opening a completed run keeps its original journal, and deleting it from that journal retires its routes even when the session uses another journal by default ([#5561](https://github.com/bastani-inc/atomic/issues/5561)).
+- Running and awaiting-input stage borders now pulse in their own status colour instead of fading through the graph connector colour ([#5596](https://github.com/bastani-inc/atomic/issues/5596)).
+- A paged workflow listing no longer shows a deleted run alongside a replacement that never coexisted with it. Reloading a long run keeps the same catalog order as reloading a short one. Folding an earlier checkpoint shipment no longer makes a worker's newer acknowledged result look stale ([#5480](https://github.com/bastani-inc/atomic/issues/5480)).
+- Nested workflows that finish or fail on a worker now appear with their final state in the parent graph, even if they finish before the first progress update. A failed or skipped workflow call keeps the stages and tools of the child it actually started inspectable ([#5616](https://github.com/bastani-inc/atomic/issues/5616)).
+- After resuming a workflow with a different stage registry, clearing the old registry no longer removes the resumed stage’s question or redirects its chat to an earlier attempt. Inspecting the completed run also keeps questions in its open stage chat answerable ([#5577](https://github.com/bastani-inc/atomic/issues/5577)).
+- The bundled skill trigger evaluator counts producer startup as part of its timeout. It reads events buffered before its deadline even if the producer has exited, and reports a timeout instead of counting a late trigger. Large `--timeout` values no longer discard a timely result because the system timer cannot represent the full wait ([#5566](https://github.com/bastani-inc/atomic/issues/5566)).
+- A stage chat opened during a provider backoff or model switch shows `retrying…` or `switching model…` even when the session still reads as streaming, including on a worker. When the worker exits or is replaced, the stage and its subagent chats clear the old wait; a remote stage reopens on the replacement’s own session ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
 
 - After a context clear, an interrupted workflow remains reachable without keeping its saved inputs and stage outputs in chat memory ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 

@@ -3,6 +3,7 @@ import {
 	type Component,
 	getKeybindings,
 	Input,
+	isHintActivation,
 	matchesKey,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -23,11 +24,13 @@ import {
 } from "../../../core/tasks/completion.js";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import {
+	bindTaskClock,
 	liveElapsedFromRead,
 	type TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
 	taskClocksFor,
+	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
@@ -35,6 +38,7 @@ import { theme } from "../theme/theme.js";
 import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
 import {
+	clickableKeyTextHint,
 	isNavHelpKey,
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
@@ -605,7 +609,7 @@ export class TaskInspector implements Component {
 						sectionChanged = true;
 						anyChanged = true;
 						previous.set(task.ref.taskId, task);
-						if (!dismissed.has(task.ref.taskId))
+						if (task.elapsedSpan === undefined && !dismissed.has(task.ref.taskId))
 							this.elapsedClocks.elapsedMs(
 								task.ref.taskId,
 								task.metrics?.elapsedMs,
@@ -627,7 +631,7 @@ export class TaskInspector implements Component {
 			const tasks = this.store.backgroundTasks;
 			this.tasksById = new Map(tasks.map((task) => [task.ref.taskId, task]));
 			for (const task of tasks)
-				if (!dismissed.has(task.ref.taskId))
+				if (task.elapsedSpan === undefined && !dismissed.has(task.ref.taskId))
 					this.elapsedClocks.elapsedMs(
 						task.ref.taskId,
 						task.metrics?.elapsedMs,
@@ -984,7 +988,7 @@ export class TaskInspector implements Component {
 			// Shell input is a prompt: Esc cancels nothing and keeps the text; ← on an empty input returns to the list.
 			if (matchesKey(data, "escape")) return true;
 			// ← on an empty input, or at its start (the draft is kept for the return), goes back to the list.
-			if (getKeybindings().matches(data, "app.nav.back") && this.input.getCursor() === 0) {
+			if (getKeybindings().matches(data, "app.nav.back") && (this.input.getCursor() === 0 || isHintActivation())) {
 				this.navigation.focus = { kind: "tasks" };
 				this.status = "";
 				this.requestRender();
@@ -1057,7 +1061,11 @@ export class TaskInspector implements Component {
 		if (keys.matches(data, "app.tasks.openWaited") && this.waitedShell === undefined && this.openWaitedShell())
 			return true;
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
-		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
+		if (
+			!matchesKey(data, "escape") &&
+			keys.matches(data, "app.nav.back") &&
+			(transcript.cursorAtStart() || isHintActivation())
+		) {
 			if (this.waitedShell !== undefined) {
 				this.leaveWaitedShell();
 				return true;
@@ -1075,7 +1083,7 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return true;
 		}
-		if (isNavHelpKey(keys, data) && !transcript.hasDraft()) {
+		if (isNavHelpKey(keys, data) && (!transcript.hasDraft() || isHintActivation())) {
 			this.helpOpen = true;
 			this.requestRender();
 			return true;
@@ -1122,7 +1130,7 @@ export class TaskInspector implements Component {
 				return true;
 			}
 			if (replying) {
-				if (keys.matches(data, "app.nav.back") && this.reply.getCursor() === 0) {
+				if (keys.matches(data, "app.nav.back") && (this.reply.getCursor() === 0 || isHintActivation())) {
 					this.closePeek();
 					return true;
 				}
@@ -1479,13 +1487,11 @@ export class TaskInspector implements Component {
 
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
 		if (isTaskTurnInterrupted(task)) return task;
-		const elapsedMs = this.elapsedClocks.elapsedMs(
-			task.ref.taskId,
-			task.metrics?.elapsedMs,
-			taskClockRunning(task.execution.kind),
-		);
+		const elapsedMs = taskElapsedMs(task, taskClockRunning(task.execution.kind), this.elapsedClocks);
 		if (elapsedMs === undefined) return task;
-		return { ...task, metrics: { ...task.metrics, elapsedMs } };
+		const copy = { ...task, metrics: { ...task.metrics, elapsedMs } };
+		// The board and peek read a running span again: from this view's clock, which keeps what it showed.
+		return task.elapsedSpan ? bindTaskClock(copy, this.elapsedClocks) : copy;
 	}
 	private withBoardElapsed(row: TaskBoardRow): TaskBoardRow {
 		if (row.kind === "task") return { ...row, task: this.withLiveElapsed(row.task) };
@@ -1510,13 +1516,13 @@ export class TaskInspector implements Component {
 		if (this.itemFinishedWhileArmed !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
 			const action = this.itemFinishedAcknowledged ? "dismiss" : "acknowledge";
-			return `${this.itemFinishedWhileArmed.name} finished · ${key} to ${action}`;
+			return `${this.itemFinishedWhileArmed.name} finished · ${clickableKeyTextHint(key, ` to ${action}`)}`;
 		}
 		const finished = this.navigation.finishedWhileArmed;
 		if (finished !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
 			const action = this.navigation.finishedAcknowledged ? "dismiss" : "acknowledge";
-			return `${taskDisplayText(finished.title || taskLabel(finished))} finished · ${key} to ${action}`;
+			return `${taskDisplayText(finished.title || taskLabel(finished))} finished · ${clickableKeyTextHint(key, ` to ${action}`)}`;
 		}
 		const pending = this.navigation.stopConfirm.pending();
 		if (pending === undefined) return "";
@@ -1525,7 +1531,7 @@ export class TaskInspector implements Component {
 		if (row === undefined && task === undefined) return "";
 		const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
 		const name = task ? taskDisplayText(task.title || taskLabel(task)) : row ? rowName(row) : "the task";
-		return `Press ${key} again within 3s to stop ${name}`;
+		return `Press ${clickableKeyTextHint(key, " again")} within 3s to stop ${name}`;
 	}
 	renderPicker(width: number, availableRows: number): string[] {
 		return this.renderViewport(width, Math.max(1, Math.min(12, availableRows)));
@@ -1768,7 +1774,8 @@ export class TaskInspector implements Component {
 		}
 		const selected = this.selectedRow();
 		if (selected !== undefined && this.peekId === selected.id) this.dropStaleReply(selected);
-		const notice = this.failureNotice || this.stopNotice() || this.status;
+		const stopNotice = this.failureNotice ? "" : this.stopNotice();
+		const notice = this.failureNotice || stopNotice || this.status;
 		const counts = taskBoardCounts(all);
 		const edge = theme.fg("borderMuted", "▔".repeat(Math.max(1, width)));
 		const header = ` ${theme.bold("Tasks")}${counts ? `  ${theme.fg("muted", counts)}` : ""}`;
@@ -1913,7 +1920,9 @@ export class TaskInspector implements Component {
 								return [{ ...key, keys: peekKey ? `${peekKey}/${key.keys}` : key.keys }];
 							});
 		const hint = renderNavHintLine(keys, width, style, getKeybindings(), 2, { compact: true });
-		const footer = [...(notice ? [theme.fg("warning", clip(taskDisplayText(notice)))] : []), hint];
+		// A stop notice names its tasks sanitized already, and marks the key a click presses, which sanitizing drops.
+		const noticeText = stopNotice ? stopNotice : taskDisplayText(notice);
+		const footer = [...(notice ? [theme.fg("warning", clip(noticeText))] : []), hint];
 		const recordPaintedRow = (row: TaskBoardRow, drawnTasks: TaskRecord[]) => {
 			if (row.kind === "item") {
 				this.paintedItemFinished.set(row.id, rowFinished(row));

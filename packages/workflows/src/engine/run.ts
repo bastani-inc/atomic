@@ -1423,6 +1423,8 @@ async function executeRun(
 		runId,
 		{
 			registry: stageRegistry,
+			store: activeStore,
+			stageUiBroker,
 			adapters: opts.adapters,
 			cwd: workflowInvocationCwd,
 			defaultSessionDir: opts.defaultSessionDir,
@@ -1893,9 +1895,10 @@ async function executeRun(
 			returned.metadata?.resumable,
 			undefined,
 			runSnapshot.runGeneration,
+			runSnapshot.finishSequence,
 		);
 		terminalStatusCommitted = true;
-		await appendRunEndWhenRecorded(opts.persistence, recorded, {
+		await appendRunEndWhenRecorded(opts.persistence, recorded, runSnapshot, {
 			runId,
 			runGeneration: runSnapshot.runGeneration,
 			status: returned.status,

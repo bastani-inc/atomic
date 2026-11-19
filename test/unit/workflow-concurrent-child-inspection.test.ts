@@ -351,7 +351,7 @@ describe("inspecting a running root after one of its children settled unsuccessf
 		return { backend, rootId, pending, release: () => gate.resolve() };
 	}
 
-	function assertSettledChildPruned(
+	function assertSettledChildShown(
 		inspected: Awaited<ReturnType<typeof inspectTargetedDurableWorkflow>>,
 		rootId: string,
 		status: string,
@@ -360,19 +360,20 @@ describe("inspecting a running root after one of its children settled unsuccessf
 		if (inspected.kind !== "found") return;
 		const root = inspected.runs.find((candidate) => candidate.id === rootId);
 		assert.deepEqual(root?.stages.map((stage) => stage.status).sort(), ["completed", "running", status].sort());
+		// The child that failed stays inspectable under its failed or skipped boundary (#5616).
 		assert.deepEqual(
 			inspected.runs
 				.filter((candidate) => candidate.parentRunId === rootId)
 				.map((candidate) => candidate.status)
 				.sort(),
-			["completed", "running"],
+			["completed", "failed", "running"],
 		);
 	}
 
 	test("a failed child that checkpointed keeps a running root inspectable and its completed sibling replayable (#3903)", async () => {
 		const { backend, rootId, pending, release } = await rootWithSettledChild();
 		try {
-			assertSettledChildPruned(await inspectTargetedDurableWorkflow(backend, rootId), rootId, "failed");
+			assertSettledChildShown(await inspectTargetedDurableWorkflow(backend, rootId), rootId, "failed");
 			assert.deepEqual(
 				durableNestedRunSnapshots(backend, rootId)
 					.map((candidate) => candidate.status)
@@ -410,7 +411,7 @@ describe("inspecting a running root after one of its children settled unsuccessf
 				};
 				await skipped.commitCheckpoint(rewritten);
 			}
-			assertSettledChildPruned(await inspectTargetedDurableWorkflow(skipped, rootId), rootId, "skipped");
+			assertSettledChildShown(await inspectTargetedDurableWorkflow(skipped, rootId), rootId, "skipped");
 		} finally {
 			release();
 		}

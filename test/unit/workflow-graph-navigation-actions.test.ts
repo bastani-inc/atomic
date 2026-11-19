@@ -1,7 +1,6 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
@@ -12,6 +11,7 @@ import type {
 import { APP_ACTION } from "../../packages/workflows/src/tui/keybindings-adapter.js";
 import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 

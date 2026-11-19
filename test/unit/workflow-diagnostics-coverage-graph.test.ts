@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
@@ -10,6 +9,7 @@ import type {
 } from "../../packages/workflows/src/shared/store-types.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
+import { stripVTControlCharacters as stripAnsi } from "../helpers/visible-text.ts";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import * as h from "./overlay-graph-helpers.js";
 

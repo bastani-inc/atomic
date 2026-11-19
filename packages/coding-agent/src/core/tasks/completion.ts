@@ -265,7 +265,7 @@ export function withoutSupersededAttempts(tasks: readonly TaskRecord[]): readonl
 export function waitingReleasedTools(task: Pick<TaskRecord, "execution" | "ref">): string | undefined {
 	if (task.execution.kind !== "settled") return undefined;
 	const tools = releasedWaitingTools(task.execution.result);
-	return tools === undefined || taskStoppedForResume(task.ref.taskId) ? undefined : tools;
+	return tools === undefined || taskStoppedForResume(task.ref) ? undefined : tools;
 }
 
 /**

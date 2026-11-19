@@ -29,6 +29,14 @@ export interface WorkflowRunListFilter {
 	readonly includeDurable?: boolean;
 }
 
+export interface WorkflowRunListOptions {
+	/**
+	 * Stops waiting for stored runs to be read when it aborts: the listing rejects with the signal's reason, and the
+	 * store stops reading for it once no other caller is waiting.
+	 */
+	readonly signal?: AbortSignal;
+}
+
 export interface WorkflowStageListFilter {
 	/** `waiting` is a deprecated alias for `suspended`. */
 	readonly status?: WorkflowStageStatus | "waiting";
@@ -148,13 +156,13 @@ export interface WorkflowRunControlOutcome {
 
 /** Typed run management for the workflow runs owned by one session, as registered by the workflows extension. */
 export interface WorkflowRunControl {
-	listRuns(filter?: WorkflowRunListFilter): Promise<readonly WorkflowRunSummary[]>;
+	listRuns(filter?: WorkflowRunListFilter, options?: WorkflowRunListOptions): Promise<readonly WorkflowRunSummary[]>;
 	/**
 	 * Every root run recorded for this session's project, including runs the user started with `/workflow` that
 	 * `listRuns({ includeDurable: true })` leaves out because no model session owns them. Optional: a host without
 	 * it is read through `listRuns({ includeDurable: true })`.
 	 */
-	listProjectRuns?(): Promise<readonly WorkflowRunSummary[]>;
+	listProjectRuns?(options?: WorkflowRunListOptions): Promise<readonly WorkflowRunSummary[]>;
 	getRun(runId: string): Promise<WorkflowRunDetail>;
 	getStages(runId: string, filter?: WorkflowStageListFilter): Promise<readonly WorkflowRunStageSummary[]>;
 	pause(runId: string, options?: WorkflowRunPauseOptions): Promise<WorkflowRunControlOutcome>;

@@ -45,6 +45,11 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				return buildSystemPrompt(this._runSystemPromptOptions ?? this._baseSystemPromptOptions);
 			},
 		},
+		retryStatus: {
+			get() {
+				return this._retryStatus;
+			},
+		},
 		retryAttempt: {
 			get() {
 				return this._retryAttempt;

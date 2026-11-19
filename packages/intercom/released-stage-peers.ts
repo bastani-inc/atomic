@@ -31,6 +31,8 @@ export interface ReleasedStageAnnouncement {
 		readonly stageKeys: readonly string[];
 		readonly capability: string;
 	};
+	readonly generation?: number;
+	readonly isCurrent?: () => boolean;
 	readonly answer: (content: string) => Promise<string>;
 }
 
@@ -47,6 +49,8 @@ export function isReleasedStageAnnouncement(value: object): value is ReleasedSta
 		route.sessionId.length > 0 &&
 		typeof route.group === "string" &&
 		(route.model === undefined || typeof route.model === "string") &&
+		(route.generation === undefined || Number.isSafeInteger(route.generation)) &&
+		(route.isCurrent === undefined || typeof route.isCurrent === "function") &&
 		typeof route.answer === "function" &&
 		(live === undefined ||
 			(typeof live.capability === "string" &&
@@ -103,6 +107,8 @@ function peerKey(route: Pick<ReleasedStageAnnouncement, "runId" | "stageId">): s
 /** Whether an announcement registers the stage exactly as the peer is registered already. */
 function sameRegistration(left: ReleasedStageAnnouncement, right: ReleasedStageAnnouncement): boolean {
 	return (
+		left.generation === right.generation &&
+		left.isCurrent?.() !== false &&
 		left.sessionId === right.sessionId &&
 		left.group === right.group &&
 		left.model === right.model &&
@@ -158,12 +164,14 @@ export class ReleasedStagePeers {
 	 * An announcement the broker would refuse is rejected alone with `HostedSessionRequestError`, before it is kept.
 	 */
 	async adopt(route: ReleasedStageAnnouncement): Promise<void> {
+		if (route.isCurrent?.() === false) return;
 		if (this.reconnectTimer === null) this.reconnectAttempt = 0;
 		const wire: JsonWireValue = JSON.parse(JSON.stringify([this.hostedSession(route)]));
 		const validation = validateHostSessionsFrame(wire);
 		if (!validation.ok) throw hostedSessionErrorFor(validation.refusal);
 		const key = peerKey(route);
 		const previous = this.peers.get(key);
+		if (previous?.route.generation !== undefined && route.generation !== undefined && route.generation < previous.route.generation) return;
 		if (previous !== undefined && sameRegistration(previous.route, route)) {
 			previous.route = route;
 			await this.host(previous);
@@ -205,7 +213,7 @@ export class ReleasedStagePeers {
 
 	/** Hosts every peer not yet hosted on `client`, in frames of at most 500; settles with the first failure. */
 	private async hostPending(client: IntercomClient): Promise<Error | undefined> {
-		const pending = [...this.peers.values()].filter((peer) => peer.hostedOn !== client);
+		const pending = [...this.peers.values()].filter((peer) => peer.hostedOn !== client && peer.route.isCurrent?.() !== false);
 		const requests: Promise<Error | undefined>[] = [];
 		for (let start = 0; start < pending.length; start += HOSTED_SESSION_FRAME_MAX) {
 			const chunk = pending.slice(start, start + HOSTED_SESSION_FRAME_MAX);
@@ -439,6 +447,7 @@ export class ReleasedStagePeers {
 	): Promise<void> {
 		let reply: { text: string; replyError?: string };
 		try {
+			if (peer.route.isCurrent?.() === false) throw new Error("The workflow stage was replaced.");
 			reply = { text: await peer.route.answer(askPrompt(from, message)) };
 		} catch (error) {
 			const failure = `Released workflow stage could not answer: ${toError(error).message}`;

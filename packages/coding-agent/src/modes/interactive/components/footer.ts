@@ -19,6 +19,7 @@ import {
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
+import { clickableKeyTextHint } from "./nav-keys.ts";
 import { renderTaskFooter } from "./task-list.js";
 
 export interface FooterRenderStyle {
@@ -371,7 +372,7 @@ export class FooterComponent implements Component {
 			const interruptKey = working ? keyText("app.interrupt") : "";
 			let statusText = working
 				? interruptKey
-					? this.renderStyle.muted(`${interruptKey} to interrupt`)
+					? this.renderStyle.muted(clickableKeyTextHint(interruptKey, " to interrupt"))
 					: ""
 				: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
 			if (areExperimentalFeaturesEnabled()) {

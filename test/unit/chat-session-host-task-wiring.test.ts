@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { createVerbatimCompactionMessage } from "../../packages/coding-agent/src/core/messages.js";
@@ -55,7 +54,7 @@ const flush = async () => {
 	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 };
 
-const text = (rows: readonly string[]) => stripVTControlCharacters(rows.join("\n"));
+const text = (rows: readonly string[]) => stripTerminalSequences(rows.join("\n"));
 
 const longConversation = Array.from({ length: 60 }, (_, i) => ({
 	role: "user" as const,
@@ -551,7 +550,7 @@ test("a chat that shows task rows adds and repaints them as its tasks change (#4
 	const rows = () =>
 		host
 			.renderBody(30, 30)
-			.map((row) => stripVTControlCharacters(row))
+			.map(stripTerminalSequences)
 			.filter((row) => row.includes("worker"));
 	try {
 		assert.deepEqual(rows(), []);

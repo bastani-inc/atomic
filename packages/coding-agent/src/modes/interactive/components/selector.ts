@@ -19,7 +19,7 @@ import {
 	type NavKeybindings,
 	type NavKeyStyle,
 	navActionText,
-	navKeyText,
+	navFirstKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
@@ -425,7 +425,7 @@ export function selectorHintEntries<T>(
 		const keys = numberedHintKeys(state.getVisible());
 		if (keys) entries.push(tagHintEntry({ keys, label: "pick" }, "pick"));
 	}
-	const cancel = firstKey(keybindings, "tui.select.cancel") || "esc";
+	const cancel = navFirstKeyText(keybindings, "tui.select.cancel") || "esc";
 	entries.push({
 		keys: cancel,
 		label: state.getQuery() ? "clear" : (options.cancelLabel ?? "cancel"),
@@ -480,11 +480,6 @@ export function fitHintEntries(
 		kept.splice(drop, 1);
 	}
 	return kept;
-}
-
-function firstKey(keybindings: NavKeybindings, action: string): string {
-	const key = keybindings.getKeys?.(action)?.[0];
-	return key ? navKeyText(key) : "";
 }
 
 function numberedHintKeys<T>(visible: readonly SelectorItem<T>[]): string {
@@ -799,6 +794,7 @@ export class Selector<T> implements Component, Focusable {
 				width,
 				this.style,
 				this.options.keybindings ?? getKeybindings(),
+				"tui.select.cancel",
 			).map((line) => clipSelectorLine(line, width));
 		}
 		const lines: string[] = [];

@@ -79,6 +79,38 @@ for (const success of [true, false]) {
 	});
 }
 
+test("a main chat bound during a backoff shows the remaining countdown, not a new wait (#5572)", async () => {
+	const mode = Object.assign(makeMode(), {
+		createExtensionUIContext: () => undefined,
+		handleEvent: InteractiveMode.prototype.handleEvent,
+		unsubscribe: () => {},
+	});
+	const onEscape = mode.defaultEditor.onEscape;
+	Object.assign(mode.session, {
+		subscribe: () => () => {},
+		workflows: { observe: () => ({ dispose() {} }) },
+		retryStatus: {
+			type: "auto_retry_start",
+			attempt: 1,
+			maxAttempts: 3,
+			delayMs: 8000,
+			retryAt: Date.now() + 3000,
+			errorMessage: "busy",
+		},
+	});
+	InteractiveMode.prototype.subscribeToAgent.call(mode as never);
+	vi.advanceTimersByTime(600);
+	mode.unsubscribe();
+	InteractiveMode.prototype.subscribeToAgent.call(mode as never);
+	assert.match(rendered(mode), /Retrying \(1\/3\) in 3s/);
+	vi.advanceTimersByTime(400);
+	assert.match(rendered(mode), /Retrying \(1\/3\) in 2s/, "reattaching between ticks retains the same deadline");
+	mode.unsubscribe();
+	await emit(mode, { type: "auto_retry_end", success: true, attempt: 1 });
+	assert.equal(mode.defaultEditor.onEscape, onEscape);
+	assert.equal(vi.getTimerCount(), 0);
+});
+
 test("summary retries use Atomic's indicator and stop it when the next attempt begins", async () => {
 	const mode = makeMode();
 	await emit(mode, {

@@ -230,10 +230,17 @@ function* discriminator(key: string, parent?: string): Reader<string> {
 	return "";
 }
 
-function* project(type: string, customType: string, role: string, branchStateOnly = false): Reader<Json> {
+function* project(
+	type: string,
+	customType: string,
+	role: string,
+	branchStateOnly = false,
+	includeId = false,
+): Reader<Json> {
 	const fields: Record<string, Shape> = branchStateOnly
 		? { type: true, id: true }
 		: { type: true, parentId: true, timestamp: true };
+	if (includeId) fields.id = true;
 	switch (type) {
 		case "custom": {
 			const data = field(customFields, customType);
@@ -358,6 +365,34 @@ function extracted(value: Json | undefined, postgres: boolean): Json {
 	return typeof value === "boolean" ? Number(value) : value;
 }
 
+/** Test the exact saved ID against caller-owned text without retaining the entry, even when the ID spans chunks. */
+export function chunkedEntryHasId(chunks: AsyncIterable<Uint8Array>, id: string): Promise<boolean> {
+	return read(
+		chunks,
+		(function* (): Reader<boolean> {
+			if ((yield).name !== "startObject") throw new SyntaxError("Expected a session entry");
+			let matched = false;
+			while ((yield).name !== "endObject") {
+				const key = yield* stringValue(3);
+				const first = yield;
+				if (key !== "id" || first.name !== "startString") {
+					if (key === "id") matched = false;
+					yield* skip(first);
+					continue;
+				}
+				let offset = 0;
+				matched = true;
+				for (let part = yield; part.name === "stringChunk"; part = yield) {
+					if (!id.startsWith(part.value, offset)) matched = false;
+					offset += part.value.length;
+				}
+				matched = matched && offset === id.length;
+			}
+			return matched;
+		})(),
+	);
+}
+
 /** Read an interrupted run's exact JSON string without decoding its unrelated start inputs or normalizing SQL text. */
 export async function readChunkedWorkflowRunId(chunks: AsyncIterable<Uint8Array>): Promise<string | undefined> {
 	const selected = await read(
@@ -407,6 +442,22 @@ export async function chunkedForkLink(
 		parentId: typeof selected.parentId === "string" ? selected.parentId : null,
 		hash: typeof hash === "string" ? hash : undefined,
 	};
+}
+
+/** Fold a pinned prefix that has no native resume index. Read the stored ID, ancestry and billing fields, never
+ * the message body. The tool-call count is kept separate so no array of dummy content blocks is allocated. */
+export async function chunkedPrefixFields(
+	chunks: () => AsyncIterable<Uint8Array>,
+): Promise<{ entry: SessionEntry; toolCalls: number }> {
+	const type = await read(chunks(), discriminator("type"));
+	const custom = type === "custom" || type === "custom_message";
+	const customType = custom ? await read(chunks(), discriminator("customType")) : "";
+	const role = type === "message" ? await read(chunks(), discriminator("role", "message")) : "";
+	const value = object(await read(chunks(), project(type, customType, role, false, true)));
+	if (custom) value.customType = customType;
+	if (type === "worktree_snapshot" && !value.snapshot) delete value.snapshot;
+	const count = object(value.message).content;
+	return { entry: value as unknown as SessionEntry, toolCalls: typeof count === "number" ? count : 0 };
 }
 
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */

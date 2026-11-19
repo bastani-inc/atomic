@@ -15,7 +15,7 @@ import type { SessionInfo, SessionListProgress } from "../../../core/session-man
 import { assertSessionNotOpenElsewhere } from "../../../core/session-open-markers.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyText } from "./keybinding-hints.js";
+import { keyTextHint } from "./keybinding-hints.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "./session-selector-delete.ts";
 import { SessionSelectorHeader } from "./session-selector-header.ts";
 import { SessionList, type SessionListVariant } from "./session-selector-list.ts";
@@ -294,7 +294,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		panel.addChild(new Spacer(1));
 		panel.addChild(
 			new Text(
-				theme.fg("muted", `${keyText("tui.select.confirm")} Save · ${keyText("tui.select.cancel")} Cancel`),
+				theme.fg(
+					"muted",
+					`${keyTextHint("tui.select.confirm", "Save")} · ${keyTextHint("tui.select.cancel", "Cancel")}`,
+				),
 				1,
 				0,
 			),

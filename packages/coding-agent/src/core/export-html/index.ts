@@ -8,7 +8,8 @@ import { getResolvedThemeColors, getThemeExportColors } from "../../modes/intera
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import { SessionManager } from "../session-manager.ts";
 import { SessionNotFoundError } from "../storage/session/errors.js";
-import { encodeSessionData, sessionDataBytes } from "./session-data.js";
+import { renderHtmlInputs } from "./render-inputs.js";
+import { captureHtmlHistory, encodeSessionData, sessionDataBytes } from "./session-data.js";
 
 /**
  * Interface for rendering custom tools to HTML.
@@ -177,14 +178,23 @@ export async function exportSessionToHtml(
 ): Promise<string> {
 	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
 
-	if (!(await sm.getSessionStore().readHeader(sm.getSessionId())))
-		throw new Error("Nothing to export yet - start a conversation first");
+	const sessionFile = sm.getSessionFile();
+	const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
+	const source = await captureHtmlHistory(sm).catch((error: Error) => {
+		if (error instanceof SessionNotFoundError) throw new Error("Nothing to export yet - start a conversation first");
+		throw error;
+	});
+	const inputs = opts.toolRenderer ? await renderHtmlInputs(source.readHistory(), opts.toolRenderer) : undefined;
+	const presentation = {
+		systemPrompt: state?.systemPrompt,
+		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
+	};
 	const [prefix, suffix] = await htmlTemplate(opts.themeName);
+	inputs?.freezeInputs();
+	const metadataJson = JSON.stringify({ leafId: source.leafId, ...presentation });
 
 	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
 	if (!outputPath) {
-		const sessionFile = sm.getSessionFile();
-		const sessionBasename = sessionFile ? basename(sessionFile, ".jsonl") : sm.getSessionId();
 		outputPath = `${APP_NAME}-session-${sessionBasename}.html`;
 	}
 
@@ -198,7 +208,7 @@ export async function exportSessionToHtml(
 		const output = await open(partial, "wx", 0o600);
 		try {
 			await output.writeFile(prefix);
-			for await (const encoded of encodeSessionData(sessionDataBytes(sm, state, opts.toolRenderer)))
+			for await (const encoded of encodeSessionData(sessionDataBytes(source, metadataJson, inputs)))
 				await output.writeFile(encoded);
 			await output.writeFile(suffix);
 			await output.chmod(mode);

@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ExtensionAPI } from "../../packages/coding-agent/src/core/extensions/types.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
@@ -31,8 +31,8 @@ function agent(): AgentConfig {
 const CONDITION_WAIT_MS = 20_000;
 
 async function until(predicate: () => boolean, timeoutMs = CONDITION_WAIT_MS): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (!predicate() && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	const deadline = performance.now() + timeoutMs;
+	while (!predicate() && performance.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(predicate(), "condition never held");
 }
 
@@ -103,6 +103,32 @@ test("Esc interrupts a subagent's turn and it waits for the next message in the 
 		);
 		assert.deepEqual(userTexts, ["fix the picker", "carry on with the picker"]);
 	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a message that wakes an interrupted child starts a new elapsed span in the same session (#5570)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-interrupt-elapsed-"));
+	const stop = new AbortController();
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const child = launch(root, stop.signal);
+	try {
+		await until(() => child.source()?.isRunning?.() === true);
+		now += 2300;
+		await child.source()!.interruptTurn!();
+		now += 60_000;
+		const waking = child.queue()!.prompt("continue");
+		await until(() => child.source()?.isRunning?.() === true);
+		now += 1200;
+		child.gate.resolve();
+		await waking;
+		assert.equal((await child.result).progressSummary?.durationMs, 1200);
+	} finally {
+		stop.abort("user");
+		await child.result;
+		clock.mockRestore();
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}

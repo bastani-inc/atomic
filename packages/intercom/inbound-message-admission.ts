@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { InMemoryDeliveredMessageCache } from "./broker/delivered-message-cache.js";
 
 function digest(key: string): string {
-  return createHash("sha256").update(key).digest("hex").slice(0,32);
+  return createHash("sha256").update(key, "utf16le").digest("hex").slice(0,32);
 }
 import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
 import type { Message, SessionInfo } from "./types.js";

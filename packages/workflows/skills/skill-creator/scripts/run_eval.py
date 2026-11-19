@@ -48,6 +48,13 @@ def run_single_query(
     stream events (content_block_start) rather than waiting for the
     full assistant message, which only arrives after tool execution.
     """
+    second_ns = 1_000_000_000
+    deadline_ns = time.monotonic_ns() + timeout * second_ns
+
+    def check_deadline():
+        if time.monotonic_ns() >= deadline_ns:
+            raise TimeoutError(f"Timed out after {timeout}s waiting for a skill trigger")
+
     unique_id = uuid.uuid4().hex[:8]
     clean_name = f"{skill_name}-skill-{unique_id}"
     project_commands_dir = Path(project_root) / ".claude" / "commands"
@@ -82,6 +89,7 @@ def run_single_query(
         # programmatic subprocess usage is safe.
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+        check_deadline()
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -90,33 +98,26 @@ def run_single_query(
             env=env,
         )
 
-        triggered = False
-        start_time = time.time()
-        buffer = ""
-        # Track state for stream event detection
-        pending_tool_name = None
-        accumulated_json = ""
-
-        try:
-            while time.time() - start_time < timeout:
-                if process.poll() is not None:
-                    remaining = process.stdout.read()
-                    if remaining:
-                        buffer += remaining.decode("utf-8", errors="replace")
-                    break
-
-                ready, _, _ = select.select([process.stdout], [], [], 1.0)
-                if not ready:
+        def read_trigger():
+            triggered = False
+            buffer = b""
+            pending_tool_name = None
+            accumulated_json = ""
+            while (remaining_ns := deadline_ns - time.monotonic_ns()) > 0:
+                # A large user budget need not fit the operating system's select timer.
+                ready, _, _ = select.select([process.stdout], [], [], min(remaining_ns, second_ns) / second_ns)
+                if not ready or time.monotonic_ns() >= deadline_ns:
                     continue
 
                 chunk = os.read(process.stdout.fileno(), 8192)
-                if not chunk:
+                if not chunk and not buffer:
                     break
-                buffer += chunk.decode("utf-8", errors="replace")
+                # EOF completes the last line even if the producer omitted its newline.
+                buffer += chunk or b"\n"
 
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
 
@@ -169,13 +170,17 @@ def run_single_query(
 
                     elif event.get("type") == "result":
                         return triggered
+            return False
+
+        try:
+            triggered = read_trigger()
+            check_deadline()
+            return triggered
         finally:
             # Clean up process on any exit path (return, exception, timeout)
             if process.poll() is None:
                 process.kill()
                 process.wait()
-
-        return triggered
     finally:
         if command_file.exists():
             command_file.unlink()

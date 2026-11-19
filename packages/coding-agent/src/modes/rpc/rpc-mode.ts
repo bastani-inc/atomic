@@ -14,7 +14,7 @@ import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
-import { setKeybindings } from "@bastani/atomic-tui";
+import { bindBundledHintCommands, setKeybindings } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
@@ -68,7 +68,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const deferInteractiveEngineResources = interactiveEngineChild && options.deferInteractiveEngineResources === true;
 	const resourceReadiness = new RpcResourceReadiness();
 	const keybindings = interactiveEngineChild ? KeybindingsManager.create(runtimeHost.services.agentDir) : undefined;
-	if (keybindings) setKeybindings(keybindings);
+	if (keybindings) {
+		setKeybindings(keybindings);
+		bindBundledHintCommands(
+			keybindings,
+			(name) => runtimeHost.session.extensionRunner.getCommand(name)?.sourceInfo.configurationOrigin === "bundled",
+		);
+	}
 
 	const outputBuffer = new RpcOutputBuffer();
 	const output = outputBuffer.output;

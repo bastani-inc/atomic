@@ -6,11 +6,13 @@ import {
 	type OperationId,
 	ranOnModelLine,
 	sessionStartStepText,
+	spanElapsedMs,
 } from "@bastani/atomic";
 import type {
 	Cleanup,
 	ModelParallelResponse,
 	ModelSingleResponse,
+	TaskElapsedSpan,
 	TaskId,
 	TaskRecord,
 	TaskResult,
@@ -479,6 +481,7 @@ export async function runAgentTask(input: {
 	const agentSource = agentConfig?.source;
 	const requestedModel = launchRequestedModel(agentConfig, input.options);
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
+	let recordSpan: TaskElapsedSpan | undefined;
 	const recordChildTask = (
 		taskId: TaskId,
 		state: SubagentChildRecordInput["state"],
@@ -496,6 +499,8 @@ export async function runAgentTask(input: {
 			...(agentSource ? { agentSource } : {}),
 			forked,
 			state,
+			elapsedMs: recordSpan ? spanElapsedMs(recordSpan) : 0,
+			elapsedSpan: recordSpan ? { ...recordSpan } : null,
 			cwd: childCwd,
 			taskId,
 			...childSession,
@@ -638,8 +643,10 @@ export async function runAgentTask(input: {
 			},
 			(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,
 			(context) => {
+				const elapsedSpan: TaskElapsedSpan = { dispatchedAt: Date.now() };
+				recordSpan = elapsedSpan;
 				dispatched = true;
-				queuedChildren.delete(context.ref.taskId);
+				if (queuedChildren.delete(context.ref.taskId)) recordChildTask(context.ref.taskId, "running");
 				// This execution owns the child's worktree now; a stopped child's worktree was kept for it until here.
 				claimRunWorktree(runId, index);
 				const cleaned = Promise.withResolvers<Cleanup>();
@@ -674,7 +681,7 @@ export async function runAgentTask(input: {
 						: (input.recordChild?.clearHeldToolResults?.(childId, delivered) ?? Promise.resolve());
 				};
 				// From here until its first turn starts the child is starting, and says where (never merely "running").
-				const dispatchedAt = Date.now();
+				const { dispatchedAt } = elapsedSpan;
 				let startText: string | undefined;
 				let lastStartStep: SubagentStartProgress["step"] | undefined;
 				const reportStart = (progress: SubagentStartProgress | undefined) => {
@@ -705,6 +712,8 @@ export async function runAgentTask(input: {
 						const ownerSessionId = input.recordChild?.ownerSessionId;
 						const running = input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 							...input.options,
+							elapsedSpan,
+							onElapsedSpanChanged: () => recordChild("running"),
 							cwdVerdict,
 							// A child is released while it waits, and its owner wakes it (#4326).
 							...(input.options.releaseWhenWaiting === undefined && ownerSessionId !== undefined
@@ -720,6 +729,7 @@ export async function runAgentTask(input: {
 								),
 							signal: context.signal,
 							taskExecution: {
+								taskId: context.ref.taskId,
 								signal: context.signal,
 								reportActivity: context.reportActivity,
 								bindTranscript: (session) =>
@@ -751,8 +761,7 @@ export async function runAgentTask(input: {
 								},
 								// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 								toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
-								reportStart: (progress) =>
-									reportStart(progress === undefined ? undefined : { ...progress, launchedAt: dispatchedAt }),
+								reportStart,
 								onExecution: (execution) => {
 									executionBound = true;
 									trackChildClosing(childId, execution.cleanup);
@@ -771,6 +780,7 @@ export async function runAgentTask(input: {
 						});
 						ticket?.onEntered();
 						const child = await running;
+						elapsedSpan.endedAt ??= Date.now();
 						if (child.model !== undefined || child.thinking !== undefined)
 							context.reportActivity({
 								reportId: "terminal-model",
@@ -912,6 +922,7 @@ export async function runAgentTask(input: {
 									output,
 								};
 					} catch (error) {
+						elapsedSpan.endedAt ??= Date.now();
 						if (takeSubagentChildStop(context.ref.taskId) !== undefined) unparkRunWorktree(runId, index);
 						if (!ownerClosed()) recordChild("terminal", "error");
 						else if (input.recordChild?.ownerEndedForGood?.()) {
@@ -926,7 +937,7 @@ export async function runAgentTask(input: {
 						if (!executionBound) cleaned.resolve({ kind: "reaped" });
 					}
 				});
-				return { result, cleanup: cleaned.promise };
+				return { result, cleanup: cleaned.promise, elapsedSpan };
 			},
 			schedule,
 		)

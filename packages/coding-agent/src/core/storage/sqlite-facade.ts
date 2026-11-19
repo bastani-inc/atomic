@@ -75,6 +75,8 @@ export interface SqliteDriverTransientFailure {
 
 /** How the facade asks a driver to begin a transaction. */
 export interface SqliteDriverTransactionOptions {
+	/** @internal A consistent read snapshot without acquiring the database's writer lock. */
+	readonly readOnly?: boolean;
 	/** Always present when the facade calls; `{ kind: "serial" }` unless the transaction asked for another. */
 	readonly concurrency: TransactionConcurrency;
 	/** The transaction's `SqliteTransactionOptions.lockWaitMs`, when it set one. */
@@ -102,7 +104,8 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	/**
 	 * Begins a write transaction. With `options.concurrency` `{ kind: "serial" }` (the default) it holds the write lock of the whole database
 	 * or of `concurrency.domain`, like `BEGIN IMMEDIATE`; with `fenced` it may take no lock, and the body locks its rows.
-	 * A SQLite driver runs both as `BEGIN IMMEDIATE` and may ignore the argument.
+	 * A SQLite driver runs both as `BEGIN IMMEDIATE` and may ignore the concurrency argument. An internal `readOnly`
+	 * request instead opens a consistent read snapshot without any writer lock.
 	 */
 	beginTransaction(options?: SqliteDriverTransactionOptions): Awaitable<SqliteDriverTransaction>;
 	/**
@@ -776,8 +779,11 @@ class DriverDatabase implements SqliteDatabase {
 		} catch (error) {
 			return Promise.reject(error);
 		}
-		const begin: SqliteDriverTransactionOptions =
-			options?.lockWaitMs === undefined ? { concurrency } : { concurrency, lockWaitMs: options.lockWaitMs };
+		const begin: SqliteDriverTransactionOptions = {
+			concurrency,
+			...(options?.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
+			...(options?.readOnly === true ? { readOnly: true } : {}),
+		};
 		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
 		if (concurrency.kind === "serial" || this.driver.concurrentTransactions !== true) return this.queue.push(run);
 		const result = run();

@@ -677,3 +677,65 @@ test("a sibling aborted while its message's failed merged run is checked never l
 	assert.match(await settledOutput(call, single(later).observation.taskId), /output:later/);
 	assert.deepEqual(launched, ["later"]);
 });
+
+test("sibling calls that merge share one concurrency limit, also when only one of them passes a wait (#5686)", async () => {
+	const release = Promise.withResolvers<void>();
+	const started: string[] = [];
+	const { call } = harness(
+		async (_cwd, _agents, _agent, task) => {
+			started.push(task);
+			await release.promise;
+			return childResult(task);
+		},
+		undefined,
+		1,
+	);
+	cleanups.push(() => release.resolve());
+	const outputs = await Promise.all([
+		call("with-wait", { agent: "echo", task: "A", wait: { kind: "background" } } as SubagentParamsLike),
+		call("without-wait", { agent: "echo", task: "B" }),
+	]);
+	assert.deepEqual(
+		outputs.map((output) => output.isError === true),
+		[false, false],
+		outputs.map(text).join(" | "),
+	);
+	const deadline = Date.now() + 500;
+	while (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual(started, ["A"], "a limit of one starts the second child only once the first ends");
+	release.resolve();
+	const settled = Date.now() + 10_000;
+	while (started.length < 2 && Date.now() < settled) await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual(started, ["A", "B"]);
+});
+
+test.each([
+	{ name: "a shared output file", maxTasks: 50, shared: true, error: /same path/ },
+	{ name: "the combined task limit", maxTasks: 1, shared: false, error: /Too many parallel tasks/ },
+])(
+	"sibling calls that can merge still fail together on $name when only one passes a wait (#5686)",
+	async ({ maxTasks, shared, error }) => {
+		const started: string[] = [];
+		const { call, cwd } = harness(
+			async (_cwd, _agents, _agent, task) => {
+				started.push(task);
+				return childResult(task);
+			},
+			undefined,
+			4,
+			{ maxTasks },
+		);
+		const output = shared ? { output: join(cwd, "report.md") } : {};
+		// A caller that still passes the removed launch `wait`.
+		const withWait = { agent: "echo", task: "A", ...output, wait: { kind: "background" } };
+		const answers = await Promise.all([
+			call("with-wait", withWait as SubagentParamsLike),
+			call("without-wait", { agent: "echo", task: "B", ...output }),
+		]);
+		for (const answer of answers) {
+			assert.equal(answer.isError, true, text(answer));
+			assert.match(text(answer), error);
+		}
+		assert.deepEqual(started, []);
+	},
+);

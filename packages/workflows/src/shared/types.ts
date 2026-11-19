@@ -270,6 +270,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
  * Not exposed to workflow authors — StageContext public API is unchanged.
  */
 export interface StageExecutionMeta {
+	/** The UI registration of this stage handle, retired independently of the workflow's abort signal. */
+	stageUiSignal?: AbortSignal;
 	/** Run ID of the containing workflow execution. */
 	runId: string;
 	/** Runtime-owned home group shared by this top-level workflow invocation. */

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, matchesKey, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -24,6 +23,7 @@ import {
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 const ESC = "\x1b";
 const ENTER = "\r";
