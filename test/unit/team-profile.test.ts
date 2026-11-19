@@ -47,8 +47,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { readSharedStorageSetting } from "../../packages/intercom/broker/shared-storage-setting.js";
 import { getBrokerSpawnOptions, getBrokerSpawnOptionsAsync } from "../../packages/intercom/broker/spawn.js";
-import type { RunOpts } from "../../packages/workflows/src/authoring.js";
-import { resolveRunJournal, selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -138,7 +137,6 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 			assert.equal(hasProcessStorageSelection(domain), true);
 		}
 		assert.deepEqual(selectSessionStorage(project, { agentDir }), selection);
-		assert.deepEqual(selectRunJournal({ agentDir }), selection);
 		assert.deepEqual(JSON.parse(processSharedStorageSelection() ?? "null"), expected);
 		assert.deepEqual(JSON.parse(getBrokerSpawnOptions().env.ATOMIC_STORAGE ?? "null"), expected);
 		assert.deepEqual(readSharedStorageSetting(agentDir, processStorageEnvironment()), expected);
@@ -328,10 +326,6 @@ describe("teamProfileSelection (#4320)", () => {
 		assert.doesNotMatch(inspect(selection, { depth: 5 }), /memory-secret-token/);
 		assert.doesNotMatch(inspect(selection, { depth: 5, showHidden: false }), /memory-secret-token/);
 		assert.deepEqual({ ...secret }, {});
-
-		const sdk: CreateAgentSessionOptions = { storage: selection };
-		const run: RunOpts = { journal: selection };
-		assert.equal(sdk.storage, run.journal);
 	});
 
 	test("tokenFile and tokenEnv are references, checked before they are used (#4320)", () => {
@@ -415,7 +409,7 @@ describe("teamProfileSelection (#4320)", () => {
 	});
 
 	test(
-		"the selection opens sessions and workflow runs as createAgentSession({ storage }) and RunOpts.journal use it (#4320)",
+		"the selection opens sessions as createAgentSession({ storage }) uses it (#4320)",
 		async () => {
 			const databaseDirectory = makeLibsqlDirectory();
 			try {
@@ -430,8 +424,7 @@ describe("teamProfileSelection (#4320)", () => {
 				const sessionStore = selectStorage(selection, "sdk", "storage", "");
 				const store = await resolveSessionStore(project, { agentDir, sessionStore });
 				await store.close();
-				const journal = await resolveRunJournal({ agentDir, journal: selection });
-				await journal.close();
+
 				const unreachable = teamProfileSelection({
 					profile: "ci",
 					url: pathToFileURL(join(databaseDirectory, "absent", "dir", "db.sqlite")).href,

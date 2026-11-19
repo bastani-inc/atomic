@@ -14,124 +14,84 @@ import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
 } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.js";
+import { fakeFooterAgentSession } from "../helpers/footer-session.js";
 import { taskFixture } from "../helpers/task-projection.js";
-import {
-	createStore,
-	deriveGraphTheme,
-	fakeFooterAgentSession,
-	makeHandle,
-	makeTestTui,
-	StageChatView,
-	StageUiBroker,
-	setupRun,
-} from "../unit/stage-chat-view-helpers.js";
 
-test.each(["stage", "engine"] as const)(
-	"%s chat lists its active tasks below MCP and drops them once they finish (#5224, #5723)",
-	async (surface) => {
-		const tasks = taskFixture();
-		const emptyTasks = taskFixture();
-		const session = fakeFooterAgentSession();
-		bindOwnerTaskStore(session, tasks.store);
-		const footerData = new FooterDataProvider(tmpdir());
-		footerData.setExtensionStatus("mcp", "MCP  1 server · 3 tools");
-		const store = createStore();
-		setupRun(store, "order-run", "stage-a");
-		// A stage chat shows its own session's statuses, not the main footer provider's.
-		const stageUiBroker = new StageUiBroker(store);
-		stageUiBroker.setStageStatus("order-run", "stage-a", "mcp", "MCP  1 server · 3 tools");
-		const main = surface !== "stage" ? createProductionFullscreenContext({ rows: 40, columns: 100 }) : undefined;
-		const stage =
-			surface === "stage"
-				? new StageChatView({
-						store,
-						graphTheme: deriveGraphTheme({}),
-						runId: "order-run",
-						stageId: "stage-a",
-						workflowName: "order",
-						handle: makeHandle(undefined, [], "running", session).handle,
-						footerData,
-						stageUiBroker,
-						piTui: makeTestTui(40),
-						onClose() {},
-						onDetach() {},
-					})
-				: undefined;
-		let panelAgents = 0;
-		let removeTasks = () => {};
-		if (main) {
-			main.context.footerContainer.clear();
-			main.context.footerContainer.addChild(new FooterComponent(fakeFooterAgentSession(), footerData));
-			removeTasks = bindAgentPanel(
-				session,
-				{
-					setWidget: main.context.setExtensionWidget.bind(main.context),
-					requestRender: () => main.tui.requestRender(),
-				} as ExtensionUIContext,
-				(counts) => {
-					panelAgents = counts.total;
-				},
-			);
-		}
-		const render = () => {
-			if (stage) return stripTerminalSequences(stage.render(100).join("\n"));
-			assert.ok(main);
-			main.tui.renderNow();
-			return stripTerminalSequences(getLayoutFrame(main.tui).lines.join("\n"));
-		};
-		const taskRows = (screen: string) => screen.split("\n").filter((row) => /^ {2}[∀✓✗] worker /.test(row));
-		const assertOrder = async (expected: readonly RegExp[]) => {
-			// A store drain can finish one refresh window before the engine panel publishes its new rows.
-			if (main)
-				await vi.waitFor(() => assert.equal(panelAgents, expected.length), {
-					interval: AGENT_PANEL_REFRESH_WINDOW_MS,
-					timeout: 3 * AGENT_PANEL_REFRESH_WINDOW_MS,
-				});
-			const screen = render();
-			const rows = screen.split("\n");
-			const mcp = rows.findIndex((row) => row.includes("MCP "));
-			const shown = taskRows(screen);
-			assert.ok(mcp >= 0, screen);
-			assert.equal(shown.length, expected.length, screen);
-			for (const [index, row] of shown.entries()) assert.match(row, expected[index]!);
-			if (shown.length > 0) assert.ok(rows.indexOf(shown[0]!) > mcp, `Task rows must follow MCP:\n${screen}`);
-		};
-		try {
-			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.match(render(), /MCP /);
-			assert.deepEqual(taskRows(render()), []);
-			await tasks.start("will fail");
-			await tasks.start("keeps running");
-			await assertOrder([/keeps running/, /will fail/]);
-			tasks.runners[0].result.resolve({ kind: "failed", code: "fixture", message: "Retained failure" });
-			await vi.waitFor(() => {
-				tasks.store.drain();
-				assert.equal(tasks.store.tasks[0]?.execution.kind, "settled");
+test("the engine lists its active tasks below MCP and drops them once they finish (#5224, #5723)", async () => {
+	const tasks = taskFixture();
+	const emptyTasks = taskFixture();
+	const session = fakeFooterAgentSession();
+	bindOwnerTaskStore(session, tasks.store);
+	const footerData = new FooterDataProvider(tmpdir());
+	footerData.setExtensionStatus("mcp", "MCP  1 server · 3 tools");
+	const main = createProductionFullscreenContext({ rows: 40, columns: 100 });
+	let panelAgents = 0;
+	let removeTasks = () => {};
+	if (main) {
+		main.context.footerContainer.clear();
+		main.context.footerContainer.addChild(new FooterComponent(fakeFooterAgentSession(), footerData));
+		removeTasks = bindAgentPanel(
+			session,
+			{
+				setWidget: main.context.setExtensionWidget.bind(main.context),
+				requestRender: () => main.tui.requestRender(),
+			} as ExtensionUIContext,
+			(counts) => {
+				panelAgents = counts.total;
+			},
+		);
+	}
+	const render = () => {
+		assert.ok(main);
+		main.tui.renderNow();
+		return stripTerminalSequences(getLayoutFrame(main.tui).lines.join("\n"));
+	};
+	const taskRows = (screen: string) => screen.split("\n").filter((row) => /^ {2}[∀✓✗] worker /.test(row));
+	const assertOrder = async (expected: readonly RegExp[]) => {
+		// A store drain can finish one refresh window before the engine panel publishes its new rows.
+		if (main)
+			await vi.waitFor(() => assert.equal(panelAgents, expected.length), {
+				interval: AGENT_PANEL_REFRESH_WINDOW_MS,
+				timeout: 3 * AGENT_PANEL_REFRESH_WINDOW_MS,
 			});
-			// A finished subagent leaves the main panel and a stage chat's task list at once.
-			await assertOrder([/keeps running/]);
-			if (stage) {
-				const narrow = stripTerminalSequences(stage.render(40).join("\n"));
-				assert.match(narrow, /∀ worker/);
-				assert.match(narrow, /← (?:return to )?graph/);
-			}
-			await tasks.settle(1);
-			if (stage) assert.deepEqual(taskRows(render()), []);
-			assert.equal(tasks.store.backgroundTasks.length, 2, "terminal history remains inspectable");
-			bindOwnerTaskStore(session, emptyTasks.store);
-			await assertOrder([]);
-		} finally {
-			removeTasks();
-			stage?.dispose();
-			if (main) {
-				main.resolveTheme();
-				await main.initPromise;
-				main.tui.stop();
-				main.restoreOffline();
-			}
-			footerData.dispose();
-			await tasks.dispose();
-			await emptyTasks.dispose();
+		const screen = render();
+		const rows = screen.split("\n");
+		const mcp = rows.findIndex((row) => row.includes("MCP "));
+		const shown = taskRows(screen);
+		assert.ok(mcp >= 0, screen);
+		assert.equal(shown.length, expected.length, screen);
+		for (const [index, row] of shown.entries()) assert.match(row, expected[index]!);
+		if (shown.length > 0) assert.ok(rows.indexOf(shown[0]!) > mcp, `Task rows must follow MCP:\n${screen}`);
+	};
+	try {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.match(render(), /MCP /);
+		assert.deepEqual(taskRows(render()), []);
+		await tasks.start("will fail");
+		await tasks.start("keeps running");
+		await assertOrder([/keeps running/, /will fail/]);
+		tasks.runners[0].result.resolve({ kind: "failed", code: "fixture", message: "Retained failure" });
+		await vi.waitFor(() => {
+			tasks.store.drain();
+			assert.equal(tasks.store.tasks[0]?.execution.kind, "settled");
+		});
+		// A finished subagent leaves the main panel and a stage chat's task list at once.
+		await assertOrder([/keeps running/]);
+		await tasks.settle(1);
+		await assertOrder([]);
+		assert.equal(tasks.store.backgroundTasks.length, 2, "terminal history remains inspectable");
+		bindOwnerTaskStore(session, emptyTasks.store);
+		await assertOrder([]);
+	} finally {
+		removeTasks();
+		if (main) {
+			main.resolveTheme();
+			await main.initPromise;
+			main.tui.stop();
+			main.restoreOffline();
 		}
-	},
-);
+		footerData.dispose();
+		await tasks.dispose();
+		await emptyTasks.dispose();
+	}
+});

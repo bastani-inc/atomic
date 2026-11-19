@@ -11,6 +11,7 @@ import type { ChatBoxSession } from "../../packages/coding-agent/src/core/tasks/
 import {
 	launchedTaskViewSource,
 	ownerTaskViewSource,
+	type TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
 	AGENT_PANEL_IDLE_ROWS,
@@ -21,7 +22,7 @@ import type { ChatSessionHostOpts } from "../../packages/coding-agent/src/modes/
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
+
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 
@@ -121,71 +122,6 @@ test("a settled remote task uses its final report rather than the next observati
 	assert.equal(liveElapsedMs(id, 1000, true, 10_000), 1000);
 	assert.equal(liveElapsedMs(id, 1000, true, 13_000), 4000);
 	assert.equal(liveElapsedMs(id, 6000, false, 610_000), 6000);
-});
-
-test("unrelated root and pooled worker tasks with the same id keep independent clocks (#5224)", async () => {
-	initTheme("dark");
-	let now = 300_000;
-	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-	const fixture = taskFixture();
-	const pooled = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
-	const rootInspector = new TaskInspector(
-		fixture.store,
-		() => {},
-		() => {},
-	);
-	const pooledInspector = new TaskInspector(
-		pooled,
-		() => {},
-		() => {},
-	);
-	const model = new AgentPanelModel(() => now);
-	try {
-		await fixture.start("Root task");
-		const sharedId = fixture.store.tasks[0]!.ref.taskId;
-		text(rootInspector);
-		now += 600_000;
-		assert.match(text(rootInspector), /Root task +10m\b/);
-		const workerTask = {
-			...taskRecord(sharedId),
-			title: "Worker task",
-			metrics: { elapsedMs: 5000 },
-		};
-		pooled.apply({
-			tasks: [workerTask],
-			background: [sharedId],
-			settlement: [],
-			activity: [],
-			stdin: [],
-			statuses: [],
-		});
-		assert.match(text(pooledInspector), /5s/);
-		assert.doesNotMatch(text(pooledInspector), /10m/);
-
-		const secondPool = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
-		secondPool.apply({
-			tasks: [{ ...taskRecord(sharedId), title: "Long worker", metrics: { elapsedMs: 3_600_000 } }],
-			background: [sharedId],
-			settlement: [],
-			activity: [],
-			stdin: [],
-			statuses: [],
-		});
-		const secondInspector = new TaskInspector(
-			secondPool,
-			() => {},
-			() => {},
-		);
-		text(secondInspector);
-		secondInspector.dispose();
-		const rootRows = model.rows(taskPanelItems(ownerTaskViewSource(fixture.store), new Set()));
-		assert.equal(rootRows[0]?.elapsedMs, 600_000);
-	} finally {
-		rootInspector.dispose();
-		pooledInspector.dispose();
-		await fixture.dispose();
-		clock.mockRestore();
-	}
 });
 
 test("a second task store settling first does not reset the session store's clock (#5224)", async () => {
@@ -416,9 +352,9 @@ function stageHostOptions(overrides: Partial<ChatSessionHostOpts> = {}): ChatSes
 	};
 }
 
-test("painting a sibling chat cannot bring back a stopped child in either footer (#5567)", () => {
+test("painting a sibling chat cannot bring back a stopped child in either footer (#5567)", async () => {
 	initTheme("dark");
-	const root = new PooledStageTaskSource(async () => undefined);
+	const fixture = taskFixture();
 	const parentA = taskRecord("A").ref.taskId;
 	const parentB = taskRecord("B").ref.taskId;
 	const stopped = {
@@ -427,16 +363,15 @@ test("painting a sibling chat cannot bring back a stopped child in either footer
 		execution: { kind: "settled", result: { kind: "cancelled", cause: "user" } },
 	} as const;
 	const tasks = [stopped, { ...taskRecord("sibling-child"), parentTaskId: parentB }];
-	const publish = () =>
-		root.apply({
-			tasks,
-			background: tasks.map((t) => t.ref.taskId),
-			settlement: [],
-			activity: [],
-			stdin: [],
-			statuses: [],
-		});
-	publish();
+	const root: TaskViewSource = {
+		...ownerTaskViewSource(fixture.store),
+		tasks,
+		backgroundTasks: tasks,
+		ownerTasks: tasks,
+		ownerBackgroundTasks: tasks,
+		taskRecord: (id) => tasks.find((task) => task.ref.taskId === id),
+		panelRevision: () => tasks.length,
+	};
 	const host = (id: typeof parentA) =>
 		new ChatSessionHost(stageHostOptions({ getTaskSource: () => launchedTaskViewSource(root, id) }));
 	const a = host(parentA);
@@ -445,7 +380,6 @@ test("painting a sibling chat cannot bring back a stopped child in either footer
 		assert.deepEqual(a.renderTaskFooter(120), []);
 		assert.match(stripVTControlCharacters(b.renderFooter(120).join("\n")), /sibling-child/);
 		tasks.push({ ...taskRecord("new-child"), parentTaskId: parentA });
-		publish();
 		for (const lines of [a.renderFooter(120), a.renderTaskFooter(120)]) {
 			const painted = stripVTControlCharacters(lines.join("\n"));
 			assert.match(painted, /new-child/);
@@ -454,87 +388,7 @@ test("painting a sibling chat cannot bring back a stopped child in either footer
 	} finally {
 		a.dispose();
 		b.dispose();
-	}
-});
-
-test("two stage chat hosts with the same pooled task id keep independent footer clocks and unbound records do not tick (#5224)", () => {
-	initTheme("dark");
-	let now = 700_000;
-	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-	const sharedId = taskRecord("task-1-0-0").ref.taskId;
-	const poolA = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
-	const poolB = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
-	poolA.apply({
-		tasks: [{ ...taskRecord(sharedId), title: "Worker A", metrics: { elapsedMs: 3_600_000 } }],
-		background: [sharedId],
-		settlement: [],
-		activity: [],
-		stdin: [],
-		statuses: [],
-	});
-	poolB.apply({
-		tasks: [{ ...taskRecord(sharedId), title: "Worker B", metrics: { elapsedMs: 5000 } }],
-		background: [sharedId],
-		settlement: [],
-		activity: [],
-		stdin: [],
-		statuses: [],
-	});
-	const hostA = new ChatSessionHost(stageHostOptions({ getTaskSource: () => poolA }));
-	const hostB = new ChatSessionHost(stageHostOptions({ getTaskSource: () => poolB }));
-	const unboundPool = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
-	unboundPool.apply({
-		tasks: [{ ...taskRecord(sharedId), title: "Unbound worker", metrics: { elapsedMs: 2000 } }],
-		background: [sharedId],
-		settlement: [],
-		activity: [],
-		stdin: [],
-		statuses: [],
-	});
-	let unboundInspector: TaskInspector | undefined;
-	try {
-		const frameA1 = stripVTControlCharacters(hostA.renderFooter(120).join("\n"));
-		hostA.renderTaskFooter(120);
-		assert.match(frameA1, /Worker A.*1h 0m/);
-
-		const frameB1 = stripVTControlCharacters(hostB.renderFooter(120).join("\n"));
-		hostB.renderTaskFooter(120);
-		assert.match(frameB1, /Worker B.*5s/);
-		assert.doesNotMatch(frameB1, /1h/);
-
-		now += 1000;
-		const frameB2 = stripVTControlCharacters(hostB.renderFooter(120).join("\n"));
-		hostB.renderTaskFooter(120);
-		assert.match(frameB2, /Worker B.*6s/);
-
-		const unbound1 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
-		assert.match(unbound1, /Unbound worker.*2s/);
-		now += 60_000;
-		const unbound2 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
-		assert.match(unbound2, /Unbound worker.*2s/);
-		assert.doesNotMatch(unbound2, /1m/);
-
-		unboundInspector = new TaskInspector(
-			unboundPool,
-			() => {},
-			() => {},
-		);
-		assert.match(text(unboundInspector), /Unbound worker.*2s/);
-		const bound1 = stripVTControlCharacters(
-			renderTaskFooter(unboundPool.backgroundTasks, 100, taskClocksFor(unboundPool)).join("\n"),
-		);
-		assert.match(bound1, /Unbound worker.*2s/);
-		now += 10_000;
-		const bound2 = stripVTControlCharacters(
-			renderTaskFooter(unboundPool.backgroundTasks, 100, taskClocksFor(unboundPool)).join("\n"),
-		);
-		assert.match(bound2, /Unbound worker.*12s/);
-		assert.match(text(unboundInspector), /Unbound worker.*12s/);
-	} finally {
-		unboundInspector?.dispose();
-		hostA.dispose();
-		hostB.dispose();
-		clock.mockRestore();
+		await fixture.dispose();
 	}
 });
 

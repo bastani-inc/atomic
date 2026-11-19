@@ -37,7 +37,6 @@ const { getBrokerPidPath, getBrokerSocketPath } = await import("../../packages/i
 const { isSocketAnswering } = await import("../../packages/intercom/broker/socket-liveness.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
-const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 const { reconnectDelayMs } = await import("../../packages/intercom/reconnect-backoff.js");
 const { SupervisorAuthorizationRegistry } = await import(
 	"../../packages/intercom/supervisor-authorization-registry.js"
