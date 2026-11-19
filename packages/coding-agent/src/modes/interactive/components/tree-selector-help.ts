@@ -1,8 +1,10 @@
 import {
 	type Component,
 	CURSOR_MARKER,
+	clickableKeysHint,
 	type Focusable,
 	getKeybindings,
+	type HintKeyPart,
 	type Keybinding,
 	sliceByColumn,
 	truncateToWidth,
@@ -58,8 +60,17 @@ export class TreeHelp implements Component {
 
 	render(width: number): string[] {
 		const items = TREE_HELP_ITEMS.map(({ keys, label, labelFirst, drop }) => {
-			const text = formatHelpKeys(keys);
-			return { text: !text ? label : labelFirst ? `${label} ${text}` : `${text} ${label}`, drop };
+			const parts = helpKeyParts(keys);
+			const text = parts.map((part) => part.text).join("");
+			return {
+				text: !text ? label : labelFirst ? `${label} ${text}` : `${text} ${label}`,
+				hint: !text
+					? label
+					: labelFirst
+						? `${label} ${clickableKeysHint(parts)}`
+						: clickableKeysHint(parts, ` ${label}`),
+				drop,
+			};
 		});
 		const room = Math.max(1, width - 2);
 		const kept = [...items];
@@ -69,7 +80,7 @@ export class TreeHelp implements Component {
 			if (visibleWidth(line()) <= room) break;
 			kept.splice(kept.indexOf(item), 1);
 		}
-		return [theme.fg("dim", truncateToWidth(`  ${line()}`, width, "…"))];
+		return [theme.fg("dim", truncateToWidth(`  ${kept.map((item) => item.hint).join(" · ")}`, width, "…"))];
 	}
 }
 
@@ -96,36 +107,24 @@ const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: b
 	{ keys: ["tui.select.cancel"], label: "cancel" },
 ];
 
-function formatHelpKeys(keybindings: Keybinding[]): string {
-	const keys: string[] = [];
-	for (const keybinding of keybindings) {
-		const key = getKeybindings().getKeys(keybinding)[0];
-		if (key !== undefined) keys.push(key);
-	}
-	if (keys.length === 0) return "";
-
-	return formatKeyText(compactRawKeys(keys))
-		.replace(/\bpageup\b/g, "pgup")
-		.replace(/\bpagedown\b/g, "pgdn")
-		.replace(/\bup\b/g, "↑")
-		.replace(/\bdown\b/g, "↓")
-		.replace(/\bleft\b/g, "←")
-		.replace(/\bright\b/g, "→")
-		.replace("↑/↓", "↑↓")
-		.replace("←/→", "←→");
-}
-
-function compactRawKeys(keys: string[]): string {
-	if (keys.length === 1) return keys[0]!;
-
-	const parts = keys.map((key) => {
-		const separatorIndex = key.lastIndexOf("+");
-		return separatorIndex === -1
-			? { prefix: "", suffix: key }
-			: { prefix: key.slice(0, separatorIndex + 1), suffix: key.slice(separatorIndex + 1) };
+/** Compact shared modifiers and paired arrows without losing the key ID of any visible segment. */
+function helpKeyParts(keybindings: Keybinding[]): HintKeyPart[] {
+	const keys = keybindings.flatMap((keybinding) => getKeybindings().getKeys(keybinding).slice(0, 1));
+	const modifiers = keys.map((key) => /^(?:(?:ctrl|alt|shift|super)\+)+/i.exec(key)?.[0] ?? "");
+	const prefix = modifiers.every((part) => part === modifiers[0]) ? modifiers[0] : undefined;
+	const labels = keys.map((key, index) =>
+		formatKeyText(prefix && index > 0 ? key.slice(prefix.length) : key)
+			.replace(/\bpageup\b/g, "pgup")
+			.replace(/\bpagedown\b/g, "pgdn")
+			.replace(/\bup\b/g, "↑")
+			.replace(/\bdown\b/g, "↓")
+			.replace(/\bleft\b/g, "←")
+			.replace(/\bright\b/g, "→"),
+	);
+	return keys.map((key, index) => {
+		const label = labels[index]!;
+		const next = labels[index + 1];
+		const paired = (label.endsWith("↑") && next === "↓") || (label.endsWith("←") && next === "→");
+		return { text: label + (next && !paired ? "/" : ""), key };
 	});
-	const prefix = parts[0]!.prefix;
-	return prefix && parts.every((part) => part.prefix === prefix)
-		? `${prefix}${parts.map((part) => part.suffix).join("/")}`
-		: keys.join("/");
 }

@@ -145,6 +145,7 @@ function factory(pi: ExtensionAPI): void {
 		resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,
 		store,
 		stageControlRegistry: runState.stageControlRegistry,
+		stageUiBroker: runState.stageUiBroker,
 	};
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
 	const disposeCompletedRoutes = registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
@@ -208,9 +209,9 @@ function factory(pi: ExtensionAPI): void {
 			context: () => sessionContext,
 			store: owner.store,
 			jobs: runState.jobs,
-			catalog: async () => {
+			catalog: async (options) => {
 				const runtime = runtimeState.runtimeForContext(sessionContext);
-				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
+				return (await runtime.prepareDurableCatalog?.(options)) ?? { resumable: [], completed: [] };
 			},
 		}),
 		...resumeProvider,

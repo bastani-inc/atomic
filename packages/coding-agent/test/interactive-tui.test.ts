@@ -8,11 +8,13 @@ import {
 	getKeybindings,
 	Image,
 	isViewportTUI,
+	readHintSpans,
 	resetCapabilitiesCache,
 	ScrollView,
 	setCapabilities,
 	setCellDimensions,
 	setKeybindings,
+	stripHintMarkers,
 	Text,
 	type TUI,
 	type TuiAltScreen,
@@ -844,7 +846,14 @@ describe("clear-on-shrink working status spacing", () => {
 
 		assert.equal(context.workingMessage, undefined);
 		assert.equal(context.workingVisible, true);
-		assert.deepEqual(setMessage.mock.calls, [["Working (esc Interrupt)"]]);
+		assert.equal(setMessage.mock.calls.length, 1);
+		const message = String(setMessage.mock.calls[0]?.[0]);
+		assert.equal(stripHintMarkers(message), "Working (esc Interrupt)");
+		assert.deepEqual(
+			readHintSpans(message).spans.map((span) => [span.start, span.end, span.action]),
+			[[9, 22, { kind: "key", key: "escape" }]],
+			"a click on esc Interrupt presses esc",
+		);
 	});
 });
 

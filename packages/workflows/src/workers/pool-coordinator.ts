@@ -347,6 +347,7 @@ export function projectRootRun(run: RunSnapshot): PoolRootProjection {
 			...(stage.replayKey === undefined ? {} : { replayKey: stage.replayKey }),
 			...(stage.intercomGroup === undefined ? {} : { intercomGroup: stage.intercomGroup }),
 			...(stage.workflowChildRun === undefined ? {} : { workflowChildRun: stage.workflowChildRun }),
+			...(stage.startedChildRunId === undefined ? {} : { startedChildRunId: stage.startedChildRunId }),
 			...(stage.workflowChild === undefined ? {} : { workflowChild: { ...stage.workflowChild, outputs: {} } }),
 		})),
 	};
@@ -786,6 +787,8 @@ export class PoolCoordinator {
 	private ownsJournal = true;
 	private sharedTimer?: NodeJS.Timeout;
 	private sharedPass?: Promise<void>;
+	/** Final and periodic relays run in order: an older snapshot must not overwrite a completed child's last one. */
+	private sharedActivity = Promise.resolve();
 	/** Relayed activity already read, by version (the root's coordinator of a shared pool). */
 	private activityCursor = 0;
 	/** Work whose result reached the root. */
@@ -1663,12 +1666,18 @@ export class PoolCoordinator {
 		const shared = this.sharedPool!;
 		const lease = this.lease!;
 		const root = this.root!;
-		if (this.satellite !== undefined) await this.relayActivity(shared, lease);
-		else if (this.publishing) {
-			await this.readRelayedActivity(shared, root);
-			await this.readPoolUsage(root);
-		}
+		await this.syncSharedActivity(shared, lease);
+		if (this.satellite === undefined && this.publishing) await this.readPoolUsage(root);
 		await this.takeStageInputs(shared, lease, root);
+	}
+
+	private syncSharedActivity(shared: SqlSharedPool, lease: Lease): Promise<void> {
+		const transfer = this.sharedActivity.then(() => {
+			if (this.satellite !== undefined) return this.relayActivity(shared, lease);
+			if (this.publishing) return this.readRelayedActivity(shared, lease.runId);
+		});
+		this.sharedActivity = transfer.catch(() => {});
+		return transfer;
 	}
 
 	/** Relays the latest activity of this host's attempts, at most once per pass. */
@@ -3082,6 +3091,8 @@ export class PoolCoordinator {
 					if (message.kind !== "complete") throw new Error("Invalid worker operation");
 					const shipping = this.shipping;
 					if (shipping !== undefined) await leased(() => shipping.flush(work));
+					// Relays only accept leased work. Commit this host's last activity before completion releases that lease.
+					if (this.satellite !== undefined) await leased(() => this.syncSharedActivity(this.sharedPool!, lease));
 					await leased(() => queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject));
 					await shipping?.release(work);
 					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
@@ -3577,6 +3588,7 @@ export class PoolCoordinator {
 		const local = new Set([...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work.id])));
 		const claimWindowMs = this.options?.shared?.claimWindowMs ?? 0;
 		const capable = new Map<string, boolean>();
+		let readFinalActivity = false;
 		for (const work of rows) {
 			if (!this.attemptBase.has(work.id)) continue;
 			// A failure an unreachable journal may have written reaches the root once a pass reads the work failed; work the
@@ -3602,8 +3614,14 @@ export class PoolCoordinator {
 				readyForMs: waitedMs(wait, now),
 				claimWindowMs,
 			});
-			if (settlement === "report-result") await this.sendResult(work.id);
-			else if (settlement === "attempts-exhausted") {
+			if (settlement === "report-result") {
+				// All completions in these rows already have their final relay. Read it before sendResult flushes to the root.
+				if (!readFinalActivity) {
+					await this.syncSharedActivity(shared, lease);
+					readFinalActivity = true;
+				}
+				await this.sendResult(work.id);
+			} else if (settlement === "attempts-exhausted") {
 				const failure = this.retryLimit(work, "worker-lost", undefined);
 				if (await this.failUnclaimed(queue, lease, work, failure)) this.failWork(work, failure);
 			} else if (settlement === "claim-window-passed") {

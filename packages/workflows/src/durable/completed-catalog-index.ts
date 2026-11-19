@@ -80,10 +80,14 @@ export class CheckpointCatalogIndex {
 		};
 	}
 
-	/** Whether any raw record is scoped under a boundary replay key or claims the child run. */
-	childScopedEvidenceExists(boundaryReplayKey: string, childRunId: string): boolean {
+	/**
+	 * Whether any raw record is scoped under a boundary replay key or claims the child run. `prompts: false` ignores
+	 * answered prompts, which a child records without any stage or tool of its own.
+	 */
+	childScopedEvidenceExists(boundaryReplayKey: string, childRunId: string, prompts = true): boolean {
 		this.evidence ??= scopedEvidenceIndex(this.checkpoints);
-		return this.evidence.runIds.has(childRunId) || hasPrefix(this.evidence.identities, `${boundaryReplayKey}:`);
+		const identities = prompts ? this.evidence.identities : this.evidence.graphIdentities;
+		return this.evidence.runIds.has(childRunId) || hasPrefix(identities, `${boundaryReplayKey}:`);
 	}
 
 	private inCheckpointOrder(
@@ -99,26 +103,32 @@ interface ScopedEvidenceIndex {
 	readonly runIds: ReadonlySet<string>;
 	/** Every checkpoint id and lookup identity, sorted so a prefix match is one binary search. */
 	readonly identities: readonly string[];
+	/** The same for stage and tool records only. */
+	readonly graphIdentities: readonly string[];
 }
 
 function scopedEvidenceIndex(checkpoints: readonly DurableCheckpoint[]): ScopedEvidenceIndex {
 	const runIds = new Set<string>();
 	const identities: string[] = [];
+	const graphIdentities: string[] = [];
 	for (const checkpoint of checkpoints) {
-		identities.push(
+		const ids = [
 			checkpoint.checkpointId,
 			checkpoint.kind === "tool"
 				? checkpoint.argsHash
 				: checkpoint.kind === "ui"
 					? checkpoint.promptHash
 					: checkpoint.replayKey,
-		);
+		];
+		identities.push(...ids);
+		if (checkpoint.kind !== "ui") graphIdentities.push(...ids);
 		if (checkpoint.kind !== "ui" && checkpoint.topology?.run?.runId !== undefined) {
 			runIds.add(checkpoint.topology.run.runId);
 		}
 	}
 	identities.sort(compareCodeUnits);
-	return { runIds, identities };
+	graphIdentities.sort(compareCodeUnits);
+	return { runIds, identities, graphIdentities };
 }
 
 /** Whether any sorted identity starts with `prefix`; all such identities sort contiguously from its lower bound. */

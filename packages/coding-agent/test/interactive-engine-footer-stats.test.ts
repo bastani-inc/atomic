@@ -24,8 +24,8 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { InteractiveEngineGenerationEnded } from "../src/modes/interactive-engine/engine-generation.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import type { RpcEvent, RpcSessionState } from "../src/modes/rpc/rpc-types.js";
-import { stripAnsi } from "../src/utils/ansi.js";
 import { createInteractiveSubmissionHost } from "./helpers/interactive-submission-host.js";
+import { stripAnsi } from "./helpers/visible-text.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
 beforeAll(() => {

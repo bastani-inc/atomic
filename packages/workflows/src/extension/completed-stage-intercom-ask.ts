@@ -1,8 +1,13 @@
 import type {
 	EnsurePostMortemStageHandleResult,
+	PostMortemAdmission,
 	PostMortemUnavailableReason,
 } from "../runs/foreground/postmortem-stage-chat.js";
-import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
+import {
+	isLatestStageRelease,
+	type ReleasedStageSource,
+	type StageControlHandle,
+} from "../runs/foreground/stage-control-registry.js";
 
 const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const POST_MORTEM_ATTACH_TIMEOUT_MS = 10_000;
@@ -21,6 +26,7 @@ interface CompletedStageAskEvent {
 	handled: boolean;
 	completion?: Promise<void>;
 	readonly batch: boolean;
+	readonly assertCurrentStage?: () => void;
 	readonly workflowRunId?: string;
 	readonly workflowStageId?: string;
 	readonly messages: readonly IntercomAskMessage[];
@@ -39,6 +45,7 @@ interface WorkflowEventSurface {
 export type CompletedStageHandleResolver = (
 	runId: string,
 	stageId: string,
+	admission?: PostMortemAdmission,
 ) => EnsurePostMortemStageHandleResult | undefined | Promise<EnsurePostMortemStageHandleResult | undefined>;
 
 /**
@@ -59,7 +66,10 @@ export function registerCompletedStageIntercomAskRouter(
 		if (disposed || !isCompletedStageAskEvent(payload) || payload.handled === true) return;
 		payload.handled = true;
 		payload.completion = enqueueTargetTurn(queues, `${payload.workflowRunId}:${payload.workflowStageId}`, () =>
-			deliverAsPostMortemTurn(payload, resolveHandle, assertActive),
+			deliverAsPostMortemTurn(payload, resolveHandle, () => {
+				assertActive();
+				payload.assertCurrentStage?.();
+			}),
 		);
 	});
 	const dispose = (): void => {
@@ -78,6 +88,7 @@ function isCompletedStageAskEvent(payload: unknown): payload is CompletedStageAs
 	if (typeof payload !== "object" || payload === null) return false;
 	const event = payload as Partial<CompletedStageAskEvent>;
 	return (
+		(event.assertCurrentStage === undefined || typeof event.assertCurrentStage === "function") &&
 		typeof event.workflowRunId === "string" &&
 		event.workflowRunId.length > 0 &&
 		typeof event.workflowStageId === "string" &&
@@ -110,13 +121,19 @@ async function deliverAsPostMortemTurn(
 	resolveHandle: CompletedStageHandleResolver,
 	assertActive: () => void,
 ): Promise<void> {
-	await withReopenedStage(event.workflowRunId, event.workflowStageId, resolveHandle, assertActive, async (handle) => {
-		for (const message of event.messages) {
-			assertActive();
-			if (handle.isStreaming) await handle.followUp(message.content);
-			else await handle.prompt(message.content);
-		}
-	});
+	await withReopenedStage(
+		event.workflowRunId,
+		event.workflowStageId,
+		resolveHandle,
+		assertActive,
+		async (handle, check) => {
+			for (const message of event.messages) {
+				check();
+				if (handle.isStreaming) await handle.followUp(message.content);
+				else await handle.prompt(message.content);
+			}
+		},
+	);
 }
 
 /** The reopened stage stays open while `use` runs, and goes back to its saved transcript once nothing else holds it. */
@@ -125,13 +142,27 @@ async function withReopenedStage<T>(
 	stageId: string,
 	resolveHandle: CompletedStageHandleResolver,
 	assertActive: () => void,
-	use: (handle: StageControlHandle) => Promise<T>,
+	use: (handle: StageControlHandle, check: () => void) => Promise<T>,
+	source?: ReleasedStageSource,
 ): Promise<T> {
-	const handle = await resolveCompletedStage(runId, stageId, resolveHandle, assertActive);
+	let current = () => isLatestStageRelease(source);
+	const check = () => {
+		assertActive();
+		if (!current()) throw new Error("Intercom ask target is unavailable: the workflow stage was replaced.");
+	};
+	const admission: PostMortemAdmission = {
+		source,
+		assertCurrent: check,
+		acquired: (held) => {
+			current = held;
+		},
+	};
+	const handle = await resolveCompletedStage(runId, stageId, resolveHandle, admission);
 	const letGo = handle.subscribe(() => {});
 	try {
 		await attachWithTimeout(handle);
-		return await use(handle);
+		check();
+		return await use(handle, check);
 	} finally {
 		letGo();
 	}
@@ -141,11 +172,11 @@ async function resolveCompletedStage(
 	runId: string,
 	stageId: string,
 	resolveHandle: CompletedStageHandleResolver,
-	assertActive: () => void,
+	admission: PostMortemAdmission,
 ): Promise<StageControlHandle> {
-	assertActive();
-	const resolution = await resolveHandle(runId, stageId);
-	assertActive();
+	admission.assertCurrent();
+	const resolution = await resolveHandle(runId, stageId, admission);
+	admission.assertCurrent();
 	if (resolution === undefined) {
 		throw new Error(
 			`Intercom ask target is unavailable: completed workflow stage ${runId}/${stageId} was deleted or is no longer retained.`,
@@ -198,26 +229,44 @@ export async function collectTurnReply(
  * with `content`, and returns the final assistant text. Turns for one stage run
  * in arrival order.
  */
-export type CompletedStageAnswerer = (runId: string, stageId: string, content: string) => Promise<string>;
+export type CompletedStageAnswerer = (
+	runId: string,
+	stageId: string,
+	content: string,
+	assertCurrent?: () => void,
+	source?: ReleasedStageSource,
+) => Promise<string>;
 
 export function createCompletedStageAnswerer(
 	resolveHandle: CompletedStageHandleResolver,
 	assertActive: () => void = () => {},
 ): CompletedStageAnswerer {
 	const queues = new Map<string, Promise<string>>();
-	return (runId, stageId, content) =>
-		enqueueTargetTurn(queues, `${runId}:${stageId}`, () =>
-			withReopenedStage(runId, stageId, resolveHandle, assertActive, async (handle) => {
-				if (handle.isStreaming) {
-					throw new Error(
-						`Completed workflow stage ${runId}/${stageId} is busy with another turn; ask again when it is idle.`,
-					);
-				}
-				const reply = await collectTurnReply(handle, content);
-				assertActive();
-				return reply ?? `Completed workflow stage ${runId}/${stageId} reopened but produced no text answer.`;
-			}),
+	return (runId, stageId, content, assertCurrent, source) => {
+		const check = () => {
+			assertActive();
+			assertCurrent?.();
+		};
+		return enqueueTargetTurn(queues, `${runId}:${stageId}`, () =>
+			withReopenedStage(
+				runId,
+				stageId,
+				resolveHandle,
+				check,
+				async (handle, checkHandle) => {
+					if (handle.isStreaming) {
+						throw new Error(
+							`Completed workflow stage ${runId}/${stageId} is busy with another turn; ask again when it is idle.`,
+						);
+					}
+					const reply = await collectTurnReply(handle, content);
+					checkHandle();
+					return reply ?? `Completed workflow stage ${runId}/${stageId} reopened but produced no text answer.`;
+				},
+				source,
+			),
 		);
+	};
 }
 
 async function attachWithTimeout(handle: StageControlHandle): Promise<void> {

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { stripHintMarkers } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { agentPanelKeys } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.ts";
 import { renderNavHintLine } from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.ts";
 
 const identity = (text: string) => text;
-const style = { dim: identity, text: identity, muted: identity, border: identity, bold: identity };
+// Hint lines are compared as the terminal shows them, without their zero-width click markers.
+const style = { dim: stripHintMarkers, text: identity, muted: identity, border: identity, bold: identity };
 
 test("focused panel hints name open and back actions in live key order at both terminal widths (#5224)", () => {
 	const row = { id: "job:1", kind: "agent", state: "running", name: "debugger", task: "fix spawn locks" } as const;

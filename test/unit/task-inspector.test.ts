@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -8,6 +7,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 import { transcriptOnlySource } from "../helpers/task-transcript-environment.js";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 // RFC #2884: real owner tasks remain inspectable and cancellation needs target confirmation.
 test("inspector keeps selected live task reachable in a short viewport and confirms cancellation", async () => {
