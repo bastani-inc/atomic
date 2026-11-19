@@ -514,8 +514,8 @@ export interface DurableWorkflowBackend {
 	/** Clear all state (for tests). */
 	commitReset(): Promise<void>;
 
-	/** Hydrate one workflow from persistent storage. */
-	hydrateWorkflow(workflowId: string): Promise<void>;
+	/** Hydrate one workflow. A targeted lookup checks its header before reading the history. */
+	hydrateWorkflow(workflowId: string, options?: { readonly checkHeader?: boolean }): Promise<void>;
 	/** Hydrate all catalog candidates from persistent storage. */
 	hydrateResumableWorkflows(): Promise<void>;
 	promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string };

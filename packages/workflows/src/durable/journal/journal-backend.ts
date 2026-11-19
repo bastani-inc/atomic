@@ -1573,8 +1573,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	async readPendingStageMessageDeliveryCount(runId: string, messageId: string, logicalRunId = runId): Promise<number> {
 		return this.getPendingStageMessageDeliveryCount(runId, messageId, logicalRunId);
 	}
-	async hydrateWorkflow(runId: string): Promise<void> {
-		await this.serialize(runId, () => this.rebuild(runId, true), false);
+	async hydrateWorkflow(runId: string, options?: { readonly checkHeader?: boolean }): Promise<void> {
+		await this.serialize(runId, () => this.rebuild(runId, options?.checkHeader), false);
 	}
 	holdsIdleWorkflowLease(runId: string): boolean {
 		return this.leases.has(runId) && !this.takenUp.has(runId);

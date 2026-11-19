@@ -106,7 +106,7 @@ export async function prepareDurableResume(
 	if (workflowId !== undefined) {
 		const resolved = resolveDurableEntry(workflowId, catalog);
 		if (resolved !== undefined && !("kind" in resolved)) {
-			await backend.hydrateWorkflow(resolved.workflowId);
+			await backend.hydrateWorkflow(resolved.workflowId, { checkHeader: true });
 		}
 	}
 	return backend.listResumableWorkflows();
@@ -182,7 +182,7 @@ export async function resumeDurableWorkflow(
 		if (resolution.kind === "malformed" || resolution.kind === "ambiguous")
 			return { ok: false, reason: "not_registered", message: resolution.message };
 		id = resolution.runId;
-		await raceAbort(backend.hydrateWorkflow(id), deps.signal);
+		await raceAbort(backend.hydrateWorkflow(id, { checkHeader: true }), deps.signal);
 	}
 	let handle = backend.getWorkflow(id);
 	if (handle === undefined) {
@@ -205,7 +205,7 @@ export async function resumeDurableWorkflow(
 		// The terminal event can reach a caller before the old attempt finishes its persistence and releases its
 		// lease. Wait for that attempt before admitting a replacement, then discard its now-stale catalog version.
 		await raceAbort(finishing.promise, deps.signal);
-		await raceAbort(backend.hydrateWorkflow(id), deps.signal);
+		await raceAbort(backend.hydrateWorkflow(id, { checkHeader: true }), deps.signal);
 		handle = backend.getWorkflow(id);
 		if (handle !== undefined) selected = resumableEntryFromHandle(handle);
 	}
@@ -766,7 +766,7 @@ export async function prepareTargetedDurableResumable(
 	for (const workflowId of workflowIds) {
 		if (seen.has(workflowId)) continue;
 		seen.add(workflowId);
-		await backend.hydrateWorkflow(workflowId);
+		await backend.hydrateWorkflow(workflowId, { checkHeader: true });
 		const handle = backend.getLoadableWorkflow(workflowId);
 		if (
 			handle === undefined ||
@@ -787,7 +787,8 @@ export async function prepareRuntimeDurableResumable(
 	await backend.hydrateResumableWorkflows();
 	if (workflowId !== undefined) {
 		const resolved = resolveDurableEntry(workflowId, backend.listResumableWorkflows());
-		if (resolved !== undefined && !("kind" in resolved)) await backend.hydrateWorkflow(resolved.workflowId);
+		if (resolved !== undefined && !("kind" in resolved))
+			await backend.hydrateWorkflow(resolved.workflowId, { checkHeader: true });
 	}
 	return backend.listResumableWorkflows();
 }

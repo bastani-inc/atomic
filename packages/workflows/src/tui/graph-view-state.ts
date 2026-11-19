@@ -1,6 +1,4 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
-import { isWorkflowRunResumable, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
-import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import {
 	type ExpandedWorkflowGraph,
 	type ExpandedWorkflowStage,
@@ -13,7 +11,6 @@ import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
-import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { buildGraphEdgeIndex, type GraphEdgeIndex, type GraphRenderEdge } from "./graph-edge-index.js";
 import { buildGraphNavigation, type GraphNodeNavigation } from "./graph-navigation.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -742,14 +739,7 @@ export abstract class GraphViewState {
 	protected _runResumable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
 		if (this.stageActions?.resumeRun === undefined || run === null || run.resumable === false) return false;
 		const status = effectiveRunStatus(run);
-		if (status === "paused" || status === "blocked") return true;
-		if (run.status === "completed" || run.status === "killed") return false;
-		if (workflowRunHasPausedState(run)) return true;
-		// A healthy running root needs no durable or artifact lookup when painting its key hints.
-		if (!isWorkflowRunResumable({ ...run, budgetSystemOwnedStop: run.budgetState?.systemOwnedStop })) return false;
-		const backend = availableStoreDurableBackend(this.store, run.id);
-		if (backend === undefined) return run.exited === true && run.status === "failed" && run.resumable === true;
-		return isWorkflowRunResumable(workflowRunResumeCandidate(run, this.currentSnapshot?.runs, backend));
+		return status === "paused" || status === "blocked" || this.stageActions.canResumeRun?.(run.id) === true;
 	}
 
 	protected _runQuittable(run: RunSnapshot | null = this._getCurrentRun()): boolean {

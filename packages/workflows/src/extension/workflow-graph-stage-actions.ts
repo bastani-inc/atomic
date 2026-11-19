@@ -1,6 +1,6 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { durableForkTarget } from "../durable/fork-run.js";
-import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { isWorkflowRunResumable, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
 import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
@@ -157,6 +157,16 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 			} catch (error) {
 				return failure(error);
 			}
+		},
+		canResumeRun(runId) {
+			const run = owner.store.run(runId);
+			if (run === undefined || run.resumable === false || run.status === "completed" || run.status === "killed")
+				return false;
+			if (workflowRunHasPausedState(run)) return true;
+			if (!isWorkflowRunResumable({ ...run, budgetSystemOwnedStop: run.budgetState?.systemOwnedStop })) return false;
+			const backend = availableStoreDurableBackend(owner.store, runId);
+			if (backend === undefined) return run.exited === true && run.status === "failed" && run.resumable === true;
+			return isWorkflowRunResumable(workflowRunResumeCandidate(run, owner.store.runs(), backend));
 		},
 		async resumeRun(runId) {
 			try {

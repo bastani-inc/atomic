@@ -160,7 +160,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			.runs()
 			.map((run) => run.id)
 			.filter((id) => target === undefined || id === target);
-		for (const id of ids) await (availableRunDurableBackend(deps.store, id) ?? backend).hydrateWorkflow(id);
+		for (const id of ids)
+			await (availableRunDurableBackend(deps.store, id) ?? backend).hydrateWorkflow(id, { checkHeader: true });
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
 	const discover = async (name: string, cwd: string, projectTrusted: boolean | undefined) =>
@@ -281,7 +282,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						let catalog: readonly ResumableWorkflowEntry[] | undefined =
 							dormantWrites.size === 0 && selected !== undefined ? [selected] : undefined;
 						if (isFullRunId(workflowId) && backend.getWorkflow(workflowId) !== undefined) {
-							if (catalog !== undefined) await backend.hydrateWorkflow(workflowId);
+							if (catalog !== undefined) await backend.hydrateWorkflow(workflowId, { checkHeader: true });
 							else catalog = await prepareTargetedDurableResumable(backend, [workflowId]);
 						}
 						options?.signal?.throwIfAborted();
@@ -343,7 +344,9 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					);
 					for (const run of deps.store.runs())
 						if (!known.has(run.id))
-							await (availableRunDurableBackend(deps.store, run.id) ?? backend).hydrateWorkflow(run.id);
+							await (availableRunDurableBackend(deps.store, run.id) ?? backend).hydrateWorkflow(run.id, {
+								checkHeader: true,
+							});
 					preparedCatalog = catalog.resumable;
 					return catalog;
 				} finally {
@@ -375,7 +378,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					await backend.hydrateResumableWorkflows();
 					await hydrateStoredWorkflowCandidates(backend);
 					// The catalog lists a run from its latest snapshot; checking that it opens reads its checkpoints (#3892).
-					for (const entry of backend.listCompletedWorkflows()) await backend.hydrateWorkflow(entry.workflowId);
+					for (const entry of backend.listCompletedWorkflows())
+						await backend.hydrateWorkflow(entry.workflowId, { checkHeader: true });
 					return await listOpenableCompletedWorkflows(backend, deps.adapters?.sessionStore);
 				} finally {
 					purgeSuppressedWorkflowRuns(backend, deps.store, deps.toolControlRegistry);
@@ -389,7 +393,8 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				const entry = resolveCatalogEntry(workflowId, catalog ?? backend.listCompletedWorkflows());
 				const id = entry?.workflowId ?? workflowId;
 				// The catalog lists a run from its latest snapshot; opening it reads its checkpoints (#3892).
-				if (entry !== undefined || isFullRunId(workflowId)) await backend.hydrateWorkflow(id);
+				if (entry !== undefined || isFullRunId(workflowId))
+					await backend.hydrateWorkflow(id, { checkHeader: true });
 				const handle = backend.getWorkflow(id);
 				return await openCompletedSnapshot(
 					workflowId,
