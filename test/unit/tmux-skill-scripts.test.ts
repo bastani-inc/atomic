@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
 	chmodSync,
 	existsSync,
@@ -7,6 +9,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:net";
@@ -220,6 +223,38 @@ exec "$REAL_TMUX" -S "$SOCKET" "$@"
 			if (realTmux) tmux("kill-server");
 		}
 	});
+
+	test("wait-for-text returns at the deadline when a capture's child holds its output open (#5566)", () => {
+		writeFileSync(join(stubBin, "tmux"), '#!/bin/sh\n: >"$HOME/capturing"\nsleep 4\necho OK\n');
+		const result = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "OK", "-T", "1"]);
+		assert.ok(existsSync(join(dir, "capturing")));
+		assert.equal(result.exitCode, 1, result.stderr);
+		assert.match(result.stderr, /Timed out after 1s/u);
+		assert.equal(result.stdout, "");
+		assert.ok(result.elapsedMs < 3_000, `output stayed open for ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test.each(["SIGTERM", "SIGHUP"] as const)(
+		"wait-for-text can be reaped after %s while a capture's child holds the pipe (#5566)",
+		async (signal) => {
+			writeFileSync(join(stubBin, "tmux"), '#!/bin/sh\n: >"$HOME/capturing"\nsleep 4\necho OK\n');
+			const child = spawn("bash", [join(scripts, "wait-for-text.sh"), "-t", "s", "-F", "-p", "OK", "-T", "8"], {
+				env: { ...process.env, PATH: `${stubBin}:${process.env.PATH}`, HOME: dir },
+			});
+			// 'exit' observes waitpid; 'close' also waits for inherited output pipes.
+			const exited = once(child, "exit");
+			const closed = once(child, "close");
+			await until(() => existsSync(join(dir, "capturing")));
+			const sent = performance.now();
+			child.kill(signal);
+			const [code, reason] = await exited;
+			const exitMs = performance.now() - sent;
+			await closed;
+			assert.equal(code, null);
+			assert.equal(reason, signal);
+			assert.ok(exitMs < 2_500, `could not reap the helper for ${Math.round(exitMs)} ms`);
+		},
+	);
 
 	test("wait-for-text includes a stalled pattern check in its timeout (#5566)", () => {
 		const grepPath = join(stubBin, "grep");
@@ -463,6 +498,26 @@ trap interrupt DEBUG
 			STUB_CAPTURE_FAIL: "1",
 		});
 		assert.notEqual(exitCode, 0);
+	});
+
+	test("wait-for-text preserves grep's error status even without tmux (#5566)", () => {
+		rmSync(join(stubBin, "tmux"));
+		for (const name of ["bash", "grep", "awk", "sleep", "perl"]) {
+			const path = spawnSyncCollect(["bash", "-c", `command -v ${name}`])
+				.stdout.toString()
+				.trim();
+			if (path) symlinkSync(path, join(stubBin, name));
+		}
+		const args = ["-t", "s", "-p", "[", "-T", "3"];
+		const invalid = run("wait-for-text.sh", args, { PATH: stubBin });
+		assert.equal(invalid.exitCode, 2, invalid.stderr);
+		assert.match(invalid.stderr, /grep/u);
+		// These are also valid command exit statuses, not necessarily a timeout or timer failure.
+		for (const code of [124, 125]) {
+			rmSync(join(stubBin, "grep"));
+			writeFileSync(join(stubBin, "grep"), `#!/bin/sh\nexit ${code}\n`, { mode: 0o755 });
+			assert.equal(run("wait-for-text.sh", args, { PATH: stubBin }).exitCode, code);
+		}
 	});
 
 	test("wait-for-text rejects an invalid pattern at once instead of waiting out the timeout", () => {

@@ -76,10 +76,7 @@ if ! start=$(monotonic_cs); then
   echo 'A monotonic clock is required: enable /proc/uptime or install Perl with Time::HiRes.' >&2
   exit 1
 fi
-if ! command -v tmux >/dev/null 2>&1; then
-  echo "tmux not found in PATH" >&2
-  exit 1
-fi
+
 # Bound each timer sleep to a day, not the overall wait. Large decimal budgets
 # must not overflow shell arithmetic or the platform's sleep primitive.
 remaining_cs() {
@@ -112,15 +109,21 @@ wait_child() {
   return "$rc"
 }
 
-# Runs in a command substitution, with the worker's output on fd 5. The helper
-# kills a capture that is still running when the wait ends, so it learns each
-# capture's PID.
+# Only the reader writes into the command substitution. Stopping it closes
+# the result even if a descendant of tmux still holds the capture pipe open.
+# Report both PIDs on fd 5; pipefail preserves tmux's status on normal reads.
 capture() {
   local rc=0
-  tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null 5>&- &
-  printf 'capture %s\n' "$!" >&5 2>/dev/null
-  wait "$!" || rc=$?
-  printf 'captured %s\n' "$!" >&5 2>/dev/null
+  {
+    tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null 5>&- &
+    printf 'capture %s\n' "$!" >&5 2>/dev/null
+    wait "$!" 2>/dev/null || rc=$?
+    printf 'captured\n' >&5 2>/dev/null
+    exit "$rc"
+  } | cat 5>&- &
+  printf 'reader %s\n' "$!" >&5 2>/dev/null
+  wait "$!" 2>/dev/null || rc=$?
+  printf 'read\n' >&5 2>/dev/null
   return "$rc"
 }
 
@@ -130,7 +133,7 @@ poll() {
   local pane_text rc=0
   LC_NUMERIC=C sleep 0.0 >/dev/null 2>&1 &
   child=$!
-  wait_child || return 125
+  wait_child || { status=timer-error; return 0; }
   # Check the pattern inside the timed worker: even the first grep can stall.
   # Check quietly, so nothing a stalled check started keeps the caller's error
   # output open, and repeat a failed check to report its error.
@@ -142,6 +145,10 @@ poll() {
     child=$!
     wait_child || :
     return "$rc"
+  fi
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "tmux not found in PATH" >&2
+    return 1
   fi
   while before_deadline && (( ! stopping )); do
     # Stop polling once the helper is gone, even if only its own PID was killed.
@@ -163,7 +170,7 @@ poll() {
     child=$!
     wait_child || return "$?"
   done
-  return 124
+  status=timeout
 }
 
 watch_deadline() {
@@ -178,11 +185,11 @@ watch_deadline() {
     wait_child || rc=$?
     (( ! stopping )) || return 0
     if (( rc != 0 )); then
-      echo 'status 125' 2>/dev/null
+      echo 'status timer-error' 2>/dev/null
       return 0
     fi
   done
-  (( stopping )) || echo 'status 124' 2>/dev/null
+  (( stopping )) || echo 'status timeout' 2>/dev/null
 }
 
 # The worker's output: the PIDs of its timer and of each capture, the first
@@ -190,6 +197,7 @@ watch_deadline() {
 # timer has stopped. The worker and its timer say when they can take a stop
 # request: a signal sent while a shell is still starting can be lost.
 watch_pane() {
+  # poll sets a named timer result or returns a command's own exit status.
   local status=0 timer
   trap stop_child TERM
   # A write after the helper has gone must not end the worker before its timer.
@@ -209,6 +217,7 @@ worker=""
 stopping_worker=0
 timer_pid=""
 capture_pid=""
+reader_pid=""
 status=""
 have_pane=0
 pane=""
@@ -222,7 +231,11 @@ take() {
     'capture '*)
       capture_pid=${1#capture }
       if (( stopping_worker )); then kill -KILL "$capture_pid" 2>/dev/null || :; fi ;;
-    'captured '*) capture_pid="" ;;
+    captured) capture_pid="" ;;
+    'reader '*)
+      reader_pid=${1#reader }
+      if (( stopping_worker )); then kill -KILL "$reader_pid" 2>/dev/null || :; fi ;;
+    read) reader_pid="" ;;
     'status '*) if [[ -z "$status" ]]; then status=${1#status }; fi ;;
     pane) have_pane=1; pane=$(cat <&3) || :; return 1 ;;
   esac
@@ -233,9 +246,10 @@ signal_worker() {
   kill -TERM "$worker" 2>/dev/null || :
   if [[ -n "$timer_pid" ]]; then kill -TERM "$timer_pid" 2>/dev/null || :; fi
   if [[ -n "$capture_pid" ]]; then kill -KILL "$capture_pid" 2>/dev/null || :; fi
+  if [[ -n "$reader_pid" ]]; then kill -KILL "$reader_pid" 2>/dev/null || :; fi
 }
-# Stop the worker and keep its last complete capture. End of file means the
-# worker and its children are gone.
+# Stop the worker and keep its last complete capture. Only the worker and its
+# own protocol writers need to finish, not a descendant holding the capture pipe.
 stop_worker() {
   local line
   if [[ -n "$worker" ]]; then
@@ -269,11 +283,11 @@ if [[ -n "$cancelled" ]]; then
   kill -"$cancelled" "$$"
   exit "$((128 + $(kill -l "$cancelled")))"
 fi
-if [[ "$status" == 125 ]]; then
+if [[ "$status" == timer-error ]]; then
   echo 'The wait timer requires a sleep command that accepts fractional seconds.' >&2
   exit 1
 fi
-if [[ "$status" != 124 ]]; then exit "${status:-1}"; fi
+if [[ "$status" != timeout ]]; then exit "${status:-1}"; fi
 
 echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
 echo "Last ${lines} lines from $target:" >&2
