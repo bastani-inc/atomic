@@ -12,6 +12,8 @@
 - Source checkouts no longer include the `@bastani/workflows` extension or its builtin workflow definitions. If you linked that directory into another host, remove the link. To reuse a definition, ask Atomic to convert it to a skill and run the skill with codemode and subagents. The original file stays untouched.
 - A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 - Task cancellation receipts can return `already-finishing`: the runner's outcome can no longer change, but its batch may still be using the directory. Wait for task settlement before removing its temporary worktree ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
+- Removed `atomic worker start`, `status`, `metrics` and `controller`, the standalone workflow worker entry point, and the worker fleet deployment examples. Stop worker services and autoscalers before upgrading. Ask Atomic to delegate work to subagents instead; there is no remote worker pool to configure.
+- Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH` and `ATOMIC_WORKFLOW_ARTIFACT_DIR` in launch scripts; startup warns once if they are still set. Other workflow and pool variables, including `ATOMIC_WORKFLOW_DEBUG` and `ATOMIC_DEBUG_POOLED_WATCH`, no longer enable tracing or classify new sessions. Extensions no longer receive `WORKFLOW_STAGE_SUBAGENT_GUARD_ENV`, `WORKFLOW_SESSION_METADATA_ENV`, `workflowSessionMetadataFromEnv`, or the `workflow`, `pooled-watch` and `pool` debug areas. Use `--debug` or `ATOMIC_DEBUG=1` for the supported areas.
 
 ### Added
 

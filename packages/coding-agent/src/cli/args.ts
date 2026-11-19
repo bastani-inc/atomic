@@ -350,11 +350,10 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} auth <command>            Log in or out, print credentials, or check provider readiness
   ${APP_NAME} mcp <command>             Configure MCP servers, check connections, and sign in
   ${APP_NAME} storage <command>         Show storage selections and connectivity, or join a shared database
-  ${APP_NAME} team <command>            Join or leave a team database (shared workflow runs and Intercom, private sessions)
+  ${APP_NAME} team <command>            Join or leave a team database (shared Intercom, private sessions)
   ${APP_NAME} intercom <command>        Show or restart this machine's Intercom broker
-  ${APP_NAME} worker <command>          Run this machine as a worker host of a shared workflow database, or list hosts
   ${APP_NAME} blueprint cache-key       Print cache keys and paths for a runner's cache action (actions/cache)
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/team/intercom/worker/blueprint
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/team/intercom/blueprint
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider to search for --model (requires --model)
@@ -374,7 +373,7 @@ ${chalk.bold("Options:")}
   --session-store <path>         Select a SQLite session database
   --session-prefix <prefix>      Table prefix for --session-store (default: empty)
   --no-session                   Don't save session (ephemeral)
-  --storage <json>               Storage selection for this process's sessions and workflow runs,
+  --storage <json>               Shared storage selection for this process,
                                  in the same JSON form as the "storage" setting; never saved
   --storage-file <path>          Read the --storage selection from a JSON file
   --name, -n <name>              Set session display name
@@ -536,11 +535,9 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_TELEMETRY.padEnd(32)} - Override install telemetry when set to 1/true/yes or 0/false/no
   ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://bastani.ai/session/)
   PI_* aliases are also supported for app-specific variables above.
-  ATOMIC_STORAGE                   - Storage selection JSON for sessions and workflow runs (overridden by --storage)
+  ATOMIC_STORAGE                   - Shared storage selection JSON for sessions and Intercom (overridden by --storage)
   ATOMIC_SESSIONS_STORAGE          - Session-only storage selection JSON (cannot be combined with ${ENV_SESSION_DIR})
-  ATOMIC_WORKFLOWS_JOURNAL         - Workflow-run-only storage selection JSON
-  ATOMIC_WORKFLOW_JOURNAL_PATH     - Workflow journal SQLite path (cannot be combined with ATOMIC_WORKFLOWS_JOURNAL)
-  ATOMIC_PROFILE                   - ci: use the team database for sessions, workflow runs and Intercom without settings
+  ATOMIC_PROFILE                   - ci: use the team database for sessions and Intercom without settings
   ATOMIC_TEAM_URL                  - Team database URL for ATOMIC_PROFILE=ci
   ATOMIC_TEAM_TOKEN                - Team database token for ATOMIC_PROFILE=ci (or ATOMIC_TEAM_TOKEN_FILE)
   ATOMIC_TEAM_TOKEN_FILE           - File holding the team database token for ATOMIC_PROFILE=ci
