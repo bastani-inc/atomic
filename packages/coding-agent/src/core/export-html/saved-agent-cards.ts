@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AssistantMessage, ToolCall } from "@bastani/atomic-ai/compat";
 import type { SessionEntry, SessionManager } from "../session-manager.ts";
 import type { captureHtmlHistory } from "./session-data.js";
@@ -245,6 +246,12 @@ export async function savedFileCards(source: Awaited<ReturnType<typeof captureHt
 					? { entry: item.entry, answerBlock: undefined }
 					: await (await import("./card-projection.js")).chunkedCardEntry(source.readHistoryChunks(item));
 			const e = held.entry;
+			// These strings are used *only* for exact launch/receipt matching. Do not retain archived task
+			// prompts in the outline. The oversized selector hashes their code units as they stream in.
+			const compare = (value: unknown): string => {
+				if (typeof value !== "string") throw new Error("A saved agent launch is missing its identity");
+				return "entry" in item ? createHash("sha256").update(value, "utf16le").digest("hex") : value;
+			};
 			const receipt = savedReceipt(source.header.id, e);
 			const call =
 				e.type === "message" && e.message.role === "assistant" && Array.isArray(e.message.content)
@@ -256,7 +263,12 @@ export async function savedFileCards(source: Awaited<ReturnType<typeof captureHt
 				marker: marker(e),
 				result: e.type === "message" && e.message.role === "toolResult",
 				...(call
-					? { call: { id: call.id, arguments: { agent: call.arguments.agent, task: call.arguments.task } } }
+					? {
+							call: {
+								id: call.id,
+								arguments: { agent: compare(call.arguments.agent), task: compare(call.arguments.task) },
+							},
+						}
 					: {}),
 				...(receipt
 					? {
@@ -264,7 +276,9 @@ export async function savedFileCards(source: Awaited<ReturnType<typeof captureHt
 								toolCallId: receipt.toolCallId,
 								answerBlock:
 									receipt.answerBlock === undefined ? undefined : (held.answerBlock ?? receipt.answerBlock),
-								...(receipt.child ? { child: { agent: receipt.child.agent, task: receipt.child.task } } : {}),
+								...(receipt.child
+									? { child: { agent: compare(receipt.child.agent), task: compare(receipt.child.task) } }
+									: {}),
 							},
 						}
 					: {}),

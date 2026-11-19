@@ -60,14 +60,12 @@ export async function* forkTranscriptEntries(read: ReadBranch): AsyncGenerator<S
 		if (hidden.size && entry.type === "compaction") {
 			const first = entry.firstKeptEntryId ? hidden.get(entry.firstKeptEntryId) : undefined;
 			const covered = entry.coveredThroughEntryId ? hidden.get(entry.coveredThroughEntryId) : undefined;
-			if (first || covered) {
-				const projected: CompactionEntry = { ...entry };
-				if (first) projected.firstKeptEntryId = first.after ?? null;
-				if (covered) {
-					const through = covered.before ?? root;
-					if (through === undefined) delete projected.coveredThroughEntryId;
-					else projected.coveredThroughEntryId = through;
-				}
+			const firstKeptEntryId = first ? (first.after ?? null) : entry.firstKeptEntryId;
+			const through = covered ? (covered.before ?? root) : entry.coveredThroughEntryId;
+			if (firstKeptEntryId !== entry.firstKeptEntryId || through !== entry.coveredThroughEntryId) {
+				const projected: CompactionEntry = { ...entry, firstKeptEntryId };
+				if (through === undefined) delete projected.coveredThroughEntryId;
+				else projected.coveredThroughEntryId = through;
 				visible = projected;
 			}
 		}

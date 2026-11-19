@@ -1130,6 +1130,7 @@ export class SessionManager {
 		for (const [position, entry] of entries.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq - entries.length + position + 1);
 			updateWorkflowStarts(this.workflowStarts, entry, this.lastSeq - entries.length + position + 1);
+			this.childArchive.noteResident(entry, this.lastSeq - entries.length + position + 1);
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
@@ -1264,6 +1265,7 @@ export class SessionManager {
 		for (const [i, entry] of tail.entries()) {
 			this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
 			updateWorkflowStarts(this.workflowStarts, entry, this.lastSeq + i + 1);
+			this.childArchive.noteResident(entry, this.lastSeq + i + 1);
 		}
 		this.lastEntryId = tail.at(-1)?.id ?? this.lastEntryId;
 		this.fileEntries = [...this.fileEntries, ...tail];

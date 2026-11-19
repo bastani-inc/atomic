@@ -53,7 +53,11 @@ test("RPC pages a compacted session's saved entries without putting them back in
 		assert.deepEqual(tree.data, { tree: manager.getTree(), leafId: manager.getLeafId() });
 		const prompts = await handle({ type: "get_fork_messages" });
 		assert.ok(prompts?.success && prompts.command === "get_fork_messages");
-		assert.deepEqual(prompts.data, { messages: [] });
+		assert.deepEqual(prompts.data, {
+			messages: entries.flatMap((e) =>
+				e.type === "message" && e.message.role === "user" ? [{ entryId: e.id, text: e.message.content }] : [],
+			),
+		});
 		const received: string[] = [];
 		let cursor: string | undefined;
 		do {

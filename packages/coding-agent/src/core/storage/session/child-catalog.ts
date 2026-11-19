@@ -107,6 +107,17 @@ export class ChildCatalog {
 			data: projected,
 		};
 	}
+	noteResident(entry: SessionEntry, seq: number) {
+		if (!this.groups.size || entry.type !== "custom" || entry.customType !== "subagent-child") return;
+		const s = ChildCatalog.inspect(entry),
+			c = s && this.groups.get(s.key);
+		if (!s || !c || seq <= c.latest) return;
+		const keys = new Set(Object.keys(s.d).map(fieldKey));
+		if ([...c.fields.keys()].every((k) => keys.has(k))) {
+			c.heading = { ...c.heading, coveredBy: entry.id };
+			this.publish();
+		}
+	}
 	private observe(entry: SessionEntry, seq: number): string | undefined {
 		const s = ChildCatalog.inspect(entry);
 		if (!s) return;
@@ -119,6 +130,7 @@ export class ChildCatalog {
 		const heading: ArchivedChildCatalogEntry = {
 			...p,
 			entryId: entry.id,
+			coveredBy: undefined,
 			firstSeq: record?.first ?? seq,
 			childId: s.child,
 			ownerSessionId: s.owner,
