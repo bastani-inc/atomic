@@ -6,7 +6,7 @@ import {
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@bastani/atomic-tui";
-import { stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
+import { stageChatHistory, stageWaitsToRetry } from "../runs/foreground/stage-control-registry.js";
 import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
@@ -364,6 +364,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		},
 		requestRender: opts.requestRender,
 		getAgentSession: () => liveHandle(ctx)?.agentSession,
+		getSessionContextMeter: (displayed) => liveHandle(ctx)?.contextMeter?.(displayed),
 		// A stage on a local worker: the handle's copy of its session's messages, kept current by the worker.
 		getSessionMessages: () => {
 			const handle = liveHandle(ctx);
@@ -452,8 +453,8 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
 	if (!handle) return;
-	const messages = handle.messages;
-	ctx.chatHost.appendMessages(messages);
+	const { messages, contextMeter } = stageChatHistory(handle);
+	ctx.chatHost.appendMessages(messages, contextMeter);
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
 	const active = activeLiveHandle(ctx);
@@ -462,11 +463,9 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const status = active.agentSession?.retryStatus ?? active.modelSwitch;
 	if (stageWaitsToRetry(active)) ctx.chatHost.hydrateRetryWait(messages, turnStartedAt);
 	else if (status?.type === "model_fallback_start") ctx.chatHost.hydrateModelSwitch(turnStartedAt, messages);
-	else if (active.isStreaming) {
-		// A failed row in the transcript predates a running attempt that has not itself failed.
-		const turn = active.turnState?.();
-		ctx.chatHost.hydrateRunningTurn(messages, streaming, turnStartedAt, turn?.running && !turn.lastAnswerFailed);
-	} else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
+	else if (active.isStreaming)
+		ctx.chatHost.hydrateRunningTurn(messages, streaming, turnStartedAt, contextMeter?.requestSide);
+	else if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
 }
 
 /** The calls a stage with its session released waits on: their results arrive when it reopens, so none is interrupted. */
@@ -737,9 +736,18 @@ export function isStreaming(ctx: StageChatViewContext): boolean {
 
 /** Whether Escape interrupts the stage's turn: it streams, or its session waits out a retry's backoff between attempts. */
 export function isAbortableStreamingSession(ctx: StageChatViewContext): boolean {
-	if (isPaused(ctx) || ctx.interruptedByEscape) return false;
+	if (isPaused(ctx) || ctx.interruptedByEscape || liveHandle(ctx)?.canPause === false) return false;
+	const handle = activeLiveHandle(ctx);
 	const agentSession = liveHandle(ctx)?.agentSession;
-	return isLiveHandleStreaming(ctx) || agentSession?.isStreaming === true || agentSession?.isRetrying === true;
+	return (
+		agentSession?.isStreaming === true ||
+		agentSession?.isRetrying === true ||
+		(handle !== undefined &&
+			(ctx.chatHost.isStreaming() ||
+				handle.isRetrying === true ||
+				stageWaitsToRetry(handle) ||
+				currentStage(ctx)?.rateLimits?.some((limit) => limit.waitingUntil !== undefined) === true))
+	);
 }
 
 export function isBlocked(ctx: StageChatViewContext): boolean {

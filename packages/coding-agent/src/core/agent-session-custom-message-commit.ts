@@ -13,6 +13,7 @@ import {
 	triggerProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { deliverQueuedInputIfIdle } from "./agent-session-prompt.ts";
+import { abortTurnRetries } from "./agent-session-retry.ts";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "./tasks/completion.js";
@@ -95,7 +96,7 @@ async function commitPriorityMessage(session: AgentSession, message: CustomMessa
 	session._priorityInterruptPending = true;
 	session._ensureActiveInterruptQueueHold();
 	if (!session._queuedMessagesPaused) {
-		session.abortRetry();
+		abortTurnRetries.call(session);
 		session.agent.abort();
 	}
 	await queueProtectedStreamingCustomMessage(session, message, "steer", true);

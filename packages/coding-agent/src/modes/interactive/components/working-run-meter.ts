@@ -54,7 +54,6 @@ const RUN_CONTINUING_STOP_REASONS: ReadonlySet<string> = new Set(["toolUse", "pe
 export function runInProgress(
 	messages: readonly MeteredRunMessage[],
 	streaming?: MeteredRunMessage,
-	skipPriorFailures = false,
 ): { readonly startedAt: number | undefined; readonly settledTokens: number; readonly requesting: boolean } {
 	let start = messages.length;
 	// A failed answer the run went on from, with a retry or a fallback model, belongs to the run: only a new prompt
@@ -80,10 +79,7 @@ export function runInProgress(
 		if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
 	}
 	if (startedAt === undefined && isTimestamp(streaming?.timestamp)) startedAt = streaming.timestamp;
-	// Earlier failed attempts still count toward the turn, but they are not replies to its current request.
-	const last = skipPriorFailures
-		? turn.findLast((message) => message.role !== "assistant" || !isFailedAttempt(message))
-		: turn.at(-1);
+	const last = turn.at(-1);
 	const requesting = !hasContent(streaming) && (last?.role === "user" || last?.role === "toolResult");
 	return { startedAt, settledTokens, requesting };
 }
@@ -111,12 +107,23 @@ function hasContent(message: MeteredMessage | undefined): boolean {
 	});
 }
 
-export class AgentTokenMeter {
-	private outputTokens = 0;
-	private latestInputTokens = 0;
+export interface AgentTokenMeterSnapshot {
+	readonly outputTokens: number;
+	readonly latestInputTokens: number;
+}
 
-	constructor(messages: readonly MeteredMessage[] = []) {
+export class AgentTokenMeter {
+	private outputTokens: number;
+	private latestInputTokens: number;
+
+	constructor(messages: readonly MeteredMessage[] = [], snapshot?: AgentTokenMeterSnapshot) {
+		this.outputTokens = snapshot?.outputTokens ?? 0;
+		this.latestInputTokens = snapshot?.latestInputTokens ?? 0;
 		for (const message of messages) this.settled(message);
+	}
+
+	snapshot(): AgentTokenMeterSnapshot {
+		return { outputTokens: this.outputTokens, latestInputTokens: this.latestInputTokens };
 	}
 
 	settled(message: MeteredMessage): void {

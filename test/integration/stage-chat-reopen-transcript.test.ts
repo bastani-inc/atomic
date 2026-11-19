@@ -113,128 +113,148 @@ test("a discarded branch's compaction notice does not make the healthy stage wal
 	}
 });
 
-test("reopened stage chats still show requesting before the retry's first token (#5613)", async () => {
-	initTheme("dark", false);
-	const stage = await createHarness({
-		settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 25 } },
-		tools: [
-			{
-				name: "read_value",
-				label: "Read",
-				description: "Read a value",
-				parameters: Type.Object({}),
-				async execute() {
-					return { content: [{ type: "text", text: "Value." }], details: {} };
-				},
-			},
-		],
-	});
-	const started = Promise.withResolvers<void>();
-	const fail = Promise.withResolvers<void>();
-	const retryStarted = Promise.withResolvers<void>();
-	const finish = Promise.withResolvers<void>();
-	const call = fauxAssistantMessage(fauxToolCall("read_value", {}), { stopReason: "toolUse" });
-	call.usage = { ...call.usage, output: 24, totalTokens: 24 };
-	let requests = 0;
-	stage.session.agent.streamFunction = async () => {
-		const stream = createAssistantMessageEventStream();
-		switch (++requests) {
-			case 1:
-				stream.push({ type: "done", reason: "toolUse", message: call });
-				break;
-			case 2:
-				started.resolve();
-				await fail.promise;
-				stream.push({
-					type: "error",
-					reason: "error",
-					error: fauxAssistantMessage([], { stopReason: "error", errorMessage: "529 overloaded" }),
-				});
-				break;
-			default:
-				retryStarted.resolve();
-				await finish.promise;
-				stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("Done.") });
-		}
-		stream.end();
-		return stream;
-	};
-	const registry = createStageControlRegistry();
-	const store = createStore();
-	let target: { runId: string; stageId: string } | undefined;
-	const execution = run(
-		workflow({
-			name: "retry-direction",
-			description: "",
-			inputs: {},
-			outputs: {},
-			async run(ctx) {
-				await ctx.stage("inspect", { releaseWhenWaiting: false }).complete("Get the value.");
-				return {};
-			},
-		}),
-		{},
-		{
-			durableBackend: await createMemoryTestBackend(),
-			store,
-			stageControlRegistry: registry,
-			adapters: {
-				agentSession: {
-					async create() {
-						return stage.session as StageSessionRuntime;
+test.each([
+	{ kind: "provider error", reason: "error", content: "", output: 0, liveTokens: 24 },
+	{ kind: "provider error with billed output", reason: "error", content: "", output: 12, liveTokens: 36 },
+	{ kind: "whitespace completion", reason: "stop", content: "   ", output: 0, liveTokens: 25 },
+	{ kind: "canned refusal", reason: "stop", content: "I cannot assist with this request.", output: 0, liveTokens: 33 },
+] as const)(
+	"reopened stage chats still show requesting before the retry's first token after a $kind (#5613)",
+	async ({ reason, content, output, liveTokens }) => {
+		initTheme("dark", false);
+		const stage = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 25 } },
+			tools: [
+				{
+					name: "read_value",
+					label: "Read",
+					description: "Read a value",
+					parameters: Type.Object({}),
+					async execute() {
+						return { content: [{ type: "text", text: "Value." }], details: {} };
 					},
 				},
-			},
-			onStageStart(runId, snapshot) {
-				target = { runId, stageId: snapshot.id };
-			},
-		},
-	);
-	const views: StageChatView[] = [];
-	function mount(handle: StageControlHandle): StageChatView {
-		assert.ok(target);
-		const view = new StageChatView({
-			...target,
-			store,
-			graphTheme: deriveGraphTheme({}),
-			workflowName: "retry-direction",
-			handle,
-			onDetach() {},
-			onClose() {},
+			],
 		});
-		views.push(view);
-		return view;
-	}
-	try {
-		await Promise.race([
-			started.promise,
-			execution.then((outcome) => assert.fail(`Stage ended before the failed request: ${JSON.stringify(outcome)}`)),
-		]);
-		assert.ok(target);
-		const handle = registry.get(target.runId, target.stageId);
-		assert.ok(handle);
-		const live = mount(handle);
-		fail.resolve();
-		await Promise.race([
-			retryStarted.promise,
-			execution.then(() => assert.fail("Stage ended before the retry request")),
-		]);
-		const attached = text(mount(handle));
-		const pooled = withWorkerView({ ...target, registry }, (mirror) => text(mount(mirror)));
-		const segment = (body: string) => body.match(/[↑↓] [\d.kM]+ tokens/u)?.[0];
-		const requesting = segment(text(live));
-		assert.equal(requesting, "↑ 24 tokens");
-		assert.deepEqual([segment(attached), segment(pooled)], [requesting, requesting]);
-		for (const body of [attached, pooled]) assert.equal(body.split("Error: 529 overloaded").length - 1, 1);
-	} finally {
-		for (const view of views) view.dispose();
-		fail.resolve();
-		finish.resolve();
-		await execution;
-		registry.clear();
-		await stage.cleanup();
-	}
-});
+		const started = Promise.withResolvers<void>();
+		const fail = Promise.withResolvers<void>();
+		const retryStarted = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const call = fauxAssistantMessage(fauxToolCall("read_value", {}), { stopReason: "toolUse" });
+		call.usage = { ...call.usage, output: 24, totalTokens: 24 };
+		let requests = 0;
+		stage.session.agent.streamFunction = async () => {
+			const stream = createAssistantMessageEventStream();
+			switch (++requests) {
+				case 1:
+					stream.push({ type: "done", reason: "toolUse", message: call });
+					break;
+				case 2: {
+					started.resolve();
+					await fail.promise;
+					const failure = fauxAssistantMessage(content || [], {
+						stopReason: reason,
+						...(reason === "error" ? { errorMessage: "529 overloaded" } : {}),
+					});
+					failure.usage = { ...failure.usage, output, totalTokens: output };
+					if (reason === "error") stream.push({ type: "error", reason, error: failure });
+					else stream.push({ type: "done", reason, message: failure });
+					break;
+				}
+				default:
+					retryStarted.resolve();
+					await finish.promise;
+					stream.push({ type: "done", reason: "stop", message: fauxAssistantMessage("Done.") });
+			}
+			stream.end();
+			return stream;
+		};
+		const registry = createStageControlRegistry();
+		const store = createStore();
+		let target: { runId: string; stageId: string } | undefined;
+		const execution = run(
+			workflow({
+				name: "retry-direction",
+				description: "",
+				inputs: {},
+				outputs: {},
+				async run(ctx) {
+					await ctx.stage("inspect", { releaseWhenWaiting: false }).complete("Get the value.");
+					return {};
+				},
+			}),
+			{},
+			{
+				durableBackend: await createMemoryTestBackend(),
+				store,
+				stageControlRegistry: registry,
+				adapters: {
+					agentSession: {
+						async create() {
+							return stage.session as StageSessionRuntime;
+						},
+					},
+				},
+				onStageStart(runId, snapshot) {
+					target = { runId, stageId: snapshot.id };
+				},
+			},
+		);
+		const views: StageChatView[] = [];
+		function mount(handle: StageControlHandle): StageChatView {
+			assert.ok(target);
+			const view = new StageChatView({
+				...target,
+				store,
+				graphTheme: deriveGraphTheme({}),
+				workflowName: "retry-direction",
+				handle,
+				onDetach() {},
+				onClose() {},
+			});
+			views.push(view);
+			return view;
+		}
+		try {
+			await Promise.race([
+				started.promise,
+				execution.then((outcome) =>
+					assert.fail(`Stage ended before the failed request: ${JSON.stringify(outcome)}`),
+				),
+			]);
+			assert.ok(target);
+			const handle = registry.get(target.runId, target.stageId);
+			assert.ok(handle);
+			const live = mount(handle);
+			fail.resolve();
+			await Promise.race([
+				retryStarted.promise,
+				execution.then(() => assert.fail("Stage ended before the retry request")),
+			]);
+			const attached = text(mount(handle));
+			const pooled = withWorkerView({ ...target, registry }, (mirror) => text(mount(mirror)));
+			const segment = (body: string) => body.match(/[↑↓] [\d.kM]+ tokens/u)?.[0];
+			const requesting = segment(text(live));
+			assert.equal(requesting, `↑ ${liveTokens} tokens`, "the open chat counted the attempt it saw");
+			assert.deepEqual(
+				[segment(attached), segment(pooled)],
+				["↑ 24 tokens", "↑ 24 tokens"],
+				"a reopened meter counts the request context, not a restored attempt",
+			);
+			if (reason === "error" || content.trim()) {
+				const restored = reason === "error" ? "Error: 529 overloaded" : content;
+				for (const body of [attached, pooled]) assert.equal(body.split(restored).length - 1, 1);
+			}
+		} finally {
+			for (const view of views) view.dispose();
+			fail.resolve();
+			finish.resolve();
+			await execution;
+			registry.clear();
+			await stage.cleanup();
+		}
+	},
+);
 
 const histories = [
 	{ history: "a plain history", retried: false },

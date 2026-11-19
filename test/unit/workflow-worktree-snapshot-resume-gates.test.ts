@@ -12,6 +12,7 @@ import {
 	resumeDurableWorkflow,
 } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -119,31 +120,100 @@ test("a backend with no snapshot journal resumes without looking for snapshots (
 	await fixture.close();
 });
 
-test("resuming an unknown run reads no journal history (#4245)", async () => {
-	const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
-	let reads = 0;
-	const counting = new Proxy(fixture.journal, {
-		get(target, key) {
-			if (key === "read")
-				return (...args: Parameters<SqlRunJournal["read"]>) => {
-					reads++;
-					return target.read(...args);
-				};
-			const value = Reflect.get(target, key, target);
-			return typeof value === "function" ? value.bind(target) : value;
+test.each(["adapter", "runtime"] as const)(
+	"resuming an unknown run through the %s reads no journal history (#4245, #5569)",
+	async (route) => {
+		const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
+		let reads = 0;
+		const counting = new Proxy(fixture.journal, {
+			get(target, key) {
+				if (key === "read")
+					return (...args: Parameters<SqlRunJournal["read"]>) => {
+						reads++;
+						return target.read(...args);
+					};
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}) as SqlRunJournal;
+		const backend = await JournalDurableBackend.open(counting, { runs: [] });
+		const missing = "11111111-2222-4333-8444-555555555555";
+		const store = createStore();
+		const result =
+			route === "runtime"
+				? await createExtensionRuntime({ store }).resumeDurableWorkflow(missing, { durableBackend: backend })
+				: await resumeDurableWorkflow(missing, {
+						registry: createRegistry(),
+						durableBackend: backend,
+						baseRunOpts: { store, durableBackend: backend },
+						jobs: createJobTracker(),
+					});
+		assert.ok(!result.ok);
+		assert.equal(result.reason, "not_registered");
+		assert.equal(reads, 0);
+		await backend.close();
+		await fixture.database.close();
+	},
+);
+
+test("a cold resume loads the failed run named by its journal row (#5569)", async () => {
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const id = testRunId("stored-cold-failure");
+	const definition = workflow({
+		name: "cold-retry",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("retry", {}, async () => true);
+			return {};
 		},
-	}) as SqlRunJournal;
-	const backend = await JournalDurableBackend.open(counting, { runs: [] });
-	const result = await resumeDurableWorkflow("11111111-2222-4333-8444-555555555555", {
-		registry: createRegistry(),
-		durableBackend: backend,
-		baseRunOpts: { store: createStore(), durableBackend: backend },
-		jobs: createJobTracker(),
 	});
-	assert.equal(result.ok, false);
-	assert.equal(reads, 0);
-	await backend.close();
-	await fixture.database.close();
+	await fixture.backend.commitWorkflowRegistration({
+		workflowId: id,
+		name: definition.name,
+		inputs: {},
+		createdAt: 1,
+		status: "failed",
+	});
+	await fixture.backend.releaseWorkflow(id);
+	const reader = await JournalDurableBackend.open(fixture.journal, { runs: [], ownsJournal: false });
+	const jobs = createJobTracker();
+	try {
+		assert.equal(reader.getWorkflow(id), undefined);
+		const resumed = await resumeDurableWorkflow(id, {
+			registry: createRegistry().register(definition),
+			durableBackend: reader,
+			baseRunOpts: { store: createStore() },
+			jobs,
+		});
+		assert.ok(resumed.ok, resumed.message);
+		assert.equal(resumed.runId, id);
+		await jobs.get(id)?.promise;
+		assert.equal(reader.getWorkflow(id)?.status, "completed");
+	} finally {
+		await reader.close();
+	}
+});
+
+test("a stored run without workflow records is not reported missing (#5569)", async () => {
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const id = testRunId("stored-without-records");
+	await fixture.journal.createRun({
+		runId: id,
+		name: "incomplete",
+		cwd: sandbox.path(""),
+		createdAt: 1,
+		status: "failed",
+	});
+	const result = await resumeDurableWorkflow(id, {
+		registry: createRegistry(),
+		durableBackend: fixture.backend,
+		baseRunOpts: { store: createStore() },
+	});
+	assert.ok(!result.ok);
+	assert.equal(result.reason, "stale");
+	assert.ok(await fixture.journal.getRun(id));
 });
 
 test("a resume whose startup fails for a reason other than drift reports it instead of throwing (#4245)", async () => {

@@ -1217,6 +1217,7 @@ export {
 // UI components for extensions
 export {
 	AgentTokenMeter,
+	type AgentTokenMeterSnapshot,
 	ArminComponent,
 	AssistantMessageComponent,
 	agentTokenTotal,
