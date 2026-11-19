@@ -18,13 +18,21 @@ import { availableStoreDurableBackend, requireStoreDurableBackend } from "../dur
 import {
 	type EnsurePostMortemStageHandleResult,
 	ensurePostMortemStageHandle,
+	type PostMortemAdmission,
 	type PostMortemStageChatDeps,
 } from "../runs/foreground/postmortem-stage-chat.js";
-import { type StageControlRegistry, stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import {
+	beginStageRegistrationCheck,
+	type StageControlRegistry,
+	stageControlRegistry,
+} from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { ownsStageRecord, stageRecordOwner } from "../shared/stage-record-owner.js";
+import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreRun, readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import { failedBoundaryChildRuns } from "../shared/workflow-run-ownership.js";
 
 export interface PostMortemResolverDeps {
 	readonly adapters: StageAdapters;
@@ -33,6 +41,7 @@ export interface PostMortemResolverDeps {
 	readonly store?: Store;
 	/** The owning session's stage-control registry; defaults to the current one. */
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly stageUiBroker?: StageUiBroker;
 }
 
 /** Persisted original/resolved cwd for a durable run tree, when still available. */
@@ -62,6 +71,9 @@ function resolveRunWorktreeRootMappings(runId: string, runStore: Store): readonl
 export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps): PostMortemStageChatDeps {
 	return {
 		registry: deps.stageControlRegistry ?? stageControlRegistry,
+		store: deps.store ?? store,
+		// An explicitly supplied store and adapter need not share the interactive session's broker.
+		stageUiBroker: deps.stageUiBroker ?? (deps.store === undefined ? currentStageUiBroker() : undefined),
 		adapters: deps.adapters,
 		sessionStore: deps.adapters.sessionStore,
 		cwd: resolveStageCwd(runId, deps.store ?? store),
@@ -87,15 +99,18 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
  */
 export function createPostMortemHandleResolver(
 	deps: PostMortemResolverDeps,
-): (runId: string, stageId: string) => Promise<EnsurePostMortemStageHandleResult | undefined> {
-	return async (requestedRunId, requestedStageId) => {
+): (
+	runId: string,
+	stageId: string,
+	admission?: PostMortemAdmission,
+) => Promise<EnsurePostMortemStageHandleResult | undefined> {
+	return async (requestedRunId, requestedStageId, admission) => {
 		const snapshot = readGraphStoreSnapshot(deps.store ?? store);
 		const requested = snapshot.runs
 			.find((candidate) => candidate.id === requestedRunId)
 			?.stages.find((candidate) => candidate.id === requestedStageId);
 		if (requested === undefined) return undefined;
-		// A failed child-workflow boundary collapses its child in the graph. When the child ran on a
-		// local worker, its one agent stage is the session behind it, and reopens for it (#3996).
+		// A failed boundary's id can still name its pooled child's one stage for post-mortem chat (#3996).
 		const pooledChild = failedBoundaryPooledStage(snapshot.runs, requestedRunId, requested);
 		const runId = pooledChild?.runId ?? requestedRunId;
 		const stageId = pooledChild?.stage.id ?? requestedStageId;
@@ -113,17 +128,27 @@ export function createPostMortemHandleResolver(
 			found.status !== "skipped";
 		// A fenced attempt's stage loses its live session id in the store; its last session is still
 		// recorded on the stage's session checkpoints in the journal.
-		const sessionId =
-			found.sessionId ??
-			(found.workerExecution === undefined
-				? undefined
-				: await pooledStageSessionId(deps.store ?? store, snapshot.runs, runId, stageId));
+		const runStore = deps.store ?? store;
+		const currentRecord = () => runStore.run(runId)?.stages.find((candidate) => candidate.id === stageId);
+		const record = currentRecord();
+		const owner = record && stageRecordOwner(record);
+		let sessionId = found.sessionId;
+		if (sessionId === undefined && found.workerExecution !== undefined) {
+			const check = beginStageRegistrationCheck(deps.stageControlRegistry ?? stageControlRegistry, runId);
+			try {
+				sessionId = await pooledStageSessionId(runStore, snapshot.runs, runId, stageId);
+				if (!check.current()) return { ok: false, reason: "closed" };
+			} finally {
+				check.release();
+			}
+		}
 		const stage = {
 			...found,
 			...(pooledEnded ? { status: "failed" as const } : {}),
 			...(sessionId === undefined ? {} : { sessionId }),
 		};
-		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps));
+		if (!ownsStageRecord(owner, currentRecord())) return { ok: false, reason: "closed" };
+		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps), admission);
 	};
 }
 
@@ -171,8 +196,7 @@ function failedBoundaryPooledStage(
 	boundary: StageSnapshot,
 ): { readonly runId: string; readonly stage: StageSnapshot } | undefined {
 	if (boundary.status !== "failed") return undefined;
-	// A failed boundary drops its child reference; the child run still names its boundary.
-	const children = runs.filter((run) => run.parentRunId === runId && run.parentStageId === boundary.id);
+	const children = failedBoundaryChildRuns(runs, runId, boundary.id, boundary.startedChildRunId);
 	const pooled = children.flatMap((run) =>
 		run.stages.filter((stage) => stage.workerExecution !== undefined).map((stage) => ({ runId: run.id, stage })),
 	);

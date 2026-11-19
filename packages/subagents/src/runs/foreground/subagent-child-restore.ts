@@ -56,10 +56,11 @@ import {
 	SUBAGENT_OWNER_GENERATION,
 	savedToolResultIds,
 } from "./released-children.js";
-import { resumeRunWorktree } from "./run-worktrees.js";
+import { boundedWorktreeReply, resumeRunWorktree, WORKTREE_REPLY_WAIT_MS } from "./run-worktrees.js";
 import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
+import { type ChildOwnerAPI, subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
@@ -134,7 +135,8 @@ export {
 	type WorkflowDormantRunSubagentHoldRequest,
 } from "./subagent-child-hold.js";
 
-export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime"> & {
+export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "config" | "discoverAgents" | "runtime"> & {
+	readonly pi: ChildOwnerAPI;
 	/** The owner's own Intercom identity, which a relaunched child's bridge names as its supervisor. */
 	readonly state?: Pick<ExecutorDeps["state"], "ownIntercomSession">;
 };
@@ -552,6 +554,7 @@ async function relaunchChild(
 		const supervisorAuthorization = record.intercomTarget ? hold?.authorization : undefined;
 		if (!supervisorAuthorization) await hold?.release();
 		const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+		const intercomGroup = launchIntercomGroup(record, ctx);
 		const launched = queuedOwnerless({
 			recordChild,
 			...(ownerSignal ? { ownerSignal } : {}),
@@ -559,7 +562,16 @@ async function relaunchChild(
 			...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		});
 		return startedFresh(
-			await ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx),
+			await ownerlessRelaunched(
+				deps,
+				record,
+				launched,
+				recordChild,
+				release,
+				hold,
+				supervisorAuthorization,
+				intercomGroup,
+			),
 		);
 	}
 	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
@@ -808,7 +820,7 @@ async function relaunchChild(
 			release,
 			hold,
 			supervisorAuthorization,
-			ctx,
+			intercomGroup,
 		);
 		return fresh ? startedFresh(outcome) : outcome;
 	}
@@ -886,6 +898,7 @@ async function startQueuedChild(
 	if (!supervisorAuthorization) await hold?.release();
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
+	const intercomGroup = launchIntercomGroup(record, ctx);
 	const response = await queued.start({
 		host,
 		recordChild,
@@ -896,15 +909,7 @@ async function startQueuedChild(
 			void hold?.release();
 		},
 	});
-	return relaunched(
-		deps,
-		record,
-		response,
-		recordChild,
-		release,
-		supervisorAuthorization,
-		launchIntercomGroup(record, ctx),
-	);
+	return relaunched(deps, record, response, recordChild, release, supervisorAuthorization, intercomGroup);
 }
 
 /**
@@ -919,7 +924,7 @@ async function ownerlessRelaunched(
 	release: () => void,
 	hold: ChildTargetHold | undefined,
 	supervisorAuthorization: ChildTargetHold["authorization"] | undefined,
-	ctx: ExtensionContext,
+	intercomGroup: string | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	void launched.result
 		.then(
@@ -945,7 +950,6 @@ async function ownerlessRelaunched(
 		});
 	// Pause or quit right after this returns must find the child under its new launch id.
 	await recordChild.flushed?.();
-	const intercomGroup = launchIntercomGroup(record, ctx);
 	const intercomLive =
 		record.intercomTarget && supervisorAuthorization
 			? await awaitIntercomPeer(deps.pi.events, record.intercomTarget, intercomGroup)
@@ -998,6 +1002,9 @@ export async function restoreSubagentChild(
 	resume?: SubagentChildResumeRequest,
 	refuseRelaunch?: () => SubagentChildRecord | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	deps = { ...deps, pi: owner.pi };
+	ctx = owner.ctx;
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
 	// The owner's own session when the index's latest record is in a copy of it that is no longer open.
@@ -1049,7 +1056,21 @@ export async function restoreSubagentChild(
 			},
 		},
 	);
-	let releaseWorktree: (() => void) | undefined;
+	let releaseWorktree: ((failed?: boolean) => Promise<void>) | undefined;
+	// The resume reports only once its run's worktrees are swept, so nothing of Atomic still runs in the child's worktree
+	// when it does (#5589). A sweep that fails leaves the worktree to the next one; it never changes how the resume ends.
+	const worktreeReleased = (failed: boolean) => boundedWorktreeReply(record.runId, releaseWorktree?.(failed));
+	const failedRestore = async (reason: string, deadline: number) => {
+		await markGone(reason);
+		// The broker acknowledgement yields: the last sibling may have begun sweeping this worktree meanwhile.
+		const note = await boundedWorktreeReply(record.runId, undefined, deadline);
+		return {
+			kind: "unrestorable" as const,
+			childId: record.childId,
+			record,
+			reason: note ? `${reason.replace(/\.$/, "")}. ${note.replace(/\.$/, "")}` : reason,
+		};
+	};
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
 		releaseWorktree = await worktreeResume;
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
@@ -1079,14 +1100,16 @@ export async function restoreSubagentChild(
 				registered.settled = outcome;
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
-			releaseWorktree?.();
-			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
-			else if (outcome.kind !== "restored") release();
+			const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
+			await worktreeReleased(outcome.kind === "unrestorable");
+			if (outcome.kind === "unrestorable") return failedRestore(outcome.reason, deadline);
+			if (outcome.kind !== "restored") release();
 			return outcome;
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
-			releaseWorktree?.();
+			const deadline = Date.now() + WORKTREE_REPLY_WAIT_MS;
+			await worktreeReleased(true);
 			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
 			// child as it was, for a later wake or resume; only a lasting one makes it gone.
 			if (isRetryableStorageError(error)) {
@@ -1094,8 +1117,7 @@ export async function restoreSubagentChild(
 				await hold?.release();
 				throw error;
 			}
-			await markGone(error.message);
-			return { kind: "unrestorable", childId: record.childId, record, reason: error.message };
+			return failedRestore(error.message, deadline);
 		},
 	);
 	activeRestorations.set(key, {

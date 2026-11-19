@@ -1,6 +1,7 @@
 import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { IntercomEventBus, RunSyncOptions } from "../../shared/types.js";
 import { reservationRecordLookup, subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import { subagentChildRequestEvents } from "./subagent-child-owner.js";
 import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -267,10 +268,13 @@ async function reserveFrame(
  * was reserved for, so a child the broker took, or one a later request asked for again, is never named (#5551).
  */
 export async function reserveReleasedChildren(
-	events: IntercomEventBus,
+	ownerEvents: IntercomEventBus,
 	children: readonly ReleasedChildReservation[],
 ): Promise<void> {
 	if (children.length === 0) return;
+	// Parking and reconnects share the same in-flight requests on this generation's bus.
+	const events = subagentChildRequestEvents(ownerEvents);
+	if (!events) return;
 	const inFlight = latestReservations.get(events) ?? new Map<string, object>();
 	latestReservations.set(events, inFlight);
 	const request = {};
@@ -308,10 +312,12 @@ export function dropReleasedChildren(
  * release this wake ends, so a refusal is not reported once the child's latest record is another run's.
  */
 export function acknowledgeReleasedChildWake(
-	events: IntercomEventBus,
+	ownerEvents: IntercomEventBus,
 	childName: string,
 	taskId?: string,
 ): Promise<void> {
+	const events = subagentChildRequestEvents(ownerEvents);
+	if (!events) return Promise.resolve();
 	return emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName }).catch(
 		(error: Error) =>
 			recordHoldFailure(

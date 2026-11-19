@@ -11,7 +11,7 @@ import { CustomEntryComponent } from "../src/modes/interactive/components/custom
 import { CustomMessageComponent } from "../src/modes/interactive/components/custom-message.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { stripAnsi } from "./helpers/visible-text.js";
 
 function hintText(hints: KeybindingHints): string {
 	return `${hints.keyText("app.tools.expand")} | ${stripAnsi(hints.keyHint("app.tools.expand", "to expand"))}`;
