@@ -9,8 +9,11 @@
 - The SDK no longer accepts `workflows` in the `builtins` option. Remove that key from session options. The `@bastani/atomic/workflows`, `@bastani/atomic/workflows/builtin` and `@bastani/atomic/workflows/builtin/*` imports are no longer published; keep a pre-0.10 installation if you still need to execute a definition with the old SDK.
 - RPC no longer accepts `list_workflow_runs`, `get_workflow_run_summary`, `get_workflow_resume_entries`, `resume_workflow_from_picker` or `delete_workflow_from_picker`. `RpcClient.listWorkflowRuns()` and `getWorkflowRunSummary()` are removed. For saved conversations, use `list_sessions`, `get_session_summary` and `switch_session`.
 - `atomic storage migrate` still sets up sessions and Intercom, but no longer creates workflow or worker-pool tables. Existing workflow data is not deleted.
+- A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 
 ### Added
+
+- Interactive startup points out earlier workflow files. Ask Atomic to convert one into a skill that uses codemode and subagents. Project workflows become project skills; global workflows become user skills. Discovery writes nothing and conversion leaves the original unchanged.
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 

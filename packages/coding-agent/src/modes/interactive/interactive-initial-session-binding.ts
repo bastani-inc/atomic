@@ -1,5 +1,6 @@
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
+import { showLegacyWorkflowNotice } from "./session-notices.ts";
 
 /** Bind the eager startup session without letting the reusable runtime path append its disclosure. */
 export async function bindInitialEagerSession(mode: InteractiveModeBase): Promise<void> {
@@ -15,6 +16,7 @@ export async function bindInitialEagerSession(mode: InteractiveModeBase): Promis
 			showDiagnosticsWhenQuiet: true,
 			targetContainer: mode.resourceDisclosureContainer,
 		});
+		showLegacyWorkflowNotice(mode);
 		mode.showStartupNoticesIfNeeded(mode.startupNoticesContainer);
 		// A suppressed derived `-fast` duplicate is a startup notice, so it renders here on the eager
 		// path and again after deferred extension loading on the other branch of `run()`.
