@@ -149,11 +149,31 @@ function createToolComponent(
 			);
 }
 
+function isSessionClosed(error: unknown): boolean {
+	try {
+		return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "SessionClosed";
+	} catch {
+		return false; // An SDK error can have a throwing code getter, or be a revoked proxy.
+	}
+}
+
 InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
 	refreshInteractiveTasks(this);
 	const session = this.session;
-	const unsubscribe = session.subscribe(async (event) => {
-		await this.handleEvent(event);
+	const unsubscribe = session.subscribe((event) => {
+		const delivery: Promise<void> = (async () => {
+			try {
+				await this.handleEvent(event);
+			} catch (error) {
+				if (isSessionClosed(error)) {
+					// The session doesn't await its listeners. Observe this delivery without changing its rejection.
+					// An SDK override can throw synchronously, before delivery is assigned.
+					queueMicrotask(() => void delivery.catch(() => {}));
+				}
+				throw error;
+			}
+		})();
+		return delivery;
 	});
 	// A rebind can miss the start of a wait. Subscribe and read it in one turn; don't restart its countdown.
 	const wait = session.retryStatus;
