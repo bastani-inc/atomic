@@ -1,6 +1,6 @@
 import type { AgentTaskHost } from "./agent-adapter.js";
 import type { TaskCompletionMessage } from "./child-command-owner.js";
-import { COMMAND_DETAIL_TAIL_BYTES, taskOutputText } from "./command-output.js";
+import { COMMAND_DETAIL_TAIL_BYTES, readTaskOutputTail } from "./command-output.js";
 import {
 	formatTaskCompletion,
 	TASK_COMPLETION_MESSAGE_TYPE,
@@ -17,12 +17,12 @@ export async function commandOutputExcerpt(host: AgentTaskHost, lease: TaskLease
 	try {
 		const bytes = BigInt(task.output.byteCount);
 		const start = bytes > BigInt(COMMAND_DETAIL_TAIL_BYTES) ? bytes - BigInt(COMMAND_DETAIL_TAIL_BYTES) : 0n;
-		const page = await host.ownerBinding.supervisor.readTaskOutput(lease, {
+		const page = await readTaskOutputTail(host.ownerBinding.supervisor, lease, {
 			start: String(start),
 			maximumBytes: COMMAND_DETAIL_TAIL_BYTES,
 		});
 		return page.ok
-			? `${start > 0n ? "[Earlier output omitted]\n" : ""}${taskOutputText(page.value)}`
+			? `${start > 0n ? "[Earlier output omitted]\n" : ""}${page.value.text}`
 			: COMMAND_OUTPUT_UNAVAILABLE;
 	} catch {
 		return COMMAND_OUTPUT_UNAVAILABLE;
