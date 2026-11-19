@@ -1,4 +1,4 @@
-import { isBoxedPrimitive, isProxy, isSymbolObject } from "node:util/types";
+import { isBigIntObject, isBooleanObject, isNumberObject, isProxy, isStringObject } from "node:util/types";
 import { sliceHead } from "@bastani/atomic";
 import { flattenTruncatedString } from "./flat-string.js";
 import {
@@ -18,6 +18,20 @@ function guardProxy(value: unknown): void {
 	if (isProxy(value) && !Array.isArray(value)) throw new TypeError("Cannot checkpoint a proxied tool payload");
 }
 
+/** Inspect only bounded containers, while their replacer is running and before native JSON visits their members. */
+function isTooWide(value: object): boolean {
+	if (isProxy(value)) return false; // Only the indexed array-proxy exception reaches this point.
+	const array = Array.isArray(value);
+	// Arrays can serialize non-enumerable indices; the built-in length is not a member.
+	const keys = array ? Object.getOwnPropertyNames(value) : Object.keys(value);
+	if (keys.length > TOOL_PAYLOAD_MAX_KEYS + (array ? 1 : 0)) return true;
+	for (const key of keys) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (descriptor && "value" in descriptor) guardProxy(descriptor.value);
+	}
+	return false;
+}
+
 function truncatedString(value: string): string {
 	let units = Math.min(value.length, BYTES - Buffer.byteLength(JSON.stringify(TRUNCATED)));
 	for (;;) {
@@ -26,6 +40,20 @@ function truncatedString(value: string): string {
 			return flattenTruncatedString(prefix) + TRUNCATED;
 		units = Math.floor(units / 2);
 	}
+}
+
+/** Read only a bounded prefix of an already encoded root string, never its original object or conversion hook. */
+function wireStringPrefix(encoded: string, field: string): string | undefined {
+	const start = field.length + 4; // {"field": followed by the value
+	if (encoded[start] !== '"') return undefined;
+	const prefix = sliceHead(encoded, Math.min(encoded.length - 2, start + BYTES)).slice(start);
+	// A cut through a JSON escape can leave up to five incomplete code units (\\u followed by three digits).
+	for (let trim = 0; trim <= 5 && trim < prefix.length; trim++) {
+		try {
+			return JSON.parse(`${prefix.slice(0, prefix.length - trim)}"`) as string;
+		} catch {}
+	}
+	return undefined;
 }
 
 /**
@@ -84,11 +112,25 @@ export function boundedRecordedToolPayload(
 					chargeText(item.rawJSON, false);
 					return item;
 				}
-				// The engine unboxes these after the replacer; do not invoke its conversion a second time to weigh it.
-				if (isBoxedPrimitive(item) && !isSymbolObject(item)) return item;
+				// Charge the intrinsic primitive before visiting a sibling, without invoking user coercion hooks.
+				// Return the original box so native JSON still applies any custom conversion exactly once.
+				if (isStringObject(item)) {
+					const text = String.prototype.valueOf.call(item);
+					if (root) rootText = text;
+					chargeText(text, true);
+					return item;
+				}
+				if (isNumberObject(item)) {
+					charge(JSON.stringify(Number.prototype.valueOf.call(item)).length);
+					return item;
+				}
+				if (isBooleanObject(item)) {
+					charge(Boolean.prototype.valueOf.call(item) ? 4 : 5);
+					return item;
+				}
+				if (isBigIntObject(item)) return BigInt.prototype.valueOf.call(item); // No JSON representation.
 				const depth = parent.depth + 1;
-				if (depth >= TOOL_PAYLOAD_MAX_DEPTH || (!isProxy(item) && Object.keys(item).length > TOOL_PAYLOAD_MAX_KEYS))
-					item = TRUNCATED;
+				if (depth >= TOOL_PAYLOAD_MAX_DEPTH || isTooWide(item)) item = TRUNCATED;
 				else {
 					containers.set(item, { depth, emitted: false });
 					charge(2);
@@ -103,7 +145,10 @@ export function boundedRecordedToolPayload(
 		});
 		// Include bytes produced by native conversions after the replacer (for example boxed strings), not the envelope.
 		const wireLimit = BYTES + field.length + 5;
-		if (encoded.length > wireLimit || Buffer.byteLength(encoded) > wireLimit) throw new StagePayloadBudgetExceeded();
+		if (encoded.length > wireLimit || Buffer.byteLength(encoded) > wireLimit) {
+			rootText = wireStringPrefix(encoded, field);
+			throw new StagePayloadBudgetExceeded();
+		}
 		return (JSON.parse(encoded) as Partial<Record<typeof field, WorkflowSerializableValue>>)[field];
 	} catch (error) {
 		if (error instanceof StagePayloadBudgetExceeded)

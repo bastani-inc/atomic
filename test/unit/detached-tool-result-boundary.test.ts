@@ -210,8 +210,14 @@ test("stage checkpoints reject object proxies before enumerating any of their ke
 	assert.equal(stageMetadata(proxy).isError, true);
 	assert.equal(stageMetadata({ nested: proxy }).isError, true);
 	let reads = 0;
+	let conversions = 0;
 	const converted = new Proxy(
-		{ toJSON: () => "plain" },
+		{
+			toJSON: () => {
+				conversions++;
+				return "plain";
+			},
+		},
 		{
 			ownKeys() {
 				enumerations++;
@@ -219,15 +225,80 @@ test("stage checkpoints reject object proxies before enumerating any of their ke
 			},
 		},
 	);
-	assert.equal(stageMetadata({ nested: converted }).isError, true); // Visible without a getter.
+	let earlierReads = 0;
+	assert.equal(
+		stageMetadata({
+			get first() {
+				earlierReads++;
+				return 1;
+			},
+			nested: converted,
+		}).isError,
+		true,
+	);
+	assert.deepEqual(
+		[earlierReads, conversions],
+		[0, 0],
+		"reject a visible data-property proxy before reading any member",
+	);
 	const viaGetter = stageMetadata({
 		get nested() {
 			assert.equal(++reads, 1);
 			return converted;
 		},
 	});
-	assert.deepEqual([viaGetter.isError, viaGetter.details, reads], [false, { nested: "plain" }, 1]);
+	assert.deepEqual([viaGetter.isError, viaGetter.details, reads, conversions], [false, { nested: "plain" }, 1, 1]);
 	assert.equal(enumerations, 0);
+});
+
+test("boxed and plain oversized strings stop a checkpoint before it reads the next member (#5486)", () => {
+	const huge = "x".repeat(20_000);
+	for (const value of [huge, Object(huge)]) {
+		let reads = 0;
+		const answer = stageMetadata({
+			large: value,
+			get later() {
+				reads++;
+				throw new Error("past byte cutoff");
+			},
+		});
+		assert.deepEqual([answer.isError, answer.details, reads], [false, TOOL_PAYLOAD_TRUNCATION_MARKER, 0]);
+	}
+	const expected = stageMetadata(huge).details;
+	assert.equal(stageMetadata(Object(huge)).details, expected);
+	let calls = 0;
+	const shrinks = Object.assign(Object(huge), {
+		[Symbol.toPrimitive]() {
+			calls++;
+			return "small";
+		},
+	});
+	assert.deepEqual(
+		[stageMetadata(shrinks).details, calls],
+		[expected, 0],
+		"accounting uses the intrinsic, not a user hook",
+	);
+});
+
+test("boxed-string custom conversion runs once and its actual oversized output keeps a bounded prefix (#5486)", () => {
+	let calls = 0;
+	const actual = '🟢\\"tail'.repeat(10_000);
+	const small = Object.assign(Object("seed"), {
+		[Symbol.toPrimitive]() {
+			calls++;
+			return actual;
+		},
+	});
+	const result = stageMetadata(small);
+	assert.equal(calls, 1);
+	assert.equal(result.isError, false);
+	assert.ok(
+		typeof result.details === "string" &&
+			result.details.startsWith("🟢") &&
+			result.details.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER),
+	);
+	assert.ok(actual.startsWith(result.details.slice(0, -TOOL_PAYLOAD_TRUNCATION_MARKER.length)));
+	assert.ok(Buffer.byteLength(JSON.stringify(result.details)) <= TOOL_PAYLOAD_VALUE_LIMIT);
 });
 
 test("a 100,000-key plain object is truncated as a leaf without reading its values or losing its sibling (#5486)", () => {
