@@ -147,7 +147,7 @@ describe("reading a stage whose session is released (#4309)", () => {
 		const load = vi.spyOn(rig.store, "readResume");
 
 		assert.deepEqual(roleAndContent(await rig.ctx.readMessages()), [["user", "go"]]);
-		assert.deepEqual(load.mock.calls, [[sessionId]]);
+		assert.deepEqual(load.mock.calls, [[sessionId, undefined, { deferChildRecords: true }]]);
 		assert.equal(rig.created(), 1, "the session was not reopened");
 		assert.equal(rig.ctx.__isReleased?.(), true);
 		assert.deepEqual(waitHooks(rig.log), ["enter:release"]);
@@ -391,7 +391,7 @@ describe("a stage whose tool wait ended without reopening its session (#4309)", 
 		assert.equal(rig.ctx.thinkingLevel, "high");
 		const load = vi.spyOn(rig.store, "readResume");
 		assert.deepEqual(roleAndContent(await rig.ctx.readMessages()), [["user", "go"]]);
-		assert.deepEqual(load.mock.calls, [[sessionId]]);
+		assert.deepEqual(load.mock.calls, [[sessionId, undefined, { deferChildRecords: true }]]);
 
 		await rig.ctx.prompt("again");
 		assert.equal(rig.created(), 3);

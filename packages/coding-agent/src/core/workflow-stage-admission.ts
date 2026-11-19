@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { OrchestrationContext } from "./extensions/context-types.ts";
+import { SessionKeyDigests } from "./storage/session/key-digests.js";
 import { AgentTaskHost, type AgentTaskHostBinding } from "./tasks/agent-adapter.js";
 import { deliverToLaunchingSession, forgetChildDelivery } from "./tasks/child-command-owner.js";
 import { taskCompletionEnvelope } from "./tasks/completion.js";
@@ -97,7 +98,7 @@ export function parkWorkflowStageForRelease(orchestrationContext: OrchestrationC
 export class WorkflowStageAdmissionBoundary {
 	private open = true;
 	private parked = false;
-	private readonly completed: Set<string>;
+	private readonly completed = new SessionKeyDigests();
 	private readonly parkedSettlements: ParkedTaskSettlement[] = [];
 	private readonly inFlight = new Map<string, Promise<void>>();
 	private readonly pending = new Set<Promise<void>>();
@@ -192,7 +193,12 @@ export class WorkflowStageAdmissionBoundary {
 	}
 
 	/** Take back the admission keys a reopened session's transcript records. */
-	restoreCompleted(entries: Iterable<PersistedWorkflowStageAdmission>, keys: Iterable<string> = []): void {
+	restoreCompleted(
+		entries: Iterable<PersistedWorkflowStageAdmission>,
+		keys: Iterable<string> = [],
+		encoded?: string,
+	): void {
+		if (encoded) this.completed.mergeEncoded(encoded);
 		for (const key of keys) this.completed.add(key);
 		for (const key of admissionKeys(entries)) this.completed.add(key);
 	}
@@ -205,15 +211,18 @@ export class WorkflowStageAdmissionBoundary {
 
 	constructor(drainAdmittedWork: (() => Promise<void>) | undefined = undefined, completedKeys: Iterable<string> = []) {
 		this.drainAdmittedWork = drainAdmittedWork ?? (async () => {});
-		this.completed = new Set(completedKeys);
+		for (const key of completedKeys) this.completed.add(key);
 	}
 
 	static restore(
 		entries: Iterable<PersistedWorkflowStageAdmission>,
 		drainAdmittedWork?: () => Promise<void>,
 		keys: Iterable<string> = [],
+		encoded?: string,
 	): WorkflowStageAdmissionBoundary {
-		return new WorkflowStageAdmissionBoundary(drainAdmittedWork, [...keys, ...admissionKeys(entries)]);
+		const boundary = new WorkflowStageAdmissionBoundary(drainAdmittedWork);
+		boundary.restoreCompleted(entries, keys, encoded);
+		return boundary;
 	}
 
 	/** One FIFO position for an external operation, including its retry waits. */

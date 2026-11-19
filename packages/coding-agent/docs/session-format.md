@@ -16,6 +16,8 @@ For an explicitly selected JSONL store, sessions can be removed by deleting thei
 
 Delete individual sessions from `/resume`: select a session, press `CTRL+D`, then confirm. Database stores delete the selected session record. JSONL stores use the `trash` CLI when available.
 
+An entry in the current window keeps its exact `id` and `parentId` strings. A multi-megabyte ID counts toward that window's memory even when its message is short, or when the only current record referencing it is a compaction boundary. Atomic does not shorten these IDs when copying or importing a session.
+
 ## Session Version
 
 SessionManager writes version 4 headers with `createdAt` and `parentSessionId`. Sessions in formats 1, 2, and 3, and early version-4 files whose header has `timestamp` and `parentSession` instead, are upgraded automatically when opened, resumed, imported, or forked. Reading converts older records in memory; listing sessions and looking up headers leave files unchanged. Opening an older JSONL session persists its upgrade atomically under the file lock before new entries are saved. Future versions, unrecognized version values, and structurally invalid entries remain rejected; unloadable sessions are omitted from resume listings. A complete final record without a newline is accepted. A final line that a crashed or killed process left unfinished was never saved: it is ignored with one warning naming the file, the session still opens and lists, and the next saved entry removes it. A damaged record before the last line is still rejected.
@@ -479,10 +481,10 @@ Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations.
 
 - `SessionManager.create(cwd, sessionDir?, options?)` - New session in configured storage, or explicit JSONL when a directory is supplied.
 - `SessionManager.create(store, cwd, options?)` - New session in a supplied `SessionStore`. Workflow-owned sessions require the pair `internal: true` and `workflow: { runId, stageId, stageName }`.
-- `SessionManager.open(store, sessionId, cwdOverride?, options?)` - Open an existing session by exact ID in that store. A missing ID raises `SessionNotFoundError`; it does not create a session. Pass `{ history: "tail" }` to read a compacted session from its latest compaction: the manager then holds the entries that keep the session's state and the branch from the compaction's kept messages on, and `loadFullHistory()` reads the rest. The default, `{ history: "full" }`, reads every entry. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` take the same option.
+- `SessionManager.open(store, sessionId, cwdOverride?, options?)` - Open an existing session by exact ID in that store. A missing ID raises `SessionNotFoundError`; it does not create a session. A compacted session opens at its current context window. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` do the same. Use `readHistory()` for entries before the window.
 - `SessionManager.open(path, sessionDir?, cwdOverride?)` - Open a JSONL file directly, creating it if missing. This is a file API, not the CLI session selector.
 - `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)` - Continue the most recent regular session or create one. Pass `{ includeInternal: true }` only to include workflow sessions.
-- `SessionManager.inMemory(cwd?, options?, entries?)` - Explicit memory storage.
+- `SessionManager.inMemory(cwd?, options?)` - Create an empty, private, memory-only session synchronously. To seed it, use `await SessionManager.inMemory(cwd, options, entries)` and do not change the supplied entries until it resolves. The store keeps the history; the manager opens at the current window.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` - Fork a JSONL file into the configured or explicit destination. To fork a database session, open it by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.
 - `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)` - Import a JSONL export without changing its ID, upgrading older supported formats. An existing ID raises `SessionExistsError`.
 
@@ -539,15 +541,22 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
 - `buildContextEntries()` - Active branch entries after the latest compaction boundary
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)
-- `getEntries()` - All entries (excluding header). A manager opened with `{ history: "tail" }` holds the entries that keep the session's state and the branch from its latest compaction on until `loadFullHistory()` reads the rest
-- `hasFullHistory()` - Whether every entry is held
-- `loadFullHistory()` - Read missing sequence ranges and merge them in store order; resolves at once when every entry is held. Rejects with `SessionConflictError` if the session was replaced or recreated after it was opened
+- `getEntries()` - Raw entries in the manager's current window, excluding the header. A context edit changes only the provider projection: while its target is in the window, the target and the edit are both retained. For an older entry outside the window, use `readHistory()` or `readEntry(id)`
+- `hasFullHistory()` - Whether every stored entry is held
+- `readHistory({ fromSeq?, toSeq?, direction?, signal? }?)` - Iterate pages between the inclusive bounds. Use `direction: "backward"` to start with the latest page and page toward the start; entries within each page always stay in append order. A page has `items` and, when there are more, `nextCursor`. To resume a stopped read, pass `{ cursor: nextCursor }` without new bounds. Items are `{ seq, entry }` except that an entry over 1 MiB is an oversized reference with `kind: "oversized"`, `seq` and `bytes`, not a truncated entry. A replaced or recreated session is rejected rather than mixing generations
+- `readHistoryChunks(reference, { offset?, signal? }?)` - Read an oversized entry’s original encoded bytes in chunks of at most 64 KiB. Track the number of bytes consumed to resume at a byte offset; use a streaming text decoder when decoding UTF-8
+- For a read-only view with a `SessionStore` but no session manager, import `readSessionHistory(store, sessionId, options?)` and `readSessionHistoryChunks(store, reference, options?)` from `@bastani/atomic/storage`. They expose the same pages and byte chunks without opening a live session.
+- `getWorktreeSnapshotRecords()` - Snapshot records the manager holds, by id: every one while `hasFullHistory()` is true, otherwise those its resume needs (the latest snapshot of each checkout root on the active branch and the snapshots its restores name) and those its window's entries carry. `getLatestWorktreeSnapshots()` - The latest snapshot of each checkout root on the active branch, the same whatever the manager holds
+- `loadWorktreeSnapshotRecords(ids, { signal? }?)` - Resolve the record of each id from the latest entry carrying it on any branch, reading the store for records the manager does not hold. Ids the session never recorded are left out; a store that cannot be read rejects with its error
+- `readWorktreeSnapshotPages({ branch?, direction?, signal? }?)` - Iterate the session's `worktree_snapshot` entries as pages of `{ seq, entry }`, on every branch or, with `branch: true`, on the active one, without keeping them in the manager
+- `readEntry(id)` - Read one entry by ID, including one outside the window, or return `undefined` if it is missing
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
 - `getLastSeq()` - The session's last stored sequence, including entries not in memory
 - `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held. Subagent launch and restoration tolerate a `SessionManager` without `getEntrySeq` or `findEntrySeq`, falling back to `findEntrySeq`, full-history `getEntries()`, or `getBranch()`
 - `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
 - `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones a `{ history: "tail" }` manager does not hold in pages and keeping none of them. Resolves with the last sequence visited
-- `getSessionRecoveryState()` - Persisted admission keys, delivered Intercom message ids and pooled workflow delivery ids (`deliveryOpIds`) used to prevent duplicate deliveries after resume
+- `getAdmissionKeys().has(key)` - Test a persisted admission key synchronously. A resume keeps packed 128-bit digests, not original admission-key strings. The decision to admit or reject a duplicate is unchanged
+- `getSessionRecoveryState()` - Packed admission-key digests, delivered Intercom message IDs and pooled workflow delivery IDs used to prevent duplicate deliveries after resume
 - `getHeader()` - Session header metadata
 - `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
 - `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named

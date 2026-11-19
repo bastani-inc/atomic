@@ -23,7 +23,7 @@ import {
 	registerNamedRunWorktrees,
 	worktreeWaitDeadline,
 } from "./run-worktrees.js";
-import { subagentChildCardRecord, subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import { subagentChildCardRecord, subagentChildIntercomTargetOfTask } from "./subagent-child-card-state.js";
 import { subagentChildOwner } from "./subagent-child-records.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
@@ -229,11 +229,7 @@ async function handleManagementRequest(input: {
 				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records), signal);
 				const ownerSessionId = subagentChildOwner(ctx).sessionId;
 				const shown = records.map((record) =>
-					subagentTaskStatusRecord(
-						record,
-						subagentChildRecordsOf(ownerSessionId).find((child) => child.taskId === record.ref.taskId)
-							?.intercomTarget,
-					),
+					subagentTaskStatusRecord(record, subagentChildIntercomTargetOfTask(ownerSessionId, record.ref.taskId)),
 				);
 				const child = subagentChildCardRecord(undefined, taskId);
 				const cleanup =

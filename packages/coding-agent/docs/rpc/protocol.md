@@ -957,7 +957,7 @@ If an extension cancelled the clone:
 
 #### get_fork_messages
 
-Get user messages available for forking.
+Get user prompts available for forking, including older prompts on every branch. A windowed session obtains them through the same bounded archive reader as `/fork`; long prompts use the picker's short labels. Each original entry ID can be passed to `fork`.
 
 ```json
 {"type": "get_fork_messages"}
@@ -980,7 +980,7 @@ Response:
 
 #### get_entries
 
-Get all session entries in append order, excluding the session header. Unlike `get_messages`, this includes pre-compaction history and abandoned branches.
+Get resident session entries in append order, excluding the session header. `entries` includes the current context window and the earlier state needed to resume it. Use `get_history_page` for pre-compaction history and abandoned branches.
 
 Entry IDs are stable in the append-only tree. Use the last entry ID you have seen as `since` to get only entries strictly after it, even across client restarts.
 
@@ -1010,9 +1010,17 @@ Response:
 
 `leafId` is the id of the current leaf entry (`null` for an empty session), so a client can tell in one round trip whether the active branch moved. If `since` does not match any entry id, the response is `success: false`.
 
+#### get_history_page
+
+Read one page of the saved session in append order, including abandoned branches. Pass optional inclusive `fromSeq` and `toSeq`. A response's `data.items` contains `{seq, entry}` records up to 64 entries and 1 MiB per page; a larger entry returns alone as an oversized reference. Pass `cursor: data.nextCursor` instead of a range to get the next page. Later appends do not change the captured end. `get_tree` and `get_fork_messages` do not need to be called before reading pages.
+
+#### get_history_chunk
+
+Read up to 64 KiB of the original UTF-8 bytes of one oversized item. Pass `reference` (the complete item from `get_history_page`) and `offset` (0 for the first chunk). Decode `data.data` from base64 and continue at `data.nextOffset` if present. A replacement is rejected instead of mixing generations.
+
 #### get_tree
 
-Get the session as a tree of entries. Each node is `{entry, children, label?, labelTimestamp?}`. A well-formed session has a single root; orphaned entries (broken parent chain) also appear as roots.
+Get the resident window as a tree of entries. Each node is `{entry, children, label?, labelTimestamp?}`. A well-formed session has a single root; orphaned entries (broken parent chain) also appear as roots.
 
 ```json
 {"type": "get_tree"}

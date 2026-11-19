@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -128,6 +128,65 @@ for (const [name, backend] of Object.entries(backends)) {
 		});
 	});
 }
+
+test("copying a session between stores does not expand its live window, on success or failure (#5554)", async () => {
+	const { manager } = await tailResumed(backends.memory!);
+	const closed = new MemorySessionStore();
+	await closed.close();
+	await assert.rejects(manager.rebindStore(closed, false));
+	assert.equal(manager.hasFullHistory(), false, "a failed copy left old messages resident in its source");
+	const destination = new MemorySessionStore();
+	cleanups.push(() => destination.close());
+	await manager.rebindStore(destination, false);
+	assert.equal(manager.hasFullHistory(), false, "a successful copy hydrated retired messages into the live manager");
+	assert.deepEqual(
+		await storedIds(destination, manager.getSessionId()),
+		history.map((entry) => entry.id),
+	);
+	assert.equal(manager.getEntry("a"), undefined);
+});
+
+test("a JSONL backup streams earlier entries without bringing them back into the open window (#5554)", async () => {
+	const { store, manager } = await tailResumed(backends.jsonl!);
+	assert.ok(store instanceof JsonlSessionStore);
+	const path = await store.findFile(manager.getSessionId());
+	assert.ok(path);
+	const giant = "日🙂".repeat(180_000);
+	await manager.appendMessage({ role: "user", timestamp: 1, content: giant });
+	await manager.appendCompaction("cleared", null, 100, { strategy: "verbatim-lines" });
+	const before = manager.getEntries();
+	const backup = await manager.writeBackupSnapshot();
+	assert.ok(backup);
+	assert.deepEqual(await readFile(backup), await readFile(path));
+	assert.deepEqual(
+		manager.getEntries().map((entry) => entry.id),
+		before.map((entry) => entry.id),
+	);
+});
+
+test("switching to a compacted session file keeps its saved history positions and interrupted runs (#5554)", async () => {
+	const { dir, store, manager } = await tailResumed(backends.jsonl!);
+	assert.ok(store instanceof JsonlSessionStore);
+	await store.create({ id: "other", version: 4, createdAt: stamp, cwd: dir }, [
+		{
+			type: "custom",
+			customType: "workflow.run.start",
+			id: "start",
+			parentId: null,
+			timestamp: stamp,
+			data: { runId: "open", name: "work", ts: 1 },
+		},
+		user("old", "start"),
+		user("tail", "old"),
+		boundary("clear", "tail", "tail"),
+	]);
+	const file = await store.findFile("other");
+	assert.ok(file);
+	await manager.setSessionFile(file);
+	assert.equal(manager.getEntrySeq("tail"), 3);
+	assert.deepEqual(await manager.readOpenWorkflowIds(), ["open"]);
+	assert.equal(manager.getEntry("old"), undefined);
+});
 
 test("appends after setSessionFile from a tail-resumed manager (#5249)", async () => {
 	const { dir, store, manager } = await tailResumed(backends.jsonl!);

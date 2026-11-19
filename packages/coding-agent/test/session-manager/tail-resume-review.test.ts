@@ -104,6 +104,137 @@ test("branching to held state and pre-boundary kept messages restores their comp
 	}
 });
 
+test("rewinding within the current window needs no archive and preserves a live entry's identity (#5554)", async () => {
+	const { store, open } = await fixture([
+		user("old", null),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+		user("later", "current"),
+	]);
+	const local = await open();
+	const held = local.getEntry("current");
+	assert.ok(held?.type === "message" && held.message.role === "user");
+	held.message.content = "SDK mutation";
+	await store.delete("session");
+	await local.branch("current");
+	assert.equal(local.getLeafEntry(), held);
+	const last = local.buildSessionContext().messages.at(-1);
+	assert.equal(last?.role === "user" && last.content, "SDK mutation");
+});
+
+test("a later compaction may keep an older span, and live and reopened windows agree (#5554)", async () => {
+	const { open } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const live = await open();
+	await live.appendCompaction("second", "old", 3, { strategy: "verbatim-lines", backend: "summary" } as Parameters<
+		SessionManager["appendCompaction"]
+	>[3]);
+	const restored = await open();
+	assert.deepEqual(live.buildSessionContext(), restored.buildSessionContext());
+	assert.ok(live.getEntry("old"));
+});
+
+test("the source window stays visible while a historical branch write is pending and after it fails (#5554)", async () => {
+	const { open, store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const session = await open();
+	const before = session.getEntries(),
+		leaf = session.getLeafId();
+	const started = Promise.withResolvers<void>(),
+		finish = Promise.withResolvers<void>();
+	const refusal = new Error("branch append refused");
+	const append = vi.spyOn(store, "append").mockImplementation(async () => {
+		started.resolve();
+		await finish.promise;
+		throw refusal;
+	});
+	try {
+		const switched = session.branchWithSummary("old", "summary");
+		const rejected = assert.rejects(switched, (error) => error === refusal);
+		await started.promise;
+		const during = session.getEntries(),
+			duringLeaf = session.getLeafId();
+		finish.resolve();
+		await rejected;
+		assert.equal(duringLeaf, leaf);
+		assert.deepEqual(during, before);
+		assert.equal(session.getLeafId(), leaf);
+		assert.deepEqual(session.getEntries(), before);
+	} finally {
+		finish.resolve();
+		append.mockRestore();
+	}
+});
+
+test("a peer append conflicts once when moving to an archived branch, and retry reopens the selected conversation (#5554)", async () => {
+	const { open } = await fixture([
+		user("root", null),
+		user("old", "root"),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+	]);
+	const local = await open();
+	const peer = await open();
+	await peer.appendMessage({ role: "user", content: "other writer", timestamp: 2 });
+	await assert.rejects(local.recordBranch("old"), { name: "SessionConflictError" });
+	assert.equal(local.getLeafId(), "current");
+	await local.recordBranch("old");
+	for (const view of [local, await open()]) {
+		assert.equal(view.getLeafId(), "old");
+		assert.deepEqual(
+			view.buildSessionContext().messages.map((m) => m.role === "user" && m.content),
+			["root", "old"],
+		);
+	}
+});
+
+for (const tier of ["native", "paged", "legacy"] as const) {
+	test(`a stale local branch uses its original watermark with a ${tier} source (#5554)`, async () => {
+		const { store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+		const viewStore = Object.create(store) as import("../../src/core/storage/session/types.ts").SessionStore;
+		if (tier !== "native") viewStore.readResumeAt = undefined;
+		if (tier === "legacy") {
+			viewStore.readEntrySizes = undefined;
+			viewStore.readEntryChunk = undefined;
+		}
+		const read = vi.spyOn(viewStore, "load");
+		const view = await SessionManager.open(viewStore, "session");
+		const newer = await SessionManager.open(store, "session");
+		await newer.appendSessionInfo("new owner's title");
+		await view.branch("old");
+		assert.equal(view.getLastSeq(), 3);
+		assert.equal(view.getSessionName(), undefined, "newer metadata did not enter the old view");
+		assert.deepEqual(
+			view.getBranch().map((e) => e.id),
+			["old"],
+		);
+		assert.equal(read.mock.calls.length, tier === "legacy" ? 1 : 0);
+		await assert.rejects(view.appendMessage({ role: "user", content: "stale write", timestamp: 2 }), {
+			name: "SessionConflictError",
+		});
+	});
+}
+
+test("a snapshot-only SDK store opens a window and pages the archive without keeping earlier turns (#5554)", async () => {
+	const { store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const adapter = Object.assign(
+		Object.create(store) as import("../../src/core/storage/session/types.ts").SessionStore,
+		{
+			readResume: undefined,
+			readResumeAt: undefined,
+			readRange: undefined,
+			readEntrySizes: undefined,
+			readEntryChunk: undefined,
+			findEntrySeq: undefined,
+		},
+	);
+	const load = vi.spyOn(adapter, "load");
+	const view = await SessionManager.open(adapter, "session");
+	assert.equal(load.mock.calls.length, 1);
+	assert.equal(view.getEntry("old"), undefined);
+	assert.equal((await view.readEntry("old"))?.id, "old");
+	assert.equal(view.getEntry("old"), undefined);
+	assert.equal(view.getLeafId(), "current");
+});
+
 test("hydration rejects a same-length replacement instead of merging session generations (#5249)", async () => {
 	const entries = [user("u", null), user("kept", "u"), boundary("c", "kept", "kept")];
 	const { open, store, header } = await fixture(entries);
@@ -133,6 +264,33 @@ test("resume excludes abandoned branches after the active boundary (#5249)", asy
 	assert.equal(id.length, 36);
 	await partial.loadFullHistory();
 	assert.deepEqual(partial.getEntries(), (await store.load("session")).entries);
+});
+
+test("opening the tree returns historical ancestry without fetching old message bodies or hydrating the manager (#5554)", async () => {
+	const { open, store } = await fixture([
+		user("old", null),
+		boundary("clear", "old", null),
+		user("current", "clear"),
+		user("sibling", "old"),
+	]);
+	const view = await open();
+	await view.branch("current");
+	const held = view.getEntryCount();
+	const reads = vi.spyOn(store, "readRange");
+	const rows = [];
+	for await (const page of view.readTreeOutline()) rows.push(...page);
+	assert.deepEqual(
+		rows.map((row) => [row.id, row.parentId]),
+		[
+			["old", null],
+			["clear", "old"],
+			["current", "clear"],
+			["sibling", "old"],
+		],
+	);
+	assert.equal(reads.mock.calls.length, 0);
+	assert.equal(view.getEntryCount(), held);
+	assert.equal(view.getEntry("old"), undefined);
 });
 
 test("settled heartbeats and delivery cards do not grow the resumed state (#5249)", async () => {

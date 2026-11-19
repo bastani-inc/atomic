@@ -125,12 +125,23 @@ export async function writeLinesAtomically(
 	file: string,
 	lines: Iterable<string> | AsyncIterable<string>,
 ): Promise<"written" | "unchanged"> {
+	async function* contents() {
+		for await (const line of lines) yield `${line}\n`;
+	}
+	return writeChunksAtomically(file, contents());
+}
+
+/** Publish a complete file even when a single JSONL record spans many byte chunks. */
+export async function writeChunksAtomically(
+	file: string,
+	chunks: AsyncIterable<Uint8Array | string>,
+): Promise<"written" | "unchanged"> {
 	const temporary = join(file, "..", `.${randomUUID()}.tmp`);
 	try {
 		const handle = await open(temporary, "wx", 0o600);
 		await withCleanup(
 			async () => {
-				for await (const line of lines) await handle.write(`${line}\n`, null, "utf8");
+				for await (const chunk of chunks) await handle.writeFile(chunk);
 				await handle.sync();
 			},
 			() => handle.close(),

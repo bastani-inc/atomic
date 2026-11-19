@@ -44,6 +44,11 @@ class ControlledStore extends MemorySessionStore {
 		return super.append(id, entries, options);
 	}
 
+	override async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions) {
+		if (this.failure) throw this.failure;
+		return super.updateHeader(header, options);
+	}
+
 	override async replace(
 		id: string,
 		header: SessionRecordHeader,
@@ -149,9 +154,17 @@ test("concurrent mutations preserve invocation order and branch parentage", asyn
 	const reopened = await SessionManager.open(store, manager.getSessionId());
 	assert.equal(reopened.getLeafId(), secondId);
 	assert.deepEqual(
-		reopened.getEntries().map((entry) => entry.id),
-		[root, firstId, secondId],
+		reopened.getBranch().map((entry) => entry.id),
+		[root, secondId],
 	);
+	const stored: string[] = [];
+	for await (const { items } of reopened.readHistory()) {
+		for (const item of items) {
+			assert.ok("entry" in item);
+			stored.push(item.entry.id);
+		}
+	}
+	assert.deepEqual(stored, [root, firstId, secondId]);
 });
 
 test("failed new-session creation preserves the active session and permits retry", async () => {

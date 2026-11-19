@@ -2321,7 +2321,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         sessionHomeGroup = null;
         return;
       }
-      inboundDeliveries.restore(value.sessionManager.getBranch(),value.sessionManager.getSessionRecoveryState?.().admissionKeys.filter(key=>key.startsWith("intercom:")).map(key=>key.slice("intercom:".length)));
+      inboundDeliveries.restore(value.sessionManager.getBranch(), [], value.sessionManager.getAdmissionKeys?.());
       await configReady;
       selectedSharedStorage = await multiNodeSelectedAsync(dirname(getIntercomDirPath()), await processStorageEnvironmentAsync());
       try {

@@ -727,7 +727,7 @@ export class AgentSessionRuntime {
 			const previousSessionId = this.session.sessionId;
 			const opened = await this.boundedSessionLookup(
 				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory, {
-					history: options?.history ?? "full",
+					history: options?.history,
 				}),
 				sessionId,
 			);
@@ -800,8 +800,7 @@ export class AgentSessionRuntime {
 			let targetLeafId: string | null;
 			let selectedText: string | undefined;
 
-			if (!this.session.sessionManager.getEntry(entryId)) await this.session.sessionManager.loadFullHistory();
-			const selectedEntry = this.session.sessionManager.getEntry(entryId);
+			const selectedEntry = await this.session.sessionManager.readEntry(entryId);
 			if (!selectedEntry) {
 				throw new SessionEntryError(entryId, "missing");
 			}
@@ -911,7 +910,7 @@ export class AgentSessionRuntime {
 			if (live !== undefined && !(live as unknown as AgentSessionInternalSurface)._disposed) return live;
 			const pending = this.rehydrating.get(sessionId);
 			if (pending !== undefined) return pending;
-			const rehydration = this.rehydrateFromStore(sessionId, options?.history ?? "full");
+			const rehydration = this.rehydrateFromStore(sessionId, options?.history);
 			this.rehydrating.set(sessionId, rehydration);
 			try {
 				return await rehydration;
@@ -922,7 +921,7 @@ export class AgentSessionRuntime {
 	}
 
 	/** Where a rehydrated session continues, decided checkout by checkout; see {@link continueSessionWhereItWorked}. */
-	private continueWhereItWorked(opened: SessionManager, history: "tail" | "full"): Promise<SessionManager> {
+	private continueWhereItWorked(opened: SessionManager, history?: "tail" | "full"): Promise<SessionManager> {
 		const options = {
 			...this.resumeOptions("rehydrate"),
 			onNotices: (notices: readonly ResumeNotice[]) => this.queueResumeNotices(notices),
@@ -935,7 +934,7 @@ export class AgentSessionRuntime {
 		);
 	}
 
-	private async rehydrateFromStore(sessionId: string, history: "tail" | "full"): Promise<AgentSession> {
+	private async rehydrateFromStore(sessionId: string, history?: "tail" | "full"): Promise<AgentSession> {
 		const store = this.session.sessionManager.getSessionStore();
 		if ((await this.boundedSessionLookup(store.readHeader(sessionId), sessionId)) === undefined) {
 			const storage = store.descriptor.adapter;

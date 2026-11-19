@@ -67,7 +67,11 @@ export class StorageSchemaVersionError extends StorageError {
 	readonly found: SqliteValue;
 	readonly supported: number;
 	constructor(domain: string, found: SqliteValue, supported: number) {
-		super(`Unsupported ${domain} storage schema version`);
+		super(
+			typeof found === "number" && found > supported
+				? `Unsupported ${domain} storage schema version ${found}: this store needs a newer Atomic. Update Atomic before reopening it.`
+				: `Unsupported ${domain} storage schema version`,
+		);
 		this.domain = domain;
 		this.found = found;
 		this.supported = supported;

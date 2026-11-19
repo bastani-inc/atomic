@@ -60,7 +60,9 @@ test("a forked subagent writes the captured context and settings, not the pre-cl
 	assert.deepEqual(saved.buildSessionContext(), expected);
 	assert.equal(saved.getHeader()?.parentSessionId, parent.getSessionId());
 	assert.equal(saved.getEntry(retired), undefined, "the retired conversation was copied into the child's session");
-	assert.ok((await SessionManager.open(store, parent.getSessionId())).getEntry(retired));
+	const original = await SessionManager.open(store, parent.getSessionId());
+	assert.equal(await original.findEntrySeq(retired), 3, "the retired source remains in the parent's archive");
+	assert.equal(await saved.findEntrySeq(retired), undefined, "the child archive did not copy the retired turn");
 });
 
 test("a store without a fork-window reader keeps its original child entries byte for byte (#5500)", async () => {

@@ -167,14 +167,14 @@ export function copySessionBlobs(
  * once, after the last entry, through `onMissingBlob`.
  */
 export async function* inlineToolOutput(
-	entries: readonly SessionEntry[],
+	entries: Iterable<SessionEntry> | AsyncIterable<SessionEntry>,
 	store: SessionStore,
 	sessionId: string,
 	options: BlobCopyOptions = {},
 ): AsyncGenerator<SessionEntry, void> {
 	const seen = new Set<string>();
 	const missing: string[] = [];
-	for (const entry of entries) {
+	for await (const entry of entries) {
 		const reference = referenceOf(entry);
 		if (store.getBlob === undefined || reference === undefined || seen.has(reference.hash)) {
 			yield entry;
@@ -194,12 +194,15 @@ export async function* inlineToolOutput(
 
 /** `entries` without the bytes any tool-output entry carries inline, so an export for sharing holds only previews. */
 export function withoutInlineToolOutput(entries: readonly SessionEntry[]): SessionEntry[] {
-	return entries.map((entry) => {
-		const reference = referenceOf(entry);
-		if (reference?.base64 === undefined) return entry;
-		const { base64: _carried, ...kept } = reference;
-		return { ...entry, data: kept } as SessionEntry;
-	});
+	return entries.map(withoutCarriedToolOutput);
+}
+
+/** `entry` without the bytes it carries inline when it is a tool-output entry; any other entry as it is. */
+export function withoutCarriedToolOutput(entry: SessionEntry): SessionEntry {
+	const reference = referenceOf(entry);
+	if (reference?.base64 === undefined) return entry;
+	const { base64: _carried, ...kept } = reference;
+	return { ...entry, data: kept } as SessionEntry;
 }
 
 /**

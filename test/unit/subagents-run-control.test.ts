@@ -22,6 +22,7 @@ import {
 	AgentWakeDispatcher,
 	agentWakeDispatcher,
 } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
+import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import {
 	bindBuiltinChildRecordSession,
@@ -54,11 +55,13 @@ import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/ru
 import { isReleasedChildError } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
 	endedChildMark,
+	markEndedChildrenOf,
 	type ReleasedChildReservation,
 	releasedChildReservation,
 	reserveReleasedChildrenOf,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+	SUBAGENT_MARK_ENDED_CHILDREN_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import {
@@ -90,7 +93,13 @@ import {
 import {
 	bindSubagentChildCards,
 	observeSubagentChildRecord,
+	subagentChildCardRecord,
+	subagentChildCardTask,
+	subagentChildIndexEntry,
+	subagentChildRecordNeedsRead,
 	subagentChildRecordOf,
+	subagentChildRecordsMerging,
+	watchSubagentChildCard,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import { bindSubagentChildOwner } from "../../packages/subagents/src/runs/foreground/subagent-child-owner.js";
 import {
@@ -104,6 +113,7 @@ import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
+	saveUnsavedSubagentChildRecords,
 	subagentChildRecordsAppended,
 	takeSubagentChildStop,
 	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
@@ -125,6 +135,7 @@ import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/
 import {
 	resumeAwaitingSubagentChildren,
 	SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+	subagentChildOfTask,
 	subagentChildrenAwaitingResume,
 } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import {
@@ -156,6 +167,7 @@ import {
 	WORKFLOW_STAGE_END_CHILDREN_STATE as WORKFLOWS_STAGE_END_CHILDREN_STATE,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
 import { createStore as createWorkflowStore } from "../../packages/workflows/src/shared/store.js";
+import { collectGarbage } from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { drained, waitForWakeCompletion } from "../helpers/wake-completion.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -7562,4 +7574,259 @@ test("a released child of the earlier process told a call is still running start
 	await dispatcher.whenIdle();
 	assert.equal(toldLost().length, 1, "the lost call is reported once");
 	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1);
+});
+
+/** A `/clear` boundary: the session's window starts after it, and nothing before it is kept in the window. */
+const CLEAR: VerbatimCompactionDetails = {
+	strategy: "verbatim-lines",
+	promptVersion: 7,
+	parameters: { query: "clear" },
+	form: "cleared",
+	stats: {
+		linesBefore: 2,
+		linesDeleted: 1,
+		linesKept: 1,
+		rangeCount: 1,
+		tokensBefore: 100,
+		tokensAfter: 50,
+		percentReduction: 50,
+	},
+};
+
+function childRecordsIn(manager: SessionManager): SubagentChildRecord[] {
+	return manager.getEntries().flatMap((entry) => (isSubagentChildRecord(entry) && entry.data ? [entry.data] : []));
+}
+
+/** What a reader of the parent sees of a finished child: run control's answers, its chat binding and its launch card. */
+async function finishedChildViews(h: Harness, ctx: ExtensionContext, child: SubagentChildRecord, launchTaskId: string) {
+	const call = (params: Parameters<Harness["call"]>[0]) =>
+		createSubagentExecutor(h.deps).execute("run-control", params, new AbortController().signal, undefined, ctx);
+	const card = subagentChildCardRecord(child.childId, launchTaskId);
+	// What a reconnect tells the broker of the parent's ended children, so a send to one is answered with how it ended.
+	const ended: unknown[] = [];
+	await markEndedChildrenOf(
+		{
+			on: () => () => {},
+			emit(channel: string, data: unknown) {
+				if (channel !== SUBAGENT_MARK_ENDED_CHILDREN_EVENT) return;
+				ended.push((data as { children: unknown }).children);
+				(data as { completion?: Promise<void> }).completion = Promise.resolve();
+			},
+		} as never,
+		ctx.sessionManager.getSessionId(),
+	);
+	return {
+		ended,
+		pause: text(await call({ action: "pause", id: child.childId })),
+		quitByName: text(await call({ action: "quit", id: child.intercomTarget })),
+		status: text(await call({ action: "status", id: child.childId })),
+		awaiting: subagentChildrenAwaitingResume(ctx),
+		launchChat: subagentChildOfTask(ctx, launchTaskId),
+		latestChat: subagentChildOfTask(ctx, child.taskId!),
+		card: card && {
+			childId: card.childId,
+			state: card.state,
+			terminalStatus: card.terminalStatus,
+			taskId: card.taskId,
+			elapsedMs: card.elapsedMs,
+		},
+	};
+}
+
+async function cardTaskOf(childId: string, taskId: string): Promise<string | undefined> {
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	for (;;) {
+		const card = subagentChildCardRecord(childId, taskId);
+		const task = card && subagentChildCardTask(card);
+		if (task !== undefined || Date.now() > deadline) return task;
+		await sleep(5);
+	}
+}
+
+test(
+	"a finished child whose records a clear moved out of the window answers, shows and resumes as before the clear (#5554)",
+	async () => {
+		const h = harness();
+		const { record, taskId: launchTaskId } = await h.launch("cleared1");
+		await h.call({ action: "quit", id: record.childId });
+		await settled(h, launchTaskId);
+		const finishing = await h.call({ action: "resume", id: record.childId, message: "finish up" });
+		await settled(h, resumedTaskId(finishing));
+		const finished = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+		const before = await finishedChildViews(h, h.ctx, finished, launchTaskId);
+		assert.match(before.pause, /worker \(cleared1:0, subagent-worker-cleared1\) is not running \(ok\)/);
+		assert.deepEqual(before.ended, [
+			[
+				{
+					childName: "subagent-worker-cleared1",
+					group: "lane-group",
+					aliases: [finished.childSessionId],
+					outcome: "completed",
+					childId: record.childId,
+				},
+			],
+		]);
+		assert.equal(await cardTaskOf(record.childId, launchTaskId), ORIGINAL_TASK);
+
+		await h.sessionManager.appendCompaction("clear", null, 10, CLEAR);
+		assert.deepEqual(childRecordsIn(h.sessionManager), [], "the window keeps no record of the finished child");
+		assert.deepEqual(
+			h.sessionManager.getArchivedChildCatalog().map((child) => child.childId),
+			[record.childId],
+		);
+		assert.deepEqual(await finishedChildViews(h, h.ctx, finished, launchTaskId), before, "after the clear");
+
+		// Reopened, as a resume of the parent opens it: only its window and its catalog of finished children.
+		const reopened = await SessionManager.open(h.sessionManager.getSessionStore(), h.sessionManager.getSessionId());
+		assert.deepEqual(childRecordsIn(reopened), []);
+		const reopenedCtx = { ...h.ctx, sessionManager: reopened } as ExtensionContext;
+		bindSubagentChildCards(reopenedCtx);
+		assert.deepEqual(await finishedChildViews(h, reopenedCtx, finished, launchTaskId), before, "after reopening");
+		assert.equal(await cardTaskOf(record.childId, launchTaskId), ORIGINAL_TASK);
+
+		const resumed = await createSubagentExecutor(h.deps).execute(
+			"run-control",
+			{ action: "resume", id: record.childId, message: "one more check" },
+			new AbortController().signal,
+			undefined,
+			reopenedCtx,
+		);
+		assert.notEqual(resumed.isError, true, text(resumed));
+		assert.match(
+			text(resumed),
+			/^Resumed worker \(cleared1:0, subagent-worker-cleared1\) from its own session as task .*, with your message as its new prompt\./,
+		);
+		const resumedTaskIdAfterClear = resumedTaskId(resumed);
+		await settled(h, resumedTaskIdAfterClear);
+		const run = h.runs.at(-1);
+		assert.equal(run?.options.runId, "cleared1");
+		assert.equal(run?.options.sessionManager?.getSessionId(), finished.childSessionId);
+		assert.equal(occurrences(transcript(finished), "one more check"), 1);
+		// The harness's parent writes through the session it opened first; both are the same saved session.
+		const latest = await h.waitForLatest(record.childId, (candidate) => candidate.taskId === resumedTaskIdAfterClear);
+		assert.equal(latest.terminalStatus, "ok");
+		// Its new records keep what only its earlier, cleared records named: a resumed run records what changed.
+		const saved = childRecordsIn(h.sessionManager).filter((candidate) => candidate.childId === record.childId);
+		assert.equal(saved.at(-1)?.taskId, resumedTaskIdAfterClear);
+		assert.equal(saved.at(-1)?.task, ORIGINAL_TASK, "the latest saved record is whole on its own");
+		assert.deepEqual(saved.at(-1)?.inherited, finished.inherited);
+
+		// The window holds its newer records while the catalog still names the cleared one: indexing the session again
+		// reads the child as those newer records say, and saves nothing again.
+		const owner = h.sessionManager.getSessionId();
+		assert.ok(h.sessionManager.getArchivedChildCatalog().some((child) => child.childId === record.childId));
+		bindSubagentChildCards(h.ctx);
+		await subagentChildRecordsMerging(owner);
+		await saveUnsavedSubagentChildRecords(h.deps.pi, owner);
+		assert.deepEqual(subagentChildRecordOf(owner, record.childId), saved.at(-1));
+		assert.equal(childRecordsIn(h.sessionManager).length, saved.length);
+	},
+	LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS,
+);
+
+test(
+	"a finished child's record read for an action that does not record it again is let go once that action answers (#5554)",
+	async () => {
+		const h = harness();
+		const { record, taskId: launchTaskId } = await h.launch("letgo1");
+		await h.call({ action: "quit", id: record.childId });
+		await settled(h, launchTaskId);
+		const finishing = await h.call({ action: "resume", id: record.childId, message: "finish up" });
+		await settled(h, resumedTaskId(finishing));
+		const finished = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "ok");
+		await h.sessionManager.appendCompaction("clear", null, 10, CLEAR);
+		assert.deepEqual(childRecordsIn(h.sessionManager), [], "the window keeps no record of the finished child");
+		const owner = h.sessionManager.getSessionId();
+		// Each full record an action reads from the session after the clear, held weakly.
+		const read: WeakRef<object>[] = [];
+		const readArchived = h.sessionManager.readArchivedChildRecord.bind(h.sessionManager);
+		h.sessionManager.readArchivedChildRecord = async (entryId) => {
+			const entry = await readArchived(entryId);
+			if (entry?.type === "custom" && typeof entry.data === "object" && entry.data !== null)
+				read.push(new WeakRef(entry.data));
+			return entry;
+		};
+		const uncollected = async () => {
+			await collectGarbage();
+			return read.filter((ref) => ref.deref() !== undefined).length;
+		};
+
+		const pause = await h.call({ action: "pause", id: record.childId });
+		assert.match(text(pause), /worker \(letgo1:0, subagent-worker-letgo1\) is not running \(ok\)/);
+		assert.equal(read.length, 1, "pause read the finished child's full record");
+		assert.equal(await uncollected(), 0, "the record pause read is not kept once it answered");
+		assert.equal(subagentChildRecordNeedsRead(owner, record.childId), true, "it is read again when next asked for");
+
+		const interrupted = new AbortController();
+		interrupted.abort();
+		const refused = await h.call({ action: "resume", id: record.childId, message: "not now" }, interrupted.signal);
+		assert.equal(refused.isError, true);
+		assert.match(
+			text(refused),
+			/^Interrupted before worker \(letgo1:0, subagent-worker-letgo1\) took the resume: it was withdrawn/,
+		);
+		assert.equal(read.length, 2, "the refused resume read the record again");
+		assert.equal(await uncollected(), 0, "the record a refused resume read is not kept once it answered");
+		assert.equal(subagentChildRecordNeedsRead(owner, record.childId), true);
+
+		// A resume that runs it again reads it once more, and its new records are merged over that record.
+		const resumed = await h.call({ action: "resume", id: record.childId, message: "one more check" });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		const resumedTask = resumedTaskId(resumed);
+		await settled(h, resumedTask);
+		await h.waitForLatest(record.childId, (candidate) => candidate.taskId === resumedTask);
+		const saved = childRecordsIn(h.sessionManager).filter((candidate) => candidate.childId === record.childId);
+		assert.equal(saved.at(-1)?.terminalStatus, "ok");
+		assert.equal(saved.at(-1)?.task, ORIGINAL_TASK, "the latest saved record is whole on its own");
+		assert.deepEqual(saved.at(-1)?.inherited, finished.inherited);
+	},
+	LAUNCH_QUIT_THREE_RESUMES_TIMEOUT_MS,
+);
+
+test("a launch card in another session reads only where its owner's children stand, never the owner's history (#5554)", async () => {
+	const h = harness();
+	const store = h.sessionManager.getSessionStore();
+	const owner = await SessionManager.create(store, h.cwd);
+	const ownerSessionId = owner.getSessionId();
+	const finished: SubagentChildRecord = {
+		version: 1,
+		childId: "elsewhere1:0",
+		runId: "elsewhere1",
+		index: 0,
+		agent: "worker",
+		state: "terminal",
+		terminalStatus: "ok",
+		elapsedMs: 1234,
+		cwd: h.cwd,
+		owner: { kind: "session", sessionId: ownerSessionId },
+		taskId: "task-elsewhere",
+		task: "work done elsewhere",
+		launch: { task: "a long launch prompt the card never shows" },
+	};
+	await owner.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, finished);
+	await owner.appendMessage({ role: "user", content: "later history", timestamp: Date.now() });
+	bindSubagentChildCards(h.ctx);
+	const loads = vi.spyOn(store, "load");
+	try {
+		watchSubagentChildCard({}, () => {}, finished.childId, ownerSessionId);
+		const deadline = Date.now() + RECORD_WAIT_MS;
+		while (subagentChildIndexEntry(finished.childId) === undefined && Date.now() < deadline) await sleep(5);
+		assert.deepEqual(subagentChildIndexEntry(finished.childId), {
+			childId: finished.childId,
+			runId: finished.runId,
+			index: 0,
+			agent: "worker",
+			ownerSessionId,
+			state: "terminal",
+			elapsedMs: 1234,
+			cwd: h.cwd,
+			taskId: "task-elsewhere",
+			terminalStatus: "ok",
+			entryId: subagentChildIndexEntry(finished.childId)?.entryId,
+		});
+		assert.equal(subagentChildCardRecord(undefined, "task-elsewhere")?.childId, finished.childId);
+		assert.equal(loads.mock.calls.length, 0, "the owner's history is never loaded for a card");
+	} finally {
+		loads.mockRestore();
+	}
 });

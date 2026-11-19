@@ -144,7 +144,9 @@ function stageHarness(
 					retry: options.retry ? { enabled: true, maxRetries: 2, baseDelayMs: 1 } : { enabled: false },
 					compaction: { enabled: true, reserveTokens: 2000 },
 				}),
-				sessionManager: SessionManager.inMemory(process.cwd(), undefined, options.history),
+				sessionManager: options.history
+					? await SessionManager.inMemory(process.cwd(), undefined, options.history)
+					: SessionManager.inMemory(process.cwd()),
 				resourceLoader: createTestResourceLoader(),
 			});
 			session.subscribe((event) => {

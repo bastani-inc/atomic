@@ -1,15 +1,28 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
-import { getSessionStats } from "../../src/core/agent-session-export.ts";
+import { getLastAssistantText, getSessionStats } from "../../src/core/agent-session-export.ts";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import {
+	buildSessionProjection,
+	getSessionLeafId,
+	type SessionEntry,
+	SessionManager,
+} from "../../src/core/session-manager.ts";
+import { getBranchPath } from "../../src/core/session-manager-history.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.js";
-import type { SessionResume, SessionStore } from "../../src/core/storage/session/types.js";
+import {
+	SESSION_HISTORY_CHUNK_BYTES,
+	SESSION_HISTORY_PAGE_BYTES,
+	type SessionResume,
+	type SessionStore,
+} from "../../src/core/storage/session/types.js";
 import { pendingTaskCompletionIntents } from "../../src/core/tasks/completion.ts";
 
 const details: VerbatimCompactionDetails = {
@@ -100,7 +113,7 @@ async function compactedSession(store: SessionStore, history = 4): Promise<{ id:
 	return { id: manager.getSessionId(), firstPreTail };
 }
 
-function stats(manager: SessionManager) {
+function stats(manager: Pick<SessionManager, "getEntries" | "getSessionId">) {
 	return getSessionStats.call({
 		sessionManager: manager,
 		sessionFile: undefined,
@@ -109,22 +122,482 @@ function stats(manager: SessionManager) {
 	} as unknown as AgentSession);
 }
 
+it("a live manager drops earlier windows after each compaction without deleting their history (#5554)", async () => {
+	const store = await sqlStore();
+	const manager = await SessionManager.create(store, "/project");
+	const windows = 3;
+	const messagesPerWindow = 20;
+	for (let window = 0; window < windows; window++) {
+		for (let turn = 0; turn < messagesPerWindow; turn++) {
+			await manager.appendMessage({ role: "user", content: `window ${window}, turn ${turn}`, timestamp: turn });
+		}
+		await manager.appendCompaction(`summary ${window}`, null, 1000, details);
+		const reopened = await SessionManager.open(store, manager.getSessionId(), undefined, { history: "tail" });
+		expect(manager.buildSessionContext()).toEqual(reopened.buildSessionContext());
+		expect(manager.getEntryCount()).toBe(reopened.getEntryCount());
+	}
+	const first = await store.readRange!(manager.getSessionId(), 1, 1);
+	expect(first.entries[0]).toMatchObject({ type: "message", message: { content: "window 0, turn 0" } });
+	expect(first.lastSeq).toBe(windows * (messagesPerWindow + 1));
+});
+
+it("discovers interrupted workflows across a clear without keeping their inputs, outputs or closed runs (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const payload = "界".repeat(SESSION_HISTORY_PAGE_BYTES);
+	const runId = "active\ud800workflow";
+	for (const id of ["completed", runId]) {
+		await writer.appendCustomEntry("workflow.run.start", { inputs: { payload }, runId: id, name: "work", ts: 1 });
+		await writer.appendCustomEntry("workflow.stage.end", { runId: id, output: payload });
+	}
+	await writer.appendCustomEntry("workflow.run.end", { runId: "completed" });
+	await writer.appendCompaction("cleared", null, 1000, details);
+	const resumed = await SessionManager.open(store, writer.getSessionId());
+	for (const manager of [writer, resumed]) {
+		expect(await manager.readOpenWorkflowIds()).toEqual([runId]);
+		expect(manager.getEntries().map((entry) => entry.type)).toEqual(["compaction"]);
+	}
+	await resumed.appendCustomEntry("workflow.run.end", { runId });
+	expect(await resumed.readOpenWorkflowIds()).toEqual([]);
+});
+
+it("a cleared parent releases a giant workflow identity after its route ends (#5554)", async () => {
+	const store = await sqlStore();
+	const parent = await SessionManager.create(store, "/project");
+	const { collectGarbage } = await import("../../../../test/helpers/collect-garbage.js");
+	const makeRun = async () => {
+		const runId = Array.from({ length: 2048 }, () => "r".repeat(1024)).join("");
+		const start = { runId, name: "work", ts: 1 };
+		const end = { runId };
+		const first = await parent.appendCustomEntry("workflow.run.start", start);
+		await parent.appendCompaction("cleared", null, 1000, details);
+		expect(await parent.readOpenWorkflowIds()).toEqual([runId]);
+		const last = await parent.appendCustomEntry("workflow.run.end", end);
+		await parent.appendCompaction("cleared again", null, 1000, details);
+		return { entries: [first, last], payloads: [new WeakRef(start), new WeakRef(end)] };
+	};
+	const { entries, payloads } = await makeRun();
+	await collectGarbage();
+	expect(payloads.every((payload) => payload.deref() === undefined)).toBe(true);
+	expect(entries.every((id) => !parent.getEntry(id))).toBe(true);
+	expect(await parent.readOpenWorkflowIds()).toEqual([]);
+	const resume = await store.readResume!(parent.getSessionId());
+	expect(resume.recovery.workflowStarts).toEqual({});
+	expect(JSON.stringify(resume).length).toBeLessThan(SESSION_HISTORY_PAGE_BYTES);
+});
+
+it("live stage and Intercom receipts survive repeated clears without retaining their message bodies (#5554)", async () => {
+	const store = await sqlStore();
+	const live = await SessionManager.create(store, "/project");
+	for (const n of [1, 2]) {
+		await live.appendCustomEntry("atomic-pooled-delivery-op", { op: `op${n}` });
+		await live.appendCustomMessageEntry("intercom_message", `m${n}`, true, { message: { id: `m${n}` } });
+		await live.appendCompaction(`clear${n}`, null, 100, details);
+	}
+	const reopened = await SessionManager.open(store, live.getSessionId());
+	for (const holder of [live, reopened]) {
+		const recovery = holder.getSessionRecoveryState();
+		expect(recovery.intercomDeliveredIds).toEqual(["m1", "m2"]);
+		expect(recovery.deliveryOpIds).toEqual(["op1", "op2"]);
+		expect(holder.getEntries().map((entry) => entry.type)).toEqual(["compaction"]);
+	}
+});
+
+it("moving to an older branch restores that window but does not hydrate abandoned conversations (#5554)", async () => {
+	const store = await sqlStore();
+	const { id, firstPreTail } = await compactedSession(store, 100);
+	const session = await SessionManager.open(store, id),
+		otherLeaf = session.getLeafId();
+	await session.branchWithSummary(firstPreTail, "summary of the branch we left");
+	const summary = session.getLeafEntry();
+	expect(summary?.type === "branch_summary" && summary.fromId).toBe(otherLeaf);
+	expect(session.getEntryCount()).toBeLessThan(30);
+	expect(session.getBranch().at(-2)?.id).toBe(firstPreTail);
+	expect(await session.findEntrySeq(otherLeaf!)).toBeDefined();
+});
+
+it("copy uses the last visible edited answer across a clear and reopen, not an omitted or tool-only reply (#5554)", async () => {
+	const store = await sqlStore();
+	const live = await SessionManager.create(store, "/project");
+	const older = await live.appendMessage(assistant("original", 1));
+	await live.appendContextEdit(older, { content: "replaced" });
+	const omitted = await live.appendMessage(assistant("not visible", 2));
+	await live.appendContextEdit(omitted, null);
+	await live.appendMessage({
+		...assistant("tool", 3),
+		content: [{ type: "toolCall", id: "last", name: "ls", arguments: {} }],
+	});
+	await live.appendCompaction("cleared", null, 100, details);
+	for (const manager of [live, await SessionManager.open(store, live.getSessionId())]) {
+		expect(
+			getLastAssistantText.call({
+				messages: manager.buildSessionContext().messages,
+				sessionManager: manager,
+			} as AgentSession),
+		).toBe("replaced");
+	}
+});
+
+it("a cleared parent keeps completed children's addresses rather than their launch and result payloads (#5554)", async () => {
+	const store = await sqlStore();
+	const manager = await SessionManager.create(store, "/project");
+	const owner = { kind: "session", sessionId: manager.getSessionId() };
+	const base = { version: 1, childId: "child", runId: "run", index: 0, agent: "worker", cwd: "/project", owner };
+	await manager.appendCustomEntry("subagent-child", {
+		...base,
+		state: "running",
+		taskId: "previous",
+		launch: { task: "old input" },
+	});
+	const id = await manager.appendCustomEntry("subagent-child", {
+		...base,
+		state: "terminal",
+		taskId: "last",
+		terminalStatus: "ok",
+		extra: "old result",
+	});
+	await manager.appendCompaction("clear", null, 10, details);
+	for (const view of [manager, await SessionManager.open(store, manager.getSessionId())]) {
+		expect(view.getEntries().filter((e) => e.type === "custom" && e.customType === "subagent-child")).toEqual([]);
+		expect(view.getArchivedChildCatalog()).toMatchObject([
+			{ entryId: id, childId: "child", taskIds: ["previous", "last"] },
+		]);
+		expect(await view.readArchivedChildRecord(id)).toMatchObject({
+			type: "custom",
+			data: { launch: { task: "old input" }, extra: "old result", state: "terminal", taskId: "last" },
+		});
+		expect(view.getEntry(id)).toBeUndefined();
+	}
+	const complete = await manager.appendCustomEntry("subagent-child", {
+		...base,
+		state: "running",
+		taskId: "again",
+		terminalStatus: "ok",
+		extra: "updated",
+		launch: { task: "current" },
+	});
+	expect(manager.getArchivedChildCatalog()).toMatchObject([
+		{ entryId: id, coveredBy: complete, taskIds: ["previous", "last"] },
+	]);
+});
+
+it("cold resume never decodes an oversized settled child payload to recover its heading or earlier task aliases (#5554)", async () => {
+	const store = await sqlStore(),
+		m = await SessionManager.create(store, "/project");
+	const base = {
+		version: 1,
+		childId: "cold",
+		runId: "owner-run",
+		index: 0,
+		agent: "worker",
+		cwd: "/project",
+		owner: { kind: "session", sessionId: m.getSessionId() },
+	};
+	for (const [taskId, state, status] of [
+		["one", "running", "ok"],
+		["two", "terminal", "released"],
+		["three", "running", "ok"],
+		["four", "terminal", "ok"],
+	])
+		await m.appendCustomEntry("subagent-child", {
+			...base,
+			taskId,
+			state,
+			terminalStatus: status,
+			launch: state === "terminal" ? "large child launch " + "x".repeat(2 * 1024 * 1024) : "small",
+		});
+	await m.appendCompaction("clear", null, 10, details);
+	const parse = JSON.parse;
+	let count = 0;
+	const trap = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+		if (text.length > 1024 * 1024 && text.includes("large child launch ")) count++;
+		return parse(text, reviver);
+	});
+	try {
+		const reopened = await SessionManager.open(store, m.getSessionId());
+		expect(count).toBe(0);
+		expect(reopened.getArchivedChildCatalog()).toMatchObject([
+			{ taskIds: ["one", "two", "three", "four"], releasedTaskIds: ["two"] },
+		]);
+	} finally {
+		trap.mockRestore();
+	}
+});
+
+it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {
+	const store = await sqlStore();
+	const { id, firstPreTail } = await compactedSession(store);
+	const expected = await SessionManager.open(store, id, undefined, { history: "tail" });
+	const guarded: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+		load: () => Promise.reject(new Error("opened the entire session")),
+	});
+	const manager = await SessionManager.open(guarded, id);
+	expect(manager.getEntry(firstPreTail)).toBeUndefined();
+	expect(manager.getEntries()).toEqual(expected.getEntries());
+	expect(manager.buildSessionContext()).toEqual(expected.buildSessionContext());
+});
+
+it("an in-flight historical lookup never returns a different session's entry with the same ID (#5554)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, "/project");
+	const old = await manager.appendMessage({ role: "user", content: "original owner", timestamp: 1 });
+	const raw = manager.getEntry(old)!;
+	await manager.appendCompaction("cleared", null, 100, details);
+	const original = manager.getSessionId();
+	const found = Promise.withResolvers<void>(),
+		finish = Promise.withResolvers<void>();
+	const lookup = store.findEntrySeq.bind(store);
+	store.findEntrySeq = async (sessionId, id) => {
+		const seq = await lookup(sessionId, id);
+		if (sessionId === original && id === old) {
+			found.resolve();
+			await finish.promise;
+		}
+		return seq;
+	};
+	try {
+		const inFlight = manager.readEntry(old);
+		await found.promise;
+		await manager.newSession();
+		await store.append(
+			manager.getSessionId(),
+			[
+				{
+					type: "message",
+					id: old,
+					parentId: null,
+					timestamp: raw.timestamp,
+					message: { role: "user", content: "different owner", timestamp: 2 },
+				},
+			],
+			{ expectSeq: 0 },
+		);
+		await manager.refreshFromStore();
+		finish.resolve();
+		expect(await inFlight).toEqual(raw);
+	} finally {
+		finish.resolve();
+		await store.close();
+	}
+});
+
+it("labels a retired oversized entry without decoding it or accepting a different writer's future target (#5554)", async () => {
+	const store = new MemorySessionStore();
+	try {
+		const manager = await SessionManager.create(store, "/project");
+		const old = await manager.appendMessage({
+			role: "user",
+			content: "x".repeat(SESSION_HISTORY_PAGE_BYTES + 20),
+			timestamp: 1,
+		});
+		await manager.appendCompaction("cleared", null, 100, details);
+		await manager.appendLabelChange(old, "hello");
+		expect(manager.getLabel(old)).toBe("hello");
+		expect(manager.getEntry(old)).toBeUndefined();
+		const peer = await SessionManager.open(store, manager.getSessionId());
+		const future = await peer.appendMessage({ role: "user", content: "peer", timestamp: 2 });
+		expect(await manager.findEntrySeq(future)).toBeUndefined();
+	} finally {
+		await store.close();
+	}
+});
+
+it("a reader can stop after its first page without hydrating older messages into the manager (#5554)", async () => {
+	const store = await sqlStore();
+	const { id, firstPreTail } = await compactedSession(store, 120);
+	const manager = await SessionManager.open(store, id);
+	const held = manager.getEntryCount();
+	const seen: number[] = [];
+	read: for await (const { items } of manager.readHistory()) {
+		for (const item of items) {
+			seen.push(item.seq);
+			if ("entry" in item && item.entry.id === firstPreTail) break read;
+		}
+	}
+	expect(seen).toEqual([1, 2, 3]);
+	expect(manager.getEntryCount()).toBe(held);
+	expect(manager.getEntry(firstPreTail)).toBeUndefined();
+});
+
+it("a giant historical entry is an exact byte stream, never one decoded entry (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const giant = "a".repeat(SESSION_HISTORY_PAGE_BYTES - 2) + "漢😀e\u0301".repeat(16);
+	const id = await writer.appendMessage({ role: "user", timestamp: 0, content: giant });
+	const expected = Buffer.from(JSON.stringify(writer.getEntry(id)));
+	await writer.appendCompaction("cleared", null, 1000, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	const first = await manager.readHistory({ toSeq: 1 }).next();
+	expect(first.done).toBe(false);
+	const reference = first.value?.items[0];
+	if (!reference || !("kind" in reference) || reference.kind !== "oversized")
+		throw new Error("a history page decoded the giant entry");
+	expect(reference.bytes).toBe(expected.length);
+	let offset = 0;
+	for await (const chunk of manager.readHistoryChunks(reference)) {
+		expect(chunk.length).toBeGreaterThan(0);
+		expect(chunk.length).toBeLessThanOrEqual(SESSION_HISTORY_CHUNK_BYTES);
+		expect(Buffer.from(chunk).equals(expected.subarray(offset, offset + chunk.length))).toBe(true);
+		offset += chunk.length;
+	}
+	expect(offset).toBe(expected.length);
+	expect(manager.getEntry(id)).toBeUndefined();
+});
+
+it("2 MiB entry identities survive create, append, import, seed, copy and fork unchanged (#5554)", async () => {
+	const store = await sqlStore();
+	const dir = mkdtempSync(join(tmpdir(), "atomic-long-identity-"));
+	directories.push(dir);
+	const timestamp = new Date(0).toISOString();
+	const header = { id: "long-ids", version: 4 as const, createdAt: timestamp, cwd: dir };
+	const ids = ["a", "b"].map((char) => char.repeat(2 * 1024 * 1024));
+	const entries: SessionEntry[] = ids.map((id, i) => ({
+		type: "message",
+		id,
+		parentId: i ? ids[0]! : null,
+		timestamp,
+		message: { role: "user", content: `message ${i}`, timestamp: i },
+	}));
+	await store.create(header, [entries[0]!]);
+	await store.append(header.id, [entries[1]!], { expectSeq: 1 });
+	const source = await SessionManager.open(store, header.id);
+	const file = join(dir, "export.jsonl");
+	await writeFile(
+		file,
+		[{ type: "session", ...header }, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+	);
+	const target = new MemorySessionStore();
+	closers.push(() => target.close());
+	const imported = await SessionManager.importFromJsonl(file, dir, target);
+	const seeded = await SessionManager.inMemory(dir, undefined, entries);
+	const forked = await source.forkTo(dir, target);
+	const copied = new MemorySessionStore();
+	closers.push(() => copied.close());
+	await imported.rebindStore(copied, false);
+	for (const manager of [source, imported, seeded, forked]) {
+		const branch = manager.getBranch();
+		expect(branch.length).toBe(2);
+		expect(branch[0]!.id === ids[0] && branch[1]!.id === ids[1] && branch[1]!.parentId === ids[0]).toBe(true);
+	}
+	await source.appendCompaction("cleared", null, 100, details);
+	const firstWindow = source.getEntries();
+	expect(firstWindow.length).toBe(1);
+	expect(firstWindow[0]!.parentId === ids[1]).toBe(true);
+	await source.appendMessage({ role: "user", content: "later", timestamp: 3 });
+	await source.appendCompaction("cleared again", null, 100, details);
+	expect(source.getEntryCount()).toBe(1);
+	expect(Buffer.byteLength(JSON.stringify(source.getEntries()))).toBeLessThan(4096);
+	const result = await source.readHistory({ fromSeq: 2, toSeq: 2 }).next();
+	const ref = result.value?.items[0];
+	if (!ref || !("kind" in ref)) throw new Error("historical identity did not use a bounded entry reference");
+	const chunks = [];
+	for await (const chunk of source.readHistoryChunks(ref)) chunks.push(chunk);
+	expect(Buffer.concat(chunks).equals(Buffer.from(JSON.stringify(entries[1])))).toBe(true);
+});
+
+it("a seeded private session yields while storing its input and initially owns only the current window (#5554)", async () => {
+	const timestamp = new Date(0).toISOString();
+	const history: SessionEntry[] = Array.from({ length: 400 }, (_, i) => ({
+		type: "message",
+		id: `old${i}`,
+		parentId: i ? `old${i - 1}` : null,
+		timestamp,
+		message: { role: "user", content: `saved-${i}`, timestamp: 0 },
+	}));
+	history.push({
+		type: "compaction",
+		id: "boundary",
+		parentId: history.at(-1)!.id,
+		timestamp,
+		details,
+		summary: "cleared",
+		tokensBefore: 1000,
+		firstKeptEntryId: null,
+	});
+	let yielded = false;
+	const turn = setImmediate(() => {
+		yielded = true;
+	});
+	try {
+		const manager = await SessionManager.inMemory("/project", undefined, history);
+		expect(manager.getEntryCount()).toBe(1);
+		expect(yielded).toBe(true);
+		expect(manager.isPersisted()).toBe(false);
+		expect(await manager.readEntry("old0")).toEqual(history[0]);
+	} finally {
+		clearImmediate(turn);
+	}
+});
+
+it("a resume does not retain previous system instructions or superseded model settings (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	for (let i = 0; i < 32; i++) {
+		await writer.appendModelChange("test", `model-${i}`);
+		await writer.appendThinkingLevelChange(i % 2 ? "high" : "low");
+		await writer.appendMessage({ role: "system", content: `instruction ${i}`, timestamp: i });
+	}
+	await writer.appendCompaction("cleared", null, 100, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	const kept = manager.getEntries();
+	expect(kept.filter((e) => e.type === "model_change")).toHaveLength(1);
+	expect(kept.filter((e) => e.type === "thinking_level_change")).toHaveLength(1);
+	expect(kept.filter((e) => e.type === "message" && e.message.role === "system")).toHaveLength(0);
+	const full = [...(await store.load(writer.getSessionId())).entries];
+	expect(manager.buildSessionProjection()).toEqual(
+		buildSessionProjection(full, writer.getLeafId(), undefined, writer.getSessionId()),
+	);
+});
+
+it("a live window does not retain one identical checkout reference per old turn (#5554)", async () => {
+	const store = await sqlStore();
+	const writer = await SessionManager.create(store, "/project");
+	const root = "/project";
+	const snapshot = {
+		id: "one",
+		root,
+		tree: "t",
+		chain: [],
+		omitted: [],
+		filters: null,
+		bundle: null,
+	} as unknown as import("../../src/core/worktree-snapshot/types.js").WorktreeSnapshot;
+	await writer.appendWorktreeSnapshot(root, snapshot.id, snapshot);
+	for (let i = 0; i < 100; i++)
+		await writer.appendWorktreeSnapshot(root, snapshot.id, undefined, undefined, undefined, undefined, i);
+	await writer.appendCompaction("cleared", null, 100, details);
+	const manager = await SessionManager.open(store, writer.getSessionId());
+	for (const view of [writer, manager]) {
+		expect(view.getEntries().filter((e) => e.type === "worktree_snapshot").length).toBeLessThanOrEqual(3);
+		expect(view.getLatestWorktreeSnapshots().get(root)).toEqual(snapshot);
+		expect(
+			view
+				.getEntries()
+				.filter((e) => e.type === "worktree_snapshot")
+				.at(-1)?.captureMs,
+		).toBe(99);
+	}
+});
+
 describe("SessionManager resume from the latest compaction (#5249)", () => {
 	it("resumes with the same context, name, labels, model, thinking level and usage as a whole read (#5249)", async () => {
 		const store = await sqlStore();
 		const { id, firstPreTail } = await compactedSession(store);
-		const full = await SessionManager.open(store, id);
+		const snapshot = await store.load(id);
+		const entries = [...snapshot.entries];
+		const full = { getEntries: () => entries, getSessionId: () => id };
 		const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
 
-		expect(full.hasFullHistory()).toBe(true);
 		expect(tail.hasFullHistory()).toBe(false);
-		expect(tail.getEntries().length).toBeLessThan(full.getEntries().length);
-		expect(tail.buildSessionContext()).toEqual(full.buildSessionContext());
+		expect(tail.getEntries().length).toBeLessThan(entries.length);
+		expect(tail.buildSessionProjection()).toEqual(
+			buildSessionProjection(entries, getSessionLeafId(entries), undefined, id),
+		);
 		expect(tail.buildSessionContext().thinkingLevel).toBe("high");
 		expect(tail.getSessionNameState()).toEqual({ hasName: true, name: "renamed" });
 		expect(tail.getLabel(firstPreTail)).toBe("start");
-		expect(tail.getLeafId()).toBe(full.getLeafId());
-		expect(tail.getHeader()).toEqual(full.getHeader());
+		expect(tail.getLeafId()).toBe(getSessionLeafId(entries));
+		expect(tail.getHeader()).toEqual({ type: "session", ...snapshot.header });
 		expect(tail.getBranch().some((entry) => entry.type === "thinking_level_change")).toBe(true);
 		expect(pendingTaskCompletionIntents(tail)).toEqual(pendingTaskCompletionIntents(full));
 		expect(pendingTaskCompletionIntents(tail).map((intent) => intent.completionId)).toEqual(["open"]);
@@ -161,14 +634,15 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 	it("reads older entries when the tree, a branch, a label or a fork needs them (#5249)", async () => {
 		const store = await sqlStore();
 		const { id, firstPreTail } = await compactedSession(store);
-		const full = await SessionManager.open(store, id);
-
+		const full = [...(await store.load(id)).entries];
 		const forTree = await SessionManager.open(store, id, undefined, { history: "tail" });
-		await forTree.loadFullHistory();
-		expect(forTree.hasFullHistory()).toBe(true);
-		expect(forTree.getEntries()).toEqual(full.getEntries());
-		expect(forTree.getTree()).toEqual(full.getTree());
-		expect(forTree.getOmittedHistoryTotals()).toBeUndefined();
+		const read: SessionEntry[] = [];
+		for await (const { items } of forTree.readHistory()) {
+			for (const item of items) if ("entry" in item) read.push(item.entry);
+		}
+		expect(read).toEqual(full);
+		expect(forTree.hasFullHistory()).toBe(false);
+		expect(forTree.getOmittedHistoryTotals()).toBeDefined();
 
 		const forLabel = await SessionManager.open(store, id, undefined, { history: "tail" });
 		expect(forLabel.getEntry(firstPreTail)).toBeUndefined();
@@ -178,7 +652,7 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		const forBranch = await SessionManager.open(store, id, undefined, { history: "tail" });
 		await forBranch.branch(firstPreTail);
 		expect(forBranch.getBranch().map((entry) => entry.id)).toEqual(
-			full.getBranch(firstPreTail).map((entry) => entry.id),
+			getBranchPath(firstPreTail, new Map(full.map((entry) => [entry.id, entry]))).map((entry) => entry.id),
 		);
 
 		const shape = (manager: SessionManager) =>
@@ -191,12 +665,14 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		expect(shape(forFork)).toContainEqual([firstPreTail, "again"]);
 	});
 
-	it("never rewrites a session with only its tail (#5249)", async () => {
+	it("updates a session header without reading or rewriting its old entries (#5249, #5554)", async () => {
 		const store = await sqlStore();
 		const { id } = await compactedSession(store);
 		const before = (await store.load(id)).entries;
 		const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
+		const held = tail.getEntryCount();
 		await tail.markSessionInternal({ runId: "run", stageId: "stage", stageName: "stage" });
+		expect(tail.getEntryCount()).toBe(held);
 		const after = await store.load(id);
 		expect(after.entries).toEqual(before);
 		expect(after.header.internal).toBe(true);
@@ -226,10 +702,12 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		await manager.appendCompaction("compacted", kept, 10, details);
 		await manager.appendMessage({ role: "user", content: "after", timestamp: 1 });
 		const id = manager.getSessionId();
-		const full = await SessionManager.open(store, id);
+		const full = [...(await store.load(id)).entries];
 		const tail = await SessionManager.open(store, id, undefined, { history: "tail" });
 		expect(tail.hasFullHistory()).toBe(false);
-		expect(tail.buildSessionContext()).toEqual(full.buildSessionContext());
+		expect(tail.buildSessionProjection()).toEqual(
+			buildSessionProjection(full, getSessionLeafId(full), undefined, id),
+		);
 		expect(tail.buildSessionContext().thinkingLevel).toBe("high");
 		expect(tail.getBranch().filter((entry) => entry.type === "thinking_level_change")).toHaveLength(1);
 	});

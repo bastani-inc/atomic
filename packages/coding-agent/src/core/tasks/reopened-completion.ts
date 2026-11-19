@@ -183,6 +183,30 @@ export function reopenedCompletionName(message: CustomMessage, isProxy: Completi
 /** An SDK caller can copy the same entry object into a different session. Evidence outside the window belongs to
  * the store snapshot that supplied it, not to that entry on its own. Neither weak key keeps a session alive. */
 const earlierWitnesses = new WeakMap<SessionRecoveryState, WeakMap<Card, StopWitness>>();
+/** Preserve evidence when the same captured store view exposes a new recovery-state envelope. */
+export function shareCompletionEvidence<T extends SessionRecoveryState>(source: SessionRecoveryState, target: T): T {
+	const cards = earlierWitnesses.get(source);
+	if (cards) earlierWitnesses.set(target, cards);
+	return target;
+}
+/** Local compaction can shorten a parent link without changing the saved card it represents. */
+export function carryCompletionEvidence(
+	source: SessionRecoveryState,
+	from: SessionEntry,
+	target: SessionRecoveryState,
+	to: SessionEntry,
+): void {
+	if (from.type !== "custom_message" || to.type !== "custom_message" || from.id !== to.id) return;
+	const witness = earlierWitnesses.get(source)?.get(from);
+	if (!witness) return;
+	let cards = earlierWitnesses.get(target);
+	if (!cards) {
+		cards = new WeakMap();
+		earlierWitnesses.set(target, cards);
+	}
+	cards.set(to, witness);
+}
+
 export function rememberEarlierCompletion(
 	scope: SessionRecoveryState,
 	entry: SessionEntry,

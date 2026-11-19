@@ -411,7 +411,8 @@ class AgentSessionBase {
 				const admission = WorkflowStageAdmissionBoundary.restore(
 					this.sessionManager.getBranch(),
 					undefined,
-					this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+					undefined,
+					this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 				);
 				this._subagentMessageAdmission = admission;
 				this._subagentPolicy = {
@@ -441,7 +442,8 @@ class AgentSessionBase {
 			const stageBoundary = stageContext?.messageAdmission?.boundary;
 			stageBoundary?.restoreCompleted(
 				this.sessionManager.getBranch(),
-				this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+				undefined,
+				this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 			);
 			this._workflowStageAdmission =
 				stageBoundary ??
@@ -449,7 +451,8 @@ class AgentSessionBase {
 					? WorkflowStageAdmissionBoundary.restore(
 							this.sessionManager.getBranch(),
 							undefined,
-							this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+							undefined,
+							this.sessionManager.getSessionRecoveryState?.().admissionDigests,
 						)
 					: undefined);
 			// #3919: a fresh stage is live before its runner dispatches the stage prompt. Turn-starting

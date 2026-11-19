@@ -71,10 +71,14 @@ async function startWith(sessionManager: SessionManager, origin: "bundled" | und
 	return seen;
 }
 
-test("reads the whole history before an extension Atomic does not bundle starts (#5249)", async () => {
+test("starting a user extension does not hydrate a compacted session (#5554)", async () => {
 	const manager = await resumedFromCompaction();
-	expect(await startWith(manager, undefined)).toEqual([true]);
-	expect(manager.hasFullHistory()).toBe(true);
+	const held = manager.getEntries();
+	expect(await startWith(manager, undefined)).toEqual([false]);
+	expect(manager.getEntries()).toEqual(held);
+	const first = await manager.readHistory({ toSeq: 1 }).next();
+	expect(first.value?.items[0]).toMatchObject({ entry: { type: "message", message: { content: "turn 0" } } });
+	expect(manager.hasFullHistory()).toBe(false);
 });
 
 test("keeps a resumed session's tail for extensions Atomic bundles (#5249)", async () => {

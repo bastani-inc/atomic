@@ -52,7 +52,7 @@ export interface NewSessionOptions {
 }
 
 export interface SessionOpenOptions {
-	readonly history?: "full" | "tail";
+	readonly history?: "tail" | "full";
 }
 
 export interface SessionEntryBase {
@@ -406,6 +406,13 @@ export type ReadonlySessionManager = Pick<
 	| "getOmittedHistoryTotals"
 	| "getEntrySeq"
 	| "findEntrySeq"
+	| "readEntry"
+	| "readHistory"
+	| "readHistoryChunks"
 	| "getLastSeq"
 	| "getSessionRecoveryState"
+	| "getArchivedChildCatalog"
+	| "readArchivedChildRecord"
+	| "getAdmissionKeys"
+	| "readOpenWorkflowIds"
 >;

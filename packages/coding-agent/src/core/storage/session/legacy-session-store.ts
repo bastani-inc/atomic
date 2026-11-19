@@ -8,14 +8,17 @@ import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
-import { findSessionCompaction, readSessionRange, readSessionTail, sessionResumeOf } from "./session-resume.js";
+import { findSessionCompaction, readSessionTail, sessionRangeOf } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
 	SessionBlob,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryRange,
+	SessionEntrySizes,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
@@ -28,7 +31,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix } from "./types.js";
 
 const DELETED_TABLE = "session_legacy_deleted";
 
@@ -56,7 +59,11 @@ export class LegacySessionStore implements SessionStore {
 	readonly getBlob?: (sessionId: string, hash: string) => Promise<Uint8Array | undefined>;
 	readonly readEntryRange?: (sessionId: string, query: SessionEntriesQuery) => Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
+	readonly readTreeOutline?: SessionStore["readTreeOutline"];
+	readonly readChildCatalogCut?: SessionStore["readChildCatalogCut"];
+	readonly readSelectedPage?: SessionStore["readSelectedPage"];
 	readonly readForkWindow?: SessionStore["readForkWindow"];
+	readonly readSnapshotCut?: SessionStore["readSnapshotCut"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -75,6 +82,26 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		if (inner.readChildCatalogCut)
+			this.readChildCatalogCut = async (id) => {
+				await this.convert(id);
+				return inner.readChildCatalogCut!(id);
+			};
+		if (inner.readSelectedPage)
+			this.readSelectedPage = async (id, seqs, epoch, options) => {
+				await this.convert(id);
+				return inner.readSelectedPage!(id, seqs, epoch, options);
+			};
+		if (inner.readSnapshotCut)
+			this.readSnapshotCut = async (id, options) => {
+				await this.convert(id);
+				return inner.readSnapshotCut!(id, options);
+			};
+		if (inner.readTreeOutline)
+			this.readTreeOutline = async (id, from, to, epoch) => {
+				await this.convert(id);
+				return inner.readTreeOutline!(id, from, to, epoch);
+			};
 		const { readEntryRange, searchIndex } = inner;
 		if (readEntryRange !== undefined)
 			this.readEntryRange = async (sessionId, query) => {
@@ -131,6 +158,11 @@ export class LegacySessionStore implements SessionStore {
 		return this.inner.replace(sessionId, header, entries, options);
 	}
 
+	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		await this.convert(header.id);
+		return (await import("./snapshot-history.js")).updateStoredHeader(this.inner, header, options);
+	}
+
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		await this.convert(sessionId);
 		return this.inner.load(sessionId);
@@ -141,9 +173,53 @@ export class LegacySessionStore implements SessionStore {
 		return readSessionTail(this.inner, sessionId, fromSeq);
 	}
 
-	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	async readRange(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		expectedEpoch?: string,
+	): Promise<SessionEntryRange> {
 		await this.convert(sessionId);
-		return readSessionRange(this.inner, sessionId, startSeq, endSeq);
+		if (this.inner.readRange) return this.inner.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+		const snapshot = await this.inner.load(sessionId);
+		const { assertSnapshotCut, snapshotStamp } = await import("./snapshot-history.js");
+		assertSnapshotCut(snapshot, expectedEpoch, Math.min(endSeq, snapshot.lastSeq));
+		return { ...sessionRangeOf(snapshot.entries, startSeq, endSeq), epoch: expectedEpoch ?? snapshotStamp(snapshot) };
+	}
+
+	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		await this.convert(sessionId);
+		if (this.inner.readBranchSpan) return this.inner.readBranchSpan(sessionId, cut);
+		return (await import("./snapshot-history.js")).snapshotBranchSpan(this.inner, sessionId, cut);
+	}
+
+	async readEntrySizes(
+		sessionId: string,
+		startSeq: number,
+		endSeq: number,
+		limit?: number,
+	): Promise<SessionEntrySizes> {
+		await this.convert(sessionId);
+		if (this.inner.readEntrySizes)
+			return limit === undefined
+				? this.inner.readEntrySizes(sessionId, startSeq, endSeq)
+				: this.inner.readEntrySizes(sessionId, startSeq, endSeq, limit);
+		const snapshot = await this.inner.load(sessionId);
+		const { snapshotStamp } = await import("./snapshot-history.js");
+		const start = Math.max(startSeq, 1);
+		return {
+			epoch: snapshotStamp(snapshot),
+			lastSeq: snapshot.lastSeq,
+			sizes: snapshot.entries
+				.slice(start - 1, Math.min(endSeq, start - 1 + entrySizeLimit(limit)))
+				.map((entry, i) => ({ seq: start + i, bytes: Buffer.byteLength(JSON.stringify(entry)) })),
+		};
+	}
+
+	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		await this.convert(reference.sessionId);
+		if (this.inner.readEntryChunk) return this.inner.readEntryChunk(reference, offset);
+		return (await import("./snapshot-history.js")).snapshotChunk(this.inner, reference, offset);
 	}
 
 	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
@@ -151,17 +227,23 @@ export class LegacySessionStore implements SessionStore {
 		return findSessionCompaction(this.inner, sessionId, leafId);
 	}
 
-	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+	async readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		await this.convert(sessionId);
-		if (this.inner.readResume) return this.inner.readResume(sessionId, leafId);
-		const snapshot = await this.inner.load(sessionId);
-		return sessionResumeOf(snapshot.header, snapshot.entries, leafId, undefined, isProxy);
+		if (this.inner.readResume)
+			return options ? this.inner.readResume(sessionId, leafId, options) : this.inner.readResume(sessionId, leafId);
+		return (await import("./snapshot-history.js")).snapshotWindow(
+			this.inner,
+			sessionId,
+			leafId,
+			undefined,
+			undefined,
+			isProxy,
+		);
 	}
 	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
 		await this.convert(sessionId);
 		if (this.inner.findEntrySeq) return this.inner.findEntrySeq(sessionId, entryId);
-		const entries = (await this.inner.load(sessionId)).entries;
-		const index = entries.findLastIndex((e) => e.id === entryId);
+		const index = (await this.inner.load(sessionId)).entries.findLastIndex((entry) => entry.id === entryId);
 		return index < 0 ? undefined : index + 1;
 	}
 

@@ -21,6 +21,7 @@ import lockfile from "proper-lockfile";
 import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { branchStatePages } from "./branch-state-pages.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
@@ -35,6 +36,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { entryProjector, jsonlEntryProjection, type ProjectedEntry } from "./jsonl-entry-projection.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -46,6 +48,7 @@ import {
 import { summarizeLegacySession } from "./legacy-session-summary.js";
 import {
 	branchRanges,
+	childCatalogCut,
 	foldSessionResume,
 	foreignResumeIds,
 	isSessionResumeIndex,
@@ -53,11 +56,14 @@ import {
 	readEarlierCompletionIntents,
 	resumeIndexNeedsRefold,
 	type SessionResumeIndex,
+	selectedPagePlan,
+	selectResumeLeaf,
 	sessionResumeFrom,
-	sessionResumeOf,
 	sessionResumePlan,
 	sessionTailFrom,
+	snapshotCutOf,
 	stateSeqsBefore,
+	transcriptBranchSpan,
 } from "./session-resume.js";
 import {
 	applySessionSummaryEntries,
@@ -66,15 +72,20 @@ import {
 	summarizeSession,
 } from "./session-summary.js";
 import type {
+	OversizedSessionEntry,
+	SessionBranchPageCut,
 	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionEntrySizes,
+	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
 	SessionSnapshot,
+	SessionSnapshotCut,
 	SessionStore,
 	SessionStoredEntry,
 	SessionSummary,
@@ -83,7 +94,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 interface SessionFileState {
@@ -114,7 +125,10 @@ function isForkCatalogType(type: string): type is ForkCatalogType {
 }
 
 /** Update only the sparse fork metadata touched by the append. Old sidecars without it remain usable. */
-function appendedForkIndex(cached: JsonlIndex, entries: readonly SessionEntry[]): JsonlForkIndex | undefined {
+function appendedForkIndex(
+	cached: Pick<JsonlIndex, "index" | "fork">,
+	entries: readonly SessionEntry[],
+): JsonlForkIndex | undefined {
 	const previous = cached.fork;
 	if (!previous) return undefined;
 	let labels: number[] | undefined, catalog: Array<readonly [number, ForkCatalogType]> | undefined;
@@ -502,6 +516,167 @@ function reportTornLine(path: string): void {
 	);
 }
 
+/**
+ * Stream the entry lines of `file` from byte `from` to `end` (or its end), skipping a header line first when `header`.
+ * As a whole-file load does, a malformed line throws when it is read, but the first invalid entry throws only after
+ * every later line parsed: an invalid structure before any invalid text. `take` receives the valid entries until the
+ * first invalid one, with the line's span and the tool calls of a replaced content array, and returns false to stop
+ * the scan, which then resolves undefined. A line longer than one scan window is projected as it is read, never held
+ * or decoded whole unless it is malformed, so that the parser's own diagnostic is reported.
+ */
+async function scanEntries(
+	path: string,
+	file: FileHandle,
+	from: number,
+	end: number | undefined,
+	header: boolean,
+	take: (entry: SessionEntry, start: number, end: number, toolCalls: number) => boolean | Promise<boolean>,
+): Promise<{ readonly size: number; readonly terminated: boolean; readonly torn: boolean } | undefined> {
+	let invalidStructure: { readonly error: unknown } | undefined;
+	let invalidText: { readonly error: unknown } | undefined;
+	let stopped = false;
+	// Validate the entries read in batches, as a load does, before any is taken; hold at most one scan window.
+	let held: SessionEntry[] = [],
+		heldSpans: number[] = [],
+		heldTools: number[] = [],
+		heldBytes = 0;
+	const settle = async (): Promise<void> => {
+		const entries = held,
+			spans = heldSpans,
+			tools = heldTools;
+		held = [];
+		heldSpans = [];
+		heldTools = [];
+		heldBytes = 0;
+		if (!invalidStructure)
+			try {
+				validateSessionEntryStructure(entries, path);
+			} catch (error) {
+				invalidStructure = { error };
+			}
+		if (!invalidStructure && !invalidText)
+			try {
+				validateSessionEntries(entries);
+			} catch (error) {
+				invalidText = { error };
+			}
+		for (let at = 0; at < entries.length && !invalidStructure && !invalidText && !stopped; at++) {
+			const taken = take(entries[at]!, spans[2 * at]!, spans[2 * at + 1]!, tools[at]!);
+			if (!(typeof taken === "boolean" ? taken : await taken)) stopped = true;
+		}
+	};
+	const accept = (entry: SessionEntry, start: number, stop: number, toolCalls: number): undefined | Promise<void> => {
+		held.push(entry);
+		heldSpans.push(start, stop);
+		heldTools.push(toolCalls);
+		heldBytes += stop - start;
+		return held.length >= INDEX_BATCH_ENTRIES || heldBytes >= SCAN_WINDOW_BYTES ? settle() : undefined;
+	};
+	let parts: Buffer[] = [],
+		lineStart = from,
+		position = from;
+	// An oversized line is projected as it is read, never held whole.
+	let projector: ReturnType<typeof entryProjector> | undefined;
+	const add = (part: Buffer, stop: number) => {
+		if (header) return;
+		if (projector) projector.feed(part);
+		else if (stop - lineStart > SCAN_WINDOW_BYTES) {
+			projector = entryProjector();
+			for (const earlier of parts) projector.feed(earlier);
+			projector.feed(part);
+			parts = [];
+		} else parts.push(part);
+	};
+	const shortLine = (stop: number, closed: boolean): boolean | Promise<boolean> => {
+		const line = parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+		const text = line.toString("utf8");
+		if (closed && !text.trim()) return true;
+		const entry = closed ? (JSON.parse(text) as SessionEntry) : parseUnterminated(text);
+		if (!entry && !closed) return false;
+		const pending = accept(entry!, lineStart, stop, 0);
+		return pending ? pending.then(() => true) : true;
+	};
+	const longLine = async (projected: ProjectedEntry | undefined, stop: number, closed: boolean): Promise<boolean> => {
+		const start = lineStart;
+		if (!projected) {
+			if (!closed) return false;
+			if (await isBlank(readChunks(file, start, stop))) return true;
+		}
+		// Only corrupt data reaches the native parser, to preserve its exact diagnostic and offset.
+		const entry =
+			projected?.entry ?? (JSON.parse((await readFrom(file, start, stop - start)).toString("utf8")) as SessionEntry);
+		await accept(entry, start, stop, projected?.toolCalls ?? 0);
+		return true;
+	};
+	// Read with the caller's handle, which a stream would close: a malformed oversized line is read again from it.
+	// The next window is read while this one is parsed.
+	const read = (at: number): Promise<Buffer> | undefined => {
+		const length = Math.min(SCAN_WINDOW_BYTES, (end ?? Number.POSITIVE_INFINITY) - at);
+		if (length <= 0) return undefined;
+		const buffer = Buffer.allocUnsafe(length);
+		return file.read(buffer, 0, length, at).then(({ bytesRead }) => buffer.subarray(0, bytesRead));
+	};
+	let next = read(position);
+	try {
+		for (let chunk = await next; chunk?.length; chunk = await next) {
+			next = read(position + chunk.length);
+			let at = 0;
+			for (let newline = chunk.indexOf(10); newline !== -1; newline = chunk.indexOf(10, at)) {
+				const stop = position + newline;
+				add(chunk.subarray(at, newline), stop);
+				if (header) header = false;
+				else if (projector) await longLine(projector.finish(), stop, true);
+				else {
+					const short = shortLine(stop, true);
+					if (short !== true) await short;
+				}
+				if (stopped) return undefined;
+				at = newline + 1;
+				lineStart = position + at;
+				parts = [];
+				projector = undefined;
+			}
+			if (at < chunk.length) add(chunk.subarray(at), position + chunk.length);
+			position += chunk.length;
+		}
+	} finally {
+		// Settle a read ahead before the caller can close the file.
+		await next?.catch(() => undefined);
+	}
+	const terminated = lineStart === position;
+	const torn =
+		!terminated &&
+		!header &&
+		!(projector ? await longLine(projector.finish(), position, false) : await shortLine(position, false));
+	await settle();
+	if (stopped) return undefined;
+	if (torn) reportTornLine(path);
+	if (invalidStructure) throw invalidStructure.error;
+	if (invalidText) throw invalidText.error;
+	return { size: torn ? lineStart : position, terminated: torn || terminated, torn };
+}
+
+/** One line's bytes in chunks of a history read. */
+async function* readChunks(file: FileHandle, start: number, end: number): AsyncGenerator<Buffer> {
+	for (let at = start; at < end; ) {
+		const bytes = await readFrom(file, at, Math.min(SESSION_HISTORY_CHUNK_BYTES, end - at));
+		yield bytes;
+		at += bytes.length;
+	}
+}
+
+/** Whether a line holds only what `String.prototype.trim` removes, decoded as `Buffer.toString("utf8")` would be. */
+async function isBlank(chunks: AsyncIterable<Uint8Array>): Promise<boolean> {
+	const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+	for await (const chunk of chunks) if (decoder.decode(chunk, { stream: true }).trim()) return false;
+	return !decoder.decode().trim();
+}
+
+/** The tool calls of an oversized assistant message, counted while its content was skipped. */
+function withToolCalls(index: SessionResumeIndex, toolCalls: number): SessionResumeIndex {
+	return { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + toolCalls } };
+}
+
 /** One read takes the whole header line of any ordinary session; a longer line takes further reads of this size. */
 const HEADER_READ_CHUNK_BYTES = 64 * 1024;
 /** `"type":"session",`, which a header line carries before the fields of its record header. */
@@ -554,7 +729,15 @@ const LOCK_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
 /** The name a session's file is created with: its creation time, then its id or the key of its id. */
 const SESSION_FILE_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z_(.+)\.jsonl$/;
 
+/** Used only by the owner of a view opened at an explicit file path, not by ordinary directory listings. */
+export const bindSessionFile = Symbol("bindSessionFile");
+
 export class JsonlSessionStore implements SessionStore {
+	private selectedFile?: { id: string; path: string };
+
+	[bindSessionFile](id: string, path: string): void {
+		this.selectedFile = { id, path: resolve(path) };
+	}
 	private queue: Promise<void> = Promise.resolve();
 	private closed = false;
 	private poisoned: JsonlStoragePoisonedError | StorageUnavailableError | undefined;
@@ -640,6 +823,8 @@ export class JsonlSessionStore implements SessionStore {
 			}
 			const state = this.contentState(header, entries, payload);
 			const stats = await this.remember(path, state);
+			// Only successful creation of a new generation of the bound ID moves this handle's association.
+			if (this.selectedFile?.id === header.id) this.selectedFile = { id: header.id, path };
 			return { lastSeq: entries.length, epoch: epochOf(stats, state.headerStamp) };
 		}, true);
 	}
@@ -709,6 +894,52 @@ export class JsonlSessionStore implements SessionStore {
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			return { lastSeq: entries.length, epoch: await this.commit(path, header, entries) };
+		});
+	}
+
+	updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+		return this.run(async () => {
+			validateSessionHeader(header);
+			const { path, state } = await this.forWrite(header.id, options);
+			const temporary = `${path}.${randomUUID()}.tmp`;
+			const output = await open(temporary, "wx+", 0o600);
+			try {
+				let witness: Buffer;
+				try {
+					await output.writeFile(this.encode(header, []));
+					let inHeader = true;
+					const source = createReadStream(path, { end: state.size - 1 });
+					for await (const chunk of source as AsyncIterable<Buffer>) {
+						if (!inHeader) await output.writeFile(chunk);
+						else {
+							const newline = chunk.indexOf(10);
+							if (newline >= 0) {
+								inHeader = false;
+								await output.writeFile(chunk.subarray(newline + 1));
+							}
+						}
+					}
+					witness = await witnessAt(output, (await output.stat()).size);
+					await output.chmod((await stat(path)).mode & 0o7777);
+				} finally {
+					await output.close();
+				}
+				await this.forgetIndex(path);
+				await rename(temporary, path);
+				const headerStamp = JSON.stringify(header);
+				const stats = await this.remember(path, {
+					...state,
+					headerStamp,
+					witness,
+					torn: false,
+					terminated: state.lastSeq === 0 || state.terminated,
+				});
+				return { lastSeq: state.lastSeq, epoch: epochOf(stats, headerStamp) };
+			} finally {
+				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+					if (cause.code !== "ENOENT") throw cause;
+				});
+			}
 		});
 	}
 
@@ -964,9 +1195,38 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+	readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
+		return this.run(async () => transcriptBranchSpan(sessionId, (await this.indexed(sessionId)).jsonl.index, cut));
+	}
+
+	readEntrySizes(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes> {
+		return this.run(async () => {
+			const { jsonl } = await this.indexed(sessionId);
+			const start = Math.max(1, startSeq);
+			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq, start + entrySizeLimit(limit) - 1));
+			return {
+				epoch: jsonl.index.epoch,
+				lastSeq: jsonl.index.seq,
+				sizes: seqs.map((seq) => ({ seq, bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq) })),
+			};
+		});
+	}
+
+	readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
+		return this.run(async () => {
+			const { path, jsonl } = await this.indexed(reference.sessionId);
+			if (jsonl.index.epoch !== reference.epoch)
+				throw new SessionConflictError(reference.sessionId, reference.seq, jsonl.index.seq);
+			const start = spanStart(jsonl, reference.seq) + offset;
+			return readBytes(path, start, Math.min(SESSION_HISTORY_CHUNK_BYTES, spanEnd(jsonl, reference.seq) - start));
+		});
+	}
+
+	readRange(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange> {
 		return this.run(async () => {
 			const { path, jsonl } = await this.indexed(sessionId);
+			if (expectedEpoch !== undefined && expectedEpoch !== jsonl.index.epoch)
+				throw new SessionConflictError(sessionId, endSeq, jsonl.index.seq);
 			const start = Math.max(1, startSeq);
 			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq));
 			const read = await this.entriesAt(path, jsonl, seqs);
@@ -997,6 +1257,9 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
+	readChildCatalogCut(sessionId: string) {
+		return this.run(async () => childCatalogCut((await this.indexed(sessionId)).jsonl.index));
+	}
 	readForkWindow(sessionId: string, entryId: string) {
 		return this.run(async () => {
 			const { indexedForkWindow, rangedForkMetadata, scanForkRecords } = await import("./fork-window.js");
@@ -1063,26 +1326,76 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+	/** The snapshot entries the session's index locates; no line of the file is read (#5554). */
+	readSnapshotCut(
+		sessionId: string,
+		options: { readonly leafSeq?: number } = {},
+	): Promise<SessionSnapshotCut | undefined> {
+		return this.run(async () => {
+			const { index } = (await this.indexed(sessionId)).jsonl;
+			if (options.leafSeq !== undefined && options.leafSeq > index.seq) return undefined;
+			return snapshotCutOf(index, options.leafSeq);
+		});
+	}
+	/** The lines at `seqs`, each read from where the index places it, without reading the lines between them. */
+	readSelectedPage(
+		sessionId: string,
+		seqs: readonly number[],
+		epoch: string,
+		options: { readonly limit?: number; readonly backward?: boolean } = {},
+	): Promise<SessionHistoryPage> {
+		return this.run(async () => {
+			const limit = entrySizeLimit(options.limit);
+			const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
+			if (!wanted.length) return { items: [] };
+			const { path, jsonl } = await this.indexed(sessionId);
+			if (jsonl.index.epoch !== epoch) throw new SessionConflictError(sessionId, wanted.at(-1)!, jsonl.index.seq);
+			const plan = selectedPagePlan(
+				sessionId,
+				wanted,
+				jsonl.index.seq,
+				(seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+				options.backward,
+			);
+			if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+			return { items: await this.entriesAt(path, jsonl, plan.seqs) };
+		});
+	}
+	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.run(async () => {
 			if (leafId !== undefined) validateSessionText("entry.id", leafId);
 			const { path, header, jsonl } = await this.indexed(sessionId);
 			const leafSeq =
 				leafId === undefined ? jsonl.index.leafSeq : ((await this.seqInFile(path, jsonl, leafId)) ?? 0);
-			if (leafSeq !== jsonl.index.leafSeq) {
-				const read = await this.entriesAt(path, jsonl, seqRange(1, jsonl.index.seq));
-				const entries = read.map((held) => held.entry);
-				return { ...sessionResumeOf(header, entries, leafId), epoch: jsonl.index.epoch };
-			}
-			const index = jsonl.index;
-			const plan = sessionResumePlan(index);
+			const index =
+				leafSeq === jsonl.index.leafSeq
+					? jsonl.index
+					: await selectResumeLeaf(
+							jsonl.index,
+							leafSeq,
+							branchStatePages(jsonl.index.seq, {
+								bytes: (seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+								read: (seqs) => this.entriesAt(path, jsonl, seqs),
+								chunk: (seq, offset, length) => readBytes(path, spanStart(jsonl, seq) + offset, length),
+							}),
+						);
+			const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
 			const read = await this.entriesAt(path, jsonl, [...branchSeqs, ...plan.state]);
 			const inBranch = new Set(branchSeqs);
 			const branch = read.filter((held) => inBranch.has(held.seq));
 			const state = read.filter((held) => !inBranch.has(held.seq));
 			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
-			const resume = sessionResumeFrom(index, header, branch, state, leaf);
+			if (leafSeq !== jsonl.index.leafSeq) {
+				const stats = await stat(path, { bigint: true });
+				if (
+					`${stats.dev}:${stats.ino}` !== jsonl.identity ||
+					String(stats.mtimeNs) !== jsonl.mtimeNs ||
+					Number(stats.size) !== jsonl.fileSize
+				)
+					throw new SessionConflictError(sessionId, index.seq, index.seq);
+			}
+			const resume = sessionResumeFrom(index, header, branch, state, leaf, plan.children);
 			if (resume.compaction)
 				await readEarlierCompletionIntents(index, resume, (seqs) => this.entriesAt(path, jsonl, seqs, true));
 			return resume;
@@ -1216,11 +1529,11 @@ export class JsonlSessionStore implements SessionStore {
 		const catalog: Array<readonly [number, ForkCatalogType]> = [];
 		const fork = (): JsonlForkIndex => ({ labels: [...activeLabels.values()], catalog });
 		const ids = new Map<string, number>();
-		let batch: SessionEntry[] = [];
+		let batch: SessionEntry[] = [],
+			batchBytes = 0,
+			extraToolCalls = 0;
 		const flush = () => {
-			if (batch.length === 0) return;
-			validateSessionEntryStructure(batch, path);
-			validateSessionEntries(batch);
+			if (!batch.length) return;
 			for (const [i, entry] of batch.entries()) {
 				const seq = index.seq + i + 1;
 				if (entry.type === "label") {
@@ -1229,70 +1542,36 @@ export class JsonlSessionStore implements SessionStore {
 				} else if (isForkCatalogType(entry.type)) catalog.push([seq, entry.type]);
 			}
 			index = foldSessionResume(index, batch, (id) => ids.get(id), activeSeq);
+			if (extraToolCalls) index = withToolCalls(index, extraToolCalls);
 			batch = [];
+			batchBytes = 0;
+			extraToolCalls = 0;
 		};
-		const take = (start: number, line: Buffer) => {
-			const text = line.toString("utf8");
-			if (!text.trim()) return;
-			const entry = JSON.parse(text) as SessionEntry;
-			spans.push(start, start + line.length);
+		const take = (entry: SessionEntry, start: number, end: number, toolCalls: number) => {
+			const bytes = end - start;
+			if (batch.length && batchBytes + bytes > SCAN_WINDOW_BYTES) flush();
+			spans.push(start, end);
 			hashes.push(idHash(entry.id));
-			batch.push(entry);
 			ids.set(entry.id, spans.length / 2);
-			if (batch.length >= INDEX_BATCH_ENTRIES) flush();
+			batch.push(entry);
+			batchBytes += bytes;
+			extraToolCalls += toolCalls;
+			if (batch.length >= INDEX_BATCH_ENTRIES || batchBytes >= SCAN_WINDOW_BYTES) flush();
+			return true;
 		};
-		const input = createReadStream(path, { highWaterMark: SCAN_WINDOW_BYTES });
-		let parts: Buffer[] = [];
-		let lineStart = 0;
-		let position = 0;
-		let header = true;
+		const file = await open(path, "r");
 		try {
-			for await (const chunk of input as AsyncIterable<Buffer>) {
-				let from = 0;
-				for (let newline = chunk.indexOf(10); newline !== -1; newline = chunk.indexOf(10, from)) {
-					parts.push(chunk.subarray(from, newline));
-					const line = parts.length === 1 ? (parts[0] as Buffer) : Buffer.concat(parts);
-					parts = [];
-					if (header) header = false;
-					else take(lineStart, line);
-					from = newline + 1;
-					lineStart = position + from;
-				}
-				if (from < chunk.length) parts.push(chunk.subarray(from));
-				position += chunk.length;
-			}
+			const scanned = (await scanEntries(path, file, 0, undefined, true, take))!;
+			flush();
+			return { index, spans, ids: hashes, fork: fork(), ...scanned };
 		} finally {
-			input.destroy();
+			await file.close();
 		}
-		const rest = parts.length === 0 ? undefined : Buffer.concat(parts);
-		if (rest === undefined || header) {
-			flush();
-			return {
-				index,
-				spans,
-				ids: hashes,
-				fork: fork(),
-				size: position,
-				terminated: rest === undefined,
-				torn: false,
-			};
-		}
-		const unterminated = parseUnterminated(rest.toString("utf8"));
-		if (unterminated === undefined) {
-			flush();
-			reportTornLine(path);
-			return { index, spans, ids: hashes, fork: fork(), size: lineStart, terminated: true, torn: true };
-		}
-		spans.push(lineStart, position);
-		hashes.push(idHash(unterminated.id));
-		batch.push(unterminated);
-		ids.set(unterminated.id, spans.length / 2);
-		flush();
-		return { index, spans, ids: hashes, fork: fork(), size: position, terminated: false, torn: false };
 	}
 
 	private async catchUp(path: string, cached: JsonlIndex, stats: BigIntStats): Promise<JsonlIndex | undefined> {
 		const from = cached.size - cached.witness.length;
+		if (Number(stats.size) - from > SCAN_WINDOW_BYTES) return this.streamCatchUp(path, cached, stats);
 		const bytes = await readBytes(path, from, Number(stats.size) - from);
 		let offset = cached.size;
 		let appended = bytes.subarray(cached.witness.length);
@@ -1345,6 +1624,76 @@ export class JsonlSessionStore implements SessionStore {
 			fork: appendedForkIndex(cached, entries),
 			index,
 		};
+	}
+
+	/**
+	 * Index an appended suffix larger than one scan window line by line, as {@link foldFile} would, from the end of the
+	 * indexed prefix, rather than read the whole file again or hold the suffix. Undefined when the cache cannot be
+	 * extended: the suffix does not continue the cached last line, or it branches, which needs a full fold.
+	 */
+	private async streamCatchUp(path: string, cached: JsonlIndex, stats: BigIntStats): Promise<JsonlIndex | undefined> {
+		const file = await open(path, "r");
+		try {
+			let start = cached.size;
+			if (!cached.terminated) {
+				if ((await readFrom(file, start, 1))[0] !== 10) return undefined;
+				start += 1;
+			}
+			let index = cached.index;
+			let fork = cached.fork;
+			let lastId = cached.index.lastId;
+			const spans = [...cached.spans];
+			const hashes = [...cached.ids];
+			const appended = new Map<string, number>();
+			let batch: SessionEntry[] = [],
+				batchBytes = 0,
+				extraToolCalls = 0;
+			const flush = async () => {
+				if (!batch.length) return;
+				const seqs = new Map<string, number>();
+				for (const id of foreignResumeIds(index, batch)) {
+					const seq = appended.get(id) ?? (await this.seqInFile(path, cached, id));
+					if (seq !== undefined) seqs.set(id, seq);
+				}
+				fork = appendedForkIndex({ index, fork }, batch);
+				index = foldSessionResume(index, batch, (id) => seqs.get(id));
+				if (extraToolCalls) index = withToolCalls(index, extraToolCalls);
+				let seq = index.seq - batch.length;
+				for (const entry of batch) appended.set(entry.id, ++seq);
+				batch = [];
+				batchBytes = 0;
+				extraToolCalls = 0;
+			};
+			const take = (entry: SessionEntry, lineStart: number, end: number, toolCalls: number) => {
+				// The same condition as resumeIndexNeedsRefold: a suffix that branches is folded again from the start.
+				if (entry.parentId !== lastId) return false;
+				lastId = entry.id;
+				spans.push(lineStart, end);
+				hashes.push(idHash(entry.id));
+				batch.push(entry);
+				batchBytes += end - lineStart;
+				extraToolCalls += toolCalls;
+				return batch.length >= INDEX_BATCH_ENTRIES || batchBytes >= SCAN_WINDOW_BYTES
+					? flush().then(() => true)
+					: true;
+			};
+			const scanned = await scanEntries(path, file, start, Number(stats.size), false, take);
+			if (!scanned) return undefined;
+			await flush();
+			return {
+				...cached,
+				fileSize: Number(stats.size),
+				mtimeNs: String(stats.mtimeNs),
+				...scanned,
+				fork,
+				witness: await witnessAt(file, scanned.size),
+				spans,
+				ids: hashes,
+				index,
+			};
+		} finally {
+			await file.close();
+		}
 	}
 
 	private async foldAppended(
@@ -1458,9 +1807,27 @@ export class JsonlSessionStore implements SessionStore {
 		const hash = idHash(entryId);
 		const candidates: number[] = [];
 		for (let seq = 1; seq <= total; seq++) if (jsonl.ids[seq - 1] === hash) candidates.push(seq);
-		return (await this.entriesAt(path, jsonl, candidates, false, pinned)).findLast(
-			(held) => held.entry.id === entryId,
-		)?.seq;
+		const oversized = (seq: number) => spanEnd(jsonl, seq) - spanStart(jsonl, seq) > SCAN_WINDOW_BYTES;
+		if (!candidates.some(oversized))
+			return (await this.entriesAt(path, jsonl, candidates, false, pinned)).findLast(
+				(held) => held.entry.id === entryId,
+			)?.seq;
+		// Read an oversized candidate's ID from the same open file without decoding its body.
+		const file = pinned ?? (await open(path, "r"));
+		try {
+			for (let at = candidates.length - 1; at >= 0; at--) {
+				const seq = candidates[at]!;
+				const start = spanStart(jsonl, seq);
+				const end = spanEnd(jsonl, seq);
+				const entry = oversized(seq)
+					? (await jsonlEntryProjection(readChunks(file, start, end)))?.entry
+					: (JSON.parse((await readFrom(file, start, end - start)).toString("utf8")) as SessionEntry);
+				if (entry?.id === entryId) return seq;
+			}
+		} finally {
+			if (!pinned) await file.close();
+		}
+		return undefined;
 	}
 
 	private async readPersisted(path: string, stored?: StoredSessionHeader): Promise<SessionSnapshot> {
@@ -1747,6 +2114,7 @@ export class JsonlSessionStore implements SessionStore {
 		| undefined
 	> {
 		validateSessionText("sessionId", sessionId);
+		if (this.selectedFile?.id === sessionId) return this.scan(sessionId, [this.selectedFile.path]);
 		const known = await this.locateKnown(sessionId);
 		if (known) return known;
 		const suffix = `_${this.key(sessionId)}.jsonl`;

@@ -375,13 +375,18 @@ test("the task view reads informational entries and thinking as chats render the
 	});
 	await session.appendCustomMessageEntry("extension-notice", "notice text", true);
 	await session.appendCompaction("kept line", prompt, 100, verbatimDetails);
-	await session.branchWithSummary(prompt, "summary text");
+	// This synchronous source owns its complete records, independently of the manager's current branch.
+	const recorded: ReturnType<SessionManager["getEntries"]> = [];
+	for await (const { items } of session.readHistory())
+		for (const item of items) if ("entry" in item) recorded.push(item.entry);
+	const summaryId = await session.branchWithSummary(prompt, "summary text");
+	recorded.push(session.getEntry(summaryId)!);
 	const fixture = taskFixture();
 	try {
 		await fixture.start("Read informational entries");
 		fixture.runners[0].context.bindTranscript({
 			getSessionId: () => session.getSessionId(),
-			getEntries: () => session.getEntries(),
+			getEntries: () => recorded,
 			getCompactionReason: () => "threshold",
 		});
 		const view = ownerTaskViewSource(fixture.store);

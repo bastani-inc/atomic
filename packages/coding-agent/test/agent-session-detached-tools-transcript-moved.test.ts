@@ -86,12 +86,13 @@ function projectedRoles(harness: Harness): string[] {
 }
 
 /** The results the session's history holds, whatever a compaction since folded into text. */
-function recordedResultIds(harness: Harness): string[] {
-	return harness.sessionManager
-		.getEntries()
-		.flatMap((entry) =>
-			entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : [],
-		);
+function recordedResultIds(
+	harness: Harness,
+	entries: readonly import("../src/core/session-manager.ts").SessionEntry[] = harness.sessionManager.getEntries(),
+): string[] {
+	return entries.flatMap((entry) =>
+		entry.type === "message" && entry.message.role === "toolResult" ? [entry.message.toolCallId] : [],
+	);
 }
 
 function lastAnswer(harness: Harness): string {
@@ -142,12 +143,13 @@ describe("a compaction while a call is detached (#4580)", () => {
 		await harness.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
 
 		assert.deepEqual(continued, [["user"]], "the continuation carries only the boundary message");
-		const entries = harness.sessionManager.getEntries();
+		const entries = (await harness.sessionManager.getSessionStore().load(harness.sessionManager.getSessionId()))
+			.entries;
 		const boundary = entries.findIndex((entry) => entry.type === "compaction");
 		const result = entries.findIndex((entry) => entry.type === "message" && entry.message.role === "toolResult");
 		assert.ok(result >= 0 && result < boundary, "the call and its result are both before the boundary");
 		assert.equal(compactionEntries(harness)[0]?.coveredThroughEntryId, undefined);
-		assert.deepEqual(recordedResultIds(harness), ["ci-1"]);
+		assert.deepEqual(recordedResultIds(harness, entries), ["ci-1"]);
 		assert.equal(lastAnswer(harness), "ci passed");
 	});
 

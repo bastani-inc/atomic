@@ -356,11 +356,15 @@ export async function indexedForkWindow(
 			const transition = await modelPosition(index, before, metadata);
 			const earlier = new Set<number>();
 			if (transition !== undefined) earlier.add(transition);
-			let at = 0;
-			for (const d of index.state.split(".")) {
-				at += Number.parseInt(d, 36);
-				if (at >= start) break;
-				if (onEarlierBranch(at)) earlier.add(at);
+			// The resume index tracks older settings and plain snapshots separately from protocol state.
+			for (const positions of [index.state, index.settingsHistory, index.snapshotRefs]) {
+				if (!positions) continue;
+				let at = 0;
+				for (const d of positions.split(".")) {
+					at += Number.parseInt(d, 36);
+					if (at >= start) break;
+					if (onEarlierBranch(at)) earlier.add(at);
+				}
 			}
 			let thinking = 0;
 			const candidates = [...earlier].sort((a, b) => a - b);

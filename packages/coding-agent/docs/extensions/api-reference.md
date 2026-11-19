@@ -56,12 +56,12 @@ Read-only access to session state. See [Session Format](/session-format) for the
 For `tool_call`, this state is synchronized through the current assistant message before handlers run. In parallel tool execution mode it is still not guaranteed to include sibling tool results from the same assistant message.
 
 ```typescript
-ctx.sessionManager.getEntries()       // All entries
+ctx.sessionManager.getEntries()       // Entries held for the current window
 ctx.sessionManager.getBranch()        // Current branch
 ctx.sessionManager.getLeafId()        // Current leaf entry ID
 ```
 
-A resumed compacted session starts from its latest compaction. Before an extension that Atomic does not bundle starts, Atomic reads the session's whole history, so `getEntries()` and `getTree()` return every entry. `ctx.sessionManager.hasFullHistory()` tells whether every entry is held, and `await ctx.sessionManager.loadFullHistory()` reads the rest when it is not.
+Starting an extension does not load older conversation entries. To look up one entry, use `await ctx.sessionManager.readEntry(id)`. To visit a range in append order, use `for await (const page of ctx.sessionManager.readHistory({ fromSeq, toSeq }))`. Each item in `page.items` is either `{ seq, entry }` or an oversized reference with `kind: "oversized"`, `seq` and `bytes`. Read that reference with `for await (const bytes of ctx.sessionManager.readHistoryChunks(item))`. Break either loop when you have what you need; the manager does not retain pages you have read.
 
 ### ctx.modelRegistry / ctx.model / ctx.scopedModels
 

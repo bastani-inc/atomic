@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import type { SessionInfo } from "../src/core/session-manager.ts";
-import { filterAndSortSessions } from "../src/modes/interactive/components/session-selector-search.ts";
+import {
+	filterAndSortSessions,
+	parseSearchQuery,
+} from "../src/modes/interactive/components/session-selector-search.ts";
 
 function makeSession(
 	overrides: Partial<SessionInfo> & { id: string; modified: Date; allMessagesText: string },
@@ -21,6 +24,27 @@ function makeSession(
 }
 
 describe("session selector search", () => {
+	it("matches backreferences, lookaround and paired anchors against the joined message text (#5554)", () => {
+		const repeated = makeSession({
+			id: "repeated",
+			modified: new Date("2026-01-02T00:00:00.000Z"),
+			allMessagesText: "deploy staging deploy staging",
+		});
+		const followed = makeSession({
+			id: "followed",
+			modified: new Date("2026-01-01T00:00:00.000Z"),
+			allMessagesText: "deploy staging then prod",
+		});
+		const ids = (query: string) => filterAndSortSessions([repeated, followed], query, "recent").map((s) => s.id);
+
+		assert.equal(parseSearchQuery(String.raw`re:^(.+) \1$`).error, undefined);
+		assert.deepEqual(ids(String.raw`re:^(.+) \1$`), ["repeated"]);
+		assert.deepEqual(ids(String.raw`re:(?<word>deploy) staging \k<word>`), ["repeated"]);
+		assert.deepEqual(ids("re:staging(?= then)"), ["followed"]);
+		assert.deepEqual(ids("re:(?<!then )prod$"), []);
+		assert.deepEqual(ids("re:^deploy.*prod$"), ["followed"]);
+	});
+
 	it("filters by quoted phrase with whitespace normalization", () => {
 		const sessions: SessionInfo[] = [
 			makeSession({

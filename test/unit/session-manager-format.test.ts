@@ -30,8 +30,8 @@ for (const version of [undefined, 1, 2, 3]) {
 				return true;
 			};
 			await assert.rejects(async () => await SessionManager.open(path), rejected);
-			assert.throws(
-				() => SessionManager.inMemory(directory, undefined, JSON.parse(JSON.stringify(entries)) as FileEntry[]),
+			await assert.rejects(
+				SessionManager.inMemory(directory, undefined, JSON.parse(JSON.stringify(entries)) as FileEntry[]),
 				rejected,
 			);
 			await assert.rejects(async () => await SessionManager.forkFrom(path, directory, directory), rejected);
@@ -98,7 +98,7 @@ for (const entry of [
 			const entries = JSON.parse(JSON.stringify([header, entry])) as FileEntry[];
 			await writeFile(path, content);
 			await assert.rejects(async () => await SessionManager.open(path), SessionFormatVersionError);
-			assert.throws(() => SessionManager.inMemory(directory, undefined, entries), SessionFormatVersionError);
+			await assert.rejects(SessionManager.inMemory(directory, undefined, entries), SessionFormatVersionError);
 			await assert.rejects(
 				async () => await SessionManager.forkFrom(path, directory, directory),
 				SessionFormatVersionError,
@@ -130,7 +130,7 @@ it("writes format 4 and retains context on file, memory, fork and resume loads",
 		const entries = JSON.parse(`[${(await readFile(path, "utf8")).trim().split("\n").join(",")}]`) as FileEntry[];
 		const loaded = [
 			await SessionManager.open(path),
-			SessionManager.inMemory(directory, undefined, entries),
+			await SessionManager.inMemory(directory, undefined, entries),
 			await SessionManager.forkFrom(path, directory, directory),
 			await SessionManager.forkFrom(path, directory, directory),
 			await SessionManager.continueRecent(directory, directory),

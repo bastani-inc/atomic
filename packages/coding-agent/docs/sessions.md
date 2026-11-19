@@ -87,6 +87,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
+An HTML export reads saved entries in pages. If extensions render tool calls or results, memory use during the export can also grow with the arguments and results passed to those renderers. They share mutable objects, so the exported conversation reflects their final values without changing the saved session. For an independent backup that does not invoke chat renderers, use `atomic storage export`.
+
 ## Resuming and Deleting Sessions
 
 `/resume` opens the **Resume** picker with the current folder's sessions, newest first. Type to filter, use ↑ or ↓ to select, and press Enter to resume. Tab switches between the current folder and all folders. Press `?` for more keys, or F1 while typing a search. `atomic -r` opens a session picker at startup.
