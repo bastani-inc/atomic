@@ -104,6 +104,7 @@ export async function stripWorkflowOnlyOptions(
 		context,
 		forkFromSessionId,
 		forkFromEntryId,
+		parallelForkLength,
 		resumeFromSessionId,
 		resumeFromLegacySessionFile,
 		resumeInsideCall: _resumeInsideCall,
@@ -151,6 +152,7 @@ export async function stripWorkflowOnlyOptions(
 			classification,
 			undefined,
 			forkFromEntryId,
+			parallelForkLength,
 		);
 	} else if (sessionOptions.sessionManager === undefined) {
 		if (sessionStore !== undefined) {

@@ -605,6 +605,21 @@ export class SqlSessionStore implements SessionStore {
 		return { ...this.database.descriptor, ...(this.prefix === "" ? {} : { prefix: this.prefix }) };
 	}
 
+	get forkSourceKey(): string | undefined {
+		const { adapter, location } = this.database.descriptor;
+		return location && location !== ":memory:" ? JSON.stringify([adapter, location, this.prefix]) : undefined;
+	}
+
+	async readForkLength(sessionId: string): Promise<number | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const row = await this.database.get<SqliteRow & { last_seq: number }>(
+			`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
+			sessionId,
+		);
+		return row && Number(row.last_seq);
+	}
+
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);

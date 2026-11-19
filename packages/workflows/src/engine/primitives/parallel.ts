@@ -14,15 +14,18 @@ import { validateStepsReleaseWhenWaiting } from "../../shared/stage-wait.js";
 import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
+import { ParallelForks } from "./parallel-fork.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
 
 export function createParallelPrimitive(input: {
 	readonly runtime: EngineRuntime;
 	readonly task: WorkflowTaskPrimitive;
-}): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
+}) {
 	return async (
 		steps: readonly WorkflowTaskStep[],
 		options: WorkflowParallelOptions = {},
+		forks = new ParallelForks(),
+		capture?: (step: WorkflowTaskStep) => void,
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
 		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
@@ -31,7 +34,10 @@ export function createParallelPrimitive(input: {
 		const normalizeGroup = <T extends { group?: string | true }>(value: T): T =>
 			value.group === undefined ? value : { ...value, group: normalizeAutoGroupSentinel(value.group) };
 		const normalizedOptions = normalizeGroup(options);
-		const normalizedSteps = steps.map(normalizeGroup);
+		const normalizedSteps = steps.map((step) => {
+			capture?.(step);
+			return normalizeGroup(step);
+		});
 		const needsAutoGroup = normalizedOptions.group === true || normalizedSteps.some((step) => step.group === true);
 		const autoGroup = needsAutoGroup ? randomUUID() : undefined;
 		const resolveAutoGroup = <T extends { group?: string | true }>(value: T): T =>
@@ -77,11 +83,10 @@ export function createParallelPrimitive(input: {
 					step.prompt ?? step.task ?? fallback,
 					resolvedOptions.task ?? fallback,
 				);
-				return await input.task(
-					step.name,
-					taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions),
-					parallelScope,
-				);
+				const task = taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions);
+				if (task.context === "fork" && task.forkFromSessionId !== undefined && task.forkFromEntryId === undefined)
+					task.parallelForkLength = forks.length;
+				return await input.task(step.name, task, parallelScope);
 			},
 			async (error) => {
 				if (!failFastEnabled) return;

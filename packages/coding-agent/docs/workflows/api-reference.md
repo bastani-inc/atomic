@@ -726,6 +726,8 @@ readonly forkFromEntryId?: string;
 
 Select a clean session or a forked context, with `forkFromSessionId` naming an explicit session ID in the selected session store. Use the earlier task's `sessionId`, not its transcript file path. IDs are preserved verbatim, including an empty stored ID. Omitting `context` creates a fresh session unless the runtime is reopening durable state; see [Locally Scoped Stage Prompts](/workflows/reliable-design#locally-scoped-stage-prompts) for choosing fresh reviewer context versus coherent implementation context.
 
+When `ctx.parallel` forks several children from the same session in the same store, they share one source prefix for that launch. A child waiting for a worker slot does not inherit turns appended after the first child opened. A worktree or stage setting that selects a different store uses that store’s history, even if the session IDs match. Replaying a cached task does not open its fork source. To specify a point across separate launches, pass `forkFromEntryId`.
+
 `forkFromEntryId` forks at an exact entry instead of the session's latest one. With `context: "fork"` and `forkFromSessionId`, the new session holds the entries on the path from the source session's root to that entry, with their ids, so a stage can retry from just before a bad turn. The path is copied as recorded: unlike `/fork` in chat, labels set with `/tree` after that entry are not carried over. It applies to `ctx.stage`, `ctx.task`, `ctx.chain` and `ctx.parallel` steps alike, and is ignored without `forkFromSessionId`. Stage setup fails with `ForkEntryNotFoundError` when the entry is not in the source session; nothing is created. The source session is never changed.
 
 ```typescript

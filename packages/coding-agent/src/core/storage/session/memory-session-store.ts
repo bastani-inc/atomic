@@ -269,6 +269,11 @@ export class MemorySessionStore implements SessionStore {
 		return { adapter: "memory", location: ":memory:" };
 	}
 
+	async readForkLength(sessionId: string): Promise<number | undefined> {
+		this.assertOpen();
+		return this.records.get(sessionId)?.lastSeq;
+	}
+
 	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
