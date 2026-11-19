@@ -9,6 +9,7 @@ import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
+import { rendererRows } from "./renderer-click-area.ts";
 import { disposeRenderer } from "./renderer-disposal.js";
 import {
 	completionNoticeFromDetails,
@@ -17,7 +18,7 @@ import {
 } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 import { ToolBlock } from "./tool-block.ts";
-import { type RowRange, rendererRows } from "./transcript-block-clicks.ts";
+import type { RowRange } from "./transcript-block-clicks.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a

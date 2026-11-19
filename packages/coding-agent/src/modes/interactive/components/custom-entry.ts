@@ -4,7 +4,8 @@ import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
-import { type RowRange, rendererRows } from "./transcript-block-clicks.ts";
+import { rendererRows } from "./renderer-click-area.ts";
+import type { RowRange } from "./transcript-block-clicks.ts";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {

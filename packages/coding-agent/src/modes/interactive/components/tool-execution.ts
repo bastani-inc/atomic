@@ -25,6 +25,7 @@ import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { clickableKeyTextHint } from "./nav-keys.ts";
 import { STATUS_MARKERS } from "./notice-line.ts";
+import { rendererRows } from "./renderer-click-area.ts";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
@@ -36,7 +37,7 @@ import {
 	type ToolGroupRole,
 } from "./tool-block.ts";
 import { builtinToolBlockPresentation, formatToolBlockElapsed } from "./tool-block-families.ts";
-import { blockRenderTime, type RowRange, rendererRows, rowsFrom } from "./transcript-block-clicks.ts";
+import { blockRenderTime, type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
