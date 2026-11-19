@@ -64,10 +64,13 @@ test("ChatSessionHost disposal is final for public agent-event application", () 
 });
 
 test.each([
-	[{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 1000, errorMessage: "busy" }, /retrying…/],
+	[
+		{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 60_000, errorMessage: "busy" },
+		/Retrying · busy · attempt 1\/2 in 1m 0s/,
+	],
 	[
 		{ type: "model_fallback_start", from: "primary", to: "fallback", reason: "not found", attempt: 1 },
-		/switching model…/,
+		/Switching model…/,
 	],
 	[{ type: "agent_start" }, /Working…/],
 ] as const)(
@@ -96,15 +99,20 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
 	Math.random = () => 0;
 	const cases = [
 		{
-			start: { type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 80, errorMessage: "network" },
-			factual: "retrying…",
+			start: { type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 60_000, errorMessage: "fetch failed" },
+			factual: "Retrying…",
+			line: "Retrying · network error · attempt 1/2 in 1m 0s",
+			// The retry's line counts down to its next attempt, so it animates like the working line.
+			animates: true,
 			end: { type: "auto_retry_end", success: true, attempt: 1 },
 			restart: { type: "agent_start" },
 			restartedLine: " ∀ Working…",
 		},
 		{
 			start: { type: "model_fallback_start", from: "a", to: "b", reason: "quota", attempt: 1 },
-			factual: "switching model…",
+			factual: "Switching model…",
+			line: "Switching model…",
+			animates: false,
 			end: { type: "model_fallback_end", success: true, from: "a", to: "b" },
 			restart: { type: "turn_start" },
 			restartedLine: " ∀ Schlepping…",
@@ -130,12 +138,12 @@ test("successful retry and fallback stay ordinary-inactive until a genuine lifec
 				host.applyAgentEvent(transition.start as never);
 				assert.equal(renderRequests, beforeFactualStart + 1, `${transition.start.type} repaints immediately`);
 				assert.equal(host.statusText(), transition.factual);
-				// The factual copy is the working line while the retry or switch waits; it does not animate.
-				assert.deepEqual(host.renderWorkingStatus(64).map(stripAnsi), ["", ` ∀ ${transition.factual}`.padEnd(64)]);
-				assert.equal(host.hasAnimationTick(), false);
+				// The factual copy is the working line while the retry or switch waits; only a retry's counts down.
+				assert.deepEqual(host.renderWorkingStatus(64).map(stripAnsi), ["", ` ∀ ${transition.line}`.padEnd(64)]);
+				assert.equal(host.hasAnimationTick(), transition.animates);
 				assert.equal(timers.timeoutCount(), 0);
-				timers.advanceBy(80);
-				assert.equal(renderRequests, beforeFactualStart + 1);
+				timers.advanceBy(88);
+				assert.equal(renderRequests, beforeFactualStart + (transition.animates ? 2 : 1));
 
 				host.applyAgentEvent(transition.end as never);
 				const afterSuccessfulEnd = renderRequests;
@@ -248,16 +256,18 @@ test("public interrupt stops the working lifecycle and fences its captured callb
 
 test("turn and terminal stops repaint immediately and leave no delayed repaint", () => {
 	const stopCases = [
-		// The retry still waits after the turn ends, so its factual working line stays.
+		// The retry still waits after the turn ends, so its factual working line stays, animating on its own frames.
 		{
 			name: "turn_end",
 			stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never),
-			after: ["", " ∀ retrying…".padEnd(64)],
+			after: ["", " ∀ Retrying…".padEnd(64)],
+			retryFrames: 1,
 		},
 		{
 			name: "agent_end",
 			stop: (host) => host.applyAgentEvent({ type: "agent_end", messages: [] } as never),
 			after: ["", " ∀ Worked for 0s".padEnd(64)],
+			retryFrames: 0,
 		},
 	] as const;
 
@@ -281,12 +291,16 @@ test("turn and terminal stops repaint immediately and leave no delayed repaint",
 			stopCase.stop(host);
 			assert.equal(renderRequests, beforeStop + 1, `${stopCase.name} cleanup repaints immediately`);
 			assert.equal(timers.timeoutCount(), 0, stopCase.name);
-			assert.equal(timers.intervalCount(), 0, stopCase.name);
-			assert.equal(host.hasAnimationTick(), false, stopCase.name);
+			assert.equal(timers.intervalCount(), stopCase.retryFrames, stopCase.name);
+			assert.equal(host.hasAnimationTick(), stopCase.retryFrames > 0, stopCase.name);
 			assert.deepEqual(host.renderWorkingStatus(64).map(stripAnsi), stopCase.after, stopCase.name);
 
 			timers.advanceBy(160);
-			assert.equal(renderRequests, beforeStop + 1, `${stopCase.name} leaves no delayed repaint`);
+			assert.equal(
+				renderRequests,
+				beforeStop + 1 + stopCase.retryFrames,
+				`${stopCase.name} leaves no delayed repaint beyond the retry's own frames`,
+			);
 		} finally {
 			host.dispose();
 			timers.restore();
