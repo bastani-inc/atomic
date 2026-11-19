@@ -396,6 +396,10 @@ pub(super) struct Task {
 	pub intent: AgentIntent,
 	pub record: TaskRecord,
 	pub claimed: bool,
+	/// The runner has chosen its outcome, but still owns resources its terminal observer may remove.
+	pub finishing: bool,
+	/// The execution, its session and its output drained; only a batch-owned directory sweep remains.
+	pub directory_tail: bool,
 	pub activities: VecDeque<([u8; 32], ReportReceipt)>,
 	pub terminal: Option<(OutcomeReport, SettlementReceipt)>,
 	// Every terminal path retains its authentic journal receipt, including cancellation.
@@ -411,7 +415,10 @@ impl Task {
 	pub fn receipt(&self) -> CancelReceipt {
 		CancelReceipt {
 			task_id: self.record.reference.task_id.clone(),
-			decision: if self.cancel_cause.is_some() {
+			decision: if self.finishing && !matches!(self.record.execution, Execution::Settled { .. })
+			{
+				"already-finishing"
+			} else if self.cancel_cause.is_some() {
 				"cancellation-requested"
 			} else {
 				"already-settled"
@@ -500,6 +507,8 @@ impl Actor {
 			intent,
 			record: record.clone(),
 			claimed: false,
+			finishing: false,
+			directory_tail: false,
 			activities: VecDeque::new(),
 			terminal: None,
 			settlement: None,
@@ -512,6 +521,9 @@ impl Actor {
 		Ok(TaskLease { cap })
 	}
 	pub(super) fn claim(&self, task: &TaskLease) -> Door<RunnerLease> {
+		self.claim_or_reserve(task, false)
+	}
+	pub(super) fn claim_or_reserve(&self, task: &TaskLease, queued: bool) -> Door<RunnerLease> {
 		let mut s = self.state.lock().unwrap();
 		let (oi, ti) = s.task(self.id, &task.cap, "RunnerUnavailable")?;
 		if s.closing || s.owners[oi].state != "open" {
@@ -522,10 +534,53 @@ impl Actor {
 			return Err(fail("RunnerUnavailable"));
 		}
 		t.claimed = true;
-		t.record.execution = Execution::Running {};
-		let reference = t.record.reference.clone();
-		s.emit(oi, Some(reference.task_id.clone()), TaskEvent::TaskStarted { reference });
+		if !queued {
+			s.start_runner(oi, ti);
+		}
 		Ok(RunnerLease { cap: task.cap.clone() })
+	}
+	pub(super) fn dispatch_reserved(&self, runner: &RunnerLease) -> Door<()> {
+		let mut s = self.state.lock().unwrap();
+		let (oi, ti) = s.runner(self.id, &runner.cap)?;
+		if !matches!(s.owners[oi].tasks[ti].record.execution, Execution::Queued {}) {
+			return Err(fail("RunnerUnavailable"));
+		}
+		s.start_runner(oi, ti);
+		Ok(())
+	}
+	pub(super) fn runner_finishing(
+		&self,
+		runner: &RunnerLease,
+		result: TaskResult,
+	) -> Door<SettlementReceipt> {
+		let mut s = self.state.lock().unwrap();
+		let (oi, ti) = s.runner(self.id, &runner.cap)?;
+		let t = &mut s.owners[oi].tasks[ti];
+		t.finishing = true;
+		let task_id = t.record.reference.task_id.clone();
+		let result = match t.cancel_cause {
+			Some(cause) => TaskResult::Cancelled { cause, output: result.output() },
+			None => result,
+		};
+		Ok(SettlementReceipt {
+			completion_id: s.completion_id(&task_id),
+			task_id,
+			cursor: s.cursor(oi),
+			result,
+		})
+	}
+	pub(super) fn handoff_directory(&self, runner: &RunnerLease) -> Door<()> {
+		let mut s = self.state.lock().unwrap();
+		let (oi, ti) = s.runner(self.id, &runner.cap)?;
+		let t = &mut s.owners[oi].tasks[ti];
+		if !t.finishing || t.command.is_some() {
+			return Err(fail("ReportConflict"));
+		}
+		t.directory_tail = true;
+		s.finish_close(oi);
+		drop(s);
+		self.changed.notify_waiters();
+		Ok(())
 	}
 	pub(super) fn task_ref(&self, task: &TaskLease) -> Door<NativeTaskRef> {
 		let s = self.state.lock().unwrap();
@@ -770,9 +825,21 @@ impl Actor {
 	}
 }
 impl State {
+	fn completion_id(&self, task_id: &str) -> String {
+		format!("completion-{task_id}-{}", self.incarnation)
+	}
+	fn start_runner(&mut self, oi: usize, ti: usize) {
+		let t = &mut self.owners[oi].tasks[ti];
+		t.record.execution = Execution::Running {};
+		let reference = t.record.reference.clone();
+		self.emit(oi, Some(reference.task_id.clone()), TaskEvent::TaskStarted { reference });
+	}
 	pub fn cancel(&mut self, oi: usize, ti: usize, cause: CancelCause) {
 		let t = &mut self.owners[oi].tasks[ti];
-		if t.cancel_cause.is_some() || matches!(t.record.execution, Execution::Settled { .. }) {
+		if t.finishing
+			|| t.cancel_cause.is_some()
+			|| matches!(t.record.execution, Execution::Settled { .. })
+		{
 			return;
 		}
 		t.cancel_cause = Some(cause);
@@ -823,7 +890,7 @@ impl State {
 			Some(reference.task_id.clone()),
 			TaskEvent::HostObservationChanged { reference: reference.clone(), observation },
 		);
-		let completion_id = format!("completion-{}-{}", reference.task_id, self.incarnation);
+		let completion_id = self.completion_id(&reference.task_id);
 		let cursor = self.emit(
 			oi,
 			Some(reference.task_id.clone()),

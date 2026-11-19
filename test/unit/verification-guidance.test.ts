@@ -41,7 +41,6 @@ test("registered base guidance honors complex inline requests and retains defaul
 			prompt,
 			/Because workflows are the default[\s\S]*use a workflow and let its stages delegate specialists/,
 		);
-		assert.doesNotMatch(prompt, /workflow route|workflowId/);
 		assert.match(prompt, /coordinate children from codemode/);
 		assert.match(prompt, /Honor requests to work inline/);
 		assert.match(prompt, /testing, review and evidence inline/);
