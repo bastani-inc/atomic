@@ -6,11 +6,10 @@ import {
 	setKeybindings,
 	Text,
 	TuiAltScreen,
-	TuiMainScreen,
 	VStack,
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { selectMovementDelta } from "../../workflows/src/tui/prompt-card-select.ts";
+
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionMessageEntry, SessionTreeNode } from "../src/core/session-manager.ts";
 import { TreeSelectorComponent } from "../src/modes/interactive/components/tree-selector-component.ts";
@@ -191,125 +190,6 @@ describe("fullscreen input navigation", () => {
 		}
 	});
 
-	test.sequential("keeps workflow paging available to focused components in regular mode", () => {
-		const terminal = new RecordingTerminal();
-		const tui = new TuiMainScreen(terminal);
-		const inputs: string[] = [];
-		const stageChat = makeEditor(inputs);
-		const keybindings = new KeybindingsManager();
-		const promptDeltas: number[] = [];
-		const promptCard = {
-			focused: false,
-			render: () => ["prompt card"],
-			invalidate: () => {},
-			handleInput: (data: string) => {
-				const delta = selectMovementDelta(data, keybindings, 10);
-				if (delta !== 0) promptDeltas.push(delta);
-			},
-		} satisfies Component & { focused: boolean };
-		tui.addChild(stageChat);
-		tui.addChild(promptCard);
-		tui.setFocus(stageChat);
-		tui.start();
-
-		try {
-			const pageInputs = ["\x1b[5~", "\x1b[6~"];
-			for (const input of pageInputs) terminal.input(input);
-			expect(inputs).toEqual(pageInputs);
-
-			tui.setFocus(promptCard);
-			for (const input of pageInputs) terminal.input(input);
-			expect(promptDeltas).toEqual([-5, 5]);
-		} finally {
-			tui.stop();
-		}
-	});
-
-	test.sequential("preserves workflow paging precedence in fullscreen", () => {
-		const keybindings = new KeybindingsManager({
-			"tui.altScreen.halfPageUp": "ctrl+u",
-			"tui.altScreen.halfPageDown": "ctrl+d",
-		});
-		setKeybindings(keybindings);
-		const terminal = new RecordingTerminal();
-		terminal.columns = 40;
-		terminal.rows = 10;
-		const stageInputs: string[] = [];
-		const stageChat = makeEditor(stageInputs);
-		const promptDeltas: number[] = [];
-		const promptCard = {
-			focused: false,
-			render: () => ["prompt card"],
-			invalidate: () => {},
-			handleInput: (data: string) => {
-				const delta = selectMovementDelta(data, keybindings, 10);
-				if (delta !== 0) promptDeltas.push(delta);
-				return delta !== 0;
-			},
-		} satisfies Component & { focused: boolean };
-		const mainEditor = makeEditor([]);
-		const viewportActions = [
-			"tui.altScreen.pageUp",
-			"tui.altScreen.pageDown",
-			"tui.altScreen.halfPageUp",
-			"tui.altScreen.halfPageDown",
-			"tui.altScreen.top",
-			"tui.altScreen.bottom",
-		] as const;
-		let tui: TuiAltScreen;
-		const shouldHandleViewportInput = (data: string): boolean => {
-			if (tui.getFocusedComponent() === mainEditor) return true;
-			return !viewportActions.some((action) => keybindings.matches(data, action));
-		};
-		tui = createInteractiveTui({
-			showHardwareCursor: false,
-			logDirectory: "/tmp",
-			terminal,
-			shouldHandleViewportInput,
-		}) as TuiAltScreen;
-		const hostInputs: string[] = [];
-		tui.addInputListener((data) => {
-			hostInputs.push(data);
-		});
-		const transcript = new ScrollView(
-			new Text(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0),
-			{ follow: "end", primary: true },
-		);
-		tui.setLayoutRoot(
-			new VStack([
-				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
-				{ component: stageChat, basis: 1, shrink: 0 },
-				{ component: promptCard, basis: 1, shrink: 0 },
-				{ component: mainEditor, basis: 1, shrink: 0 },
-			]),
-		);
-		tui.setFocus(stageChat);
-		tui.start();
-		tui.renderNow();
-
-		try {
-			const initialTop = transcript.scrollTop;
-			const stageInputsToCheck = ["\x1b[5~", "\x1b[6~", "\x1b[1;5H", "\x1b[1;5F", "\x15", "\x04"];
-			for (const input of stageInputsToCheck) terminal.input(input);
-			tui.renderNow();
-			expect(transcript.scrollTop).toBe(initialTop);
-			expect(stageInputs).toEqual(stageInputsToCheck);
-			expect(hostInputs).toEqual(stageInputsToCheck);
-			tui.setFocus(promptCard);
-			const promptInputs = ["\x1b[5~", "\x1b[6~"];
-			for (const input of promptInputs) terminal.input(input);
-			tui.renderNow();
-			expect(promptDeltas).toEqual([-5, 5]);
-			expect(hostInputs).toEqual([...stageInputsToCheck, ...promptInputs]);
-
-			tui.setFocus(mainEditor);
-			terminal.input("\x1b[5~");
-			tui.renderNow();
-			expect(transcript.scrollTop).toBeLessThan(initialTop);
-		} finally {
-			tui.stop();
-		}
-	});
 	test.sequential("lets a real selector page without scrolling the transcript twice", () => {
 		setKeybindings(new KeybindingsManager());
 		const terminal = new RecordingTerminal();

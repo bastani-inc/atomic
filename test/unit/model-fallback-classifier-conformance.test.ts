@@ -2,17 +2,13 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { ExtensionStartupError } from "../../packages/coding-agent/src/core/extension-startup-failure.js";
 import {
+	isRetryableModelFailure as hostIsRetryable,
+	normalizeModelFailureSignal as hostNormalize,
+} from "../../packages/coding-agent/src/core/model-fallback-failures.js";
+import {
 	isRetryableModelFailure as subagentsIsRetryable,
 	normalizeModelFailureSignal as subagentsNormalize,
 } from "../../packages/subagents/src/runs/shared/model-fallback.js";
-import {
-	isRetryableModelFailure as workflowsIsRetryable,
-	normalizeModelFailureSignal as workflowsNormalize,
-} from "../../packages/workflows/src/runs/shared/model-fallback.js";
-
-// Both companion packages re-export the classifier implemented by the published
-// Atomic package. The identity assertion below protects the single-source
-// contract; the corpus keeps the public wrappers covered as well.
 
 type Fixture = { label: string; failure: unknown; kind: string; retryable: boolean };
 
@@ -562,27 +558,23 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 	},
 ];
 
-describe("model fallback classifier conformance (subagents vs workflows)", () => {
-	test("companion packages expose the one shared classifier implementation", () => {
-		assert.strictEqual(subagentsNormalize, workflowsNormalize);
-		assert.strictEqual(subagentsIsRetryable, workflowsIsRetryable);
+describe("model fallback classifier conformance (subagents and host)", () => {
+	test("subagents expose the one shared classifier implementation", () => {
+		assert.strictEqual(subagentsNormalize, hostNormalize);
+		assert.strictEqual(subagentsIsRetryable, hostIsRetryable);
 	});
 	test("both classifiers agree on the shared failure corpus", () => {
 		for (const fixture of CONFORMANCE_FIXTURES) {
 			const subagentsSignal = subagentsNormalize(fixture.failure);
-			const workflowsSignal = workflowsNormalize(fixture.failure);
+			const hostSignal = hostNormalize(fixture.failure);
 			assert.equal(subagentsSignal.kind, fixture.kind, `subagents kind for ${fixture.label}`);
-			assert.equal(workflowsSignal.kind, fixture.kind, `workflows kind for ${fixture.label}`);
+			assert.equal(hostSignal.kind, fixture.kind, `host kind for ${fixture.label}`);
 			assert.equal(
 				subagentsIsRetryable(fixture.failure),
 				fixture.retryable,
 				`subagents retryable for ${fixture.label}`,
 			);
-			assert.equal(
-				workflowsIsRetryable(fixture.failure),
-				fixture.retryable,
-				`workflows retryable for ${fixture.label}`,
-			);
+			assert.equal(hostIsRetryable(fixture.failure), fixture.retryable, `host retryable for ${fixture.label}`);
 		}
 	});
 
@@ -598,7 +590,7 @@ describe("model fallback classifier conformance (subagents vs workflows)", () =>
 		for (const [index, wrapper] of wrappers.entries()) {
 			assert.equal(
 				subagentsIsRetryable(wrapper),
-				workflowsIsRetryable(wrapper),
+				hostIsRetryable(wrapper),
 				`retryability parity for wrapper #${index}`,
 			);
 		}

@@ -7,7 +7,6 @@ import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 import { temporaryAgentDir, useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -56,7 +55,7 @@ let agentDir: string;
 const cleanups: Array<() => Promise<void> | void> = [];
 
 beforeEach(() => {
-	agentDir = temporaryAgentDir(process.env[ENV_WORKFLOW_ARTIFACT_DIR]);
+	agentDir = temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR);
 	mkdirSync(join(agentDir, "intercom"), { recursive: true });
 	writeFileSync(join(agentDir, "intercom", "config.json"), JSON.stringify({ brokerCommand: "bun", brokerArgs: [] }));
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
@@ -591,7 +590,7 @@ describe("replacing an older broker (#4538)", () => {
 	test(
 		"starts this version's broker for an agent directory that has no Intercom directory yet",
 		async () => {
-			const fresh = temporaryAgentDir(process.env[ENV_WORKFLOW_ARTIFACT_DIR]);
+			const fresh = temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR);
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", fresh);
 			vi.resetModules();
 			cleanups.push(() => stopDetachedBroker(fresh));

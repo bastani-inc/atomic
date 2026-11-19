@@ -22,9 +22,10 @@ git archive 0.9.89 packages/coding-agent/src/core/worktree-snapshot/blob-store.t
   | tar -x --strip-components=4
 ```
 
-`storage/journal-adoption.ts` is not vendored: the blob store imports it only when it writes a chunked blob, to upgrade a
-run journal at schema version 1, and that module needs most of 0.9.89's storage layer. It re-exports this version's
-`upgradeRunJournalSchema`, which upgrades a journal the same way. `worktree-snapshot/errors.ts`, which the store loads
+`storage/journal-adoption.ts` is not vendored whole: the blob store imports it only when it writes a chunked blob, to
+upgrade a run journal at schema version 1, and that module needs most of 0.9.89's storage layer. It holds only that
+release's `upgradeRunJournalSchema` and the table definitions it applies, copied byte for byte; this version keeps no run
+journal of its own to borrow them from. `worktree-snapshot/errors.ts`, which the store loads
 only to refuse a snapshot whose blobs are gone, is not vendored either; no test makes it do that.
 
 Do not edit the vendored files; replace the directory when the previous release changes. Biome ignores

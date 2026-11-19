@@ -10,7 +10,7 @@ import {
 	serializeIntercomBrokerError,
 } from "@bastani/atomic";
 import { test } from "vitest";
-import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
+
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
@@ -83,24 +83,6 @@ test("a successor timeout copy whose fields do not fit its class rehydrates as t
 	);
 });
 
-test("a family member this version does not know crosses the worker codec as the family base with its facts (#4496)", () => {
-	const rebuilt = rehydrateError({ ...FUTURE, family: "intercom-broker" });
-
-	assert.equal(rebuilt.constructor, IntercomBrokerError);
-	assert.ok(rebuilt instanceof IntercomBrokerError);
-	assert.ok(isIntercomBrokerError(rebuilt));
-	assert.equal(rebuilt.name, FUTURE.name);
-	assert.equal(rebuilt.code, FUTURE.code);
-	assert.equal(rebuilt.message, FUTURE.message);
-	assert.equal(rebuilt.hint, FUTURE.hint);
-	assert.equal(rebuilt.retryable, true);
-	assert.deepEqual(rebuilt.fields, FUTURE.fields);
-	assert.equal(isRetryableIntercomBrokerError(rebuilt), true);
-	// A second hop carries the facts the receiver could not interpret.
-	assert.deepEqual(serializeError(rebuilt).fields, FUTURE.fields);
-	assert.equal(serializeError(rebuilt).family, "intercom-broker");
-});
-
 test("the family base keeps what it is given and nothing else (#4496)", () => {
 	const bare = new IntercomBrokerError("broker-future", "Something new failed.");
 	assert.equal(bare.name, "IntercomBrokerError");
@@ -121,16 +103,6 @@ test("the family base keeps what it is given and nothing else (#4496)", () => {
 	assert.equal(plain.hint, undefined);
 	assert.deepEqual(plain.fields, {});
 	assert.equal(isRetryableIntercomBrokerError(plain), false);
-});
-
-test("a timeout that crossed the worker codec is still a retryable Intercom broker error (#4496)", () => {
-	const original = new IntercomBrokerSuccessorTimeoutError(FIELDS, { cause: new Error("read ECONNRESET") });
-	const rebuilt = rehydrateError(JSON.parse(JSON.stringify(serializeError(original))));
-
-	assert.ok(rebuilt instanceof IntercomBrokerSuccessorTimeoutError, String(rebuilt));
-	assert.equal(rebuilt.retryable, true);
-	assert.equal(isRetryableIntercomBrokerError(rebuilt), true);
-	assert.equal(isRetryableIntercomBrokerError(new Error("stage failed", { cause: rebuilt })), true);
 });
 
 test("retryability is read down the cause chain for eight links (#4496)", () => {

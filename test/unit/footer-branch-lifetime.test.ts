@@ -3,20 +3,13 @@ import type { FSWatcher, Stats, WatchFileOptions, WatchListener } from "node:fs"
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, unwatchFile } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { afterEach, test, vi } from "vitest";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import * as fsWatch from "../../packages/coding-agent/src/utils/fs-watch.js";
+import { fakeFooterAgentSession } from "../helpers/footer-session.js";
 import { writeFileEnsuringDir } from "../helpers/runtime.js";
-import {
-	createStore,
-	deriveGraphTheme,
-	fakeFooterAgentSession,
-	makeHandle,
-	StageChatView,
-	setupRun,
-	stripAnsi,
-} from "./stage-chat-view-helpers.js";
 
 const observed = vi.hoisted(() => [] as Array<{ path: string; watcher: FSWatcher; closed: boolean }>);
 const polling = vi.hoisted(() => new Set<string>());
@@ -121,60 +114,6 @@ test("footer disposal and cwd replacement release only unused branch watchers", 
 });
 
 // PR #2926: stage renders share one footer lease owned by the chat host.
-test("stage host repaint, session replacement and disposal release branch resources", async () => {
-	const directory = mkdtempSync(join(tmpdir(), "stage-footer-lifetime-"));
-	const main = join(directory, "main");
-	const cwd = join(directory, "stage");
-	await writeFileEnsuringDir(join(cwd, ".git/HEAD"), "ref: refs/heads/stage\n");
-	const replacementCwd = join(directory, "replacement");
-	await writeFileEnsuringDir(join(replacementCwd, ".git/HEAD"), "ref: refs/heads/replacement\n");
-	const provider = new FooterDataProvider(main);
-	provider.startGitWatcher();
-	const session = fakeFooterAgentSession();
-	session.sessionManager.getCwd = () => cwd;
-	const store = createStore();
-	setupRun(store, "run", "stage");
-	const { handle } = makeHandle(undefined, [], "running", session);
-	let activeSession: typeof session | undefined = session;
-	Object.defineProperty(handle, "agentSession", { get: () => activeSession });
-	const view = new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run",
-		stageId: "stage",
-		workflowName: "test",
-		handle,
-		footerData: provider,
-		onDetach() {},
-		onClose() {},
-	});
-	try {
-		await renderedUntil(() => view.render(160), /\(stage\)/);
-		for (let i = 0; i < 10; i++) assert.match(stripAnsi(view.render(160).join("\n")), /\(stage\)/);
-		await eventually(() => assert.equal(live(cwd).length, 1));
-		activeSession = fakeFooterAgentSession();
-		activeSession.sessionManager.getCwd = () => replacementCwd;
-		view.render(160);
-		assert.equal(live(cwd).length, 0, "replacing the session releases the previous cwd");
-		await renderedUntil(() => view.render(160), /\(replacement\)/);
-		await eventually(() => assert.equal(live(replacementCwd).length, 1));
-		activeSession = undefined;
-		view.render(160);
-		assert.equal(live(replacementCwd).length, 0, "a detached session releases its footer");
-		activeSession = session;
-		view.render(160);
-		await eventually(() => assert.equal(live(cwd).length, 1));
-		view.dispose();
-		assert.equal(live(cwd).length, 0, "stage disposal releases every render's branch lease");
-		view.render(160);
-		assert.equal(live(cwd).length, 0, "a late stage paint cannot reacquire branch resources");
-	} finally {
-		view.dispose();
-		provider.dispose();
-		rmSync(directory, { recursive: true, force: true });
-	}
-});
-
 // PR #2926: an already queued native error must not resurrect a released child.
 test("released branch subscriptions reject late watcher errors and pending refreshes", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "released-footer-"));
