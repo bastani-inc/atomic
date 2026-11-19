@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
 import { getEventListeners } from "node:events";
 import {
 	closeSync,
@@ -16,6 +16,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -247,6 +248,68 @@ describe("running a logged process (#4588)", () => {
 		},
 	);
 
+	test.skipIf(process.platform !== "linux")(
+		"a refusal at 450 whole milliseconds still gets the final 50 ms retry (#5608, #5707)",
+		async () => {
+			const log = await openStepLog(path("boundary.log"));
+			const spawn = childProcess.spawn;
+			const sleeper = new Int32Array(new SharedArrayBuffer(4));
+			try {
+				// Neither clock is mocked. Retry the placement only if the host misses the target millisecond.
+				for (let placement = 0; placement < 5; placement++) {
+					const held = heldNode();
+					const run = held.run('console.log("started")');
+					let release: NodeJS.Timeout | undefined;
+					let wallStart = 0;
+					let monoStart = 0;
+					let decisionMs: number | undefined;
+					const options = {
+						get timeoutMs() {
+							decisionMs ??= Date.now() - wallStart;
+							return 2_000;
+						},
+					};
+					const os = vi.spyOn(childProcess, "spawn").mockImplementationOnce((...args) => {
+						try {
+							return spawn(...args);
+						} catch (error) {
+							assert.equal((error as NodeJS.ErrnoException).code, "ETXTBSY");
+							// Deliver the real refusal partway through millisecond 450. Release during the backoff.
+							Atomics.wait(sleeper, 0, 0, Math.max(0, monoStart + 448 - performance.now()));
+							while (performance.now() - monoStart < 450.25) {
+								/* wait for the fractional boundary */
+							}
+							release = setTimeout(held.release, 25);
+							throw error;
+						}
+					});
+					syncBuiltinESMExports();
+					try {
+						const tick = Date.now();
+						while (Date.now() === tick) {
+							/* align the run with the start of a wall millisecond */
+						}
+						wallStart = Date.now();
+						monoStart = performance.now();
+						const exit = await runLoggedProcess(run, log, options);
+						if (decisionMs !== 450) continue;
+						assert.equal(exit.spawnError, undefined);
+						assert.equal(exit.exitStatus, 0);
+						return;
+					} finally {
+						os.mockRestore();
+						syncBuiltinESMExports();
+						clearTimeout(release);
+						held.release();
+					}
+				}
+				assert.fail("the refusal check never landed in millisecond 450");
+			} finally {
+				await log.close();
+			}
+		},
+	);
+
 	test.skipIf(process.platform !== "win32")(
 		"a program Windows refuses to start for a moment with EPERM is started when it is tried again (#5608)",
 		async () => {
@@ -392,6 +455,43 @@ describe("running a logged process (#4588)", () => {
 				assert.equal((result.exit.spawnError as NodeJS.ErrnoException | undefined)?.code, "ETXTBSY");
 				assert.equal(result.output, "");
 				assert.equal(result.exit.elapsedMs, 400);
+			} finally {
+				monotonic.mockRestore();
+				wall.mockRestore();
+				held.release();
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"a retried command's timeout reports the time spent asleep before it started (#5707)",
+		async () => {
+			const held = heldNode();
+			const wall = vi.spyOn(Date, "now").mockReturnValue(1_000);
+			const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
+			try {
+				const { result, tries } = await counting(
+					() =>
+						stepProcessWatcher.run(
+							(_pid, running) => {
+								if (running) return;
+								// The child has been stopped after 605 more milliseconds awake.
+								wall.mockReturnValue(2_005);
+								monotonic.mockReturnValue(655);
+							},
+							() => execute(held.run("setInterval(() => {}, 1000)"), { timeoutMs: 1_000 }),
+						),
+					(attempt) => {
+						if (attempt !== 2) return;
+						// The 50 ms retry and 350 ms of suspend leave the child 600 ms to run.
+						wall.mockReturnValue(1_400);
+						monotonic.mockReturnValue(50);
+						held.release();
+					},
+				);
+				assert.equal(tries, 2);
+				assert.equal(result.exit.timedOut, true);
+				assert.equal(result.exit.elapsedMs, 1_005);
 			} finally {
 				monotonic.mockRestore();
 				wall.mockRestore();

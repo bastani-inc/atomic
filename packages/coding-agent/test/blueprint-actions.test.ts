@@ -2227,27 +2227,30 @@ describe("the file commands of a step", () => {
 });
 
 describe("the budget of a step", () => {
-	test.each([0, -10_000])(
-		"is spent before a process starts even with a wall-clock correction of %i ms (#4588, #5707)",
-		async (correction) => {
+	test.each([
+		{ duringFetch: "ordinary time", wallMs: 5_000, awakeMs: 5_000, timeoutMs: 5_000, expectedMs: 5_000 },
+		{ duringFetch: "a backward clock change", wallMs: -5_000, awakeMs: 5_000, timeoutMs: 5_000, expectedMs: 5_000 },
+		{ duringFetch: "system suspend", wallMs: 350, awakeMs: 0, timeoutMs: 200, expectedMs: 350 },
+	])(
+		"expires without starting the action after $duringFetch during fetch (#4588, #5707)",
+		async ({ wallMs, awakeMs, timeoutMs, expectedMs }) => {
 			const started = 1_700_000_000_000;
-			const timeoutMs = 5_000;
-			let elapsed = 0;
-			const clock = vi.spyOn(Date, "now").mockImplementation(() => started + elapsed + (elapsed ? correction : 0));
-			const monotonic = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+			const clock = vi.spyOn(Date, "now").mockReturnValue(started);
+			const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
 			const planting = planted({
 				"acme/late": nodeAction(`require("node:fs").appendFileSync(process.env.RESULT_FILE, "ran\\n");\n`),
 			});
 			const fetchAction: ActionFetcher = async (request) => {
 				await planting(request);
-				elapsed = timeoutMs;
+				clock.mockReturnValue(started + wallMs);
+				monotonic.mockReturnValue(awakeMs);
 			};
 
 			try {
 				const run = startRun("github.com/acme/late@v1", { fetchAction, timeoutMs });
 				const exit = await run.result;
 
-				assert.deepEqual(exit, { exitStatus: null, signal: null, timedOut: true, elapsedMs: timeoutMs });
+				assert.deepEqual(exit, { exitStatus: null, signal: null, timedOut: true, elapsedMs: expectedMs });
 				assert.deepEqual(resultLines(), []);
 				assert.ok(!readText(run.logPath).includes("=== main of"));
 			} finally {

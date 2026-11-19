@@ -89,6 +89,13 @@ function passingRefusals(platform: NodeJS.Platform): readonly string[] {
 	return platform === "win32" ? ["EPERM", "EBUSY"] : ["ETXTBSY"];
 }
 
+/** Measures whole milliseconds, counting suspend without letting a backward wall-clock change extend a deadline. */
+export function startElapsedMs(): () => number {
+	const wallStart = Date.now();
+	const monoStart = performance.now();
+	return () => Math.max(Date.now() - wallStart, Math.floor(performance.now() - monoStart));
+}
+
 /** Whether a start refused with `error` on try `tries`, `elapsedMs` into a step allowed `timeoutMs`, is tried again. */
 function triesStartAgain(error: unknown, tries: number, elapsedMs: number, timeoutMs: number): boolean {
 	return (
@@ -132,11 +139,7 @@ export async function runLoggedProcess(
 	options: LoggedProcessOptions,
 ): Promise<ProcessExit> {
 	options.signal?.throwIfAborted();
-	const wallStartedAt = Date.now();
-	const startedAt = performance.now();
-	const elapsedMs = () => performance.now() - startedAt;
-	// The wall clock counts time asleep; the monotonic clock keeps a backward correction from extending a retry.
-	const retryElapsedMs = () => Math.max(Date.now() - wallStartedAt, elapsedMs());
+	const elapsedMs = startElapsedMs();
 	const copiesOutput = copiesOutputToLog(process.platform);
 	let started: ChildProcess;
 	// How long the step waited to try again before its process started: that time counts toward its timeout.
@@ -147,14 +150,14 @@ export async function runLoggedProcess(
 		// Also cancelled while it waited to try again, or by what ran in between: then nothing may start.
 		options.signal?.throwIfAborted();
 		if (refusal !== undefined) {
-			waitedMs = retryElapsedMs();
+			waitedMs = elapsedMs();
 			// A try that wakes late, as when the event loop was busy, starts nothing once the step's time is up.
 			if (waitedMs >= options.timeoutMs) {
 				return {
 					exitStatus: null,
 					signal: null,
 					timedOut: false,
-					elapsedMs: Math.floor(waitedMs),
+					elapsedMs: waitedMs,
 					spawnError: refusal,
 				};
 			}
@@ -174,14 +177,14 @@ export async function runLoggedProcess(
 			break;
 		} catch (error) {
 			// spawn throws, rather than emitting "error", when the system refuses at once (EPERM, EBUSY, ETXTBSY, ENOTDIR).
-			const elapsed = retryElapsedMs();
+			const elapsed = elapsedMs();
 			refusal = error as Error;
 			if (!triesStartAgain(error, tries, elapsed, options.timeoutMs)) {
 				return {
 					exitStatus: null,
 					signal: null,
 					timedOut: false,
-					elapsedMs: Math.floor(elapsed),
+					elapsedMs: elapsed,
 					spawnError: refusal,
 				};
 			}
@@ -266,7 +269,7 @@ export async function runLoggedProcess(
 				exitStatus: null,
 				signal: null,
 				timedOut: false,
-				elapsedMs: Math.floor(elapsedMs()),
+				elapsedMs: elapsedMs(),
 				spawnError: error,
 			});
 		};
@@ -284,7 +287,7 @@ export async function runLoggedProcess(
 				reject(writeError);
 				return;
 			}
-			resolveExit({ exitStatus, signal: exitSignal, timedOut, elapsedMs: Math.floor(elapsedMs()) });
+			resolveExit({ exitStatus, signal: exitSignal, timedOut, elapsedMs: elapsedMs() });
 		};
 		if (copiesOutput) {
 			waitForChildProcess(child).then((exitStatus) => ended(exitStatus, child.signalCode), onSpawnError);
