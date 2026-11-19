@@ -1,5 +1,6 @@
+import { appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { SettingsList } from "@bastani/atomic-tui";
+import { SelectList, SettingsList } from "@bastani/atomic-tui";
 
 const load = createRequire(import.meta.url);
 const labels = ["Alpha", "Bravo", "Charlie"];
@@ -15,6 +16,12 @@ export default (pi) => {
 			if (name === "ready") {
 				ctx.ui.notify("Menu commands ready", "info");
 				return;
+			}
+			if (name === "preview") {
+				return ctx.ui.custom(() => ({ render: () => ["Passive preview"], invalidate() {} }), {
+					overlay: true,
+					overlayOptions: { anchor: "top-right", width: 20, nonCapturing: true },
+				});
 			}
 			if (name === "runs" || name === "empty") {
 				const { openWorkflowsListing } = await import("../../packages/workflows/src/tui/workflows-listing.ts");
@@ -43,6 +50,21 @@ export default (pi) => {
 			}
 			return ctx.ui.custom(
 				async (tui, theme, keys, done) => {
+					if (name === "repeated") {
+						const plain = (s) => s;
+						const row = (label) => ({ label, value: label });
+						const repeat = row("Repeat");
+						const list = new SelectList([repeat, row("Bravo"), repeat, row("Delta")], 4, {
+							selectedPrefix: plain,
+							selectedText: plain,
+							description: plain,
+							scrollInfo: plain,
+							noMatch: plain,
+						});
+						list.onSelect = (item) => appendFileSync(process.env.DRAFT_CHANGES, `choose ${item.label}\n`);
+						list.onSelectionChange = (item) => appendFileSync(process.env.DRAFT_CHANGES, `move ${item.label}\n`);
+						return list;
+					}
 					if (name === "settings") {
 						const plain = (s) => s;
 						const list = new SettingsList(
