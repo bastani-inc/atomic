@@ -103,14 +103,19 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	if (opts.initialComposerDraft !== undefined) {
 		ctx.chatHost.setInputText(opts.initialComposerDraft);
 	}
-	ctx._unregisterStageUiHost = ctx.stageUiBroker.registerHost(ctx.runId, ctx.stageId, {
-		showCustomUi: (request) => {
-			void showCustomUi(ctx, request);
+	ctx._unregisterStageUiHost = ctx.stageUiBroker.registerHost(
+		ctx.runId,
+		ctx.stageId,
+		{
+			showCustomUi: (request) => {
+				void showCustomUi(ctx, request);
+			},
+			hideCustomUi: (request) => {
+				hideMountedCustomUi(ctx, request);
+			},
 		},
-		hideCustomUi: (request) => {
-			hideMountedCustomUi(ctx, request);
-		},
-	});
+		opts.handle?.stageUiSignal,
+	);
 
 	snapshotMessagesFromHandle(ctx);
 	replayPendingToolExecutions(ctx);
