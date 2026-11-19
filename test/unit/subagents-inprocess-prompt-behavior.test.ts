@@ -322,7 +322,18 @@ describe("forked child's first request replays the parent's thinking (#5481)", (
 			const root = mkdtempSync(join(tmpdir(), "atomic-responses-thinking-"));
 			tempDirs.push(root);
 			const parent = await SessionManager.create(root, join(root, "sessions"));
-			const model = getModel("github-copilot", "gpt-6.2-astra")!;
+			const model: Model<"openai-responses"> = {
+				id: "gpt-6.2-astra",
+				name: "GPT-6.2 Astra",
+				api: "openai-responses",
+				provider: "github-copilot",
+				baseUrl: "https://example.invalid",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: zeroUsage.cost,
+				contextWindow: 1_050_000,
+				maxTokens: 128_000,
+			};
 			const item = { type: "reasoning", id: "rs_first", encrypted_content: "opaque", summary: [] };
 			const first = {
 				...parentTurn([
