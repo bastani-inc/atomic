@@ -16,6 +16,36 @@ function record(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
+/** A scoped receipt must be readable by the ordinary tool renderer before replacing its fallback. */
+function readableResult(content: unknown, nestedCalls: unknown): boolean {
+	if (
+		!Array.isArray(content) ||
+		!content.every((item: unknown) => {
+			const block = record(item);
+			return (
+				(block?.type === "text" && typeof block.text === "string") ||
+				(block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string")
+			);
+		})
+	)
+		return false;
+	const calls = record(nestedCalls)?.calls;
+	return (
+		!Array.isArray(calls) ||
+		calls.every((item: unknown) => {
+			const call = record(item);
+			return (
+				call &&
+				typeof call.name === "string" &&
+				typeof call.status === "string" &&
+				(call.error === undefined || typeof call.error === "string") &&
+				(call.durationMs === undefined || typeof call.durationMs === "number") &&
+				(call.argumentsBytes === undefined || typeof call.argumentsBytes === "number")
+			);
+		})
+	);
+}
+
 function marker(entry: SessionEntry | undefined): boolean {
 	return entry?.type === "custom" && entry.customType === "subagent-child";
 }
@@ -47,8 +77,7 @@ function previousTurns(sm: SessionManager): PreviousTurn {
 function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: PreviousTurn): SavedAgentCard | undefined {
 	if (entry.type !== "message" || entry.message.role !== "toolResult") return;
 	const receipt = entry.message;
-	if (receipt.toolName !== "subagent" || receipt.isError || !receipt.toolCallId || !Array.isArray(receipt.content))
-		return;
+	if (receipt.toolName !== "subagent" || receipt.isError || !receipt.toolCallId) return;
 	const details = record(receipt.details);
 	if (details?.mode !== "single" || !Array.isArray(details.results)) return;
 	if (details.ownerSessionId !== undefined && details.ownerSessionId !== sm.getSessionId()) return;
@@ -75,7 +104,7 @@ function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: Previo
 		const response = record(details.taskResponse);
 		const observation = record(response?.observation);
 		if (response?.kind === "admitted" && observation?.kind === "yielded" && typeof observation.taskId === "string") {
-			return { launch: launch.id, receipt: entry.id };
+			if (readableResult(receipt.content, receipt.nestedCalls)) return { launch: launch.id, receipt: entry.id };
 		}
 		return;
 	}
@@ -134,7 +163,8 @@ function savedCard(sm: SessionManager, entry: SessionEntry, previousTurn: Previo
 		)
 	)
 		return;
-	return { launch: launch.id, receipt: entry.id, answerBlock };
+	if (readableResult(receipt.content, receipt.nestedCalls))
+		return { launch: launch.id, receipt: entry.id, answerBlock };
 }
 
 /** Do not embed viewer code unless a complete recorded branch can show a card. */

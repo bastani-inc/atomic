@@ -227,6 +227,42 @@ test("switching forks switches both the card and its recorded receipt, and keeps
 	}
 });
 
+test("an unsupported receipt cannot blank a previously readable row with a reused tool ID (#5658)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "atomic-file-export-old-receipt-"));
+	try {
+		const messages = [
+			{},
+			{ content: [null] },
+			{ nestedCalls: { calls: [{ name: "read", status: "error", error: { message: "old error" } }] } },
+		].flatMap((recorded, i) => {
+			const args = { agent: "worker", task: `Task ${i}` };
+			return [
+				fauxAssistantMessage([fauxToolCall("subagent", args, { id: "reused" })]),
+				{
+					role: "toolResult",
+					toolName: "subagent",
+					toolCallId: "reused",
+					isError: false,
+					timestamp: 2,
+					content: [{ type: "text", text: "Original result" }],
+					details: {
+						mode: "single",
+						results: [{ ...args, status: "ok", finalOutput: "Done", toolCalls: [{ text: "read sample.txt" }] }],
+					},
+					...recorded,
+				},
+			];
+		});
+		const page = await exportSavedMessages(dir, messages);
+		assert.deepEqual(
+			[...page.querySelectorAll("#messages .tool-header")].map((e) => e.textContent),
+			["Agent(worker · Task 0)", "subagent", "subagent"],
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("unstarted and rejected parallel declarations stay one raw row, regardless of count (#5658)", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-parallel-file-export-"));
 	try {
