@@ -425,7 +425,7 @@ InteractiveModeBase.prototype.expectStartedUserInput = function (
 /** Show a user message from the session: in place of its echo, or of the echo of the run it started, or as new. */
 InteractiveModeBase.prototype.showSessionUserMessage = function (this: InteractiveModeBase, message: Message): void {
 	const text = this.getUserMessageText(message);
-	const echo = this.deferredRenderedUserInputComponents.get(text)?.[0];
+	const echo = this.deferredRenderedUserInputComponents?.get(text)?.[0];
 	if (this.consumeDeferredRenderedUserInput(text)) {
 		// The echo stays as the session's message: its rows are that message's rows.
 		for (const component of echo ?? []) noteRowSource(component, { message, part: 0 });

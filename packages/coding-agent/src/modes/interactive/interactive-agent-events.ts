@@ -69,7 +69,7 @@ function noteMessageReceipt(
 ): void {
 	const { message } = event;
 	const sent = event as { readonly seq?: unknown };
-	const seq = mode.session.entryReceipt?.(message)?.seq ?? (typeof sent.seq === "number" ? sent.seq : undefined);
+	const seq = mode.session?.entryReceipt?.(message)?.seq ?? (typeof sent.seq === "number" ? sent.seq : undefined);
 	if (seq !== undefined) noteSavedSeq(message, seq);
 	if (message.role === "assistant" && mode.streamingComponent) {
 		noteRowSource(mode.streamingComponent, { message, part: 0 });

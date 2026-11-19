@@ -1,5 +1,6 @@
 import { sep } from "node:path";
 import { type Component, getImageDimensions, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { savedReadLines } from "../../../core/storage/session/saved-read-summary.js";
 import type { WaitOutcome } from "../../../core/tasks/contracts.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.ts";
 import { splitReadLineSelector } from "../../../core/tools/read-selectors.ts";
@@ -420,11 +421,12 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 	}
 
 	const { lines, lineNumbers } = parseReadLinesAndNumbers(rawText, startLine);
-	const lineCount = lines.length;
-	const summary = activeTheme.fg(
-		"text",
-		`Read ${activeTheme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"}`,
-	);
+	const archivedLines = savedReadLines(input.result?.content);
+	const lineCount = archivedLines ?? lines.length;
+	const summary =
+		archivedLines === null
+			? activeTheme.fg("muted", rawText)
+			: activeTheme.fg("text", `Read ${activeTheme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"}`);
 	if (!input.expanded || lineCount === 0) {
 		return {
 			title: "Read",

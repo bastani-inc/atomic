@@ -278,6 +278,8 @@ export type InteractiveEngineCommand =
 			rendererTaskId?: string;
 			args: JsonValue;
 			result?: JsonObject;
+			/** Display-only summary for a saved read whose body was too large for its page. */
+			savedReadLines?: number | null;
 			executionStarted: boolean;
 			executionStartedAt?: number;
 			argsComplete: boolean;
@@ -986,6 +988,12 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			toolCallId: value.toolCallId,
 			args: value.args,
 			result: isJsonObject(value.result) ? value.result : undefined,
+			...(value.savedReadLines === null ||
+			(typeof value.savedReadLines === "number" &&
+				Number.isSafeInteger(value.savedReadLines) &&
+				value.savedReadLines >= 0)
+				? { savedReadLines: value.savedReadLines }
+				: {}),
 			executionStarted: value.executionStarted,
 			argsComplete: value.argsComplete,
 			isPartial: value.isPartial,

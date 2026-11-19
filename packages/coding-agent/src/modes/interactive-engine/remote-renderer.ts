@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isProxy } from "node:util/types";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
+import { savedReadLines } from "../../core/storage/session/saved-read-summary.js";
 import { reopenedCompletionName } from "../../core/tasks/reopened-completion.js";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
@@ -383,8 +384,10 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	}
 
 	protected command(requestId: number, width: number): RemoteRenderCommand {
+		const lines = savedReadLines(this.result?.content);
 		return {
 			type: "engine_tool_render",
+			...(lines === undefined ? {} : { savedReadLines: lines }),
 			componentId: this.componentId,
 			requestId,
 			width,

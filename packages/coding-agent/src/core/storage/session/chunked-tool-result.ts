@@ -1,7 +1,9 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { readContentLines } from "./chunked-read-lines.js";
 import { type Reader, read, skip, stringValue } from "./chunked-resume-projection.js";
+import { bindSavedReadLines } from "./saved-read-summary.js";
 
 /**
  * What a tool card needs of a saved tool result too large to read whole: which call it answers, under which tool
@@ -16,6 +18,7 @@ export interface ChunkedToolResult {
 	readonly isError: boolean;
 	readonly durationMs: number | undefined;
 	readonly messageTimestamp: number | undefined;
+	readonly readLines?: number | null;
 }
 
 /** Keys are compared exactly; any longer key is not one read here. */
@@ -63,6 +66,12 @@ function* fields(
 			const message = yield* fields(MESSAGE_KEYS, ["role", "toolResult"]);
 			if (message === OTHER) return OTHER;
 			selected[key] = message;
+		} else if (
+			keys === MESSAGE_KEYS &&
+			key === "content" &&
+			(selected.toolName === undefined || selected.toolName === "read")
+		) {
+			selected.content = yield* readContentLines(first);
 		} else if (keys.has(key)) {
 			selected[key] = yield* scalar(first);
 			if (key === kind[0] && selected[key] !== kind[1]) return OTHER;
@@ -100,6 +109,7 @@ export async function chunkedToolResult(chunks: AsyncIterable<Uint8Array>): Prom
 		isError: message.isError === true,
 		durationMs: number(message.durationMs),
 		messageTimestamp: number(message.timestamp),
+		...(message.toolName === "read" ? { readLines: number(message.content) ?? null } : {}),
 	};
 }
 
@@ -116,12 +126,13 @@ export function chunkedToolResultEntry(result: ChunkedToolResult, fallbackId: st
 		isError: result.isError,
 		timestamp: result.messageTimestamp ?? 0,
 		...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }),
-	} as AgentMessage;
+	} as const;
+	if (result.readLines !== undefined) bindSavedReadLines(message.content, result.readLines);
 	return {
 		type: "message",
 		id: result.id ?? fallbackId,
 		parentId: result.parentId ?? null,
 		timestamp: result.timestamp ?? "1970-01-01T00:00:00Z",
-		message,
+		message: message as unknown as AgentMessage,
 	} as SessionEntry;
 }

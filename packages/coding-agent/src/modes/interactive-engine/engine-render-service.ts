@@ -3,6 +3,7 @@ import type { AgentSession } from "../../core/agent-session.js";
 import { runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { ToolRenderers } from "../../core/extensions/types.ts";
 import type { CustomMessage } from "../../core/messages.ts";
+import { bindSavedReadLines } from "../../core/storage/session/saved-read-summary.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
@@ -318,6 +319,8 @@ export class EngineRenderService {
 		tool.setExpanded(command.expanded);
 		tool.setGroupRole(command.groupRole ?? { kind: "standalone" });
 		if (command.result) {
+			if (command.savedReadLines !== undefined && Array.isArray(command.result.content))
+				bindSavedReadLines(command.result.content, command.savedReadLines);
 			tool.updateResult(
 				command.result as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0],
 				command.isPartial,

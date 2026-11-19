@@ -805,8 +805,9 @@ test("a saved tool result too large for a page shows its call finished, as the w
 	whole.mode.renderInitialMessages();
 	const main = () => stripVTControlCharacters(whole.mode.chatContainer.render(COLUMNS).join("\n"));
 	for (let i = 0; i < 60 && !/P-001/.test(main()); i++) await nextTurn();
-	const header = cardRows(main(), /Read\(big\.txt\)/)[0];
-	assert.match(header ?? "", /^ ● Read\(big\.txt\)/, "the whole transcript shows the call finished");
+	const wholeCard = cardRows(main(), /Read\(big\.txt\)/).slice(0, 2);
+	assert.match(wholeCard[0] ?? "", /^ ● Read\(big\.txt\)/, "the whole transcript shows the call finished");
+	assert.match(wholeCard[1] ?? "", /Read 66000 lines/);
 
 	const { mode, tui, transcript } = await openResumedSession(0);
 	const manager = mode.sessionManager;
@@ -833,7 +834,11 @@ test("a saved tool result too large for a page shows its call finished, as the w
 	const finished = () => {
 		const rows = held();
 		assert.equal(rows.match(/Read\(big\.txt\)/g)?.length, 1, rows);
-		assert.equal(cardRows(rows, /Read\(big\.txt\)/)[0], header, "the card shows the call finished as on main");
+		assert.deepEqual(
+			cardRows(rows, /Read\(big\.txt\)/).slice(0, 2),
+			wholeCard,
+			"both the header and the collapsed read count match the whole result",
+		);
 	};
 
 	// Read on from the start: the page ends with the call; the result's page after it is not read as a page.
