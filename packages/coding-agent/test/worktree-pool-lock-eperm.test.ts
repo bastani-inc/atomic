@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -77,6 +87,7 @@ const lockRefusals = vi.hoisted(() => ({
 	onRefusal: undefined as ((refused: number, path: string) => void) | undefined,
 	onCompromised: undefined as ((path: string) => void) | undefined,
 	deleteOnCloseUnavailable: false,
+	afterWrite: undefined as ((path: string) => void) | undefined,
 	onRecordWrite: undefined as ((path: string, data: string) => Promise<void>) | undefined,
 	onRemove: undefined as ((path: string) => Promise<void>) | undefined,
 }));
@@ -120,7 +131,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	};
 	const writeFile: typeof actual.writeFile = async (path, data, options) => {
 		if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
-		return actual.writeFile(path, data, options);
+		await actual.writeFile(path, data, options);
+		lockRefusals.afterWrite?.(String(path));
 	};
 	const rm: typeof actual.rm = async (path, options) => {
 		await lockRefusals.onRemove?.(String(path));
@@ -218,6 +230,7 @@ afterEach(() => {
 	lockRefusals.onRecordWrite = undefined;
 	lockRefusals.onRemove = undefined;
 	lockRefusals.deleteOnCloseUnavailable = false;
+	lockRefusals.afterWrite = undefined;
 	sandbox.dispose();
 });
 
@@ -859,13 +872,23 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 				lockRefusals.onRemove = undefined;
 				throw Object.assign(new Error("temporary record cleanup refused"), { code: "EPERM" });
 			};
-			const owner = { kind: "session" as const, id: "record-owner" };
-			const lease = await admitPooledWorktree({ storeDir, remotes, lastState: state, envHash: "env" }, owner);
-			assert.ok(temporary);
-			lockRefusals.onRecordWrite = undefined;
-			assert.equal(await releaseRestoredWorktree(lease, state), true);
-			assert.deepEqual((JSON.parse(readFileSync(file, "utf8")) as PoolSlotRecord).holder, owner);
-			assert.equal(existsSync(temporary), false);
+			let reader: number | undefined;
+			lockRefusals.afterWrite = (path) => {
+				if (path === temporary) reader ??= openSync(path, "r");
+			};
+			try {
+				const owner = { kind: "session" as const, id: "record-owner" };
+				const lease = await admitPooledWorktree({ storeDir, remotes, lastState: state, envHash: "env" }, owner);
+				assert.ok(temporary);
+				assert.notEqual(reader, undefined);
+				lockRefusals.onRecordWrite = undefined;
+				assert.equal(await releaseRestoredWorktree(lease, state), true);
+				assert.deepEqual((JSON.parse(readFileSync(file, "utf8")) as PoolSlotRecord).holder, owner);
+				assert.equal(existsSync(temporary), false);
+				assert.equal(readdirSync(dirname(file)).includes(basename(temporary)), false);
+			} finally {
+				if (reader !== undefined) closeSync(reader);
+			}
 		},
 	);
 

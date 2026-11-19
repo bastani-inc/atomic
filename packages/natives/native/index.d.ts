@@ -670,7 +670,7 @@ export interface OmittedRange {
 
 /**
  * Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
- * directory and requests deletion only after measuring the clock; a record also requests delete-on-close at creation.
+ * directory and requests deletion only after measuring the clock; a writable record also requests delete access.
  * Reports a collision separately and returns null when this open is unavailable.
  */
 export declare function openWindowsTemporaryFile(path: string, clockProbe?: boolean | undefined | null): Promise<WindowsTemporaryFile | undefined | null>

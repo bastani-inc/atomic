@@ -16,7 +16,7 @@ function windowsBindings(): Partial<typeof native> | null {
 	return bindings;
 }
 
-/** Open a new file without sharing deletion. A clock probes with its granted rights; a record reserves delete-on-close. */
+/** Open a new file without sharing deletion. A clock probes with its granted rights; a record reserves write and delete access. */
 export async function openWindowsTemporary(
 	path: string,
 	kind: "clock" | "record",

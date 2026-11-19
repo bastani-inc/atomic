@@ -112,7 +112,7 @@ fn dispose_by_handle(file: &File) {
 }
 
 /// Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
-/// directory and requests deletion only after measuring the clock; a record also requests delete-on-close at creation.
+/// directory and requests deletion only after measuring the clock; a writable record also requests delete access.
 /// Reports a collision separately and returns null when this open is unavailable.
 #[napi]
 pub fn open_windows_temporary_file(
@@ -124,19 +124,21 @@ pub fn open_windows_temporary_file(
 		{
 			use std::{fs::OpenOptions, io::ErrorKind, os::windows::fs::OpenOptionsExt};
 			use windows_sys::Win32::Storage::FileSystem::{
-				FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+				DELETE, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 			};
-			let dispose_at_close = clock_probe == Some(true);
+			let measuring = clock_probe == Some(true);
 			let mut options = OpenOptions::new();
 			options.write(true).create_new(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
-			if dispose_at_close {
+			if measuring {
 				// Acquire whatever rights are granted (including DELETE where allowed). A directory that
 				// allows creation but not deletion still supplies its clock in one open. Asking for
 				// delete-on-close first would pay a slow delete refusal twice on that filesystem.
 				const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
 				options.access_mode(MAXIMUM_ALLOWED);
 			} else {
-				options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+				// Reserve delete access, not delete-on-close: that flag keeps the temporary name listed
+				// until every reader closes, even after a successful POSIX unlink on this handle.
+				options.access_mode(FILE_GENERIC_WRITE | DELETE);
 			}
 			match options.open(path) {
 				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(file) })),
