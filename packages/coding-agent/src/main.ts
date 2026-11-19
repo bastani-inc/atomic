@@ -58,6 +58,7 @@ import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import { DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 import { startEventLoopMonitor, waitForEventLoopMonitorReady } from "./core/event-loop-monitor.ts";
+import { watchFirstProjectTrustHandler } from "./core/extensions/startup-trust-inventory.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
@@ -75,7 +76,7 @@ import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
 import { recordResumeTimings } from "./core/resume/timings.ts";
 import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
-import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
+import { ownedSessionManagerStores, ownedSessionStores, sessionLifetime } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "./core/session-manager-errors.js";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
@@ -854,6 +855,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		// While a deferred startup decision is still to come, the settings read the project untrusted to load only what
 		// the decision itself needs. That is no decision, so no one may report it as one.
 		let startupTrustPending = deferStartupTrust;
+		let hasStartupTrustHook: boolean | undefined;
+		let stopWatchingTrustHandlers: (() => void) | undefined;
+		const closeTrustInventory = () => {
+			stopWatchingTrustHandlers?.();
+			stopWatchingTrustHandlers = undefined;
+		};
 		const resolvedExtensionPathCount = resolvedExtensionPaths?.length ?? 0;
 		const hasSystemPromptInput = parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0;
 		const resolvedResourcePathCount =
@@ -942,8 +949,17 @@ export async function main(argv: string[], options?: MainOptions) {
 											defaultProjectTrust: runtimeSettingsManager.getDefaultProjectTrust(),
 											extensionsResult,
 											projectTrustContext: getProjectTrustContext(),
+											onHandlerSnapshot:
+												deferStartupTrust && storedProjectTrust === true
+													? (hasHandlers) => {
+															// Only this snapshot votes; even a handler which removes itself can still decline.
+															hasStartupTrustHook ||= hasHandlers;
+															closeTrustInventory();
+														}
+													: undefined,
 											onExtensionError: (message) => console.error(chalk.yellow(`Warning: ${message}`)),
 										});
+										closeTrustInventory();
 										projectTrustByCwd.set(cwd, trusted);
 										engineLiveness?.trustDecision("projects", cwd, trusted);
 										if (trusted && !initialProjectTrusted) {
@@ -1098,7 +1114,6 @@ export async function main(argv: string[], options?: MainOptions) {
 					!parsed.apiKey,
 			);
 			startupSession = created.session;
-			let hasStartupTrustHook: boolean | undefined;
 			services.projectTrust = {
 				get pending() {
 					return startupTrustPending;
@@ -1110,17 +1125,31 @@ export async function main(argv: string[], options?: MainOptions) {
 						// Without a session decision when startup began, one in the cache now was made by this startup.
 						decided: startupTrust.decide ? projectTrustByCwd.get(cwd) : undefined,
 						saved: storedProjectTrust,
-						// Check the bound hooks at the first authority report, not on every state poll.
 						get hasTrustHook() {
-							hasStartupTrustHook ??= services.resourceLoader
-								.getExtensions()
-								.extensions.some((extension) => (extension.handlers.get("project_trust")?.length ?? 0) > 0);
+							if (hasStartupTrustHook === undefined) {
+								const inventory = services.resourceLoader.getExtensions();
+								hasStartupTrustHook = inventory.extensions.some(
+									(ext) => (ext.handlers.get("project_trust")?.length ?? 0) > 0,
+								);
+								if (!hasStartupTrustHook && engineEnv.projectResourceWithdrawals && engineLiveness) {
+									stopWatchingTrustHandlers = watchFirstProjectTrustHandler(
+										inventory,
+										sessionLifetime(created.session),
+										() => {
+											hasStartupTrustHook = true;
+											stopWatchingTrustHandlers = undefined;
+											engineLiveness.withholdProjectResources(cwd);
+										},
+									);
+								}
+							}
 							return hasStartupTrustHook;
 						},
 					});
 				},
 				abandon() {
 					// No decision is coming any more: the session stays as untrusted as its settings read.
+					closeTrustInventory();
 					startupTrustPending = false;
 					runtimeSettingsManager.trackEditsWhileProjectTrustPending(false);
 				},
@@ -1255,6 +1284,7 @@ export async function main(argv: string[], options?: MainOptions) {
 					})().catch((error) => {
 						completion = undefined;
 						// No decision is coming any more: the session stays as untrusted as its settings read.
+						closeTrustInventory();
 						startupTrustPending = false;
 						throw error;
 					}));
