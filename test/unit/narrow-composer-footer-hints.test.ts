@@ -200,16 +200,9 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		assert.ok(visibleWidth(statuses[0]!) <= 60);
 	});
 
-	test("subagents and workflows docs reflect agent-panel rows, current workflow commands, and clean prose (#5239)", async () => {
+	test("the subagent guide describes agent-panel rows rather than below-prompt counts (#5239)", async () => {
 		const subagentsRef = await readText(resolve(docsRoot, "subagents/reference.md"));
 		assert.doesNotMatch(subagentsRef, /below-prompt background counts/u);
 		assert.match(subagentsRef, /agent panel/iu);
-
-		const operationsDoc = await readText(resolve(docsRoot, "workflows/operations.md"));
-		assert.doesNotMatch(operationsDoc, /named by id, name or unique prefix by its id, name or unique id prefix/u);
-		assert.doesNotMatch(operationsDoc, /stops a run as `\/workflow quit` does/u);
-
-		const builtinsDoc = await readText(resolve(docsRoot, "workflows/builtins.md"));
-		assert.doesNotMatch(builtinsDoc, /Use `\/workflow status` for full details/u);
 	});
 });

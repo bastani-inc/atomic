@@ -456,7 +456,7 @@ const has = (bin) => {
 		if (README.includes("### Atomic in action")) fail("readme", "the old Atomic in action heading remains");
 
 		const positioningCopy = [
-			"Build your process as workflows with scoped context, model choice, tools, handoffs, artifacts, retries, executable checks, review gates, and human approvals.",
+			"Write repeatable procedures as skills. Use codemode to run checks, launch subagents, and bring their results back to the parent chat.",
 			"Atomic’s primitives are built for the software engineering lifecycle. Verification is built into the execution model.",
 			"Atomic is open so you can inspect and adapt it. You own the workflow, the evidence, and the rules for completion.",
 			"Own your intelligence. Build in the open. Question the defaults. Keep control of the process. ☠︎",

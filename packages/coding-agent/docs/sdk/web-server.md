@@ -249,3 +249,4 @@ A route that drives an agent session lets whoever calls it run tools on your ser
 - [SDK](/sdk) for sessions, prompting, and events.
 - [SDK API reference](/sdk/reference) for every `createAgentSession()` option.
 - [Orchestration](/orchestration) for running multi-step tasks with codemode and subagents.
+- [Migrating workflows](/orchestration/migrating-workflows) for replacing earlier workflow definitions.
