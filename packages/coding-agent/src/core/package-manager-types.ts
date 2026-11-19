@@ -207,7 +207,7 @@ export const FILE_PATTERNS: Record<FileKind, RegExp> = {
 	skills: /\.md$/,
 	prompts: /\.md$/,
 	themes: /\.json$/,
-	legacyWorkflowFiles: /\.(ts|js|mjs|cjs)$/,
+	legacyWorkflowFiles: new RegExp("\\.(?:ts|js|mjs|cjs)$", process.platform === "win32" ? "i" : ""),
 };
 
 export type ResourceEntry = { metadata: PathMetadata; enabled: boolean };
