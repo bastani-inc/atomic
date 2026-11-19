@@ -175,11 +175,6 @@ export interface CreateAgentSessionOptions {
 	systemPromptTransform?: (prompt: string) => string;
 	/** Filter inherited session messages before they enter the new AgentSession. */
 	initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[];
-	/** A child filter may also supply its request-aware signature here. Only used with that same initialContextTransform. */
-	forkRequestContextTransform?: (
-		messages: AgentMessage[],
-		onRemovedBoundary: (previous: AgentMessage) => void,
-	) => AgentMessage[];
 }
 
 export interface ResourceAdmissionRequest {

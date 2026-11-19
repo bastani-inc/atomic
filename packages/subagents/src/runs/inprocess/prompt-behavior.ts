@@ -145,11 +145,7 @@ function stripAssistantSubagentToolCallBlocks<T>(message: T): T | undefined {
 }
 
 /** Remove parent-only orchestration history while preserving it for an authorized fanout child. */
-export function stripParentOnlySubagentMessages<T>(
-	messages: T[],
-	preserveFanoutToolHistory = false,
-	onRemovedBoundary?: (previous: T) => void,
-): T[] {
+export function stripParentOnlySubagentMessages<T>(messages: T[], preserveFanoutToolHistory = false): T[] {
 	let changed = false;
 	const filtered: T[] = [];
 	for (const message of messages) {
@@ -158,19 +154,6 @@ export function stripParentOnlySubagentMessages<T>(
 			(!preserveFanoutToolHistory && isSubagentToolResultMessage(message))
 		) {
 			changed = true;
-			const previous = onRemovedBoundary && filtered.at(-1);
-			if (onRemovedBoundary && previous !== undefined && (previous as { role?: string })?.role === "assistant") {
-				const removed = message as { role: string; excludeFromContext?: boolean; content?: unknown };
-				// A tool result or a visible notice separated the parent's assistant turns. Don't
-				// inspect the assistant's blocks or scan arbitrary notice text during projection.
-				if (
-					removed.role === "toolResult" ||
-					(removed.excludeFromContext !== true &&
-						typeof removed.content === "string" &&
-						(removed.content.at(0)?.trim() || removed.content.at(-1)?.trim()))
-				)
-					onRemovedBoundary(previous);
-			}
 			continue;
 		}
 		const stripped = preserveFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
@@ -184,13 +167,15 @@ export function stripParentOnlySubagentMessages<T>(
 	return changed ? filtered : messages;
 }
 
+const forkReplayFilter = Symbol.for("atomic.subagents/fork-replay-filter@1");
+
 export interface InProcessChildPromptBehavior {
 	readonly systemPromptTransform: (prompt: string) => string;
 	readonly initialContextTransform: (messages: AgentMessage[]) => AgentMessage[];
-	readonly forkRequestContextTransform: (
-		messages: AgentMessage[],
-		onRemovedBoundary: (previous: AgentMessage) => void,
-	) => AgentMessage[];
+	readonly [forkReplayFilter]: {
+		project: (messages: AgentMessage[]) => AgentMessage[];
+		boundary: (message: AgentMessage) => "visible" | "hidden" | undefined;
+	};
 }
 
 export function createInProcessChildSystemPromptTransform(
@@ -209,11 +194,28 @@ export function createInProcessChildSystemPromptTransform(
 
 /** Build the construction-time transforms for one admitted in-process child. */
 export function createInProcessChildPromptBehavior(policy: ChildPromptPolicy): InProcessChildPromptBehavior {
-	const project = (messages: AgentMessage[], onRemovedBoundary?: (previous: AgentMessage) => void) =>
-		stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized, onRemovedBoundary);
+	const project = (messages: AgentMessage[]) => stripParentOnlySubagentMessages(messages, policy.fanoutAuthorized);
 	return {
 		systemPromptTransform: createInProcessChildSystemPromptTransform(policy),
 		initialContextTransform: project,
-		forkRequestContextTransform: project,
+		[forkReplayFilter]: {
+			project,
+			boundary(message) {
+				if (!policy.fanoutAuthorized && isSubagentToolResultMessage(message)) return "visible";
+				if (
+					!policy.fanoutAuthorized &&
+					message.role === "assistant" &&
+					message.content?.length &&
+					message.content.every(isSubagentToolCallBlock)
+				)
+					return "hidden";
+				if (!isParentOnlySubagentMessage(message) || message.role !== "custom") return undefined;
+				return !("excludeFromContext" in message && message.excludeFromContext === true) &&
+					typeof message.content === "string" &&
+					(message.content.at(0)?.trim() || message.content.at(-1)?.trim())
+					? "visible"
+					: "hidden";
+			},
+		},
 	};
 }

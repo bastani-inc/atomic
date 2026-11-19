@@ -296,7 +296,6 @@ class AgentSessionBase {
 	protected _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	protected _systemPromptTransform?: (prompt: string) => string;
 	protected _contextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
-	protected _requestContextProjectionTransform?: (messages: AgentMessage[]) => AgentMessage[];
 	protected _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	/** Protection claim on this session's temp tree and tool-results directory. */
@@ -435,7 +434,6 @@ class AgentSessionBase {
 			}
 			this._systemPromptTransform = config.systemPromptTransform;
 			this._contextProjectionTransform = config.contextProjectionTransform;
-			this._requestContextProjectionTransform = config.requestContextProjectionTransform;
 			const stageContext =
 				config.orchestrationContext?.kind === "workflow-stage" ? config.orchestrationContext : undefined;
 			// A stage keeps its boundary for every session it opens; a session reopened after a release gives it back

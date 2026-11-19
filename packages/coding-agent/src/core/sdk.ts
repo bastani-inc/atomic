@@ -40,6 +40,13 @@ import {
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
 import { getModelFastRoute, streamWithFastRoute, withFastRouteStreamOptions } from "./fast-model-routing.ts";
+import {
+	acceptsForkReplay,
+	captureForkReplayPair,
+	type ForkReplayFilter,
+	type ForkReplayPair,
+	forkReplayFilter,
+} from "./fork-replay-pair.ts";
 import { SessionIntercomPolicy, validateIntercomSessionOptions } from "./intercom-policy.ts";
 import { markLifecycleTiming } from "./lifecycle-timings.ts";
 import {
@@ -430,31 +437,40 @@ async function constructAgentSession(
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
 	const repairedMessages = repairOrphanToolResults(existingSession.messages, { repairTrailing: true });
-	// Keep removed turn boundaries beside the fork projection, not on its messages: recovery
-	// and cache warming both rely on the original objects. Each projection has its own gaps.
-	let forkBoundaries: WeakSet<AgentMessage> | undefined;
-	const transform = options.initialContextTransform;
-	const forkTransform = options.forkRequestContextTransform;
-	// Never pass a second argument to a caller's ordinary projection, even if it replaced the child filter.
-	const requestContextProjectionTransform =
-		forkTransform && forkTransform === transform && options.subagentPolicy
-			? (messages: AgentMessage[]) => {
-					forkBoundaries = undefined;
-					if (sessionManager.getHeader()?.parentSessionId === undefined) return transform(messages);
-					const boundaries = new WeakSet<AgentMessage>();
-					const projected = forkTransform(messages, (previous) => boundaries.add(previous));
-					forkBoundaries = boundaries;
-					return projected;
-				}
-			: undefined;
-	// The initial projection can also be sent directly through the agent's conversion and payload hooks.
-	const existingMessages = requestContextProjectionTransform
-		? requestContextProjectionTransform(repairedMessages)
-		: options.initialContextTransform
-			? options.initialContextTransform(repairedMessages)
-			: repairedMessages;
+	const existingMessages = options.initialContextTransform
+		? options.initialContextTransform(repairedMessages)
+		: repairedMessages;
 	const hasExistingSession = existingMessages.length > 0;
-	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
+	const branch = sessionManager.getBranch();
+	const hasThinkingEntry = branch.some((entry) => entry.type === "thinking_level_change");
+	// Only the matching built-in filter opts in. A caller's filter remains an ordinary unary method.
+	const filter = (options as { [forkReplayFilter]?: ForkReplayFilter })[forkReplayFilter];
+	const openingPair =
+		filter &&
+		filter.project === options.initialContextTransform &&
+		options.subagentPolicy &&
+		(!options.model || acceptsForkReplay(options.model)) &&
+		sessionManager.getHeader()?.parentSessionId !== undefined
+			? captureForkReplayPair(repairedMessages, existingMessages, filter, branch, options.model)
+			: undefined;
+	const forkSessionId = openingPair && sessionManager.getSessionId();
+	let activeForkPair = openingPair;
+	const requestContextProjectionTransform =
+		openingPair &&
+		((messages: AgentMessage[]) => {
+			const projected = filter!.project(messages);
+			activeForkPair =
+				acceptsForkReplay(agent.state.model) &&
+				sessionManager.getSessionId() === forkSessionId &&
+				openingPair.matches(
+					messages,
+					projected,
+					(session as unknown as AgentSessionInternalSurface)._entryIdsByMessage,
+				)
+					? openingPair
+					: undefined;
+			return projected;
+		});
 
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
@@ -578,12 +594,20 @@ async function constructAgentSession(
 	let agent: Agent;
 
 	let lastConvertedLlmMessages: Message[] | undefined;
-	let requestForkBoundaries: WeakSet<AgentMessage> | undefined;
+	let requestForkBoundaries: ForkReplayPair | undefined;
 
 	// Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
 	const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-		requestForkBoundaries = forkBoundaries;
-		const converted = convertToLlmWithForkBoundaries(messages, requestForkBoundaries);
+		requestForkBoundaries = undefined;
+		const pair = activeForkPair;
+		const converted = convertToLlmWithForkBoundaries(
+			messages,
+			pair
+				? (normalized) => {
+						requestForkBoundaries = pair.converted(messages, normalized);
+					}
+				: undefined,
+		);
 		// Check setting dynamically so mid-session changes take effect
 		if (!settingsManager.getBlockImages()) {
 			lastConvertedLlmMessages = converted;
@@ -806,19 +830,22 @@ async function constructAgentSession(
 		},
 		onPayload: async (payload, model) => {
 			const sourceMessages = lastConvertedLlmMessages;
-			const boundaries =
-				requestForkBoundaries && sessionManager.getHeader()?.parentSessionId !== undefined
-					? requestForkBoundaries
-					: undefined;
 			const runner = extensionRunnerRef.current;
+			const pair = requestForkBoundaries;
 			let finalPayload = payload;
+			let useForkPair = true;
 			if (runner?.hasHandlers("before_provider_request")) {
 				const guarded = sourceMessages
 					? restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)
 					: payload;
 				finalPayload = await runner.emitBeforeProviderRequest(guarded);
+				// A replacement history is the extension's, not the fork's. For an observer (or an
+				// in-place edit), the guard still checks the final wire pair and its signed blocks.
+				useForkPair = finalPayload === guarded;
 			}
 			if (sourceMessages) {
+				const boundaries =
+					useForkPair && pair && sessionManager.getSessionId() === forkSessionId ? pair : undefined;
 				finalPayload = restoreAnthropicReplayThinkingBlocks(finalPayload, sourceMessages, model, boundaries);
 			}
 			const sanitizedPayload = sanitizeOpenAIResponsesPayload(finalPayload, model);
@@ -953,9 +980,12 @@ async function constructAgentSession(
 			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
 			contextProjectionTransform: options.initialContextTransform,
-			requestContextProjectionTransform,
 			workspace,
 		});
+		if (requestContextProjectionTransform) {
+			(session as unknown as AgentSessionInternalSurface)._requestContextProjectionTransform =
+				requestContextProjectionTransform;
+		}
 	} catch (error) {
 		// The constructor releases its own leases/subscriptions; restore borrowed provider state here.
 		const cleanup = await Promise.allSettled([providerRollback.commit(), settingsManager.flush()]);

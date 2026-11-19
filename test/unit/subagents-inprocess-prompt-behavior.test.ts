@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
 import { normalizeContext } from "@bastani/atomic-ai";
 import {
 	type Api,
@@ -14,6 +14,7 @@ import {
 	streamSimple,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
+import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import {
@@ -228,6 +229,19 @@ const zeroUsage = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
+const responsesModel: Model<"openai-responses"> = {
+	id: "gpt-6.2-astra",
+	name: "GPT-6.2 Astra",
+	api: "openai-responses",
+	provider: "github-copilot",
+	baseUrl: "https://example.invalid",
+	reasoning: true,
+	input: ["text", "image"],
+	cost: zeroUsage.cost,
+	contextWindow: 1_050_000,
+	maxTokens: 128_000,
+};
+
 /** A parent turn produced by the model the forked child runs on, so its signed thinking is replayed to the child. */
 function parentTurn(content: AssistantMessage["content"]): AssistantMessage {
 	return {
@@ -310,6 +324,56 @@ function replyStream(message: AssistantMessage) {
 }
 
 describe("child context refresh (#5481)", () => {
+	test("an ordinary AgentSession does not ask its host for an internal fork hook (#5481)", async () => {
+		const manager = forkParent();
+		const session = new AgentSession(
+			new Proxy(
+				{
+					agent: new Agent({
+						initialState: { model: copilotOpus },
+						streamFn: () => replyStream(parentTurn([{ type: "text", text: "OK" }])),
+					}),
+					sessionManager: manager,
+					settingsManager: SettingsManager.inMemory(),
+					modelRuntime: await testModelRuntime(copilotOpus),
+					cwd: manager.getCwd(),
+					resourceLoader: resourceLoader(),
+				},
+				{
+					get(target, key, receiver) {
+						if (key === "requestContextProjectionTransform") throw new Error("Unknown session option");
+						return Reflect.get(target, key, receiver);
+					},
+				},
+			),
+		);
+		try {
+			await session.prompt("Reply OK.");
+			const reply = session.messages.at(-1);
+			assert.ok(reply?.role === "assistant");
+			assert.deepEqual(reply.content, [{ type: "text", text: "OK" }]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("a child history filter remains safe to map over batches (#5481)", () => {
+		const answer = parentTurn([{ type: "text", text: "Done." }]);
+		const batch: AgentMessage[] = [
+			answer,
+			{
+				role: "custom",
+				customType: "subagent-notify",
+				content: "Finished.",
+				details: {},
+				display: true,
+				timestamp: 1,
+			},
+		];
+		const { initialContextTransform } = createInProcessChildPromptBehavior(policy());
+		assert.deepEqual([batch, batch].map(initialContextTransform), [[answer], [answer]]);
+	});
+
 	test("a fork does not enable a custom history filter's optional fanout argument (#5481)", async () => {
 		const parent = forkParent();
 		await parent.appendMessage(
@@ -444,6 +508,40 @@ describe("child context refresh (#5481)", () => {
 		}
 	});
 
+	test("preparing a plain Responses fork does not index historical answers on each request (#5481)", async () => {
+		const parent = forkParent();
+		const model = responsesModel;
+		for (let index = 0; index < 32; index++) {
+			await parent.appendMessage({
+				...parentTurn([{ type: "text", text: `Answer ${index}` }]),
+				model: model.id,
+				provider: model.provider,
+				api: model.api,
+			});
+			await parent.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
+		}
+		const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+		const session = await createChildSession({}, child, { model });
+		try {
+			for (let repeat = 0; repeat < 2; repeat++) {
+				const inserts = vi.spyOn(WeakSet.prototype, "add");
+				try {
+					const prepared = await session.agent.prepareRequest!({
+						model,
+						thinkingLevel: "off",
+						context: { tools: [], messages: session.messages },
+					});
+					assert.equal(prepared?.context?.messages.length, 32);
+					assert.equal(inserts.mock.calls.filter(([key]) => (key as AgentMessage).role === "assistant").length, 0);
+				} finally {
+					inserts.mockRestore();
+				}
+			}
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("refreshing a fork never rereads a mixed answer's signatures for each removed notice (#5481)", () => {
 		let reads = 0;
 		const answer = parentTurn([
@@ -470,6 +568,51 @@ describe("child context refresh (#5481)", () => {
 });
 
 describe("forked child's first request replays the parent's thinking (#5481)", () => {
+	test.each(["string", "blocks"])(
+		"keeps earlier signed turns before a hook's later %s answer (#5481)",
+		async (shape) => {
+			const parent = forkParent();
+			await parent.appendMessage(
+				parentTurn([{ type: "thinking", thinking: "First", thinkingSignature: "sig-first" }]),
+			);
+			await parent.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
+			await parent.appendMessage(
+				parentTurn([{ type: "thinking", thinking: "Second", thinkingSignature: "sig-second" }]),
+			);
+			const runtime = createExtensionRuntime();
+			const extension = await loadExtensionFromFactory(
+				(api) => {
+					api.on("before_provider_request", ({ payload }) => {
+						const body = payload as { messages: PayloadMessage[] };
+						body.messages.splice(
+							-1,
+							0,
+							{ role: "user", content: "Status?" },
+							{
+								role: "assistant",
+								content: shape === "string" ? "Done." : [{ type: "text", text: "Done." }],
+							},
+						);
+					});
+				},
+				parent.getCwd(),
+				createEventBus(),
+				runtime,
+			);
+			const loader = resourceLoader();
+			loader.getExtensions = () => ({ extensions: [extension], errors: [], runtime });
+			const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+			const session = await createChildSession({}, child, { resourceLoader: loader });
+			try {
+				const turns = assistantTurns(await childFirstRequest(session));
+				assert.deepEqual(turns[0], [{ type: "thinking", thinking: "First", signature: "sig-first" }]);
+				assert.equal(turns.length, 3);
+			} finally {
+				await session.dispose();
+			}
+		},
+	);
+
 	test("an aborted reply after a notice does not replace the latest signed answer, even on reopen (#5481)", async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-reopen-thinking-"));
 		tempDirs.push(root);
@@ -508,18 +651,7 @@ describe("forked child's first request replays the parent's thinking (#5481)", (
 			const root = mkdtempSync(join(tmpdir(), "atomic-responses-thinking-"));
 			tempDirs.push(root);
 			const parent = await SessionManager.create(root, join(root, "sessions"));
-			const model: Model<"openai-responses"> = {
-				id: "gpt-6.2-astra",
-				name: "GPT-6.2 Astra",
-				api: "openai-responses",
-				provider: "github-copilot",
-				baseUrl: "https://example.invalid",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: zeroUsage.cost,
-				contextWindow: 1_050_000,
-				maxTokens: 128_000,
-			};
+			const model = responsesModel;
 			const item = { type: "reasoning", id: "rs_first", encrypted_content: "opaque", summary: [] };
 			const first = {
 				...parentTurn([

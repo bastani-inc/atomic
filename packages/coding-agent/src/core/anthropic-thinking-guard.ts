@@ -2,6 +2,8 @@ import { anthropicAssistantReplayContent } from "@bastani/atomic-ai/api/anthropi
 import { isProducedByModel } from "@bastani/atomic-ai/api/transform-messages";
 import type { Api, AssistantMessage, Message, Model } from "@bastani/atomic-ai/compat";
 
+import { acceptsForkReplay, type ForkReplayPair } from "./fork-replay-pair.ts";
+
 type JsonObject = Record<string, unknown>;
 
 type AnthropicContentBlock = JsonObject & { type: string };
@@ -64,6 +66,21 @@ function isSignedWireBlock(block: AnthropicContentBlock): boolean {
 	const signature =
 		block.type === "thinking" ? block.signature : block.type === "redacted_thinking" ? block.data : undefined;
 	return typeof signature === "string" && signature.trim().length > 0;
+}
+
+function matchesSignedBlock(
+	original: ReplayThinkingBlock | undefined,
+	wire: AnthropicContentBlock | undefined,
+): boolean {
+	return (
+		!!original &&
+		!!wire &&
+		original.type === wire.type &&
+		isSignedWireBlock(original) &&
+		(original.type === "thinking"
+			? original.signature === wire.signature && original.thinking === wire.thinking
+			: original.data === wire.data)
+	);
 }
 
 function hasReplayThinkingBlock(message: AssistantMessage, allowEmptySignature: boolean): boolean {
@@ -146,8 +163,7 @@ function repairAssistantContent(
 		// Check the single candidate during the existing repair pass. The first other block
 		// rules it out; no separate walk of its content (or any earlier assistant) is needed.
 		if (forkCandidate?.onlySignedThinking) {
-			forkCandidate.onlySignedThinking =
-				!!replayBlock && isSignedWireBlock(replayBlock) && isSignedWireBlock(providerBlocks[index]);
+			forkCandidate.onlySignedThinking = matchesSignedBlock(replayBlock, providerBlocks[index]);
 		}
 		if (replayBlock) {
 			if (isThinkingLikeAnthropicBlock(providerBlocks[providerIndex])) {
@@ -209,11 +225,12 @@ function getAnthropicMessages(payload: unknown): unknown[] | undefined {
 	return Array.isArray(payload.messages) ? payload.messages : undefined;
 }
 
-function getAnthropicAssistantContent(message: unknown): AnthropicContentBlock[] | undefined {
+/** Undefined for another role; null for an assistant that is not a block-restoration target. */
+function getAnthropicAssistantContent(message: unknown): AnthropicContentBlock[] | null | undefined {
 	if (!isObject(message) || message.role !== "assistant") return undefined;
-	if (!Array.isArray(message.content)) return undefined;
+	if (!Array.isArray(message.content)) return null;
 	const content = message.content.filter(isAnthropicContentBlock);
-	return content.length === message.content.length ? content : undefined;
+	return content.length === message.content.length ? content : null;
 }
 
 /**
@@ -233,18 +250,25 @@ export function restoreAnthropicReplayThinkingBlocks(
 	payload: unknown,
 	sourceMessages: readonly Message[],
 	model: Model<Api>,
-	forkBoundaries?: WeakSet<Message>,
+	forkBoundaries?: ForkReplayPair,
 ): unknown {
 	if (model.api !== "anthropic-messages") return payload;
 
 	const payloadMessages = getAnthropicMessages(payload);
 	if (!payloadMessages) return payload;
 
+	let allAssistantRowsAligned = true;
 	const assistantPayloads = payloadMessages
-		.map((message, index) => ({ message, index, content: getAnthropicAssistantContent(message) }))
+		.map((message, index) => {
+			const content = getAnthropicAssistantContent(message);
+			// String content is a valid assistant turn too. It is not a block-restoration
+			// target, but we cannot omit a row by ordinals from an incomplete assistant list.
+			if (content === null) allAssistantRowsAligned = false;
+			return { message, index, content };
+		})
 		.filter(
 			(entry): entry is { message: JsonObject; index: number; content: AnthropicContentBlock[] } =>
-				entry.content !== undefined && isObject(entry.message),
+				entry.content != null && isObject(entry.message),
 		);
 
 	if (assistantPayloads.length === 0) return payload;
@@ -262,21 +286,23 @@ export function restoreAnthropicReplayThinkingBlocks(
 
 	// Claude joins adjacent assistants. Only a removed boundary in the latest *emitted* pair
 	// can need the fork repair. An aborted reply may not emit at all; a visible user separates them.
-	const earlier = forkBoundaries && assistantPayloads.at(-2);
+	const earlier = forkBoundaries && allAssistantRowsAligned && assistantPayloads.at(-2);
 	const latest = earlier && assistantPayloads.at(-1)!;
 	const source = earlier && emittingSourceAssistants.at(-2);
+	const laterSource = earlier && emittingSourceAssistants.at(-1);
 	const candidate =
 		earlier &&
 		source &&
 		latest &&
 		earlier.index + 1 === latest.index &&
-		forkBoundaries.has(source) &&
-		(model.provider === "github-copilot" || model.provider === "anthropic" || model.provider === "anthropic-api") &&
-		(model.fastRoute?.upstreamModelId ?? model.id).startsWith("claude-") &&
+		forkBoundaries.earlier.deref() === source &&
+		laterSource &&
+		forkBoundaries.later.deref() === laterSource &&
+		isProducedByModel(laterSource, model) &&
+		acceptsForkReplay(model) &&
 		earlier.content.length > 0 &&
 		earlier.content.length === source.content.length &&
-		latest.content[0] &&
-		isSignedWireBlock(latest.content[0])
+		matchesSignedBlock(readReplayThinkingBlock(laterSource.content[0], allowEmptySignature), latest.content[0])
 			? earlier
 			: undefined;
 	let omitIndex: number | undefined;
