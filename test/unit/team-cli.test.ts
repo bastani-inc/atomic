@@ -33,7 +33,7 @@ import {
 	type StorageStatus,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { joinTeamWith } from "../../packages/coding-agent/src/core/storage/team.js";
-import { selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -194,9 +194,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 				kind: "sqlite",
 				path: join(agentDir, "workflows", "journal.sqlite"),
 			});
-			const journal = selectRunJournal({ agentDir, settings });
-			assert.ok("kind" in journal && journal.kind === "adapter");
-			assert.equal(journal.module, LIBSQL_ADAPTER_PACKAGE);
+
 			const status = await collectStorageStatus({ cwd: project, agentDir, probe: false });
 			const intercom = status.domains.find((domain) => domain.domain === "intercom");
 			assert.equal(intercom?.selection, `adapter ${LIBSQL_ADAPTER_PACKAGE}`);

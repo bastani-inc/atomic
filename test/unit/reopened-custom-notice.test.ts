@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { type ChatMessageRenderOptions, SessionManager } from "@bastani/atomic";
-import { test, vi } from "vitest";
+import { beforeAll, test, vi } from "vitest";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
 import type { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
-import { getEditorTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+
 import { withDiskSessions } from "../helpers/on-disk-session.js";
-import { makeHandle, setupRun } from "./stage-chat-view-helpers.js";
+
+beforeAll(() => initTheme("dark", false));
 
 const title = "Subagent worker completed: Review";
 const finished = {
@@ -21,7 +20,6 @@ const finished = {
 };
 
 type Backend = "sqlite" | "jsonl";
-type Host = "chat" | "stage";
 
 const killed = {
 	notification: {
@@ -71,38 +69,19 @@ async function reopen(
 }
 
 /** A live extension can attach lazy fields to a rehydrated message; property accessors themselves never go on disk. */
-function mount(host: Host, message: CustomMessage, settings: Partial<ChatMessageRenderOptions> = {}) {
+function mount(message: CustomMessage, settings: Partial<ChatMessageRenderOptions> = {}) {
 	const getChatRenderSettings = () => settings;
-	if (host === "chat") {
-		const chat = new ChatSessionHost({
-			style: themedChatHostStyle(),
-			editorTheme: getEditorTheme(),
-			getChatRenderSettings,
-		});
-		chat.replaceMessages([message]);
-		return {
-			draw: () => stripVTControlCharacters(chat.renderBody(140, 32).join("\n")),
-			refresh: () => chat.invalidate(),
-			close: () => chat.dispose(),
-		};
-	}
-	const store = createStore();
-	setupRun(store, "run-1", "stage-a", "completed");
-	const stage = new StageChatView({
-		store,
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "review",
-		graphTheme: deriveGraphTheme({}),
-		...makeHandle(undefined, [message], "completed"),
+
+	const chat = new ChatSessionHost({
+		style: themedChatHostStyle(),
+		editorTheme: getEditorTheme(),
 		getChatRenderSettings,
-		onDetach() {},
-		onClose() {},
 	});
+	chat.replaceMessages([message]);
 	return {
-		draw: () => stripVTControlCharacters(stage.render(140).join("\n")),
-		refresh: () => stage.invalidate(),
-		close: () => stage.dispose(),
+		draw: () => stripVTControlCharacters(chat.renderBody(140, 32).join("\n")),
+		refresh: () => chat.invalidate(),
+		close: () => chat.dispose(),
 	};
 }
 
@@ -255,8 +234,8 @@ for (const backend of ["sqlite", "jsonl"] as const) {
 					},
 				});
 				try {
-					for (const host of ["chat", "stage"] as const) {
-						const card = mount(host, message);
+					{
+						const card = mount(message);
 						try {
 							assert.match(card.draw(), /⏸ worker/u);
 						} finally {
@@ -302,54 +281,52 @@ for (const backend of ["sqlite", "jsonl"] as const) {
 			},
 			killed,
 		));
-	for (const host of ["chat", "stage"] as const) {
-		test(`${backend} ${host}: repaint keeps the completion after the notification getter expires (#5690)`, () =>
-			reopen(backend, async (message) => {
-				let reads = 0;
-				const details = message.details as typeof finished;
-				const notification = details.notification;
-				Object.defineProperty(details, "notification", {
-					get() {
-						assert.equal(++reads, 1, "notification lease expired");
-						return notification;
-					},
-				});
-				const card = mount(host, message);
-				try {
-					assert.match(card.draw(), /● worker finished/u);
-					card.refresh();
-					assert.match(card.draw(), /● worker finished/u);
-					assert.equal(reads, 1);
-				} finally {
-					card.close();
-				}
-			}));
-		test(`${backend} ${host}: an extension can draw a compact completion without reading the body (#5690)`, () =>
-			reopen(backend, async (message) => {
-				message.details = { caption: "reviewer finished" };
-				Object.defineProperty(message, "content", {
-					get() {
-						throw Error("body requires expanded view");
-					},
-				});
-				let calls = 0;
-				const card = mount(host, message, {
-					getCustomMessageRenderer: () => (entry) => {
-						calls++;
-						return {
-							invalidate() {},
-							render: () => [`Extension card: ${(entry.details as { caption: string }).caption}`],
-						};
-					},
-				});
-				try {
-					assert.match(card.draw(), /Extension card: reviewer finished/);
-					assert.equal(calls, 1);
-				} finally {
-					card.close();
-				}
-			}));
-	}
+	test(`${backend} chat: repaint keeps the completion after the notification getter expires (#5690)`, () =>
+		reopen(backend, async (message) => {
+			let reads = 0;
+			const details = message.details as typeof finished;
+			const notification = details.notification;
+			Object.defineProperty(details, "notification", {
+				get() {
+					assert.equal(++reads, 1, "notification lease expired");
+					return notification;
+				},
+			});
+			const card = mount(message);
+			try {
+				assert.match(card.draw(), /● worker finished/u);
+				card.refresh();
+				assert.match(card.draw(), /● worker finished/u);
+				assert.equal(reads, 1);
+			} finally {
+				card.close();
+			}
+		}));
+	test(`${backend} chat: an extension can draw a compact completion without reading the body (#5690)`, () =>
+		reopen(backend, async (message) => {
+			message.details = { caption: "reviewer finished" };
+			Object.defineProperty(message, "content", {
+				get() {
+					throw Error("body requires expanded view");
+				},
+			});
+			let calls = 0;
+			const card = mount(message, {
+				getCustomMessageRenderer: () => (entry) => {
+					calls++;
+					return {
+						invalidate() {},
+						render: () => [`Extension card: ${(entry.details as { caption: string }).caption}`],
+					};
+				},
+			});
+			try {
+				assert.match(card.draw(), /Extension card: reviewer finished/);
+				assert.equal(calls, 1);
+			} finally {
+				card.close();
+			}
+		}));
 	for (const [state, details] of [
 		["completed", finished],
 		["killed", killed],
@@ -376,8 +353,8 @@ for (const backend of ["sqlite", "jsonl"] as const) {
 						const secondMessage = { ...message, content: details.notification.title };
 						const a = card(message),
 							b = card(secondMessage);
-						const first = mount("chat", message, { createCustomMessageComponent: () => a }),
-							second = mount("stage", secondMessage, { createCustomMessageComponent: () => b });
+						const first = mount(message, { createCustomMessageComponent: () => a }),
+							second = mount(secondMessage, { createCustomMessageComponent: () => b });
 						try {
 							a.setExpanded(true);
 							first.draw();

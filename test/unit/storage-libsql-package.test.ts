@@ -19,10 +19,9 @@ import { registerSessionStoreConformance } from "../../packages/coding-agent/src
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+
 import { registerBrokerLeaseStoreConformance } from "../helpers/intercom-multinode-contract.js";
-import { observeJournalRead } from "../helpers/journal-read-observation.js";
+
 import {
 	collectReleasedLibsqlStatements,
 	makeLibsqlDirectory,
@@ -90,24 +89,6 @@ registerSessionStoreConformance(
 			});
 		});
 	},
-);
-
-registerRunJournalConformance(
-	test,
-	"package-selected libSQL adapter journal (#3857)",
-	async () => {
-		const directory = makeLibsqlDirectory();
-		const database = await openPackageDatabase(pathToFileURL(join(directory, "journal.sqlite")).href, "journal");
-		const journal = await SqlRunJournal.open(database);
-		const close = journal.close.bind(journal);
-		journal.close = async () => {
-			await close();
-			await database.close();
-			await removeLibsqlDirectory(directory);
-		};
-		return journal;
-	},
-	observeJournalRead,
 );
 
 // A `file:` libSQL connection has no busy timeout, so two local connections would fail with SQLITE_BUSY under the

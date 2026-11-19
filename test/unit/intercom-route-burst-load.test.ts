@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
+import { isRetryableSameModelFailure } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { jitteredReconnectDelayMs, reconnectDelayMs } from "../../packages/intercom/reconnect-backoff.js";
@@ -32,7 +33,6 @@ import {
 	IntercomRuntimeInactiveError,
 	isIntercomRuntimeInactiveError,
 } from "../../packages/intercom/runtime-inactive-error.js";
-import { isRetryableSameModelFailure } from "../../packages/workflows/src/runs/shared/model-fallback-failures.js";
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
 import { sleep } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";

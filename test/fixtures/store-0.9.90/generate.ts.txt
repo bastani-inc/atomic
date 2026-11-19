@@ -1,0 +1,238 @@
+// Generates the 0.9.90 legacy store fixture: run from the 0.9.90 worktree with bun.
+// Usage: bun gen-legacy-fixture.ts <sqlite-out.sql> [<postgres-url> <pg-raw-out.json>]
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SqliteDatabase, SqliteRow } from "./packages/coding-agent/src/core/storage/database.js";
+import { openNodeSqliteDatabase } from "./packages/coding-agent/src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "./packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { openDatabaseWakeUpBus } from "./packages/intercom/broker/database-wake-up-bus.js";
+import { openSqlHeldSendStore } from "./packages/intercom/broker/sql-held-send-store.js";
+import { openSqlKnownSessionStore } from "./packages/intercom/broker/sql-known-session-store.js";
+import { openSqlBrokerLeaseStore } from "./packages/intercom/broker/sql-lease-store.js";
+import { openSqlOutboxStore } from "./packages/intercom/broker/sql-outbox-store.js";
+import { openSqlPendingAskStore } from "./packages/intercom/broker/sql-pending-ask-store.js";
+import { openSqlReleasedAskStore } from "./packages/intercom/broker/sql-released-ask-store.js";
+import { openSqlRestoringReservationStore } from "./packages/intercom/broker/sql-restoring-reservation-store.js";
+import { openSqlSentMessageAuthority } from "./packages/intercom/broker/sql-sent-message-authority.js";
+import { openPostgresDatabase } from "./packages/storage-postgres/postgres.js";
+import { sqlPoolStorage } from "./packages/workflows/src/durable/journal/internal.js";
+import { SqlFleetStore } from "./packages/workflows/src/durable/journal/sql-fleet.js";
+import { openSqlPoolQueue } from "./packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { openSqlPoolUsage } from "./packages/workflows/src/durable/journal/sql-pool-usage.js";
+import { SqlRateBuckets } from "./packages/workflows/src/durable/journal/sql-rate-buckets.js";
+import { SqlRunJournal } from "./packages/workflows/src/durable/journal/sql-run-journal.js";
+import { SqlSharedPool } from "./packages/workflows/src/durable/journal/sql-shared-pool.js";
+import { openPoolSessions } from "./packages/workflows/src/workers/pool-session-store.js";
+import { SqlResourceAdmission } from "./packages/workflows/src/workers/resource-admission.js";
+
+const blob = (text: string) => {
+	const data = new TextEncoder().encode(text);
+	return { hash: createHash("sha256").update(data).digest("hex"), data };
+};
+
+/** Every store 0.9.90 keeps on a database, then one session with a snapshot entry and one run that references two blobs. */
+async function populate(database: SqliteDatabase, connect: () => Promise<SqliteDatabase>): Promise<void> {
+	const sessions = await SqlSessionStore.open(database, {});
+	const options = { database };
+	await openSqlBrokerLeaseStore(options);
+	await openSqlOutboxStore(options);
+	await openSqlHeldSendStore(options);
+	await openSqlRestoringReservationStore(options);
+	await openSqlPendingAskStore(options);
+	await openSqlReleasedAskStore(options);
+	await openSqlSentMessageAuthority(options);
+	await openSqlKnownSessionStore(options);
+	await (await openDatabaseWakeUpBus({ openDatabase: connect })).close();
+	const journal = await SqlRunJournal.open(database, {});
+	try {
+		const queue = await openSqlPoolQueue(journal);
+		await openSqlPoolUsage(journal);
+		await SqlSharedPool.open(journal, queue);
+		await SqlFleetStore.open(journal);
+		await SqlRateBuckets.open(journal);
+		await SqlResourceAdmission.open(journal, { root: "root", holder: "holder" });
+		await (await openPoolSessions(sqlPoolStorage(journal)!)).close();
+
+		const runPatch = blob("legacy run patch\n");
+		const runBundle = blob("legacy run bundle\n");
+		const sessionPatch = blob("legacy session patch\n");
+		await journal.snapshotBlobs.putBlobs([runPatch, runBundle, sessionPatch]);
+		const snapshot = (id: string, patch: string, bundle?: string) => ({
+			version: 1,
+			id,
+			root: "/repo",
+			remotes: ["https://example.com/acme/app.git"],
+			branch: "main",
+			head: "a".repeat(40),
+			snapshot: "b".repeat(40),
+			tree: "c".repeat(40),
+			chain: [{ snapshot: "b".repeat(40), parent: "a".repeat(40), patch }],
+			...(bundle === undefined ? {} : { bundle: { blob: bundle, commits: ["d".repeat(40)] } }),
+			omitted: [],
+			createdAt: 1_790_000_000_000,
+		});
+		const runId = "legacy-run-1";
+		await journal.createRun({
+			runId,
+			name: "legacy-workflow",
+			cwd: "/repo",
+			createdAt: 1_790_000_000_000,
+			status: "running",
+			inputs: { task: "legacy" },
+		});
+		const acquired = await journal.acquire(runId, "legacy-holder");
+		if (acquired.status !== "acquired") throw new Error("lease not acquired");
+		await journal.append(acquired.lease, { type: "RunStarted", payload: { workflowId: runId } });
+		await journal.append(
+			acquired.lease,
+			{
+				type: "CheckpointRecorded",
+				payload: {
+					kind: "tool",
+					name: "build",
+					output: "ok",
+					completedAt: 1_790_000_000_500,
+					worktreeSnapshots: [snapshot("snap-run", runPatch.hash, runBundle.hash)],
+				},
+			},
+			{ key: '["CheckpointRecorded","tool","build"]' },
+		);
+		await journal.append(acquired.lease, {
+			type: "StatusChanged",
+			payload: {
+				workflowId: runId,
+				status: "paused",
+				completedCheckpoints: 1,
+				pendingPrompts: 0,
+			},
+		});
+		await journal.release(acquired.lease);
+
+		const sessionId = "legacy-session-1";
+		await sessions.create(
+			{
+				type: "session",
+				version: 4,
+				id: sessionId,
+				createdAt: "2026-11-01T09:30:00.000Z",
+				cwd: "/repo",
+			},
+			[
+				{
+					type: "message",
+					id: "m1",
+					parentId: null,
+					timestamp: "2026-11-01T09:30:05.000Z",
+					message: { role: "user", content: "hello from 0.9.90", timestamp: 1_790_000_000_000 },
+				},
+				{
+					type: "worktree_snapshot",
+					id: "w1",
+					parentId: "m1",
+					timestamp: "2026-11-01T09:30:06.000Z",
+					root: "/repo",
+					snapshotId: "snap-session",
+					snapshot: snapshot("snap-session", sessionPatch.hash),
+				},
+			] as never,
+		);
+		const stage = "legacy-stage-session";
+		await sessions.create(
+			{
+				type: "session",
+				version: 4,
+				id: stage,
+				createdAt: "2026-11-01T09:31:00.000Z",
+				cwd: "/repo",
+				internal: true,
+				workflow: { runId, stageId: "stage-build", stageName: "build" },
+			} as never,
+			[
+				{
+					type: "message",
+					id: "s1",
+					parentId: null,
+					timestamp: "2026-11-01T09:31:05.000Z",
+					message: { role: "user", content: "stage prompt", timestamp: 1_790_000_060_000 },
+				},
+			] as never,
+		);
+	} finally {
+		await journal.close();
+		await sessions.close();
+	}
+	// The next open of the journal, as any later session or run makes: the snapshot index then also covers the pool's
+	// tables, which did not exist when the first one installed it.
+	await (await SqlRunJournal.open(database, {})).close();
+}
+
+const literal = (value: unknown): string => {
+	if (value === null || value === undefined) return "NULL";
+	if (typeof value === "number" || typeof value === "bigint") return String(value);
+	if (value instanceof Uint8Array) return `X'${Buffer.from(value).toString("hex")}'`;
+	return `'${String(value).replaceAll("'", "''")}'`;
+};
+
+/** A SQLite database as SQL text: tables, their rows, then indexes, then triggers, in creation order. */
+async function dumpSqlite(database: SqliteDatabase): Promise<string> {
+	const objects = await database.all<SqliteRow & { type: string; name: string; tbl_name: string; sql: string | null }>(
+		"SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid",
+	);
+	const out: string[] = [];
+	// A full-text table creates its own shadow tables, whose rows are then replaced with the dumped ones; the full-text
+	// table's own rows are its index, not data.
+	const virtual = objects.filter((o) => o.type === "table" && /^CREATE VIRTUAL TABLE/i.test(o.sql ?? ""));
+	const shadowOf = (name: string) =>
+		virtual.some((table) => new RegExp(`^${table.name}_(data|idx|content|docsize|config)$`).test(name));
+	// One statement a line: SQLite keeps each object's SQL as it was written, line breaks included.
+	const line = (sql: string | null) => `${(sql ?? "").replace(/\s*\n\s*/g, " ")};`;
+	for (const object of objects.filter((o) => o.type === "table" && !shadowOf(o.name))) out.push(line(object.sql));
+	for (const object of objects.filter((o) => o.type === "table" && !virtual.includes(o))) {
+		const rows = /WITHOUT ROWID/i.test(object.sql ?? "")
+			? (await database.all(`SELECT * FROM "${object.name}"`)).sort((a, b) =>
+					JSON.stringify(a, (_k, v) => (v instanceof Uint8Array ? Buffer.from(v).toString("hex") : v)).localeCompare(
+						JSON.stringify(b, (_k, v) => (v instanceof Uint8Array ? Buffer.from(v).toString("hex") : v)),
+					),
+				)
+			: await database.all(`SELECT * FROM "${object.name}" ORDER BY rowid`);
+		for (const row of rows) {
+			const columns = Object.keys(row);
+			out.push(
+				`INSERT${shadowOf(object.name) ? " OR REPLACE" : ""} INTO ${object.name} (${columns.join(", ")}) VALUES (${columns.map((column) => literal(row[column])).join(", ")});`,
+			);
+		}
+	}
+	for (const type of ["index", "view", "trigger"])
+		for (const object of objects.filter((o) => o.type === type)) out.push(line(object.sql));
+	if (out.some((statement) => statement.includes("\n"))) throw new Error("a statement spans lines");
+	return `${out.join("\n")}\n`;
+}
+
+const [sqliteOut, postgresUrl, postgresOut] = process.argv.slice(2);
+const dir = mkdtempSync(join(tmpdir(), "legacy-0990-"));
+try {
+	const path = join(dir, "legacy.sqlite");
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		await populate(database, () => openNodeSqliteDatabase(path));
+		writeFileSync(sqliteOut!, await dumpSqlite(database));
+	} finally {
+		await database.close();
+	}
+	if (postgresUrl !== undefined) {
+		const open = () => openPostgresDatabase({ url: postgresUrl, password: "pw" });
+		if (postgresOut !== "skip") {
+			const pg = await open();
+			try {
+				await populate(pg, open);
+			} finally {
+				await pg.close();
+			}
+		}
+	}
+} finally {
+	rmSync(dir, { recursive: true, force: true });
+}
+console.log("ok");

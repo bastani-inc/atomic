@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Interleaved A/B comparison of the `/resume` and `/workflow resume` list paths: a base commit's session store
- * and durable backend against the working tree's, alternating per iteration over one fixture database.
+ * Interleaved A/B comparison of the `/resume` list paths: a base commit's session store
+ * against the working tree's, alternating per iteration over one fixture database.
  *
  *   bun run scripts/perf/resume-lists/interleaved.ts --database <seeded journal.sqlite> --base debf9d9db [--n 20]
  *
@@ -17,30 +17,19 @@ import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/sto
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { SessionStore } from "../../../packages/coding-agent/src/core/storage/session/types.js";
 import { createSessionCwdMatcher } from "../../../packages/coding-agent/src/utils/canonical-path.js";
-import type { DurableWorkflowCatalogEntries } from "../../../packages/workflows/src/durable/backend.js";
-import { openSqlRunJournal } from "../../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
-import type { RunJournal } from "../../../packages/workflows/src/durable/journal/types.js";
+
 import { sessionCwd } from "./fixtures.js";
 
 const REPO = resolve(import.meta.dir, "../../..");
 const STORE = "packages/coding-agent/src/core/storage/session/sql-session-store.ts";
-const BACKEND = "packages/workflows/src/durable/journal/journal-backend.ts";
 
 interface StoreModule {
 	SqlSessionStore: {
 		open(database: SqliteDatabase, options: { cwdMatcher: typeof createSessionCwdMatcher }): Promise<SessionStore>;
 	};
 }
-interface Backend {
-	prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries>;
-	close(): Promise<void>;
-}
-interface BackendModule {
-	JournalDurableBackend: { open(journal: RunJournal): Promise<Backend> };
-}
 interface Implementation {
 	readonly store: StoreModule;
-	readonly backend: BackendModule;
 }
 type Sample = Record<string, number>;
 
@@ -50,11 +39,11 @@ function option(name: string): string | undefined {
 }
 
 /**
- * Copies the base commit's two modules into a fresh private directory, with every import pointing back into this
+ * Copies the base commit's session store into a fresh private directory, with every import pointing back into this
  * checkout. The caller removes the directory.
  */
 function materializeBase(commit: string): string {
-	const modules = [STORE, BACKEND].map((path) => {
+	const modules = [STORE].map((path) => {
 		const source = execFileSync("git", ["show", `${commit}:${path}`], { cwd: REPO, encoding: "utf8" });
 		const from = join(REPO, dirname(path));
 		const rewritten = source
@@ -80,7 +69,6 @@ async function load(kind: "base" | "after", baseDirectory: string): Promise<Impl
 	const root = kind === "base" ? baseDirectory : undefined;
 	return {
 		store: (await import(root ? join(root, "sql-session-store.ts") : join(REPO, STORE))) as StoreModule,
-		backend: (await import(root ? join(root, "journal-backend.ts") : join(REPO, BACKEND))) as BackendModule,
 	};
 }
 
@@ -104,14 +92,6 @@ async function sample(implementation: Implementation, database: string): Promise
 		await store.close();
 		await connection.close();
 	}
-	let backend: Backend | undefined;
-	result["/workflow resume backend open (startup fold)"] = await timed(async () => {
-		backend = await implementation.backend.JournalDurableBackend.open(await openSqlRunJournal(database));
-	});
-	if (backend === undefined) throw new Error("backend did not open");
-	result["/workflow resume first open"] = await timed(() => backend.prepareWorkflowCatalog());
-	result["/workflow resume reopen"] = await timed(() => backend.prepareWorkflowCatalog());
-	await backend.close();
 	return result;
 }
 

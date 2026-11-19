@@ -10,7 +10,7 @@ import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import { SNAPSHOT_BLOB_CHUNK_BYTES } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+
 import { createSession, messageEntry, syntheticSnapshot } from "../helpers/snapshot-reference-index.js";
 
 /** The snapshot blob store of Atomic 0.9.87, vendored unmodified (test/fixtures/snapshot-store-0.9.87/README.md). */
@@ -67,22 +67,6 @@ function largeBlob(): { readonly hash: string; readonly data: Uint8Array } {
 }
 
 describe("an older build on a snapshot store this build wrote (#5065)", () => {
-	test("an older build refuses a new journal holding a chunked blob, never reading it as empty (#5065)", async () => {
-		const database = await open();
-		const journal = await SqlRunJournal.open(database);
-		const blob = largeBlob();
-		await journal.snapshotBlobs.putBlobs([blob]);
-
-		const read = await readAsRelease0987(database, blob.hash);
-
-		assert.ok(
-			"refused" in read,
-			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
-		);
-		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
-		await journal.close();
-	});
-
 	test("an older build refuses a database where this build stored a chunked blob through its sessions only (#5065)", async () => {
 		const database = await open();
 		// Shared or team storage before any workflow run: this build has opened the session store and no journal.
@@ -99,18 +83,12 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
 		);
 		assert.deepEqual(await sessions.snapshotBlobs.getBlob(blob.hash), blob.data);
-		// This build's journal opens the database it marked, and reads the blob whole.
-		const journal = await SqlRunJournal.open(database);
-		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
-		await journal.close();
 	});
 
 	test("a chunked blob stored through the sessions upgrades a journal an older build created (#5065)", async () => {
 		const database = await open();
 		// An older build created the journal first: its tables, at schema version 1.
-		await (await SqlRunJournal.open(database)).close();
-		await database.run("UPDATE wf_meta SET schema_version = 1");
-		await database.exec("DROP TABLE wf_event_chunks");
+		await readAsRelease0987(database, "unknown");
 		// This build then opens only the session store and stores a chunked blob.
 		const sessions = await SqlSessionStore.open(database);
 		const blob = largeBlob();
@@ -124,24 +102,7 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 		);
 		// The journal's own upgrade ran, so its version 2 tables are there too.
 		assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'wf_event_chunks'"));
-		const journal = await SqlRunJournal.open(database);
-		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
-		await journal.close();
-	});
-
-	test("opening an older build's journal upgrades it, so that build then refuses it (#5065)", async () => {
-		const database = await open();
-		await (await SqlRunJournal.open(database)).close();
-		// The journal as 0.9.87 leaves it: the same tables, at schema version 1.
-		await database.run("UPDATE wf_meta SET schema_version = 1");
-
-		const journal = await SqlRunJournal.open(database);
-		const blob = largeBlob();
-		await journal.snapshotBlobs.putBlobs([blob]);
-
-		assert.ok("refused" in (await readAsRelease0987(database, blob.hash)));
-		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
-		await journal.close();
+		assert.deepEqual(await sessions.snapshotBlobs.getBlob(blob.hash), blob.data);
 	});
 
 	test("an older build refuses a database where collection moved a legacy blob to chunks, never reading it as empty (#5327)", async () => {

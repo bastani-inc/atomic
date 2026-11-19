@@ -9,7 +9,7 @@
 //
 // Checks, in order:
 //   1  required feature set, count, fixed product-impact order, lesson/display binding, and docs mapping
-//   2  README hierarchy and table shape: 6 featured + 31 remaining, exact placement, links, media, alt
+//   2  README hierarchy and table shape: 6 featured + 19 remaining, exact placement, links, media, alt
 //   3  exact 19 + 27 + 15 badge manifest and README groups; local SVG XML, icon/text shape, and source records
 //   4  feature media exist for all 74 files named by the manifest
 //   5  dimensions: every GIF and poster is exactly 960x540 (16:9)
@@ -34,29 +34,17 @@ const BADGE_MANIFEST_PATH = join(REPO, "scripts", "readme-badges", "manifest.jso
 const BADGE_MANIFEST = JSON.parse(readFileSync(BADGE_MANIFEST_PATH, "utf8"));
 const README = readFileSync(join(REPO, "README.md"), "utf8");
 
-// The exact 6+31 contract, written out rather than derived from the manifest
+// The exact 6+19 contract, written out rather than derived from the manifest
 // so the manifest cannot quietly redefine the required split or coverage.
 const FEATURED_REQUIRED = [
-	["A.8", "Natural-language workflow authoring", "Workflows", "/workflows"],
-	["6.2", "Steer and control a live run", "Workflows", "/workflows"],
-	["6.5", "Durability and resume", "Workflows", "/workflows"],
-	["6.4", "Human-in-the-loop gates", "Workflows", "/workflows"],
 	["5.3", "Planner-worker intercom coordination", "Intercom", "/intercom"],
-	["6.6", "Security review with a repair loop", "Workflows", "/workflows"],
-];
-const REMAINING_REQUIRED = [
-	["W.1", "Launch a workflow in plain English", "Workflows", "/workflows"],
-	["A.10", "Autonomous implementation loops", "Workflows", "/workflows"],
-	["W.3", "Inspect and control workflows", "Workflows", "/workflows"],
 	["5.2", "Worktree-isolated parallel work", "Subagents", "/subagents"],
 	["5.4", "Escalating to a human supervisor", "Intercom", "/intercom"],
-	["A.9", "Nesting builtin workflows", "Workflows", "/workflows"],
 	["5.5", "Intercom context handoff", "Intercom", "/intercom"],
 	["5.1", "Delegating to bundled specialists", "Subagents", "/subagents"],
-	["6.3", "Writing your own workflow", "Workflows", "/workflows"],
-	["6.1", "Touring the builtins", "Workflows", "/workflows"],
-	["W.2", "Run a workflow with typed inputs", "Workflows", "/workflows"],
-	["2.2", "Verbatim compaction", "Compaction", "/compaction"],
+	["2.2", "Context compaction", "Compaction", "/compaction"],
+];
+const REMAINING_REQUIRED = [
 	["1.3", "The agent interviews you", "Built-in tools", "/tools"],
 	["A.2", "Permission gate extension", "Extensions", "/extensions"],
 	["3.2", "Block a dangerous command", "Extensions", "/extensions"],
@@ -78,10 +66,6 @@ const REMAINING_REQUIRED = [
 	["3.5", "Custom theme", "Themes", "/themes"],
 ];
 const REQUIRED = [...FEATURED_REQUIRED, ...REMAINING_REQUIRED];
-const DISPLAY_TITLES = new Map([
-	["6.6", "Verification built in"],
-	["A.8", "Create a workflow in plain English"],
-]);
 
 const COURSE_URL = "https://github.com/bastani-inc/atomic-crash-course";
 const DOCS_URL = "https://docs.bastani.ai";
@@ -327,7 +311,7 @@ const has = (bin) => {
 // ---------------------------------------------------------------- 1. lessons
 {
 	const lessons = MANIFEST.lessons ?? [];
-	if (lessons.length !== 37) fail("lessons", `expected 37 lessons, manifest has ${lessons.length}`);
+	if (lessons.length !== 25) fail("lessons", `expected 25 lessons, manifest has ${lessons.length}`);
 	const ids = new Set();
 	const orders = new Set();
 	const sources = new Set();
@@ -343,31 +327,7 @@ const has = (bin) => {
 		if (l.lesson !== `${id} ${title}`)
 			fail("lessons", `${id}: expected exact lesson label "${id} ${title}", found "${l.lesson}"`);
 		if (l.title !== title) fail("lessons", `${id}: course title must remain "${title}", found "${l.title}"`);
-		const expectedDisplayTitle = DISPLAY_TITLES.get(id);
-		if (expectedDisplayTitle && l.display_title !== expectedDisplayTitle)
-			fail("lessons", `${id}: display_title must be "${expectedDisplayTitle}", found "${l.display_title}"`);
-		if (!expectedDisplayTitle && l.display_title !== undefined)
-			fail(
-				"lessons",
-				`${id}: unexpected display_title; only an explicit display override may differ from its lesson title`,
-			);
-		if (id === "6.6") {
-			if (
-				l.blurb !==
-				"Executable checks and fresh reviewers produce evidence; failures route into bounded repair until the gate passes."
-			)
-				fail("lessons", "6.6 must describe executable checks, fresh reviewers, evidence, and bounded repair");
-			if (
-				l.alt !==
-				"Atomic security-review workflow graph with the hardcoded API key audit finding, repair-1 running, and the header reaching four-of-four complete"
-			)
-				fail("lessons", "6.6 must carry the exact alt tied to the real security-review/repair capture");
-			if (
-				l.media?.gif !== "assets/feature-wall/27-security-review-repair-loop.gif" ||
-				l.media?.jpg !== "assets/feature-wall/27-security-review-repair-loop.jpg"
-			)
-				fail("lessons", "6.6 must retain the exact real security-review repair-loop GIF and poster");
-		}
+		if (l.display_title !== undefined) fail("lessons", `${id}: unexpected display_title`);
 		const expectedDocsUrl = `${DOCS_URL}${docsPath}`;
 		if (l.docs?.label !== docsLabel)
 			fail("docs", `${id}: docs label must be "${docsLabel}", found "${l.docs?.label}"`);
@@ -432,9 +392,9 @@ const has = (bin) => {
 		}
 	});
 	if (!failures.some((f) => f.startsWith("lessons")))
-		ok("lessons", "37 rows in the exact 6+31 order, with unique capture and media mappings");
+		ok("lessons", "25 rows in the exact 6+19 order, with unique capture and media mappings");
 	if (!failures.some((f) => f.startsWith("docs")))
-		ok("docs", "all 37 rows carry the exact public Atomic docs label and URL mapping");
+		ok("docs", "all 25 rows carry the exact public Atomic docs label and URL mapping");
 	if (!failures.some((f) => f.startsWith("interactions")))
 		ok("interactions", "every command the manifest claims for a lesson appears in that lesson's capture script");
 }
@@ -552,8 +512,8 @@ const has = (bin) => {
 			fail("readme", "expected exactly one More Atomic capabilities heading");
 		if (occurrences(README, MORE_ANCHOR_LINK) !== 1)
 			fail("readme", "the featured table must contain one link to #more-atomic-capabilities");
-		if (!featuredRegion.includes(`${MORE_ANCHOR_LINK}<strong>Explore 31 more Atomic capabilities ↓</strong></a>`))
-			fail("readme", "the featured-to-more link must state that 31 more capabilities follow");
+		if (!featuredRegion.includes(`${MORE_ANCHOR_LINK}<strong>Explore 19 more Atomic capabilities ↓</strong></a>`))
+			fail("readme", "the featured-to-more link must state that 19 more capabilities follow");
 		if ((README.match(/<table>/gi) ?? []).length !== 2)
 			fail("readme", "README must contain exactly the two generated feature tables");
 		if ((featuredRegion.match(/<table>/gi) ?? []).length !== 1 || (moreRegion.match(/<table>/gi) ?? []).length !== 1)
@@ -575,7 +535,7 @@ const has = (bin) => {
 		if (featuredRows.length !== FEATURED_REQUIRED.length)
 			fail("readme", `expected 6 featured rows, found ${featuredRows.length}`);
 		if (moreRows.length !== REMAINING_REQUIRED.length)
-			fail("readme", `expected 31 remaining rows, found ${moreRows.length}`);
+			fail("readme", `expected 19 remaining rows, found ${moreRows.length}`);
 
 		const seen = [];
 		const validateRows = (rows, expected, regionName) => {
@@ -613,7 +573,7 @@ const has = (bin) => {
 					fail("readme", `${lesson.id}: row is missing poster ${lesson.media.jpg}`);
 				if (!/<picture>/i.test(row)) fail("readme", `${lesson.id}: row must use <picture> markup`);
 				if (!row.includes(`alt="${lesson.alt}"`)) fail("readme", `${lesson.id}: row is missing its exact alt text`);
-				const displayTitle = DISPLAY_TITLES.get(expectedId) ?? expected[index]?.[1];
+				const displayTitle = expected[index]?.[1];
 				if (!row.includes(`<h4>${displayTitle}</h4>`))
 					fail("readme", `${lesson.id}: row is missing its exact display title`);
 			});
@@ -633,13 +593,13 @@ const has = (bin) => {
 		if (seen.length !== REQUIRED.length || new Set(seen).size !== REQUIRED.length)
 			fail(
 				"readme",
-				`the two tables must cover all 37 records once; duplicate ids: ${duplicateIds.join(", ") || "none"}`,
+				`the two tables must cover all 25 records once; duplicate ids: ${duplicateIds.join(", ") || "none"}`,
 			);
 
 		if (!failures.some((failure) => failure.startsWith("readme"))) {
 			ok(
 				"readme",
-				"6 featured + 31 remaining rows once each; exact runtime/Get started hierarchy, cross-link, and docs-first links",
+				"6 featured + 19 remaining rows once each; exact runtime/Get started hierarchy, cross-link, and docs-first links",
 			);
 		}
 	}

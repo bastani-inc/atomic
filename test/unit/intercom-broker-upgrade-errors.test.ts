@@ -14,7 +14,6 @@ import {
 	serializeIntercomBrokerError,
 } from "@bastani/atomic";
 import { describe, test } from "vitest";
-import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
@@ -134,10 +133,6 @@ describe.each(MEMBERS)("$name (#4538)", (member) => {
 		assert.equal(rebuilt.cause, cause);
 		assert.ok(member.guard(rebuilt));
 
-		const crossed = rehydrateError(JSON.parse(JSON.stringify(serializeError(original))));
-		assert.ok(crossed instanceof member.type, String(crossed));
-		assert.equal(serializeError(original).family, "intercom-broker");
-		assert.deepEqual((crossed as IntercomBrokerError).fields, member.fields);
 		assert.ok(member.guard(JSON.parse(JSON.stringify(original))));
 	});
 

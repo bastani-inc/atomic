@@ -15,7 +15,7 @@ import {
 	scheduleSnapshotCollection,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.ts";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { LegacySnapshotRows } from "../helpers/legacy-snapshot-rows.js";
 import {
 	bunExecutable,
 	makeTempDirectory,
@@ -64,7 +64,7 @@ async function unindexedHistory(path: string): Promise<void> {
 	const database = await openNodeSqliteDatabase(path);
 	try {
 		const sessions = await SqlSessionStore.open(database);
-		const journal = await SqlRunJournal.open(database);
+		const journal = await LegacySnapshotRows.open(database);
 		const lease = await startRun(journal, "big");
 		await journal.append(lease, statusEvent("big", { status: "running" }, "RunStarted"));
 		await database.run(
@@ -83,7 +83,6 @@ async function unindexedHistory(path: string): Promise<void> {
 		await journal.append(lease, statusEvent("big", { status: "failed" }));
 		await journal.snapshotBlobs.putBlobs(ORPHANS);
 		await database.run("UPDATE snapshot_blobs SET created_at = 1");
-		await journal.close();
 		await sessions.close();
 		await dropSnapshotIndex(database);
 	} finally {
@@ -91,11 +90,11 @@ async function unindexedHistory(path: string): Promise<void> {
 	}
 }
 
-type ChildMode = "schedule" | "await" | "dispose-session" | "dispose-journal";
+type ChildMode = "schedule" | "await" | "dispose-session";
 
 async function runChild(runtime: (typeof RUNTIMES)[number], mode: ChildMode, path: string) {
 	const command = mode.startsWith("dispose-")
-		? [...runtime[1](), DISPOSE_FIXTURE, path, mode.slice("dispose-".length)]
+		? [...runtime[1](), DISPOSE_FIXTURE, path]
 		: [...runtime[1](), FIXTURE, mode, path];
 	const child = spawnProcess(command, {
 		cwd: ROOT,
@@ -172,16 +171,16 @@ describe.each(RUNTIMES)("an automatic collection never keeps its %s process aliv
 		CHILD_PROCESS_TEST_TIMEOUT_MS,
 	);
 
-	test.each(["session", "journal"] as const)(
-		"a process whose storage keeps it alive until closed exits once its %s store is closed, with the collection stopped at a batch",
-		async (kind) => {
+	test(
+		"a process whose storage keeps it alive until closed exits once its session store is closed, with the collection stopped at a batch",
+		async () => {
 			const directory = makeTempDirectory("snapshot-collection-dispose-");
 			const path = join(directory, "shared.sqlite");
 			let database: SqliteDatabase | undefined;
 			try {
 				await unindexedHistory(path);
 
-				const { child, stdout, stderr } = await runChild(runtime, `dispose-${kind}`, path);
+				const { child, stdout, stderr } = await runChild(runtime, "dispose-session", path);
 				assert.equal(await child.exited, 0, await stderr);
 				assert.equal(
 					await stdout,
