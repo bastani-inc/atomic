@@ -15,6 +15,7 @@ import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/se
 import {
 	BackgroundCollectionPace,
 	SNAPSHOT_COLLECTION_BATCH,
+	SNAPSHOT_COLLECTION_DELETE_BATCH,
 	SNAPSHOT_INDEX_BACKFILL_BATCH,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
@@ -573,7 +574,7 @@ describe("the backfill works in short transactions that resume where they stoppe
 		);
 	});
 
-	test("an automatic collection renews its claim in every backfill batch as well as in every sweep batch", async () => {
+	test("an automatic collection renews its claim in every backfill batch, when its sweep starts and in every delete batch", async () => {
 		const { database } = await oldHistory();
 		const counted = countingDatabase(database);
 		const upgraded = await openStores(counted.wrapped);
@@ -591,9 +592,11 @@ describe("the backfill works in short transactions that resume where they stoppe
 			statement.sql.startsWith("UPDATE snapshot_collection SET claimed_at = unixepoch() WHERE id = 1"),
 		).length;
 		const backfillBatches = Math.ceil((EVENTS + 2) / SNAPSHOT_INDEX_BACKFILL_BATCH) + 1;
-		const sweepBatches = Math.ceil((ORPHANS.length + extraOrphans.length) / SNAPSHOT_COLLECTION_BATCH);
-		assert.equal(sweepBatches, 2);
-		assert.equal(renewals, backfillBatches + sweepBatches);
+		const deleteBatches = counted.statements.filter((statement) =>
+			statement.sql.startsWith("DELETE FROM snapshot_blobs"),
+		).length;
+		assert.ok(deleteBatches >= Math.ceil((ORPHANS.length + extraOrphans.length) / SNAPSHOT_COLLECTION_DELETE_BATCH));
+		assert.equal(renewals, backfillBatches + 1 + deleteBatches);
 	});
 
 	test("a backfill returns to the event loop between batches, so timers and I/O run during a long one", async () => {
