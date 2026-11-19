@@ -23,8 +23,8 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 	});
 	const acted: string[] = [];
 	const clicks: string[] = [];
-	const row = (name: string): Component => ({
-		render: () => [`${name} words here`],
+	const row = (name: string, label = name): Component => ({
+		render: () => [`${label} words here`],
 		invalidate: () => {},
 		handleMouse: (event): TuiMouseEventResult | undefined => {
 			if (options.capture && event.type === "press") return { handled: true, capture: true };
@@ -41,7 +41,7 @@ function settleFixture(options: { readonly capture?: boolean } = {}) {
 		terminal.sendInput(press(x, y));
 		terminal.sendInput(release(x, y));
 	};
-	return { terminal, tui, copied, acted, clicks, click };
+	return { terminal, tui, copied, acted, clicks, click, list, row };
 }
 
 describe("a single click's action waits until it cannot become a double-click", () => {
@@ -98,6 +98,21 @@ describe("a single click's action waits until it cannot become a double-click", 
 		await sleep(MULTI_CLICK_INTERVAL_MS + 100);
 		assert.deepStrictEqual(acted, ["first", "second"]);
 		tui.stop();
+	});
+
+	it("clicking two items painted at the same cell runs both pending singles on their own items (#5562)", async (t) => {
+		const { terminal, tui, acted, click, list, row } = settleFixture();
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		click(1, 0);
+		list.children.unshift(row("inserted", "first"));
+		list.invalidate();
+		tui.renderNow();
+		click(1, 0);
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["first", "inserted"]);
 	});
 
 	it("waits the same way for a component that takes its press", async () => {
@@ -210,6 +225,24 @@ describe("a single click's action waits until it cannot become a double-click", 
 		click(1, 1);
 		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
 		assert.deepStrictEqual(acted, ["second"]);
+	});
+
+	it("a single click that clears a painted drag highlight still acts on the unchanged row (#5562)", async (t) => {
+		const { terminal, tui, acted } = settleFixture();
+		tui.start();
+		t.after(() => tui.stop());
+		await terminal.waitForRender();
+		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+		terminal.sendInput(press(6, 0));
+		terminal.sendInput("\x1b[<32;9;1M");
+		terminal.sendInput(release(8, 0));
+		tui.renderNow();
+		assert.ok(tui.hasActiveSelection());
+		terminal.sendInput(press(8, 0));
+		tui.renderNow();
+		terminal.sendInput(release(8, 0));
+		t.mock.timers.tick(MULTI_CLICK_INTERVAL_MS + 1);
+		assert.deepStrictEqual(acted, ["first"]);
 	});
 
 	it("a double-click still selects a word after its first press clears a painted drag selection (#5562)", async (t) => {

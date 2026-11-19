@@ -14,6 +14,7 @@ import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
 import type { CustomMessage } from "../src/core/messages.js";
+import { toggleClickedBlocks } from "../src/modes/interactive/components/transcript-block-clicks.js";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -70,7 +71,14 @@ function isolatedEngine() {
 		extensionRunner: {
 			resolveToolRenderers: () => undefined,
 			getMessageRenderer: (customType: string) =>
-				customType === "intercom_message" ? renderIntercomCustomMessage : undefined,
+				customType === "responsive"
+					? (_message: CustomMessage<unknown>, { expanded }: { expanded: boolean }) => ({
+							invalidate() {},
+							render: (width: number) => ["Title", ...(expanded && width < 80 ? ["Narrow detail"] : [])],
+						})
+					: customType === "intercom_message"
+						? renderIntercomCustomMessage
+						: undefined,
 		},
 		getToolDefinition: () => undefined,
 		sessionManager: { getCwd: () => "/workspace" },
@@ -216,6 +224,24 @@ async function mountIsolatedChat() {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("an isolated row not redrawn since a resize compares at the transcript's settlement width (#5562)", async () => {
+	const { runtime } = isolatedEngine();
+	const row = new RemoteCustomMessageComponent(
+		{ ...intercomMessage("sample"), customType: "responsive" },
+		runtime,
+		() => {},
+		1,
+	);
+	try {
+		await vi.waitFor(() => assert.ok(row.render(105).some((line) => line.includes("Title"))), ENGINE_FRAME_WAIT);
+		// The reader scrolled the block out of the window, so the resize did not redraw the block itself.
+		toggleClickedBlocks([row], 68, () => {});
+		await vi.waitFor(() => assert.ok(row.isExpanded()), ENGINE_FRAME_WAIT);
+	} finally {
+		row.dispose();
+	}
+});
 
 test("a click on any row of a tool block the isolated engine draws expands it, and a second click collapses it", async () => {
 	const chat = await mountIsolatedChat();

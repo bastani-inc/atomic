@@ -141,6 +141,9 @@ interface ClickTarget {
 /** What the screen showed at a pointer position: the painted row and the components drawn there. */
 interface PointerFrame {
 	readonly line: string | undefined;
+	/** Before the text selection was painted, including the row's original styling and links. */
+	readonly unselectedLine: string | undefined;
+	readonly highlighted: boolean;
 	readonly boxes: readonly { readonly component: Component; readonly x: number; readonly y: number }[];
 	/** The overlay drawn at the pointer and the rectangle it was drawn in, or undefined. */
 	readonly overlay:
@@ -312,6 +315,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	readonly mode = "fullscreen" as const;
 	readonly [VIEWPORT_TUI] = true as const;
 	private previousScreen: string[] = [];
+	private unselectedScreen: readonly string[] = [];
+	private readonly highlightedRows = new Set<number>();
 	private lastDocument: string[] = [];
 	private exitWrites = 0;
 	private previousScreenWidth = 0;
@@ -1536,6 +1541,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const innermost = boxes[0];
 		return {
 			line: this.previousScreen[y],
+			unselectedLine: this.unselectedScreen[y],
+			highlighted: this.highlightedRows.has(y),
 			boxes: boxes.map((box) => ({ component: box.component, x: box.rect.x, y: box.rect.y })),
 			drawn: overlay
 				? drawnAt(overlay.component, overlay.width, y - overlay.row)
@@ -1627,7 +1634,14 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				(sameDrawnAtPointer(this.pressFrame, releaseFrame) &&
 					stripTerminalSequences(this.pressFrame?.line ?? "") ===
 						stripTerminalSequences(releaseFrame.line ?? "") &&
-					(!this.pressedUrl || this.pressedUrl === getOsc8LinkAtColumn(releaseFrame.line ?? "", event.x)));
+					getOsc8LinkAtColumn(this.pressFrame?.line ?? "", event.x) ===
+						getOsc8LinkAtColumn(releaseFrame.line ?? "", event.x));
+			const unchanged =
+				samePaint ||
+				(sameSpot &&
+					this.pressFrame?.highlighted &&
+					!releaseFrame.highlighted &&
+					this.pressFrame.unselectedLine === releaseFrame.unselectedLine);
 			if (click && (click.row !== event.y || click.col !== event.x || !sameSpot)) this.lastClick = undefined;
 			const isClick =
 				this.lastClick !== undefined &&
@@ -1638,7 +1652,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			// A click acts on what the screen showed when it was pressed: a repaint that changed what is under the
 			// pointer before the release makes it no click at all.
 			this.pressFrame = undefined;
-			const clickedUrl = isClick && samePaint ? this.pressedUrl : undefined;
+			const clickedUrl = isClick && unchanged ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
 			if (clickedUrl && this.openUrl) {
 				this.selectionAnchor = undefined;
@@ -1651,7 +1665,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.requestRender();
 				return;
 			}
-			if (click && isClick && samePaint && !releaseFrame.decorated) {
+			if (click && isClick && unchanged && !releaseFrame.decorated) {
 				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
 					clickCount: click.count,
 				});
@@ -1661,7 +1675,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					const render = this.applyMouseDispatchResult(clickEvent, result);
 					this.clearTextSelection();
 					this.waitForSingleClick(result, click);
-					click.awaitingPaint = true;
+					// Only an immediate action has changed what the next frame draws here.
+					click.awaitingPaint = result.whenSingleClick === undefined;
 					if (render) this.requestRender();
 					return;
 				}
@@ -1904,6 +1919,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	private applySelection(screen: string[], layout = this.currentLayout): string[] {
+		this.highlightedRows.clear();
 		const selection = this.getSelectionBounds();
 		if (!selection) return screen;
 		let screenSelection = selection;
@@ -1945,6 +1961,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const lineWidth = visibleWidth(line);
 			const columns = this.getSelectionColumns(line, row, screenSelection, minColumn, maxColumn);
 			if (columns.end <= columns.start) return line;
+			this.highlightedRows.add(row);
 			const before = sliceByColumn(line, 0, columns.start, true);
 			const selected = sliceByColumn(line, columns.start, columns.end - columns.start, true);
 			const after = sliceByColumn(line, columns.end, Math.max(0, lineWidth - columns.end), true);
@@ -2091,6 +2108,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const nextLayout = rendered.layout;
 		let screen = rendered.screen;
 		if (screen.length > height) screen = screen.slice(screen.length - height);
+		this.unselectedScreen = screen.slice();
 		screen = this.applySelection(screen, nextLayout);
 		screen = this.compositeFlashes(screen, width, height);
 

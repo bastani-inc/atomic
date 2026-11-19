@@ -370,6 +370,7 @@ export function expandedOverride<TExtraEntry extends ChatTranscriptEntryLike>(
 export function dropExpandedOverrides<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 ): void {
+	state.expansionGeneration++;
 	state.expandedOverrides = new Map();
 	state.expandedEntryOverrides = new WeakMap();
 }

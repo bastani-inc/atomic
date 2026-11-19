@@ -314,6 +314,26 @@ describe("clicking transcript blocks in the main chat", () => {
 		}
 	});
 
+	for (const held of [false, true]) {
+		test(`Ctrl+O wins over a click that is ${held ? "still pressed" : "released but not settled"} (#5562)`, async () => {
+			const chat = await mountChat(100, 60);
+			try {
+				const row = chat.rowOf(/Bash\(first-command\)/);
+				const col = chat.columnOf(row, "Bash");
+				chat.press(col, row);
+				if (!held) chat.release(col, row);
+				vi.advanceTimersByTime(80);
+				mode(chat).toggleToolOutputExpansion();
+				if (held) chat.release(col, row);
+				chat.settle();
+				assert.ok(chat.expanded("first"), "the later explicit expansion wins");
+				assert.ok(chat.expanded("second"));
+			} finally {
+				chat.tui.stop();
+			}
+		});
+	}
+
 	test("pressing Ctrl+O twice before the next paint collapses a block a click expanded, with every other block", async () => {
 		const chat = await mountChat(100, 60);
 		try {
@@ -917,6 +937,30 @@ describe("clicking other blocks Ctrl+O expands in the main chat", () => {
 		}
 	});
 
+	test("a click uses the block width painted after a resize before settlement (#5562)", async () => {
+		const chat = await mountChat(105, 60, {
+			messageRenderers: {
+				responsive: (_message, { expanded }) => ({
+					invalidate() {},
+					render: (width) => ["Responsive title", ...(expanded && width < 80 ? ["Narrow detail"] : [])],
+				}),
+			},
+		});
+		try {
+			const message = { role: "custom", customType: "responsive", content: "sample", display: true, timestamp: 1 };
+			mode(chat).addMessageToChat(message);
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Responsive title/);
+			chat.quickClick(chat.columnOf(row, "title"), row);
+			chat.terminal.columns = 68;
+			chat.tui.renderNow();
+			chat.settle();
+			assert.ok(chat.screen().some((line) => line.includes("Narrow detail")));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("a click anywhere on an extension's custom entry toggles the expansion its renderer draws", async () => {
 		const chat = await mountChat(100, 60);
 		try {
@@ -982,6 +1026,42 @@ describe("clicking other blocks Ctrl+O expands in the main chat", () => {
 			assert.ok(shown(), chat.screen().join("\n"));
 		} finally {
 			chat.tui.stop();
+		}
+	});
+
+	test("pending-area clicks on different blocks painted at the same cell both act (#5562)", () => {
+		const terminal = new RecordingTerminal();
+		const tui = createFullscreenTui({ showHardwareCursor: false, logDirectory: tmpdir(), terminal }) as TuiAltScreen;
+		try {
+			const pending = new Container();
+			const card = (detail: string) =>
+				new ExpandableText(
+					() => "Same title",
+					() => `Same title\n${detail}`,
+				);
+			pending.addChild(card("First detail"));
+			tui.setLayoutRoot(clickableBlocksView(pending, () => false));
+			tui.start();
+			tui.renderNow();
+			const tap = () => {
+				terminal.input("\x1b[<0;2;1M");
+				terminal.input("\x1b[<0;2;1m");
+			};
+			tap();
+			pending.children.unshift(card("Second detail"));
+			pending.invalidate();
+			tui.renderNow();
+			tap();
+			vi.advanceTimersByTime(MULTI_CLICK_INTERVAL_MS + 1);
+			tui.renderNow();
+			const shown = tui
+				.getScreenLines()
+				.map((line) => stripTerminalSequences(line))
+				.join("\n");
+			assert.match(shown, /First detail/);
+			assert.match(shown, /Second detail/);
+		} finally {
+			tui.stop();
 		}
 	});
 

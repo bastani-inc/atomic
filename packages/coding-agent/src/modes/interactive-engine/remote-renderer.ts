@@ -233,9 +233,9 @@ abstract class RemoteRenderer implements Component {
 		this.changed();
 	}
 
-	expandByClick(expanded: boolean, changed: () => void): void {
+	expandByClick(expanded: boolean, changed: () => void, width = this.width): void {
 		if (this.disposed || this.routes.clicks.signal.aborted || expanded === this.expanded) return;
-		const command = { ...this.command(++this.requestId, this.width), compareExpansion: true as const };
+		const command = { ...this.command(++this.requestId, width), compareExpansion: true as const };
 		this.clickChecks.push({ command, changed });
 		if (this.clickChecks.length === 1) {
 			this.routes.clicks.signal.addEventListener("abort", this.clearClickChecks, { once: true });
