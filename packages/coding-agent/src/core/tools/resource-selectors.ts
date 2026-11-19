@@ -47,6 +47,15 @@ export interface InternalSearchRequest {
 	ranges?: readonly { readonly start: number; readonly end: number }[];
 	signal?: AbortSignal;
 }
+// A local router can avoid preparing a continuation for a group the selector won't show. No field
+// is added to the extension's request, and the hint cannot collect or hold a provider's result rows.
+export interface HistoryNoteWindow {
+	first: number;
+	end: number;
+	includes: (lines: readonly string[], note: string) => boolean;
+}
+export const historyNoteWindows = new WeakMap<InternalSearchRequest, HistoryNoteWindow>();
+
 export interface InternalReadSelection {
 	ranges?: readonly { readonly start: number; readonly end?: number }[];
 	offset?: number;
@@ -755,16 +764,20 @@ export async function searchInternalSelector(
 	contextBefore = 1,
 	contextAfter = 3,
 	scope: Pick<InternalSearchRequest, "ranges" | "signal"> = {},
+	window?: HistoryNoteWindow,
 ): Promise<string> {
-	const searched = await routerFromContext(context)?.search?.(value, {
-		pattern,
-		ignoreCase,
-		literal,
-		contextBefore,
-		contextAfter,
-		...scope,
-	});
-	if (typeof searched === "string") return searched;
+	const router = routerFromContext(context);
+	const search = router?.search;
+	if (search != null) {
+		const request = { pattern, ignoreCase, literal, contextBefore, contextAfter, ...scope };
+		if (window) historyNoteWindows.set(request, window);
+		try {
+			const searched = await Reflect.apply(search, router, [value, request]);
+			if (typeof searched === "string") return searched;
+		} finally {
+			if (window) historyNoteWindows.delete(request);
+		}
+	}
 	return searchTextSelectorLines(
 		value,
 		await readInternalSelector(value, cwd, context),
