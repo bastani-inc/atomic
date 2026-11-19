@@ -1268,6 +1268,13 @@ export function truncateToWidth(
 		return pad ? " ".repeat(maxWidth) : "";
 	}
 
+	// Text of printable ASCII, tabs and escape sequences, such as a styled row of a tool's output, is measured in one
+	// scan; when it fits it is returned as it is, without segmenting it into graphemes.
+	const asciiWidth = asciiVisibleWidth(text);
+	if (asciiWidth !== -1 && asciiWidth <= maxWidth) {
+		return pad ? text + " ".repeat(maxWidth - asciiWidth) : text;
+	}
+
 	const ellipsisWidth = visibleWidth(ellipsis);
 	if (ellipsisWidth >= maxWidth) {
 		const textWidth = visibleWidth(text);

@@ -4,7 +4,7 @@ import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { type Component, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import type { ToolRenderContext } from "../src/core/extensions/types.js";
-import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";
+import { codemodeRenderers, WIDE_CHARACTER_PLACEHOLDER } from "../src/extensions/codemode/renderer.js";
 import type { CodemodeToolDetails } from "../src/extensions/codemode/tool.js";
 import { keyHint, keyText } from "../src/modes/interactive/components/keybinding-hints.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
@@ -254,6 +254,23 @@ test("codemode expanded script indents a wrapped line's continuation rows under 
 		"     }",
 		"   ) · 1s",
 	]);
+});
+
+test("codemode expanded script keeps every wide character at every width, and shows a one-column row's as a placeholder (#5525)", () => {
+	const lines = 11;
+	const code = `${"// 漢字😀e\u0301甲乙丙\n".repeat(lines)}return 1;`;
+	const wide = ["漢", "字", "😀", "甲", "乙", "丙"];
+	for (let width = 1; width <= 60; width++) {
+		const { raw, plain } = codemodeBlock({ code }, { width, expanded: true });
+		for (const line of raw) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
+		const text = plain.join("\n");
+		assert.equal(text.split("e\u0301").length - 1, lines, `${width}: ${text}`);
+		// One column cannot hold a wide character: each one shows as a placeholder there, and nowhere else.
+		const placeholders = text.split(WIDE_CHARACTER_PLACEHOLDER).length - 1;
+		for (const mark of wide)
+			assert.equal(text.split(mark).length - 1, width === 1 ? 0 : lines, `${width} ${mark}: ${text}`);
+		assert.equal(placeholders, width === 1 ? lines * wide.length : 0, `${width}: ${text}`);
+	}
 });
 
 test("codemode one-line script too wide for the row wraps under codemode( when expanded", () => {

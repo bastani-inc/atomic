@@ -37,7 +37,15 @@ export interface ToolHtmlRenderer {
 		details: unknown,
 		isError: boolean,
 	): { collapsed?: string; expanded?: string } | undefined;
+	/**
+	 * Waits, for at most {@link EXPORT_LOAD_WAIT_MS}, for the reads that rendering a tool call started for what it shows,
+	 * such as a subagent's transcript. True when there were any: its result is then rendered again with what they read.
+	 */
+	settleLoads(toolCallId: string): Promise<boolean>;
 }
+
+/** The longest an export waits for the reads one tool call's rendering started before it keeps what it drew. */
+export const EXPORT_LOAD_WAIT_MS = 15_000;
 
 /**
  * Create a tool HTML renderer.
@@ -65,6 +73,8 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 	const canonicalResultCallHtml = new Map<string, string>();
 	const renderedStates = new Map<string, Record<string, unknown>>();
 	const renderedArgs = new Map<string, unknown>();
+	/** Reads each tool call's rendering started and the export has not waited for yet. */
+	const pendingLoads = new Map<string, Promise<unknown>[]>();
 
 	const getState = (toolCallId: string): Record<string, unknown> => {
 		let state = renderedStates.get(toolCallId);
@@ -99,6 +109,12 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			outputPad: 1,
 			// A block that draws other tools' calls, such as a subagent card, draws them with their own renderers.
 			getToolDefinition: getToolRenderers,
+			// The page keeps what is drawn: a read the rendering starts is waited for and the result drawn again.
+			waitForLoad: (load) => {
+				const loads = pendingLoads.get(toolCallId) ?? [];
+				loads.push(load);
+				pendingLoads.set(toolCallId, loads);
+			},
 			keyText,
 			keyHint,
 		};
@@ -156,6 +172,23 @@ export function createToolHtmlRenderer(deps: ToolHtmlRendererDeps): ToolHtmlRend
 			} catch {
 				return undefined;
 			}
+		},
+
+		async settleLoads(toolCallId: string): Promise<boolean> {
+			const loads = pendingLoads.get(toolCallId);
+			pendingLoads.delete(toolCallId);
+			if (!loads?.length) return false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const limit = new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, EXPORT_LOAD_WAIT_MS);
+				timer.unref?.();
+			});
+			try {
+				await Promise.race([Promise.allSettled(loads), limit]);
+			} finally {
+				clearTimeout(timer);
+			}
+			return true;
 		},
 
 		renderResult(

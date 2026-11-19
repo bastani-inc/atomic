@@ -10,8 +10,13 @@ import { theme } from "../theme/theme.js";
 import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
 import { NoticeLine, type NoticeLineSpec } from "./notice-line.ts";
 import {
+	drawsWithMargin,
+	indentWithin,
 	isToolBlock,
 	markdownPreviewRows,
+	SlicedRows,
+	streamRows,
+	streamSeparated,
 	ToolBlock,
 	ToolBlockMarkdown,
 	ToolBlockRecords,
@@ -80,6 +85,7 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		...("model" in notice && typeof notice.model === "string" ? { model: notice.model } : {}),
 		...("thinking" in notice && typeof notice.thinking === "string" ? { thinking: notice.thinking } : {}),
 		...(line === undefined ? {} : { line }),
+		...("launchId" in notice && typeof notice.launchId === "string" ? { launchId: notice.launchId } : {}),
 	};
 	parsedNotices.set(details, parsed);
 	return parsed;
@@ -239,7 +245,11 @@ class SectionRecord implements Component {
 		this.content.invalidate();
 	}
 	render(width: number): string[] {
-		return [this.heading, ...this.content.render(width)];
+		return [...this.streamRows(width)];
+	}
+	*streamRows(width: number): Generator<string> {
+		yield this.heading;
+		yield* streamRows(this.content, width);
 	}
 }
 
@@ -252,17 +262,14 @@ class ComponentList implements Component {
 		for (const item of this.items) item.invalidate();
 	}
 	render(width: number): string[] {
-		const rows: string[] = [];
-		for (const item of this.items) {
-			const rendered = item.render(width);
-			if (rendered.length === 0) continue;
-			if (rows.length > 0) rows.push("");
-			rows.push(...rendered);
-		}
-		return rows;
+		return [...this.streamRows(width)];
+	}
+	streamRows(width: number): Iterable<string> {
+		return streamSeparated(this.items, width);
 	}
 }
 
+/** A tool block drawn without its output pad, which the notice's own indent already gives it. */
 class UnpaddedBlockComponent implements Component {
 	private readonly inner: Component;
 	constructor(inner: Component) {
@@ -272,12 +279,42 @@ class UnpaddedBlockComponent implements Component {
 		this.inner.invalidate();
 	}
 	render(width: number): string[] {
-		if (width < 1) return [];
-		const lines = this.inner.render(width + 1);
-		if (lines.length > 0 && lines.every((line) => line.startsWith(" "))) {
-			return lines.map((line) => truncateToWidth(line.slice(1), width, "…"));
+		return [...this.streamRows(width)];
+	}
+	*streamRows(width: number): Generator<string> {
+		if (width < 1) return;
+		const inner = this.inner;
+		// A block whose rows all start with its margin is drawn a column wider without that column, row by row.
+		if (drawsWithMargin(inner, width + 1)) {
+			for (const line of inner.streamRows(width + 1)) yield truncateToWidth(line.slice(1), width, "…");
+			return;
 		}
-		return this.inner.render(width);
+		const lines = inner.render(width + 1);
+		if (lines.length > 0 && lines.every((line) => line.startsWith(" "))) {
+			for (const line of lines) yield truncateToWidth(line.slice(1), width, "…");
+			return;
+		}
+		yield* inner.render(width);
+	}
+}
+
+/** The rows of an expanded notice under its line: its transcript's sections, indented by `pad`. */
+class NoticeTranscriptRows implements Component {
+	private readonly records: ToolBlockRecords;
+	constructor(records: ToolBlockRecords) {
+		this.records = records;
+	}
+	invalidate(): void {
+		this.records.invalidate();
+	}
+	render(width: number): string[] {
+		return [...this.streamRows(width)];
+	}
+	*streamRows(width: number): Generator<string> {
+		const pad = " ".repeat(indentWithin(width, 1));
+		const detailWidth = Math.max(1, width - pad.length);
+		for (const row of this.records.streamRows(detailWidth))
+			yield previewRow(truncateToWidth(`${pad}${row}`, width, "…"));
 	}
 }
 
@@ -293,10 +330,12 @@ export type TaskCompletionTranscriptLoadResult =
 	| undefined;
 
 export interface TaskCompletionMessageOptions {
+	/** The task's transcript; `notice` tells a task of an earlier process from this one's task with the same id. */
 	readonly loadTranscript?: (
 		taskId: TaskId,
+		notice?: TaskCompletionNotice,
 	) => Promise<TaskCompletionTranscriptLoadResult> | TaskCompletionTranscriptLoadResult;
-	readonly hasTranscript?: (taskId: TaskId) => boolean;
+	readonly hasTranscript?: (taskId: TaskId, notice?: TaskCompletionNotice) => boolean;
 	readonly getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 	readonly cwd?: string;
 	readonly requestRender?: () => void;
@@ -565,6 +604,11 @@ export class TaskCompletionMessage implements Component {
 	private readonly pendingByTask = new Map<TaskId, Promise<void>>();
 	private readonly previewRows = new Map<TaskCompletionNotice, readonly string[]>();
 	private readonly expandedPreviews = new Map<TaskCompletionNotice, ToolBlockMarkdown>();
+	/** Each expanded notice's transcript rows, held only while the notice is expanded. */
+	private readonly transcriptRows = new Map<
+		TaskCompletionNotice,
+		{ readonly transcript: ExtractedNoticeTranscript; readonly rows: SlicedRows }
+	>();
 
 	constructor(
 		notices: TaskCompletionNotice | readonly TaskCompletionNotice[],
@@ -598,6 +642,7 @@ export class TaskCompletionMessage implements Component {
 		if (!expanded) {
 			this.loadedByTask.clear();
 			this.pendingByTask.clear();
+			this.transcriptRows.clear();
 			for (const notice of this.notices) {
 				expandedNoticeCache.delete(notice);
 				pendingNoticeLoads.delete(notice);
@@ -610,6 +655,7 @@ export class TaskCompletionMessage implements Component {
 		this.generation += 1;
 		this.loadedByTask.clear();
 		this.pendingByTask.clear();
+		this.transcriptRows.clear();
 		for (const notice of this.notices) {
 			expandedNoticeCache.delete(notice);
 			pendingNoticeLoads.delete(notice);
@@ -619,6 +665,7 @@ export class TaskCompletionMessage implements Component {
 	invalidate(): void {
 		this.previewRows.clear();
 		this.expandedPreviews.clear();
+		this.transcriptRows.clear();
 	}
 
 	render(width: number): string[] {
@@ -649,7 +696,7 @@ export class TaskCompletionMessage implements Component {
 			let inflight = pendingNoticeLoads.get(notice);
 			if (!inflight) {
 				inflight = Promise.resolve()
-					.then(() => loader(taskId))
+					.then(() => loader(taskId, notice))
 					.then(
 						(loaded) => extractEntriesExpansion(loaded, status, this.options) ?? null,
 						() => null,
@@ -685,29 +732,34 @@ export class TaskCompletionMessage implements Component {
 		if (this.expanded) {
 			const transcript = this.ensureTranscriptLoaded(notice, spec.status);
 			if (transcript) {
-				const records = new ToolBlockRecords([
-					new SectionRecord(
-						theme.bold("Prompt"),
-						transcript.prompt
-							? new ToolBlockMarkdown(transcript.prompt)
-							: new Text(theme.fg("dim", "(none)"), 0, 0),
-					),
-					new SectionRecord(
-						theme.bold("Tool calls"),
-						transcript.toolBlocks.length > 0
-							? new ComponentList(transcript.toolBlocks)
-							: new Text(theme.fg("dim", transcript.unavailable ?? "(none)"), 0, 0),
-					),
-					new SectionRecord(
-						theme.bold("Result"),
-						preview ? new ToolBlockMarkdown(preview) : new Text(theme.fg("dim", "(no output)"), 0, 0),
-					),
-				]);
-				const detailWidth = Math.max(1, width - 1);
-				return [
-					...(line === undefined ? [] : [line]),
-					...records.render(detailWidth).map((row) => previewRow(truncateToWidth(` ${row}`, width, "…"))),
-				];
+				let drawn = this.transcriptRows.get(notice);
+				if (drawn?.transcript !== transcript) {
+					const records = new ToolBlockRecords([
+						new SectionRecord(
+							theme.bold("Prompt"),
+							transcript.prompt
+								? new ToolBlockMarkdown(transcript.prompt)
+								: new Text(theme.fg("dim", "(none)"), 0, 0),
+						),
+						new SectionRecord(
+							theme.bold("Tool calls"),
+							transcript.toolBlocks.length > 0
+								? new ComponentList(transcript.toolBlocks)
+								: new Text(theme.fg("dim", transcript.unavailable ?? "(none)"), 0, 0),
+						),
+						new SectionRecord(
+							theme.bold("Result"),
+							preview ? new ToolBlockMarkdown(preview) : new Text(theme.fg("dim", "(no output)"), 0, 0),
+						),
+					]);
+					// A transcript can run to thousands of rows: they are drawn a slice per turn, and kept for the width.
+					drawn = {
+						transcript,
+						rows: new SlicedRows(new NoticeTranscriptRows(records), this.options?.requestRender),
+					};
+					this.transcriptRows.set(notice, drawn);
+				}
+				return [...(line === undefined ? [] : [line]), ...drawn.rows.render(width)];
 			}
 			if (!preview) return line === undefined ? [] : [line];
 			let markdown = this.expandedPreviews.get(notice);
@@ -732,7 +784,9 @@ export class TaskCompletionMessage implements Component {
 		}
 		const canLoadTranscript =
 			this.loadedByTask.get(taskId) !== null &&
-			(this.options?.hasTranscript ? this.options.hasTranscript(taskId) : Boolean(this.options?.loadTranscript));
+			(this.options?.hasTranscript
+				? this.options.hasTranscript(taskId, notice)
+				: Boolean(this.options?.loadTranscript));
 		if (!preview && !canLoadTranscript) return line === undefined ? [] : [line];
 		let rows = this.previewRows.get(notice);
 		if (!rows) {

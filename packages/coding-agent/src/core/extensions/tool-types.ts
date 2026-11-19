@@ -51,6 +51,17 @@ export interface ToolRenderContext<TState = unknown, TArgs = unknown> extends Ke
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
 	getElapsedMs?: () => number | undefined;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	/**
+	 * Draws this tool's row again without building its components again: a renderer that draws a large block a slice
+	 * per turn asks for the next slice with it. Absent where a row is drawn once, as in an HTML export; a renderer then
+	 * draws every row in its first render.
+	 */
+	requestRender?: () => void;
+	/**
+	 * Passed where a row is drawn once and kept, as in an HTML export. A renderer hands it each read it starts for what it
+	 * shows, such as a subagent's transcript, and the view draws the row again once those reads are done.
+	 */
+	waitForLoad?: (load: Promise<unknown>) => void;
 }
 
 type ToolRenderCall<TParams extends TSchema, TState> = {

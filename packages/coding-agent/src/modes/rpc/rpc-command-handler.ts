@@ -669,7 +669,10 @@ export function createRpcCommandHandler({
 			}
 
 			case "export_html": {
-				const path = await session.exportToHtml(command.outputPath);
+				const path = await session.exportToHtml(
+					command.outputPath,
+					command.themeName === undefined ? {} : { themeName: command.themeName },
+				);
 				return createRpcSuccessResponse(id, "export_html", { path });
 			}
 

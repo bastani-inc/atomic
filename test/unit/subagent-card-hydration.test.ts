@@ -1,13 +1,37 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { Container, type TUI } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import { exportSessionToHtml } from "../../packages/coding-agent/src/core/export-html/index.js";
+import { createToolHtmlRenderer } from "../../packages/coding-agent/src/core/export-html/tool-renderer.js";
 import type { ToolDefinition, ToolRenderers } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
-import type { ModelSingleResponse, TaskId, WaitId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import {
+	TASK_COMPLETION_MESSAGE_TYPE,
+	type TaskCompletionEnvelope,
+	taskCompletionNotice,
+} from "../../packages/coding-agent/src/core/tasks/completion.js";
+import type {
+	ModelSingleResponse,
+	OperationId,
+	OwnerId,
+	Sequence,
+	TaskId,
+	WaitId,
+} from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import {
+	hasTaskTranscript,
+	loadTaskTranscript,
+	registerSavedTaskTranscripts,
+	type TaskTranscriptQuery,
+} from "../../packages/coding-agent/src/core/tasks/saved-transcripts.js";
 import { codemodeRenderers } from "../../packages/coding-agent/src/extensions/codemode/renderer.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import {
@@ -15,7 +39,7 @@ import {
 	renderChatMessageEntry,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
 import { attachInteractiveEngineResourceExtensionRefresh } from "../../packages/coding-agent/src/modes/interactive/interactive-startup.js";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.js";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.js";
 import {
@@ -30,7 +54,10 @@ import {
 	renderSubagentToolCall,
 	renderSubagentToolResult,
 } from "../../packages/subagents/src/extension/tool-rendering.js";
-import { bindSubagentChildCards } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import {
+	bindSubagentChildCards,
+	savedSubagentTranscripts,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	SUBAGENT_CHILD_RECORD_TYPE,
@@ -426,10 +453,327 @@ test("an expanded launch card draws the calls in the child's saved transcript ex
 
 	bindSubagentChildCards({ sessionManager: manager });
 	const cards = buildCards(manager, true, (name) => (name === "codemode" ? codemodeRenderers : undefined));
-	const expanded = await eventually(() => paint(cards)[0]!, /codemode\(/);
-	assert.match(expanded, /const v0 = 0; .* const v19 = 19; \)/);
+	// A large card is drawn a slice per render: the test renders until the end of the script is drawn.
+	const expanded = await eventually(() => paint(cards)[0]!, /const v19 = 19; \)/);
+	assert.match(expanded, /codemode\( const v0 = 0; .* const v19 = 19; \)/);
 	assert.doesNotMatch(expanded, /\+\d+ lines/);
 	await store.close();
+});
+
+/** The pre-rendered tool rows of an exported page, as text, by tool call id. */
+function exportedToolRows(html: string): Map<string, { call: string; collapsed: string; expanded: string }> {
+	const encoded = /<script id="session-data" type="application\/json">([^<]*)<\/script>/.exec(html)?.[1] ?? "";
+	const data = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as {
+		renderedTools?: Record<string, { callHtml?: string; resultHtmlCollapsed?: string; resultHtmlExpanded?: string }>;
+	};
+	const text = (value: string | undefined) =>
+		(value ?? "")
+			.replace(/<\/div>/g, " ")
+			.replace(/<[^>]+>/g, "")
+			.replace(/&nbsp;/g, " ")
+			.replace(/&lt;/g, "<")
+			.replace(/&gt;/g, ">")
+			.replace(/&quot;/g, '"')
+			.replace(/&#039;/g, "'")
+			.replace(/&amp;/g, "&")
+			.replace(/\s+/g, " ")
+			.trim();
+	return new Map(
+		Object.entries(data.renderedTools ?? {}).map(([id, rendered]) => [
+			id,
+			{
+				call: text(rendered.callHtml),
+				collapsed: text(rendered.resultHtmlCollapsed),
+				expanded: text(rendered.resultHtmlExpanded),
+			},
+		]),
+	);
+}
+
+test("an HTML export draws a finished background child's saved tool calls in its card, read before the page is written (#5525)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const childSession = await SessionManager.create(store, process.cwd());
+	const code = Array.from({ length: 20 }, (_, i) => `const v${i} = ${i};`).join("\n");
+	await childSession.appendMessage({ role: "user", content: "Script the audit", timestamp: Date.now() });
+	await childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "toolCall", id: "script", name: "codemode", arguments: { code } }],
+		api: "test-api",
+		provider: "test-provider",
+		model: "test-model",
+		usage,
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	});
+	await childSession.appendMessage({
+		role: "toolResult",
+		toolCallId: "script",
+		toolName: "codemode",
+		content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }],
+		details: { calls: [] },
+		isError: false,
+		timestamp: Date.now(),
+	});
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch("hyexport", "task-hyexport");
+	await t.record({
+		childId: "hyexport:0",
+		runId: "hyexport",
+		state: "terminal",
+		terminalStatus: "ok",
+		taskId: "task-hyexport",
+		childSessionId: childSession.getSessionId(),
+	});
+	bindSubagentChildCards({ sessionManager: manager });
+	const dir = mkdtempSync(join(tmpdir(), "atomic-card-export-"));
+	try {
+		const output = await exportSessionToHtml(manager, undefined, {
+			outputPath: join(dir, "export.html"),
+			toolRenderer: createToolHtmlRenderer({
+				getToolRenderers: (name) =>
+					name === "subagent" ? definition : name === "codemode" ? codemodeRenderers : undefined,
+				theme,
+				cwd: process.cwd(),
+			}),
+		});
+		const card = exportedToolRows(readFileSync(output, "utf8")).get("call-1");
+		assert.ok(card, "the card is pre-rendered");
+		assert.match(card.expanded, /Tool calls ● codemode\( const v0 = 0; .* const v19 = 19; \)/, card.expanded);
+		assert.doesNotMatch(card.expanded, /\(none\)/, card.expanded);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		await store.close();
+	}
+});
+
+/** A saved session whose finished background child ran a script, as a parent and the child's own session. */
+async function finishedScriptChild(runId: string, taskId: string) {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const childSession = await SessionManager.create(store, process.cwd());
+	const code = Array.from({ length: 20 }, (_, i) => `const v${i} = ${i};`).join("\n");
+	await childSession.appendMessage({ role: "user", content: `Script the ${runId} audit`, timestamp: Date.now() });
+	await childSession.appendMessage({
+		role: "assistant",
+		content: [{ type: "toolCall", id: "script", name: "codemode", arguments: { code } }],
+		api: "test-api",
+		provider: "test-provider",
+		model: "test-model",
+		usage,
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	});
+	await childSession.appendMessage({
+		role: "toolResult",
+		toolCallId: "script",
+		toolName: "codemode",
+		content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }],
+		details: { calls: [] },
+		isError: false,
+		timestamp: Date.now(),
+	});
+	const t = new TranscriptBuilder(manager, process.cwd());
+	await t.launch(runId, taskId);
+	await t.record({
+		childId: `${runId}:0`,
+		runId,
+		state: "terminal",
+		terminalStatus: "ok",
+		taskId,
+		childSessionId: childSession.getSessionId(),
+	});
+	return { store, manager };
+}
+
+/** The finished-task notice the parent's chat saved for the child, as an earlier process wrote it. */
+function savedNotice(runId: string, taskId: string, launchId: string | undefined) {
+	const envelope = {
+		completionId: `completion-${taskId}-earlier-process`,
+		ownerId: "owner-1-0" as OwnerId,
+		taskId: taskId as TaskId,
+		terminalSequence: "9" as Sequence,
+		result: {
+			kind: "completed" as const,
+			output: { ownerId: "owner-1-0", taskId, artifactId: `output:${taskId}`, byteCount: "4", omittedRanges: [] },
+		},
+		display: false as const,
+		taskKind: "agent" as const,
+	} as unknown as TaskCompletionEnvelope;
+	const notification = taskCompletionNotice(
+		envelope,
+		{
+			kind: "agent",
+			title: `task for ${runId}`,
+			agentName: runId,
+			model: undefined,
+			thinking: undefined,
+			...(launchId === undefined ? {} : { launchOperationId: launchId as OperationId }),
+		},
+		"Audit done.",
+	);
+	return {
+		role: "custom",
+		customType: TASK_COMPLETION_MESSAGE_TYPE,
+		content: `Subagent ${runId} completed`,
+		details: { ...envelope, notification },
+		display: true,
+		timestamp: Date.now(),
+	};
+}
+
+/** The engine's drawing of an expanded notice, rendered again until `expected` shows or the wait runs out. */
+async function engineNotice(manager: SessionManager, message: object, expected: RegExp): Promise<string> {
+	const frames: string[] = [];
+	const service = new EngineRenderService((line) => {
+		const parsed = parseInteractiveEngineMessage(line.trim());
+		if (parsed?.type === "engine_custom_frame") frames.push(stripVTControlCharacters(parsed.lines.join("\n")));
+	});
+	service.bindSession({
+		extensionRunner: {
+			getMessageRenderer: () => undefined,
+			resolveToolRenderers: (name: string) => (name === "codemode" ? codemodeRenderers : undefined),
+		},
+		getToolDefinition: () => undefined,
+		sessionManager: manager,
+	} as unknown as AgentSession);
+	let requestId = 0;
+	const render = () =>
+		service.handleLine(
+			serializeInteractiveEngineFrame({
+				type: "engine_message_render",
+				componentId: "notice",
+				requestId: ++requestId,
+				width: 140,
+				message: message as never,
+				expanded: true,
+				outputPad: 1,
+			}).trim(),
+		);
+	try {
+		return await eventually(() => {
+			render();
+			return (frames.at(-1) ?? "").replace(/\s+/g, " ");
+		}, expected);
+	} finally {
+		service.dispose();
+	}
+}
+
+test("after a restart, a finished subagent's notice shows the child's saved prompt and tool calls, as its launch card does (#5525)", async () => {
+	initTheme("dark");
+	const { store, manager } = await finishedScriptChild("hynotice", "task-1-0-1");
+	try {
+		bindSubagentChildCards({ sessionManager: manager });
+		registerSavedTaskTranscripts(savedSubagentTranscripts);
+		// No task of this process runs as task-1-0-1: the notice reads the child's own session, named by its record.
+		const shown = await engineNotice(
+			manager,
+			savedNotice("hynotice", "task-1-0-1", "hynotice:0"),
+			/const v19 = 19; \)/,
+		);
+		assert.match(
+			shown,
+			/Prompt Script the hynotice audit .*Tool calls ● codemode\( const v0 = 0; .* const v19 = 19; \) .*Result Audit done\./,
+		);
+
+		// A later process ran another child under the same task id: the notice names its own child, so it still shows it.
+		const t = new TranscriptBuilder(manager, process.cwd());
+		await t.record({
+			childId: "hyother:0",
+			runId: "hyother",
+			state: "terminal",
+			terminalStatus: "ok",
+			taskId: "task-1-0-1",
+		});
+		bindSubagentChildCards({ sessionManager: manager });
+		const named = await engineNotice(
+			manager,
+			savedNotice("hynotice", "task-1-0-1", "hynotice:0"),
+			/const v19 = 19; \)/,
+		);
+		assert.match(named, /Prompt Script the hynotice audit/);
+	} finally {
+		await store.close();
+	}
+});
+
+test("after a restart, a finished subagent's notice saved before notices named their child finds the child by its task id, unless two children ran as it (#5525)", async () => {
+	initTheme("dark");
+	const { store, manager } = await finishedScriptChild("hyolder", "task-1-0-7");
+	try {
+		bindSubagentChildCards({ sessionManager: manager });
+		registerSavedTaskTranscripts(savedSubagentTranscripts);
+		const shown = await engineNotice(manager, savedNotice("hyolder", "task-1-0-7", undefined), /const v19 = 19; \)/);
+		assert.match(shown, /Prompt Script the hyolder audit .*Tool calls ● codemode\( const v0 = 0;/);
+
+		// A later process ran another child under the same task id: the notice cannot tell which one it is about.
+		const t = new TranscriptBuilder(manager, process.cwd());
+		await t.record({
+			childId: "hyolder2:0",
+			runId: "hyolder2",
+			state: "terminal",
+			terminalStatus: "ok",
+			taskId: "task-1-0-7",
+		});
+		bindSubagentChildCards({ sessionManager: manager });
+		const ambiguous = await engineNotice(
+			manager,
+			savedNotice("hyolder", "task-1-0-7", undefined),
+			/Transcript unavailable · more than one subagent ran as task-1-0-7/,
+		);
+		assert.doesNotMatch(ambiguous, /codemode\(/);
+	} finally {
+		await store.close();
+	}
+});
+
+test("a notice whose task id this process reuses for another task reads the notice's own child, not the running task (#5525)", async () => {
+	const loads: TaskTranscriptQuery[] = [];
+	const stop = registerSavedTaskTranscripts({
+		has: (task) => task.launchId === "first:0" || task.agentName === "first",
+		load: async (task) => {
+			loads.push(task);
+			return { entries: [] };
+		},
+	});
+	try {
+		const store = {
+			resolveTask: () => ({ ok: true, value: {} }),
+			getTask: () => ({ launchOperationId: "second:0", agentName: "second", title: "Second task" }),
+		} as unknown as OwnerTaskStore;
+		assert.equal(hasTaskTranscript(store, { taskId: "task-reused-7", launchId: "first:0" }), true);
+		assert.deepEqual(await loadTaskTranscript(store, { taskId: "task-reused-7", launchId: "first:0" }), {
+			entries: [],
+		});
+		// A notice saved before notices named the launch tells the tasks apart by agent and title.
+		const older = { taskId: "task-reused-7", agentName: "first", subject: "First task" };
+		assert.equal(hasTaskTranscript(store, older), true);
+		assert.deepEqual(await loadTaskTranscript(store, older), { entries: [] });
+		assert.deepEqual(loads, [{ taskId: "task-reused-7", launchId: "first:0" }, older]);
+		// Of the same agent and title, it cannot tell them apart once several tasks ran under the id: it does not take
+		// the running task's transcript for its own.
+		const same = { taskId: "task-reused-7", agentName: "second", subject: "Second task" };
+		const stopSeveral = registerSavedTaskTranscripts({
+			has: (task) => task === same,
+			load: async () => ({
+				entries: [],
+				unavailable: "more than one subagent ran as task-reused-7 in this session",
+			}),
+			ranAsSeveral: (taskId) => taskId === "task-reused-7",
+		});
+		try {
+			assert.deepEqual(await loadTaskTranscript(store, same), {
+				entries: [],
+				unavailable: "more than one subagent ran as task-reused-7 in this session",
+			});
+		} finally {
+			stopSeveral();
+		}
+	} finally {
+		stop();
+	}
 });
 
 test("an expanded card of a running child shows messages it saves after the card first read its transcript (#3760 run control)", async () => {

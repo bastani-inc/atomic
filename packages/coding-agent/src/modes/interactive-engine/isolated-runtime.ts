@@ -24,7 +24,7 @@ import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
 import { warnDeprecation } from "../../utils/deprecation.js";
-import { canonicalizePathAsync } from "../../utils/paths.ts";
+import { canonicalizePathAsync, resolvePath } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AgentPanelCounts } from "../rpc/agent-panel-bridge.ts";
@@ -948,6 +948,23 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				},
 			},
 			recordBashResult: { configurable: true, value: () => {} },
+			// The engine holds the extensions, so it draws each tool call with the renderer the chat uses. It writes the
+			// page where the host would have: a relative path, or the default name, in the host's working directory.
+			exportToHtml: {
+				configurable: true,
+				value: async (outputPath?: string, options?: { themeName?: string }) => {
+					const { defaultHtmlExportPath } = await import("../../core/export-html/index.ts");
+					const target = resolvePath(
+						outputPath ||
+							defaultHtmlExportPath(
+								this.remoteSessionFile,
+								this.remoteSessionId ?? session.sessionManager.getSessionId(),
+							),
+						process.cwd(),
+					);
+					return (await this.client.exportHtml(target, options ?? {})).path;
+				},
+			},
 			abortBash: {
 				configurable: true,
 				value: (id?: string) => {

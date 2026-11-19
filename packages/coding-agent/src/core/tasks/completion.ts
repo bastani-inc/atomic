@@ -82,7 +82,17 @@ export type TaskCompletionNotice = {
 	requestedModel?: string;
 	/** The notice's line; notices saved by earlier versions lack it and show their title. */
 	line?: TaskNoticeLine;
+	/**
+	 * The operation that launched the task, such as a subagent's child id. A later process numbers its tasks from the
+	 * start again, so the task id alone can name another task; this names the one the notice is about.
+	 */
+	launchId?: string;
 };
+
+/** A task's title as its notice's line quotes it: on one line, at most 240 characters. */
+export function noticeSubject(title: string): string {
+	return title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240);
+}
 
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
 export function taskNoticeLine(
@@ -91,7 +101,7 @@ export function taskNoticeLine(
 ): TaskNoticeLine {
 	const kind = task?.kind ?? envelope.taskKind;
 	const result = envelope.result;
-	const subject = task?.title ? task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240) : undefined;
+	const subject = task?.title ? noticeSubject(task.title) : undefined;
 	const facts = {
 		...(subject ? { subject } : {}),
 		...((task?.metrics?.elapsedMs ?? envelope.elapsedMs) === undefined
@@ -151,7 +161,7 @@ export function ranOnModelLine(
 export function taskCompletionNotice(
 	envelope: TaskCompletionEnvelope,
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking"> &
-		Partial<Pick<TaskRecord, "requestedModel" | "metrics">>,
+		Partial<Pick<TaskRecord, "requestedModel" | "metrics" | "launchOperationId">>,
 	output?: string,
 ): TaskCompletionNotice {
 	const exitCode =
@@ -171,6 +181,7 @@ export function taskCompletionNotice(
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
 		line: taskNoticeLine(envelope, task),
+		...(task?.launchOperationId === undefined ? {} : { launchId: task.launchOperationId }),
 	};
 }
 

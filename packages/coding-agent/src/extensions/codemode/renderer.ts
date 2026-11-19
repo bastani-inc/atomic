@@ -12,6 +12,8 @@ import { getTextOutput, replaceTabs, str } from "../../core/tools/render-utils.t
 import { keyHintIfBound } from "../../modes/interactive/components/keybinding-hints.js";
 import {
 	collapseToolBlockLines,
+	indentWithin,
+	NARROWEST_INDENTED_TEXT,
 	TOOL_BLOCK_LIMITS,
 	ToolBlock,
 	ToolBlockRecords,
@@ -39,12 +41,28 @@ function scriptSource(code: string): string {
 		.trimEnd();
 }
 
-/** A script line in rows of `width`: rows after the first hang under the line, two columns past its indent. */
+/**
+ * A script line in rows of `width`: rows after the first hang under the line, two columns past its indent, without
+ * leaving them narrower than a wide character. A character that does not fit at the end of a row starts the next one.
+ */
 function wrapScriptLine(line: string, width: number): string[] {
 	if (visibleWidth(line) <= width) return [line];
 	const indent = /^ */.exec(stripTerminalSequences(line))?.[0].length ?? 0;
-	const hang = Math.min(indent + 2, Math.floor(width / 2));
+	const hang = indentWithin(width, Math.min(indent + 2, Math.floor(width / 2)));
 	return wrapTextWithAnsi(line, width - hang).map((row, index) => (index === 0 ? row : `${" ".repeat(hang)}${row}`));
+}
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Stands for a character two columns wide on rows one column wide, where it cannot be drawn. */
+export const WIDE_CHARACTER_PLACEHOLDER = "\uFFFD";
+
+/** `text` with each character wider than one column replaced by {@link WIDE_CHARACTER_PLACEHOLDER}. */
+function placeholdWideCharacters(text: string): string {
+	let narrowed = "";
+	for (const { segment } of graphemes.segment(text))
+		narrowed += visibleWidth(segment) > 1 ? WIDE_CHARACTER_PLACEHOLDER : segment;
+	return narrowed;
 }
 
 /**
@@ -73,11 +91,17 @@ class CodemodeCall implements ToolBlockTitleRows {
 		const close = this.theme.fg("text", ")");
 		const inlineWidth = Math.max(0, width - visibleWidth("codemode()"));
 		if (this.code === null) return [truncateToWidth(`${open}[invalid arg]${close}`, width, "…")];
-		const source = scriptSource(this.code);
+		// Under `codemode(`, the script is indented two columns unless that leaves it narrower than a wide character.
+		const indent = indentWithin(width, 2);
+		const codeWidth = Math.max(1, width - indent);
+		// Rows one column wide cannot hold a wide character: it shows as a placeholder rather than not at all.
+		const source =
+			codeWidth < NARROWEST_INDENTED_TEXT
+				? placeholdWideCharacters(scriptSource(this.code))
+				: scriptSource(this.code);
 		const lines = source ? this.highlighter.highlight(source, "javascript") : [];
 		if (lines.length <= 1 && (!this.expanded || visibleWidth(lines[0] ?? "") <= inlineWidth))
 			return [truncateToWidth(`${open}${truncateToWidth(lines[0] ?? "", inlineWidth, "…")}${close}`, width, "…")];
-		const codeWidth = Math.max(1, width - 2);
 		const rows = this.expanded
 			? lines.flatMap((line) => wrapScriptLine(line, codeWidth))
 			: collapseToolBlockLines(
@@ -85,7 +109,8 @@ class CodemodeCall implements ToolBlockTitleRows {
 					TOOL_BLOCK_LIMITS.script,
 					false,
 				);
-		return [open, ...rows.map((row) => `  ${row}`), close].map((row) => truncateToWidth(row, width, "…"));
+		const margin = " ".repeat(indent);
+		return [open, ...rows.map((row) => `${margin}${row}`), close].map((row) => truncateToWidth(row, width, "…"));
 	}
 }
 

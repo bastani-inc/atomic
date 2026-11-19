@@ -88,13 +88,13 @@ function assertInnerToolsExpanded(rows: readonly string[], width: number): void 
 	assert.match(plain, /\bout-1$/m, plain);
 }
 
-function subagentResultDetails(): Details {
+function subagentResultDetails(messages: Message[] = childMessages()): Details {
 	const child = {
 		agent: "worker",
 		task: "Run the fixture",
 		exitCode: 0,
 		status: "ok",
-		messages: childMessages(),
+		messages,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
 	} as unknown as Details["results"][number];
 	return { mode: "single", results: [child] } as Details;
@@ -114,11 +114,11 @@ function exportedText(html: string): string {
 }
 
 /** The expanded card of a finished foreground subagent, as the parent's chat draws it. */
-function renderExpandedCard(width: number): string[] {
+function renderExpandedCard(width: number, messages?: Message[]): string[] {
 	initTheme("dark", false);
 	setKeybindings(new KeybindingsManager());
 	return renderSubagentToolResult(
-		{ content: [], details: subagentResultDetails() },
+		{ content: [], details: subagentResultDetails(messages) },
 		{ expanded: true, isPartial: false },
 		theme,
 		{ toolCallId: "parent", state: {}, invalidate() {}, getToolDefinition },
@@ -126,7 +126,7 @@ function renderExpandedCard(width: number): string[] {
 }
 
 /** The expanded finished-task notice of the same subagent, once it has loaded the child's transcript. */
-async function renderExpandedNotice(width: number): Promise<string[]> {
+async function renderExpandedNotice(width: number, messages: () => Message[] = childMessages): Promise<string[]> {
 	initTheme("dark", false);
 	setKeybindings(new KeybindingsManager());
 	const task = taskRecord("inner-tools");
@@ -144,7 +144,7 @@ async function renderExpandedNotice(width: number): Promise<string[]> {
 	);
 	let loaded = false;
 	const message = new TaskCompletionMessage(notice, true, {
-		loadTranscript: () => childMessages().map((message) => ({ type: "message", message })) as never,
+		loadTranscript: () => messages().map((message) => ({ type: "message", message })) as never,
 		getToolDefinition,
 		requestRender: () => {
 			loaded = true;
@@ -153,7 +153,14 @@ async function renderExpandedNotice(width: number): Promise<string[]> {
 	message.render(width);
 	for (let i = 0; i < 20 && !loaded; i++) await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.ok(loaded, "the notice loaded its transcript");
-	return message.render(width);
+	// A notice holding many rows draws them a slice per render, asking for the next render until all are drawn.
+	let rows: string[];
+	do {
+		loaded = false;
+		rows = message.render(width);
+		await new Promise((resolve) => setImmediate(resolve));
+	} while (loaded);
+	return rows;
 }
 
 test.each([50, 100, 160])(
@@ -207,4 +214,59 @@ test("an HTML export's expanded subagent card draws the child's tool calls with 
 	const result = renderer.renderResult("parent", "subagent", [], subagentResultDetails(), false);
 	const rows = exportedText(result?.expanded ?? "").split("\n");
 	assertInnerToolsExpanded(rows, 100);
+});
+
+/** A script whose every line holds wide characters, an emoji and a combining mark. */
+const WIDE_LINES = 11;
+const WIDE_SCRIPT = `${"// 漢字😀e\u0301甲乙丙\n".repeat(WIDE_LINES)}return 1;`;
+const WIDE_MARKS = ["漢", "字", "😀", "e\u0301", "甲", "乙", "丙"];
+
+function wideScriptMessages(): Message[] {
+	return [
+		{ role: "user", content: "Run the fixture", timestamp: 1 },
+		fauxAssistantMessage([fauxToolCall("codemode", { code: WIDE_SCRIPT }, { id: "wide" })], {
+			stopReason: "toolUse",
+		}),
+		{
+			role: "toolResult",
+			toolCallId: "wide",
+			toolName: "codemode",
+			content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }],
+			details: { calls: [] },
+			isError: false,
+			timestamp: 2,
+		},
+		fauxAssistantMessage("Fixture done"),
+	];
+}
+
+/** The widths at which the rows lose a script character or overflow, with what they lose. */
+function wideScriptLosses(rowsAt: (width: number) => readonly string[], widths: readonly number[]): unknown[] {
+	const losses: unknown[] = [];
+	for (const width of widths) {
+		const rows = rowsAt(width);
+		const plain = rows.map(stripTerminalSequences).join("\n");
+		const lost = WIDE_MARKS.filter((mark) => plain.split(mark).length - 1 !== WIDE_LINES);
+		const overflow = rows.filter((row) => visibleWidth(row) > width);
+		if (lost.length > 0 || overflow.length > 0) losses.push({ width, lost, overflow });
+	}
+	return losses;
+}
+
+const NARROW_TO_WIDE = Array.from({ length: 197 }, (_, i) => i + 4);
+
+test("an expanded subagent card keeps every character of the script, wide ones included, at every width from 4 to 200 (#5525)", () => {
+	assert.deepEqual(
+		wideScriptLosses((width) => renderExpandedCard(width, wideScriptMessages()), NARROW_TO_WIDE),
+		[],
+	);
+});
+
+test("an expanded finished-task notice keeps every character of the script, wide ones included, at every width from 4 to 200 (#5525)", async () => {
+	const rows = new Map<number, string[]>();
+	for (const width of NARROW_TO_WIDE) rows.set(width, await renderExpandedNotice(width, wideScriptMessages));
+	assert.deepEqual(
+		wideScriptLosses((width) => rows.get(width) ?? [], NARROW_TO_WIDE),
+		[],
+	);
 });

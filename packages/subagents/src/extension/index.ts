@@ -7,6 +7,7 @@ import {
 	initTheme,
 	keyHintIfBound,
 	publishExtensionContextEffect,
+	registerSavedTaskTranscripts,
 	type SessionEntry,
 	ToolBlock,
 	type ToolBlockStatus,
@@ -27,7 +28,7 @@ import { trackOwnIntercomSession } from "../intercom/own-intercom-session.js";
 import { answerIntercomChildrenRequests } from "../runs/foreground/intercom-children.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
-import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
+import { bindSubagentChildCards, savedSubagentTranscripts } from "../runs/foreground/subagent-child-card-state.js";
 import {
 	endWorkflowRunStageSubagentChildren,
 	saveUnsavedSubagentChildRecords,
@@ -470,7 +471,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			clearPendingForegroundControlNotices(state);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 			// A subagent's own session launches no children (#4395): it adds nothing to the child index.
-			if (!isSubagentChildSession(ctx)) bindSubagentChildCards(ctx);
+			if (!isSubagentChildSession(ctx)) {
+				bindSubagentChildCards(ctx);
+				// A finished subagent's notice shows its transcript from the child's session once its task is gone.
+				registerSavedTaskTranscripts(savedSubagentTranscripts);
+			}
 		};
 		let stopReleasedChildWakes: (() => void) | undefined;
 		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;

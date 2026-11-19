@@ -95,7 +95,7 @@ export interface ChatMessageRenderOptions {
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
 	loadTaskTranscript?: TaskCompletionMessageOptions["loadTranscript"];
-	hasTaskTranscript?: (taskId: TaskId) => boolean;
+	hasTaskTranscript?: TaskCompletionMessageOptions["hasTranscript"];
 	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	createToolComponent?: (
 		entry: Extract<ChatMessageEntry, { kind: "tool" }>,
