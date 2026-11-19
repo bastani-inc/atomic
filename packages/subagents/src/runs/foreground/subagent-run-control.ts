@@ -16,6 +16,7 @@ import {
 	liveOwnerlessAdmissions,
 	stopOwnerlessChild,
 } from "./ownerless-children.js";
+import { ReleasedChildError } from "./released-child-errors.js";
 import { releasedChildReservation, reserveReleasedChildren } from "./released-child-reservations.js";
 import {
 	type AdmittedSubagentChild,
@@ -30,7 +31,12 @@ import {
 } from "./released-child-resume.js";
 import { subagentWakeKey } from "./released-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
-import { indexSubagentChildOwner, observedSubagentRunIds } from "./subagent-child-card-state.js";
+import {
+	indexSubagentChildOwner,
+	loadSubagentChildRecord,
+	observedSubagentRunIds,
+	type SubagentChildStanding,
+} from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import { subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
@@ -45,6 +51,7 @@ import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
+	type SubagentChildOwner,
 	type SubagentChildRecord,
 	type SubagentChildStopStatus,
 	subagentChildOwner,
@@ -112,7 +119,7 @@ function label(record: ChildLabel): string {
 }
 
 function childDetails(
-	record: SubagentChildRecord,
+	record: SubagentChildStanding,
 	state: SubagentRunControlChild["state"],
 	taskId = record.taskId,
 ): SubagentRunControlChild {
@@ -143,6 +150,27 @@ function liveTaskIds(host: AgentTaskHost | undefined): Set<string> {
 	}
 }
 
+/**
+ * A child of this session whose records left its context window, as the session's catalog names it: where it stands,
+ * without its task, held messages or results. Such a child settled and holds nothing for a later run; an action on it
+ * reads its full record first (see {@link fullRecordOf}).
+ */
+interface ArchivedChild extends SubagentChildStanding {
+	readonly owner: SubagentChildOwner;
+	readonly archivedEntryId: string;
+	/** Every task id it ran as. */
+	readonly taskIds: readonly string[];
+	/** Newer records of it the window still holds, which do not name everything its record has (#4395). */
+	readonly overlay?: SubagentChildRecord;
+}
+
+/** A child this session launched: its full record, or where it stands when its records left the session's window. */
+type OwnedChild = SubagentChildRecord | ArchivedChild;
+
+function isArchivedChild(child: OwnedChild): child is ArchivedChild {
+	return Object.hasOwn(child, "archivedEntryId");
+}
+
 /** The session state `ownedRecords` read its records from; any append, branch change or history load replaces it. */
 interface OwnedRecordsRead {
 	readonly sessionId: string;
@@ -150,7 +178,7 @@ interface OwnedRecordsRead {
 	readonly lastSeq: number;
 	readonly leafId: string | null;
 	readonly fullHistory: boolean;
-	readonly records: ReadonlyMap<string, SubagentChildRecord>;
+	readonly records: ReadonlyMap<string, OwnedChild>;
 }
 
 const ownedRecordReads = new WeakMap<object, OwnedRecordsRead>();
@@ -160,7 +188,7 @@ const ownedRecordReads = new WeakMap<object, OwnedRecordsRead>();
  * child is stopped or read-only, and folding a long session's every entry for each frame cost a stage of work per
  * paint.
  */
-function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildRecord> {
+function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, OwnedChild> {
 	const manager = ctx.sessionManager;
 	const owner = subagentChildOwner(ctx).sessionId;
 	if (
@@ -168,7 +196,7 @@ function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildR
 		typeof manager.getLeafId !== "function" ||
 		typeof manager.hasFullHistory !== "function"
 	)
-		return readSubagentChildRecords(manager.getEntries(), owner);
+		return ownedChildren(manager, owner);
 	const state = {
 		sessionId: manager.getSessionId(),
 		owner,
@@ -186,9 +214,96 @@ function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildR
 		read.fullHistory === state.fullHistory
 	)
 		return read.records;
-	const records = readSubagentChildRecords(manager.getEntries(), owner);
+	const records = ownedChildren(manager, owner);
 	ownedRecordReads.set(manager, { ...state, records });
 	return records;
+}
+
+/** The children `owner` launched, as its entries and its catalog of children whose records left its window name them. */
+function ownedChildren(manager: ExtensionContext["sessionManager"], owner: string): ReadonlyMap<string, OwnedChild> {
+	const resident = readSubagentChildRecords(manager.getEntries(), owner);
+	const catalog =
+		typeof manager.getArchivedChildCatalog === "function"
+			? manager.getArchivedChildCatalog().filter((child) => child.ownerSessionId === owner)
+			: [];
+	if (catalog.length === 0) return resident;
+	const archived = new Map<string, readonly [number, ArchivedChild]>();
+	for (const child of catalog) {
+		const overlay = resident.get(child.childId);
+		const { entryId, firstSeq, ownerSessionId, taskIds, releasedTaskIds: _released, ...standing } = child;
+		archived.set(child.childId, [
+			firstSeq,
+			{
+				...standing,
+				...(overlay === undefined ? {} : standingOfRecord(overlay)),
+				owner: { kind: "session", sessionId: ownerSessionId },
+				archivedEntryId: entryId,
+				taskIds,
+				...(overlay === undefined ? {} : { overlay }),
+			},
+		]);
+	}
+	// In launch order, as a fold of the session's every record lists them: by where each child's first record is.
+	const firstSeqs = new Map<string, number | undefined>();
+	if (typeof manager.getEntrySeq === "function")
+		for (const entry of manager.getEntries()) {
+			if (!isSubagentChildRecord(entry)) continue;
+			const childId = (entry.data as SubagentChildRecord).childId;
+			if (!firstSeqs.has(childId)) firstSeqs.set(childId, manager.getEntrySeq(entry.id));
+		}
+	const ordered: (readonly [number, OwnedChild])[] = [...archived.values()];
+	let positioned = typeof manager.getEntrySeq === "function";
+	for (const record of resident.values()) {
+		if (archived.has(record.childId)) continue;
+		const seq = firstSeqs.get(record.childId);
+		if (seq === undefined) positioned = false;
+		ordered.push([seq ?? Number.POSITIVE_INFINITY, record]);
+	}
+	// A session interface that does not say where its entries are lists its own records first, as it always did.
+	if (positioned) ordered.sort((left, right) => left[0] - right[0]);
+	else ordered.sort((left, right) => Number(isArchivedChild(left[1])) - Number(isArchivedChild(right[1])));
+	return new Map(ordered.map(([, child]) => [child.childId, child]));
+}
+
+function standingOfRecord(record: SubagentChildRecord): Partial<SubagentChildStanding> {
+	const keys = [
+		"runId",
+		"index",
+		"agent",
+		"cwd",
+		"state",
+		"terminalStatus",
+		"taskId",
+		"childSessionId",
+		"childSessionFile",
+		"intercomTarget",
+		"intercomGroup",
+		"releasedIntercomId",
+		"elapsedMs",
+		"elapsedSpan",
+	] as const;
+	return Object.fromEntries(keys.filter((key) => Object.hasOwn(record, key)).map((key) => [key, record[key]]));
+}
+
+/**
+ * The full record of a child whose records left the session's window, which an action on it reads first: through the
+ * child index, which keeps it until the child is recorded again, or else from the session, merged with any newer
+ * records the window holds.
+ */
+async function fullRecordOf(ctx: ExtensionContext, child: ArchivedChild): Promise<SubagentChildRecord> {
+	const kept = await loadSubagentChildRecord(child.owner.sessionId, child.childId, { keep: true }).catch(
+		() => undefined,
+	);
+	if (kept !== undefined) return kept;
+	const saved = await ctx.sessionManager.readArchivedChildRecord?.(child.archivedEntryId);
+	const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
+	if (data === undefined || data.childId !== child.childId)
+		throw new ReleasedChildError("child-record-unreadable", {
+			childId: child.childId,
+			ownerSessionId: child.owner.sessionId,
+			entryId: child.archivedEntryId,
+		});
+	return child.overlay === undefined ? data : { ...data, ...child.overlay };
 }
 
 /**
@@ -197,6 +312,8 @@ function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildR
  */
 function childIdOfEarlierTask(ctx: ExtensionContext, taskId: string): string | undefined {
 	const owner = subagentChildOwner(ctx).sessionId;
+	for (const child of ownedRecords(ctx).values())
+		if (isArchivedChild(child) && child.taskIds.includes(taskId)) return child.childId;
 	for (const entry of ctx.sessionManager.getEntries()) {
 		if (!isSubagentChildRecord(entry)) continue;
 		const data = entry.data as SubagentChildRecord;
@@ -263,12 +380,12 @@ function resolveRecord<T extends Pick<SubagentChildRecord, "childId" | "runId" |
 }
 
 /** A child released while it waits on detached tool calls (#4326): not running, and woken by what it waits on. */
-function isReleased(record: SubagentChildRecord): boolean {
+function isReleased(record: Pick<SubagentChildRecord, "state" | "terminalStatus">): boolean {
 	return record.state === "terminal" && record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS;
 }
 
 /** How a settled child already stands for pause and quit: a child its workflow stage's pause stopped counts as paused. */
-function stoppedAs(record: SubagentChildRecord): SubagentChildStopStatus | undefined {
+function stoppedAs(record: Pick<SubagentChildRecord, "state" | "terminalStatus">): SubagentChildStopStatus | undefined {
 	if (record.state !== "terminal") return undefined;
 	if (record.terminalStatus === "paused" || record.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS)
 		return "paused";
@@ -390,11 +507,11 @@ async function stopChildren(
 	const host = ctx.getAgentTaskHost?.();
 	const live = liveTaskIds(host);
 	const records = ownedRecords(ctx);
-	const isLive = (record: SubagentChildRecord) =>
+	const isLive = (record: OwnedChild) =>
 		record.taskId !== undefined && (live.has(record.taskId) || isLiveOwnerlessChild(record.taskId));
-	const isQueued = (record: SubagentChildRecord) =>
+	const isQueued = (record: OwnedChild) =>
 		record.taskId !== undefined && (isQueuedSubagentChild(record.taskId) || isQueuedOwnerlessChild(record.taskId));
-	let targets: SubagentChildRecord[];
+	let targets: OwnedChild[];
 	if (request.all) {
 		// Queued children are stopped first, so stopping a running sibling cannot free a slot that starts them.
 		targets = [...records.values()]
@@ -432,11 +549,15 @@ async function stopChildren(
 				: `Quit ${label(record)}: paused · awaiting resume, as a quit workflow run is. It stays resumable with { action: "resume", id: "${record.childId}", message? }.`,
 		);
 	};
-	const notRunning = (record: SubagentChildRecord) =>
+	const notRunning = (
+		record: Pick<SubagentChildRecord, "agent" | "childId" | "intercomTarget" | "state" | "terminalStatus">,
+	) =>
 		failures.push(
 			`${label(record)} is not running (${record.state === "terminal" ? (record.terminalStatus ?? "settled") : "not live in this process"}); there is nothing to ${action}.`,
 		);
-	for (const record of targets) {
+	for (const target of targets) {
+		// One whose records left the session's window is read in full first, as this action needs all of it.
+		const record = isArchivedChild(target) ? await fullRecordOf(ctx, target) : target;
 		const key = childHoldKey(subagentChildOwner(ctx).sessionId, record.childId);
 		if (isLive(record)) {
 			reportLive(record, await stopLiveChild(deps, ctx, host, record, status));
@@ -547,7 +668,7 @@ async function resumeChild(
 	if (!request.id?.trim()) return errorResult(action, "resume needs the id of the child to resume.");
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	// Live handles can refuse a resume without their first saved record. Only a durable record can start a restore.
-	const resolved = resolveRecord<SubagentChildRecord | AdmittedSubagentChild>(
+	const resolved = resolveRecord<OwnedChild | AdmittedSubagentChild>(
 		ownedRecords(ctx),
 		request.id,
 		liveResumeAdmissions(ctx, ownerSessionId),
@@ -556,7 +677,7 @@ async function resumeChild(
 	if (!resolved) return errorResult(action, `Unknown subagent '${request.id}': this session launched no such child.`);
 	if ("ownerSessionId" in resolved) return alreadyRunning(resolved, resolved.taskId);
 	const wakeKey = subagentWakeKey(ownerSessionId, resolved.childId);
-	let record = resolved;
+	let child: OwnedChild = resolved;
 	// A wake or another resume may be reopening the child right now. Wait only until it has, or has given up, never for
 	// the run it starts: a reopened child is running, and resume refuses it as it refuses any running child (#5485).
 	const reopenings = [
@@ -574,18 +695,30 @@ async function resumeChild(
 				action,
 				`Interrupted while ${label(resolved)} was being reopened, before it could be resumed: nothing was sent to it.`,
 			);
-		if (check !== "readable") return alreadyRunning(record, check.taskId);
+		if (check !== "readable") return alreadyRunning(child, check.taskId);
 		const admitted = liveResumeAdmissions(ctx, ownerSessionId).get(resolved.childId);
 		if (admitted) return alreadyRunning(admitted, admitted.taskId);
-		record = ownedRecords(ctx).get(resolved.childId) ?? resolved;
+		child = ownedRecords(ctx).get(resolved.childId) ?? resolved;
 	}
 	const terminalReason =
-		record.state === "terminal" ? NON_RESUMABLE_STATUSES.get(record.terminalStatus ?? "") : undefined;
+		child.state === "terminal" ? NON_RESUMABLE_STATUSES.get(child.terminalStatus ?? "") : undefined;
 	if (terminalReason)
 		return errorResult(
 			action,
-			`${label(record)} is terminal and cannot be resumed: ${terminalReason}. Launch a fresh subagent if its work is still needed.`,
+			`${label(child)} is terminal and cannot be resumed: ${terminalReason}. Launch a fresh subagent if its work is still needed.`,
 		);
+	let record: SubagentChildRecord;
+	if (isArchivedChild(child)) {
+		// One whose records left the session's window is read in full first, as resuming it needs all of it.
+		record = await fullRecordOf(ctx, child);
+		// A wake or another resume may have begun reopening it meanwhile: this resume decides again, as it would then.
+		if (
+			isReleasedChildWakeActive(wakeKey) ||
+			subagentChildRestoring(ownerSessionId, record.childId) !== undefined ||
+			liveResumeAdmissions(ctx, ownerSessionId).has(record.childId)
+		)
+			return resumeChild(deps, ctx, request, signal);
+	} else record = child;
 	// A wake that did not reopen the child may still be finishing: the resume is queued behind it, not dropped.
 	const waking = isReleasedChildWakeActive(wakeKey);
 	const message = request.message?.trim() ? request.message : undefined;
@@ -648,19 +781,25 @@ async function resumeChild(
 		},
 	);
 }
-function wakeFailureText(record: SubagentChildRecord): string {
+/** What `status` reads of a child; a child whose records left the session's window has no more, and holds nothing. */
+type StatusFacts = Pick<
+	SubagentChildRecord,
+	"agent" | "childId" | "intercomTarget" | "state" | "terminalStatus" | "taskId" | "waitingOn" | "wakeFailure"
+>;
+
+function wakeFailureText(record: StatusFacts): string {
 	const failure = currentWakeFailure(record);
 	return failure === undefined ? "" : ` Its last wake failed: ${failure.reason} (${failure.code}). ${failure.hint}`;
 }
 
 /** How `status` shows a released child: what it waits on, and what wakes it. */
-function releasedLine(record: SubagentChildRecord): string {
+function releasedLine(record: StatusFacts): string {
 	const calls = (record.waitingOn ?? []).map((call) => `${call.toolName} (${call.toolCallId})`).join(", ");
 	return `${label(record)} released · waiting${calls ? ` on ${calls}` : ""}; it holds nothing and is not paused: it wakes by itself when that finishes or a message reaches it, and needs no resume. To wake it sooner, resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
 }
 
 /** How `status` shows a child pause or quit stopped: paused and awaiting resume, as a quit workflow run shows. */
-function awaitingResumeLine(record: SubagentChildRecord): string {
+function awaitingResumeLine(record: StatusFacts): string {
 	const how =
 		record.terminalStatus === "quit"
 			? "quit · paused · awaiting resume"
@@ -670,11 +809,11 @@ function awaitingResumeLine(record: SubagentChildRecord): string {
 	return `${label(record)} ${how}. Resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
 }
 
-function wakeFailedLine(record: SubagentChildRecord): string {
+function wakeFailedLine(record: StatusFacts): string {
 	return `${label(record)} keeps results its wake could not deliver. Resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
 }
 
-function statusLines(record: SubagentChildRecord): string[] {
+function statusLines(record: StatusFacts): string[] {
 	if (isReleased(record)) return [releasedLine(record)];
 	if (stoppedAs(record)) return [awaitingResumeLine(record)];
 	return currentWakeFailure(record) ? [wakeFailedLine(record)] : [];
