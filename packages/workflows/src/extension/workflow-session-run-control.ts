@@ -7,6 +7,7 @@ import {
 	type WorkflowRunControlStatus,
 	WorkflowRunControlUnavailableError,
 	type WorkflowRunListFilter,
+	type WorkflowRunListOptions,
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
@@ -17,7 +18,7 @@ import {
 	WorkflowStageResumeUnsupportedError,
 } from "@bastani/atomic";
 import { rehydrateJournalStoreError } from "@bastani/atomic/storage";
-import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import type { CatalogReadOptions, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { JournalError } from "../durable/journal/types.js";
 import {
 	canonicalDirectoryAsync,
@@ -26,6 +27,7 @@ import {
 } from "../durable/sdk-recovery-scope.js";
 import { awaitJobSettlement } from "../runs/background/ended-run-settlement.js";
 import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
+import { raceAbort } from "../shared/abort.js";
 import { describeErrorWithCauses } from "../shared/error-with-causes.js";
 import { isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
@@ -53,7 +55,8 @@ export interface SessionRunControlHost {
 	/** The owning session's most recent event context, or `undefined` before it started. */
 	readonly context: () => PiEventContext | undefined;
 	readonly store: Pick<Store, "runs">;
-	readonly catalog?: () => Promise<DurableWorkflowCatalogEntries>;
+	/** The stored resumable and completed runs; a caller whose `signal` aborts stops the read once nobody else waits. */
+	readonly catalog?: (options?: CatalogReadOptions) => Promise<DurableWorkflowCatalogEntries>;
 	/** The owning session's executors; defaults to the current session's. */
 	readonly jobs?: Pick<JobTracker, "get">;
 }
@@ -191,6 +194,7 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 		filter: WorkflowRunListFilter | undefined,
 		inScope: RunScope,
 		finished: (catalog: DurableWorkflowCatalogEntries) => DurableWorkflowCatalogEntries["completed"],
+		options?: WorkflowRunListOptions,
 	): Promise<WorkflowRunSummary[]> => {
 		const result = await request({
 			action: "status",
@@ -198,7 +202,9 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 		});
 		if (result.action !== "status")
 			throw failure("control_failed", `Unexpected workflow result: ${result.action}`, undefined);
-		const catalog = filter?.includeDurable ? await host.catalog?.() : undefined;
+		// The first read of the stored runs in a process can take seconds on a large journal; the caller may stop waiting.
+		const read = filter?.includeDurable ? host.catalog?.(options) : undefined;
+		const catalog = read === undefined ? undefined : await raceAbort(read, options?.signal);
 		const cwd = host.context()?.cwd;
 		const canonicalPaths = new Map<string, Promise<string>>();
 		const canonicalize = (path: string): Promise<string> => {
@@ -256,9 +262,14 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 	};
 
 	return {
-		listRuns: (filter) => list(filter, isSdkDurableRunInScopeAsync, (catalog) => catalog.completed),
-		listProjectRuns: () =>
-			list({ includeDurable: true }, isProjectRootRunAsync, (catalog) => catalog.completedAll ?? catalog.completed),
+		listRuns: (filter, options) => list(filter, isSdkDurableRunInScopeAsync, (catalog) => catalog.completed, options),
+		listProjectRuns: (options) =>
+			list(
+				{ includeDurable: true },
+				isProjectRootRunAsync,
+				(catalog) => catalog.completedAll ?? catalog.completed,
+				options,
+			),
 		async getRun(runId) {
 			const result = await request({ action: "status", runId });
 			if (result.action !== "statusDetail")

@@ -25,6 +25,7 @@ import {
 } from "./workflow-failures.js";
 
 interface RestoredRunBlockedMetadata {
+	readonly runGeneration?: number;
 	readonly failedStageId?: string;
 	readonly error: string;
 	readonly failureKind: WorkflowFailureKind;
@@ -97,6 +98,9 @@ export function _buildStageSnapshots(
 			const snap = stageMap.get(stageId);
 			if (snap) {
 				snap.status = restoreStageStatus(status);
+				if ((status === "failed" || status === "skipped") && typeof entry.payload.startedChildRunId === "string")
+					snap.startedChildRunId = entry.payload.startedChildRunId;
+				else delete snap.startedChildRunId;
 				if (typeof durationMs === "number") snap.durationMs = durationMs;
 				if (typeof entry.payload.endedAt === "number") snap.endedAt = entry.payload.endedAt;
 				if (typeof summary === "string") snap.result = summary;
@@ -369,6 +373,10 @@ function numericTimestamp(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function restoredGeneration(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 function numericDuration(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -440,6 +448,7 @@ export function findRunBlockedMetadata(
 		)
 			continue;
 		latest = {
+			runGeneration: restoredGeneration(entry.payload.runGeneration),
 			...(typeof failedStageId === "string" ? { failedStageId } : {}),
 			error,
 			failureKind,
@@ -488,6 +497,19 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 		}
 	}
 
+	// Older transcripts have no sequence: order by recorded end time, with end-entry order breaking clock ties.
+	const sequences = new Map<string, number>();
+	const legacy: Array<[string, number]> = [];
+	for (const [id, end] of ended) {
+		const recorded = numericTimestamp(end.finishSequence);
+		if (recorded !== undefined) sequences.set(id, recorded);
+		else legacy.push([id, numericTimestamp(end.endedAt) ?? numericTimestamp(end.ts) ?? 0]);
+	}
+	let last = 0;
+	for (const [id, time] of legacy.sort((a, b) => a[1] - b[1])) {
+		last = Math.max(last + 1, time);
+		sequences.set(id, last);
+	}
 	for (const [runId, start] of started) {
 		if (store.run(runId) !== undefined) continue;
 		const end = ended.get(runId);
@@ -517,6 +539,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			toolNodes:
 				typeof failedToolNodeId === "string" && failedToolNode?.id === failedToolNodeId ? [failedToolNode] : [],
 			startedAt: start.startTs,
+			runGeneration: runMeta.runGeneration,
 			...(runMeta.parentRunId !== undefined ? { parentRunId: runMeta.parentRunId } : {}),
 			...(runMeta.parentStageId !== undefined ? { parentStageId: runMeta.parentStageId } : {}),
 			...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
@@ -543,6 +566,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 		const restoredEndedAt = numericTimestamp(end.endedAt);
 		const restoredDurationMs = numericDuration(end.durationMs);
 		store.recordRunEnd(runId, status, result, typeof error === "string" ? error : undefined, {
+			runGeneration: restoredGeneration(end.runGeneration),
+			finishSequence: sequences.get(runId),
 			...(typeof failureKind === "string" && isWorkflowFailureKind(failureKind) ? { failureKind } : {}),
 			...(typeof failureCode === "string" && isWorkflowFailureCode(failureCode) ? { failureCode } : {}),
 			...(typeof failureRecoverability === "string" && isWorkflowFailureRecoverability(failureRecoverability)
@@ -601,6 +626,7 @@ export function findRunStartMetadata(
 	entries: readonly SessionEntry[],
 	runId: string,
 ): {
+	readonly runGeneration?: number;
 	readonly parentRunId?: string;
 	readonly parentStageId?: string;
 	readonly rootRunId?: string;
@@ -627,6 +653,7 @@ export function findRunStartMetadata(
 		const budgetState = restoreBudgetState(entry.payload.budgetState);
 		const origin = entry.payload.origin;
 		return {
+			runGeneration: restoredGeneration(entry.payload.runGeneration),
 			...(typeof parentRunId === "string" ? { parentRunId } : {}),
 			...(typeof parentStageId === "string" ? { parentStageId } : {}),
 			...(typeof rootRunId === "string" ? { rootRunId } : {}),

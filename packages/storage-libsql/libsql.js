@@ -804,12 +804,14 @@ function rerunsLocked(sql) {
 /**
  * Whether `sql` is one statement: it has no `;` but at its end, or it is one `CREATE TRIGGER`, whose body holds a `;`
  * after each of its statements. Otherwise a `;` in a literal or a comment also counts, so several statements are never
- * taken for one.
+ * taken for one. After the last `;`, any white space counts as none, a no-break space or a byte-order mark too (#5676):
+ * SQLite skips a byte-order mark and fails on any other such character, and sqld runs such a text as one statement,
+ * so none of them can start another statement that runs.
  * @param {string} sql
  */
 function isOneStatement(sql) {
 	const first = sql.indexOf(";");
-	return first === -1 || /^[ \t\n\f\r;]*$/.test(sql.slice(first)) || isOneTrigger(sql);
+	return first === -1 || /^[\s;]*$/.test(sql.slice(first)) || isOneTrigger(sql);
 }
 
 /** The keyword that starts a `CREATE TRIGGER`. */
@@ -1484,8 +1486,8 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 				() => true,
 			);
 		},
-		async beginTransaction() {
-			const begin = async () => (await connection()).transaction("write");
+		async beginTransaction(options) {
+			const begin = async () => (await connection()).transaction(options?.readOnly === true ? "read" : "write");
 			let transaction = await waitForLock(begin);
 			// A server's transaction sends its `BEGIN IMMEDIATE` with its first statement. A server that answers that busy
 			// fails the statement and the client closes the transaction, having run nothing of it, so the statement runs

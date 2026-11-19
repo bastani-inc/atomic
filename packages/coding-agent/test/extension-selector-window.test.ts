@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { ExtensionSelectorComponent } from "../src/modes/interactive/components/extension-selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
-import { stripAnsi } from "../src/utils/ansi.js";
+import { stripAnsi } from "./helpers/visible-text.js";
 
 function lines(selector: ExtensionSelectorComponent, width = 80): string[] {
 	return stripAnsi(selector.render(width).join("\n")).split("\n");

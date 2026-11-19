@@ -485,6 +485,8 @@ export interface StageSnapshot {
 	replayed?: boolean;
 	/** Live child workflow run metadata used to expand nested workflow graphs while the child is running. */
 	workflowChildRun?: WorkflowChildRunRef;
+	/** The child that actually started under a failed or skipped boundary. Not a replayable result. */
+	startedChildRunId?: string;
 	/** Snapshot-safe child workflow result metadata for continuation replay of import boundaries. */
 	workflowChild?: WorkflowChildReplaySnapshot;
 	readonly toolEvents: ToolEvent[];
@@ -604,6 +606,8 @@ export type RunResumeSource = "run_control" | "prompt_answer" | "stage_control" 
 export type { WorkflowWorktreeRestoreOutcome } from "./worktree-restore-outcome.js";
 
 export interface RunSnapshot extends RunExecutionState {
+	/** Sequence of this run's pause and block occurrences, retained when the run resumes under its own id. */
+	runGeneration?: number;
 	readonly label?: string;
 	readonly summary?: string;
 	readonly summarizedThrough?: number;
@@ -625,6 +629,8 @@ export interface RunSnapshot extends RunExecutionState {
 	budgetState?: RunBudgetState;
 	startedAt: number;
 	endedAt?: number;
+	/** Order of this attempt's finish in its host session, including finishes in the same clock tick. */
+	finishSequence?: number;
 	durationMs?: number;
 	/**
 	 * Elapsed milliseconds inherited from prior sessions of this run. Seeded on

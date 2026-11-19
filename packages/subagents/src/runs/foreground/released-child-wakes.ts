@@ -15,9 +15,12 @@ import { isReleasedChildError, ReleasedChildError } from "./released-child-error
 import { releasedReplyTimeoutId, releasedReplyToolResult } from "./released-child-replies.js";
 import {
 	acknowledgeReleasedChildWake,
+	bindReleasedChildReservationOwner,
 	INTERCOM_CONNECTED_EVENT,
+	isHeldChildRecord,
 	markEndedChildrenOf,
 	type ReleasedChildHoldFailure,
+	type ReleasedChildHoldRecovery,
 	releasedChildReservation,
 	reserveReleasedChildrenOf,
 	SUBAGENT_HOLD_FAILURE_EVENT,
@@ -27,7 +30,6 @@ import {
 	bindResumeDispatcher,
 	isReleasedChildStopPending,
 	openReleasedChildRelaunch,
-	refuseQueuedResumes,
 	settleReleasedChildRelaunch,
 } from "./released-child-resume.js";
 import {
@@ -44,10 +46,12 @@ import {
 import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest } from "./released-reply-protocol.js";
 import {
 	indexSubagentChildOwner,
+	reservationRecordLookup,
 	subagentChildRecordForTarget,
 	subagentChildRecordOf,
 	subagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
+import { subagentChildOwnerOperations } from "./subagent-child-owner.js";
 import {
 	currentWakeFailure,
 	observeChildRecordFailure,
@@ -103,54 +107,100 @@ export function bindReleasedChildWakes(
 	ctx: ExtensionContext,
 	events: IntercomEventBus,
 	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
+	start: (work: () => void) => void = (work) => work(),
 ): () => void {
+	const owner = subagentChildOwnerOperations(deps.pi, ctx);
+	// A bound owner's notices follow its live generation; without a binding they go to `events`, as the caller passed.
+	const ownerEvents = owner.pi === deps.pi ? events : owner.pi.events;
+	ctx = owner.ctx;
+	deps = { ...deps, pi: owner.pi };
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const namespace = subagentWakeNamespace(ownerSessionId);
-	let holdFailureNotified = false;
+	const unbindReservationOwner = bindReleasedChildReservationOwner(events, ownerSessionId);
+	/**
+	 * #5551: the children whose reservation failure the owner was told of and whose reservation has not succeeded since,
+	 * each with the task of the release it failed for: told once per child and release. Only children that failed.
+	 */
+	const holdFailuresTold = new Map<string, string | undefined>();
+	const pruned = new WeakSet<ReturnType<typeof reservationRecordLookup>>();
 	const unsubscribeHoldFailure = events.on(SUBAGENT_HOLD_FAILURE_EVENT, (payload) => {
 		const failure = payload as ReleasedChildHoldFailure;
 		indexSubagentChildOwner(ctx);
-		const recordsByName = new Map<string, SubagentChildRecord>();
-		for (const record of subagentChildRecordsOf(ownerSessionId))
-			if (record.intercomTarget !== undefined) recordsByName.set(record.intercomTarget, record);
+		const recordOf = failure.recordOf ?? reservationRecordLookup(ownerSessionId);
+		// Prune notices for obsolete releases once per batch, not once for every failed frame.
+		if (!pruned.has(recordOf)) {
+			pruned.add(recordOf);
+			for (const [childName, taskId] of holdFailuresTold) {
+				const record = recordOf(childName);
+				if (record === undefined || !isHeldChildRecord(record) || record.taskId !== taskId)
+					holdFailuresTold.delete(childName);
+			}
+		}
+		const untold: Array<{ readonly childName: string; readonly record: SubagentChildRecord }> = [];
 		for (const childName of failure.childNames) {
-			const record = recordsByName.get(childName);
+			const record = recordOf(childName);
 			if (record === undefined) continue;
 			failure.handled = true;
-			const error = new ReleasedChildError(
-				"hold-failed",
-				{ ownerSessionId, childId: record.childId, childName, reason: "Intercom reservation request failed" },
-				{ cause: failure.error },
+			// #5551: a child that runs again or has ended is not released any more: there is nothing to hold for it.
+			if (!isHeldChildRecord(record)) continue;
+			// #5551: a failure of an earlier release of a child that another run has released since is not this one's.
+			const taskId = failure.taskIds?.get(childName);
+			if (taskId !== undefined && taskId !== record.taskId) continue;
+			observeChildRecordFailure(
+				ownerSessionId,
+				new ReleasedChildError(
+					"hold-failed",
+					{ ownerSessionId, childId: record.childId, childName, reason: "Intercom reservation request failed" },
+					{ cause: failure.error },
+				),
 			);
-			observeChildRecordFailure(ownerSessionId, error);
-			if (holdFailureNotified) continue;
-			holdFailureNotified = true;
-			void deliverLocalCompletionNotification(
-				events,
-				{
-					id: record.runId,
-					runId: record.runId,
-					agent: record.agent,
-					status: "error",
-					summary: `${error.message} (${error.code}). ${error.hint}`,
-					timestamp: Date.now(),
-					noticeLabel: "Released subagent reservation",
-				},
-				`released-hold-failure-${ownerSessionId}-${randomUUID()}`,
-			).catch((cause: Error) => {
-				observeChildRecordFailure(ownerSessionId, new ReleasedChildError("hold-failed", error.fields, { cause }));
-			});
+			if (holdFailuresTold.has(childName) && holdFailuresTold.get(childName) === record.taskId) continue;
+			holdFailuresTold.set(childName, record.taskId);
+			untold.push({ childName, record });
 		}
+		const [told] = untold;
+		if (told === undefined) return;
+		const first = told.record;
+		// One notice for every child this failure leaves newly without a hold.
+		const childNames = untold.map((child) => child.childName);
+		const error = new ReleasedChildError(
+			"hold-failed",
+			{
+				ownerSessionId,
+				childId: first.childId,
+				childName: told.childName,
+				...(childNames.length > 1 ? { childNames } : {}),
+				reason: "Intercom reservation request failed",
+			},
+			{ cause: failure.error },
+		);
+		void deliverLocalCompletionNotification(
+			events,
+			{
+				id: first.runId,
+				runId: first.runId,
+				agent: first.agent,
+				status: "error",
+				// The message already names the code and the hint.
+				summary: error.message,
+				timestamp: Date.now(),
+				noticeLabel: "Released subagent reservation",
+			},
+			`released-hold-failure-${ownerSessionId}-${randomUUID()}`,
+		).catch((cause: Error) => {
+			observeChildRecordFailure(ownerSessionId, new ReleasedChildError("hold-failed", error.fields, { cause }));
+		});
 	});
-	const unsubscribeHoldRecovered = events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => {
-		holdFailureNotified = false;
+	const unsubscribeHoldRecovered = events.on(SUBAGENT_HOLD_RECOVERED_EVENT, (payload) => {
+		// Only these children's reservations succeeded: another child's failure stays told (#5551).
+		for (const childName of (payload as Partial<ReleasedChildHoldRecovery> | undefined)?.childNames ?? [])
+			holdFailuresTold.delete(childName);
 	});
 	const reserveAll = () => {
 		indexSubagentChildOwner(ctx);
 		void reserveReleasedChildrenOf(events, ownerSessionId);
 		void markEndedChildrenOf(events, ownerSessionId);
 	};
-	reserveAll();
 	/**
 	 * The child's latest record when a wake must not relaunch it after all: a pause or quit of it is in flight, or its
 	 * latest record is no longer released or ended on its own (#4845). Undefined when it may run.
@@ -167,6 +217,8 @@ export function bindReleasedChildWakes(
 		slot: AgentWakeSlot | undefined,
 	) => {
 		const key = subagentWakeKey(ownerSessionId, record.childId);
+		// Wait through the admitting host even if the owner closes while the accepted record is being saved.
+		const host = ctx.getAgentTaskHost?.();
 		// #4856: while the child waits for its run's concurrency limit, it leaves its wake slot to other runs' children.
 		const outcome = await restoreSubagentChild(
 			deps,
@@ -179,9 +231,6 @@ export function bindReleasedChildWakes(
 			throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 		// Relaunched with its new run's record written, or not relaunched: what the wake carried stays held for resume.
 		settleReleasedChildRelaunch(key);
-		// A resume queued behind this wake would wait for the run it just started: the child runs, so it is refused.
-		if (outcome.kind === "restored") refuseQueuedResumes(key, record.childId, outcome.taskId);
-		const host = ctx.getAgentTaskHost?.();
 		if (outcome.kind !== "restored" || host === undefined) return;
 		await awaitTaskSettlement(host, outcome.taskId);
 		openReleasedChildRelaunch(key);
@@ -196,7 +245,10 @@ export function bindReleasedChildWakes(
 				);
 				if (unsaved.length > 0) await holdResults(record, unsaved);
 				if (refuseRelaunch(record)() !== undefined) return;
-				if (record.intercomTarget !== undefined) void acknowledgeReleasedChildWake(events, record.intercomTarget);
+				// #5551: only a released child is reserved; one that ended on its own and is woken for a late result is not.
+				const reservation = releasedChildReservation(record);
+				if (reservation?.wake === true)
+					void acknowledgeReleasedChildWake(ownerEvents, reservation.childName, reservation.taskId);
 				await restore(
 					record,
 					{
@@ -217,7 +269,6 @@ export function bindReleasedChildWakes(
 				// A pause or quit waiting on this wake now finds the run the resume started, and stops it.
 				const key = subagentWakeKey(ownerSessionId, record.childId);
 				settleReleasedChildRelaunch(key);
-				if (outcome.kind === "restored") refuseQueuedResumes(key, record.childId, outcome.taskId);
 				return outcome;
 			},
 			redispatch: (record, slot) =>
@@ -238,7 +289,7 @@ export function bindReleasedChildWakes(
 				const notice = record === undefined ? undefined : noticeOf(record);
 				if (notice === undefined) return;
 				await deliverLocalCompletionNotification(
-					events,
+					ownerEvents,
 					notice,
 					`released-wake-failure-${childId}-${record?.taskId ?? "none"}`,
 				);
@@ -255,8 +306,12 @@ export function bindReleasedChildWakes(
 			});
 	};
 	const stopReporting = dispatcher.onUnobservedFailure(report);
-	wakeReleasedChildrenOfEarlierProcess(dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
-	reportInterruptedStillRunningCalls(deps.pi, dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+	// Route replacement is synchronous at commit. Only start background work after the previous generation retires.
+	start(() => {
+		reserveAll();
+		wakeReleasedChildrenOfEarlierProcess(dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+		reportInterruptedStillRunningCalls(deps.pi, dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+	});
 	const unsubscribe = events.on(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, (payload) => {
 		const childName = (payload as { readonly childName?: string } | null)?.childName;
 		if (typeof childName !== "string") return;
@@ -316,6 +371,7 @@ export function bindReleasedChildWakes(
 		disposeHandler();
 		unbindResume();
 		stopReporting();
+		unbindReservationOwner();
 		unsubscribeHoldFailure();
 		unsubscribeHoldRecovered();
 		unsubscribe();
