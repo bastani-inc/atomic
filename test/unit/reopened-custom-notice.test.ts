@@ -105,6 +105,46 @@ function mount(host: Host, message: CustomMessage, settings: Partial<ChatMessage
 	};
 }
 
+test("an extension completion repaints and expands without revealing its component prototype (#5690)", () => {
+	const message: CustomMessage = {
+		role: "custom",
+		customType: "task-completion",
+		display: true,
+		details: { caption: "progress" },
+		content: "initial",
+		timestamp: 1,
+	};
+	let probes = 0;
+	const card = new CustomMessageComponent(message, (entry, { expanded }) => {
+		const text = `Extension: ${entry.content}${expanded ? " (expanded)" : ""}`;
+		return new Proxy(
+			{ invalidate() {}, render: () => [text] },
+			{
+				getPrototypeOf() {
+					probes++;
+					throw new Error("Renderer does not expose a prototype");
+				},
+			},
+		);
+	});
+	const rows = () =>
+		card
+			.render(80)
+			.map((row) => row.trim())
+			.filter(Boolean);
+	try {
+		assert.deepEqual(rows(), ["Extension: initial"]);
+		message.content = "edited";
+		card.invalidate();
+		assert.deepEqual(rows(), ["Extension: edited"]);
+		card.setExpanded(true);
+		assert.deepEqual(rows(), ["Extension: edited (expanded)"]);
+		assert.equal(probes, 0);
+	} finally {
+		card.dispose();
+	}
+});
+
 test("repaint shows an extension's in-place text edits when it takes over a completion (#5690)", () => {
 	const message: CustomMessage = {
 		role: "custom",

@@ -678,6 +678,7 @@ function extractEntriesExpansion(
 }
 
 export class TaskCompletionMessage implements Component {
+	static readonly #cards = new WeakSet<Component>();
 	readonly expandsOnClick = true;
 	private readonly notices: readonly TaskCompletionNotice[];
 	private expanded: boolean;
@@ -689,6 +690,11 @@ export class TaskCompletionMessage implements Component {
 	private readonly previewRows = new Map<TaskCompletionNotice, readonly string[]>();
 	private readonly expandedPreviews = new Map<TaskCompletionNotice, ToolBlockMarkdown>();
 	private stoppedName?: string;
+
+	/** Recognize our own cards without asking an extension component for its prototype. */
+	static isCard(component: Component | undefined): component is TaskCompletionMessage {
+		return component !== undefined && TaskCompletionMessage.#cards.has(component);
+	}
 
 	static fromMessage(
 		message: CustomMessage,
@@ -729,6 +735,7 @@ export class TaskCompletionMessage implements Component {
 		expanded: boolean,
 		options?: TaskCompletionMessageOptions,
 	) {
+		TaskCompletionMessage.#cards.add(this);
 		this.notices = Array.isArray(notices) ? notices : [notices as TaskCompletionNotice];
 		this.expanded = expanded;
 		this.options = options;

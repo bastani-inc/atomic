@@ -90,8 +90,13 @@ export function completionTitleText(text: string): string {
 
 /** The description after `: ` in a saved title: at most 240 UTF-16 code units, with controls folded to spaces. */
 export function completionTitleDescription(text: string): string {
-	// The saved subject can outlive a much larger string that the task title was sliced from.
-	return Buffer.from(completionTitleText(text.slice(0, 240)), "utf16le").toString("utf16le");
+	return completionTitleText(text.slice(0, 240));
+}
+
+function savedSubject(title: string): string {
+	const subject = completionTitleDescription(title);
+	// Only a clipped subject needs its own backing. Preserve every UTF-16 unit, even an unpaired surrogate.
+	return subject.length === title.length ? subject : Buffer.from(subject, "utf16le").toString("utf16le");
 }
 
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
@@ -101,7 +106,7 @@ export function taskNoticeLine(
 ): TaskNoticeLine {
 	const kind = task?.kind ?? envelope.taskKind;
 	const result = envelope.result;
-	const subject = task?.title ? completionTitleDescription(task.title) : undefined;
+	const subject = task?.title ? savedSubject(task.title) : undefined;
 	const facts = {
 		...(subject ? { subject } : {}),
 		...((task?.metrics?.elapsedMs ?? envelope.elapsedMs) === undefined

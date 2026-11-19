@@ -13,6 +13,7 @@ import {
 	taskCompletionEnvelope,
 	taskCompletionNotice,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
+import { taskCompletionMessage } from "../../packages/coding-agent/src/core/tasks/completion-message.js";
 import type {
 	CancelCause,
 	Generation,
@@ -60,6 +61,23 @@ test("completion content is readable, bounded and leaves structured identity unc
 	assert.doesNotMatch(text, /"completionId"|"terminalSequence"/);
 	assert.ok(text.length < 9000);
 	assert.equal(JSON.stringify(envelope), before);
+});
+
+test("writing a completed command does not copy an ordinary subject through a buffer (#5690)", () => {
+	const title = "npm run test:isolated -- ".repeat(8);
+	const command = { ...taskRecord("completion", "command"), title };
+	const from = vi.spyOn(Buffer, "from");
+	try {
+		const message = taskCompletionMessage(
+			{ ...envelope, taskKind: "command", result: { kind: "completed", output: command.output, exitCode: 0 } },
+			command,
+			undefined,
+		);
+		assert.equal(completionNoticeFromDetails(message.details)?.line?.subject, title);
+		assert.equal(from.mock.calls.filter(([input]) => input === title).length, 0);
+	} finally {
+		from.mockRestore();
+	}
 });
 
 test("restored and killed completions report only known context", () => {

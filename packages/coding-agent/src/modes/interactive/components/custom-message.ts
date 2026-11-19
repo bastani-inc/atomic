@@ -99,7 +99,7 @@ export class CustomMessageComponent extends Container {
 		if (this.disposed) return;
 		if (this._expanded !== expanded) {
 			this._expanded = expanded;
-			if (this.customComponent instanceof TaskCompletionMessage) {
+			if (TaskCompletionMessage.isCard(this.customComponent)) {
 				this.customComponent.setExpanded(expanded);
 				return;
 			}
@@ -154,7 +154,7 @@ export class CustomMessageComponent extends Container {
 				this.message,
 				this._expanded,
 				this.completionOptions,
-				previous instanceof TaskCompletionMessage ? previous : undefined,
+				TaskCompletionMessage.isCard(previous) ? previous : undefined,
 			);
 			if (card) {
 				this.spacer = new Spacer(1);
