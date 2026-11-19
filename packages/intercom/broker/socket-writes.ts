@@ -45,7 +45,6 @@ export function isSocketOpenForWrite(socket: net.Socket): boolean {
 export type BrokerOutboundFrame =
 	| BrokerMessage
 	| { type: "pending_stage_route_registered"; requestId: string }
-	| { type: "pending_stage_route_refused"; requestId: string; runId: string; code: "not_authorized"; reason: string }
 	| { type: "live_workflow_stage_route_registered"; requestId: string }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: false };
 
@@ -92,11 +91,6 @@ export function recordClientProtocol(socket: net.Socket, protocol: BrokerProtoco
 	else hostingClients.delete(socket);
 	if (protocol.max >= REACH_POLICY_PROTOCOL) reachClients.add(socket);
 	else reachClients.delete(socket);
-}
-
-/** Whether the client on `socket` registered speaking protocol 1 only (Atomic 0.9.71 and earlier). */
-export function isProtocol1Client(socket: net.Socket): boolean {
-	return protocol1Clients.has(socket);
 }
 
 /** #4642: whether the client on `socket` registered speaking protocol 3, so it may host sessions. */
