@@ -2,7 +2,7 @@ import type { ExtensionCommandContext } from "./extensions/context-types.ts";
 import type { HostSessionPickerRow } from "./extensions/ui-types.js";
 import { type WorkflowRunControl, WorkflowRunControlUnavailableError } from "./extensions/workflow-run-control.js";
 
-import { type HostSessionPickerRowCandidate, parseHostSessionPickerRows } from "./host-session-picker-rows.ts";
+import { type HostSessionPickerRowCandidate, parseHostSessionPickerRows } from "./host-session-picker-rows.js";
 
 export function validateWorkflowResumeEntries(value: HostSessionPickerRowCandidate): readonly HostSessionPickerRow[] {
 	const rows = parseHostSessionPickerRows(value);
