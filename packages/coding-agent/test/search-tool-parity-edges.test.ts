@@ -222,6 +222,14 @@ describe("find/search edge parity", () => {
 		}
 	});
 
+	it("a partial SDK history page and its cursor work without native task support", () => {
+		const probe = spawnSync("bun", [join(import.meta.dirname, "fixtures/search-no-native.ts"), testDir], {
+			env: { ...process.env, NAPI_RS_FORCE_WASI: "error" },
+			encoding: "utf8",
+		});
+		expect(probe.status, probe.stderr || probe.stdout).toBe(0);
+	});
+
 	it("keeps verbose-regex comments in native-unavailable ranged search", () => {
 		const script = `import { mkdtempSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; const modPath = process.cwd().replace(/\\\\/g, "/").endsWith("packages/coding-agent") ? "./src/core/tools/search.ts" : "./packages/coding-agent/src/core/tools/search.ts"; const { createSearchToolDefinition } = await import(modPath); const dir = mkdtempSync(join(tmpdir(), "atomic-no-native-search-")); try { writeFileSync(join(dir, "f.txt"), "foobar\\n"); const result = await createSearchToolDefinition(dir).execute("no-native-ranged-x", { pattern: "(?x)foo # comment\\n bar", paths: "f.txt:1-1" }); const text = result.content.map((item) => item.text ?? "").join("\\n"); if (!text.includes("foobar")) throw new Error(text); } finally { rmSync(dir, { recursive: true, force: true }); }`;
 		const result = spawnSync("bun", ["-e", script], {

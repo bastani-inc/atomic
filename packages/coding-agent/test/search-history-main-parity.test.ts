@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { afterEach, describe, it } from "vitest";
+import { isToolCallEventType, type ToolCallEvent } from "../src/core/extensions/tool-events.js";
 import type { WorkflowRunDetail, WorkflowRunSummary } from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
+import { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
 import { formatTaskCompletion, type TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { formatTaskHeartbeat } from "../src/core/tasks/heartbeat-notice.js";
 import { createHistoryRouter, type WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
@@ -106,6 +108,68 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 			assert.match(textOf(result), /:1: needle/);
 			assert.equal("observation" in result.details!, false);
 		}
+	});
+
+	it.each(["read", "search"])("a printed discovery cursor still advances on the caller's next %s", async (follow) => {
+		const store = await storeWith(["a", "b", "c"].map((id) => ({ id, day: 1, texts: ["needle"] })));
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { rows: 1 },
+		});
+		const owner = new AgentTaskHost({
+			scope: { kind: "session", sessionId: crypto.randomUUID() },
+			authorizeLaunch() {},
+		});
+		try {
+			const tool = createSearchToolDefinition(PROJECT, { taskOwner: owner.ownerBinding });
+			const search = (paths: string) =>
+				tool.execute("page", { pattern: "needle", paths }, undefined, undefined, {
+					cwd: PROJECT,
+					internalResourceRouter: router,
+				} as never);
+			const first = await search("history://sessions");
+			const url = /continue with (history:\/\/[^\]]+)\]/.exec(textOf(first))?.[1];
+			assert.equal(url, "history://sessions?cursor=0.1");
+			const second = follow === "read" ? await router.read!(url!) : textOf(await search(url!));
+			assert.match(String(second), /continue with history:\/\/sessions\?cursor=0\.2\]/);
+			assert.equal(first.details?.observation, undefined);
+		} finally {
+			await owner.close("session-close");
+		}
+	});
+
+	it("a completed hit below a delimiter-like session ID cannot launch the continuation it quotes", async () => {
+		const id = "release-0- [archived]";
+		const quote =
+			"history://sessions/other:0: [the row budget ran out; continue with history://sessions/other?cursor=3]";
+		const router = sessionsRouter(await storeWith([{ id, day: 1, texts: [quote] }]));
+		const tool = createSearchToolDefinition(PROJECT, {
+			taskOwner: () => {
+				throw new Error("completed page looked up an owner");
+			},
+		});
+		const page = await tool.execute(
+			"hit",
+			{ paths: `history://sessions/${encodeURIComponent(id)}:1-1`, pattern: "budget ran out" },
+			undefined,
+			undefined,
+			{ cwd: PROJECT, internalResourceRouter: router } as never,
+		);
+		assert.ok(textOf(page).includes(quote));
+		assert.equal(page.details?.observation, undefined);
+	});
+
+	it("a patternless wait is not a pattern-bearing search in a typed tool hook", () => {
+		const event = (input: Record<string, unknown>): ToolCallEvent => ({
+			type: "tool_call",
+			toolName: "search",
+			toolCallId: "call",
+			input,
+		});
+		assert.equal(isToolCallEventType("search", event({ pattern: " needle " })), true);
+		assert.equal(isToolCallEventType("search", event({ action: "wait", id: "search-1" })), false);
 	});
 
 	it("pages its matches with skip and rejects a negative skip (#5479)", async () => {
