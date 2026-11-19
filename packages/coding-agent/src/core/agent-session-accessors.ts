@@ -1,32 +1,59 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
-import { finalizeProjectedMessages } from "./agent-session-boundaries.ts";
+import { finalizeProjectedMessages, repairUniquifiedMessages } from "./agent-session-boundaries.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { uniquifyToolCallIds } from "./context-tool-pairing.ts";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
+import type { SessionProjection } from "./session-manager-types.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 
-function finalizeTranscript(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
-	const finalized = finalizeProjectedMessages(session, messages);
-	// recordBashResult adds source-only output directly to the resident chat, after its context transform.
+function finalizeTranscript(session: AgentSession, { entries, messages }: SessionProjection): AgentMessage[] {
 	const runOnly = session._runOnlyBashMessages;
-	if (!runOnly) return finalized;
 	const resident = session.messages;
-	const first = resident.findIndex((message) => runOnly.has(message));
-	if (first < 0) return finalized;
-	// Use the following resident row as an anchor: a prompt admitted after a shell must stay after it.
-	const anchors = new Set(finalized);
-	const before = new Map<AgentMessage, AgentMessage[]>();
-	let shells: AgentMessage[] = [];
-	for (const message of resident.slice(first)) {
-		if (runOnly.has(message)) shells.push(message);
-		else if (shells.length > 0 && anchors.has(message)) {
-			before.set(message, shells);
-			shells = [];
+	const first = runOnly ? resident.findIndex((message) => runOnly.has(message)) : -1;
+	if (!runOnly || first < 0) return finalizeProjectedMessages(session, messages);
+
+	// Repair the whole history, so a call before a run-only shell still pairs with its result after the shell.
+	const unique = uniquifyToolCallIds(messages);
+	const repaired = repairUniquifiedMessages(session, unique);
+	const positions = new Map(repaired.map((message, index) => [message, index]));
+	const anchors = new Map<string | AgentMessage, number>();
+	let row = 0;
+	for (const { sourceEntry, messages: contribution } of entries) {
+		const end = row + contribution.length;
+		while (row < end) {
+			const position = positions.get(unique[row++]);
+			if (position !== undefined && !anchors.has(sourceEntry.id)) anchors.set(sourceEntry.id, position);
 		}
 	}
-	return before.size === 0
-		? finalized.concat(shells)
-		: finalized.flatMap((message) => (before.get(message) ?? []).concat(message)).concat(shells);
+	// Rows joined after the saved entries are still the resident objects (including a prompt whose save is pending).
+	for (; row < messages.length; row++) {
+		const position = positions.get(unique[row]);
+		if (position !== undefined) anchors.set(messages[row], position);
+	}
+
+	const before = new Map<number, AgentMessage[]>();
+	let position = repaired.length;
+	for (let index = resident.length - 1; index >= first; index--) {
+		const message = resident[index];
+		if (runOnly.has(message)) {
+			const group = before.get(position) ?? [];
+			group.push(message);
+			before.set(position, group);
+		} else {
+			const anchor = anchors.get(message) ?? anchors.get(session._entryIdsByMessage.get(message) ?? message);
+			if (anchor !== undefined) position = Math.min(position, anchor);
+		}
+	}
+	// The shell and everything appended after it are already live rows. A context refresh would have removed the
+	// shell. Apply the SDK filter only to the prefix, before adding those rows, just as recordBashResult did.
+	const prefix = repaired.slice(0, position);
+	const result = [...(session._contextProjectionTransform?.(prefix) ?? prefix)];
+	for (; position <= repaired.length; position++) {
+		for (const shell of before.get(position)?.reverse() ?? []) result.push(shell);
+		if (position < repaired.length) result.push(repaired[position]);
+	}
+	return result;
 }
 
 export function installAgentSessionAccessors(prototype: AgentSession): void {
@@ -107,13 +134,14 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 				if (saving === undefined && !this.sessionManager.hasContextEdits()) return this.messages;
 				const beforeSave =
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
-				const { entries, messages } = this.sessionManager.buildSessionProjection("transcript", beforeSave);
+				const projection = this.sessionManager.buildSessionProjection("transcript", beforeSave);
+				const { entries, messages } = projection;
 				// The context also shows rows the store does not have: admitted ones still saving and ones whose save failed.
 				const pending = this.messages.filter(
 					(message) =>
 						this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message),
 				);
-				if (pending.length === 0 && beforeSave === undefined) return finalizeTranscript(this, messages);
+				if (pending.length === 0 && beforeSave === undefined) return finalizeTranscript(this, projection);
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
 				// An independent delivery can save a notice after the pinned leaf and publish it while the input's
 				// write is still outstanding. Its source ID distinguishes it from both the prefix and the pending input.
@@ -131,7 +159,7 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					messages.push(message);
 				}
 				// Paired and repaired as the context is: a call whose result was never saved shows it was interrupted.
-				return finalizeTranscript(this, messages);
+				return finalizeTranscript(this, projection);
 			},
 		},
 		steeringMode: {

@@ -121,7 +121,7 @@ test.each(histories)(
 test("a reopened stage still shows shell output recorded for this run only after a retry (#5613)", async () => {
 	// The result was added directly to the running session, after its model-context filter.
 	const fixture = await createStageSkillFixture({
-		initialContextTransform: (rows) => rows.filter((m) => m.role !== "bashExecution"),
+		initialContextTransform: (rows) => rows.filter((m) => m.role !== "bashExecution").map((m) => ({ ...m })),
 	});
 	const entered = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
@@ -160,6 +160,9 @@ test("a reopened stage still shows shell output recorded for this run only after
 			view.render(120).flatMap((line) => [output, prompt].filter((s) => stripAnsi(line).includes(s)));
 		assert.deepEqual(rows(fixture.mount()), [output, prompt]);
 		withWorkerView(fixture, (mirror) => assert.deepEqual(rows(fixture.mount({ handle: mirror })), [output, prompt]));
+		release.resolve();
+		await turn;
+		assert.deepEqual(rows(fixture.mount()), [output, prompt]);
 	} finally {
 		release.resolve();
 		await turn;
