@@ -2,6 +2,7 @@ import type { KeyId } from "@bastani/atomic-tui";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";
+import { extensionSessionQuitting } from "./extensions/extension-work.ts";
 import { loadExtensionFromFactory, loadExtensionsCached, type WorkflowResourceProvider } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
@@ -34,6 +35,8 @@ export async function loadExtensionPaths(
 		state.agentDir,
 	);
 	for (const path of paths.filter((path) => path.startsWith(BUILTIN_PATH_PREFIX))) {
+		// The post-trust load may resume after its owning session quit. Don't start another builtin on that runtime.
+		if (runtime && extensionSessionQuitting(runtime)) break;
 		const builtin = state.extensionFactories.find(
 			(input) =>
 				typeof input !== "function" && input.builtin && input.name === path.slice(BUILTIN_PATH_PREFIX.length),
