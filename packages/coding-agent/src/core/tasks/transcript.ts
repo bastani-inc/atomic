@@ -65,6 +65,16 @@ export function taskTranscriptPage(
 	sessionId: string,
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor?: string,
+): Result<TaskTranscriptPage, Failure<TranscriptError>> {
+	return taskTranscriptPageWithCuts(taskId, sessionId, entries, cursor);
+}
+
+/** A task view also needs the source rows crossing the two boundaries of the same indexed page. */
+export function taskTranscriptPageWithCuts(
+	taskId: string,
+	sessionId: string,
+	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
+	cursor: string | undefined,
 	onSplitEntries?: (fromEarlier: string | undefined, intoLater: string | undefined) => void,
 ): Result<TaskTranscriptPage, Failure<TranscriptError>> {
 	const scope = `${taskId}\n${sessionId}\n`;

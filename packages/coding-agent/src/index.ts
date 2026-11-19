@@ -181,6 +181,7 @@ export {
 	type TaskViewResult,
 	type TaskViewSource,
 	taskTranscriptFragments,
+	withTaskTranscriptArchive,
 } from "./core/tasks/task-view-source.js";
 export { formatReadLineRange, formatToolCallWithArgs } from "./core/tools/render-utils.ts";
 export {

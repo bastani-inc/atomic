@@ -29,7 +29,6 @@ import {
 	type TaskTranscriptView,
 	type TaskViewResult,
 	type TaskViewSource,
-	taskTranscriptFragments,
 } from "../../../core/tasks/task-view-source.js";
 import { createSessionSkillAutocompleteProvider, getSkillCatalogCommands } from "../skill-command-autocomplete.ts";
 import { theme } from "../theme/theme.js";
@@ -41,6 +40,7 @@ import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyAttachedComposer } from "./input-label.ts";
 import { clickableKeyTextHint, navActionText } from "./nav-keys.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
+import { pagedNotices, TaskTranscriptNotices } from "./task-transcript-notices.ts";
 import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -245,8 +245,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private followedSessionId?: string;
 	private unsubscribe?: () => void;
 	private cursor?: string;
-	/** The reply at the upper page boundary, if its standalone terminal notice is already on screen. */
-	private coveredTerminalNotice?: { entryId: string; error: string };
+	readonly #notices = new TaskTranscriptNotices();
 	private loading = false;
 	private reloadPending = false;
 	private loadingEarlier = false;
@@ -346,6 +345,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
 			},
 		});
+		pagedNotices.set(this.chat, this.#notices);
 		this.restoreDraft();
 		this.restoreUndelivered();
 		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
@@ -598,7 +598,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
-		this.coveredTerminalNotice = undefined;
+		this.#notices.reset();
 		this.unsubscribePrompts();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -686,9 +686,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		this.followedSessionId = nextSessionId;
 		this.cursor = page.value.nextCursor;
-		this.coveredTerminalNotice = undefined;
-		this.adoptTerminalFragments(page);
-		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
+		const messages = page.value.messages;
+		this.chat.replaceMessages(messages, { preserveUnread: !sessionChanged });
+		this.#notices.adopt(page, messages, this.cursor !== undefined);
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -748,37 +748,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.chat.applyAgentEvent({ type: "queue_update", steering: queued.steering, followUp: queued.followUp });
 	}
 
-	private adoptTerminalFragments(
-		result: Extract<TaskViewResult<TaskTranscriptView>, { ok: true }>,
-	): readonly number[] | undefined {
-		const fragments = taskTranscriptFragments(result);
-		if (!fragments) {
-			this.coveredTerminalNotice = undefined;
-			return undefined;
-		}
-		const { fromEarlier: leading, intoLater: trailing } = fragments;
-		const page = result.value;
-		const later = this.coveredTerminalNotice;
-		const errorAt = (index: number) => {
-			const message = page.messages[index];
-			return message?.role === "assistant" && message.stopReason === "error"
-				? message.errorMessage || "Unknown error"
-				: undefined;
-		};
-		const hide =
-			later && trailing?.entryId === later.entryId
-				? trailing.messageIndices.filter((index) => errorAt(index) === later.error)
-				: undefined;
-		const ownError = leading && leading.noticeIndex !== null ? errorAt(leading.noticeIndex) : undefined;
-		this.coveredTerminalNotice =
-			leading && ownError !== undefined
-				? { entryId: leading.entryId, error: ownError }
-				: leading && leading.entryId === trailing?.entryId && leading.entryId === later?.entryId
-					? later
-					: undefined;
-		return hide;
-	}
-
 	private loadEarlier(): void {
 		const cursor = this.cursor;
 		if (cursor === undefined || this.loadingEarlier || this.loading || this.disposed) return;
@@ -793,12 +762,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					return;
 				}
 				this.cursor = page.value.nextCursor;
-				this.chat.prependMessages(page.value.messages, this.adoptTerminalFragments(page));
+				const messages = page.value.messages;
+				this.#notices.adopt(page, messages, this.cursor !== undefined);
+				this.chat.prependMessages(messages);
 			} catch (error) {
 				if (this.disposed) return;
 				this.cursor = undefined;
 				this.status = error instanceof Error ? error.message : String(error);
 			} finally {
+				if (this.cursor === undefined) this.#notices.finishPaging();
 				this.loadingEarlier = false;
 				this.requestRender();
 			}

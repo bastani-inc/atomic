@@ -71,6 +71,7 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
+import { pagedNotices } from "./task-transcript-notices.ts";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
 import { isClickedGroup } from "./transcript-block-clicks.ts";
 import { type AgentTokenMeterSnapshot, type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
@@ -196,14 +197,16 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
-	prependMessages(messages: readonly AgentSnapshotMessage[], continuedReplies?: readonly number[]): void {
+	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
 		const firstUser = firstRawUserExactText(messages);
 		if (firstUser.seenUser) {
 			this.state.seenFirstRawUser = true;
 			this.state.firstUserEntryExactText = firstUser.exactText;
 		}
 		const previousCount = countableTranscriptLength(this.state);
-		this.state.liveChat.prependMessages(messages, continuedReplies);
+		const notices = pagedNotices.get(this);
+		if (notices?.card) this.state.assistantCard = notices.card;
+		this.state.liveChat.prependMessages(messages);
 		if (firstUser.seenUser || this.state.firstUserEntry === undefined) {
 			syncFirstUserEntry(this.state);
 		}
@@ -219,6 +222,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const firstUser = firstRawUserExactText(messages);
 		this.state.seenFirstRawUser = firstUser.seenUser;
 		this.state.firstUserEntryExactText = firstUser.exactText;
+		const notices = pagedNotices.get(this);
+		if (notices) pagedNotices.set(this.state.transcript, notices);
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
 		syncFirstUserEntry(this.state);
 		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));

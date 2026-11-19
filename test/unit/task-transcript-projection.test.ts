@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import {
 	VERBATIM_COMPACTION_PROMPT_VERSION,
@@ -121,6 +122,34 @@ test("transcript pages have opaque task scoped cursors and omit duplicate source
 			assert.equal(wrong.error.code, "ScopeMismatch");
 		});
 	});
+});
+
+test("paging a successful reply consumes its provider status only once (#5651)", async () => {
+	const session = SessionManager.inMemory();
+	const reply = fauxAssistantMessage("done");
+	reply.content = Array.from({ length: 101 }, () => ({ type: "thinking", thinking: "reasoning" }));
+	await session.appendMessage(reply);
+	let reads = 0;
+	Object.defineProperty(reply, "stopReason", {
+		enumerable: true,
+		get() {
+			assert.equal(++reads, 1, "provider status already consumed");
+			return "stop";
+		},
+	});
+	const fixture = taskFixture();
+	try {
+		await fixture.start();
+		fixture.runners[0].context.bindTranscript(session);
+		const page = await ownerTaskViewSource(fixture.store).readTaskTranscript(fixture.runners[0].context.ref.taskId);
+		assert.ok(page.ok && page.value.nextCursor);
+		const message = page.value.messages[0];
+		assert.ok(message.role === "assistant");
+		assert.equal(message.stopReason, "stop");
+		assert.equal(message.content.length, 100);
+	} finally {
+		await fixture.dispose();
+	}
 });
 
 test("a cursor from another task never inspects the supplied history rows (#5651)", async () => {

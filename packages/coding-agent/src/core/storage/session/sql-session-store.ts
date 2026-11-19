@@ -36,6 +36,7 @@ import {
 	type SessionSummaryState,
 	type SessionSummaryText,
 } from "./session-summary.js";
+import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
 	SessionBlob,
 	SessionCompactionPoint,
@@ -1312,11 +1313,13 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		return {
+		const snapshot = {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
 			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
 			lastSeq: row.last_seq,
 		};
+		// The revision comes from the same transaction. An intervening write conservatively starts a new view.
+		return noteSnapshotGeneration(this, snapshot, nativeLoad, row, "revision");
 	}
 
 	private async readRows(
@@ -1974,6 +1977,8 @@ export class SqlSessionStore implements SessionStore {
 		}
 	}
 }
+
+const nativeLoad = registerArchiveLoad(SqlSessionStore.prototype.load);
 
 type OpenMarkerRow = SqliteRow & { token: string; pid: number; host: string; age_ms: number };
 

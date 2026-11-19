@@ -4,29 +4,33 @@ import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
+	AssistantMessageComponent,
 	ChatTranscriptComponent,
 	chatEntriesFromAgentMessages,
 	LiveChatEntriesController,
-	renderChatMessageEntry,
 	ScrollableComponentViewport,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 
 describe("chat message renderer utilities", () => {
-	test("rendering a page fragment independently keeps the error its task view already showed (#5651)", () => {
+	test("an assistant card subclass keeps control of its own compact notice setting (#5651)", () => {
 		initTheme("dark", false);
-		const entries = [] as ReturnType<typeof chatEntriesFromAgentMessages>;
-		const live = new LiveChatEntriesController(entries);
-		live.prependMessages(
-			[{ ...fauxAssistantMessage("earlier"), stopReason: "error", errorMessage: "provider failed" }],
-			[0],
-		);
-		const component = renderChatMessageEntry(entries[0], {
-			ui: { requestRender() {} },
-			cwd: process.cwd(),
-			toolOutputExpanded: false,
+		class Compact extends AssistantMessageComponent {
+			get hideTerminalNotice() {
+				return true;
+			}
+			override render(width: number) {
+				return super.render(width).filter((line) => !this.hideTerminalNotice || !line.includes("Error:"));
+			}
+		}
+		const card = new Compact({
+			...fauxAssistantMessage("visible body"),
+			stopReason: "error",
+			errorMessage: "provider failed",
 		});
-		assert.match(component.render(80).join("\n"), /Error: provider failed/);
+		const body = card.render(80).join("\n");
+		assert.match(body, /visible body/);
+		assert.doesNotMatch(body, /provider failed/);
 	});
 
 	test("pairs assistant tool calls with later tool results while preserving args", () => {

@@ -11,7 +11,11 @@ import {
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
 import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
-import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
+import {
+	type ChatMessageEntry,
+	type ChatMessageRenderOptions,
+	renderHostedChatEntry,
+} from "./chat-message-renderer.ts";
 import {
 	hasChatSessionTransientModal,
 	setEditorBorderColor,
@@ -435,9 +439,10 @@ export function renderChatSessionEntry<TExtraEntry extends ChatTranscriptEntryLi
 			expanded === undefined
 				? chatMessageRenderOptions(state, isStreaming)
 				: { ...chatMessageRenderOptions(state, isStreaming), toolOutputExpanded: expanded };
-		const component = state.liveChat.renderEntry(
+		const component = renderHostedChatEntry(
 			streamingWindowedEntry(state, entry, isStreaming),
 			entry.kind === "tool" || entry.kind === "custom" ? { ...options, ui: entryTui(state, entry) } : options,
+			state.assistantCard,
 		);
 		const echoed = resolveEchoedInitialPrompt(state);
 		if (
