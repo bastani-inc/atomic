@@ -6,6 +6,10 @@
 
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 
+### Fixed
+
+- The interactive interface now withdraws a folder's resources when an extension registers a `project_trust` handler after the first trust report but before the engine calls the handlers. It waits for the decision before warning that the folder is untrusted ([#5693](https://github.com/bastani-inc/atomic/issues/5693)).
+
 ## [0.9.90] - 2026-11-19
 
 Every subagent now runs in the background, a click runs key hints and expands blocks in fullscreen mode, and large stores, retries and interrupts no longer stall Atomic.
