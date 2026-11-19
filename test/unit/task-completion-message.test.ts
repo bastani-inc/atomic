@@ -173,6 +173,91 @@ test("a quit or paused subagent's notice says it is paused and resumable and nam
 	assert.match(killed, /This execution has ended\. Do not restart it/);
 });
 
+const FINISHED_CHILD_ID = "a760c0ec:0";
+const finishedResumeCall = (id: string) =>
+	`Resume it with subagent({ action: "resume", id: "${id}", message: "…" }) to continue it with a follow-up.`;
+
+test("a finished subagent's notice names its resume call and still says not to restart it for its result", () => {
+	const launched = { ...task, agentName: "worker", launchOperationId: FINISHED_CHILD_ID } as typeof task;
+	// A resumed child's launch operation carries a resume suffix; its resume call still names the child id.
+	const resumed = { ...launched, launchOperationId: `${FINISHED_CHILD_ID}:resume:uuid` } as typeof task;
+	const results: TaskCompletionEnvelope["result"][] = [
+		{ kind: "completed", output: task.output },
+		{ kind: "failed", code: "AgentFailed", message: "model refused", output: task.output },
+	];
+	for (const result of results) {
+		for (const record of [launched, resumed]) {
+			const notice = formatTaskCompletion({ ...envelope, result }, record, "the answer");
+			assert.ok(notice.includes(finishedResumeCall(FINISHED_CHILD_ID)), notice);
+			assert.match(notice, /This execution has ended\. Do not restart it merely to retrieve its result\./);
+			assert.match(notice, /The user can inspect retained output with \/tasks\.$/);
+		}
+		// A notice restored without its task record names the task id, which resume also accepts.
+		const restored = formatTaskCompletion({ ...envelope, result, taskKind: "agent" });
+		assert.ok(restored.includes(finishedResumeCall(envelope.taskId)), restored);
+	}
+	// The child's Intercom name, when the notice has it, is the name it takes messages under once resumed.
+	const named = taskCompletionMessage(
+		{ ...envelope, result: { kind: "completed", output: task.output } },
+		launched,
+		"the answer",
+		"subagent-worker-a760c0ec-0",
+	);
+	assert.ok(named.content.includes(finishedResumeCall(FINISHED_CHILD_ID)), named.content);
+	assert.match(named.content, /Once resumed, it takes Intercom messages again as subagent-worker-a760c0ec-0\./);
+
+	// A child killed for good, a shell, and a task of unknown kind name no resume call.
+	const killed = formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "user" } }, launched);
+	const shell = formatTaskCompletion(
+		{ ...envelope, result: { kind: "completed", output: task.output, exitCode: 0 } },
+		taskRecord("finished-shell", "command"),
+	);
+	const unknown = formatTaskCompletion({ ...envelope, result: { kind: "completed", output: task.output } });
+	for (const notice of [killed, shell, unknown]) {
+		assert.doesNotMatch(notice, /subagent\(|Resume it|Intercom/, notice);
+		assert.match(
+			notice,
+			/\n\nThis execution has ended\. Do not restart it merely to retrieve its result\. The user can inspect retained output with \/tasks\.$/,
+		);
+	}
+});
+
+test("a resumable subagent's card keeps its line and shows the id its notice names only when expanded", () => {
+	initTheme("dark");
+	const launched = {
+		...task,
+		agentName: "worker",
+		launchOperationId: `${FINISHED_CHILD_ID}:resume:uuid`,
+	} as typeof task;
+	const card = (result: TaskCompletionEnvelope["result"], record?: typeof task) =>
+		completionNoticeFromDetails(
+			JSON.parse(JSON.stringify(taskCompletionMessage({ ...envelope, result }, record, "the answer").details)),
+		);
+	const completed = card({ kind: "completed", output: task.output }, launched);
+	const paused = card({ kind: "cancelled", cause: "pause" }, launched);
+	assert.equal(completed?.resumeId, FINISHED_CHILD_ID);
+	assert.equal(paused?.resumeId, FINISHED_CHILD_ID);
+	assert.equal(card({ kind: "completed", output: task.output })?.resumeId, undefined, "unknown kind");
+	assert.equal(card({ kind: "cancelled", cause: "user" }, launched)?.resumeId, undefined, "killed");
+	for (const result of [
+		{ kind: "completed", output: task.output, exitCode: 0 },
+		{ kind: "cancelled", cause: "quit" },
+	] as const)
+		assert.equal(card(result, taskRecord("shell", "command"))?.resumeId, undefined, `shell ${result.kind}`);
+	assert.equal(card({ kind: "cancelled", cause: "quit" })?.resumeId, undefined, "a quit task of unknown kind");
+	assert.ok(completed);
+	// A notice saved before it carried the id renders as it always did, collapsed and expanded.
+	const { resumeId: _id, ...saved } = completed;
+	const rows = (notice: typeof completed, expanded: boolean) =>
+		new TaskCompletionMessage(notice, expanded).render(100).map((row) => stripVTControlCharacters(row));
+	assert.deepEqual(rows(completed, false), rows(saved, false));
+	assert.deepEqual(rows(completed, true), [
+		rows(saved, true)[0],
+		`   resume id ${FINISHED_CHILD_ID}`,
+		...rows(saved, true).slice(1),
+	]);
+});
+
 test("a subagent released while it waits is reported as released and waking by itself, while a pause keeps its pause notice (#5031)", () => {
 	const launched = { ...task, agentName: "worker", launchOperationId: RESUMABLE_CHILD_ID } as typeof task;
 	const released = formatTaskCompletion(
@@ -589,7 +674,9 @@ test.each([80, 160])(
 		)
 			.render(width)
 			.map((row) => stripVTControlCharacters(row));
-		assert.equal(expanded[1], "   ⎿  Medium finding with code");
+		// Expanded, the card names the id its resume call takes under its line, before the result.
+		assert.equal(expanded[1], "   resume id completion");
+		assert.equal(expanded[2], "   ⎿  Medium finding with code");
 		assert.doesNotMatch(expanded.join("\n"), /\*\*|`/);
 		assert.ok(expanded.some((row) => /first$/.test(row)) && expanded.some((row) => /second$/.test(row)));
 	},
@@ -607,7 +694,7 @@ test("an agent's Markdown result preview is plain text under NO_COLOR", () => {
 		const rows = new TaskCompletionMessage(notice, expanded).render(80);
 		assert.deepEqual(rows, rows.map(stripVTControlCharacters), `expanded=${expanded}`);
 		assert.equal(
-			rows[1],
+			rows[expanded ? 2 : 1],
 			expanded ? "   ⎿  Medium claim docs (https://example.com/d)" : "   ⎿  Medium claim docs",
 			`expanded=${expanded}`,
 		);
@@ -691,8 +778,9 @@ test("expanded agent results also retain text beyond 40 soft wraps (#5342)", () 
 	const output = `${"z".repeat(7900)} final-result`;
 	const notice = taskCompletionNotice(envelope, { kind: "agent", title: "review" }, output);
 	const rows = new TaskCompletionMessage(notice, true).render(20).map(stripVTControlCharacters);
+	// The line, then the id its resume call takes, then the result.
 	const result = rows
-		.slice(1)
+		.slice(2)
 		.map((row) => row.slice(6))
 		.join("");
 	assert.equal(result.replace(/\s/g, ""), output.replace(/\s/g, ""));

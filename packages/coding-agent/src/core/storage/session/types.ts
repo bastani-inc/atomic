@@ -277,6 +277,8 @@ export interface SessionSearchIndex {
 
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
+	/** Optional reader-only chat data, owned by a particular incarnation of a session, outside its conversation tree. */
+	readonly chatRecords?: import("./chat-records.js").SessionChatRecords;
 	/**
 	 * Which running sessions have this store's sessions open (#4971). Absent when the store keeps none: markers are then
 	 * files under the agent directory, seen only by processes that share it.

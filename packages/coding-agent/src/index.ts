@@ -112,7 +112,12 @@ export {
 	type TaskCleanupFailure,
 	type TaskCleanupPhase,
 } from "./core/tasks/cleanup-error.js";
-export { ranOnModelLine } from "./core/tasks/completion.js";
+export {
+	finishedSubagentResumeText,
+	ranOnModelLine,
+	resumableSubagentResult,
+	subagentResumeId,
+} from "./core/tasks/completion.js";
 export type {
 	AgentIntent,
 	Cleanup,

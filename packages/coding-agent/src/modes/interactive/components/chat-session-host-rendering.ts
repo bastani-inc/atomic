@@ -10,7 +10,11 @@ import {
 } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { getToolExecutionStartedAt } from "../../../core/tool-execution-timing.ts";
-import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
+import {
+	AtomicWorkedStatusComponent,
+	DEFAULT_WORKING_MESSAGE,
+	workingMessageColumns,
+} from "./atomic-working-status.ts";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
@@ -215,11 +219,13 @@ const publishedWorkingMessages = {
 
 /**
  * The working line of work that waits between turns: a retry, a model switch or a resume. A retry this chat saw start,
- * or read from its session, counts down to its next attempt, and names the key that cancels it where Esc does.
+ * or read from its session, counts down to its next attempt, and names the key that cancels it where Esc does; it fits
+ * a line `width` columns wide.
  */
 function chatSessionBusyMessage<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	published: Exclude<PublishedChatActivity, "idle"> | undefined,
+	width: number,
 ): string {
 	const status = published === undefined ? state.statusMessage : publishedWorkingMessages[published];
 	if (!isChatSessionRetryStatus(status)) return status;
@@ -229,7 +235,7 @@ function chatSessionBusyMessage<TExtraEntry extends ChatTranscriptEntryLike>(
 	const cancel = cancellable
 		? clickableKeyTextHint(state.getActionKeyDisplay?.("app.interrupt") ?? "esc", " cancel")
 		: undefined;
-	return retryWaitMessage(wait, retrySecondsLeft(wait), cancel);
+	return retryWaitMessage(wait, retrySecondsLeft(wait), cancel, workingMessageColumns(width));
 }
 
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -246,7 +252,7 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	if (!state.compacting && (published !== undefined || isChatSessionBusyStatus(state.statusMessage))) {
 		return new WorkingStatusComponent({
 			frame: state.workingFrame,
-			message: chatSessionBusyMessage(state, published),
+			message: chatSessionBusyMessage(state, published, width),
 			palette,
 			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
