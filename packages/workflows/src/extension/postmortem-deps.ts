@@ -25,6 +25,7 @@ import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreRun, readGraphStoreSnapshot } from "../shared/store-observation.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import { failedBoundaryChildRuns } from "../shared/workflow-run-ownership.js";
 
 export interface PostMortemResolverDeps {
 	readonly adapters: StageAdapters;
@@ -94,8 +95,7 @@ export function createPostMortemHandleResolver(
 			.find((candidate) => candidate.id === requestedRunId)
 			?.stages.find((candidate) => candidate.id === requestedStageId);
 		if (requested === undefined) return undefined;
-		// A failed child-workflow boundary collapses its child in the graph. When the child ran on a
-		// local worker, its one agent stage is the session behind it, and reopens for it (#3996).
+		// A failed boundary's id can still name its pooled child's one stage for post-mortem chat (#3996).
 		const pooledChild = failedBoundaryPooledStage(snapshot.runs, requestedRunId, requested);
 		const runId = pooledChild?.runId ?? requestedRunId;
 		const stageId = pooledChild?.stage.id ?? requestedStageId;
@@ -171,8 +171,7 @@ function failedBoundaryPooledStage(
 	boundary: StageSnapshot,
 ): { readonly runId: string; readonly stage: StageSnapshot } | undefined {
 	if (boundary.status !== "failed") return undefined;
-	// A failed boundary drops its child reference; the child run still names its boundary.
-	const children = runs.filter((run) => run.parentRunId === runId && run.parentStageId === boundary.id);
+	const children = failedBoundaryChildRuns(runs, runId, boundary.id, boundary.startedChildRunId);
 	const pooled = children.flatMap((run) =>
 		run.stages.filter((stage) => stage.workerExecution !== undefined).map((stage) => ({ runId: run.id, stage })),
 	);

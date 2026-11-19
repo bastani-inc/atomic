@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { Key } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { run as runWorkflow } from "../../packages/workflows/src/engine/run.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
 import {
 	prepareTopLevelExpandedSnapshots,
 	resolveControlNodeTarget,
@@ -258,6 +261,144 @@ describe("nested workflow stage target routing", () => {
 			else process.env.ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD = previousGuard;
 		}
 	});
+
+	test("a failed boundary that started an empty child cannot route to a previous child's pooled stage (#5616)", () => {
+		const rootId = fixtureRunId("changed-child");
+		const current = fixtureRunId("new-child");
+		const old = fixtureRunId("previous-child");
+		const boundary = { ...stage("call"), status: "failed" as const, startedChildRunId: current };
+		store.recordRunStart(run({ id: rootId, name: "root", stages: [boundary] }));
+		const parents = { parentRunId: rootId, parentStageId: boundary.id, rootRunId: rootId };
+		store.recordRunStart(run({ id: current, name: "current", stages: [], ...parents }));
+		store.recordRunStart(
+			run({
+				id: old,
+				name: "previous",
+				stages: [
+					{
+						...stage("previous-stage"),
+						workerExecution: { worker: "worker", generation: 1, renewedAt: 1, expiresAt: 2 },
+					},
+				],
+				...parents,
+			}),
+		);
+		const target = resolveStageTarget(rootId, "previous-stage", store);
+		assert.ok(!target.ok);
+		assert.equal(target.code, "stage_not_found");
+	});
+
+	test.each([
+		["has only a failing tool", false],
+		["first draws a stage named with that id", true],
+	])(
+		"a boundary id listed before its child ran still names the boundary after a child that %s fails (#5616)",
+		async (_shape, shadow) => {
+			const previousGuard = process.env.ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD;
+			delete process.env.ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD;
+			const childWaiting = Promise.withResolvers<void>();
+			const releaseChild = Promise.withResolvers<string>();
+			try {
+				const localStore = createStore();
+				const leaf = workflow({
+					name: "saved-id-leaf",
+					description: "",
+					inputs: {},
+					outputs: {},
+					run: async () => ({}),
+				});
+				const child = workflow({
+					name: "saved-id-child",
+					description: "",
+					inputs: {},
+					outputs: {},
+					run: async (ctx) => {
+						childWaiting.resolve();
+						const saved = await releaseChild.promise;
+						// A stage of the child may carry the saved id as its name; the id still names the boundary.
+						if (shadow) await ctx.workflow(leaf, { stageName: saved });
+						await ctx.tool("check", {}, async () => {
+							throw new Error("check failed");
+						});
+						return {};
+					},
+				});
+				const root = workflow({
+					name: "saved-id-root",
+					description: "",
+					inputs: {},
+					outputs: {},
+					run: async (ctx) => {
+						await ctx.workflow(child);
+						return {};
+					},
+				});
+				const execute = makeExecuteWorkflowTool(
+					createExtensionRuntime({ store: localStore }),
+					() => undefined,
+					() => {},
+					{ ...captureWorkflowOwnerResources(), store: localStore },
+				);
+				const rootId = fixtureRunId("saved-boundary-root");
+				const pending = runWorkflow(
+					root,
+					{},
+					{ runId: rootId, store: localStore, durableBackend: await createMemoryTestBackend() },
+				);
+				await childWaiting.promise;
+				const listed = await execute({ action: "stages", runId: rootId }, {} as never);
+				assert.ok(listed.action === "stages" && listed.stages.length === 1, JSON.stringify(listed));
+				const saved = listed.stages[0]!.id;
+				releaseChild.resolve(saved);
+				assert.equal((await pending).status, "failed");
+
+				const boundary = localStore.run(rootId)?.stages.find((item) => item.id === saved);
+				assert.equal(boundary?.status, "failed");
+				assert.ok(boundary?.startedChildRunId !== undefined, "the boundary started its child");
+				const after = await execute({ action: "stages", runId: rootId }, {} as never);
+				assert.ok(after.action === "stages");
+				assert.ok(
+					after.stages.every((item) => item.id !== saved),
+					"the failed boundary still shows its child in its place",
+				);
+				assert.equal(
+					after.stages.some((item) => item.name === saved),
+					shadow,
+				);
+
+				const detail = await execute({ action: "stage", runId: rootId, stageId: saved }, {} as never);
+				assert.ok(detail.action === "stage" && detail.stage !== undefined, JSON.stringify(detail));
+				assert.equal(detail.runId, rootId);
+				assert.equal(detail.stage.id, saved);
+				assert.equal(detail.stage.status, "failed");
+				const transcript = await execute({ action: "transcript", runId: rootId, stageId: saved }, {} as never);
+				assert.ok(transcript.action === "transcript", JSON.stringify(transcript));
+				assert.equal(transcript.source, "snapshot", JSON.stringify(transcript));
+				assert.equal(transcript.stageId, saved);
+				assert.deepEqual(resolveStageTarget(rootId, saved, localStore), {
+					ok: true,
+					runId: rootId,
+					stageId: saved,
+				});
+				// Its name still selects it too, as nothing drawn has that name.
+				assert.deepEqual(resolveStageTarget(rootId, boundary?.name, localStore), {
+					ok: true,
+					runId: rootId,
+					stageId: saved,
+				});
+				assert.deepEqual(resolveControlNodeTarget(rootId, saved, localStore), {
+					ok: true,
+					kind: "stage",
+					runId: rootId,
+					stageId: saved,
+				});
+			} finally {
+				releaseChild.resolve("released");
+				if (previousGuard === undefined) delete process.env.ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD;
+				else process.env.ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD = previousGuard;
+			}
+		},
+	);
 
 	test("duplicate child-local stage IDs are ambiguous instead of first-matched", () => {
 		const result = resolveStageTarget(fixtureRunId("root-run"), "shared");

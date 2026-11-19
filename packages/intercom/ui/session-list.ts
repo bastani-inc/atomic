@@ -1,5 +1,5 @@
 import type { Component } from "@bastani/atomic-tui";
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { clickableKeysHint, type KeyId, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
 import type { SessionInfo, WorkflowStageRosterEntry } from "../types.js";
 import { terminalSafeLabel } from "./terminal-text.js";
@@ -18,8 +18,12 @@ function formatKeyLabel(key: string): string {
     .join("+");
 }
 
-function formatKeys(keys: readonly string[]): string {
-  return keys.map(formatKeyLabel).join("/");
+/** `Enter: Send`: the keys and what they do. A click on a key's text presses that key. */
+function keysHint(keys: readonly KeyId[], label: string): string {
+  return clickableKeysHint(
+    keys.map((key, index) => ({ text: `${formatKeyLabel(key)}${index < keys.length - 1 ? "/" : ""}`, key })),
+    label,
+  );
 }
 
 function middleTruncate(text: string, maxWidth: number): string {
@@ -133,7 +137,7 @@ export class SessionListOverlay implements Component {
   render(width: number): string[] {
     const innerWidth = Math.max(36, Math.min(width - 2, 88));
     const contentWidth = Math.max(1, innerWidth - 2);
-    const footer = `${formatKeys(this.keybindings.getKeys("tui.select.confirm"))}: Message • ${formatKeys(this.keybindings.getKeys("tui.select.cancel"))}: Close`;
+    const footer = `${keysHint(this.keybindings.getKeys("tui.select.confirm"), ": Message")} • ${keysHint(this.keybindings.getKeys("tui.select.cancel"), ": Close")}`;
     const border = (text: string) => this.theme.fg("accent", text);
     const row = (text = "") => {
       const clipped = truncateToWidth(text, contentWidth, "", true);
