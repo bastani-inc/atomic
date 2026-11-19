@@ -171,6 +171,11 @@ export declare class WaitLease {
   get waitId(): string
 }
 
+export declare class WindowsTemporaryFile {
+  /** Close the original handle off the event loop. Closing it removes only its own name, not a published hard link. */
+  close(): Promise<undefined>
+}
+
 export type ActivityChange =
   | { kind: 'action'; tool: string; text: string }
   | { kind: 'model'; model?: string; thinking?: string }
@@ -663,6 +668,13 @@ export interface OmittedRange {
   end: string
 }
 
+/**
+ * Opens an exclusive temporary file, pinning its name until close. A clock probe takes the rights granted by its
+ * directory and requests deletion only after measuring the clock; a writable record also requests delete access.
+ * Reports a collision separately and returns null when this open is unavailable.
+ */
+export declare function openWindowsTemporaryFile(path: string, clockProbe?: boolean | undefined | null): Promise<WindowsTemporaryFile | undefined | null>
+
 export interface OutcomeReport {
   reportId: string
   result: TaskResult
@@ -758,6 +770,9 @@ export interface PtyStartOptions {
   commandTransport?: string
   closeStdinAfterCommand?: boolean
 }
+
+/** Removes a regular file older than `beforeMs` using the handle whose last-write time was checked. */
+export declare function removeWindowsFileOlderThan(path: string, beforeMs: number): Promise<undefined>
 
 /**
  * Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,
