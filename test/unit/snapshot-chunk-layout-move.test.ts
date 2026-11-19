@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
@@ -43,7 +44,7 @@ const { rehydrateWorkspaceError, serializeWorkspaceError, WorkspaceCollectionErr
 	"../../packages/coding-agent/src/core/worktree-snapshot/errors.ts"
 );
 type WorkspaceCollectionError = InstanceType<typeof WorkspaceCollectionError>;
-const { resetSnapshotCollectionScheduleForTesting, scheduleSnapshotCollection } = await import(
+const { collectSnapshotGarbage, resetSnapshotCollectionScheduleForTesting, scheduleSnapshotCollection } = await import(
 	"../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts"
 );
 const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
@@ -154,6 +155,83 @@ function underPageLimit(database: SqliteDatabase, limit: () => number): SqliteDa
 		},
 	};
 }
+
+test("offline maintenance leaves a customized chunk layout alone (#5700)", async () => {
+	const path = join(directory, "custom.sqlite");
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		await release0989.SqlSnapshotBlobStore.open(database);
+		await database.exec("CREATE INDEX local_chunk_positions ON snapshot_blob_chunks(idx)");
+	} finally {
+		await database.close();
+	}
+	await assert.rejects(SqlSnapshotBlobStore.moveChunksOffline(path), /customized.*chunk/i);
+	const reopened = await openNodeSqliteDatabase(path);
+	try {
+		assert.ok(await reopened.get("SELECT 1 FROM sqlite_schema WHERE name = 'local_chunk_positions'"));
+	} finally {
+		await reopened.close();
+	}
+});
+
+test("offline maintenance moves a closed local chunk table with room for one copy, not two (#5700)", async () => {
+	const { runStorageCommand } = await import("../../packages/coding-agent/src/cli/storage-command.js");
+	const path = join(directory, "store.sqlite");
+	const prefix = "test_";
+	const chunked = blob(40 * SNAPSHOT_BLOB_CHUNK_BYTES, 99);
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		await (await release0989.SqlSnapshotBlobStore.open(database, prefix)).putBlobs([chunked]);
+		reportedFree.bytes = 128 * SNAPSHOT_BLOB_CHUNK_BYTES;
+		const store = await SqlSnapshotBlobStore.open(database, prefix);
+		assert.equal((await collectSnapshotGarbage(store)).pendingChunkMove?.reason, "free-space");
+	} finally {
+		await database.close();
+	}
+	// Sample the physical WAL at the SQLite boundary. A timer in this process could miss the commit before a checkpoint.
+	const logAtStart: number[] = [];
+	const logAfterCommit: number[] = [];
+	const bytes = () => statSync(`${path}-wal`, { throwIfNoEntry: false })?.size ?? 0;
+	const exec = DatabaseSync.prototype.exec;
+	const observer = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+		this: DatabaseSync,
+		sql: string,
+	) {
+		if (sql === "BEGIN IMMEDIATE") logAtStart.push(bytes());
+		exec.call(this, sql);
+		if (sql === "COMMIT") logAfterCommit.push(bytes());
+	});
+	const lines: string[] = [];
+	const rc = await runStorageCommand(["move-snapshot-chunks", path, "--prefix", prefix], {
+		cwd: directory,
+		agentDir: directory,
+		log: (line) => lines.push(line),
+		error: (line) => lines.push(line),
+	});
+	observer.mockRestore();
+	assert.equal(rc, 0, lines.join("\n"));
+	assert.ok(logAtStart.length > 4 && logAtStart.every((size) => size === 0), `WAL before batches: ${logAtStart}`);
+	assert.ok(
+		Math.max(...logAfterCommit) > 0 && Math.max(...logAfterCommit) < 16 * SNAPSHOT_BLOB_CHUNK_BYTES,
+		`WAL after commits: ${logAfterCommit}`,
+	);
+	const reopened = await openNodeSqliteDatabase(path);
+	try {
+		assert.equal(
+			(await reopened.get("SELECT wr FROM pragma_table_list WHERE name = ?", `${prefix}snapshot_blob_chunks`))?.wr,
+			0,
+		);
+		const old = await release0989.SqlSnapshotBlobStore.open(reopened, prefix);
+		assert.equal(
+			createHash("sha256")
+				.update((await old.getBlob(chunked.hash))!)
+				.digest("hex"),
+			chunked.hash,
+		);
+	} finally {
+		await reopened.close();
+	}
+});
 
 for (const adapter of ["node-sqlite", "libsql"] as const) {
 	for (const prefix of ["", "custom_"]) {
@@ -781,6 +859,32 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.deepEqual(await chunkTables(database), [chunks], "the stale copy is gone");
 				assert.deepEqual(await chunkRows(database), before);
 				await assertEveryBlobReads(store, replaced, "this version");
+			});
+
+			test("manual and automatic collection report the space needed by a deferred chunk move (#5700)", async () => {
+				const database = await release0989Store();
+				const store = await SqlSnapshotBlobStore.open(database, prefix);
+				const { free, size } = await pagesOf(database);
+				const remainingBytes = (await chunkRows(database)).length * SNAPSHOT_BLOB_CHUNK_BYTES;
+				reportedFree.bytes = SNAPSHOT_BLOB_CHUNK_BYTES;
+				const pendingChunkMove = {
+					reason: "free-space",
+					remainingBytes,
+					freeBytes: reportedFree.bytes,
+					requiredFreeBytes:
+						remainingBytes * 2 - Math.min(remainingBytes, free * size) + SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES,
+				};
+				assert.deepEqual(await collectSnapshotGarbage(store), { deleted: [], pendingChunkMove });
+				assert.deepEqual(
+					await scheduleSnapshotCollection(store, {
+						autoCollect: true,
+						graceSeconds: 3600,
+						collectIntervalSeconds: 10,
+					}),
+					{ status: "collected", deleted: [], pendingChunkMove },
+				);
+				reportedFree.bytes = undefined;
+				assert.deepEqual(await collectSnapshotGarbage(store), { deleted: [] });
 			});
 
 			test("the room a move needs holds its copy, the write-ahead log of the copy and the headroom (#5694)", async () => {
