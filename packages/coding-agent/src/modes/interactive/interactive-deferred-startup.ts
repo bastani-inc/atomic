@@ -22,7 +22,7 @@ import {
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
-import { showSessionNotices } from "./session-notices.ts";
+import { showLegacyWorkflowNotice, showSessionNotices } from "./session-notices.ts";
 
 export interface DeferredStartupMode {
 	deferredStartupPending: boolean;
@@ -107,6 +107,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 			showDiagnosticsWhenQuiet: true,
 			targetContainer: this.resourceDisclosureContainer,
 		});
+		showLegacyWorkflowNotice(this);
 		// Keep the subscription warning after the RESOURCES disclosure.
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
 		await preloadChangelog(getChangelogPath());

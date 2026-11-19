@@ -197,6 +197,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private resourceOverlaps: ResourceOverlap[] = [];
 	private readonly resourceExtensionsListeners: ResourceExtensionsListener[] = [];
 	private resourceExtensions: RpcResourceExtension[] = [];
+	private legacyWorkflowFileCount = 0;
 	private resourceIssues: EngineResourceIssues = { errors: [], warnings: [] };
 	private resourcesInitializedGeneration = 0;
 	private resourceInitialization: { generation: number; promise: Promise<void> } | undefined;
@@ -767,10 +768,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	getResourceIssues(): EngineResourceIssues {
 		return this.resourceIssues;
 	}
+	async getStartupLegacyWorkflowFileCount(): Promise<number> {
+		await this.waitUntilResourcesReady();
+		return this.legacyWorkflowFileCount;
+	}
 	private updateResources(
-		state: Pick<RpcSessionState, "resourceExtensions" | "resourceErrors" | "resourceWarnings">,
+		state: Pick<
+			RpcSessionState,
+			"resourceExtensions" | "resourceErrors" | "resourceWarnings" | "legacyWorkflowFileCount"
+		>,
 		forNextView = false,
 	): void {
+		this.legacyWorkflowFileCount = state.legacyWorkflowFileCount ?? 0;
 		this.resourceIssues = { errors: state.resourceErrors ?? [], warnings: state.resourceWarnings ?? [] };
 		this.resourceExtensions = [...(state.resourceExtensions ?? [])];
 		for (const listener of [...this.resourceExtensionsListeners]) {

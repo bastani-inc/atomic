@@ -4,8 +4,13 @@
 
 ### Breaking Changes
 
+- A workflow stage can no longer launch another layer of subagents. Launch all children from the parent chat with codemode; when a child's result is ready, the parent can launch the next batch from its completion notice.
 - `/resume` now lists sessions only. Workflow runs no longer appear in the agent panel, `/tasks`, terminal program status, `/settings` or `/config`. To continue work, resume the parent session and inspect its subagents in `/tasks`.
 - `history://` searches session transcripts only. Existing `history://workflows` links explain the removal; old workflow stores are left untouched. Use `history://sessions` to recall the conversation.
+
+### Added
+
+- Interactive startup points out earlier workflow files. Ask Atomic to read a file and carry out its steps with codemode and subagents, or describe the procedure in a reusable skill.
 
 ## [0.9.90] - 2026-11-19
 

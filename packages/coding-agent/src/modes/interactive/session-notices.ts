@@ -1,3 +1,40 @@
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import type { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { Spacer, Text, theme } from "./interactive-mode-deps.ts";
+
+function renderLegacyWorkflowNotice(mode: InteractiveModeBase, count: number | undefined): void {
+	if (!count || !mode.shouldShowStartupDetails()) return;
+	mode.startupNoticesContainer.addChild(new Spacer(1));
+	mode.startupNoticesContainer.addChild(
+		new Text(
+			theme.fg(
+				"dim",
+				`Found ${count} legacy workflow file${count === 1 ? "" : "s"}. Ask Atomic to read one and run its steps with codemode and subagents.`,
+			),
+			1,
+			0,
+		),
+	);
+	mode.ui.requestRender();
+}
+
+/** Only the engine knows the final trust decisions and which temporary packages the user supplied. */
+export function showLegacyWorkflowNotice(mode: InteractiveModeBase): void {
+	if (mode.runtimeHost instanceof IsolatedInteractiveRuntime) {
+		const session = mode.session;
+		void mode.runtimeHost.getStartupLegacyWorkflowFileCount().then(
+			(count) => {
+				if (!mode.isShuttingDown && mode.session === session) renderLegacyWorkflowNotice(mode, count);
+			},
+			() => {
+				/* The engine reports resource readiness failures separately. */
+			},
+		);
+	} else {
+		renderLegacyWorkflowNotice(mode, mode.session.resourceLoader?.getLegacyWorkflowFiles?.()?.total);
+	}
+}
+
 export interface SessionNotice {
 	readonly type: "info" | "warning" | "error";
 	readonly message: string;
