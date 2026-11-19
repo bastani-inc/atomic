@@ -1,9 +1,11 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { StoragePayloadTooLargeError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { exportWorkflowRuns } from "../../packages/coding-agent/src/core/storage/journal-transfer.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 it("selects a run only after opening and listing its named source (#5537)", async () => {
@@ -37,7 +39,45 @@ it("selects a run only after opening and listing its named source (#5537)", asyn
 	}
 });
 
-it("keeps the catalog refusal for a bulk export, including its original diagnostic after close (#5537)", async () => {
+it("does not filter or create output when the selected run's events cannot be read after a catalog refusal (#5537)", async () => {
+	const directory = makeTempDirectory("atomic-selected-events-");
+	const path = join(directory, "source.sqlite"),
+		backup = join(directory, "backup");
+	const writer = await openNodeSqliteDatabase(path),
+		journal = await SqlRunJournal.open(writer);
+	try {
+		await journal.createRun({ runId: "one", name: "r", cwd: "/p", createdAt: 1, status: "completed" });
+		const failure = new Error("event read failed");
+		const open = async () => {
+			const db = await openNodeSqliteDatabase(path);
+			observeSqlReads(db, {
+				before(sql) {
+					if (sql.includes("ORDER BY run_id")) throw new StoragePayloadTooLargeError(0, 0, { kind: "response" });
+					if (sql.includes("ORDER BY seq")) throw failure;
+				},
+			});
+			return db;
+		};
+		await expect(
+			exportWorkflowRuns({ kind: "database", location: "journal", open }, backup, {
+				runs: ["one"],
+				get unfinished(): boolean {
+					throw new Error("no exportable events");
+				},
+				get limit(): number {
+					throw new Error("no exportable events");
+				},
+			}),
+		).rejects.toBe(failure);
+		expect(existsSync(backup)).toBe(false);
+	} finally {
+		await journal.close();
+		await writer.close();
+		removeTempDirectory(directory);
+	}
+});
+
+it("keeps the original diagnostic after close and leaves no output for a refused export (#5537)", async () => {
 	const directory = makeTempDirectory("atomic-bulk-selection-");
 	const file = join(directory, "source.sqlite");
 	const writer = await openNodeSqliteDatabase(file);
@@ -45,9 +85,10 @@ it("keeps the catalog refusal for a bulk export, including its original diagnost
 	try {
 		for (const runId of ["one", "two"])
 			await journal.createRun({ runId, name: "run", cwd: "/p", status: "completed", createdAt: 1 });
-		for (const runs of [undefined, [], ["one", "two"]]) {
+		for (const runs of [undefined, [], ["one", "two"], ["one"]]) {
 			let closed = false,
-				extraReads = 0;
+				extraReads = 0,
+				refusedPoints = 0;
 			const failure = new StoragePayloadTooLargeError(0, 0, { kind: "response" });
 			Object.defineProperty(failure, "message", {
 				get() {
@@ -57,10 +98,17 @@ it("keeps the catalog refusal for a bulk export, including its original diagnost
 			});
 			const open = async () => {
 				const db = await openNodeSqliteDatabase(file);
-				const all = db.all.bind(db),
-					close = db.close.bind(db),
+				observeSqlReads(db, {
+					after(_rows, sql, pinned) {
+						if (!pinned && sql.includes("ORDER BY run_id")) throw failure;
+						if (pinned && /^SELECT \* FROM \S+ WHERE run_id = \?$/.test(sql)) {
+							refusedPoints++;
+							throw new StoragePayloadTooLargeError(0, 0, { kind: "response" });
+						}
+					},
+				});
+				const close = db.close.bind(db),
 					transaction = db.transaction.bind(db);
-				db.all = (sql, ...args) => (sql.includes("ORDER BY run_id") ? Promise.reject(failure) : all(sql, ...args));
 				db.transaction = (fn, options) => {
 					extraReads++;
 					return transaction(fn, options);
@@ -72,9 +120,19 @@ it("keeps the catalog refusal for a bulk export, including its original diagnost
 				return db;
 			};
 			await expect(
-				exportWorkflowRuns({ kind: "database", location: "journal", open }, join(directory, "backup"), { runs }),
+				exportWorkflowRuns({ kind: "database", location: "journal", open }, join(directory, "backup"), {
+					runs,
+					get unfinished(): boolean {
+						throw new Error("no exportable header");
+					},
+					get limit(): number {
+						throw new Error("no exportable header");
+					},
+				}),
 			).rejects.toThrow("journal: the journal file cannot be read: refused header catalog");
-			expect(extraReads).toBe(0);
+			expect(existsSync(join(directory, "backup"))).toBe(false);
+			if (runs?.length === 1) expect(refusedPoints).toBe(1);
+			else expect(extraReads).toBe(0);
 		}
 	} finally {
 		await journal.close();

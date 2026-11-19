@@ -334,39 +334,52 @@ async function exportSelectedAfterRefusal(
 	options: WorkflowRunExportOptions,
 	directory: string,
 	t: Tables,
-): Promise<WorkflowRunExportReport> {
+): Promise<WorkflowRunExportReport | undefined> {
 	const { reader: database, path } = refused;
+	let refusedPoint: StoragePayloadTooLargeError | undefined;
 	const header = async <Row extends SqliteRow>(tx: SqliteExecutor, columns: string) => {
 		const version = await schemaVersion(tx, t);
 		if (!isReadableRunJournalVersion(version))
 			throw new StorageTransferError({ path, reason: `unsupported journal schema version ${String(version)}` });
 		const row = await tx.get<Row>(`SELECT ${columns} FROM ${t.runs} WHERE run_id = ?`, id).catch((error: unknown) => {
-			if (isStorageResponseRefusal(error)) throw catalogRefusal(refused);
+			if (isStorageResponseRefusal(error)) refusedPoint = error;
 			throw error;
 		});
 		if (!row) throw new StorageTransferError({ path, id, reason: `run ${id} is not in this workflow journal` });
 		return row;
 	};
-	// Selection only needs the status. Read the actual header once, with its events, after selection.
-	const row = await database.transaction((tx) => header<{ status: string }>(tx, "status"), { readOnly: true });
-	let included = !options.unfinished || !isFinishedJournalStatus(row.status) ? [id] : [];
-	if (options.limit !== undefined) included = included.slice(0, options.limit);
-	await mkdir(directory, { recursive: true });
-	if (included.length === 0) return { written: [], unchanged: [], skipped: [] };
-	const { run, events } = await database.transaction(
-		async (tx) => {
-			const run = await header<JournalRunTableRow>(tx, "*");
-			const events = await withJournalPayloads(
-				tx,
-				t.eventChunks,
-				await tx.all<JournalEventTableRow>(`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`, id),
-			);
-			return { run, events };
-		},
-		{ readOnly: true },
-	);
-	const outcome = await writeLinesAtomically(transferFile(directory, id), exportLines(run, events, path));
-	return { written: outcome === "written" ? [id] : [], unchanged: outcome === "written" ? [] : [id], skipped: [] };
+	try {
+		const { run, events } = await database.transaction(
+			async (tx) => {
+				const run = await header<JournalRunTableRow>(tx, "*");
+				const events = await withJournalPayloads(
+					tx,
+					t.eventChunks,
+					await tx.all<JournalEventTableRow>(`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`, id),
+				);
+				return { run, events };
+			},
+			{ readOnly: true },
+		);
+		// Do not publish a run deleted or upgraded during recovery. The header body was already read with its events.
+		await database.transaction((tx) => header(tx, "1 AS found"), { readOnly: true });
+		// Only a complete, supported run reaches the caller's remaining selection options, outside the transaction.
+		let included = !options.unfinished || !isFinishedJournalStatus(run.status) ? [id] : [];
+		if (options.limit !== undefined) included = included.slice(0, options.limit);
+		if (included.length === 0) {
+			await mkdir(directory, { recursive: true });
+			return { written: [], unchanged: [], skipped: [] };
+		}
+		const file = transferFile(directory, id),
+			lines = exportLines(run, events, path);
+		await mkdir(directory, { recursive: true });
+		const outcome = await writeLinesAtomically(file, lines);
+		return { written: outcome === "written" ? [id] : [], unchanged: outcome === "written" ? [] : [id], skipped: [] };
+	} catch (error) {
+		// Only the confirmed header refusal goes back to the caller's close-before-diagnostic path.
+		if (refusedPoint !== undefined && error === refusedPoint) return undefined;
+		throw error;
+	}
 }
 
 async function closeExportSource(source: Pick<ExportSource, "database" | "snapshot">): Promise<void> {
@@ -571,7 +584,10 @@ export async function exportWorkflowRuns(
 			let selected = [...listed.values()];
 			if (refused !== undefined) {
 				const id = singleExportId(options.runs);
-				if (id !== undefined) return exportSelectedAfterRefusal(refused, id, options, directory, t);
+				if (id !== undefined) {
+					const report = await exportSelectedAfterRefusal(refused, id, options, directory, t);
+					if (report !== undefined) return report;
+				}
 				const original = refused;
 				refused = undefined;
 				await original.reader.close().catch(() => undefined);
