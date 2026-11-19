@@ -158,7 +158,7 @@ import { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
 import { createChainPrimitive } from "./primitives/chain.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
-import { createParallelPrimitive } from "./primitives/parallel.js";
+import { createParallelPrimitive, sharedReplayForkCut } from "./primitives/parallel.js";
 import { createWorkflowEventPrimitives } from "./primitives/subscribe.js";
 import { createSubscriberReports } from "./primitives/subscriber-report.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
@@ -1522,7 +1522,25 @@ async function executeRun(
 		},
 		task: (...args) => rejectionScope.watch(gatedTask(...args)),
 		chain: (...args) => rejectionScope.watch(whenRunning(() => chain(...args))),
-		parallel: (...args) => rejectionScope.watch(whenRunning(() => parallel(...args))),
+		parallel: (steps, options) => {
+			if (
+				(cachedStageDrain === undefined && cachedStagePersistence.length === 0) ||
+				scheduler.isRunPaused() ||
+				ownController.signal.aborted
+			)
+				return rejectionScope.watch(whenRunning(() => parallel(steps, options)));
+			const cut = sharedReplayForkCut(steps, options);
+			if (!cut) return rejectionScope.watch(whenRunning(() => parallel(steps, options)));
+			return rejectionScope.watch(
+				(async () => {
+					try {
+						return await whenRunning(() => parallel(steps, options, cut.admit()));
+					} finally {
+						cut.close();
+					}
+				})(),
+			);
+		},
 		workflow: (...args) =>
 			rejectionScope.watch(
 				whenRunning(() => {

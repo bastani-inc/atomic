@@ -44,8 +44,9 @@ export async function forkStageSession(
 	options: NewSessionOptions,
 	destination: SessionStore = store,
 	entryId?: string,
+	forkCut?: import("@bastani/atomic").SessionForkCut,
 ): Promise<SessionManager> {
-	const source = await store.load(sessionId);
+	const source = await (forkCut && entryId === undefined ? forkCut.load(store, sessionId) : store.load(sessionId));
 	const entries =
 		entryId === undefined
 			? source.entries

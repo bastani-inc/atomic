@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { isProxy } from "node:util/types";
+import { type SessionForkCut, type SessionStore, watchSessionFork } from "@bastani/atomic";
 import { findWorkflowExitSignal } from "../../runs/foreground/executor-abort.js";
 import { mapParallelSteps } from "../../runs/foreground/executor-direct-helpers.js";
 import {
@@ -16,13 +18,43 @@ import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
 
+const sourceFields = [
+	"context",
+	"forkFromSessionId",
+	"forkFromEntryId",
+	"sessionStore",
+	"sessionManager",
+	"sessionDir",
+] as const;
+
+/** Only an explicitly shared, plain source is known without inspecting a queued task or consulting its host. */
+export function sharedReplayForkCut(
+	steps: readonly WorkflowTaskStep[],
+	options: WorkflowParallelOptions | undefined,
+): SessionForkCut | undefined {
+	if (!options || isProxy(options) || !Array.isArray(steps) || isProxy(steps) || steps.length === 0) return undefined;
+	const data = (key: keyof WorkflowParallelOptions) => {
+		const field = Object.getOwnPropertyDescriptor(options, key);
+		return field?.enumerable && "value" in field ? field.value : undefined;
+	};
+	if (data("context") !== "fork") return undefined;
+	const entry = Object.getOwnPropertyDescriptor(options, "forkFromEntryId");
+	if (entry?.enumerable && (!("value" in entry) || entry.value !== undefined)) return undefined;
+	const id = data("forkFromSessionId");
+	const store = data("sessionStore");
+	return typeof id === "string" && store !== null && typeof store === "object"
+		? watchSessionFork(store as SessionStore, id)
+		: undefined;
+}
+
 export function createParallelPrimitive(input: {
 	readonly runtime: EngineRuntime;
 	readonly task: WorkflowTaskPrimitive;
-}): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
+}) {
 	return async (
 		steps: readonly WorkflowTaskStep[],
 		options: WorkflowParallelOptions = {},
+		forkCut?: SessionForkCut,
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
 		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
@@ -46,6 +78,9 @@ export function createParallelPrimitive(input: {
 			activeStages: new Map<string, ParallelFailFastStage>(),
 			parentIds: parallelParentIds,
 		};
+		// These tasks still observe the same live fail-fast state as steps that supply their own source.
+		const sharedSourceScope: ParallelFailFastScope | undefined =
+			forkCut && Object.assign(Object.create(parallelScope), { forkCut });
 		const stageIdsBeforeParallel = new Set(
 			input.runtime.activeStore.run(input.runtime.runId)?.stages.map((stage) => stage.id) ?? [],
 		);
@@ -77,10 +112,13 @@ export function createParallelPrimitive(input: {
 					step.prompt ?? step.task ?? fallback,
 					resolvedOptions.task ?? fallback,
 				);
+				const own = taskOptionsFromStep(step, prompt, taskPrevious(step));
 				return await input.task(
 					step.name,
-					taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions),
-					parallelScope,
+					taskWithSharedDefaults(own, resolvedOptions),
+					sharedSourceScope && !sourceFields.some((key) => Object.hasOwn(own, key))
+						? sharedSourceScope
+						: parallelScope,
 				);
 			},
 			async (error) => {

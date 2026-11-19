@@ -491,6 +491,7 @@ export function createWorkflowStageFactory(input: {
 			record: stageSnapshot,
 		});
 		const innerCtx = createInnerStageContext({
+			forkCut: stageFailFastScope?.forkCut,
 			stageId,
 			stageName: name,
 			stageUiSignal: uiOwner.signal,

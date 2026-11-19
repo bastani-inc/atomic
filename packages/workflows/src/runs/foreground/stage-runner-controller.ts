@@ -3266,6 +3266,7 @@ export class StageSessionController {
 				this.meta,
 				this.opts.pendingStageDelivery,
 				this.residency.startupWait.signal,
+				this.opts.forkCut,
 			)) as StageSessionCreateOptions;
 			this.callerSessionManager = createOptions.sessionManager;
 			const createMeta: Parameters<typeof adapter.create>[1] = {

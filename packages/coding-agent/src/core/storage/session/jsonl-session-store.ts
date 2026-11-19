@@ -35,6 +35,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { forkSnapshotWitness, sessionForkRead, sessionForkWrite } from "./fork-observer.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -638,13 +639,20 @@ export class JsonlSessionStore implements SessionStore {
 				throw cause;
 			}
 			const lastSeq = state.lastSeq + entries.length;
+			let witness: Buffer;
+			let payloadBytes: number;
+			{
+				const bytes = Buffer.from(payload);
+				payloadBytes = bytes.length;
+				witness = witnessOf(Buffer.concat([state.witness, bytes]));
+			}
 			const appended = await this.remember(path, {
 				...state,
 				lastSeq,
 				lastEntryId: entries.at(-1)?.id,
 				terminated: true,
 				torn: false,
-				witness: witnessOf(Buffer.concat([state.witness, Buffer.from(payload)])),
+				witness,
 				...(state.summaryState === undefined
 					? {}
 					: { summaryState: applySessionSummaryEntries(state.summaryState, entries).state }),
@@ -654,6 +662,14 @@ export class JsonlSessionStore implements SessionStore {
 				rangeIndex.seenStamp = this.stamp(appended);
 				rangeIndex.seenSize = Number(appended.size);
 			}
+			// Independent handles can have different directory locks. An in-place edit can even keep the inode and size.
+			const forkWrite = sessionForkWrite(options);
+			if (
+				forkWrite &&
+				state.identity === `${appended.dev}:${appended.ino}` &&
+				appended.size === BigInt(offset + payloadBytes)
+			)
+				forkWrite(this, state.stamp, this.stamp(appended), undefined, true);
 			await this.indexAppended(path, state, entries, lines, offset + (state.terminated ? 0 : 1));
 			return { lastSeq };
 		});
@@ -691,10 +707,15 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	load(sessionId: string): Promise<SessionSnapshot> {
+		const request = sessionForkRead(sessionId);
 		return this.run(async () => {
 			const located = await this.locate(sessionId);
 			if (!located) throw new SessionNotFoundError(sessionId);
-			return this.readPersisted(located.path, located.stored);
+			if (!request) return this.readPersisted(located.path, located.stored);
+			const snapshot = await this.readPersisted(located.path, located.stored);
+			const state = this.fileStates.get(located.path);
+			if (state?.stamp === this.stamp(located.stats)) forkSnapshotWitness(request, this, state.stamp)?.(snapshot);
+			return snapshot;
 		});
 	}
 

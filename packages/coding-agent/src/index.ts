@@ -80,6 +80,7 @@ export {
 	selectProcessStorage,
 	selectProcessStorageAsync,
 } from "./core/storage/process-selection.js";
+export { type SessionForkView as SessionForkCut, watchSessionFork } from "./core/storage/session/fork-cut.js";
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";

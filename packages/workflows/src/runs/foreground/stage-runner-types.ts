@@ -238,6 +238,7 @@ export interface StageAdapters {
 }
 
 export interface StageRunnerOpts {
+	forkCut?: import("@bastani/atomic").SessionForkCut;
 	stageUiSignal?: AbortSignal;
 	stageId: string;
 	stageName: string;
