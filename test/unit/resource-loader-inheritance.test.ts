@@ -50,7 +50,7 @@ describe("DefaultResourceLoader inheritance snapshots", () => {
 			agentDir,
 			additionalExtensionPaths: [externalPackage],
 			additionalSkillPaths: [skillFile],
-			builtinPackagePaths: ["/repo/packages/workflows"],
+			builtinPackagePaths: ["/repo/packages/subagents"],
 			appendSystemPrompt: ["Parent append prompt"],
 			extensionFactories: [
 				(pi) => {
@@ -65,7 +65,7 @@ describe("DefaultResourceLoader inheritance snapshots", () => {
 		assert.equal(observedSnapshots.length, 1);
 		assert.deepEqual(observedSnapshots[0]?.additionalExtensionPaths, [externalPackage]);
 		assert.deepEqual(observedSnapshots[0]?.additionalSkillPaths, [skillFile]);
-		assert.deepEqual(observedSnapshots[0]?.builtinPackagePaths, ["/repo/packages/workflows"]);
+		assert.deepEqual(observedSnapshots[0]?.builtinPackagePaths, ["/repo/packages/subagents"]);
 		assert.deepEqual(observedSnapshots[0]?.appendSystemPrompt, ["Parent append prompt"]);
 
 		const childLoader = new DefaultResourceLoader({

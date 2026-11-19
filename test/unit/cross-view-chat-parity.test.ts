@@ -36,25 +36,16 @@ import { showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-
 import { showTaskInspector } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
-import { injectStageLabelIntoEditorTopRule } from "../../packages/workflows/src/tui/stage-chat-view-footer-status.js";
-import {
-	applyStageLabelToAwaitingInputTopRule,
-	applyStageLabelToEditorTopRule,
-	applyStageLabelToWidgetTopRule,
-} from "../../packages/workflows/src/tui/stage-input-label.js";
-import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
+import { fakeFooterAgentSession } from "../helpers/footer-session.js";
+
 import { taskFixture } from "../helpers/task-projection.js";
-import { taskRecord } from "../helpers/task-record.js";
+
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { makeTestTui } from "../support/fake-tui.js";
-import { fakeFooterAgentSession, makeHandle, setupRun } from "./stage-chat-view-helpers.js";
 
 const ESC = "\x1b";
 const LEFT = "\x1b[D";
-const DOWN = "\x1b[B";
+
 const APPLICATION_COMMAND = /\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 const plain = (lines: readonly string[]): string[] =>
@@ -449,7 +440,7 @@ describe("attached subagent transcript header and live-key hint (#5224)", () => 
 	});
 });
 
-describe("cross-view parity across main chat, stage chat, and subagent view (#5224)", () => {
+describe("cross-view parity across main chat and subagent view (#5224)", () => {
 	test("same events produce identical whimsical working line, interrupt notice, and shared hint/overlay across main, stage, and subagent views (#5224)", async () => {
 		let now = 10_000;
 		vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -512,59 +503,6 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			updatePendingMessagesDisplay() {},
 		}) as InteractiveModeBase;
 
-		// 2. Stage chat (StageChatView)
-		const wfStore = createStore();
-		setupRun(wfStore, "run-1", "stage-a", "running");
-		let stageStreaming = true;
-		const stageAgentSession = fakeFooterAgentSession(true);
-		const { handle: stageHandle, emit: emitStage } = makeHandle(
-			{
-				promptCalls: [],
-				steerCalls: [],
-				followUpCalls: [],
-				pauseCalls: 0,
-				resumeCalls: [],
-				get isStreaming() {
-					return stageStreaming;
-				},
-			},
-			[],
-			"running",
-			stageAgentSession,
-		);
-		const originalPause = stageHandle.pause.bind(stageHandle);
-		Object.assign(stageHandle, {
-			async pause() {
-				stageStreaming = false;
-				await originalPause();
-				wfStore.recordStagePaused("run-1", "stage-a");
-			},
-		});
-		let stageExpanded = false;
-		const stageView = new StageChatView({
-			store: wfStore,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-1",
-			stageId: "stage-a",
-			workflowName: "demo",
-			handle: stageHandle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(28),
-			piTheme: theme,
-			piKeybindings: keys,
-			getToolsExpanded: () => stageExpanded,
-			setToolsExpanded: (next) => {
-				stageExpanded = next;
-			},
-			footerData: {
-				getGitBranch: () => "main",
-				getExtensionStatuses: () => new Map(),
-				getAvailableProviderCount: () => 1,
-				onBranchChange: () => () => {},
-			},
-		});
-
 		// 3. Subagent view (TaskInspector + TaskAgentTranscriptPage)
 		const subFixture = taskFixture();
 		await subFixture.start("Investigate lock contention");
@@ -606,7 +544,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 
 		const dispatchAll = async (event: AgentSessionEvent): Promise<void> => {
 			await mainMode.handleEvent(event);
-			emitStage(event);
+
 			for (const listener of subListeners) listener(event);
 		};
 
@@ -628,33 +566,22 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Checking lock owner state..." },
 			} as unknown as AgentSessionEvent);
 
-			// 1. Working line must be identical across main chat, stage chat, and subagent view
+			// 1. Working line must be identical across main chat and subagent view
 			const mainWorkingLines = plain(mainStatusContainer.render(100)).filter((line) => line.trim().length > 0);
-			const stageLines = plain(stageView.render(100));
+
 			const subLines = plain(subInspector.renderViewport(100, 28));
 
-			const stageWorkingLine = stageLines.find((line) => line.includes("∀ "));
 			const subWorkingLine = subLines.find((line) => line.includes("∀ "));
 			assert.equal(mainWorkingLines.length, 1);
 			assert.match(mainWorkingLines[0]!, /^ ∀ Schlepping… \(4s · ↓ 7 tokens\)$/);
-			assert.equal(stageWorkingLine, mainWorkingLines[0], "stage chat working line matches main chat");
+
 			assert.equal(subWorkingLine, mainWorkingLines[0], "subagent view working line matches main chat");
 
 			// 2. Hint line while working: stage chat and subagent view share the exact live-key suffix, with no duplicate footer row
-			const stageRunningHint = stageLines.at(-1) ?? "";
+
 			const subRunningHint = subLines.at(-1) ?? "";
-			assert.equal(stageRunningHint, "  ← graph · esc interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys");
+
 			assert.equal(subRunningHint, "  ← main chat · esc interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys");
-			assert.equal(
-				stageLines.filter((line) => line.includes("← ") || line.includes("interrupt")).length,
-				1,
-				"stage chat renders a single live-key hint row without a duplicate esc to interrupt / ← return to graph row",
-			);
-			assert.equal(
-				stageRunningHint.replace(/^ {2}← graph/, ""),
-				subRunningHint.replace(/^ {2}← main chat/, ""),
-				"stage and subagent hint lines share identical live key segments",
-			);
 
 			// 3. ? on an empty prompt opens the shared key overlay in all three views
 			const mainOverlay = new MainComposerKeyOverlay(
@@ -663,26 +590,23 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 				() => {},
 			);
 			const mainOverlayLines = plain(mainOverlay.render(100));
-			assert.equal(stageView.handleInput("?"), true);
-			assert.equal(stageView._inputBuffer, "", "? in stage chat does not type into the composer");
-			const stageOverlayLines = plain(stageView.render(100));
+
 			assert.equal(subInspector.handleInput("?"), true);
 			const subOverlayLines = plain(subInspector.renderViewport(100, 28));
 
 			assert.match(mainOverlayLines[0] ?? "", /^╭─ keys /);
-			assert.ok(stageOverlayLines.some((line) => line.startsWith("╭─ keys · stage chat ")));
+
 			assert.ok(subOverlayLines.some((line) => line.startsWith("╭─ keys · task chat ")));
 			const closeHelpRow = (rows: readonly string[]) => rows.find((line) => line.includes("close this help"));
-			assert.equal(closeHelpRow(stageOverlayLines), closeHelpRow(subOverlayLines));
-			assert.equal(closeHelpRow(stageOverlayLines), closeHelpRow(mainOverlayLines));
+
+			assert.equal(closeHelpRow(subOverlayLines), closeHelpRow(mainOverlayLines));
 
 			// Esc closes the ? overlay in both stage chat and subagent view without interrupting
-			assert.equal(stageView.handleInput(ESC), true);
+
 			assert.equal(subInspector.handleInput(ESC), true);
-			assert.equal(stageStreaming, true, "Esc on stage ? overlay only closes the overlay");
+
 			assert.equal(subRunning, true, "Esc on subagent ? overlay only closes the overlay");
 
-			assert.equal(stageView.handleInput(ESC), true);
 			assert.equal(subInspector.handleInput(ESC), true);
 			await flush();
 
@@ -697,38 +621,28 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			await flush();
 
 			const mainAfterAbort = plain(mainChatContainer.render(100));
-			const stageAfterAbort = plain(stageView.render(100));
+
 			const subAfterAbort = plain(subInspector.renderViewport(100, 28));
 
 			const mainNotice = mainAfterAbort.find((line) => line.includes("◼ Interrupted"));
-			const stageNotice = stageAfterAbort.find((line) => line.includes("◼ Interrupted"));
+
 			const subNotice = subAfterAbort.find((line) => line.includes("◼ Interrupted"));
 			assert.equal(mainNotice, " ◼ Interrupted · response");
-			assert.equal(stageNotice, mainNotice, "stage chat renders the same shared interruption notice");
+
 			assert.equal(subNotice, mainNotice, "subagent view renders the same shared interruption notice");
-			assert.doesNotMatch(
-				stageAfterAbort.join("\n"),
-				/❚❚\s+PAUSED|This workflow stage is paused/,
-				"Esc in stage chat does not render the divergent PAUSED banner",
-			);
 
 			// Hint line after interrupt drops esc interrupt in both stage and subagent views
-			assert.equal(stageAfterAbort.at(-1), "  ← graph · pgup/pgdn scroll · ctrl+o expand · ? keys");
+
 			assert.equal(subAfterAbort.at(-1), "  ← main chat · pgup/pgdn scroll · ctrl+o expand · ? keys");
-			assert.equal(
-				stageAfterAbort.filter((line) => line.includes("← ")).length,
-				1,
-				"idle stage chat renders a single ← graph hint row without right-aligned ← return to graph on the model row",
-			);
 
 			// ? overlay when idle omits esc interrupt in both stage chat and subagent view
-			assert.equal(stageView.handleInput("?"), true);
+
 			assert.equal(subInspector.handleInput("?"), true);
-			const idleStageOverlay = plain(stageView.render(100)).join("\n");
+
 			const idleSubOverlay = plain(subInspector.renderViewport(100, 28)).join("\n");
-			assert.doesNotMatch(idleStageOverlay, /interrupt the agent's turn/);
+
 			assert.doesNotMatch(idleSubOverlay, /interrupt the agent's turn/);
-			assert.equal(stageView.handleInput(ESC), true);
+
 			assert.equal(subInspector.handleInput(ESC), true);
 			assert.equal(
 				renderNavHintLine(mainComposerKeys({ working: false }), 100, themedNavKeyStyle(), keys).includes(
@@ -738,13 +652,13 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			);
 		} finally {
 			mainMode.stopWorkingLoader();
-			stageView.dispose();
+
 			subInspector.dispose();
 			await subFixture.dispose();
 		}
 	});
 
-	test("attaching mid-turn to a running stage chat or subagent view hydrates the whimsical verb and WorkingRunMeter instead of bare Working... (#5224)", async () => {
+	test("attaching mid-turn to a running subagent view hydrates the whimsical verb and WorkingRunMeter instead of bare Working... (#5224)", async () => {
 		const now = 30_000;
 		vi.spyOn(Date, "now").mockImplementation(() => now);
 		vi.spyOn(Math, "random").mockReturnValue(0);
@@ -760,39 +674,6 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			settledAssistant,
 		];
 
-		// 1. Mid-turn StageChatView attach (turn_start already happened at t=3_000)
-		const wfStore = createStore();
-		setupRun(wfStore, "run-mid", "stage-mid", "running");
-		const stageSession = fakeFooterAgentSession(true);
-		const { handle } = makeHandle(
-			{
-				promptCalls: [],
-				steerCalls: [],
-				followUpCalls: [],
-				pauseCalls: 0,
-				resumeCalls: [],
-				isStreaming: true,
-			},
-			historyMessages as never,
-			"running",
-			stageSession,
-		);
-		const stageView = new StageChatView({
-			store: wfStore,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-mid",
-			stageId: "stage-mid",
-			workflowName: "demo",
-			handle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(24),
-			piTheme: theme,
-			piKeybindings: getKeybindings(),
-			getToolsExpanded: () => false,
-			setToolsExpanded: () => {},
-		});
-
 		// 2. Mid-turn Subagent view attach (turn_start already happened at t=3_000)
 		const subFixture = taskFixture();
 		await subFixture.start("Run sleep 600 with bash, then reply done.");
@@ -801,7 +682,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 		const subTranscript: TaskTranscriptSource = Object.assign(subSession, {
 			subscribe: () => () => {},
 			isRunning: () => true,
-			chatSession: stageSession as never,
+			chatSession: fakeFooterAgentSession(true) as never,
 		});
 		subFixture.runners[0]!.context.bindTranscript(subTranscript);
 		const subEnv = taskTranscriptEnvironment({
@@ -827,149 +708,17 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 				(settledAssistant.usage.cacheWrite ?? 0) +
 				(settledAssistant.usage.output ?? 0);
 			assert.equal(expectedTokens, 509);
-			const stageWorking = plain(stageView.render(100)).find((line) => line.includes("∀ "));
+
 			const subWorking = plain(subInspector.renderViewport(100, 24)).find((line) => line.includes("∀ "));
 
-			assert.equal(stageWorking, ` ∀ Schlepping… (27s · ↓ ${expectedTokens} tokens)`);
 			assert.equal(subWorking, ` ∀ Schlepping… (27s · ↓ ${expectedTokens} tokens)`);
 		} finally {
-			stageView.dispose();
 			subInspector.dispose();
 			await subFixture.dispose();
 		}
 	});
 
-	test("stage chat lists ↓ agents and opens its task inspector on ↓ only when the stage owns background tasks (#5224)", async () => {
-		const wfStore = createStore();
-		setupRun(wfStore, "run-tasks", "stage-tasks", "running");
-		const { handle: noTasksHandle } = makeHandle(undefined, [], "running", fakeFooterAgentSession(false));
-		const viewWithoutTasks = new StageChatView({
-			store: wfStore,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-tasks",
-			stageId: "stage-tasks",
-			workflowName: "demo",
-			handle: noTasksHandle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(24),
-			piTheme: theme,
-			piKeybindings: getKeybindings(),
-		});
-
-		const tasks = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
-		const shell = { ...taskRecord("build", "command"), title: "npm test" };
-		tasks.apply({
-			tasks: [shell],
-			background: [shell.ref.taskId],
-			settlement: [],
-			activity: [],
-			stdin: [],
-			statuses: [],
-		});
-		const { handle: pooledBase } = makeHandle();
-		const viewWithTasks = new StageChatView({
-			store: wfStore,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-tasks",
-			stageId: "stage-tasks",
-			workflowName: "demo",
-			handle: {
-				...pooledBase,
-				placement: { kind: "local-worker", workId: "work", generation: 1 },
-				taskSource: () => tasks,
-			},
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(24),
-			piTheme: theme,
-			piKeybindings: getKeybindings(),
-		});
-
-		try {
-			const withoutLines = plain(viewWithoutTasks.render(100));
-			assert.equal(withoutLines.at(-1), "  ← graph · pgup/pgdn scroll · ctrl+o expand · ? keys");
-
-			const withLines = plain(viewWithTasks.render(100));
-			assert.equal(withLines.at(-1), "  ← graph · ↓ agents · pgup/pgdn scroll · ctrl+o expand · ? keys");
-
-			assert.equal(viewWithTasks.handleInput("?"), true);
-			const overlayText = plain(viewWithTasks.render(100)).join("\n");
-			assert.match(overlayText, /↓\s+agents, on an empty prompt/);
-			assert.equal(viewWithTasks.handleInput(ESC), true);
-
-			assert.equal(viewWithTasks.handleInput(DOWN), true);
-			const inspectorText = plain(viewWithTasks.render(100)).join("\n");
-			assert.match(inspectorText, /npm test/);
-		} finally {
-			viewWithoutTasks.dispose();
-			viewWithTasks.dispose();
-		}
-	});
-
-	test("attached stage composer and stage label helpers strip terminal control sequences from stage names (#5224)", () => {
-		const graphTheme = deriveGraphTheme({});
-		const rawEscape = /\x1b\](?!.*\x1b_)|\x1b\[2J|\x07|\x1b\[\?1049|\x9b/;
-		const hostileNames = [
-			"evil\x1b]52;c;ZXZpbA==\x07name",
-			"clear\x1b[2Jscreen",
-			"bell\x07bell",
-			"alt\x1b[?1049h",
-			"c1\x9b31mred",
-		];
-
-		for (const name of hostileNames) {
-			for (const overflow of [false, true]) {
-				for (const width of [20, 40, 60, 80, 120]) {
-					const top = overflow
-						? `${"─".repeat(Math.max(0, width - 14))} ↑ 3 more ${"─".repeat(4)}`.slice(0, width)
-						: "─".repeat(width);
-					const lines = [top, "❯ ", "─".repeat(width)];
-					const ctx = { theme: graphTheme, chatHost: { hasInputText: () => false } } as never;
-					const stage = {
-						id: "s1",
-						name,
-						status: "running",
-						parentIds: [],
-						toolEvents: [],
-						startedAt: Date.now() - 5_000,
-					} as never;
-					const decorated = injectStageLabelIntoEditorTopRule(ctx, name, lines, stage);
-					assert.equal(
-						decorated.some((line) => rawEscape.test(line)),
-						false,
-						`injectStageLabelIntoEditorTopRule leaked control sequence for ${JSON.stringify(name)} at width ${width}`,
-					);
-				}
-			}
-			const editorDecorated = applyStageLabelToEditorTopRule(graphTheme, name, [
-				"─".repeat(80),
-				"❯ ",
-				"─".repeat(80),
-			]);
-			assert.equal(
-				editorDecorated.some((line) => rawEscape.test(line)),
-				false,
-			);
-
-			const widgetDecorated = applyStageLabelToWidgetTopRule(graphTheme, name, ["─".repeat(80), "body"], 80);
-			assert.equal(
-				widgetDecorated.some((line) => rawEscape.test(line)),
-				false,
-			);
-
-			const awaitingDecorated = applyStageLabelToAwaitingInputTopRule(graphTheme, name, [
-				`╭─ AWAITING INPUT ${"─".repeat(60)}╮`,
-				`╰${"─".repeat(78)}╯`,
-			]);
-			assert.equal(
-				awaitingDecorated.some((line) => rawEscape.test(line)),
-				false,
-			);
-		}
-	});
-
-	test("remapping navigation, focus, expand, or help to Escape never steals physical Escape from attached subagent or stage chat (#5224)", async () => {
+	test("remapping navigation, focus, expand, or help to Escape never steals physical Escape from attached subagent chat (#5224)", async () => {
 		const remapped = new KeybindingsManager({
 			"app.nav.back": ["escape", "left"],
 			"app.keys.help": ["escape", "?"],
@@ -1019,73 +768,13 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 		subInspector.openChat(subFixture.store.tasks[0]!.ref.taskId);
 		await flush();
 
-		const wfStore = createStore();
-		setupRun(wfStore, "run-esc", "stage-esc", "running");
-		const tasks = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
-		const shell = { ...taskRecord("build", "command"), title: "sleep 30" };
-		tasks.apply({
-			tasks: [shell],
-			background: [shell.ref.taskId],
-			settlement: [],
-			activity: [],
-			stdin: [],
-			statuses: [],
-		});
-		let stageStreaming = true;
-		const { handle: stageBase, state: stageState } = makeHandle({
-			promptCalls: [],
-			steerCalls: [],
-			followUpCalls: [],
-			pauseCalls: 0,
-			resumeCalls: [],
-			get isStreaming() {
-				return stageStreaming;
-			},
-		});
-		const originalPause = stageBase.pause.bind(stageBase);
-		let stageDetached = 0;
-		let stageExpanded = false;
-		const stageView = new StageChatView({
-			store: wfStore,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-esc",
-			stageId: "stage-esc",
-			workflowName: "demo",
-			handle: {
-				...stageBase,
-				placement: { kind: "local-worker", workId: "work", generation: 1 },
-				taskSource: () => tasks,
-				async pause() {
-					stageStreaming = false;
-					await originalPause();
-					wfStore.recordStagePaused("run-esc", "stage-esc");
-				},
-			},
-			onDetach: () => {
-				stageDetached += 1;
-			},
-			onClose: () => {},
-			piTui: makeTestTui(24),
-			piTheme: theme,
-			piKeybindings: remapped,
-			getToolsExpanded: () => stageExpanded,
-			setToolsExpanded: (next) => {
-				stageExpanded = next;
-			},
-		});
-
 		try {
 			const subRunningHint = plain(subInspector.renderViewport(120, 24)).at(-1) ?? "";
-			const stageRunningHint = plain(stageView.render(120)).at(-1) ?? "";
+
 			assert.equal(
 				subRunningHint,
 				"  ← main chat · esc interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
 				"subagent hint strips dead esc from remapped non-interrupt actions",
-			);
-			assert.equal(
-				stageRunningHint,
-				"  ← graph · ↓ agents · esc interrupt · pgup/pgdn scroll · ctrl+o expand · ? keys",
-				"stage hint strips dead esc from remapped non-interrupt actions",
 			);
 
 			assert.equal(subInspector.handleInput(ESC), true);
@@ -1096,23 +785,8 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			const subAfterEsc = plain(subInspector.renderViewport(120, 24)).join("\n");
 			assert.doesNotMatch(subAfterEsc, /keys · task chat/, "Esc does not open remapped ? help overlay");
 
-			assert.equal(stageView.handleInput(ESC), true);
 			await flush();
-			assert.equal(stageDetached, 0, "Esc in stage chat never detaches via remapped app.nav.back");
-			assert.equal(stageState.pauseCalls, 1, "Esc in stage chat interrupts the running stage");
-			assert.equal(stageExpanded, false, "Esc in stage chat does not toggle remapped app.tools.expand");
-			const stageAfterEsc = plain(stageView.render(120)).join("\n");
-			assert.doesNotMatch(stageAfterEsc, /keys · stage chat/, "Esc does not open remapped ? help overlay");
-			assert.doesNotMatch(stageAfterEsc, /^ Tasks\b/m, "Esc does not open remapped ↓ task inspector");
-
-			assert.equal(stageView.handleInput("?"), true);
-			const stageOverlay = plain(stageView.render(120)).join("\n");
-			assert.match(stageOverlay, /keys · stage chat/);
-			assert.doesNotMatch(stageOverlay, /esc\/←\s+back, on an empty prompt/);
-			assert.equal(stageView.handleInput(ESC), true);
-			assert.doesNotMatch(plain(stageView.render(120)).join("\n"), /keys · stage chat/);
 		} finally {
-			stageView.dispose();
 			subInspector.dispose();
 			await subFixture.dispose();
 		}
@@ -1536,7 +1210,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 		}
 	});
 
-	test("real tool execution events render byte-identical plain and ANSI tool blocks across main chat, stage chat, and attached subagent view (#5239)", async () => {
+	test("real tool execution events render byte-identical plain and ANSI tool blocks across main chat and attached subagent view (#5239)", async () => {
 		const mainChatContainer = new Container();
 		const mainStatusContainer = new Container();
 		const mainPendingContainer = new Container();
@@ -1617,23 +1291,6 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 		});
 		(mainMode as unknown as { chatHost: ChatSessionHost }).chatHost = mainHost;
 
-		const wfStore = createStore();
-		setupRun(wfStore, "run-tools", "stage-tools", "running");
-		const { handle: stageHandle, emit: emitStage } = makeHandle();
-		const stageView = new StageChatView({
-			store: wfStore,
-			graphTheme: deriveGraphTheme({}),
-			runId: "run-tools",
-			stageId: "stage-tools",
-			workflowName: "demo",
-			handle: stageHandle,
-			onDetach: () => {},
-			onClose: () => {},
-			piTui: makeTestTui(28),
-			piTheme: theme,
-			getChatRenderSettings: () => ({ cwd: "/repo" }) as never,
-		});
-
 		const fixture = taskFixture();
 		await fixture.start("Inspect tools");
 		const subSession = SessionManager.inMemory("/repo");
@@ -1700,7 +1357,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 		try {
 			for (const event of events) {
 				mainHost.applyAgentEvent(event);
-				await emitStage(event);
+
 				for (const listener of subListeners) listener(event);
 			}
 			await flush();
@@ -1716,7 +1373,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 					});
 
 			const mainRaw = extractToolRows(mainHost.renderBody(80, 20));
-			const stageRaw = extractToolRows(stageView.render(80));
+
 			const subRaw = extractToolRows(subInspector.renderViewport(80, 28));
 
 			assert.equal(mainRaw.length, 4, "renders 2 tool headers and 2 connector rows");
@@ -1726,7 +1383,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 				" ✗ Bash(ls /nonexistent-dir) · exit 2 · 0.1s",
 				"   ⎿  ls: cannot access '/nonexistent-dir': No such file or directory",
 			]);
-			assert.deepEqual(stageRaw, mainRaw, "stage chat tool rows match main chat in both plain text and ANSI SGR");
+
 			assert.deepEqual(
 				subRaw,
 				mainRaw,
@@ -1734,7 +1391,7 @@ describe("cross-view parity across main chat, stage chat, and subagent view (#52
 			);
 		} finally {
 			mainHost.dispose();
-			stageView.dispose();
+
 			subInspector.dispose();
 			await fixture.dispose();
 		}

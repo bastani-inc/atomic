@@ -27,7 +27,7 @@ import {
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { renderIntercomCustomMessage } from "../../packages/intercom/ui/inline-message.js";
 import { renderSubagentNotification } from "../../packages/subagents/src/extension/index.js";
-import { registerWorkflowHeartbeatRenderer } from "../../packages/workflows/src/extension/workflow-heartbeat-notice.js";
+
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
 
@@ -43,12 +43,6 @@ function messageRenderers(): ReadonlyMap<string, MessageRenderer> {
 		["intercom_message", renderIntercomCustomMessage],
 		["subagent-notify", renderSubagentNotification as unknown as MessageRenderer],
 	]);
-	registerWorkflowHeartbeatRenderer({
-		rendererHost: {},
-		registerMessageRenderer(customType, renderer) {
-			renderers.set(customType, renderer as unknown as MessageRenderer);
-		},
-	});
 	return renderers;
 }
 
@@ -241,16 +235,6 @@ const FIXTURES: { readonly [K in ChatMessageEntry["kind"]]: readonly Fixture<K>[
 		},
 		{ name: "a task heartbeat", entry: custom("task-heartbeat", "♥ Task heartbeat", heartbeat) },
 		{
-			name: "a workflow heartbeat",
-			entry: custom("workflows:workflow-heartbeat", "♥ Workflow heartbeat", {
-				runId: "33333333-3333-4333-8333-333333333333",
-				workflowName: "release-check",
-				startedAt: 1_000,
-				scheduledAt: 1_000 + 15 * 60_000,
-				intervalMinutes: 15,
-			}),
-		},
-		{
 			name: "a subagent notice",
 			entry: custom("subagent-notify", "", {
 				agent: "scout",
@@ -282,7 +266,6 @@ const EXPANDING = new Set([
 	"an Intercom message",
 	"a finished-task notice",
 	"a task heartbeat",
-	"a workflow heartbeat",
 	"a subagent notice",
 	"a branch summary",
 ]);

@@ -108,8 +108,6 @@ function batchingFacade(source: SqliteDatabase): SqliteDatabase {
 	};
 }
 
-const run = <R>(action: () => R): R => action();
-
 const reservation = {
 	reservationKey: "released:child",
 	ownerSessionId: "owner",

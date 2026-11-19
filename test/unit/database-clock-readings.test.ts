@@ -4,12 +4,9 @@ import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/sto
 import { afterEach, test, vi } from "vitest";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-import { readFleetDemand } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
-import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { readSharedPoolStats, SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
-import { poolWorkFixture } from "../helpers/pool-journal.js";
+
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -80,110 +77,6 @@ async function journal(): Promise<SqlRunJournal> {
 }
 
 /** A running root of a shared pool, its lease renewed at `T`, holding one child leased at `T` for `leaseMs`. */
-async function sharedRoot(leaseMs: number) {
-	pin(T);
-	const j = await journal();
-	await j.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
-	const acquired = await j.acquire("root", "owner");
-	if (acquired.status !== "acquired") assert.fail("the root holds no lease");
-	const queue = await openSqlPoolQueue(j);
-	await queue.initialize(acquired.lease, 60_000);
-	const shared = await SqlSharedPool.open(j, queue);
-	await shared.publishConfig(acquired.lease, {
-		definitions: [],
-		leaseMs,
-		heartbeatMs: 1_000,
-		startupTimeoutMs: 60_000,
-		claimWindowMs: 0,
-	});
-	const { work, boundary } = poolWorkFixture();
-	await queue.enqueue(acquired.lease, work, boundary);
-	const claimed = await queue.claim(acquired.lease, "host/w0", [work], leaseMs);
-	assert.ok(claimed);
-	await queue.heartbeat(acquired.lease, claimed, leaseMs, async () => {});
-	return j;
-}
-
-test("a poll reports a shared cooldown as running only while time is left of it (#4768)", async () => {
-	const store = await SqlRateBuckets.open(await journal());
-	pin(T);
-	await store.cooldown("anthropic/opus", 5);
-	for (let start = T; start <= T + 5; start++) {
-		const { cooldowns } = await movingFrom(start, () => store.poll());
-		if (start === T) assert.equal(cooldowns.length, 1);
-		for (const { remainingMs } of cooldowns)
-			assert.ok(remainingMs >= 1 && remainingMs <= T + 5 - start, `from ${start - T} ms: ${remainingMs}`);
-	}
-});
-
-test("an acquire never takes more tokens than its bucket's burst in one request (#4768)", async () => {
-	const store = await SqlRateBuckets.open(await journal());
-	// Half a millisecond a token, a burst of one: two tokens never fit at once, at any instant.
-	const shape = { intervalMs: 0.5, burst: 1 };
-	for (let start = T; start < T + 5; start++) {
-		const scope = `p/${start}`;
-		const outcome = await movingFrom(start, () => store.acquire(scope, 2, shape));
-		assert.equal(outcome.granted, 0, `from ${start - T} ms: ${JSON.stringify(outcome)}`);
-		// What one request may take is the burst, and that much it takes.
-		assert.deepEqual(await movingFrom(start + 10, () => store.acquire(scope, 1)), { granted: 1 });
-	}
-});
-
-test("the fleet counts a root's leased child for as long as it counts the root as running (#4768)", async () => {
-	// The child's own lease ended long before: only the root's lease, renewed at T with a 60 s timeout, keeps it live.
-	const j = await sharedRoot(1_000);
-	for (let start = T + 59_997; start <= T + 60_002; start++) {
-		const [root, ...more] = await movingFrom(start, () => readFleetDemand(j));
-		assert.deepEqual(more, []);
-		assert.equal(root?.started, root?.leased, "started and leased counts use the same clock reading");
-		assert.ok(
-			root !== undefined && (root.blocked || root.leased === 1),
-			`from ${start - T} ms: ${JSON.stringify(root)}`,
-		);
-	}
-});
-
-test("a shared pool's stats report each leased child renewed and expiring one whole lease apart (#4768)", async () => {
-	const j = await sharedRoot(60_000);
-	for (let start = T; start < T + 5; start++) {
-		const stats = await movingFrom(start, () => readSharedPoolStats(j, "root"));
-		const [lease] = stats?.leases ?? [];
-		assert.ok(lease !== undefined);
-		assert.equal(lease.renewedAgoMs + lease.expiresInMs, 60_000, `from ${start - T} ms: ${JSON.stringify(lease)}`);
-	}
-});
-
-test("a host's first report shows its checkpoint shipping and its children's progress (#4768)", async () => {
-	const j = await sharedRoot(60_000);
-	const shared = await SqlSharedPool.open(j, await openSqlPoolQueue(j));
-	const [held] = (await readSharedPoolStats(j, "root"))?.leases ?? [];
-	assert.ok(held !== undefined);
-	const shipping = { lagMs: 1_500, pending: 4 };
-	for (let start = T + 1_000; start < T + 1_005; start++) {
-		const host = `host-${start - T}`;
-		await movingFrom(start, () =>
-			shared.reportHost({
-				host,
-				labels: {},
-				git: "unavailable",
-				restore: false,
-				workers: 1,
-				maxWorkers: 1,
-				roots: ["root"],
-				busy: 1,
-				shipping,
-				progress: [{ work: held.work, agoMs: 0, checkpoints: 2 }],
-			}),
-		);
-		pin(start + 10);
-		const reported = (await readSharedPoolStats(j, "root"))?.hosts.find((entry) => entry.host === host);
-		assert.deepEqual(
-			[reported?.shipping, reported?.progress],
-			[shipping, [{ work: held.work, agoMs: 0, checkpoints: 2 }]],
-			`from ${start - T} ms`,
-		);
-	}
-});
 
 test("a broker lists a lease as live only while its age is within the stale bound (#4768)", async () => {
 	const store = await openSqlBrokerLeaseStore({ database: await database(), prefix: "" });
