@@ -587,7 +587,8 @@ const PUBLISHED_VERSION = 1;
  * The row that marks `source` for a rebuild while its index rows are removed so that its triggers can be installed
  * again (#5553). The source's own progress row is gone meanwhile, so that no build reads the index as complete and an
  * older build's backfill in progress stops at its next batch: that row is the only one older builds read. An older
- * build that opens the store meanwhile installs the index again itself, as over any table without one.
+ * build that opens the store meanwhile installs the index again itself, as over any table without one, and leaves
+ * this row: this build never trusts that index, which 0.9.87 may have indexed without degraded pins, and rebuilds it.
  */
 const rebuildRow = (source: IndexSource) => `${source.name}@rebuild`;
 
@@ -1305,6 +1306,10 @@ async function readSourceStates(
 		.map((source) => {
 			const row = progress.get(source.name);
 			const version = source.version === undefined ? undefined : progress.get(source.version);
+			// An index an older build installed while this build's rebuild mark was there, which 0.9.87 may have indexed
+			// since without degraded pins (#5553).
+			const rebuild = progress.has(rebuildRow(source));
+			const reinstalled = row !== undefined && rebuild;
 			const own = source.own === undefined ? undefined : progress.get(source.own);
 			const ownDone =
 				own !== undefined && row !== undefined && Number(own.backfilled_through) >= Number(row.watermark);
@@ -1318,18 +1323,19 @@ async function readSourceStates(
 				// This build's install whose backfill is not done yet, which holds back the version row (#5558).
 				const pending = version === undefined && own !== undefined && holds.get(source.ownTrigger ?? "") === true;
 				foreign = unsigned || (version === undefined && !pending);
-				// A row of 0 is a build of 0.9.88 to 0.9.90's, whose finished backfill indexed what this build's does. This
-				// build publishes its own once its own progress reaches the watermark, which it must still hold.
+				// A row of 0 is a build of 0.9.88 to 0.9.90's, whose finished backfill indexed what this build's does, unless it
+				// installed the index during this build's rebuild: this build takes it over then. This build publishes its own
+				// once its own progress reaches the watermark, which it must still hold.
 				const published = version !== undefined && Number(version.watermark) === PUBLISHED_VERSION;
-				trusted = published ? ownDone : version !== undefined;
+				trusted = published ? ownDone : version !== undefined && !reinstalled;
 			} else {
 				// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
-				foreign = unsigned || (source.version !== undefined && version === undefined);
+				foreign = unsigned || (source.version !== undefined && version === undefined) || reinstalled;
 				// Rows an older build indexed with its statements past this build's own progress are not backfilled.
 				trusted = own === undefined || ownDone;
 			}
-			// Marked for a rebuild: an older build that installed the index again since wrote the source's row (#5553).
-			const marked = row === undefined && progress.has(rebuildRow(source));
+			// Marked for a rebuild, which this build carries out in collection (#5553).
+			const marked = row === undefined && rebuild;
 			const installed =
 				row !== undefined &&
 				!foreign &&
@@ -1716,6 +1722,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					progress.watermark,
 				);
 				await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, source.version!);
+				await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, rebuildRow(source));
 				const pending = source.triggers.find((trigger) => trigger.name === source.ownTrigger);
 				if (pending !== undefined) {
 					await transaction.exec(this.dialect.dropTrigger(pending.name, pending.table));
