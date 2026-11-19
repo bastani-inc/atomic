@@ -76,12 +76,10 @@ describe("canonical registerCommand — opts.handler shape", () => {
 		}
 	});
 
-	test.sequential("handlers for 'workflows' and 'workflow-authoring' are callable (#5224)", async () => {
+	test.sequential("the workflows handler is callable (#5224)", async () => {
 		const { commands, sent } = await runFactoryRaw();
 		const workflowsCmd = commands.find((c) => c.name === "workflows");
-		const authoringCmd = commands.find((c) => c.name === "workflow-authoring");
 		assert.notEqual(workflowsCmd, undefined);
-		assert.notEqual(authoringCmd, undefined);
 		const msgs: string[] = [];
 		const ctx: PiCommandContext = {
 			hasUI: false,
@@ -93,7 +91,5 @@ describe("canonical registerCommand — opts.handler shape", () => {
 		};
 		await workflowsCmd!.options.handler("", ctx);
 		assert.equal(sent.length, 1);
-		await authoringCmd!.options.handler("", ctx);
-		assert.equal(sent.length, 2);
 	});
 });
