@@ -55,6 +55,8 @@ import {
 	toGoogleThinkingLevel,
 	usesGoogleThinkingLevel,
 } from "./google-shared.ts";
+import { ProviderRetryTransport } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 export interface GoogleVertexOptions extends StreamOptions {
@@ -107,8 +109,10 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 		try {
 			const apiKey = options && resolveApiKey(options);
 			// Create the client using either a Vertex API key, if provided, or ADC with project and location
+			const retryTransport = ProviderRetryTransport.for(options);
+			const fetch = retryTransport?.fetch ?? options?.fetch;
 			const client = apiKey
-				? createClientWithApiKey(model, apiKey, options.headers, options.identity, options.fetch)
+				? createClientWithApiKey(model, apiKey, options.headers, options.identity, fetch)
 				: createClient(
 						model,
 						resolveProject(options),
@@ -116,7 +120,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 						options?.headers,
 						options?.env,
 						options?.identity,
-						options?.fetch,
+						fetch,
 					);
 			recordGoogleThinkingOffFallback(model, options, output, (level) =>
 				getGoogleBudget(model, level, options?.thinkingBudgets),
@@ -133,7 +137,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(requestParams), {
 				...options,
 				signal: streamDeadline.signal,
-			});
+			}, retryTransport);
 
 			stream.push({ type: "start", partial: output });
 			let currentBlock: TextContent | ThinkingContent | null = null;
@@ -321,7 +325,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			appendProviderResponseFailureDiagnostic(output, error, googleErrorStatus(output.errorMessage));
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;

@@ -21,7 +21,7 @@ import type {
 	Tool,
 	TranscriptContext,
 } from "../types.ts";
-import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { type ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
@@ -596,7 +596,8 @@ export function googleErrorStatus(errorMessage: string): string | undefined {
  */
 export function retryGoogleRequest<T>(
 	request: () => Promise<T>,
-	options?: Pick<StreamOptions, "maxRetries" | "maxRetryDelayMs" | "signal">,
+	options?: Pick<StreamOptions, "maxRetries" | "maxRetryDelayMs" | "retryDeadline" | "signal">,
+	transport?: ProviderRetryTransport,
 ): Promise<T> {
 	return retryProviderRequest(
 		async () => {
@@ -616,7 +617,9 @@ export function retryGoogleRequest<T>(
 		{
 			maxRetries: options?.maxRetries,
 			maxRetryDelayMs: options?.maxRetryDelayMs,
+			retryDeadline: options?.retryDeadline,
 			signal: options?.signal,
 		},
+		transport,
 	);
 }

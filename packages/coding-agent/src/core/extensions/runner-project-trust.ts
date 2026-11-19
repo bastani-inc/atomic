@@ -39,9 +39,12 @@ export async function emitProjectTrustEvent(
 	extensionsResult: LoadExtensionsResult,
 	event: ProjectTrustEvent,
 	ctx: ProjectTrustContext,
+	onSnapshot?: (hasHandlers: boolean) => void,
 ): Promise<{ result?: ProjectTrustEventResult; errors: ExtensionError[] }> {
 	const errors: ExtensionError[] = [];
-	for (const { ext, handlers } of snapshotEventHandlers(extensionsResult.extensions, "project_trust")) {
+	const voters = snapshotEventHandlers(extensionsResult.extensions, "project_trust");
+	onSnapshot?.(voters.some(({ handlers }) => handlers.length > 0));
+	for (const { ext, handlers } of voters) {
 		for (const handler of handlers) {
 			const abort = new AbortController();
 			try {

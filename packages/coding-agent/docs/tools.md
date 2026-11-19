@@ -40,7 +40,7 @@ return files.map((text) => text.slice(0, 1000));
 
 Codemode works with every provider. On models that support OpenAI grammar tools, Atomic also constrains its input to JavaScript source; other models receive it as an ordinary tool. Run `/tools` to confirm it is active.
 
-Scripts run in a fresh QuickJS worker with a 256 MiB memory limit. They have no direct Node, filesystem, network, modules, timers, or credential globals. Tool calls still run with the session's permissions and can have real side effects; a failed script does **not** undo them. Workflow, subagent, Intercom/supervisor, and user-question tools are model-only and cannot be called from scripts. Allowlists, exclusions, and deactivated direct MCP tools remain authoritative.
+Scripts run in a fresh QuickJS worker with a 256 MiB memory limit. They have no direct Node, filesystem, network, modules, timers, or credential globals. Tool calls still run with the session's permissions and can have real side effects; a failed script does **not** undo them. Scripts can [launch and manage the session's subagents](/subagents#from-codemode-scripts) and [send to exact Intercom targets](/intercom/reference#from-codemode-scripts). Workflow, supervisor, and user-question tools still require a direct call. Allowlists, exclusions, and deactivated direct MCP tools remain authoritative.
 
 Use `text(value)`, `image(dataUrlOrImageContent)`, `console.log(...)`, or a top-level return for output; `exit()` ends early. An optional first line configures output and a caller-owned deadline:
 
