@@ -165,6 +165,7 @@ export class SessionManager {
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
+	private contextEdits = 0;
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
 
@@ -544,6 +545,7 @@ export class SessionManager {
 		this.byId = index.byId;
 		this.labelsById = index.labelsById;
 		this.labelTimestampsById = index.labelTimestampsById;
+		this.contextEdits = index.contextEdits;
 		this.leafId = index.leafId;
 		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
@@ -704,6 +706,7 @@ export class SessionManager {
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
+			if (entry.type === "context_edit") this.contextEdits++;
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
@@ -1206,6 +1209,11 @@ export class SessionManager {
 			leafId === this.leafId ? this.activeBranch() : leafId === null ? undefined : this.getBranch(leafId),
 			purpose,
 		);
+	}
+
+	/** Whether any entry, on any branch, edits the model context. Without one the transcript is the model context. */
+	hasContextEdits(): boolean {
+		return this.contextEdits > 0;
 	}
 
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */

@@ -1,3 +1,4 @@
+import { finalizeProjectedMessages } from "./agent-session-boundaries.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { SessionWorkflowsHandle } from "./extensions/workflow-run-control-hub.js";
 import { getLatestSessionSummary } from "./session-manager-entries.ts";
@@ -77,11 +78,17 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 		transcriptMessages: {
 			get(this: AgentSession) {
 				const saving = this._transcriptAppend;
+				// Only a context edit or a save in flight sets the transcript apart from the context, which is read as it is.
+				if (saving === undefined && !this.sessionManager.hasContextEdits()) return this.messages;
 				const beforeSave =
 					saving && this._messagesAwaitingPersistence.has(saving.message) ? saving.previousLeaf : undefined;
 				const { entries, messages } = this.sessionManager.buildSessionProjection("transcript", beforeSave);
-				const pending = this.messages.filter((message) => this._messagesAwaitingPersistence.has(message));
-				if (pending.length === 0 && beforeSave === undefined) return messages;
+				// The context also shows rows the store does not have: admitted ones still saving and ones whose save failed.
+				const pending = this.messages.filter(
+					(message) =>
+						this._messagesAwaitingPersistence.has(message) || this._messagesWithFailedPersistence.has(message),
+				);
+				if (pending.length === 0 && beforeSave === undefined) return finalizeProjectedMessages(this, messages);
 				const saved = new Set(entries.map(({ sourceEntry }) => sourceEntry.id));
 				// An independent delivery can save a notice after the pinned leaf and publish it while the input's
 				// write is still outstanding. Its source ID distinguishes it from both the prefix and the pending input.
@@ -98,7 +105,8 @@ export function installAgentSessionAccessors(prototype: AgentSession): void {
 					if (id !== undefined) saved.add(id);
 					messages.push(message);
 				}
-				return messages;
+				// Paired and repaired as the context is: a call whose result was never saved shows it was interrupted.
+				return finalizeProjectedMessages(this, messages);
 			},
 		},
 		steeringMode: {

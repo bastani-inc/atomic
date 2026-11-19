@@ -46,7 +46,7 @@ function projectSessionMessages(session: AgentSession): AgentMessage[] {
 	return projection.messages;
 }
 
-function finalizeProjectedMessages(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
+export function finalizeProjectedMessages(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
 	// While a run is active the loop owns pairing for the in-flight tool batch.
 	// Unique ids first: deferral and repair pair results with calls by id (#5056).
 	const repaired = repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(uniquifyToolCallIds(messages)), {
