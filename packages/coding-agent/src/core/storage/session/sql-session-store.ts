@@ -598,6 +598,16 @@ export class SqlSessionStore implements SessionStore {
 				{ table: storageMigrationTable(options.prefix), acceptNewer: true },
 			);
 		}
+		// Whether a staged clone ever ran here (#5594), asked beside the rest of the open rather than after it.
+		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
+		const stagingProbe = dialectOf(database).tableExists(staging);
+		const staged =
+			database.readOnly === true
+				? Promise.resolve(false)
+				: database.get(stagingProbe.sql, ...stagingProbe.params).then(
+						(row) => row !== undefined,
+						() => false,
+					);
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		const searchIndex = await SqlSessionSearchIndex.open(database, tables, options.prefix);
 		const store = new SqlSessionStore(
@@ -611,7 +621,7 @@ export class SqlSessionStore implements SessionStore {
 			await entryByteLengthOf(database),
 		);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
-		if (database.readOnly !== true) await store.cleanupForkStaging();
+		if (await staged) await store.cleanupForkStaging();
 		return store;
 	}
 
@@ -621,8 +631,6 @@ export class SqlSessionStore implements SessionStore {
 	 */
 	private async cleanupForkStaging(): Promise<void> {
 		try {
-			const probe = this.dialect.tableExists(this.forkStagingTable);
-			if ((await this.database.get(probe.sql, ...probe.params)) === undefined) return;
 			const { cleanupForkStaging, FORK_STAGING_OPEN_CLEANUPS } = await import("./fork-staging.js");
 			await cleanupForkStaging(this.database, this.dialect, this.forkStagingTable, FORK_STAGING_OPEN_CLEANUPS);
 		} catch {}
