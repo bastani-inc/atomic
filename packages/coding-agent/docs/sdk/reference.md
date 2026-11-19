@@ -927,6 +927,28 @@ Custom `ResourceLoader` implementations can optionally provide `getWorkflowResou
 
 Package MCP servers from `DefaultResourceLoader` remain available through the session's `mcp` tool when the factory adds the shipped MCP extension. Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
 
+### Copying extension handlers in `extensionsOverride`
+
+If your override rebuilds a discovered extension without changing its `resources_discover` handler, keep the callback supplied by the loader on **that load**. You can copy the handler map without wrapping its functions:
+
+```typescript
+const loader = new DefaultResourceLoader({
+  cwd,
+  agentDir: getAgentDir(),
+  extensionsOverride: (base) => ({
+    ...base,
+    extensions: base.extensions.map((extension) => ({
+      ...extension,
+      handlers: new Map(extension.handlers),
+    })),
+  }),
+});
+```
+
+During interactive startup, deferred resource loading can run discovery twice. Both calls run, but if the same registration reports the same error, the terminal shows it once. A later `/reload` reports the failure again.
+
+Creating `(...args) => handler(...args)` on every load registers a new callback each time, so you can see two startup errors. Keep separate callbacks when your override changes the handler, adds a step that can fail, or forwards on behalf of separate installations. Don't cache a previous load's handler or share a forwarder by extension name.
+
 ## Return Value
 
 `createAgentSession()` returns:

@@ -9,6 +9,10 @@
 - The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+### Added
+
+- The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
+- Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
 
 ## [0.9.90] - 2026-11-19
 

@@ -1962,34 +1962,50 @@ export class SessionManager {
 		);
 	}
 
+	/** Open a child at the committed fork point supplied by an SDK caller. */
+	static forkContext(store: SessionStore, sessionId: string, leafId: string, cwd: string): Promise<SessionManager> {
+		return SessionManager.capturedFork(store, sessionId, cwd, "", undefined, undefined, leafId)();
+	}
+
 	private static capturedFork(
 		store: SessionStore,
 		sessionId: string,
 		cwd: string,
 		sessionDir: string,
 		epoch: string | undefined,
-		watermark: number,
+		watermark: number | undefined,
 		leafId: string,
 	): () => Promise<SessionManager> {
 		return async () => {
-			const opened = await readStoredSession(store, sessionId, { leafId });
-			const { resume } = opened;
-			if ((epoch !== undefined && resume.epoch !== epoch) || resume.lastSeq < watermark)
-				throw new SessionConflictError(sessionId, watermark, resume.lastSeq);
-			if (resume.leafId !== leafId) throw new SessionEntryError(leafId, "missing");
+			const bounded = store.readForkWindow;
+			const window = bounded
+				? await bounded.call(store, sessionId, leafId, { archivedReceipts: true })
+				: (await import("./storage/session/fork-window.js")).fullForkWindow(await store.load(sessionId), leafId);
+			if (!window || !leafId) throw new SessionEntryError(leafId, "missing");
+			if (window.header.id !== sessionId) throw new SessionIdMismatchError(sessionId, window.header.id);
+			if (
+				(epoch !== undefined && window.epoch !== undefined && window.epoch !== epoch) ||
+				(watermark !== undefined && window.lastSeq < watermark)
+			)
+				throw new SessionConflictError(sessionId, watermark ?? 0, window.lastSeq);
 			const source = new SessionManager(store, cwd, sessionDir);
-			source.restoreOpened(opened);
+			source.restore({ header: window.header, entries: [], epoch: window.epoch, lastSeq: window.lastSeq });
+			const labels = buildSessionIndex(window.labels);
+			source.labelsById = labels.labelsById;
+			source.labelTimestampsById = labels.labelTimestampsById;
 			const receipts = new Map<string, OversizedSessionEntry>();
-			const entries = await includeNamedForkOutputs(
-				forkContextPath(source.getBranch(), sessionId),
-				store,
-				sessionId,
-				leafId,
-				resume.epoch,
-				watermark,
-				"branch",
-				receipts,
-			);
+			const entries = bounded
+				? await includeNamedForkOutputs(
+						forkContextPath(window.entries, sessionId),
+						store,
+						sessionId,
+						leafId,
+						window.epoch,
+						watermark ?? window.lastSeq,
+						"branch",
+						receipts,
+					)
+				: window.entries;
 			await source.installFork(leafId, entries, receipts);
 			return source;
 		};

@@ -1,6 +1,7 @@
 import { jsonParser, type Token } from "stream-json/core/parser.js";
 import type { SessionEntry } from "../../session-manager-types.js";
 import type { SqliteRow, SqliteValue } from "../database.js";
+import type { ForkMetadata } from "./fork-window.js";
 
 // A projection only constructs values consumed by the resume fold. The stream parser must not pack
 // strings or keys: even a single unselected JSON string (or property name) can span many chunks.
@@ -20,6 +21,7 @@ type Shape =
 	| "string"
 	| "stringPresent"
 	| "objectPresent"
+	| "hash"
 	| "owner"
 	| "op"
 	| "usage"
@@ -207,7 +209,7 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			if (shape === "owner" || shape === "tasks" || shape === "groups" || shape === "usage")
 				return JSON.stringify(yield* embedded(shape));
 			if (shape === "truth") return (yield* stringValue(1)) === "" ? "" : "x";
-			return yield* stringValue(shape === "short" ? 64 : Infinity);
+			return yield* stringValue(shape === "short" ? 64 : shape === "hash" ? 65 : Infinity);
 		case "numberValue":
 			return Number(first.value);
 		case "trueValue":
@@ -319,6 +321,63 @@ async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<T>): Pr
 		}
 	}
 	throw new SyntaxError("Incomplete chunked session entry");
+}
+
+export async function projectForkMetadata(seq: number, chunks: AsyncIterable<Uint8Array>): Promise<ForkMetadata> {
+	const e = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					type: "short",
+					customType: "short",
+					details: { strategy: "short" },
+					firstKeptEntryId: true,
+					coveredThroughEntryId: true,
+					data: { hash: "hash" },
+					id: true,
+					parentId: true,
+					timestamp: true,
+					message: { role: "short", provider: true, model: true },
+				});
+			})(),
+		),
+	);
+	const type = String(e.type);
+	const link = { id: String(e.id), parentId: e.parentId === null ? null : String(e.parentId) };
+	if (type === "compaction" && object(e.details).strategy === "verbatim-lines")
+		return {
+			seq,
+			type,
+			...link,
+			boundary: {
+				first: typeof e.firstKeptEntryId === "string" ? e.firstKeptEntryId : null,
+				covered: typeof e.coveredThroughEntryId === "string" ? e.coveredThroughEntryId : undefined,
+			},
+		};
+	const m = object(e.message);
+	if (type === "message" && m.role === "assistant")
+		return {
+			seq,
+			type,
+			...link,
+			assistantModel: {
+				type: "model_change",
+				id: String(e.id),
+				parentId: e.parentId === null ? null : String(e.parentId),
+				timestamp: String(e.timestamp),
+				provider: String(m.provider),
+				modelId: String(m.model),
+			},
+		};
+	const hash = object(e.data).hash;
+	return {
+		seq,
+		type,
+		...link,
+		customType: typeof e.customType === "string" ? e.customType : undefined,
+		hash: e.customType === "atomic.tool-output" && typeof hash === "string" ? hash : undefined,
+	};
 }
 
 function object(value: Json | undefined): Record<string, Json> {

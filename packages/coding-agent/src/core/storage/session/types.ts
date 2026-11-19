@@ -1,5 +1,10 @@
 import type { Usage } from "@bastani/atomic-ai/compat";
-import type { CompactionEntry, SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
+import type {
+	CompactionEntry,
+	LabelEntry,
+	SessionEntry,
+	SessionWorkflowMetadata,
+} from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
@@ -170,6 +175,14 @@ export interface SessionRecoveryState {
 	readonly admissionDigests: string;
 	readonly intercomDeliveredIds: readonly string[];
 	readonly deliveryOpIds?: readonly string[];
+}
+
+export interface SessionForkWindow {
+	readonly header: SessionRecordHeader;
+	readonly entries: SessionEntry[];
+	readonly labels: LabelEntry[];
+	readonly lastSeq: number;
+	readonly epoch?: string;
 }
 
 export interface SessionResume {
@@ -392,6 +405,12 @@ export interface SessionStore {
 	readResume?(sessionId: string, leafId?: string): Promise<SessionResume>;
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
 	readResumeAt?(sessionId: string, leafId: string, throughSeq: number): Promise<SessionResume>;
+	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
+	readForkWindow?(
+		sessionId: string,
+		entryId: string,
+		options?: { readonly archivedReceipts: true },
+	): Promise<SessionForkWindow | undefined>;
 	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;

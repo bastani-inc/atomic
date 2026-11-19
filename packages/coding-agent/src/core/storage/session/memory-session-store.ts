@@ -539,6 +539,48 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
+	async readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
+		const { indexedForkWindow, rangedForkMetadata, scanForkRecords, locateMemoryFork, fullForkWindow } = await import(
+			"./fork-window.js"
+		);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			if (record.directory && !record.directory.readRange) {
+				const snapshot = await this.decode(sessionId, record);
+				if (!snapshot) continue;
+				return fullForkWindow(snapshot, entryId);
+			}
+			const captured = record.index;
+			let invalid = false;
+			const held = this.held(record);
+			const many = async (seqs: readonly number[]) => {
+				const rows = invalid ? undefined : await this.entriesAt(sessionId, record, seqs);
+				if (!rows) invalid = true;
+				return rows ?? [];
+			};
+			const metadata = rangedForkMetadata(
+				(seq) => this.spanOf(held, seq, seq),
+				(start, n) => this.bytesOf(sessionId, held, start, start + n),
+			);
+			try {
+				const { index, leaf } = await locateMemoryFork(captured, entryId, metadata);
+				const window = await indexedForkWindow(
+					decodeHeader(record),
+					index,
+					leaf,
+					(lo, hi) => many(seqRange(lo, hi)),
+					many,
+					metadata,
+					scanForkRecords(metadata),
+					options,
+				);
+				if (!invalid && this.records.get(sessionId) === record) return window;
+			} catch (error) {
+				if (this.records.get(sessionId) === record && record.file === held.file) throw error;
+			}
+		}
+	}
+
 	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		for (;;) {
