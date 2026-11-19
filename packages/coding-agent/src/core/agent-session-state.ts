@@ -49,6 +49,7 @@ export function getCallableToolNames(this: AgentSession): string[] {
  */
 
 export function getAllTools(this: AgentSession): ToolInfo[] {
+	const removed = this.settingsManager.getDefaultToolRemovals(this._defaultToolModifiers);
 	return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
 		name: definition.name,
 		description: definition.description,
@@ -59,6 +60,7 @@ export function getAllTools(this: AgentSession): ToolInfo[] {
 		promptGuidelines: definition.promptGuidelines,
 		exposure: definition.exposure ?? "direct",
 		namespace: definition.namespace,
+		...(removed.has(definition.name) ? { explicitDefaultOptOut: true } : {}),
 		annotations: definition.annotations,
 		sourceInfo,
 	}));

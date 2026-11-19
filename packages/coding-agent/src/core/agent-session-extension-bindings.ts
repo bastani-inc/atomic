@@ -58,11 +58,12 @@ import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { notifyAgentPanelSourceHubRebound } from "./tasks/agent-panel-source.ts";
 import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
-import { defaultToolNamesFor } from "./tools/index.js";
+import { defaultToolSelectionFor } from "./tools/index.js";
 import { trackTerminalWorkflowSummary } from "./workflow-summary-lifecycle.ts";
 
 class ExtensionPublicationGate {
 	readonly resourceLoader: ResourceLoader;
+	readonly defaultToolRemovals: ReadonlySet<string>;
 	private readonly effects: Array<() => void | Promise<void>> = [];
 	private readonly startEffects: Array<() => void | Promise<void>> = [];
 	private readonly commitEffects: Array<() => void> = [];
@@ -80,7 +81,9 @@ class ExtensionPublicationGate {
 		modelRuntime: ModelRuntime,
 		isClosed: () => boolean,
 		replacedProviderIds: Iterable<string>,
+		defaultToolRemovals: ReadonlySet<string>,
 	) {
+		this.defaultToolRemovals = defaultToolRemovals;
 		this.isClosed = isClosed;
 		this.resourceLoader = resourceLoader;
 		this.runner = runner;
@@ -669,6 +672,9 @@ export function _bindExtensionCore(
 					promptGuidelines: definition.promptGuidelines,
 					exposure: definition.exposure ?? "direct",
 					namespace: definition.namespace,
+					...(publication.defaultToolRemovals.has(definition.name)
+						? { explicitDefaultOptOut: true as const }
+						: {}),
 					annotations: definition.annotations,
 					sourceInfo,
 				}));
@@ -951,7 +957,7 @@ async function reloadOwnedGeneration(
 		resetApiProviders();
 		await this._resourceLoader.reload();
 		const powerShellAvailable = await isPowerShellAvailableAsync();
-		const builtinDefaultToolNames = defaultToolNamesFor(powerShellAvailable);
+		const builtinDefaultToolNames = defaultToolSelectionFor(powerShellAvailable, this._resourceLoader);
 		const defaultTools = applyToolModifiers(
 			this.settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames,
 			this._defaultToolModifiers,
@@ -990,7 +996,7 @@ async function reloadOwnedGeneration(
 	const settingsTransaction = await this.settingsManager.prepareReload();
 	const resourceTransaction = await prepareResourceReload(settingsTransaction.settingsManager);
 	const powerShellAvailable = await isPowerShellAvailableAsync();
-	const builtinDefaultToolNames = defaultToolNamesFor(powerShellAvailable);
+	const builtinDefaultToolNames = defaultToolSelectionFor(powerShellAvailable, resourceTransaction.loader);
 	const defaultTools = applyToolModifiers(
 		settingsTransaction.settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames,
 		this._defaultToolModifiers,
@@ -1018,6 +1024,7 @@ async function reloadOwnedGeneration(
 		this._modelRuntime,
 		sessionClosedProbe(this),
 		this._extensionProviderIds,
+		settingsTransaction.settingsManager.getDefaultToolRemovals(this._defaultToolModifiers),
 	);
 	let commitPreparedResources: (() => void) | undefined;
 	let rollbackPreparedResources: (() => void) | undefined;
