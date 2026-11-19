@@ -1,4 +1,4 @@
-import { type CardPiece, cardFields, cardPiece } from "./card-message-projection.js";
+import { type CardPiece, cardFields, cardHeader, cardPiece } from "./card-message-projection.js";
 import { SessionConflictError } from "./errors.js";
 import { historyChunks } from "./history-pages.js";
 import {
@@ -8,7 +8,6 @@ import {
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_ENTRIES,
 	type SessionStore,
-	type SessionTreeOutlineEntry,
 	yieldSessionTurn,
 } from "./types.js";
 
@@ -107,8 +106,33 @@ async function projectExpanded(
 	cut: ChildDisplayCut,
 	signal?: AbortSignal,
 ): Promise<ExpandedChildDetails> {
-	const chunks = (ref: OversizedSessionEntry) => historyChunks(store, id, cut.epoch, ref, { signal });
-	async function* range(start: number, end: number, filter: (type: string, role?: string) => boolean) {
+	// A row's header and then its content are read back to back: the first chunk is read once for both.
+	let head: { seq: number; bytes: Uint8Array } | undefined;
+	async function* chunks(ref: OversizedSessionEntry): AsyncGenerator<Uint8Array> {
+		let offset = 0;
+		if (head?.seq === ref.seq) {
+			offset = head.bytes.length;
+			yield head.bytes;
+		}
+		if (offset < ref.bytes) yield* historyChunks(store, id, cut.epoch, ref, { signal, offset });
+	}
+	const headerOf = (ref: OversizedSessionEntry) => {
+		head = undefined;
+		return cardHeader(
+			(async function* () {
+				for await (const bytes of historyChunks(store, id, cut.epoch, ref, { signal })) {
+					head ??= { seq: ref.seq, bytes };
+					yield bytes;
+				}
+			})(),
+		);
+	};
+	type Row = { type: string; role?: string; id: unknown; toolCallId?: unknown; read: boolean };
+	async function* range(
+		start: number,
+		end: number,
+		filter: (type: string, role?: string) => boolean,
+	): AsyncGenerator<{ ref: OversizedSessionEntry; h: Row }> {
 		for (let at = start; at <= end; ) {
 			signal?.throwIfAborted();
 			const span = await store.readBranchSpan!(id, {
@@ -130,11 +154,17 @@ async function projectExpanded(
 				const ref: OversizedSessionEntry = { kind: "oversized", sessionId: id, epoch: cut.epoch, seq, bytes };
 				const info = outline?.[seq - span.start];
 				if (info && !("streamed" in info) && !filter(info.type, info.role)) continue;
-				const h = info && !("streamed" in info) ? info : await cardFields(chunks(ref), "header");
+				const h = info && !("streamed" in info) ? info : await headerOf(ref);
 				if (typeof h.type === "string" && filter(h.type, typeof h.role === "string" ? h.role : undefined))
 					yield {
 						ref,
-						h: { type: h.type, role: h.role, id: h.id } as Pick<SessionTreeOutlineEntry, "type" | "role" | "id">,
+						h: {
+							type: h.type,
+							role: h.role,
+							id: h.id,
+							...("toolCallId" in h ? { toolCallId: h.toolCallId } : {}),
+							read: h !== info,
+						},
 					};
 			}
 			at = hi + 1;
@@ -157,47 +187,46 @@ async function projectExpanded(
 		}
 	}
 	type Selected = { ref: OversizedSessionEntry; edit?: OversizedSessionEntry; role: string };
-	const piece = (sel: Selected, full = false, args?: ReadonlySet<number>) =>
+	const piece = (sel: Selected, full = false, args?: "all") =>
 		cardPiece(chunks(sel.edit ?? sel.ref), sel.role, !!sel.edit, full, args);
 	let prompt: Selected | undefined, answer: Selected | undefined;
 	let active = !cut.model || !launch.forked;
-	let firstSeq = 0;
 	let lines: string[] = [];
-	const calls: { sel: Selected; names: CardPiece["calls"] }[] = [],
-		wanted = new Set<string>();
-	for await (const { ref, h } of rows((t, r) => t === "message" && (r === "user" || r === "assistant"))) {
+	// One walk over the shown rows. Results count from the first shown row on, and one may come before its call.
+	const calls: CardPiece["calls"] = [],
+		wanted = new Set<string>(),
+		results = new Map<string, Selected>();
+	for await (const { ref, h } of rows(
+		(t, r) => t === "message" && (r === "user" || r === "assistant" || r === "toolResult"),
+	)) {
 		if (ref.seq <= covered) continue;
-		const edit = edits.get(h.id);
+		const edit = edits.get(h.id as string);
 		if (edit === null) continue;
 		const s = { ref, edit, role: h.role! };
+		if (s.role === "toolResult") {
+			if (!active) continue;
+			const { toolCallId } = h.read ? h : await headerOf(ref);
+			if (typeof toolCallId === "string") results.set(toolCallId, s);
+			continue;
+		}
 		if (!active && s.role !== "user") continue;
-		const p = await piece(s);
+		const p = await piece(s, false, s.role === "assistant" ? "all" : undefined);
 		if (!active) {
 			if (!p.marker) continue;
 			active = true;
-			firstSeq = ref.seq;
 		}
 		if (s.role === "user" && !prompt && p.nonblank) prompt = s;
 		else if (s.role === "assistant" && p.nonblank) answer = s;
 		lines.push(...p.lines);
 		if (lines.length > 12) lines = lines.slice(-12);
-		if (p.calls.length) {
-			calls.push({ sel: s, names: p.calls });
-			for (const c of p.calls) if (c.id) wanted.add(c.id);
+		for (const c of p.calls) {
+			calls.push(c);
+			if (c.id) wanted.add(c.id);
 		}
 	}
-	const results = new Map<string, Selected>();
-	if (wanted.size)
-		for await (const { ref, h } of rows((t, r) => t === "message" && r === "toolResult")) {
-			if (ref.seq < firstSeq || ref.seq <= covered) continue;
-			const edit = edits.get(h.id);
-			if (edit === null) continue;
-			const { toolCallId } = await cardFields(chunks(ref), "header");
-			if (typeof toolCallId === "string" && wanted.has(toolCallId))
-				results.set(toolCallId, { ref, edit, role: "toolResult" });
-		}
 	const values = new Map<string, Omit<ExpandedChildCall, "id" | "name" | "args">>();
 	for (const [call, sel] of results) {
+		if (!wanted.has(call)) continue;
 		const r = await cardFields(chunks(sel.ref), sel.edit ? "editedResult" : "result");
 		const replacement = sel.edit ? (await cardFields(chunks(sel.edit), "replacement")).content : undefined;
 		const c =
@@ -220,12 +249,12 @@ async function projectExpanded(
 			completed: true,
 		});
 	}
-	const toolCalls: ExpandedChildCall[] = [];
-	for (const row of calls) {
-		const p = await piece(row.sel, false, new Set(row.names.map((c) => c.index)));
-		for (const c of p.calls)
-			toolCalls.push({ id: c.id, name: c.name, args: c.args ?? {}, ...(values.get(c.id) ?? { completed: false }) });
-	}
+	const toolCalls: ExpandedChildCall[] = calls.map((c) => ({
+		id: c.id,
+		name: c.name,
+		args: c.args ?? {},
+		...(values.get(c.id) ?? { completed: false }),
+	}));
 	signal?.throwIfAborted();
 	return {
 		...(prompt ? { prompt: (await piece(prompt, true)).text } : {}),
