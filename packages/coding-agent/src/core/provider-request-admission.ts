@@ -77,13 +77,20 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 function sleepForAdmission(ms: number, signal?: AbortSignal): Promise<void> {
 	signal?.throwIfAborted();
 	return new Promise((resolve, reject) => {
+		let wake: ReturnType<typeof setImmediate> | undefined;
 		const cleanup = () => signal?.removeEventListener("abort", abort);
+		// The wait ends on the turn after its timer, once every other timer due by then has run. A caller's deadline that
+		// is due by the time the slot opens, even in the same millisecond or while a busy process was late to its
+		// timers, aborts the request before it can take the slot.
 		const timer = setTimeout(() => {
-			cleanup();
-			resolve();
+			wake = setImmediate(() => {
+				cleanup();
+				resolve();
+			});
 		}, ms);
 		const abort = () => {
 			clearTimeout(timer);
+			if (wake !== undefined) clearImmediate(wake);
 			cleanup();
 			reject(signal?.reason ?? new Error("Provider request aborted"));
 		};
@@ -97,6 +104,8 @@ async function waitForAdmission(provider: string, model: string, signal?: AbortS
 		const delay = tryAdmitProviderRequest(provider, model);
 		if (delay === 0) {
 			await providerRequestGate()?.(provider, model, signal);
+			// A gate's answer can cross the caller's abort; a request its caller gave up on is never sent.
+			signal?.throwIfAborted();
 			return;
 		}
 		await sleepForAdmission(Math.min(delay, 60_000), signal);
