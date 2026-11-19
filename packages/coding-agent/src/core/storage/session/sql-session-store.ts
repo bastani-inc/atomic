@@ -263,6 +263,7 @@ const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
+const LISTING_CWD_MATCHES = 64;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -1085,6 +1086,26 @@ export class SqlSessionStore implements SessionStore {
 		return rows.map((row) => row.cwd);
 	}
 
+	/** Directory resolution and row filtering use one bounded matcher path. */
+	private async matchingListingRows<Row>(
+		rows: readonly Row[],
+		query: SessionListQuery,
+		matches: (row: Row) => boolean | Promise<boolean>,
+	): Promise<Row[]> {
+		const kept: Row[] = [];
+		for (let start = 0; start < rows.length; start += LISTING_CWD_MATCHES) {
+			this.assertListing(query);
+			const matched = await Promise.all(
+				rows.slice(start, start + LISTING_CWD_MATCHES).map(async (row) => ((await matches(row)) ? row : undefined)),
+			);
+			this.assertListing(query);
+			for (const row of matched) if (row !== undefined) kept.push(row);
+			if (start + LISTING_CWD_MATCHES < rows.length) await yieldTurn();
+		}
+		this.assertListing(query);
+		return kept;
+	}
+
 	private async scopeOf(query: SessionListQuery): Promise<
 		| {
 				readonly where: string;
@@ -1101,9 +1122,8 @@ export class SqlSessionStore implements SessionStore {
 		if (matchesCwd) {
 			const distinct = await this.distinctCwds(query);
 			this.assertListing(query);
-			const matched = await Promise.all(distinct.map(async (cwd) => ((await matchesCwd(cwd)) ? cwd : undefined)));
+			projectCwds = await this.matchingListingRows(distinct, query, matchesCwd);
 			this.assertListing(query);
-			projectCwds = matched.filter((cwd): cwd is string => cwd !== undefined);
 			if (projectCwds.length === 0) return undefined;
 		}
 		// The SQL prefilter is optional: too many spellings or too much directory text must not become one oversized
@@ -1132,12 +1152,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertListing(query);
 		if (resolved === undefined) return [];
 		const { where: scope, params, inScope } = resolved;
-		const filterInScope = async (rows: readonly ListingRow[]): Promise<ListingRow[]> => {
-			this.assertListing(query);
-			const kept = await Promise.all(rows.map(async (row) => ((await inScope(row)) ? row : undefined)));
-			this.assertListing(query);
-			return kept.filter((row): row is ListingRow => row !== undefined);
-		};
+		const filterInScope = (rows: readonly ListingRow[]) => this.matchingListingRows(rows, query, inScope);
 		if (listedBefore) {
 			const rows = await filterInScope(await this.readListingRows(scope, params, query));
 			this.assertListing(query);

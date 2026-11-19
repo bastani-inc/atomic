@@ -305,6 +305,7 @@ async function inJournal<T>(
 	signal?: AbortSignal,
 ): Promise<T> {
 	try {
+		signal?.throwIfAborted();
 		return await operation();
 	} catch (error) {
 		if (signal?.aborted === true && error === signal.reason) throw error;
@@ -738,12 +739,14 @@ interface SourceClaim {
 async function claimSource(
 	backend: JournalDurableBackend,
 	runId: string,
-	request: Pick<DurableForkRequest, "isLiveRun">,
+	request: Pick<DurableForkRequest, "isLiveRun" | "signal">,
 ): Promise<SourceClaim> {
+	request.signal?.throwIfAborted();
 	if (hasForkClaim(backend, runId)) throw new ForkSourceBusyError({ runId, reason: "fork-in-progress" });
 	if (hasResumeClaim(backend, runId)) throw new ForkSourceBusyError({ runId, reason: "resume-in-progress" });
-	if (backend.hasWorkflowExecution(runId) || request.isLiveRun?.(runId) === true)
-		throw new ForkSourceBusyError({ runId, reason: "live-execution" });
+	const live = backend.hasWorkflowExecution(runId) || request.isLiveRun?.(runId) === true;
+	request.signal?.throwIfAborted();
+	if (live) throw new ForkSourceBusyError({ runId, reason: "live-execution" });
 	const claims = claimsOf(pendingForks, backend);
 	claims.add(runId);
 	const releaseLocal = () => {
@@ -751,7 +754,8 @@ async function claimSource(
 	};
 	try {
 		const claim = { runId, phase: "claim" } as const;
-		const current = await inJournal(backend.journal, claim, () => backend.journal.leaseState(runId));
+		const current = await inJournal(backend.journal, claim, () => backend.journal.leaseState(runId), request.signal);
+		request.signal?.throwIfAborted();
 		// This process already holds the source's lease (its run ended here): that lease is kept alive and checked
 		// like one the fork takes, and left to its holder at the end.
 		if (current?.holderId === backend.holderId)
@@ -761,11 +765,16 @@ async function claimSource(
 				releaseLocal,
 				false,
 			);
-		const outcome = await inJournal(backend.journal, claim, () =>
-			backend.journal.takeoverExpired(runId, `fork:${randomUUID()}`, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
+		const outcome = await inJournal(
+			backend.journal,
+			claim,
+			() => backend.journal.takeoverExpired(runId, `fork:${randomUUID()}`, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
+			request.signal,
 		);
-		if (outcome.status === "held")
+		if (outcome.status === "held") {
+			request.signal?.throwIfAborted();
 			throw new ForkSourceBusyError({ runId, reason: "foreign-lease", holderId: outcome.holderId ?? undefined });
+		}
 		return heldSourceClaim(backend, outcome.lease, releaseLocal, true);
 	} catch (error) {
 		releaseLocal();

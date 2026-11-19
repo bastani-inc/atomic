@@ -1,3 +1,4 @@
+import { setImmediate as nextTurn } from "node:timers/promises";
 import {
 	discoverLegacyJournal,
 	isJournalCatalogError,
@@ -444,15 +445,22 @@ export class ShardedRunJournal implements RunJournal {
 			const [records, owners] = await Promise.all([this.catalog.shards(options), this.catalog.owners(options)]);
 			const listed = new Map<string, RunSummary>();
 			for (const record of records) {
-				const journal = await this.listable(record);
-				if (journal === undefined) continue;
 				options?.signal?.throwIfAborted();
-				for (const run of await journal.listRuns(filter, options)) {
-					const owner = owners.get(run.runId);
-					if (owner === undefined ? listed.has(run.runId) : owner !== record.id) continue;
-					listed.set(run.runId, run);
+				const journal = await this.listable(record);
+				options?.signal?.throwIfAborted();
+				if (journal !== undefined) {
+					const rows = await journal.listRuns(filter, options);
+					options?.signal?.throwIfAborted();
+					for (const run of rows) {
+						const owner = owners.get(run.runId);
+						if (owner === undefined ? listed.has(run.runId) : owner !== record.id) continue;
+						listed.set(run.runId, run);
+					}
 				}
+				await nextTurn();
+				options?.signal?.throwIfAborted();
 			}
+			options?.signal?.throwIfAborted();
 			return [...listed.values()].sort(byRunId);
 		});
 	}

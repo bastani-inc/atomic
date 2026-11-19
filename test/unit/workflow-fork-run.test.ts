@@ -611,6 +611,64 @@ test.each([
 	},
 );
 
+for (const stopAt of ["validation", "live-check", "lease", "claimed"] as const)
+	test(`fork cancellation after ${stopAt} starts no further source read and releases its claim (#5537)`, async () => {
+		const { backend, def, runId } = await linearSource(`fork-cancel-${stopAt}`);
+		const journal = backend.journal;
+		const controller = new AbortController();
+		const reason = new Error(`cancelled after ${stopAt}`);
+		const leaseState = journal.leaseState.bind(journal);
+		const current = await leaseState(runId);
+		if (stopAt === "claimed" && current !== undefined) await journal.release(current);
+		let readsAfterAbort = 0;
+		const get = journal.getRun.bind(journal);
+		const read = journal.read.bind(journal);
+		const takeover = journal.takeoverExpired.bind(journal);
+		vi.spyOn(journal, "getRun").mockImplementation(async (id) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			return get(id);
+		});
+		vi.spyOn(journal, "read").mockImplementation((id, fromSeq) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			return read(id, fromSeq);
+		});
+		vi.spyOn(journal, "leaseState").mockImplementation(async (id) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			const state = await leaseState(id);
+			if (stopAt === "lease") controller.abort(reason);
+			return state;
+		});
+		vi.spyOn(journal, "takeoverExpired").mockImplementation(async (...args) => {
+			if (controller.signal.aborted) readsAfterAbort++;
+			const result = await takeover(...args);
+			if (stopAt === "claimed") controller.abort(reason);
+			return result;
+		});
+		await assert.rejects(
+			forkDurableRun(backend, {
+				source: "sdk",
+				runId,
+				fromStage: "implement",
+				carryMessages: "before",
+				definition: def,
+				signal: controller.signal,
+				validateSource: () => {
+					if (stopAt === "validation") controller.abort(reason);
+				},
+				isLiveRun: () => {
+					if (stopAt !== "live-check") return false;
+					controller.abort(reason);
+					return true;
+				},
+			}),
+			(error) => error === reason,
+		);
+		assert.equal(controller.signal.aborted, true);
+		assert.equal(readsAfterAbort, 0);
+		assert.equal(claimsOf(pendingForks, backend).has(runId), false);
+		if (stopAt === "claimed") assert.equal(await leaseState(runId), undefined);
+	});
+
 test("an aborted fork rejects with the signal's reason and creates no run (#4321)", async () => {
 	const { backend, def, runId } = await linearSource("fork-abort-source");
 	const reason = new Error("caller cancelled");

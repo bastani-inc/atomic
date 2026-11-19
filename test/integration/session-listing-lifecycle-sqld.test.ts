@@ -22,6 +22,60 @@ const variants: readonly { name: string; query: SessionListQuery; cached?: boole
 
 for (const backend of storageBackends) {
 	describe.skipIf(backend.skipReason !== undefined)(`session listing lifetime: ${backend.name}`, () => {
+		it("bounds directory-matcher concurrency in full and light listings, including the row filter (#5537)", async () => {
+			const scope = await backend.openScope();
+			try {
+				const database = await scope.connect();
+				let active = 0;
+				let peak = 0;
+				const store = await SqlSessionStore.open(database, {
+					prefix: scope.prefix,
+					cwdMatcher: () => async (cwd) => {
+						active++;
+						peak = Math.max(peak, active);
+						try {
+							await new Promise<void>((resolve) => setImmediate(resolve));
+							return cwd?.startsWith("/project/") ?? false;
+						} finally {
+							active--;
+						}
+					},
+				});
+				try {
+					for (let index = 0; index < 129; index++)
+						await store.create(
+							{
+								id: `s-${index}`,
+								version: SESSION_FORMAT_VERSION,
+								cwd: `/project/${index}`,
+								createdAt: "2026-11-18T00:00:00Z",
+							},
+							[],
+						);
+					await store.create(
+						{
+							id: "outside",
+							version: SESSION_FORMAT_VERSION,
+							cwd: "/elsewhere",
+							createdAt: "2026-11-18T00:00:00Z",
+						},
+						[],
+					);
+					for (const withoutSearchText of [false, true]) {
+						peak = 0;
+						const ids: string[] = [];
+						for await (const summary of store.list({ cwd: "/project", withoutSearchText })) ids.push(summary.id);
+						expect(ids).toEqual(Array.from({ length: 129 }, (_, index) => `s-${index}`));
+						expect(peak).toBeLessThanOrEqual(64);
+					}
+				} finally {
+					await store.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		});
+
 		it("bounds open-marker catalog responses for a session shared by several hosts (#5537)", async () => {
 			const scope = await backend.openScope();
 			try {
