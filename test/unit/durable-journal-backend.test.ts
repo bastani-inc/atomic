@@ -964,6 +964,37 @@ test("lease handoff refreshes the projection before writing a status snapshot", 
 	assert.equal(second.getWorkflow("run")?.pendingPrompts, 0);
 });
 
+test(
+	"a delayed summary neither overwrites nor keeps the lease of a run recreated during acquisition",
+	async () => {
+		const path = database();
+		const writer = await open(path);
+		const id = "process-run";
+		await writer.commitWorkflowRegistration({
+			workflowId: id,
+			name: "original",
+			inputs: {},
+			createdAt: 22,
+			status: "running",
+		});
+		await writer.releaseWorkflow(id);
+		const journal = await interleavedJournal(path, async () => {
+			await writer.deleteWorkflow(id);
+			const child = spawnSyncCollect(
+				[bunExecutable(), resolve("test/fixtures/journal-backend-child.ts"), path, "write"],
+				{ timeout: FRESH_PROCESS_TIMEOUT_MS },
+			);
+			assert.equal(child.exitCode, 0, child.stderr.toString());
+		});
+		const observer = await JournalDurableBackend.open(journal);
+		opened.push(observer);
+		assert.equal(await observer.persistSummary(id, "Original's summary", 100, 22), false);
+		assert.equal(observer.getWorkflow(id)?.summary, "verbatim summary");
+		assert.equal(await writer.workflowOwnership(id), "available");
+	},
+	FRESH_PROCESS_TIMEOUT_MS,
+);
+
 test("catalog and targeted hydration remove deleted runs and rebuild recreated run identities", async () => {
 	const path = database();
 	const writer = await open(path);

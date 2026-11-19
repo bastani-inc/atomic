@@ -29,7 +29,7 @@ import type {
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
 import { type StagePredictionStatus, stagePredictionStatus } from "../shared/possible-stage-prediction.js";
-import { effectiveRunStatus } from "../shared/returned-run-status.js";
+import { hasRecordedRunBlock, runResultStatus } from "../shared/returned-run-status.js";
 import { observeRunExecution, type RunExecutionObservation } from "../shared/run-execution-state.js";
 import { boundStickyDeliveryStates } from "../shared/sticky-delivery-state-bound.js";
 import { type StickyStageDeliveryStatus, stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
@@ -307,7 +307,8 @@ export function summarizeRunSnapshot(
 		...observeRunExecution(run, now),
 		runId: run.id,
 		name: run.name,
-		status: effectiveRunStatus(run),
+		// Saved list readers pair this result status with the raw snapshot. Project the live marker when displaying it.
+		status: runResultStatus(run),
 		startedAt: run.startedAt,
 		endedAt: run.endedAt,
 		elapsedMs,
@@ -362,12 +363,22 @@ export function summarizeRunSnapshot(
 	};
 }
 
+/** Use the live block only from the snapshot that belongs to this saved row. */
+export function statusListRowStatus(summary: WorkflowRunStatusSummary, snapshot: RunSnapshot | undefined): RunStatus {
+	const status = summary.status;
+	return status === "running" && snapshot?.id === summary.runId && hasRecordedRunBlock(snapshot) ? "blocked" : status;
+}
+
 /** True when the summarized run passes the status filter. */
-export function runMatchesStatusFilter(summary: WorkflowRunStatusSummary, filter: WorkflowRunStatusFilter): boolean {
+export function runMatchesStatusFilter(
+	summary: WorkflowRunStatusSummary,
+	filter: WorkflowRunStatusFilter,
+	snapshot?: RunSnapshot,
+): boolean {
 	if (filter === "all") return true;
 	if (filter === "awaiting_input") return summary.awaitingInputCount > 0;
 	if (filter === "suspended") return summary.suspendedCount > 0;
-	return summary.status === filter;
+	return statusListRowStatus(summary, snapshot) === filter;
 }
 
 /**
@@ -383,7 +394,7 @@ export function buildWorkflowStatusListing(
 	const filter = currentStatusFilter(requestedFilter);
 	const paired = snapshots
 		.map((snapshot) => ({ snapshot, summary: summarizeRunSnapshot(snapshot, now, options) }))
-		.filter(({ summary }) => runMatchesStatusFilter(summary, filter));
+		.filter(({ summary, snapshot }) => runMatchesStatusFilter(summary, filter, snapshot));
 	paired.sort((a, b) => {
 		const aEnded = a.snapshot.endedAt === undefined ? 0 : 1;
 		const bEnded = b.snapshot.endedAt === undefined ? 0 : 1;

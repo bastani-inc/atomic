@@ -15,7 +15,7 @@ import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowRegisteredToolResult, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowRunStatusSummary, WorkflowStatusAwaitingInput } from "./workflow-status-summary.js";
-import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
+import { getWorkflowStatusRenderRuns, statusListRowStatus } from "./workflow-status-summary.js";
 
 function stringifyWorkflowToolResult(result: WorkflowRegisteredToolResult): string {
 	return JSON.stringify(result, null, 2);
@@ -138,13 +138,14 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 	const inFlight = result.runs.filter((run) => run.endedAt === undefined).length;
 	lines.push(`runs: ${result.runs.length} (${inFlight} in flight)`);
 	result.runs.forEach((run, index) => {
+		const snapshot = result.snapshots[index];
 		const hint = statusRunHint(run);
 		const summaryLine = [
 			`[${index + 1}]`,
-			statusRunIcon(run, result.snapshots[index], allRuns),
+			statusRunIcon(run, snapshot, allRuns),
 			run.runId,
 			run.name,
-			run.status,
+			statusListRowStatus(run, snapshot),
 			fmtDuration(run.elapsedMs),
 			...(hint !== undefined ? [hint] : []),
 		].join("  ");

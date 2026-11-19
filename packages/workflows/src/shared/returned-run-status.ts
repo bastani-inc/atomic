@@ -106,7 +106,22 @@ export function structuredRecoverableWorkflowFailureText(
 	return structuredRecoverableWorkflowFailure(run)?.error;
 }
 
+/** The engine keeps a resumably blocked run live, regardless of the kind of failure that blocked it. */
+export function hasRecordedRunBlock(run: RunSnapshot): boolean {
+	return (
+		run.status === "running" &&
+		"blockedAt" in run &&
+		run.blockedAt !== undefined &&
+		(!("phase" in run) || run.phase !== "starting")
+	);
+}
+
 export function effectiveRunStatus(run: RunSnapshot): RunStatus {
+	return hasRecordedRunBlock(run) ? "blocked" : runResultStatus(run);
+}
+
+/** Status from the execution and its result, without the live block marker. */
+export function runResultStatus(run: RunSnapshot): RunStatus {
 	if (run.status === "running" && run.phase === "starting") return "pending";
 	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
 	if (
