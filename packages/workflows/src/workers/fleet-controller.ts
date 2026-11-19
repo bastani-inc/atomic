@@ -469,6 +469,11 @@ export class FleetController implements WorkflowFleetController {
 		const joined = action.kind === "scale-up" ? undefined : hosts.find((entry) => entry.view.id === action.id);
 		switch (action.kind) {
 			case "scale-up":
+				if (action.desired <= hosts.length) {
+					// Growth depends on a removal earlier in this pass. An accepted drain can still count at the provider.
+					const current = await this.call((signal) => this.options.provisioner.list(signal));
+					if (action.desired <= current.length) return;
+				}
 				await this.call((signal) => this.options.provisioner.scaleTo(action.desired, signal));
 				this.emit({ kind: "scale-up", target: action.target, desired: action.desired, live: plan.live });
 				await store.record(fence, {
@@ -599,9 +604,7 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 		const leased = [...holders].reduce((total, host) => total + (snapshot.leased.get(host) ?? 0), orphaned);
 		return {
 			view: {
-				id: provided.id,
-				state: provided.state,
-				since: provided.since,
+				...provided,
 				registered: registered?.live === true,
 				leased,
 				draining: drainHosts.length > 0,
