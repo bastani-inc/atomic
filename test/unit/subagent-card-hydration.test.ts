@@ -29,6 +29,7 @@ import type { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/
 import {
 	hasTaskTranscript,
 	loadTaskTranscript,
+	noticeTranscriptQuery,
 	registerSavedTaskTranscripts,
 	type TaskTranscriptQuery,
 } from "../../packages/coding-agent/src/core/tasks/saved-transcripts.js";
@@ -38,6 +39,7 @@ import {
 	chatEntriesFromAgentMessages,
 	renderChatMessageEntry,
 } from "../../packages/coding-agent/src/modes/interactive/components/index.js";
+import { completionNoticeFromDetails } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.ts";
 import { attachInteractiveEngineResourceExtensionRefresh } from "../../packages/coding-agent/src/modes/interactive/interactive-startup.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineRenderService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-render-service.js";
@@ -704,10 +706,12 @@ test("after a restart, a finished subagent's notice shows the child's saved prom
 test("after a restart, a finished subagent's notice saved before notices named their child finds the child by its task id, unless two children ran as it (#5525)", async () => {
 	initTheme("dark");
 	const { store, manager } = await finishedScriptChild("hyolder", "task-1-0-7");
+	const older = savedNotice("hyolder", "task-1-0-7", undefined);
+	await manager.appendCustomMessageEntry(older.customType, older.content, true, older.details);
 	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
-		const shown = await engineNotice(manager, savedNotice("hyolder", "task-1-0-7", undefined), /const v19 = 19; \)/);
+		const shown = await engineNotice(manager, older, /const v19 = 19; \)/);
 		assert.match(shown, /Prompt Script the hyolder audit .*Tool calls ● codemode\( const v0 = 0;/);
 
 		// A later process ran another child under the same task id: the notice cannot tell which one it is about.
@@ -722,7 +726,7 @@ test("after a restart, a finished subagent's notice saved before notices named t
 		bindSubagentChildCards({ sessionManager: manager });
 		const ambiguous = await engineNotice(
 			manager,
-			savedNotice("hyolder", "task-1-0-7", undefined),
+			older,
 			/Transcript unavailable · more than one subagent ran as task-1-0-7/,
 		);
 		assert.doesNotMatch(ambiguous, /codemode\(/);
@@ -735,10 +739,13 @@ test("after a restart, a finished subagent's notice saved before notices named t
 test("a legacy notice cannot read a different saved child's prompt through a reused task id (#5531)", async () => {
 	const taskId = "task-reused-legacy";
 	const { store, manager } = await finishedScriptChild("shapes-reader", taskId);
+	const saved = savedNotice("shapes-reader", taskId, undefined);
+	await manager.appendCustomMessageEntry(saved.customType, saved.content, true, saved.details);
+	const completionId = saved.details.completionId;
 	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
 	try {
 		bindSubagentChildCards({ sessionManager: manager });
-		const matching = { taskId, agentName: "shapes-reader", subject: "task for shapes-reader" };
+		const matching = { taskId, completionId, agentName: "shapes-reader", subject: "task for shapes-reader" };
 		assert.equal(hasTaskTranscript(undefined, { ...matching, ownerSessionId: manager.getSessionId() }), true);
 		assert.equal(
 			hasTaskTranscript(undefined, { ...matching, ownerSessionId: "another-owner" }),
@@ -750,10 +757,55 @@ test("a legacy notice cannot read a different saved child's prompt through a reu
 			["worker", "task for shapes-reader"],
 			["shapes-reader", "restart 0"],
 		]) {
-			const notice = { taskId, agentName, subject };
+			const notice = { taskId, completionId, agentName, subject };
 			assert.equal(hasTaskTranscript(undefined, notice), false, "only the original notice preview is available");
 			assert.equal(await loadTaskTranscript(undefined, notice), undefined, "no other child's prompt or calls");
 		}
+	} finally {
+		unregister();
+		await store.close();
+	}
+});
+
+test("a later child with even the same number, agent and title cannot supply an earlier completion's prompt (#5531)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const taskId = "task-1-0-0";
+	const earlier = savedNotice("worker", taskId, undefined);
+	earlier.details.notification.status = "failed";
+	earlier.details.notification.preview = "restart done";
+	earlier.details.notification.line = { status: "failure", label: "Agent", outcome: "failed", subject: "restart 0" };
+	await manager.appendCustomMessageEntry(earlier.customType, earlier.content, true, earlier.details);
+	const child = await SessionManager.create(store, process.cwd());
+	await child.appendMessage({ role: "user", content: "TASK B: Count the triangles", timestamp: Date.now() });
+	await new TranscriptBuilder(manager, process.cwd()).record({
+		childId: "later:0",
+		runId: "worker",
+		taskId,
+		task: "restart 0",
+		state: "terminal",
+		terminalStatus: "released",
+		childSessionId: child.getSessionId(),
+	});
+	bindSubagentChildCards({ sessionManager: manager });
+	const unregister = registerSavedTaskTranscripts(savedSubagentTranscripts(manager));
+	try {
+		const parsed = completionNoticeFromDetails(earlier.details);
+		assert.ok(parsed);
+		const query = noticeTranscriptQuery(taskId, parsed, manager.getSessionId());
+		assert.equal(
+			await loadTaskTranscript(undefined, query),
+			undefined,
+			"the only matching child ran after this saved completion",
+		);
+		const shown = await engineNotice(manager, earlier, /restart done/);
+		assert.match(shown, /worker failed.*restart done/i);
+		assert.doesNotMatch(shown, /Prompt|TASK B|Tool calls/);
+		// The same child *does* precede a later completion of the very same task number and labels.
+		const later = { ...earlier, details: { ...earlier.details, completionId: `later-${taskId}` } };
+		await manager.appendCustomMessageEntry(later.customType, later.content, true, later.details);
+		assert.match(await engineNotice(manager, later, /TASK B/), /TASK B: Count the triangles/);
 	} finally {
 		unregister();
 		await store.close();

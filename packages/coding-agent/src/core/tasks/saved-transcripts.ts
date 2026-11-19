@@ -11,6 +11,8 @@ import {
 /** The task a view asks about: its id, and what the view knows of it to tell it from another task with that id. */
 export interface TaskTranscriptQuery {
 	readonly taskId: string;
+	/** The durable completion, which a later use of the task number cannot satisfy. */
+	readonly completionId?: string;
 	/** The session displaying this notice; another session may have reused the same task number. */
 	readonly ownerSessionId?: string;
 	/**
@@ -36,6 +38,7 @@ export function noticeTranscriptQuery(
 	const query = {
 		taskId,
 		...(ownerSessionId === undefined ? {} : { ownerSessionId }),
+		...(notice?.completionId === undefined ? {} : { completionId: notice.completionId }),
 		...(notice?.launchId === undefined ? {} : { launchId: notice.launchId }),
 		...(notice?.agentName === undefined ? {} : { agentName: notice.agentName }),
 		...(notice?.line?.subject === undefined ? {} : { subject: notice.line.subject }),
@@ -98,6 +101,10 @@ function runningTask(store: OwnerTaskStore | undefined, task: TaskTranscriptQuer
 	// several tasks ran under its id, the running one cannot be told from the others.
 	if (record && task.agentName !== undefined && record.agentName !== task.agentName) return undefined;
 	if (record && task.subject !== undefined && noticeSubject(record.title) !== task.subject) return undefined;
+	if (task.completionId !== undefined) {
+		// A reused task number is not the native settlement receipt of the original task.
+		return store?.supervisor.taskCompletionId(lease.value) === task.completionId ? lease.value : undefined;
+	}
 	for (const source of sourcesFor(task)) if (source.ranAsSeveral?.(task.taskId, task)) return undefined;
 	return lease.value;
 }

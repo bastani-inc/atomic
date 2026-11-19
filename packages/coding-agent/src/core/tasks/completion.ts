@@ -70,6 +70,8 @@ export type TaskNoticeLine = {
 };
 
 export type TaskCompletionNotice = {
+	/** The persisted completion envelope this notice was parsed from, if available. */
+	completionId?: string;
 	title: string;
 	preview: string;
 	status: "completed" | "failed" | "cancelled";
