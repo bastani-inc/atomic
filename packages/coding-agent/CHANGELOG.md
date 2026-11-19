@@ -9,6 +9,7 @@
 - The session picker rejects `re:` patterns that rely on backreferences, lookaround or paired start/end anchors instead of silently reporting no matches. Use a narrower pattern or a quoted phrase ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
+- `SessionManager.getWorktreeSnapshotRecords()` returns only the snapshot records the session holds: all of them while `hasFullHistory()` is true, otherwise the ones its resume needs (the latest snapshot of each checkout on the active branch and the snapshots its restores name) and those recorded in its window. Replace a lookup of an older record with `await manager.loadWorktreeSnapshotRecords(ids)`, or read every snapshot entry with `for await (const page of manager.readWorktreeSnapshotPages())`; both reject with the store's error instead of returning an empty map. `getLatestWorktreeSnapshots()` is unchanged ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
 ## [0.9.90] - 2026-11-19
 
