@@ -68,7 +68,17 @@ export async function reconcileRestoredRun(
 	signal?.throwIfAborted();
 	try {
 		if (
-			!(await backend.commitWorkflowStatusTransition(id, ["running"], "blocked", undefined, true, handle.updatedAt))
+			!(await backend.commitWorkflowStatusTransition(
+				id,
+				["running"],
+				"blocked",
+				undefined,
+				true,
+				handle.updatedAt,
+				undefined,
+				undefined,
+				run.runGeneration,
+			))
 		)
 			return stale;
 	} catch (error) {

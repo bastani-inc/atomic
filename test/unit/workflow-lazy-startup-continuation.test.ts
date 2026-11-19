@@ -1169,6 +1169,7 @@ export default workflow({
 				customType: "workflow.run.blocked",
 				data: {
 					runId: id,
+					runGeneration: 1,
 					failedStageId: "build",
 					error: "blocked",
 					failureKind: "provider",
@@ -1207,6 +1208,11 @@ export default workflow({
 			backend.getWorkflow(runId)?.status,
 			"blocked",
 			"even an unsuccessful resume leaves the journal's block recoverable independently of the session",
+		);
+		assert.equal(
+			backend.getWorkflow(runId)?.runGeneration,
+			1,
+			"the restored block keeps its notice and panel identity",
 		);
 		const resumed = await runtime.resumeDurableWorkflow(runId);
 		assert.ok(resumed.ok, resumed.ok ? undefined : resumed.message);

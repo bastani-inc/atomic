@@ -35,6 +35,7 @@ export async function appendRunEndWhenRecorded(
 	recorded: boolean,
 	payload: {
 		readonly runId: string;
+		readonly runGeneration?: number;
 		readonly status: RunStatus;
 		readonly result?: WorkflowOutputValues;
 		readonly error?: string;
@@ -606,6 +607,7 @@ export async function recordActiveBlockedFailure(
 		await appendRunBlocked(persistence, {
 			runId,
 			blockAttempt,
+			runGeneration: runSnapshot.runGeneration,
 			...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
 			error: metadata.errorMessage,
 			failureKind: metadata.failureKind,

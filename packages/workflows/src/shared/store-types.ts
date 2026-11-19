@@ -611,6 +611,8 @@ export interface RunSnapshot extends RunExecutionState {
 	readonly blockAttempt?: string;
 	/** Version shown for an older, unversioned block. It can select a journal resume but never repair its status. */
 	readonly earlierBlockVersion?: number;
+	/** Sequence of this run's pause and block occurrences, retained when the run resumes under its own id. */
+	runGeneration?: number;
 	readonly label?: string;
 	readonly summary?: string;
 	readonly summarizedThrough?: number;

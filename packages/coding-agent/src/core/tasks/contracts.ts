@@ -195,6 +195,9 @@ export type TaskRecord = {
 	readonly requestedModel?: string;
 	/** Heartbeat cadence the task was launched with; `0` disables. Omitted uses the owner default. */
 	readonly heartbeatMs?: number;
+	/** Turn state copied from the owning session when this record crosses a process boundary. */
+	readonly turnInterrupted?: true;
+	readonly resumedTurns?: number;
 	execution: Execution;
 	observation: HostObservation;
 	/** Retained native background membership, independent of the current wait. */
