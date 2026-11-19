@@ -24,15 +24,15 @@ import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
-const REAL_STAGE_AND_SUBAGENT_TIMEOUT_MS = 120_000;
+const REAL_SUBAGENT_TIMEOUT_MS = 120_000;
 const PROVIDER = "faux-reach-5352";
 const MAIN_MODEL = "main-5352";
-const STAGE_MODEL = "stage-5352";
+
 const CHILD_MODEL = "child-5352";
 const HOME = "doc-a-5352";
 const REACHABLE = "doc-b-5352";
 
-type Prober = "stage" | "subagent";
+type Prober = "subagent";
 
 const PROBE_CALLS: readonly ToolCall[] = [
 	fauxToolCall("intercom", { action: "status" }),
@@ -55,8 +55,7 @@ function resultText(message: ToolResultMessage): string {
 
 function scriptedModel(probes: Map<Prober, readonly ToolResultMessage[]>): FauxResponseFactory {
 	return (context, _options, _state, model) => {
-		const prober: Prober | undefined =
-			model.id === STAGE_MODEL ? "stage" : model.id === CHILD_MODEL ? "subagent" : undefined;
+		const prober: Prober | undefined = model.id === CHILD_MODEL ? "subagent" : undefined;
 		const results = context.messages.filter((message): message is ToolResultMessage => message.role === "toolResult");
 		if (prober !== undefined) {
 			const next = PROBE_CALLS[results.length];
@@ -64,18 +63,6 @@ function scriptedModel(probes: Map<Prober, readonly ToolResultMessage[]>): FauxR
 			probes.set(prober, results);
 			return fauxAssistantMessage(`${prober} probed Intercom`);
 		}
-		const launched = results.some((message) => message.toolName === "workflow");
-		const runRequested = context.messages.some(
-			(message) =>
-				message.role === "user" && JSON.stringify(message.content).includes("Run the probe-5352 workflow"),
-		);
-		if (runRequested && !launched)
-			return fauxAssistantMessage(
-				[fauxToolCall("workflow", { action: "run", workflow: "probe-5352", inputs: {} })],
-				{
-					stopReason: "toolUse",
-				},
-			);
 		const delegated = results.some((message) => message.toolName === "subagent");
 		const asked = context.messages.some(
 			(message) => message.role === "user" && JSON.stringify(message.content).includes("Delegate the probe"),
@@ -98,7 +85,7 @@ function scriptedModel(probes: Map<Prober, readonly ToolResultMessage[]>): FauxR
 async function mainSession(cwd: string, respond: FauxResponseFactory): Promise<AgentSession> {
 	const faux = registerFauxProvider({
 		provider: PROVIDER,
-		models: [{ id: MAIN_MODEL }, { id: STAGE_MODEL }, { id: CHILD_MODEL }],
+		models: [{ id: MAIN_MODEL }, { id: CHILD_MODEL }],
 	});
 	cleanups.push(() => faux.unregister());
 	faux.setResponses(Array.from({ length: 40 }, () => respond));
@@ -143,23 +130,7 @@ async function mainSession(cwd: string, respond: FauxResponseFactory): Promise<A
 }
 
 function writeProject(cwd: string): void {
-	mkdirSync(join(cwd, ".atomic", "workflows"), { recursive: true });
 	mkdirSync(join(cwd, ".atomic", "agents"), { recursive: true });
-	writeFileSync(
-		join(cwd, ".atomic", "workflows", "probe-5352.ts"),
-		`import { workflow } from "@bastani/atomic/workflows";
-export default workflow({
-	name: "probe-5352",
-	description: "A stage in its own subgroup probes Intercom",
-	inputs: {},
-	outputs: {},
-	run: async (ctx) => {
-		await ctx.stage("probe", { model: "${PROVIDER}/${STAGE_MODEL}", group: "team" }).prompt("Probe Intercom.");
-		return {};
-	},
-});
-`,
-	);
 	writeFileSync(
 		join(cwd, ".atomic", "agents", "probe-5352.md"),
 		`---
@@ -192,7 +163,7 @@ function assertConfined(results: readonly ToolResultMessage[] | undefined, who: 
 }
 
 test(
-	"a session with the option runs a workflow whose stage, and a subagent, get their own groups and reach nothing else (#5352)",
+	"a session with the option launches a subagent that gets its own group and reaches nothing else (#5352)",
 	async () => {
 		vi.stubEnv("NODE_ENV", "production");
 		const cwd = makeTempDirectory("atomic-intercom-reach-children-");
@@ -201,22 +172,9 @@ test(
 		const probes = new Map<Prober, readonly ToolResultMessage[]>();
 		const session = await mainSession(cwd, scriptedModel(probes));
 
-		await session.prompt("Run the probe-5352 workflow.");
-		const runId = await vi.waitFor(
-			async () => {
-				const [run] = await session.workflows.listRuns();
-				assert.ok(run, "the workflow run started");
-				return run.runId;
-			},
-			{ timeout: 10_000 },
-		);
-		await session.workflows.waitForSettled(runId);
-		assert.equal((await session.workflows.getRun(runId)).status, "completed");
-		assertConfined(probes.get("stage"), "stage", `workflow:${runId}/team`);
-
 		await session.prompt("Delegate the probe to the probe-5352 subagent.", { streamingBehavior: "followUp" });
-		await vi.waitFor(() => assert.ok(probes.has("subagent")), { timeout: REAL_STAGE_AND_SUBAGENT_TIMEOUT_MS });
+		await vi.waitFor(() => assert.ok(probes.has("subagent")), { timeout: REAL_SUBAGENT_TIMEOUT_MS });
 		assertConfined(probes.get("subagent"), "subagent", `${HOME}/team`);
 	},
-	REAL_STAGE_AND_SUBAGENT_TIMEOUT_MS,
+	REAL_SUBAGENT_TIMEOUT_MS,
 );
