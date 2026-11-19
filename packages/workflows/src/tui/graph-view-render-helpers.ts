@@ -633,7 +633,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				out += `${bg}${this._edgeSegment(edgeRow, cursor, card.startCol)}`;
 				cursor = card.startCol;
 			}
-			out += card.line;
+			// Column slicing can drop the closing reset. Keep the card's style inside its border.
+			out += `${card.line}${RESET}`;
 			cursor += card.width;
 		}
 		// Trailing edge tail — same bg re-priming.
