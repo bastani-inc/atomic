@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { describe, test } from "vitest";
 import {
 	collectConfiguredRequiredChecks,
@@ -7,8 +7,10 @@ import {
 	evaluatePreparationReuse,
 	evaluatePublishRuns,
 	evaluateRequiredChecks,
+	mergeExactHead,
 	type PollClock,
 	type PublishRun,
+	pollPublish,
 	pollRequiredChecks,
 	prereleaseVersionPattern,
 	type ReleaseCommandResult,
@@ -16,10 +18,9 @@ import {
 	type RequiredChecksSnapshot,
 	releaseVersionPattern,
 	validateReleaseRequest,
-} from "../../.atomic/workflows/lib/publish-release.js";
-import publishRelease from "../../.atomic/workflows/publish-release.js";
+} from "../../scripts/release/publish-release-gates.js";
+import { bunExecutable } from "../helpers/runtime.js";
 
-const workflowSource = (): string => readFileSync(".atomic/workflows/publish-release.ts", "utf8");
 const headSha = "1".repeat(40);
 const baseSha = "2".repeat(40);
 const releaseSha = "3".repeat(40);
@@ -116,7 +117,7 @@ function apiPull() {
 		state: "open",
 		merged: false,
 		base: { ref: "main", repo: { full_name: "bastani-inc/atomic" } },
-		head: { ref: release.branch, sha: headSha },
+		head: { ref: release.branch, sha: headSha, repo: { full_name: "bastani-inc/atomic" } },
 	};
 }
 
@@ -181,27 +182,118 @@ describe("publish-release request validation", () => {
 	});
 });
 
-test("invalid versions return the declared structured failure output", async () => {
-	for (const [release_kind, target_version] of [
-		["release", "v1.2.3"],
-		["prerelease", "1.2.3"],
+test("the preparation CLI rejects invalid release requests before reading the repository", () => {
+	for (const [kind, version, base, expected] of [
+		["release", "v1.2.3", "main", /target_version/u],
+		["prerelease", "1.2.3", "main", /target_version/u],
+		["release", "1.2.3", "origin/main", /canonical remote branch name/u],
 	] as const) {
-		const result = await publishRelease.run({ inputs: { target_version, release_kind, base_ref: "main" } } as never);
-		assert.equal(result.status, "failed");
-		assert.equal(result.target_version, target_version);
-		assert.equal(result.release_kind, release_kind);
-		assert.equal(result.branch, `${release_kind}/${target_version}`);
-		assert.match(result.summary, /validate-release-request/u);
+		const result = spawnSync(
+			bunExecutable(),
+			[
+				"scripts/release/publish-release.ts",
+				"inspect-preparation",
+				"--kind",
+				kind,
+				"--version",
+				version,
+				"--base",
+				base,
+				"--dry-run",
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(result.status, 1, result.stderr);
+		assert.match(JSON.parse(result.stdout).summary, expected);
 	}
 });
 
-test("invalid base refs return the declared structured failure output", async () => {
-	const result = await publishRelease.run({
-		inputs: { target_version: "1.2.3", release_kind: "release", base_ref: "origin/main" },
-	} as never);
-	assert.equal(result.status, "failed");
-	assert.match(result.summary, /validate-release-base-ref/u);
-	assert.match(result.summary, /canonical remote branch name/u);
+test("exact-head merge refuses changed PRs and absent or failed checks; a verified dry run has no side effects", async () => {
+	for (const state of ["drift", "wrong PR", "missing", "failed", "inconsistent merge", "passed", "execute"] as const) {
+		let prReads = 0;
+		let merged = false;
+		const transport = fakeTransport((argv) => {
+			const cmd = argv.join(" ");
+			const prep = exactPreparationResponse(argv);
+			if (prep) return prep;
+			if (cmd.endsWith("/pulls/42")) {
+				const pr = apiPull();
+				if (state === "drift") pr.head.sha = "7".repeat(40);
+				if (state === "wrong PR") pr.number = 43;
+				prReads++;
+				if (merged || (state === "inconsistent merge" && prReads === 2))
+					return commandResult(
+						JSON.stringify({ ...pr, state: "closed", merged: true, merge_commit_sha: baseSha }),
+					);
+				return commandResult(JSON.stringify(pr));
+			}
+			if (cmd.includes(`commits/${headSha}?`))
+				return commandResult(
+					JSON.stringify({
+						sha: headSha,
+						parents: [{ sha: baseSha }],
+						files: [{ filename: "packages/coding-agent/CHANGELOG.md" }],
+					}),
+				);
+			if (cmd.includes("/protection/required_status_checks"))
+				return commandResult(JSON.stringify({ checks: [{ context: "ci", app_id: 1 }] }));
+			if (cmd.includes("/rules/branches")) return commandResult("[]");
+			if (cmd.includes("/check-runs"))
+				return commandResult(
+					JSON.stringify({
+						check_runs:
+							state === "missing"
+								? []
+								: [
+										{
+											id: 1,
+											name: "ci",
+											status: "completed",
+											conclusion: state === "failed" ? "failure" : "success",
+											app: { id: 1 },
+										},
+									],
+					}),
+				);
+			if (cmd.includes("/status?")) return commandResult('{"statuses":[]}');
+			if (state === "execute") {
+				if (cmd === `gh pr merge ${pullRequest.url} --squash --match-head-commit ${headSha}`) {
+					merged = true;
+					return commandResult();
+				}
+				if (
+					cmd === "git switch main" ||
+					cmd === "git fetch --no-tags origin refs/heads/main" ||
+					cmd === "git pull --ff-only origin main" ||
+					cmd === `git merge-base --is-ancestor ${baseSha} ${baseSha}`
+				)
+					return commandResult();
+				if (cmd === "git rev-parse HEAD") return commandResult(baseSha);
+				if (cmd === "git branch --show-current") return commandResult("main");
+			}
+			throw Error(`Unexpected operation: ${cmd}`);
+		});
+		const gate = mergeExactHead(
+			{
+				cwd: "/unused",
+				baseRef: "main",
+				release,
+				pullRequest,
+				signal: new AbortController().signal,
+				dryRun: state === "passed",
+			},
+			transport,
+		);
+		if (state === "passed") assert.equal((await gate).action, "would-merge-exact-head");
+		else if (state === "execute") {
+			assert.equal((await gate).baseSha, baseSha);
+			assert.equal(merged, true);
+		} else
+			await assert.rejects(
+				gate,
+				/Expected open or merged|pending or not yet created|terminal failure|merged state changed/u,
+			);
+	}
 });
 
 test("an empty configured required-check set fails closed", () => {
@@ -262,6 +354,7 @@ test("preparation adapter treats an absent local prerelease branch as preparatio
 
 	assert.deepEqual(result, {
 		mode: "prepare",
+		baseSha,
 		summary: `No existing ${prerelease.branch} branch or open PR; prepare from ${baseSha}.`,
 	});
 });
@@ -734,6 +827,28 @@ test("release-0.9.15 CI regression polls through delayed materialization and tim
 	assert.match(timedOut.summary, /timed out after 20 ms/u);
 });
 
+test("absent CI and publish evidence block after 45 and 60 minutes respectively", async () => {
+	const signal = new AbortController().signal;
+	const ciClock = fakeClock();
+	const ci = await pollRequiredChecks({
+		expected: expectedCi,
+		signal,
+		clock: ciClock,
+		inspect: async () => ciSnapshot(),
+	});
+	assert.equal(ci.status, "failed");
+	assert.equal(ciClock.elapsed(), 45 * 60_000);
+	const publishClock = fakeClock();
+	const publish = await pollPublish({
+		expected: expectedPublish,
+		signal,
+		clock: publishClock,
+		inspect: async () => [],
+	});
+	assert.equal(publish.status, "failed");
+	assert.equal(publishClock.elapsed(), 60 * 60_000);
+});
+
 test("polling propagates aborts and inspection errors", async () => {
 	const aborted = new AbortController();
 	aborted.abort(new Error("operator stopped release"));
@@ -926,9 +1041,6 @@ test("a completed publish run with a failure conclusion retains the failed resul
 
 test("safe fake-boundary E2E executes production Git/GitHub adapters through delayed CI and publish", async () => {
 	const controller = new AbortController();
-	const toolCalls: string[] = [];
-	const taskCalls: string[] = [];
-	const sideEffects: string[] = [];
 	let checkRunCalls = 0;
 	let publishCalls = 0;
 	const transport = fakeTransport((argv) => {
@@ -997,65 +1109,27 @@ test("safe fake-boundary E2E executes production Git/GitHub adapters through del
 		}
 		throw new Error(`unexpected fake command: ${command}`);
 	});
-	const ctx = {
-		inputs: { target_version: "1.2.3", release_kind: "release", base_ref: "main" },
-		cwd: "/safe/fake/repository",
-		releaseBoundaryOptions: {
-			transport,
-			clock: fakeClock(),
-			requiredCheckIntervalMs: 1,
-			requiredCheckTimeoutMs: 5,
-			publishIntervalMs: 1,
-			publishTimeoutMs: 5,
-		},
-		tool: async (
-			name: string,
-			_input: object,
-			callback: (input: { readonly signal: AbortSignal }) => Promise<unknown>,
-		) => {
-			toolCalls.push(name);
-			return await callback({ signal: controller.signal });
-		},
-		task: async (name: string) => {
-			taskCalls.push(name);
-			if (name === "merge-exact-head-and-sync-base") {
-				sideEffects.push("fake exact-head merge/base sync");
-				return {
-					structured: {
-						status: "succeeded",
-						summary: "exact head merged and base synchronized",
-						base_sha: baseSha,
-					},
-				};
-			}
-			if (name === "cut-and-push-release-tag") {
-				sideEffects.push("fake detached tag verification");
-				return { structured: { status: "succeeded", summary: "detached tag verified", release_sha: releaseSha } };
-			}
-			throw new Error(`unexpected fake task ${name}`);
-		},
-		exit: (options: { readonly reason?: string }) => {
-			throw new Error(options.reason ?? "unexpected workflow exit");
-		},
-	};
-
-	const result = await publishRelease.run(ctx as never);
-	assert.equal(result.status, "completed");
-	assert.equal(result.pr_url, pullRequest.url);
-	assert.equal(result.tag, "1.2.3");
+	const cwd = "/safe/fake/repository";
+	const boundary = createReleaseBoundary(cwd, { transport, clock: fakeClock() });
+	const signal = controller.signal;
+	const preparation = await boundary.inspectPreparation({ cwd, release, baseRef: "main", signal });
+	assert.equal(preparation.mode, "reuse");
+	const ci = await boundary.waitForRequiredChecks({
+		release,
+		baseRef: "main",
+		pullRequest: preparation.pullRequest,
+		signal,
+	});
+	assert.equal(ci.status, "passed");
+	const publish = await boundary.waitForPublish({ release, releaseSha, signal });
+	assert.equal(publish.status, "passed");
 	assert.equal(checkRunCalls, 3);
 	assert.equal(publishCalls, 2);
-	assert.deepEqual(toolCalls, ["inspect-release-preparation", "wait-required-ci", "wait-publish-action"]);
-	assert.deepEqual(taskCalls, ["merge-exact-head-and-sync-base", "cut-and-push-release-tag"]);
-	assert.deepEqual(sideEffects, ["fake exact-head merge/base sync", "fake detached tag verification"]);
 	assert.ok(transport.calls.every((argv) => argv[0] === "git" || argv[0] === "gh"));
 	assert.ok(transport.signals.every((signal) => signal === controller.signal));
 });
 
 test("release-0.9.15 retry regression blocks a stale dirty checkout before reuse or mutation", async () => {
-	const source = workflowSource();
-	assert.match(source, /preparationInspection\.mode === "reuse"/u);
-	assert.doesNotMatch(source, /git reset|reset --hard|push --force/u);
 	const transport = fakeTransport((argv) => {
 		const response = exactPreparationResponse(argv, " M packages/coding-agent/CHANGELOG.md");
 		if (response !== undefined) return response;
@@ -1072,35 +1146,15 @@ test("release-0.9.15 retry regression blocks a stale dirty checkout before reuse
 		throw new Error(`unexpected fake command: ${command}`);
 	});
 
-	let taskCalled = false;
+	const cwd = "/safe/fake/repository";
 	await assert.rejects(
-		async () =>
-			await publishRelease.run({
-				inputs: { target_version: "1.2.3", release_kind: "release", base_ref: "main" },
-				cwd: "/safe/fake/repository",
-				releaseBoundaryOptions: { transport },
-				tool: async (
-					_name: string,
-					_input: object,
-					callback: (input: { readonly signal: AbortSignal }) => Promise<unknown>,
-				) => await callback({ signal: new AbortController().signal }),
-				task: async () => {
-					taskCalled = true;
-				},
-			} as never),
+		createReleaseBoundary(cwd, { transport }).inspectPreparation({
+			cwd,
+			release,
+			baseRef: "main",
+			signal: new AbortController().signal,
+		}),
 		/not clean.*CHANGELOG\.md/u,
 	);
-	assert.equal(taskCalled, false);
-});
-
-test("workflow uses durable finite external gates and preserves versionless detached release contracts", () => {
-	const source = workflowSource();
-	assert.match(source, /ctx\.tool\([\s\S]*"wait-required-ci"/u);
-	assert.match(source, /ctx\.tool\([\s\S]*"wait-publish-action"/u);
-	assert.match(source, /REQUIRED_CHECK_TIMEOUT_MS \+ RELEASE_TOOL_TIMEOUT_BUFFER_MS/u);
-	assert.match(source, /PUBLISH_TIMEOUT_MS \+ RELEASE_TOOL_TIMEOUT_BUFFER_MS/u);
-	assert.doesNotMatch(source, /inspectGate|watch-required-CI|watch-publish-action/u);
-	assert.match(source, /package manifests, lockfiles, Cargo files, and generated version files remain at 0\.0\.0/u);
-	assert.match(source, /scripts\/cut-release\.ts \$\{release\.version\} --base \$\{baseRef\} --push --yes/u);
-	assert.doesNotMatch(source, /gh workflow run|workflow_dispatch|environment:\s*npm-publish/u);
+	assert.deepEqual(transport.calls, [["git", "status", "--porcelain=v1", "--untracked-files=all"]]);
 });
