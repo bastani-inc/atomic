@@ -49,10 +49,11 @@ export function provideStageQuestion(
 	promptId: string,
 	kind: StageInputKind,
 	params: QuestionParams,
+	owner?: AbortSignal,
 ): boolean {
 	const adapter = buildStagePromptAdapter(promptId, kind, params, Date.now());
 	if (adapter === undefined) return false;
-	broker.provideStagePrompt(runId, stageId, adapter);
+	broker.provideStagePrompt(runId, stageId, adapter, owner);
 	return true;
 }
 
@@ -71,6 +72,7 @@ export function presentStageQuestion(input: {
 	readonly kind: StageInputKind;
 	readonly params: QuestionParams;
 	readonly signal: AbortSignal;
+	readonly owner?: AbortSignal;
 }): {
 	readonly result: Promise<StageQuestionResult | undefined>;
 	readonly answered: () => { readonly value: QuestionnaireResult } | undefined;
@@ -79,7 +81,7 @@ export function presentStageQuestion(input: {
 	let answered: { readonly value: QuestionnaireResult } | undefined;
 	const read = () => answered;
 	try {
-		provideStageQuestion(broker, runId, stageId, promptId, kind, params);
+		provideStageQuestion(broker, runId, stageId, promptId, kind, params, input.owner);
 		const execute = stageQuestionTool(kind).execute;
 		if (execute === undefined) return { result: Promise.resolve(undefined), answered: read };
 		// The tool renders through `ctx.ui.custom`; the stage's broker shows that form on the stage.
@@ -87,7 +89,16 @@ export function presentStageQuestion(input: {
 			hasUI: true,
 			ui: {
 				custom: <T>(factory: PiCustomOverlayFactory<T>, options?: PiCustomOverlayOptions): Promise<T> => {
-					const value = broker.requestCustomUi(runId, stageId, factory, options, signal);
+					const value = broker.requestCustomUi(
+						runId,
+						stageId,
+						factory,
+						options,
+						signal,
+						undefined,
+						undefined,
+						input.owner,
+					);
 					value.then(
 						(raw) => {
 							answered = { value: raw as QuestionnaireResult };

@@ -1,9 +1,11 @@
 import {
 	type Component,
+	clickableKeysHint,
 	Editor,
 	type Focusable,
 	Input,
 	Key,
+	type KeyId,
 	matchesKey,
 	type TUI,
 	truncateToWidth,
@@ -546,12 +548,13 @@ export class HostInputFormComponent implements Component, Focusable {
 	}
 
 	private footerRow(): string {
-		const key = (k: string): string => this.theme.fg("accent", k);
 		const dim = (t: string): string => this.theme.fg("dim", t);
+		const hint = (keyText: string, key: KeyId, label: string): string =>
+			clickableKeysHint([{ text: this.theme.fg("accent", keyText), key }], ` ${dim(label)}`);
 		const sep = dim(" · ");
 		const focused = this.fields[this.focusedIndex];
 		const enter = focused === undefined ? "submit" : focused.type === "text" ? "new line" : "next";
-		return `${key("enter")} ${dim(enter)}${sep}${key("tab")} ${dim("between fields")}${sep}${key("esc")} ${dim("cancel")}`;
+		return `${hint("enter", "enter", enter)}${sep}${hint("tab", "tab", "between fields")}${sep}${hint("esc", "escape", "cancel")}`;
 	}
 
 	private frame(body: readonly string[], inner: number, cw: number, boxWidth: number): string[] {

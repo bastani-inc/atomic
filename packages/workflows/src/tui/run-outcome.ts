@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { sliceHead } from "@bastani/atomic";
+import { clickableHintText, sliceHead } from "@bastani/atomic";
 import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
@@ -591,7 +591,9 @@ export function renderRunOutcome(
 			);
 			if (index === selected) {
 				selectedRow = lines.length - 1;
-				lines.push(fit(`${indent}    ${paint(t?.dim, blocker.action)}`));
+				// Enter acts on the selected blocker, so a click on its action line runs Enter on it.
+				const action = t === undefined ? blocker.action : clickableHintText(blocker.action);
+				lines.push(fit(`${indent}    ${paint(t?.dim, action)}`));
 			}
 		});
 	}

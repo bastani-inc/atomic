@@ -399,6 +399,24 @@ test("a trigger with a byte-order mark inside a literal, a quoted name, a commen
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'events_marked'"), 1);
 });
 
+test("one statement followed by a byte-order mark after its semicolon lands once after the server answered it schema-changed, also under churn (#5676)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	// SQLite reads the mark after the `;` as white space, and sqld runs such a text as one statement: nothing else runs.
+	fake.fail(SCHEMA_CHANGED);
+	await database.exec("INSERT INTO events VALUES (1);\uFEFF");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+	fake.churnSchema(true);
+	try {
+		await database.exec("INSERT INTO events VALUES (2);\uFEFF");
+		await database.run("INSERT INTO events VALUES (3);\uFEFF");
+	} finally {
+		fake.churnSchema(false);
+	}
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 3);
+});
+
 test("a read that starts with WITH or VALUES the server answered schema-changed is sent again as it was, while a WITH that writes lands once under churn", async () => {
 	const fake = await server();
 	const database = await open(fake.url);

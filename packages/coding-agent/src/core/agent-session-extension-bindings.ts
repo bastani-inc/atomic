@@ -22,7 +22,7 @@ import {
 	startupCleanupFailureMessage,
 } from "./extension-startup-failure.ts";
 import { hostInputError } from "./extensions/host-input.js";
-import { ExtensionRunner } from "./extensions/index.js";
+import { type ExtensionError, ExtensionRunner } from "./extensions/index.js";
 import {
 	factoryAcquisitions,
 	factoryRollbackError,
@@ -30,6 +30,7 @@ import {
 } from "./extensions/loader-rollback.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
+import { startupErrorHandlerTokens } from "./extensions/runner-events.ts";
 import type { ExtensionRuntime, ProviderConfig, RegisteredTool } from "./extensions/types.ts";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
@@ -198,9 +199,14 @@ async function extendRunnerResources(
 	runner: ExtensionRunner,
 	loader: ResourceLoader,
 	reason: "startup" | "reload",
+	reportError?: (error: ExtensionError) => void,
 ): Promise<void> {
 	if (!runner.hasHandlers("resources_discover")) return;
-	const { skillPaths, promptPaths, themePaths } = await runner.emitResourcesDiscover(session._cwd, reason);
+	const { skillPaths, promptPaths, themePaths } = await runner.emitResourcesDiscover(
+		session._cwd,
+		reason,
+		reportError,
+	);
 	if (session._disposed) throw hostInputError("SessionClosed");
 	if (skillPaths.length === 0 && promptPaths.length === 0 && themePaths.length === 0) return;
 	const extensionPaths: ResourceExtensionPaths = {
@@ -216,8 +222,26 @@ const failedExtensionStarts = new WeakSet<ExtensionRunner>();
 // Binding intent is session-local and survives runner reloads, even when a host object is reused.
 const humanInputBindingRevisions = new WeakMap<AgentSession, number>();
 const presentationOnlyBindings = new WeakMap<AgentSession, boolean>();
+// Sessions whose host reports startup handler errors instead of failing the start (`reportStartupErrors`).
+const startupErrorReports = new WeakMap<AgentSession, boolean>();
 const statusSinks = new WeakMap<AgentSession, NonNullable<ExtensionBindings["onStatus"]>>();
 const sessionSummaryBackfills = new WeakSet<AgentSession>();
+// The `session_start` and `resources_discover` failures each session's startup reported. One startup can run a handler
+// twice: settling project trust discovers resources again for the completed extension set, and a startup that deferred
+// its extensions reloads them. Its host hears each failure once; a later `/reload` reports its failures again.
+const startupFailureReports = new WeakMap<AgentSession, Set<string>>();
+
+/** Records a startup failure; false when this session's startup already reported the same one. */
+function recordStartupFailure(session: AgentSession, error: ExtensionError): boolean {
+	const token = startupErrorHandlerTokens.get(error);
+	if (token === undefined) return true;
+	const key = JSON.stringify([token, error.event, error.error]);
+	const reported = startupFailureReports.get(session) ?? new Set<string>();
+	startupFailureReports.set(session, reported);
+	if (reported.has(key)) return false;
+	reported.add(key);
+	return true;
+}
 
 function startExtensions(
 	session: AgentSession,
@@ -231,9 +255,16 @@ function startExtensions(
 	const start = trackSessionWork(session, () =>
 		Promise.resolve().then(async () => {
 			const failures: ExtensionStartupFailure[] = [];
+			const reportsStartupErrors = startupErrorReports.get(session) === true;
+			// The session's error listener hears only the runner it is bound to. A reload's candidate runner is bound after
+			// it commits, so the startup errors it reports are handed to that listener here.
+			const reportStartupError =
+				reportsStartupErrors && runner !== session._extensionRunner ? session._extensionErrorListener : undefined;
 			const unsubscribe = runner.onError((error) => {
 				if (error.event === "session_start" || error.event === "resources_discover") {
 					failures.push({ extensionPath: error.extensionPath, event: error.event, message: error.error });
+					if (event.reason !== "reload" && !recordStartupFailure(session, error)) return;
+					reportStartupError?.(error);
 				}
 			});
 			try {
@@ -246,7 +277,8 @@ function startExtensions(
 					await session.sessionManager.loadFullHistory();
 				await runner.emit(event);
 				await extendRunnerResources(session, runner, loader, event.reason === "reload" ? "reload" : "startup");
-				if (failures.length) throw new ExtensionStartupError(failures);
+				// A reported failure leaves the extension loaded, as a failing handler for any other event does.
+				if (failures.length && !reportsStartupErrors) throw new ExtensionStartupError(failures);
 				await finalize?.();
 				if (runner === session.extensionRunner) runner.reportUnhandledMcpServers();
 				completeStartup(runner);
@@ -294,6 +326,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 		this._extensionMode = bindings.mode;
 	}
 	if (bindings.isPresentationOnly !== undefined) presentationOnlyBindings.set(this, bindings.isPresentationOnly);
+	if (bindings.reportStartupErrors !== undefined) startupErrorReports.set(this, bindings.reportStartupErrors);
 	if (bindings.onStatus !== undefined) statusSinks.set(this, bindings.onStatus);
 	if (bindings.commandContextActions !== undefined) {
 		this._extensionCommandContextActions = bindings.commandContextActions;
@@ -312,6 +345,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	});
 	migrateSavedCompactionModel(this);
 	scheduleOpeningSummary(this);
+	scheduleOpeningCollection(this);
 }
 
 /**
@@ -324,6 +358,17 @@ function migrateSavedCompactionModel(session: AgentSession): void {
 
 export async function _waitForExtensionStart(this: AgentSession): Promise<void> {
 	await extensionStarts.get(this._extensionRunner);
+}
+
+/**
+ * Schedules the snapshot blob collection of an interactive session once it has started (#5530), as the opening summary
+ * is scheduled: a session that only closes when its process quits would otherwise never collect, because a collection
+ * scheduled at close starts after a delay the process does not wait for.
+ */
+function scheduleOpeningCollection(session: AgentSession): void {
+	if (presentationOnlyBindings.get(session) || (session._extensionMode !== "tui" && session._extensionMode !== "rpc"))
+		return;
+	session._worktreeSnapshots.scheduleCollection();
 }
 
 function scheduleOpeningSummary(session: AgentSession): void {
@@ -1145,7 +1190,14 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 		await this.refreshCurrentModelFromRegistry();
 		await startNewcomers();
 		assertSessionOpen(this);
-		await this.extendResourcesFromExtensions("startup");
+		// Discovery runs again for the completed extension set, so the extensions started before trust was settled run
+		// their handlers a second time. A failure they already reported during this startup is not reported again.
+		const runner = this._extensionRunner;
+		await extendRunnerResources(this, runner, this._resourceLoader, "startup", (error) => {
+			if (recordStartupFailure(this, error)) runner.emitError(error);
+		});
+		assertSessionOpen(this);
+		this._rebuildSystemPrompt(this.getActiveToolNames());
 		// Startup completes once the project's trust is settled and its extensions are loaded: a trusted project's
 		// selection and a model those extensions register are both known now.
 		migrateSavedCompactionModel(this);

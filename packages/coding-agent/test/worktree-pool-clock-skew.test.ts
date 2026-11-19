@@ -111,6 +111,21 @@ function assertNoProbes(directory: string, leftBefore: readonly string[] = []): 
 	);
 }
 
+/**
+ * Asserts that no probe of the filesystem's clock was left in `directory` by a live process that holds `lock` and keeps
+ * refreshing it, each refresh through probes there: a refresh still running when `directory` is read has its probe
+ * there until it ends, so the probes found are looked for again once `lock` was refreshed since (#5605).
+ */
+async function assertNoProbesLeftByLiveHolder(directory: string, lock: string): Promise<void> {
+	const found = probes(directory);
+	const refreshed = statSync(lock).mtimeMs;
+	while (found.length > 0 && statSync(lock).mtimeMs === refreshed) await sleep(50);
+	assert.deepEqual(
+		probes(directory).filter((name) => found.includes(name)),
+		[],
+	);
+}
+
 /** Runs `source` in a Bun child, resolving once it prints its first line; `ask` sends it a line and resolves its answer. */
 async function runChild(
 	name: string,
@@ -224,7 +239,7 @@ test(
 		const resumed = await resumeSessionWorktree(s2, pool());
 		assert.equal(resumed.status === "restored" && resumed.mappings[0]!.to, slot(snapshot, 1));
 		assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s1));
-		assertNoProbes(poolDirectory(snapshot));
+		await assertNoProbesLeftByLiveHolder(poolDirectory(snapshot), leaseOf(snapshot));
 	},
 	TIMEOUT_MS,
 );
@@ -265,7 +280,7 @@ test(
 		await assert.rejects(lockShared(path, { realpath: false, stale: STALE_MS }), { code: "ELOCKED" });
 		// Its holder refreshed it twice meanwhile, each time finding the lock as it left it.
 		assert.equal(await ask("status"), "held");
-		assertNoProbes(sandbox.path("."));
+		await assertNoProbesLeftByLiveHolder(sandbox.path("."), `${path}.lock`);
 	},
 	TIMEOUT_MS,
 );

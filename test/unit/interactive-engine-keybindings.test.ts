@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
+import { stripHintMarkers, type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";
@@ -130,7 +130,7 @@ async function renderGroupedReads(client: RpcClient, expanded: boolean, requestI
 		imageWidthCells: 80,
 		groupRole: { kind: "head", clauses: [{ family: "read", count: 3 }] },
 	});
-	return stripAnsi((await frame).lines.join("\n"));
+	return stripAnsi(stripHintMarkers((await frame).lines.join("\n")));
 }
 
 async function renderCustom(client: RpcClient, componentId: string, requestId: number): Promise<string> {
@@ -142,7 +142,7 @@ async function renderCustom(client: RpcClient, componentId: string, requestId: n
 		width: 120,
 		rows: 40,
 	});
-	return stripAnsi((await frame).lines.join("\n"));
+	return stripAnsi(stripHintMarkers((await frame).lines.join("\n")));
 }
 
 function writeExpandBinding(agentDir: string, binding: string | string[]): void {
