@@ -8,13 +8,15 @@ import { poolStageOptions } from "./pool-stage-options.js";
 import { processIdentity, processInstance } from "./process-instance.js";
 
 export const exitChild = workflow({
-	name: "pool-exit-child", description: "Exits after the root sees it running", inputs: { release: Type.String(), length: Type.Number() }, outputs: {},
+	name: "pool-exit-child", description: "Exits after the root sees it running", inputs: { release: Type.String(), length: Type.Number(), fail: Type.Optional(Type.Boolean()) }, outputs: {},
 	async run(ctx) {
 		await ctx.tool("wait", {}, async () => {
 			while (!existsSync(ctx.inputs.release)) await delay(25);
 			return true;
 		});
-		return ctx.exit({ status: "completed", reason: "x".repeat(ctx.inputs.length), outputs: {} });
+		const text = "x".repeat(ctx.inputs.length);
+		if (ctx.inputs.fail) throw new Error(text);
+		return ctx.exit({ status: "completed", reason: text, outputs: {} });
 	},
 });
 

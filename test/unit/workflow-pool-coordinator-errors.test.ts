@@ -493,6 +493,55 @@ test("the root's refusal of a published attempt reaches its worker typed, on its
 	}
 });
 
+test.each(["before", "after"])(
+	"a refusal received %s completion retains only its typed error (#5646)",
+	async (when) => {
+		const f = await fixture({ workers: 1, publish: true });
+		try {
+			const worker = f.workers[0]!;
+			const work = (await worker.request({ kind: "claim" })).value as PoolWork;
+			const parent = { ...childRun(work.childRunId), parentRunId: "root", parentStageId: work.boundaryId };
+			const children = Array.from({ length: 64 }, (_, i) => ({
+				...childRun(`child-${i}`),
+				parentRunId: parent.id,
+				parentStageId: `stage-${i}`,
+			}));
+			await worker.request({ kind: "activity", runs: [parent, ...children] });
+			const batch = await f.next(isEvent("activity"));
+			const error = new PublicationRejectedError({
+				root: "root",
+				workId: work.id,
+				generation: work.generation,
+				reason: "outside-subtree",
+				runId: children[0]!.id,
+			});
+			const reject = () =>
+				f.notice({
+					kind: "published",
+					batch: batch.batch,
+					rejected: [{ workId: work.id, generation: work.generation, error: serializeError(error) }],
+				});
+			if (when === "before") reject();
+			const result = { runId: parent.id, status: "completed" as const, stages: [], toolNodes: [] };
+			assert.equal((await worker.request({ kind: "complete", result })).error, undefined);
+			if (when === "after") reject();
+			assert.equal(f.coordinator.heldWork().length, 0);
+			const failures: ReadonlyMap<string, { error: Error }> = Reflect.get(f.coordinator, "publicationFailures");
+			const retained = failures.get(work.id);
+			assert.ok(retained && isPublicationRejectedError(retained.error));
+			assert.equal(retained.error.runId, error.runId);
+			assert.ok(!JSON.stringify(retained).includes(children.at(-1)!.id), "no repair IDs survive the lease");
+			const slots: Iterable<{ repair?: unknown; retriedLinks?: unknown }> = Reflect.get(f.coordinator, "slots");
+			for (const slot of slots) {
+				assert.equal(slot.repair, undefined);
+				assert.equal(slot.retriedLinks, undefined);
+			}
+		} finally {
+			await f.close();
+		}
+	},
+);
+
 test("a corrected child link goes to the root in full before further changes (#5646)", async () => {
 	const f = await fixture({ workers: 1, publish: true });
 	try {
@@ -500,7 +549,14 @@ test("a corrected child link goes to the root in full before further changes (#5
 		const work = (await worker.request({ kind: "claim" })).value as PoolWork;
 		const parent = { ...childRun(work.childRunId), parentRunId: "root", parentStageId: work.boundaryId };
 		const nested = { ...childRun("nested"), parentRunId: parent.id, parentStageId: "call" };
-		const bad = [parent, nested];
+		// The missing stage may replace an unrelated stage, even without changing the array's length.
+		const bad = [
+			{
+				...parent,
+				stages: [{ id: "other", name: "other", status: "completed" as const, parentIds: [], toolEvents: [] }],
+			},
+			nested,
+		];
 		await worker.request({ kind: "activity", runs: bad });
 		const batch = await f.next(isEvent("activity"));
 		const rejection = new PublicationRejectedError({
@@ -566,19 +622,34 @@ test("alternating incomplete trees cost one full refusal; fixing both links gets
 			parentRunId: work.childRunId,
 			parentStageId: `call-${id}`,
 		}));
+		let unrelatedReads = 0;
+		const unrelated = () =>
+			Array.from({ length: 4096 }, (_, index) => ({
+				get id() {
+					unrelatedReads++;
+					return `tool-${index}`;
+				},
+				name: "tool",
+				status: "completed" as const,
+				parentIds: [],
+				toolEvents: [],
+			}));
 		const tree = (missing?: string) => [
 			{
 				...childRun(work.childRunId),
 				parentRunId: "root",
 				parentStageId: work.boundaryId,
-				stages: children.map((child) => ({
-					id: child.parentStageId,
-					name: child.id,
-					status: "failed" as const,
-					parentIds: [],
-					toolEvents: [],
-					startedChildRunId: child.id === missing ? undefined : child.id,
-				})),
+				stages: [
+					...unrelated(),
+					...children.map((child) => ({
+						id: child.parentStageId,
+						name: child.id,
+						status: "failed" as const,
+						parentIds: [],
+						toolEvents: [],
+						startedChildRunId: child.id === missing ? undefined : child.id,
+					})),
+				],
 			},
 			...children,
 		];
@@ -601,14 +672,19 @@ test("alternating incomplete trees cost one full refusal; fixing both links gets
 			complete = tree();
 		await activity(left);
 		reject((await f.next(isEvent("activity"))).batch);
+		unrelatedReads = 0;
+		assert.equal(refusal(await activity(tree("left"))).message, rejection.message);
+		const unchanged = unrelatedReads;
 		for (const snapshot of [right, left, right, left])
 			assert.equal(refusal(await activity(snapshot)).message, rejection.message);
 		const after = f.events.length;
 		assert.equal((await activity(complete)).error, undefined);
 		const retry = await f.next(isEvent("activity"), after);
 		assert.deepEqual(retry.entries[0]!.runs, complete);
-		const beforeAck = worker.ask({ kind: "activity", runs: complete });
+		unrelatedReads = 0;
+		const beforeAck = worker.ask({ kind: "activity", runs: tree() });
 		await worker.request({ kind: "control" });
+		const awaitingReceipt = unrelatedReads;
 		const next = f.events.length;
 		f.notice({ kind: "published", batch: retry.batch, rejected: [] });
 		assert.equal((await beforeAck.reply).error, undefined);
@@ -618,10 +694,16 @@ test("alternating incomplete trees cost one full refusal; fixing both links gets
 		const last = f.events.length;
 		await activity(left);
 		reject((await f.next(isEvent("activity"), last)).batch);
+		unrelatedReads = 0;
 		assert.equal(
-			refusal(await activity(complete)).message,
+			refusal(await activity(tree())).message,
 			rejection.message,
 			"the same denied links already used their retry",
+		);
+		assert.deepEqual(
+			{ unchanged, awaitingReceipt, spent: unrelatedReads },
+			{ unchanged: 0, awaitingReceipt: 0, spent: 0 },
+			"local refusals skip unrelated stages",
 		);
 	} finally {
 		await f.close();

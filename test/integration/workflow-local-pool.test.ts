@@ -23,9 +23,9 @@ beforeAll(async () => {
 	assert.ok(await fileExists(workerEntry), "packaged worker missing; run npm run build first");
 });
 
-test(
-	"a pooled child that already published its activity stores a large exit reason only once (#5662)",
-	async () => {
+test.each(["exitReason", "error"] as const)(
+	"a pooled child that already published its activity stores a large %s only once (#5662)",
+	async (field) => {
 		const directory = makeTempDirectory("pool-exit-reason-");
 		const path = join(directory, "journal.sqlite");
 		const journal = await resolveRunJournal({ journal: { path } });
@@ -62,7 +62,9 @@ test(
 					inputs: {},
 					outputs: {},
 					async run(ctx) {
-						await ctx.workflow(child, { inputs: { length, release } });
+						const called = ctx.workflow(child, { inputs: { length, release, fail: field === "error" } });
+						if (field === "error") await assert.rejects(called);
+						else await called;
 						return {};
 					},
 				}),
@@ -75,8 +77,9 @@ test(
 			const [work] = await queue.inspect(result.runId);
 			assert.ok(work);
 			const stored = await queue.result(result.runId, work.id);
-			assert.ok(stored && stored.exitReason === "x".repeat(length));
-			assert.equal(JSON.stringify(stored).split(stored.exitReason).length - 1, 1);
+			const text = "x".repeat(length);
+			assert.ok(stored && stored[field] === text);
+			assert.equal(JSON.stringify(stored).split(text).length - 1, 1);
 		} finally {
 			unsubscribe();
 			await pool.close();

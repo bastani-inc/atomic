@@ -315,6 +315,34 @@ function rerunsOnRootResume(result: WorkflowSerializableObject): boolean {
 	return failedOnPoolFault(result) || refusedAtChildStart(result);
 }
 
+interface RefusedChildLink {
+	readonly id: string;
+	readonly child: number;
+	readonly parent: number;
+	readonly stage: number;
+}
+
+/** Remember positions, not the refused tree. A later offer may reorder runs and stages. */
+function refusedChildLink(runs: readonly RunSnapshot[], id: string): RefusedChildLink {
+	const child = runs.findIndex((run) => run.id === id);
+	const { parentRunId, parentStageId } = runs[child]!;
+	const parent = runs.findIndex((run) => run.id === parentRunId);
+	const stage = runs[parent]?.stages.findIndex((item) => item.id === parentStageId) ?? -1;
+	return { id, child, parent, stage };
+}
+
+/** Only short-circuit on a still-broken edge. Changed positions go through the full repair check. */
+function stillUnlinked(runs: readonly RunSnapshot[], link: RefusedChildLink, maySearch: boolean): boolean {
+	const child = runs[link.child];
+	const parent = runs[link.parent];
+	if (child?.id !== link.id || parent === undefined || parent.id !== child.parentRunId) return false;
+	if (parent.stages.length === 0) return true;
+	if (link.stage < 0 && !maySearch && parent.stages.length > 1) return false;
+	const stage = link.stage < 0 ? parent.stages.find((s) => s.id === child.parentStageId) : parent.stages[link.stage];
+	if (stage === undefined) return link.stage < 0;
+	return stage.id === child.parentStageId && authoritativeWorkflowChildRunId(stage) !== child.id;
+}
+
 /** Nested child links in a full publication. False means its parent is present but does not name the child;
  * undefined means the child does not identify a parent stage in this publication. Only checked on the repair path. */
 function publishedChildLinks(runs: readonly RunSnapshot[], root: string): Map<string, boolean | undefined> {
@@ -575,6 +603,14 @@ interface WorkerSlot {
 	readonly deliveries: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
 	/** Runs the current attempt published, so a stage watch can find the worker that runs it. */
 	readonly runs: Set<string>;
+	/** Only the live attempt can offer a repair of this particular refusal. */
+	repair?: {
+		readonly error: Error;
+		readonly missing: readonly string[];
+		readonly key: string;
+		readonly link: RefusedChildLink;
+		offered?: PoolWorkToken;
+	};
 	/** Refused link sets for which this lease already offered a correction. */
 	retriedLinks?: Set<string>;
 	/** Stage commands awaiting the worker's result; undefined resolves a worker that exited. */
@@ -711,15 +747,7 @@ export class PoolCoordinator {
 	private readonly sentRuns = new RunChangesEncoder();
 	private readonly batches = new Map<number, { readonly entries: readonly PoolActivityEntry[]; settle(): void }>();
 	/** The root's refusal of each work's latest refused publication, bound to the attempt that published it. */
-	private readonly publicationFailures = new Map<
-		string,
-		{
-			readonly generation: number;
-			readonly error: Error;
-			readonly missing?: readonly string[];
-			offered?: PoolWorkToken;
-		}
-	>();
+	private readonly publicationFailures = new Map<string, { readonly generation: number; readonly error: Error }>();
 	private readonly requests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	private readonly deliveryRequests = new Map<number, { readonly slot: WorkerSlot; readonly workerRequest: number }>();
 	private readonly inflight = new Set<Promise<unknown>>();
@@ -998,18 +1026,20 @@ export class PoolCoordinator {
 					continue;
 				}
 				const refused = publications?.get(entry.workId);
-				let missing: string[] | undefined;
-				if (
-					isPublicationRejectedError(error) &&
-					error.reason === "outside-subtree" &&
-					error.runId !== undefined &&
-					refused?.work.generation === entry.generation
-				) {
+				this.publicationFailures.set(entry.workId, { generation: entry.generation, error });
+				if (refused?.work.generation !== entry.generation) continue;
+				const slot = this.publishingSlot(refused.work);
+				if (slot === undefined) continue; // The refusal arrived after the lease ended.
+				slot.repair = undefined;
+				if (isPublicationRejectedError(error) && error.reason === "outside-subtree" && error.runId !== undefined) {
 					const links = publishedChildLinks(refused.runs, this.root!);
-					if (links.get(error.runId) === false)
-						missing = [...links].flatMap(([id, linked]) => (linked ? [] : [id])).sort();
+					if (links.get(error.runId) === false) {
+						const missing = [...links].flatMap(([id, linked]) => (linked ? [] : [id])).sort();
+						const key = JSON.stringify(missing);
+						if (!slot.retriedLinks?.has(key))
+							slot.repair = { error, missing, key, link: refusedChildLink(refused.runs, error.runId) };
+					}
 				}
-				this.publicationFailures.set(entry.workId, { generation: entry.generation, error, missing });
 			}
 			if (this.routes !== undefined || this.publicationFailures.size > 0) {
 				const entries = batch?.entries ?? [];
@@ -1020,8 +1050,12 @@ export class PoolCoordinator {
 				if (this.publicationFailures.size > 0)
 					for (const { work } of accepted) {
 						const failure = this.publicationFailures.get(work.id);
-						if (failure?.generation === work.generation && failure.offered === work)
+						if (failure?.generation !== work.generation) continue;
+						const slot = this.publishingSlot(work);
+						if (slot?.repair?.offered === work) {
+							slot.repair = undefined;
 							this.publicationFailures.delete(work.id);
+						}
 					}
 				this.routes?.accept(accepted);
 			}
@@ -1628,6 +1662,7 @@ export class PoolCoordinator {
 		this.fleetRates?.releaseWorker(slot.worker);
 		if (work !== undefined) this.forgetProgress(work);
 		slot.work = undefined;
+		slot.repair = undefined;
 		slot.retriedLinks = undefined;
 		slot.worktree = undefined;
 		this.places.end(slot);
@@ -1985,26 +2020,45 @@ export class PoolCoordinator {
 		);
 	}
 
+	/** Receipts may arrive after the worker completed, exited, or claimed another attempt. */
+	private publishingSlot(work: PoolWorkToken): WorkerSlot | undefined {
+		for (const slot of this.slots)
+			if (slot.worker === work.worker && slot.work?.id === work.id && slot.work.generation === work.generation)
+				return slot;
+		return undefined;
+	}
+
 	/** Records the latest activity of one attempt; the root receives it with the next summary. */
-	private publish(slot: WorkerSlot, work: PoolWork, runs: readonly RunSnapshot[]): void | Promise<void> {
+	private publish(work: PoolWork, runs: readonly RunSnapshot[], source?: WorkerSlot): void | Promise<void> {
 		const entry = { work: token(work), runs };
 		const failure = this.publicationFailures.get(work.id);
 		if (failure?.generation === work.generation) {
-			if (failure.missing === undefined) throw failure.error;
-			const links = publishedChildLinks(runs, this.root!);
-			if (!failure.missing.every((id) => links.get(id)) || ![...links.values()].every(Boolean)) throw failure.error;
-			if (failure.offered !== undefined) {
-				// The worker advanced while its correction was in flight. Its next change needs the accepted base.
+			const slot = source ?? this.publishingSlot(work);
+			const repair = slot?.repair;
+			if (
+				slot === undefined ||
+				repair?.error !== failure.error ||
+				stillUnlinked(runs, repair.link, repair.offered === undefined)
+			)
+				throw failure.error;
+			const checkLinks = () => {
+				const links = publishedChildLinks(runs, this.root!);
+				if (!repair.missing.every((id) => links.get(id)) || ![...links.values()].every(Boolean))
+					throw failure.error;
+			};
+			if (repair.offered !== undefined) {
+				// Wait before checking the next update: a second refusal needs no further scan.
 				return this.flush().then(() => {
 					this.assertPublished(work);
-					if (this.attemptIsLive(slot, work)) return this.publish(slot, work, runs);
+					if (!this.attemptIsLive(slot, work)) return;
+					checkLinks();
+					return this.publish(work, runs, slot);
 				});
 			}
-			const key = JSON.stringify(failure.missing);
+			checkLinks();
 			slot.retriedLinks ??= new Set();
-			if (slot.retriedLinks.has(key)) throw failure.error;
-			slot.retriedLinks.add(key);
-			failure.offered = entry.work;
+			slot.retriedLinks.add(repair.key);
+			repair.offered = entry.work;
 			// No delta may use the refused publication as its base.
 			this.sentRuns.forget(work.id);
 		}
@@ -2702,6 +2756,8 @@ export class PoolCoordinator {
 				this.lastHeard.delete(worker);
 				this.awaiting.delete(worker);
 				this.slots.delete(slot);
+				slot.repair = undefined;
+				slot.retriedLinks = undefined;
 				this.fleetRates?.releaseWorker(slot.worker);
 				this.places.end(slot);
 				this.gateOpened();
@@ -3066,7 +3122,7 @@ export class PoolCoordinator {
 					if (work !== held) await this.holdShipping(slot, work, options.leaseMs);
 					if (message.kind === "activity") {
 						for (const run of message.runs) slot.runs.add(run.id);
-						return this.publish(slot, work, message.runs);
+						return this.publish(work, message.runs, slot);
 					}
 					if (message.kind === "stage-workspace") {
 						const shared = this.sharedPool;

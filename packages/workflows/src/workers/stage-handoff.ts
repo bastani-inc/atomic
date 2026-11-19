@@ -423,6 +423,7 @@ export class PoolStageHandoff {
 				toolNodes: result.toolNodes,
 				result: result.result,
 				error: result.error,
+				...(result.childFailureFromError ? { failureMessage: result.error } : {}),
 				...(result.exitReason !== undefined ? { exitReason: result.exitReason } : {}),
 				pendingStageMessages: [...pendingStageMessagesForDurableRun(this.backend, child.id, root)],
 			});

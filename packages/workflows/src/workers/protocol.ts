@@ -65,6 +65,8 @@ export type PooledRunResult = RunResult & {
 		RunSnapshot,
 		"inputs" | "stages" | "toolNodes" | "result" | "error" | "exitReason" | "pendingStageMessages"
 	>;
+	/** The child's failureMessage was the same text as the result's error. */
+	readonly childFailureFromError?: true;
 	readonly childExecution?: RunSnapshot["stages"][number]["workerExecution"];
 };
 

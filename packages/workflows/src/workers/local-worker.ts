@@ -810,12 +810,17 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						pendingStageMessages: _pending,
 						...childRun
 					} = child;
+					// An ordinary exception is already carried in the result's error field.
+					const sharedFailure =
+						childRun.failureMessage !== undefined && childRun.failureMessage === completed.error;
+					if (sharedFailure) delete childRun.failureMessage;
 					const { generation, renewedAt, expiresAt } = work;
 					await attemptRequests.send({
 						kind: "complete",
 						result: {
 							...completed,
 							childRun,
+							...(sharedFailure ? { childFailureFromError: true } : {}),
 							childExecution: { worker: work.worker!, generation, renewedAt, expiresAt },
 						},
 					});
