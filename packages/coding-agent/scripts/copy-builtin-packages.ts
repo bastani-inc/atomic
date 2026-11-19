@@ -466,11 +466,6 @@ await bundleEntrypoint(
 	"@bastani/workflows SDK",
 );
 await bundleLocalWorkerEntries();
-await bundleEntrypoint(
-	join(packageRoot, "src/core/export-html/extension-cards.mjs"),
-	join(distDir, "core/export-html/extension-cards.mjs"),
-	"saved-session extension cards",
-);
 
 await bundleWorkflowBuiltins();
 await bundleEntrypoint(

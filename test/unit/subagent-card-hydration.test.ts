@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -28,6 +28,7 @@ import {
 	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
 import { RemoteToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive-engine/remote-renderer.js";
+import { openExportedPage } from "../../packages/coding-agent/test/helpers/exported-page.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import {
 	renderSubagentToolCall,
@@ -412,13 +413,14 @@ test("a standalone card with a reused task ID reports missing history without re
 			`${[parent.getHeader(), ...parent.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
 		);
 		const load = vi.spyOn(store, "load");
-		const html = readFileSync(await exportFromFile(file, join(dir, "out.html")), "utf8");
-		const encoded = /<script id="session-data" type="application\/json">([^<]*)<\/script>/.exec(html)?.[1];
-		assert.ok(encoded);
-		const card = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")).renderedTools["call-1"];
+		const page = openExportedPage(await exportFromFile(file, join(dir, "out.html")));
+		const card = page.getElementById("tool-call-call-1");
 		assert.ok(card);
-		assert.doesNotMatch(JSON.stringify(card), /Private foreign task|Paused/);
-		assert.match(card.resultHtmlExpanded, /Child history is not included in this export/);
+		assert.doesNotMatch(card.textContent ?? "", /Private foreign task|Paused/);
+		assert.match(
+			card.querySelector(".output-full")?.textContent ?? "",
+			/Child history is not included in this export/,
+		);
 		assert.deepEqual(load.mock.calls, [], "export must not open another owner's or child's session");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

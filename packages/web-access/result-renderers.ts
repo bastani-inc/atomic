@@ -6,31 +6,7 @@ import {
 } from "@bastani/atomic";
 import { Text } from "@bastani/atomic-tui";
 
-type ToolCallRenderer = NonNullable<ToolDefinition["renderCall"]>;
 type ToolResultRenderer = NonNullable<ToolDefinition["renderResult"]>;
-
-export const renderWebSearchCall: ToolCallRenderer = (args, theme) => {
-	const input = args as { query?: string; queries?: string[] } | undefined;
-	const list = Array.isArray(input?.queries)
-		? input.queries.map((q) => String(q ?? "").trim()).filter(Boolean)
-		: typeof input?.query === "string" && input.query.trim() ? [input.query.trim()] : [];
-	return new Text(`${theme.fg("toolTitle", theme.bold("WebSearch"))}${theme.fg("text", `(${list.join(" · ")})`)}`, 0, 0);
-};
-
-export const renderCodeSearchCall: ToolCallRenderer = (args, theme) => {
-	const input = args as { repoName?: string; query?: string } | undefined;
-	let text = theme.fg("toolTitle", theme.bold("code_search"));
-	if (typeof input?.repoName === "string") text += " " + theme.fg("accent", input.repoName);
-	if (typeof input?.query === "string") text += "\n" + theme.fg("muted", input.query);
-	return new Text(text, 0, 0);
-};
-
-export const renderFetchContentCall: ToolCallRenderer = (args, theme) => {
-	const input = args as { url?: string; urls?: string[] } | undefined;
-	const urls = Array.isArray(input?.urls) ? input.urls : typeof input?.url === "string" ? [input.url] : [];
-	const label = urls.map((u) => String(u ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")).filter(Boolean).join(", ");
-	return new Text(`${theme.fg("toolTitle", theme.bold("Fetch"))}${theme.fg("text", `(${label})`)}`, 0, 0);
-};
 type ToolRenderResultArgs = Parameters<ToolResultRenderer>;
 type ToolRenderResult = ReturnType<ToolResultRenderer>;
 type RenderedResult = ToolRenderResultArgs[0];

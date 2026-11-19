@@ -136,8 +136,8 @@ interface SessionData {
 	leafId: string | null;
 	systemPrompt?: string;
 	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
-	/** File-only cards keep the recorded arguments and result available below the summary. */
-	savedToolCards?: boolean;
+	/** The file viewer can draw single-agent receipts on the selected branch. */
+	savedAgentCards?: boolean;
 	/** Pre-rendered HTML for custom tool calls/results, keyed by tool call ID */
 	renderedTools?: Record<string, RenderedToolHtml>;
 }
@@ -311,26 +311,10 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 	}
 
 	const sm = await SessionManager.open(resolvedInputPath);
-	const entries = sm.getEntries();
-	const { savedSessionToolRenderers } = await import("./saved-session-renderers.ts");
-	const getToolRenderers = await savedSessionToolRenderers(entries);
-	let renderedTools: Record<string, RenderedToolHtml> | undefined;
-	if (getToolRenderers) {
-		const [{ createToolHtmlRenderer }, { getGlobalTheme, initTheme, theme }] = await Promise.all([
-			import("./tool-renderer.ts"),
-			import("../../modes/interactive/theme/global-theme.ts"),
-		]);
-		if (getGlobalTheme() === undefined) initTheme(opts.themeName, false);
-		renderedTools = preRenderCustomTools(
-			entries,
-			createToolHtmlRenderer({ getToolRenderers, theme, cwd: sm.getCwd() }),
-		);
-	}
-
 	const sessionData: SessionData = {
 		header: sm.getHeader(),
-		entries,
-		...(renderedTools && { renderedTools, savedToolCards: true }),
+		entries: sm.getEntries(),
+		savedAgentCards: true,
 		leafId: sm.getLeafId(),
 		systemPrompt: undefined,
 		tools: undefined,

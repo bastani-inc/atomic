@@ -128,11 +128,25 @@
       /**
        * Get array of entries from root to target (the conversation path).
        */
-      function getPath(targetId) {
+      function getPath(targetId, savedCards) {
         const path = [];
+        let receipt = null;
         let current = byId.get(targetId);
         while (current) {
           path.push(current);
+          if (savedCards) {
+            // Walk THIS leaf's parent links. A provider ID alone identifies neither a turn nor a fork.
+            const msg = current.type === 'message' ? current.message : null;
+            if (msg?.role === 'toolResult') {
+              receipt = receipt === null && msg.toolName === 'subagent' && !msg.isError ? msg : false;
+            } else if (current.type !== 'custom' || current.customType !== 'subagent-child') {
+              if (receipt && msg?.role === 'assistant') {
+                const call = pairedAgentCall(msg, receipt);
+                if (call) savedCards.set(current, { call, receipt });
+              }
+              receipt = null;
+            }
+          }
           // Stop if no parent or self-referencing (root)
           if (!current.parentId || current.parentId === current.id) {
             break;
@@ -1009,8 +1023,66 @@
         return out;
       }
 
-      function renderToolCall(call) {
-        const result = findToolResult(call.id);
+      // Standalone pages have no running tools. Show only a single launch and its own affirmative
+      // receipt. Never open a child session, infer missing calls, or time a historical handoff.
+      function pairedAgentCall(message, receipt) {
+        const details = receipt.details;
+        if (details?.mode !== 'single' || !Array.isArray(details.results) ||
+            (details.ownerSessionId !== undefined && details.ownerSessionId !== header?.id) ||
+            !Array.isArray(message.content) || !receipt.toolCallId) return null;
+        let call;
+        for (const block of message.content) {
+          if (block?.type !== 'toolCall') continue;
+          if (call || block.name !== 'subagent' || block.id !== receipt.toolCallId) return null;
+          call = block;
+        }
+        const args = call?.arguments;
+        if (!args || args.action !== undefined || args.tasks !== undefined ||
+            typeof args.agent !== 'string' || typeof args.task !== 'string') return null;
+
+        const response = details.taskResponse;
+        if (details.results.length === 0 && response?.kind === 'admitted' &&
+            response.observation?.kind === 'yielded' && typeof response.observation.taskId === 'string') return call;
+        const child = details.results[0];
+        return details.results.length === 1 && child?.status === 'ok' && !child.detached &&
+          child.agent === args.agent && child.task === args.task ? call : null;
+      }
+
+      function savedAgentCard({ call, receipt }) {
+        const child = receipt.details.results[0];
+        if (!child) return { receipt, call, history: 'Child history is not included in this export.', caption: 'Recorded handoff' };
+        const calls = [];
+        let answer = child.finalOutput;
+        if (Array.isArray(child.messages)) {
+          for (const msg of child.messages) {
+            if (msg?.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+            for (const block of msg.content) {
+              if (block?.type === 'toolCall' && typeof block.name === 'string') {
+                const arg = block.arguments;
+                calls.push(block.name === 'read' && typeof (arg?.path ?? arg?.file_path) === 'string'
+                  ? `Read(${arg.path ?? arg.file_path})` : `${block.name}(${JSON.stringify(arg ?? {})})`);
+              }
+            }
+          }
+          const last = child.messages.at(-1);
+          if (answer === undefined && last?.role === 'assistant' && last.stopReason === 'stop' &&
+              !last.errorMessage && Array.isArray(last.content)) {
+            answer = last.content.findLast(b => b?.type === 'text' && typeof b.text === 'string' && b.text.trim())?.text;
+          }
+        }
+        if (calls.length === 0 && Array.isArray(child.toolCalls)) {
+          for (const summary of child.toolCalls) {
+            const line = summary?.expandedText || summary?.text;
+            if (typeof line !== 'string' || !line) return null;
+            calls.push(line.startsWith('read ') ? `Read(${line.slice(5)})` : line);
+          }
+        }
+        if (!calls.length || typeof answer !== 'string' || !answer.trim()) return null;
+        return { receipt, call, history: calls.join('\n'), answer, caption: 'Recorded result' };
+      }
+
+      function renderToolCall(call, savedCard) {
+        const result = savedCard?.receipt ?? findToolResult(call.id);
         const isError = result?.isError || false;
         const statusClass = result ? (isError ? 'error' : 'success') : 'pending';
 
@@ -1054,6 +1126,18 @@
         const name = call.name;
 
         const invalidArg = '<span class="tool-error">[invalid arg]</span>';
+
+        if (savedCard) {
+          const { history, answer, caption } = savedCard;
+          const title = args.task.split('\n', 1)[0];
+          html += `<div class="tool-header"><span class="tool-name">Agent(${escapeHtml(args.agent)} · ${escapeHtml(title)})</span></div>`;
+          html += `<div class="tool-output expandable" onclick="if(window.getSelection().toString())return;this.classList.toggle('expanded')"><div class="output-preview">${caption}<div class="expand-hint">Show recorded details</div></div><div class="output-full"><strong>Prompt</strong><pre>${escapeHtml(args.task)}</pre><strong>Tool calls (recorded)</strong><pre>${escapeHtml(history)}</pre>`;
+          if (answer !== undefined) html += `<strong>Result</strong><pre>${escapeHtml(answer)}</pre>`;
+          html += `</div></div><details><summary>Recorded arguments and result</summary><div class="tool-output"><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></div>`;
+          const output = getResultText();
+          if (output) html += formatExpandableOutput(output, 10);
+          return html + renderResultImages() + '</details>' + renderNestedCalls() + '</div>';
+        }
 
         switch (name) {
           case 'bash': {
@@ -1160,15 +1244,9 @@
                 html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlExpanded}</div>`;
               } else if (rendered.resultHtmlCollapsed) {
                 html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlCollapsed}</div>`;
-              } else if (!data.savedToolCards && !hasCustomResult && result) {
+              } else if (!hasCustomResult && result) {
                 const output = getResultText();
                 if (output) html += formatExpandableOutput(output, 10);
-              }
-              if (data.savedToolCards) {
-                html += `<details><summary>Recorded arguments and result</summary><div class="tool-output"><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></div>`;
-                const output = getResultText();
-                if (output) html += formatExpandableOutput(output, 10);
-                html += '</details>';
               }
             } else {
               // Fallback to JSON display (existing behavior)
@@ -1296,7 +1374,7 @@
         </button>`;
       }
 
-      function renderEntry(entry) {
+      function renderEntry(entry, savedCard) {
         const ts = formatTimestamp(entry.timestamp);
         const tsHtml = ts ? `<div class="message-timestamp">${ts}</div>` : '';
         const entryDomId = `entry-${escapeHtml(entry.id)}`;
@@ -1381,7 +1459,7 @@
 
             for (const block of msg.content) {
               if (block.type === 'toolCall') {
-                html += renderToolCall(block);
+                html += renderToolCall(block, block === savedCard?.call ? savedCard : undefined);
               }
             }
 
@@ -1634,14 +1712,15 @@
         return `entry-${entryId}`;
       }
 
-      function renderEntryToNode(entry) {
-        // Check cache first
-        if (entryCache.has(entry.id)) {
-          return entryCache.get(entry.id).cloneNode(true);
+      function renderEntryToNode(entry, pair) {
+        // Sibling branches can have different receipts for the same assistant entry.
+        const key = pair?.receipt ?? entry.id;
+        if (entryCache.has(key)) {
+          return entryCache.get(key).cloneNode(true);
         }
 
         // Render to HTML string, then parse to node
-        const html = renderEntry(entry);
+        const html = renderEntry(entry, pair && savedAgentCard(pair));
         if (!html) return null;
 
         const template = document.createElement('template');
@@ -1650,7 +1729,7 @@
 
         // Cache the node
         if (node) {
-          entryCache.set(entry.id, node.cloneNode(true));
+          entryCache.set(key, node.cloneNode(true));
         }
         return node;
       }
@@ -1662,7 +1741,8 @@
         if (scrollMode === 'target' && targetEntry?.type === 'custom_message' && targetEntry.display === false) {
           setHiddenMessagesVisible(true);
         }
-        const path = getPath(targetId);
+        const savedCards = data.savedAgentCards ? new Map() : null;
+        const path = getPath(targetId, savedCards);
 
         renderTree();
 
@@ -1674,7 +1754,7 @@
         const fragment = document.createDocumentFragment();
 
         for (const entry of path) {
-          const node = renderEntryToNode(entry);
+          const node = renderEntryToNode(entry, savedCards?.get(entry));
           if (node) {
             fragment.appendChild(node);
           }

@@ -31,15 +31,6 @@ export function createRepositoryFixtureDir(name: string): string {
 	return mkdtempSync(join(fixtureRoot, `${name}-`));
 }
 
-export function writeWebRendererFixture(dir: string): void {
-	writeFileSync(
-		join(dir, "result-renderers.ts"),
-		`const render = () => undefined;
-export { render as renderWebSearchCall, render as renderCodeSearchCall, render as renderFetchContentCall, render as renderWebAccessToolResult };
-`,
-	);
-}
-
 export function runWebFixture<T>(heavySource: string, scriptBody: string): T {
 	const tempDir = createRepositoryFixtureDir("web-lazy-hardening");
 	try {
@@ -57,7 +48,10 @@ export function runWebFixture<T>(heavySource: string, scriptBody: string): T {
 			join(tempDir, "lifecycle-lease.ts"),
 			readFileSync(resolve(repoRoot, "packages/web-access/lifecycle-lease.ts"), "utf-8"),
 		);
-		writeWebRendererFixture(tempDir);
+		writeFileSync(
+			join(tempDir, "result-renderers.ts"),
+			"export function renderWebAccessToolResult() { return undefined; }\n",
+		);
 		writeFileSync(join(tempDir, "index-heavy.ts"), heavySource);
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
 		const script = `

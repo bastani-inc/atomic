@@ -3,8 +3,9 @@ import type { ExtensionAPI, ExtensionContext, HandlerFn, MessageRenderer, Regist
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
-import { renderCodeSearchCall, renderFetchContentCall, renderWebAccessToolResult, renderWebSearchCall } from "./result-renderers.js";
+import { renderWebAccessToolResult } from "./result-renderers.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, type LifecycleLease } from "./lifecycle-lease.js";
 
 type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
@@ -333,7 +334,16 @@ export default function webAccess(pi: ExtensionAPI) {
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "web_search", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args),
-		renderCall: renderWebSearchCall,
+		renderCall(args, theme) {
+			const input = args as { query?: string; queries?: string[] } | undefined;
+			const list = Array.isArray(input?.queries)
+				? input.queries.map((q) => String(q ?? "").trim()).filter(Boolean)
+				: typeof input?.query === "string" && input.query.trim()
+					? [input.query.trim()]
+					: [];
+			const label = list.join(" · ");
+			return new Text(`${theme.fg("toolTitle", theme.bold("WebSearch"))}${theme.fg("text", `(${label})`)}`, 0, 0);
+		},
 	});
 
 	pi.registerTool({
@@ -348,7 +358,13 @@ export default function webAccess(pi: ExtensionAPI) {
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "code_search", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "code_search", args),
-		renderCall: renderCodeSearchCall,
+		renderCall(args, theme) {
+			const input = args as { repoName?: string; query?: string } | undefined;
+			let text = theme.fg("toolTitle", theme.bold("code_search"));
+			if (typeof input?.repoName === "string") text += " " + theme.fg("accent", input.repoName);
+			if (typeof input?.query === "string") text += "\n" + theme.fg("muted", input.query);
+			return new Text(text, 0, 0);
+		},
 	});
 
 	pi.registerTool({
@@ -369,7 +385,19 @@ export default function webAccess(pi: ExtensionAPI) {
 		}, { additionalProperties: false }),
 		execute: (...args) => executeHeavyTool(loadHeavy, "fetch_content", args),
 		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "fetch_content", args),
-		renderCall: renderFetchContentCall,
+		renderCall(args, theme) {
+			const input = args as { url?: string; urls?: string[] } | undefined;
+			const urlList = Array.isArray(input?.urls)
+				? input.urls
+				: typeof input?.url === "string"
+					? [input.url]
+					: [];
+			const label = urlList
+				.map((u) => String(u ?? "").trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""))
+				.filter(Boolean)
+				.join(", ");
+			return new Text(`${theme.fg("toolTitle", theme.bold("Fetch"))}${theme.fg("text", `(${label})`)}`, 0, 0);
+		},
 	});
 
 	pi.registerTool({

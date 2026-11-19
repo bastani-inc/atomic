@@ -138,26 +138,14 @@ export function registerWorkflowTool(
 				details,
 			};
 		},
-		...workflowToolRenderers(options.runs, () => hostHasAgentPanel(pi)),
-	};
-	pi.registerTool(tool);
-	return tool;
-}
-
-/** Without a run source these components show only the snapshot saved in the result. */
-export function workflowToolRenderers(
-	runs?: WorkflowRunSource,
-	hasPanel = () => false,
-): Pick<PiToolOpts<WorkflowToolArgs, WorkflowRegisteredToolResult>, "renderCall" | "renderResult"> {
-	return {
 		renderCall: (args, theme) => callComponent(workflowCallLabel(args), workflowBlockTheme(theme)),
 		renderResult: (result, opts, theme, context) => {
 			const isError = context.isError ?? result.isError ?? false;
 			const block =
 				context.lastComponent instanceof WorkflowToolResultBlock
 					? context.lastComponent
-					: new WorkflowToolResultBlock(runs, workflowBlockTheme(theme), {
-							agentPanel: hasPanel(),
+					: new WorkflowToolResultBlock(options.runs, workflowBlockTheme(theme), {
+							agentPanel: hostHasAgentPanel(pi),
 						});
 			block.update(result.details, {
 				expanded: opts.expanded === true,
@@ -174,4 +162,6 @@ export function workflowToolRenderers(
 			return block.definitionFailureBlock(context.outputPad) ?? block;
 		},
 	};
+	pi.registerTool(tool);
+	return tool;
 }

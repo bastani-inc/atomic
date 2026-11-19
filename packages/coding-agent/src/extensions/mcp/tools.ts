@@ -353,18 +353,6 @@ export function createMcpToolDefinition(options: {
 	};
 }
 
-/** The name a saved MCP call shows before its server connects, or when exported without a server. */
-export function savedMcpToolLabel(toolName: string): string {
-	const encoded = toolName.slice("mcp__".length);
-	const boundary = encoded.indexOf("__");
-	const unambiguous =
-		boundary > 0 &&
-		boundary + 2 < encoded.length &&
-		boundary === encoded.lastIndexOf("__") &&
-		!/_[a-f0-9]{8}(?:_\d+)?$/.test(toolName);
-	return unambiguous ? `${encoded.slice(0, boundary)}/${encoded.slice(boundary + 2)}` : toolName;
-}
-
 /** Renderers for calls to an MCP tool, also used before it is registered. */
 export function createMcpToolRenderers(label: string): ToolRenderers {
 	return {

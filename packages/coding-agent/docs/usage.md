@@ -193,7 +193,7 @@ The agent remembers earlier work through `history://`: it recalls this project's
 
 Use `/export [file]` to write a session to HTML. In the exported page, press `T` to toggle thinking, `O` to toggle tool output, and `H` to show custom messages that are hidden in the terminal. Hidden messages stay hidden until you toggle them, and selecting one in the sidebar reveals them.
 
-`atomic --export <session.jsonl> [file]` draws the built-in extension cards from the saved file without starting a session or loading project extensions. An expanded subagent card shows the prompt, tool calls and result recorded in the file. If a background child's history was stored separately, the card says so; the export does not open another session. Open **Recorded arguments and result** beneath a card to see what the summary omitted. Other tools keep their usual export format.
+`atomic --export <session.jsonl> [file]` can show an `Agent(...)` card for a single subagent launch on the selected branch. Expand it to read the prompt, tool calls and answer saved in the receipt. A recorded background handoff is labeled as a handoff, not as a currently running child. Open **Recorded arguments and result** for the original record. The export never opens the child's session. Parallel launches, incomplete or ambiguous receipts, and other extension tools keep their usual export format.
 
 Use `/share` to upload a private GitHub gist with a shareable link. The link opens the session in Atomic's viewer at `https://bastani.ai/session/`; set `ATOMIC_SHARE_VIEWER_URL` to use your own viewer instead.
 
