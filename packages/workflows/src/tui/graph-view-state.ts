@@ -739,7 +739,7 @@ export abstract class GraphViewState {
 	protected _runResumable(run: RunSnapshot | null = this._getCurrentRun()): boolean {
 		if (this.stageActions?.resumeRun === undefined || run === null || run.resumable === false) return false;
 		const status = effectiveRunStatus(run);
-		return status === "paused" || status === "blocked";
+		return status === "paused" || status === "blocked" || this.stageActions.canResumeRun?.(run.id) === true;
 	}
 
 	protected _runQuittable(run: RunSnapshot | null = this._getCurrentRun()): boolean {

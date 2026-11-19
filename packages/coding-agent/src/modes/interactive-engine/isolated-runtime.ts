@@ -375,10 +375,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 		return validateWorkflowResumeEntries(response?.entries);
 	}
-	async resumeWorkflowFromPicker(target: string): Promise<boolean> {
+	async resumeWorkflowFromPicker(
+		target: string,
+		selection?: HostSessionPickerRow["resumeSelection"],
+	): Promise<boolean> {
 		const response = await this.client.requestInternal<{ handled: boolean }>({
 			type: "resume_workflow_from_picker",
 			target,
+			...(selection === undefined ? {} : { selection }),
 		});
 		return response.handled;
 	}
