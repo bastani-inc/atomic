@@ -61,8 +61,13 @@ function createSession(options: { readonly fallbackModels?: readonly string[] } 
 		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		_longStreamCutRetries: 0,
-		_retryPromise: undefined,
+		_retryPromise: undefined as Promise<void> | undefined,
 		_retryAbortController: undefined as AbortController | undefined,
+		_fallbackOriginGeneration: undefined as number | undefined,
+		// The session's own accessor, which `abortRetry` reads.
+		get isRetrying(): boolean {
+			return this._retryPromise !== undefined || this._fallbackOriginGeneration !== undefined;
+		},
 		settingsManager: {
 			getRetrySettings: () => ({ enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1000 }),
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,

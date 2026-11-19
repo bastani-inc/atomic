@@ -1,7 +1,9 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
+import { GitHubCopilotStreamEndedEarlyError, recordGitHubCopilotError } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { LONG_STREAM_CUT_ADVICE, LONG_STREAM_CUT_MS } from "../../src/core/retry-policy.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 function normalizeEventOrder(events: Harness["events"]): string[] {
@@ -227,6 +229,42 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.session.isRetrying).toBe(false);
 		expect(harness.eventsOfType("auto_retry_end").map((event) => event.finalError)).toContain("Retry cancelled");
 		expect(harness.faux.state.callCount).toBe(1);
+	});
+
+	it("cancelling the retry of a long stream cut lets the next turn's long cut be retried again (#4626)", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100 } } });
+		harnesses.push(harness);
+		const longCut = () => {
+			const message = fauxAssistantMessage("", { stopReason: "error" });
+			const cut = new GitHubCopilotStreamEndedEarlyError(
+				{ modelId: harness.getModel().id, api: harness.getModel().api },
+				{ durationMs: LONG_STREAM_CUT_MS, startedContent: true },
+			);
+			recordGitHubCopilotError(message, cut);
+			return message;
+		};
+		const retryEvents: string[] = [];
+		const retryStarted = Promise.withResolvers<void>();
+		harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") {
+				retryEvents.push(`start:${event.attempt}`);
+				retryStarted.resolve();
+			}
+			if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success || event.finalError}`);
+		});
+
+		harness.setResponses([longCut()]);
+		const cancelled = harness.session.prompt("first");
+		await retryStarted.promise;
+		harness.session.abortRetry();
+		await cancelled;
+
+		harness.setResponses([longCut(), fauxAssistantMessage("recovered")]);
+		await harness.session.prompt("second");
+
+		expect(retryEvents).toEqual(["start:1", "end:Retry cancelled", "start:1", "end:true"]);
+		expect(retryEvents.join("\n")).not.toContain(LONG_STREAM_CUT_ADVICE);
+		expect(harness.faux.state.callCount).toBe(3);
 	});
 
 	it.each([
