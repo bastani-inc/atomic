@@ -215,7 +215,6 @@ async function launchInterruptedChild(
 		agent: "worker",
 		task: "original task",
 		options,
-		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(host)),
 		runtime: {
 			runSync: (...args) =>
@@ -278,7 +277,6 @@ test("a settled background child is recorded terminal and is never relaunched (#
 			agent: "worker",
 			task: "finish",
 			options: { cwd, runId: "done1", index: 0, sessionDir: join(cwd, "children") },
-			wait: { kind: "background" },
 			recordChild: createSubagentChildRecordSink(parent.pi, parent.ctx(host)),
 			runtime: {
 				runSync: (...args) =>

@@ -5,6 +5,7 @@ import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js
 import { collectKnownModelProviders, type ModelInfo, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import {
+	type ResolvedStepBehavior,
 	resolveStepBehavior,
 	type StepOverrides,
 	suppressProgressForReadOnlyTask,
@@ -39,9 +40,10 @@ import {
 	workflowStageAcceptsDetachedNotification,
 } from "./subagent-executor-status.js";
 import {
-	BURST_EXECUTION_SCHEDULE,
+	BURST_PREPARED_TASKS,
 	type ExecutionContextData,
 	type ResolvedExecutorDeps,
+	type SubagentParamsLike,
 	type TaskParam,
 } from "./subagent-executor-types.js";
 import {
@@ -54,6 +56,71 @@ import {
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.js";
 import { parallelTaskToolResultWithOutput } from "./task-execution.js";
+
+/** The error a parallel run with more tasks than its limit fails with. */
+export function parallelTaskLimitError(taskCount: number, maxParallelTasks: number): SubagentToolResult | undefined {
+	if (taskCount > maxParallelTasks)
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Too many parallel tasks (${taskCount} after count expansion). Maximum is ${maxParallelTasks} (configure parallel.maxTasks in ~/.atomic/agent/extensions/subagent/config.json).`,
+				},
+			],
+			isError: true,
+			details: { mode: "parallel" as const, results: [] },
+		};
+	return undefined;
+}
+
+/** The error a `worktree: true` parallel run fails with for tasks it cannot give a worktree of their own. */
+export async function parallelWorktreeTaskError(
+	tasks: TaskParam[],
+	worktree: SubagentParamsLike["worktree"],
+	effectiveCwd: string,
+): Promise<SubagentToolResult | undefined> {
+	if (worktree !== true) return undefined;
+	const worktreeTaskCwdError = await buildParallelWorktreeTaskCwdError(tasks, effectiveCwd);
+	return worktreeTaskCwdError ? buildParallelModeError(worktreeTaskCwdError) : undefined;
+}
+
+/** What each task of a parallel run overrides of its agent's behavior. */
+export function parallelTaskBehaviorOverrides(tasks: TaskParam[], agentConfigs: AgentConfig[]): StepOverrides[] {
+	return tasks.map((task, index) => ({
+		...(task.output !== undefined
+			? { output: task.output === true ? (agentConfigs[index]?.output ?? false) : task.output }
+			: {}),
+		...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
+		...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
+		...(task.progress !== undefined ? { progress: task.progress } : {}),
+		...(normalizeSkillInput(task.skill) !== undefined ? { skills: normalizeSkillInput(task.skill) } : {}),
+		...(task.model ? { model: task.model } : {}),
+	}));
+}
+
+/** The error a parallel run fails with for its tasks' output settings: two tasks writing one file, or a file-only task without a file. */
+export function parallelOutputSetupError(input: {
+	tasks: TaskParam[];
+	behaviors: ResolvedStepBehavior[];
+	paramsCwd: string;
+	ctxCwd: string;
+	worktreeSetup: WorktreeSetup | undefined;
+	unresolvedCwd?: (task: TaskParam) => boolean;
+}): SubagentToolResult | undefined {
+	const duplicateOutputError = findDuplicateParallelOutputPath(input);
+	if (duplicateOutputError) return buildParallelModeError(duplicateOutputError);
+	for (let index = 0; index < input.tasks.length; index++) {
+		const taskCwd = resolveParallelTaskCwd(input.tasks[index]!, input.paramsCwd, input.worktreeSetup, index);
+		const outputPath = resolveSingleOutputPath(input.behaviors[index]?.output, input.ctxCwd, taskCwd);
+		const validationError = validateFileOnlyOutputMode(
+			input.behaviors[index]?.outputMode,
+			outputPath,
+			`Parallel task ${index + 1} (${input.tasks[index]!.agent})`,
+		);
+		if (validationError) return buildParallelModeError(validationError);
+	}
+	return undefined;
+}
 
 export async function runParallelPath(
 	data: ExecutionContextData,
@@ -85,17 +152,8 @@ export async function runParallelPath(
 		deps.config.parallel?.concurrency,
 	);
 
-	if (tasks.length > maxParallelTasks)
-		return {
-			content: [
-				{
-					type: "text",
-					text: `Too many parallel tasks (${tasks.length} after count expansion). Maximum is ${maxParallelTasks} (configure parallel.maxTasks in ~/.atomic/agent/extensions/subagent/config.json).`,
-				},
-			],
-			isError: true,
-			details: { mode: "parallel" as const, results: [] },
-		};
+	const limitError = parallelTaskLimitError(tasks.length, maxParallelTasks);
+	if (limitError) return limitError;
 
 	const agentConfigs: AgentConfig[] = data.parallelAgentConfigs ? [...data.parallelAgentConfigs] : [];
 	if (!data.parallelAgentConfigs) {
@@ -114,26 +172,14 @@ export async function runParallelPath(
 
 	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 
-	if (params.worktree === true) {
-		const worktreeTaskCwdError = await buildParallelWorktreeTaskCwdError(tasks, effectiveCwd);
-		if (worktreeTaskCwdError) return buildParallelModeError(worktreeTaskCwdError);
-	}
+	const worktreeTaskError = await parallelWorktreeTaskError(tasks, params.worktree, effectiveCwd);
+	if (worktreeTaskError) return worktreeTaskError;
 
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
 	const taskTexts = tasks.map((t) => t.task);
-	const skillOverrides: (string[] | false | undefined)[] = tasks.map((t) => normalizeSkillInput(t.skill));
-	const behaviorOverrides: StepOverrides[] = tasks.map((task, index) => ({
-		...(task.output !== undefined
-			? { output: task.output === true ? (agentConfigs[index]?.output ?? false) : task.output }
-			: {}),
-		...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
-		...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
-		...(task.progress !== undefined ? { progress: task.progress } : {}),
-		...(skillOverrides[index] !== undefined ? { skills: skillOverrides[index] } : {}),
-		...(task.model ? { model: task.model } : {}),
-	}));
+	const behaviorOverrides = parallelTaskBehaviorOverrides(tasks, agentConfigs);
 	const autoModels = tasks.map((task, index) => (task.model ?? agentConfigs[index]?.model) === "auto");
 	const settings = autoModels.includes(true) ? deps.pi.getSettings?.() : undefined;
 	const modelOverrides = tasks.map((_, index) =>
@@ -172,24 +218,18 @@ export async function runParallelPath(
 		: undefined;
 
 	try {
-		const duplicateOutputError = findDuplicateParallelOutputPath({
+		if (worktreeSetup)
+			params[BURST_PREPARED_TASKS]?.(
+				tasks.map((task, i) => ({ ...task, cwd: worktreeSetup.worktrees[i]!.agentCwd })),
+			);
+		const outputError = parallelOutputSetupError({
 			tasks,
 			behaviors,
 			paramsCwd: effectiveCwd,
 			ctxCwd: ctx.cwd,
 			worktreeSetup,
 		});
-		if (duplicateOutputError) return buildParallelModeError(duplicateOutputError);
-		for (let index = 0; index < tasks.length; index++) {
-			const taskCwd = resolveParallelTaskCwd(tasks[index]!, effectiveCwd, worktreeSetup, index);
-			const outputPath = resolveSingleOutputPath(behaviors[index]?.output, ctx.cwd, taskCwd);
-			const validationError = validateFileOnlyOutputMode(
-				behaviors[index]?.outputMode,
-				outputPath,
-				`Parallel task ${index + 1} (${tasks[index]!.agent})`,
-			);
-			if (validationError) return buildParallelModeError(validationError);
-		}
+		if (outputError) return outputError;
 
 		// #4976: the run's shared progress.md lives in run-scoped artifact storage, never in the project directory,
 		// where it would overwrite a project's own progress.md.
@@ -206,9 +246,7 @@ export async function runParallelPath(
 		// context then throws on every read. Its stage admission outlives that session, so read it now.
 		const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 		const results = await runForegroundParallelTasks({
-			wait: params.wait,
 			...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
-			schedule: params[BURST_EXECUTION_SCHEDULE],
 			onDetachedExit: (index, result) => {
 				if (workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
 					notifyDetachedForegroundChildExit({

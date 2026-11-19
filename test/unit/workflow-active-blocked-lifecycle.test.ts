@@ -112,6 +112,23 @@ describe("active recoverable blocked lifecycle notices", () => {
 		assert.equal(sent[1]?.details?.createdAt, firstAt + 500);
 	});
 
+	test("reports both blocks when a resumed workflow blocks in the same millisecond (#5567)", () => {
+		const time = vi.spyOn(Date, "now").mockReturnValue(2000);
+		const store = createStore();
+		const { sent, unsubscribe } = install(store);
+		try {
+			startRecoverableRun(store, "reused-id");
+			startRecoverableRun(store, "reused-id");
+			assert.deepEqual(
+				sent.map((message) => message.details?.createdAt),
+				[2000, 2000],
+			);
+		} finally {
+			unsubscribe();
+			time.mockRestore();
+		}
+	});
+
 	test("seeds a historical active block without notifying the new chat", () => {
 		const store = createStore();
 		const blockedAt = startRecoverableRun(store, "historical-blocked");
@@ -188,13 +205,14 @@ describe("active recoverable blocked lifecycle notices", () => {
 			},
 		});
 
-		const retryBlockedAt = startRecoverableRun(store, "retry-blocked");
-		assert.equal(state.deliveredTerminalRuns.has(`blocked:retry-blocked:${retryBlockedAt}`), false);
+		startRecoverableRun(store, "retry-blocked");
+		const key = `blocked:retry-blocked:${store.run("retry-blocked")!.runGeneration}`;
+		assert.equal(state.deliveredTerminalRuns.has(key), false);
 		await new Promise((resolve) => setTimeout(resolve, 60));
 
 		assert.equal(attempts, 2);
 		assert.equal(sent.length, 1);
-		assert.equal(state.deliveredTerminalRuns.has(`blocked:retry-blocked:${retryBlockedAt}`), true);
+		assert.equal(state.deliveredTerminalRuns.has(key), true);
 		unsubscribe();
 	});
 
@@ -277,7 +295,8 @@ describe("active recoverable blocked lifecycle notices", () => {
 				return Promise.reject(new Error("session replaced"));
 			},
 		});
-		const reinstallBlockedAt = startRecoverableRun(store, "reinstall-blocked");
+		startRecoverableRun(store, "reinstall-blocked");
+		const key = `blocked:reinstall-blocked:${store.run("reinstall-blocked")!.runGeneration}`;
 		await new Promise((resolve) => setTimeout(resolve, 40));
 		rejected();
 
@@ -294,7 +313,7 @@ describe("active recoverable blocked lifecycle notices", () => {
 
 		await new Promise((resolve) => setTimeout(resolve, 40));
 		assert.equal(sent.length, 1);
-		assert.equal(state.deliveredTerminalRuns.has(`blocked:reinstall-blocked:${reinstallBlockedAt}`), true);
+		assert.equal(state.deliveredTerminalRuns.has(key), true);
 		installed();
 	});
 	test("does not re-send a still-pending admission across a config reinstall", async () => {
@@ -313,7 +332,8 @@ describe("active recoverable blocked lifecycle notices", () => {
 				});
 			},
 		});
-		const pendingBlockedAt = startRecoverableRun(store, "pending-reinstall");
+		startRecoverableRun(store, "pending-reinstall");
+		const key = `blocked:pending-reinstall:${store.run("pending-reinstall")!.runGeneration}`;
 		await Promise.resolve();
 		disposed();
 
@@ -333,8 +353,8 @@ describe("active recoverable blocked lifecycle notices", () => {
 
 		assert.equal(oldSends, 1);
 		assert.deepEqual(newSends, []);
-		assert.equal(state.deliveredTerminalRuns.has(`blocked:pending-reinstall:${pendingBlockedAt}`), true);
-		assert.equal(state.retryableTerminalNotices.has(`blocked:pending-reinstall:${pendingBlockedAt}`), false);
+		assert.equal(state.deliveredTerminalRuns.has(key), true);
+		assert.equal(state.retryableTerminalNotices.has(key), false);
 		reinstalled();
 	});
 
