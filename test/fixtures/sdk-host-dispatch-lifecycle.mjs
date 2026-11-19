@@ -85,7 +85,6 @@ export default function(pi) {
   if (mode === "thinking") mutation = session.setThinkingLevel("high");
   else if (mode === "name") mutation = session.setSessionName("raw name  ");
   else if (mode === "bus") emitBus();
-  else if (mode === "observer") session.extensionRunner.createContext().observeWorkflowActivity(suspend);
   else if (mode === "shortcut") void session.extensionRunner.getShortcuts({}).get("ctrl+shift+j").handler(session.extensionRunner.createContext());
   else void session.extensionRunner.emitContext([]);
   await entered.promise;

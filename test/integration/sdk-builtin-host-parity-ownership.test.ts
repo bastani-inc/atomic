@@ -14,7 +14,6 @@ test.each([
 	"thinking",
 	"name",
 	"bus",
-	"observer",
 	"context",
 	"shortcut",
 ])(

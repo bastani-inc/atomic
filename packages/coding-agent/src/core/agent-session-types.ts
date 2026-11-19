@@ -256,8 +256,7 @@ export interface AgentSessionConfig {
 	modelRuntime: ModelRuntime;
 	cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	childSessionOptions?: import("./child-session-options.ts").ChildSessionOptionsResolver;
-	workflowJournal?: import("./storage/provider.js").RunJournalOption;
-	/** The agent directory the session store resolved its storage against; the workflow journal uses the same base. */
+	/** The agent directory the session store resolved its storage against. */
 	storageAgentDir?: string;
 	/**
 	 * Whether PowerShell is available for the `powershell` tool, as `isPowerShellAvailableAsync()` reports. When omitted

@@ -31,8 +31,7 @@ import type {
 	SubagentChildPolicy,
 } from "./types.ts";
 export interface ExtensionContextSource {
-	observeWorkflowActivity: ExtensionContext["observeWorkflowActivity"];
-	/** Where history:// reads the project's sessions and workflow runs. */
+	/** Where history:// reads the project's sessions. */
 	getProjectHistory(): ProjectHistory;
 	getChildSessionOptions?: ExtensionContext["getChildSessionOptions"];
 	getExtensionPaths?(): string[];
@@ -59,11 +58,6 @@ export interface ExtensionContextSource {
 	abort(): void;
 	hasPendingMessages(): boolean;
 	isSessionSummaryEnabled?(): boolean;
-	generateWorkflowSummary?(
-		text: string,
-		signal: AbortSignal,
-		options?: { terminal?: boolean },
-	): Promise<string | undefined>;
 	shutdown(): void;
 	getContextUsage(): ContextUsage | undefined;
 	compact(options?: CompactOptions): void;
@@ -250,11 +244,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 			source.assertActive();
 			return source.getMode();
 		},
-		observeWorkflowActivity: (observer) => {
-			source.assertActive();
-			source.assertAction?.();
-			return source.observeWorkflowActivity(observer);
-		},
 		get hasHumanInput() {
 			source.assertActive();
 			return source.hasHumanInput?.() ?? source.hasUI();
@@ -356,10 +345,6 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 		isSessionSummaryEnabled: () => {
 			source.assertActive();
 			return source.isSessionSummaryEnabled?.() ?? false;
-		},
-		generateWorkflowSummary: (text, signal, options) => {
-			source.assertActive();
-			return source.generateWorkflowSummary?.(text, signal, options) ?? Promise.resolve(undefined);
 		},
 		shutdown: () => {
 			source.assertActive();

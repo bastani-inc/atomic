@@ -1026,7 +1026,6 @@ async function constructAgentSession(
 			settingsManager,
 			cwd,
 			powerShellAvailable,
-			workflowJournal: options.journal ?? options.storage,
 			storageAgentDir: agentDir,
 			worktreeSnapshots:
 				options.snapshots === undefined

@@ -58,4 +58,3 @@ export type * from "./ui-types.js";
  * removing it from the published surface.
  */
 export type ExtensionScopedModels = ExtensionContext["scopedModels"];
-export type * from "./workflow-events.js";

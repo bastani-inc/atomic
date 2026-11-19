@@ -22,6 +22,7 @@ import type {
 	HostSessionPickerRow,
 } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { sessionInfoFromPickerRow } from "../../packages/coding-agent/src/modes/interactive/components/host-session-picker.js";
 import { SessionSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/session-selector.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { EngineSessionPickerService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-session-picker.ts";
@@ -154,7 +155,13 @@ async function flush(times = 6): Promise<void> {
 
 describe("engine_session_picker protocol", () => {
 	test("round-trips open/update/error/close messages with strict row validation", () => {
-		const sessions = [row("alpha"), { ...row("beta"), name: "named", messageColor: "success" as const }];
+		const sessions = [
+			row("alpha"),
+			{ ...row("beta"), name: "named", messageColor: "success" as const, canDelete: true },
+		];
+		for (const canDelete of [true, false, undefined]) {
+			assert.equal(sessionInfoFromPickerRow({ ...row("alpha"), canDelete }).canDelete, canDelete);
+		}
 		for (const message of [
 			{ type: "engine_session_picker_open", componentId: "p1", sessions, showRenameHint: false },
 			{ type: "engine_session_picker_update", componentId: "p1", sessions },
@@ -197,6 +204,7 @@ describe("engine_session_picker protocol", () => {
 		assert.equal(reject({ variant: "tasks" }), undefined);
 		assert.equal(reject({ canDelete: "no" }), undefined);
 		assert.equal(reject({ sessions: [{ ...row("a"), detail: 3 }] }), undefined);
+		assert.equal(reject({ sessions: [{ ...row("a"), canDelete: "yes" }] }), undefined);
 	});
 
 	test("rejects malformed rows, colors, and missing fields", () => {
