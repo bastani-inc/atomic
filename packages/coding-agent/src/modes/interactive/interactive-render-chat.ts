@@ -453,6 +453,7 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 	this: InteractiveModeBase,
 ): ChatMessageRenderOptions {
 	const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime;
+	const sessionId = isolated ? undefined : this.session.sessionId;
 	return {
 		ui: this.ui,
 		cwd: this.sessionManager.getCwd(),
@@ -466,21 +467,16 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 		renderLatex: this.settingsManager.getLatexRenderingEnabled(),
 		markdownTransformers: this.getMarkdownTransformers(),
 		getToolDefinition: isolated ? undefined : (toolName) => this.getRegisteredToolDefinition(toolName),
+		sessionId,
 		getTaskRecord: isolated ? undefined : (taskId) => getOwnerTaskStore(this.session)?.getTask(taskId),
 		hasTaskTranscript: isolated
 			? undefined
 			: (taskId, notice) =>
-					hasTaskTranscript(
-						getOwnerTaskStore(this.session),
-						noticeTranscriptQuery(taskId, notice, this.session.sessionId),
-					),
+					hasTaskTranscript(getOwnerTaskStore(this.session), noticeTranscriptQuery(taskId, notice, sessionId)),
 		loadTaskTranscript: isolated
 			? undefined
 			: (taskId, notice) =>
-					loadTaskTranscript(
-						getOwnerTaskStore(this.session),
-						noticeTranscriptQuery(taskId, notice, this.session.sessionId),
-					),
+					loadTaskTranscript(getOwnerTaskStore(this.session), noticeTranscriptQuery(taskId, notice, sessionId)),
 		getCustomMessageRenderer: isolated
 			? undefined
 			: (customType) => this.session.extensionRunner.getMessageRenderer(customType),
@@ -606,6 +602,8 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 		}
 		case "custom": {
 			if (message.display) {
+				const sessionId =
+					this.runtimeHost instanceof IsolatedInteractiveRuntime ? undefined : this.session.sessionId;
 				const component =
 					this.runtimeHost instanceof IsolatedInteractiveRuntime
 						? new RemoteCustomMessageComponent(
@@ -627,12 +625,12 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 									hasTranscript: (taskId, notice) =>
 										hasTaskTranscript(
 											getOwnerTaskStore(this.session),
-											noticeTranscriptQuery(taskId, notice, this.session.sessionId),
+											noticeTranscriptQuery(taskId, notice, sessionId),
 										),
 									loadTranscript: (taskId, notice) =>
 										loadTaskTranscript(
 											getOwnerTaskStore(this.session),
-											noticeTranscriptQuery(taskId, notice, this.session.sessionId),
+											noticeTranscriptQuery(taskId, notice, sessionId),
 										),
 									getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
 									cwd: this.sessionManager.getCwd(),

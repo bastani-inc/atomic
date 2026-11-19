@@ -405,9 +405,6 @@ export interface TaskCompletionMessageOptions {
 	readonly requestRender?: () => void;
 }
 
-const expandedNoticeCache = new WeakMap<TaskCompletionNotice, ExtractedNoticeTranscript | null>();
-const pendingNoticeLoads = new WeakMap<TaskCompletionNotice, Promise<ExtractedNoticeTranscript | null>>();
-
 function formatUnavailableReason(reason: string): string {
 	const cleaned = cleanPreview(reason).trim();
 	if (!cleaned) return "Transcript unavailable";
@@ -664,8 +661,9 @@ export class TaskCompletionMessage implements Component {
 	private readonly options: TaskCompletionMessageOptions | undefined;
 	private disposed = false;
 	private generation = 0;
-	private readonly loadedByTask = new Map<TaskId, ExtractedNoticeTranscript | null>();
-	private readonly pendingByTask = new Map<TaskId, Promise<void>>();
+	// Even the same receipt object can be drawn by two sessions. Keep loaded rows with their view.
+	private readonly loaded = new Map<TaskCompletionNotice, ExtractedNoticeTranscript | null>();
+	private readonly pending = new Set<TaskCompletionNotice>();
 	private readonly previewRows = new Map<TaskCompletionNotice, readonly string[]>();
 	private readonly expandedPreviews = new Map<TaskCompletionNotice, ToolBlockMarkdown>();
 	/** Each expanded notice's transcript rows, held only while the notice is expanded. */
@@ -682,12 +680,6 @@ export class TaskCompletionMessage implements Component {
 		this.notices = Array.isArray(notices) ? notices : [notices as TaskCompletionNotice];
 		this.expanded = expanded;
 		this.options = options;
-		if (!expanded) {
-			for (const notice of this.notices) {
-				expandedNoticeCache.delete(notice);
-				pendingNoticeLoads.delete(notice);
-			}
-		}
 	}
 
 	isExpanded(): boolean {
@@ -704,26 +696,18 @@ export class TaskCompletionMessage implements Component {
 		this.expanded = expanded;
 		this.generation += 1;
 		if (!expanded) {
-			this.loadedByTask.clear();
-			this.pendingByTask.clear();
+			this.loaded.clear();
+			this.pending.clear();
 			this.transcriptRows.clear();
-			for (const notice of this.notices) {
-				expandedNoticeCache.delete(notice);
-				pendingNoticeLoads.delete(notice);
-			}
 		}
 	}
 
 	dispose(): void {
 		this.disposed = true;
 		this.generation += 1;
-		this.loadedByTask.clear();
-		this.pendingByTask.clear();
+		this.loaded.clear();
+		this.pending.clear();
 		this.transcriptRows.clear();
-		for (const notice of this.notices) {
-			expandedNoticeCache.delete(notice);
-			pendingNoticeLoads.delete(notice);
-		}
 	}
 
 	invalidate(): void {
@@ -744,41 +728,21 @@ export class TaskCompletionMessage implements Component {
 		notice: TaskCompletionNotice,
 		status: ToolBlockStatus,
 	): ExtractedNoticeTranscript | undefined {
-		const taskId = notice.taskId as TaskId;
-		if (this.loadedByTask.has(taskId)) {
-			return this.loadedByTask.get(taskId) ?? undefined;
-		}
-		if (expandedNoticeCache.has(notice)) {
-			const cached = expandedNoticeCache.get(notice) ?? null;
-			this.loadedByTask.set(taskId, cached);
-			return cached ?? undefined;
-		}
+		if (this.loaded.has(notice)) return this.loaded.get(notice) ?? undefined;
 		const loader = this.options?.loadTranscript;
-		if (!loader || this.disposed) return undefined;
-		if (!this.pendingByTask.has(taskId)) {
-			const gen = this.generation;
-			let inflight = pendingNoticeLoads.get(notice);
-			if (!inflight) {
-				inflight = Promise.resolve()
-					.then(() => loader(taskId, notice))
-					.then(
-						(loaded) => extractEntriesExpansion(loaded, status, this.options) ?? null,
-						() => null,
-					)
-					.finally(() => {
-						pendingNoticeLoads.delete(notice);
-					});
-				pendingNoticeLoads.set(notice, inflight);
-			}
-			const pending = inflight.then((extracted) => {
+		if (!loader || this.disposed || this.pending.has(notice)) return undefined;
+		const gen = this.generation;
+		this.pending.add(notice);
+		void Promise.resolve()
+			.then(() => loader(notice.taskId as TaskId, notice))
+			.then((loaded) => extractEntriesExpansion(loaded, status, this.options) ?? null)
+			.catch(() => null)
+			.then((extracted) => {
 				if (this.disposed || !this.expanded || this.generation !== gen) return;
-				this.loadedByTask.set(taskId, extracted);
-				expandedNoticeCache.set(notice, extracted);
-				this.pendingByTask.delete(taskId);
+				this.loaded.set(notice, extracted);
+				this.pending.delete(notice);
 				this.options?.requestRender?.();
 			});
-			this.pendingByTask.set(taskId, pending);
-		}
 		return undefined;
 	}
 
@@ -847,7 +811,7 @@ export class TaskCompletionMessage implements Component {
 			];
 		}
 		const canLoadTranscript =
-			this.loadedByTask.get(taskId) !== null &&
+			this.loaded.get(notice) !== null &&
 			(this.options?.hasTranscript
 				? this.options.hasTranscript(taskId, notice)
 				: Boolean(this.options?.loadTranscript));

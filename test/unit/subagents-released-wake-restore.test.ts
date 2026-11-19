@@ -450,7 +450,12 @@ test("a stage's original launch card opened during a wake counts from the new di
 	const origin = row()?.elapsedSpan?.dispatchedAt;
 	assert.ok(origin !== undefined);
 	const clock = vi.spyOn(Date, "now").mockReturnValue(origin + 7400);
-	const card = subagentLaunchCard(h.cwd, { agent: agent.name, task: ORIGINAL_TASK });
+	const card = subagentLaunchCard(
+		h.cwd,
+		{ agent: agent.name, task: ORIGINAL_TASK },
+		undefined,
+		h.ctx.sessionManager.getSessionId(),
+	);
 	try {
 		card.updateResult({ ...receipt, isError: false });
 		assert.equal(row()?.metrics?.elapsedMs, 7400);

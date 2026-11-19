@@ -12,7 +12,7 @@ import {
 export interface TaskTranscriptQuery {
 	readonly taskId: string;
 	readonly launchId: string;
-	readonly ownerSessionId?: string;
+	readonly ownerSessionId: string;
 }
 
 /** Older notices recorded only their result, not which child to read. */
@@ -21,7 +21,8 @@ export function noticeTranscriptQuery(
 	notice: TaskCompletionNotice | undefined,
 	ownerSessionId?: string,
 ): TaskTranscriptQuery | undefined {
-	if (notice?.launchId === undefined) return undefined;
+	if (notice?.launchId === undefined || ownerSessionId === undefined || /^[\da-f]{8}:/i.test(notice.launchId))
+		return undefined;
 	return { taskId, launchId: notice.launchId, ownerSessionId };
 }
 
@@ -31,7 +32,7 @@ export function noticeTranscriptQuery(
  * tool calls once the task itself is gone.
  */
 export interface SavedTaskTranscripts {
-	readonly ownerSessionId?: string;
+	readonly ownerSessionId: string;
 	/** Whether a transcript of the task was saved, answered from what is in memory, without reading it. */
 	has(task: TaskTranscriptQuery): boolean;
 	/** The task's saved transcript, read when a view shows it; undefined when none was saved. */
@@ -50,12 +51,7 @@ function sources(): Set<SavedTaskTranscripts> {
 
 function* sourcesFor(task: TaskTranscriptQuery): Iterable<SavedTaskTranscripts> {
 	for (const source of sources()) {
-		if (
-			task.ownerSessionId === undefined ||
-			source.ownerSessionId === undefined ||
-			source.ownerSessionId === task.ownerSessionId
-		)
-			yield source;
+		if (task.ownerSessionId !== undefined && source.ownerSessionId === task.ownerSessionId) yield source;
 	}
 }
 
@@ -69,7 +65,12 @@ export function registerSavedTaskTranscripts(source: SavedTaskTranscripts): () =
 
 /** The live lease only if it belongs to the launch named in the notice. */
 function runningTask(store: OwnerTaskStore | undefined, task: TaskTranscriptQuery): TaskLease | undefined {
-	if (store?.getTask(task.taskId as TaskId)?.launchOperationId !== task.launchId) return undefined;
+	if (
+		!store?.snapshot ||
+		store.snapshot.scope.sessionId !== task.ownerSessionId ||
+		store.getTask(task.taskId as TaskId)?.launchOperationId !== task.launchId
+	)
+		return undefined;
 	const lease = store.resolveTask(task.taskId as TaskId);
 	return lease.ok ? lease.value : undefined;
 }

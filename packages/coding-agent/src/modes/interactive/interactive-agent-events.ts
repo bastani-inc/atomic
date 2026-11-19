@@ -140,6 +140,7 @@ function createToolComponent(
 				args,
 				{
 					...options,
+					sessionId: mode.session.sessionId,
 					getTaskRecord,
 					getToolDefinition: (name) => mode.getRegisteredToolDefinition(name),
 				},

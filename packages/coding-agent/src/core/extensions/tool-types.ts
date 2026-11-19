@@ -48,6 +48,8 @@ export interface ToolRenderContext<TState = unknown, TArgs = unknown> extends Ke
 	isError: boolean;
 	durationMs: number | undefined;
 	outputPad: number;
+	/** Session whose conversation contains the call, including when a saved conversation is reopened. */
+	sessionId?: string;
 	getTaskRecord?: (taskId: TaskId) => TaskRecord | undefined;
 	getElapsedMs?: () => number | undefined;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;

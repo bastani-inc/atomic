@@ -51,6 +51,7 @@ type RenderRecord = { runner: AgentSession["extensionRunner"]; terminal: RenderT
 );
 
 interface ToolRendererScope {
+	sessionId?: string;
 	identity: object;
 	session: object;
 	cwd: string;
@@ -197,6 +198,7 @@ export class EngineRenderService {
 		const rootScope: ToolRendererScope = {
 			identity: root.extensionRunner,
 			session: root,
+			sessionId: root.sessionManager.getSessionId?.(),
 			cwd: root.sessionManager.getCwd(),
 			resolve: (name) => root.extensionRunner.resolveToolRenderers(name, () => root.getToolDefinition(name)),
 		};
@@ -213,6 +215,7 @@ export class EngineRenderService {
 			return RETAINED_TOOL_RENDERERS.has(command.toolName)
 				? {
 						...rootScope,
+						sessionId: undefined,
 						cwd: source.commands?.().cwd ?? rootScope.cwd,
 						resolve: (name) => retainedToolRenderer(name, rootScope.resolve),
 					}
@@ -221,6 +224,7 @@ export class EngineRenderService {
 		return {
 			identity: session.extensionRunner ?? session,
 			session,
+			sessionId: session.sessionManager?.getSessionId?.(),
 			cwd: source.commands?.().cwd ?? rootScope.cwd,
 			resolve: (name) =>
 				session.extensionRunner?.resolveToolRenderers?.(name, () => session.getToolDefinition?.(name)) ??
@@ -274,6 +278,7 @@ export class EngineRenderService {
 					showImages: command.showImages,
 					imageWidthCells: command.imageWidthCells,
 					outputPad: command.outputPad,
+					sessionId: scope.sessionId,
 					getTaskRecord: (taskId) => getOwnerTaskStore(scope.session)?.getTask(taskId),
 					getToolDefinition: scope.resolve,
 				},
@@ -336,6 +341,7 @@ export class EngineRenderService {
 				tui.requestRender();
 			});
 			const message = command.message as unknown as CustomMessage<object>;
+			const sessionId = session.sessionManager.getSessionId?.();
 			const component = new CustomMessageComponent(
 				message,
 				session.extensionRunner.getMessageRenderer(message.customType),
@@ -347,19 +353,14 @@ export class EngineRenderService {
 				undefined,
 				{
 					hasTranscript: (taskId, notice) =>
-						hasTaskTranscript(
-							getOwnerTaskStore(session),
-							noticeTranscriptQuery(taskId, notice, session.sessionManager.getSessionId()),
-						),
+						hasTaskTranscript(getOwnerTaskStore(session), noticeTranscriptQuery(taskId, notice, sessionId)),
 					loadTranscript: (taskId, notice) =>
-						loadTaskTranscript(
-							getOwnerTaskStore(session),
-							noticeTranscriptQuery(taskId, notice, session.sessionManager.getSessionId()),
-						),
+						loadTaskTranscript(getOwnerTaskStore(session), noticeTranscriptQuery(taskId, notice, sessionId)),
 					getToolDefinition: (name) =>
 						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
 					cwd: session.sessionManager.getCwd(),
-					requestRender: () => tui.requestRender(),
+					// The host may be showing the preview even if the last headless repaint showed this same transcript.
+					requestRender: () => this.send({ type: "engine_custom_invalidate", componentId: command.componentId }),
 				},
 			);
 			tui.addChild(component);

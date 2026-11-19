@@ -168,6 +168,7 @@ export async function renderAgentSessionHtml(
 		getToolRenderers: (name) =>
 			session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
 		theme,
+		sessionId: session.sessionManager.getSessionId(),
 		cwd: session.sessionManager.getCwd(),
 	});
 

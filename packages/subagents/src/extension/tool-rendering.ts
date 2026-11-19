@@ -70,6 +70,7 @@ type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & {
 	/** Standalone file exports must never resolve a recorded ID against a live task or child transcript. */
 	savedFile?: boolean;
 	cwd?: string;
+	sessionId?: string;
 	getTaskRecord?: ToolRenderContext["getTaskRecord"];
 	getElapsedMs?: () => number | undefined;
 	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
@@ -799,18 +800,21 @@ function buildOutcomeToolBlock(input: {
 		outcome.kind === "sdk-handoff" ? { kind: "yielded" as const, taskId: outcome.taskId } : outcome.observation;
 	const savedTask = result.details?.taskRecords?.find((item) => item.ref.taskId === observation.taskId);
 	const childId = outcome.kind === "sdk-handoff" ? outcome.childId : savedTask?.launchOperationId;
+	const ownerSessionId = result.details?.ownerSessionId ?? context.sessionId;
 	if (!context.savedFile) {
-		const initialRecord = subagentChildCardRecord(childId, observation.taskId);
+		const initialRecord = subagentChildCardRecord(ownerSessionId, childId, observation.taskId);
 		watchSubagentChildCard(
 			context.state,
 			context.invalidate,
 			initialRecord?.childId ?? childId ?? observation.taskId,
-			result.details?.ownerSessionId,
+			ownerSessionId,
 		);
 	}
 
 	const evaluate = (): { readonly block: ToolBlock; readonly working: boolean } => {
-		const record = context.savedFile ? undefined : subagentChildCardRecord(childId, observation.taskId);
+		const record = context.savedFile
+			? undefined
+			: subagentChildCardRecord(ownerSessionId, childId, observation.taskId);
 		const activeTaskId = record?.taskId ?? observation.taskId;
 		const freshTask = context.getTaskRecord?.(activeTaskId as TaskId);
 		const task = freshTask ?? (savedTask?.ref.taskId === activeTaskId ? savedTask : undefined);
@@ -1048,6 +1052,7 @@ function buildForegroundChildToolBlock(input: {
 	readonly identity?: { readonly agent: string; readonly task: string };
 	readonly taskRecord?: TaskRecord;
 	readonly childId?: string;
+	readonly ownerSessionId?: string;
 	readonly expanded: boolean;
 	readonly now?: number;
 	readonly theme: Theme;
@@ -1103,7 +1108,9 @@ function buildForegroundChildToolBlock(input: {
 			const id = activeProgress?.taskId;
 			const current =
 				(id ? context?.getTaskRecord?.(id)?.elapsedSpan : undefined) ??
-				(input.childId ? subagentChildIndexEntry(input.childId)?.elapsedSpan : undefined) ??
+				(input.ownerSessionId && input.childId
+					? subagentChildIndexEntry(input.ownerSessionId, input.childId)?.elapsedSpan
+					: undefined) ??
 				span;
 			const ms = current ? spanElapsedMs(current) : elapsedMs;
 			return statJoin(theme, [
@@ -1387,11 +1394,12 @@ export function renderSubagentToolResult(
 		if (count > 0 && !failedBeforeStart) {
 			const children = new Map(d.results.map((child, i) => [d.resultIndices?.[i] ?? i, child]));
 			const progressBySlot = new Map(d.progress?.map((p) => [p.index, p]));
+			const ownerSessionId = d.ownerSessionId ?? context.sessionId;
 			const blocks = Array.from({ length: count }, (_, index) => {
 				const child = children.get(index);
 				const progress = progressBySlot.get(index);
-				if (!context.savedFile && child?.detached && d.runId) {
-					const record = subagentChildIndexEntry(`${d.runId}:${child.progress?.index ?? index}`);
+				if (!context.savedFile && child?.detached && d.runId && ownerSessionId) {
+					const record = subagentChildIndexEntry(ownerSessionId, `${d.runId}:${child.progress?.index ?? index}`);
 					if (record?.taskId)
 						return buildOutcomeToolBlock({
 							outcome: { kind: "sdk-handoff", childId: record.childId, taskId: record.taskId },
@@ -1408,6 +1416,7 @@ export function renderSubagentToolResult(
 					identity: labels[index],
 					taskRecord: d.taskRecords?.[index],
 					childId: !context.savedFile && d.runId ? `${d.runId}:${child?.progress?.index ?? index}` : undefined,
+					ownerSessionId,
 					expanded: options.expanded,
 					now: context.state.subagentResultSnapshotNow,
 					theme,
