@@ -37,6 +37,11 @@ const SCHEMA_CHURN_TIMEOUT_MS = 300_000;
  */
 const SEVERAL_STATEMENT_TEXTS = 5;
 const WRITES_PER_TEXT = 3;
+/**
+ * Eight texts of 2,202 statements, half of them reads of wide rows, sent to a real server that every other storage test
+ * file writes to at the same time: the server's cost, up to about 23 s in CI, not a slow test.
+ */
+const WIDE_TEXTS_TIMEOUT_MS = 120_000;
 
 const prefix = `churn_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
 const serverOptions = () => {
@@ -174,32 +179,79 @@ describe.skipIf(serverUrl === undefined)(
 			}
 		});
 
-		test("several statements in one exec that return more columns than the server describes in one response run as the server runs the text (#5652)", async () => {
-			const table = `${prefix}wide_rows`;
-			const view = `${prefix}wide`;
-			const returned = `${prefix}wide_returned`;
-			// The server runs an exec's text without describing the columns its statements return; 2,200 statements that
-			// return 64 columns with long names, or 150 columns, would take over 10 MB to describe, more than the server
-			// answers in one response by default.
-			const names = Array.from({ length: 64 }, (_, index) => `${"c".repeat(60)}${index}`);
-			await database.exec(`CREATE VIEW ${view} AS SELECT ${names.map((name) => `1 AS ${name}`).join(", ")}`);
-			await database.exec(`CREATE TABLE ${returned} (${names.join(", ")})`);
-			try {
-				for (const statement of [
-					`SELECT * FROM ${view}`,
-					`WITH named AS (SELECT * FROM ${view}) SELECT * FROM named`,
-					`VALUES (${Array.from({ length: 150 }, () => "1").join(", ")})`,
-					`DELETE FROM ${returned} WHERE 0 RETURNING *`,
-				]) {
-					const sql = `INSERT INTO ${table} VALUES (1); ${`${statement}; `.repeat(2_200)}INSERT INTO ${table} VALUES (2)`;
-					const { server, exec } = await serverAndExec(table, sql);
-					assert.deepEqual(server, { failure: undefined, rows: [{ x: 1 }, { x: 2 }] }, statement);
-					assert.deepEqual(exec, server, statement);
+		test(
+			"several statements in one exec that return more columns than the server describes in one response run as the server runs the text (#5652)",
+			async () => {
+				const table = `${prefix}wide_rows`;
+				const view = `${prefix}wide`;
+				const returned = `${prefix}wide_returned`;
+				// The server runs an exec's text without describing the columns its statements return; 2,200 statements that
+				// return 64 columns with long names, or 150 columns, would take over 10 MB to describe, more than the server
+				// answers in one response by default.
+				const names = Array.from({ length: 64 }, (_, index) => `${"c".repeat(60)}${index}`);
+				await database.exec(`CREATE VIEW ${view} AS SELECT ${names.map((name) => `1 AS ${name}`).join(", ")}`);
+				await database.exec(`CREATE TABLE ${returned} (${names.join(", ")})`);
+				const schemaVersion = async () =>
+					Number(
+						(await database.get<{ schema_version: number | bigint }>("PRAGMA schema_version"))?.schema_version,
+					);
+				const written = { failure: undefined, rows: [{ x: 1 }, { x: 2 }] };
+				const client = createClient(serverOptions());
+				try {
+					for (const statement of [
+						`SELECT * FROM ${view}`,
+						`WITH named AS (SELECT * FROM ${view}) SELECT * FROM named`,
+						`VALUES (${Array.from({ length: 150 }, () => "1").join(", ")})`,
+						`DELETE FROM ${returned} WHERE 0 RETURNING *`,
+					]) {
+						const sql = `INSERT INTO ${table} VALUES (1); ${`${statement}; `.repeat(2_200)}INSERT INTO ${table} VALUES (2)`;
+						// The text sent as one request, as the adapter sent every exec, and the adapter's exec, whose failure holds
+						// the server's answer as its cause, are held to the same outcome.
+						for (const [sender, run, answer] of [
+							["one request", (text: string) => client.executeMultiple(text), undefined],
+							[
+								"exec",
+								(text: string) => database.exec(text),
+								(failure: unknown) => (failure as { readonly cause?: unknown }).cause,
+							],
+						] as const) {
+							let schemaChanged = false;
+							const result = await outcome(
+								table,
+								sql,
+								async (text) => {
+									const before = await schemaVersion();
+									try {
+										await run(text);
+									} finally {
+										schemaChanged = (await schemaVersion()) !== before;
+									}
+								},
+								answer,
+							);
+							const label = `${statement} (${sender})`;
+							// Other test files share the server and write to it, creating and dropping their tables. A text sent whole
+							// meets their writes as any text does: the server refuses one of its statements without running it, with
+							// `SQLITE_SCHEMA` when another connection changed the schema while the text ran, or with `SQLITE_BUSY` when
+							// it cannot take the write lock, after the statements before it committed, and runs none after it (#5652).
+							// Those are the only failures the text may have: never one for the size of the server's response, and
+							// never one after both writes.
+							const refused =
+								result.failure?.code === "SQLITE_BUSY" ||
+								(result.failure?.code === "SQLITE_SCHEMA" && schemaChanged);
+							if (refused) {
+								assert.notEqual(result.rows.length, written.rows.length, label);
+								assert.deepEqual(result.rows, written.rows.slice(0, result.rows.length), label);
+							} else assert.deepEqual(result, written, label);
+						}
+					}
+				} finally {
+					client.close();
+					await database.exec(`DROP VIEW IF EXISTS ${view}`);
 				}
-			} finally {
-				await database.exec(`DROP VIEW IF EXISTS ${view}`);
-			}
-		});
+			},
+			WIDE_TEXTS_TIMEOUT_MS,
+		);
 
 		test(
 			"every write lands once while other connections keep creating and dropping their tables",
