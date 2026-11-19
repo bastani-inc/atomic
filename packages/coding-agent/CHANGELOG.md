@@ -19,6 +19,7 @@
 - Closing or switching sessions no longer needs to describe a worktree child as reaped while Git is still using its checkout. Even if the close requested the stop, the receipt can say `already-finishing` instead. Children without temporary worktrees keep their usual close receipts ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 - Codemode scripts can launch single or parallel children with `tools.subagent`, wait with a budget, check status, and pause, quit or resume children their session launched. Scripts can `list` and `get` agent definitions, but `create`, `update` and `delete` still require direct calls. The new `models` action lists configured models and their supported thinking levels, both directly and from scripts ([#5927](https://github.com/bastani-inc/atomic/pull/5927)).
 - Codemode is now active in the default tool set. Its tool description adds to the model's prompt; `codemode.inlineBudget` bounds the inline declarations (default: 3000 estimated tokens). To opt out, set `"defaultTools": ["-codemode"]`. Explicit tool lists must name `codemode` to select it. An explicit `-codemode` also prevents MCP from turning it back on.
+- Custom session stores can implement `readForkWindow(sessionId, entryId)` to supply a subagent's retained branch and labels without opening the whole parent. Stores without the method keep their existing fork behavior ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
 
 ### Fixed
 

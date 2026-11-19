@@ -72,9 +72,7 @@ export function createForkContextResolver(
 			if (cached !== undefined) return cached;
 			const child = (async () => {
 				try {
-					const source = await SessionManager.open(store, parentSessionId, cwd);
-					await source.createBranchedSession(leafId);
-					return source;
+					return await SessionManager.forkContext(store, parentSessionId, leafId, cwd);
 				} catch (cause) {
 					children.delete(index);
 					throw new SubagentForkContextError(parentSessionId, "fork_failed", { cause });
