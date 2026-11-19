@@ -844,14 +844,14 @@ const UPGRADED_CUSTOM_TYPES = new Set(["subagent-child", "workflow.run.start", "
 
 /**
  * The entries a version-5 upgrade reads: every entry outside the conversation (`!isSessionHistoryEntry`: these
- * types, system messages, and the custom types of branch state) and the child and workflow-run records, which are
- * the other custom types here. A store may select a superset; the upgrade ignores the rest.
+ * types, system messages, and the custom types of branch state), the child and workflow-run records, which are
+ * the other custom types here, and the extension state: every custom type outside `atomicCustomTypes`. A store may
+ * select a superset; the upgrade ignores the rest.
  */
 export const RESUME_UPGRADE_SOURCES = {
 	types: [...SESSION_STATE_TYPES],
-	omittedCustomTypes: [...ATOMIC_CUSTOM_TYPES].filter(
-		(key) => !BRANCH_CUSTOM_STATE_TYPES.has(key) && !UPGRADED_CUSTOM_TYPES.has(key),
-	),
+	customTypes: [...BRANCH_CUSTOM_STATE_TYPES, ...UPGRADED_CUSTOM_TYPES],
+	atomicCustomTypes: [...ATOMIC_CUSTOM_TYPES],
 } as const;
 
 function upgradeSource(entry: SessionEntry): boolean {
@@ -863,8 +863,9 @@ function upgradeSource(entry: SessionEntry): boolean {
  * after an upgrade; the result equals the index a fold of every entry builds. The conversation fields (topology,
  * totals, models, assistants, compactions) and the recovery protocols this version folds as version 5 did carry
  * over, and admission keys become digests. The rest is derived again from the sources: the child records and
- * aliases, open workflow runs, the active branch's settings and checkout snapshots, and the state positions.
- * Add the sources in sequence order, on any branch.
+ * aliases, open workflow runs, the active branch's settings and checkout snapshots, the state positions, and the
+ * extension state, which an index from a build before that field does not list. Add the sources in sequence order,
+ * on any branch.
  */
 export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 	add(entry: SessionEntry, seq: number): void;
@@ -888,6 +889,7 @@ export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 		snapshotPins: [],
 	});
 	const positions = statePositions();
+	// Derived rather than carried: an index from a build before the field does not list it.
 	const extensionState: number[] = [];
 	let lastSeq = 0;
 	return {
@@ -915,9 +917,9 @@ export function sessionResumeUpgrade(previous: UpgradableSessionResumeIndex): {
 				...(previous.nameSeq !== undefined ? { nameSeq: previous.nameSeq } : {}),
 				...(previous.summarySeq !== undefined ? { summarySeq: previous.summarySeq } : {}),
 				...positions,
-				extensionState,
 				totals: previous.totals,
 				...(previous.latestAssistantSeq !== undefined ? { latestAssistantSeq: previous.latestAssistantSeq } : {}),
+				extensionState,
 			};
 		},
 	};
