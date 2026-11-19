@@ -248,7 +248,10 @@ export class RpcSessionBinding {
 			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineLine);
 		}
 		this.unsubscribe = session.subscribe((event) => {
-			this.output(toJsonEvent(event));
+			// A finished message carries its save receipt, so a host can tell which saved entry its rows show.
+			const receipt = event.type === "message_end" ? session.entryReceipt?.(event.message) : undefined;
+			const json = toJsonEvent(event);
+			this.output(receipt === undefined ? json : { ...json, entryId: receipt.entryId, seq: receipt.seq });
 			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {

@@ -77,6 +77,8 @@ interface TranscriptRowLayout {
 	readonly starts: number[];
 	readonly prompts: number[];
 	segments: readonly RowWindowSegment[];
+	/** The index in `segments` of each block's first segment: a spaced block has two. */
+	readonly firstSegments: number[];
 	rowCount: number;
 }
 
@@ -176,8 +178,16 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	private measuredRows: MeasuredRowWindow | undefined;
 	/** The blocks and their first rows as last drawn, which a click is resolved against. */
 	private paintedLayout: CachedTranscriptPaint<TEntry> | undefined;
-	private readonly layout: TranscriptRowLayout = { starts: [], prompts: [], segments: [], rowCount: 0 };
+	private readonly layout: TranscriptRowLayout = {
+		starts: [],
+		prompts: [],
+		segments: [],
+		firstSegments: [],
+		rowCount: 0,
+	};
 	private dirtyEntries = new WeakSet<TEntry>();
+	/** Retired blocks were dropped without their rows: lay every block out again at the next measure. */
+	private relayout = false;
 	private staticComponents: readonly Component[] = [];
 	/** Per-entry heights recorded by the most recent `renderAllRows`. */
 	private staticSegments: readonly RowWindowSegment[] = [];
@@ -240,7 +250,11 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	 * only moved (a prepend, a splice) keep their rendered rows.
 	 */
 	measureRows(width: number): MeasuredRowWindow {
-		const firstChanged = this.ensureBlockCache(width);
+		const firstChanged = this.relayout ? 0 : this.ensureBlockCache(width);
+		if (this.relayout) {
+			this.relayout = false;
+			this.ensureBlockCache(width);
+		}
 		if (this.measuredRows !== undefined && firstChanged === UNCHANGED) return this.measuredRows;
 		this.refreshLayout(Math.min(firstChanged, this.blockCache.length));
 		const { starts, prompts, segments, rowCount } = this.layout;
@@ -339,6 +353,36 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		this.measuredRows = undefined;
 	}
 
+	/**
+	 * Release the blocks of entries a replacement removed, now, also while nothing draws the transcript. A surviving
+	 * entry keeps its component and rows; its position is settled at the next measure.
+	 */
+	releaseRetired(retained: ReadonlySet<TEntry>): void {
+		if (!this.supportsRowWindow) {
+			this.invalidate();
+			return;
+		}
+		const kept = new Set<Component>();
+		const survivors: Array<CachedChatTranscriptBlock<TEntry>> = [];
+		for (const block of this.blockCache) {
+			if (block === undefined || !retained.has(block.entry)) continue;
+			survivors.push(block);
+			kept.add(block.component);
+		}
+		for (const block of this.blockCache) {
+			if (block !== undefined && !kept.has(block.component)) this.release(block.component);
+		}
+		this.blockCache = survivors;
+		this.layout.segments = [];
+		this.layout.starts.length = 0;
+		this.layout.firstSegments.length = 0;
+		this.layout.prompts.length = 0;
+		this.layout.rowCount = 0;
+		this.relayout = true;
+		this.measuredRows = undefined;
+		this.paintedLayout = undefined;
+	}
+
 	invalidate(): void {
 		for (const block of this.blockCache) this.release(block?.component);
 		for (const component of new Set(this.staticComponents)) this.release(component);
@@ -348,6 +392,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		this.staticSegmentsWidth = undefined;
 		this.layout.segments = [];
 		this.layout.starts.length = 0;
+		this.layout.firstSegments.length = 0;
 		this.layout.prompts.length = 0;
 		this.layout.rowCount = 0;
 		this.dirtyEntries = new WeakSet<TEntry>();
@@ -434,13 +479,18 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		let row = from === 0 ? 0 : (layout.starts[from - 1] ?? 0) + (blocks[from - 1]?.lines.length ?? 0);
 		layout.starts.length = blocks.length;
 		layout.prompts.length = indexAtOrBefore(layout.prompts, row - 1) + 1;
-		const segments = layout.segments.slice(0, from);
+		const segments = layout.segments.slice(0, layout.firstSegments[from] ?? layout.segments.length);
+		layout.firstSegments.length = blocks.length;
 		for (let index = from; index < blocks.length; index++) {
 			const block = blocks[index];
 			layout.starts[index] = row;
+			layout.firstSegments[index] = segments.length;
 			const rows = block?.lines.length ?? 0;
 			if (block !== undefined) {
-				segments.push({ id: block.entry, rows });
+				// The spacer a block's position adds is a segment of its own: a reader on the entry's rows stays on
+				// them when the block becomes the first and loses it, or gains it under a page read above.
+				if (block.spaced) segments.push({ id: spacerSegmentId(block.entry), rows: 1 });
+				segments.push({ id: block.entry, rows: block.spaced ? rows - 1 : rows });
 				for (const promptRow of block.promptRows) layout.prompts.push(row + promptRow);
 			}
 			row += rows;
@@ -492,6 +542,15 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		for (const line of rendered) lines.push(line);
 		return lines;
 	}
+}
+
+const spacerSegments = new WeakMap<object, object>();
+function spacerSegmentId(entry: object): object {
+	const known = spacerSegments.get(entry);
+	if (known !== undefined) return known;
+	const id = {};
+	spacerSegments.set(entry, id);
+	return id;
 }
 
 function indexAtOrBefore(sorted: readonly number[], target: number): number {
@@ -657,6 +716,23 @@ export class ScrollableComponentViewport implements Component {
 			top = end;
 		}
 		return false;
+	}
+
+	/** The segments of `component` the last frame painted, in order; empty before a frame was painted. */
+	paintedSegments(component: Component): unknown[] {
+		if (!this.lastPaint) return [];
+		const index = this.components.indexOf(component);
+		const ranges = this.lastComponentSegments[index] ?? [];
+		let top = this.lastComponentRowCounts.slice(0, index).reduce((a, b) => a + b, 0);
+		const { start, contentRows } = this.lastPaint;
+		const painted: unknown[] = [];
+		for (const seg of ranges) {
+			const end = top + seg.rows;
+			if (top >= start + contentRows) break;
+			if (end > start) painted.push(seg.id);
+			top = end;
+		}
+		return painted;
 	}
 
 	setVisibleRows(rows: number): void {

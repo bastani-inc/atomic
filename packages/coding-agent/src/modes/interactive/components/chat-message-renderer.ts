@@ -11,7 +11,7 @@ import {
 } from "../../../core/messages.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore, TaskActivity } from "../../../core/tasks/owner-store.js";
-import { savedTaskRows } from "../../../core/tasks/transcript-origin.js";
+import { carryRowSource, noteRowSource, rowSource, savedTaskRows } from "../../../core/tasks/transcript-origin.js";
 import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
@@ -243,6 +243,7 @@ function buildChatEntries(
 				if (toolEntry) {
 					toolEntry.result = message;
 					toolEntry.isPartial = false;
+					carryRowSource(toolEntry, toolEntry, message);
 					pendingTools.delete(message.toolCallId);
 				} else {
 					entries.push({
@@ -301,7 +302,10 @@ function buildChatEntries(
 				break;
 			}
 		}
-		if (onSourceRow) for (let i = first; i < entries.length; i++) onSourceRow(entries[i]!, message, i - first);
+		for (let i = first; i < entries.length; i++) {
+			noteRowSource(entries[i]!, { message, part: i - first });
+			onSourceRow?.(entries[i]!, message, i - first);
+		}
 	}
 	return entries;
 }
@@ -328,6 +332,8 @@ interface ToolEntryUpdate {
 	executionStarted?: boolean;
 	startedAt?: number;
 	breakBefore?: boolean;
+	/** The assistant message whose call this row shows, and the row's position among that message's rows. */
+	source?: { readonly message: object; readonly part: number };
 }
 export class LiveChatEntriesController {
 	private streamingAssistantIndex: number | undefined;
@@ -409,6 +415,15 @@ export class LiveChatEntriesController {
 		this.entries.push(...grouped.entries);
 		this.reindexPendingTools();
 	}
+	/** Adds saved history at `index`, as a newer saved page above a live window, keeping a stream in place. */
+	insertMessages(index: number, messages: readonly AgentMessage[]): void {
+		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
+		if (entries.length === 0) return;
+		this.entries.splice(index, 0, ...entries);
+		if (this.streamingAssistantIndex !== undefined && this.streamingAssistantIndex >= index)
+			this.streamingAssistantIndex += entries.length;
+		this.reindexPendingTools();
+	}
 	/** Adds earlier history ahead of every entry, keeping a stream in progress and its pending tools in place. */
 	prependMessages(messages: readonly AgentMessage[]): void {
 		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
@@ -458,6 +473,25 @@ export class LiveChatEntriesController {
 		this.entries.push({ role: "user", kind: "user", text });
 		this.tracker.break();
 		this.carriedToolBreak = false;
+	}
+	/**
+	 * Keep the rows a reader parked above the end sees through a replaced window: `kept` stay ahead of it, and a new row
+	 * of a message the reader sees is replaced by the row they see, found by its saved row key.
+	 */
+	keepParkedEntries(
+		kept: readonly object[],
+		adopted: ReadonlyMap<string, object>,
+		keyOf: (entry: object) => string | undefined,
+	): void {
+		const next = this.entries.map((entry) => {
+			const key = keyOf(entry);
+			return ((key === undefined ? undefined : adopted.get(key)) ?? entry) as LiveChatEntry;
+		});
+		this.entries.splice(0, this.entries.length, ...(kept as LiveChatEntry[]), ...next);
+		this.streamingAssistantIndex = undefined;
+		this.tracker.reset();
+		this.carriedToolBreak = groupChatEntries(this.entries, this.tracker);
+		this.reindexPendingTools();
 	}
 	/**
 	 * Seed the assistant message a chat mounted mid-stream never saw start.
@@ -541,7 +575,12 @@ export class LiveChatEntriesController {
 		}
 		if (message.role === "toolResult") {
 			const toolResult = message as ToolResultMessage;
-			if (this.findToolEntryIndex(toolResult.toolCallId) >= 0) return true;
+			const index = this.findToolEntryIndex(toolResult.toolCallId);
+			if (index >= 0) {
+				const row = this.entries[index]!;
+				carryRowSource(row, row, message);
+				return true;
+			}
 		}
 		const grouped = groupedChatEntries([message as AgentMessage], this.tracker, this.carriedToolBreak);
 		this.carriedToolBreak = grouped.carried;
@@ -593,21 +632,26 @@ export class LiveChatEntriesController {
 		);
 		if (existingIndex !== undefined) {
 			const previous = this.entries[existingIndex] as Extract<ChatMessageEntry, { kind: "assistant" }>;
-			this.entries[existingIndex] = {
+			const next = {
 				...previous,
 				message,
 				...(interruptedActivity ? { interruptedActivity } : {}),
 			};
+			this.entries[existingIndex] = next;
+			noteRowSource(next, { message, part: 0 });
 		} else {
-			this.entries.push({
+			const next: ChatMessageEntry = {
 				role: "assistant",
 				kind: "assistant",
 				message,
 				...(interruptedActivity ? { interruptedActivity } : {}),
-			});
+			};
+			this.entries.push(next);
+			noteRowSource(next, { message, part: 0 });
 			this.streamingAssistantIndex = this.entries.length - 1;
 		}
 		const calls = assistantCallBreaks(message.content, this.carriedToolBreak);
+		let part = 0;
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
 			this.upsertToolEntry({
@@ -617,6 +661,7 @@ export class LiveChatEntriesController {
 				isPartial: true,
 				argsComplete,
 				breakBefore: calls.breakBefore.has(content.id),
+				source: { message, part: ++part },
 			});
 		}
 		return true;
@@ -649,10 +694,15 @@ export class LiveChatEntriesController {
 			this.entries.push(next);
 			this.tracker.append(toolCallId, next.toolName, toolEntryState(next), toolEntryRoleSink(next));
 		}
+		if (update.source) {
+			const result = rowSource(next)?.result;
+			noteRowSource(next, result === undefined ? update.source : { ...update.source, result });
+		}
 		this.pendingToolIndexes.set(toolCallId, index >= 0 ? index : this.entries.length - 1);
 		return true;
 	}
 	private replaceToolEntry(index: number, next: ToolChatEntry): void {
+		carryRowSource(this.entries[index], next);
 		this.entries[index] = next;
 		this.tracker.bind(next.toolCallId, toolEntryRoleSink(next));
 		this.tracker.settle(next.toolCallId, toolEntryState(next));

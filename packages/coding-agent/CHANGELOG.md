@@ -11,6 +11,10 @@
 - Replace `sessionManager.getSessionRecoveryState().admissionKeys.includes(key)` with `sessionManager.getAdmissionKeys().has(key)`. Admission remains synchronous; old keys are no longer retained as strings ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 - Await `SessionManager.inMemory(cwd, options, entries)` when seeding a private session. Creating an empty `inMemory()` manager stays synchronous ([#5554](https://github.com/bastani-inc/atomic/issues/5554)).
 
+### Added
+
+- RPC `message_end` events carry `entryId` and `seq` when the session saved the message, so a client can tell which saved entry it shows ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+
 ### Changed
 
 - Non-fullscreen chats show where to read or export older messages that were never printed in the terminal's scrollback ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
@@ -19,6 +23,7 @@
 ### Fixed
 
 - A hidden subagent or stage chat releases the rendered rows of a replaced transcript without waiting to be shown again ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
+- A compaction while you are scrolled up in the main chat or a live subagent chat keeps the rows you are reading, your selection and the unread count where they were, releases the rest of the earlier conversation, and reads it again page by page on either side as you scroll. A stateful extension card keeps its instance when a compaction keeps or retires it ([#5593](https://github.com/bastani-inc/atomic/issues/5593)).
 
 ## [0.9.90] - 2026-11-19
 

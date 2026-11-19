@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
+import { stripVTControlCharacters } from "node:util";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Message } from "@bastani/atomic-ai/compat";
 import { ScrollView, type TuiAltScreen } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test } from "vitest";
+import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { type FileEntry, SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
@@ -294,6 +298,221 @@ test.each([false, true])(
 		assert.equal(second === first, !replayable);
 	},
 );
+
+const CLEARED = {
+	strategy: "verbatim-lines",
+	promptVersion: 7,
+	parameters: { query: "test" },
+	stats: {
+		linesBefore: 1,
+		linesDeleted: 1,
+		linesKept: 0,
+		rangeCount: 0,
+		tokensBefore: 100,
+		tokensAfter: 2,
+		percentReduction: 98,
+	},
+	form: "cleared",
+} as const;
+
+/** Compact the session live, as `compaction_end` redraws the chat, keeping entries from `keptId` on. */
+async function compactLive(mode: InteractiveMode, keptId: string | null): Promise<void> {
+	await mode.sessionManager.appendCompaction("new context", keptId, 100, CLEARED);
+	const result = {
+		compactedText: "new context",
+		firstKeptEntryId: keptId,
+		tokensBefore: 100,
+		parameters: CLEARED.parameters,
+		stats: CLEARED.stats,
+		promptVersion: CLEARED.promptVersion,
+		form: CLEARED.form,
+	};
+	mode.rebuildChatFromMessages({ suppressCompactionBoundary: result });
+	mode.addCompactionBoundaryToChat(result);
+}
+
+const plainScreen = (tui: TuiAltScreen) =>
+	tui.getScreenLines().map((line) => stripVTControlCharacters(line).replace(/\]8;;/g, "").trimEnd());
+/** The turn numbers the chat holds, in order, as its rows show their prompts. */
+const heldTurns = (mode: InteractiveMode) =>
+	mode.documentContainer
+		.render(COLUMNS)
+		.map((line) => /Turn (\d+): check/.exec(line)?.[1])
+		.filter((turn) => turn !== undefined)
+		.map(Number);
+
+async function parkAboveTheEnd(turns: number): Promise<ResumedTranscript> {
+	const opened = await openResumedSession(turns);
+	opened.mode.renderInitialMessages();
+	opened.tui.renderNow();
+	await fillIn(opened.mode, turns);
+	opened.tui.renderNow();
+	opened.transcript.scrollBy(-(ROWS * 3));
+	opened.tui.renderNow();
+	return opened;
+}
+
+/** The retired window is released: the chat holds only turns the screen shows a row of. */
+function assertHoldsOnlyWhatIsShown(mode: InteractiveMode, tui: TuiAltScreen): void {
+	const screen = plainScreen(tui).join("\n");
+	const held = heldTurns(mode);
+	assert.ok(held.length > 0);
+	for (const turn of held)
+		assert.match(screen, new RegExp(`(Turn|Answer) ${turn}\\b`), `turn ${turn} is held but not shown: ${held}`);
+}
+
+function terminalSelect(tui: TuiAltScreen): void {
+	const terminal = (tui as unknown as { terminal: RecordingTerminal }).terminal;
+	terminal.input("\x1b[<0;3;6M");
+	terminal.input("\x1b[<32;20;8M");
+	terminal.input("\x1b[<0;20;8m");
+	tui.renderNow();
+}
+
+test("a compaction while the reader is above the end keeps their rows on screen and releases the rest (#5593)", async () => {
+	const { mode, tui, transcript } = await parkAboveTheEnd(100);
+	terminalSelect(tui);
+	assert.equal(tui.hasActiveSelection(), true);
+	const parked = plainScreen(tui).slice(1);
+	assert.match(parked.join("\n"), /Turn 95: check/);
+	await compactLive(mode, null);
+	tui.renderNow();
+	assert.deepEqual(plainScreen(tui).slice(1), parked, "the reader keeps the rows they were reading");
+	assert.equal(transcript.isFollowingEnd, false);
+	assert.equal(tui.hasActiveSelection(), true, "the reader keeps their selection");
+	assertHoldsOnlyWhatIsShown(mode, tui);
+	// Earlier saved messages continue right above the kept rows, once each.
+	for (let i = 0; i < 40 && !heldTurns(mode).includes(80); i++) {
+		transcript.scrollBy(-ROWS);
+		await nextTurn();
+		tui.renderNow();
+	}
+	const above = heldTurns(mode);
+	assert.ok(above.includes(80), `older pages load above the kept rows: ${above}`);
+	assert.equal(new Set(above).size, above.length, `no saved row repeats: ${above}`);
+	assert.deepEqual(
+		above,
+		Array.from({ length: above.length }, (_, i) => above[0]! + i),
+		`saved rows stay in order, none skipped: ${above}`,
+	);
+	// Later saved messages continue below them until the new context.
+	for (let i = 0; i < 80 && !/Context cleared/.test(plainScreen(tui).join("\n")); i++) {
+		transcript.scrollBy(ROWS);
+		await nextTurn();
+		tui.renderNow();
+	}
+	const below = heldTurns(mode);
+	assert.ok(below.includes(99), `newer pages reach the end of the retired window: ${below}`);
+	assert.deepEqual(
+		below,
+		Array.from({ length: below.length }, (_, i) => below[0]! + i),
+		`saved rows stay in order, none repeated or skipped: ${below}`,
+	);
+});
+
+test("a compaction that keeps the rows the reader sees draws them once, where they were (#5593)", async () => {
+	const { mode, tui, transcript } = await parkAboveTheEnd(100);
+	const parked = plainScreen(tui).slice(1);
+	const kept = mode.sessionManager
+		.getEntries()
+		.find((entry) => entry.type === "message" && JSON.stringify(entry.message).includes("Turn 93:"));
+	assert.ok(kept);
+	await compactLive(mode, kept.id);
+	tui.renderNow();
+	assert.deepEqual(plainScreen(tui).slice(1), parked, "the reader keeps the rows they were reading");
+	assert.equal(transcript.isFollowingEnd, false);
+	assert.deepEqual(heldTurns(mode), [93, 94, 95, 96, 97, 98, 99], "kept turns are drawn once");
+});
+
+test.each(["the session", "the engine's message_end"])(
+	"rows drawn as their messages streamed are placed by save receipts from %s across a compaction (#5593)",
+	async (from) => {
+		const { mode, tui, transcript } = await openResumedSession(0);
+		const manager = mode.sessionManager;
+		const receipts = new WeakMap<object, { seq: number }>();
+		Object.assign(mode.session, {
+			...(from === "the session" ? { entryReceipt: (message: object) => receipts.get(message) } : {}),
+			getSteeringMessages: () => [],
+			getFollowUpMessages: () => [],
+		});
+		mode.isInitialized = true;
+		mode.renderInitialMessages();
+		const stream = async (message: AgentMessage) => {
+			await mode.handleEvent({ type: "message_start", message } as AgentSessionEvent);
+			const entryId = await manager.appendMessage(message as Message);
+			const seq = manager.getEntrySeq(entryId)!;
+			receipts.set(message, { seq });
+			const end = { type: "message_end", message, ...(from === "the session" ? {} : { entryId, seq }) };
+			await mode.handleEvent(end as AgentSessionEvent);
+		};
+		for (let turn = 0; turn < 60; turn++) {
+			await stream({ role: "user", content: `Turn ${turn}: check the loader`, timestamp: turn });
+			await stream({
+				role: "assistant",
+				content: [{ type: "text", text: `Answer ${turn}\n\nline one\nline two` }],
+				api: "openai-completions",
+				provider: "scripted",
+				model: "scripted",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: turn,
+			} as AgentMessage);
+		}
+		tui.renderNow();
+		transcript.scrollBy(-(ROWS * 3));
+		tui.renderNow();
+		const parked = plainScreen(tui).slice(1);
+		await compactLive(mode, null);
+		tui.renderNow();
+		assert.deepEqual(plainScreen(tui).slice(1), parked, "the reader keeps the rows they were reading");
+		assertHoldsOnlyWhatIsShown(mode, tui);
+		for (let i = 0; i < 40 && !heldTurns(mode).includes(40); i++) {
+			transcript.scrollBy(-ROWS);
+			await nextTurn();
+			tui.renderNow();
+		}
+		for (let i = 0; i < 80 && !/Context cleared/.test(plainScreen(tui).join("\n")); i++) {
+			transcript.scrollBy(ROWS);
+			await nextTurn();
+			tui.renderNow();
+		}
+		const read = heldTurns(mode);
+		assert.ok(read.includes(59), `newer pages reach the end of the retired window: ${read}`);
+		assert.deepEqual(
+			read,
+			Array.from({ length: read.length }, (_, i) => read[0]! + i),
+			`saved rows stay in order, none repeated or skipped: ${read}`,
+		);
+	},
+);
+
+test("rows an older engine streamed without save receipts are released by a compaction, as before (#5593)", async () => {
+	const { mode, tui, transcript } = await openResumedSession(0);
+	const manager = mode.sessionManager;
+	Object.assign(mode.session, { getSteeringMessages: () => [], getFollowUpMessages: () => [] });
+	mode.isInitialized = true;
+	mode.renderInitialMessages();
+	for (let turn = 0; turn < 60; turn++) {
+		const message = { role: "user", content: `Turn ${turn}: check the loader`, timestamp: turn } as Message;
+		await mode.handleEvent({ type: "message_start", message } as AgentSessionEvent);
+		await manager.appendMessage(message);
+		await mode.handleEvent({ type: "message_end", message } as AgentSessionEvent);
+	}
+	tui.renderNow();
+	transcript.scrollBy(-(ROWS * 3));
+	tui.renderNow();
+	await compactLive(mode, null);
+	tui.renderNow();
+	assert.deepEqual(heldTurns(mode), [], "unplaced rows are not kept above saved pages they cannot be ordered with");
+	assert.match(plainScreen(tui).join("\n"), /Earlier messages are saved above this point|Context cleared/);
+});
 
 test("a frame after the first renders what the viewport shows, however long the resumed transcript", async () => {
 	for (const turns of TURNS) {

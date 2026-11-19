@@ -1218,8 +1218,11 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
 
 ```json
 {"type": "message_start", "message": {...}}
-{"type": "message_end", "message": {...}}
+{"type": "message_end", "message": {...}, "entryId": "a1b2c3d4", "seq": 42}
 ```
+
+When the session saved the message before ending it, `message_end` also carries the saved entry's `entryId` and its
+sequence `seq` in the session's history. Both are absent for a message the session did not save.
 
 ### message_update (Streaming)
 

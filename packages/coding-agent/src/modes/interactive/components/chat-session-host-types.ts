@@ -92,6 +92,11 @@ export interface ChatSessionViewportSettings {
 export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike = never> {
 	/** @internal First-party task transcripts can recreate only the renderers that opted into it. */
 	readonly savedTaskPages?: true;
+	/**
+	 * @internal Where a live row whose message was saved at `seq` appears in the transcript's saved pages, as their row
+	 * origin; `undefined` while that is not known. A stateful renderer instance keeps it when the row is retired.
+	 */
+	readonly liveRowOrigin?: (seq: number) => string | undefined;
 	style: ChatSessionHostStyle;
 	commands?: ChatSessionHostCommands;
 	requestRender?: () => void;

@@ -8,6 +8,7 @@ import type { TaskId } from "../../../core/tasks/contracts.js";
 import { taskClocksFor } from "../../../core/tasks/live-elapsed.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { savedRowKey } from "../../../core/tasks/transcript-origin.js";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import {
 	abortChatSessionBash,
@@ -68,6 +69,7 @@ import type {
 } from "./chat-session-host-types.ts";
 import { firstRawUserExactText, syncFirstUserEntry } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import { type ParkedTaskRows, parkedRun } from "./parked-rows.ts";
 import { isSingleLeftClick } from "./single-click.ts";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
@@ -75,6 +77,14 @@ import { pagedNotices } from "./task-transcript-notices.ts";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
 import { isClickedGroup } from "./transcript-block-clicks.ts";
 import { type AgentTokenMeterSnapshot, type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
+
+/** One saved page a transcript shows: kept while on screen, discarded after the reader leaves it. */
+export interface SavedPageHandle {
+	visible(): boolean;
+	discard(): void;
+	/** The page's last row in the transcript, which a newer saved page follows. */
+	lastRow(): object | undefined;
+}
 
 export type {
 	ChatSessionHostBashRequest,
@@ -214,8 +224,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 	}
 
-	/** Replaces the conversation with `messages`, keeping the host's own extra entries. */
-	replaceMessages(messages: readonly AgentSnapshotMessage[], options: { preserveUnread?: boolean } = {}): void {
+	/**
+	 * Replaces the conversation with `messages`, keeping the host's own extra entries, and the rows a reader parked
+	 * above the end sees when `parked` names them (`parkedRows`).
+	 */
+	replaceMessages(
+		messages: readonly AgentSnapshotMessage[],
+		options: { preserveUnread?: boolean; parked?: ParkedTaskRows } = {},
+	): void {
 		if (options.preserveUnread && this.state.bodyViewport.getScrollFromBottom() > 0) {
 			this.state.newMessages.observe(false, countableTranscriptLength(this.state));
 		}
@@ -224,35 +240,87 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.firstUserEntryExactText = firstUser.exactText;
 		const notices = pagedNotices.get(this);
 		if (notices) pagedNotices.set(this.state.transcript, notices);
-		this.state.replaceTranscriptWindow(messages);
+		this.state.replaceTranscriptWindow(messages, options.parked);
 		syncFirstUserEntry(this.state);
 		if (options.preserveUnread) this.state.newMessages.replaced(countableTranscriptLength(this.state));
 		else this.state.newMessages.reset();
 		this.state.requestRender?.();
 	}
 
+	/**
+	 * The rows a reader parked above the end sees, for a replacement of the window that now starts at saved sequence
+	 * `current` to keep: the rows of the window it retires, widened to every row of the messages they show, and the rows
+	 * of entries it keeps. Undefined while the reader follows the end, or when a row they see is unsaved and cannot be
+	 * placed among the saved entries.
+	 */
+	parkedRows(current: number): ParkedTaskRows | undefined {
+		const { state } = this;
+		if (state.bodyViewport.getScrollFromBottom() === 0) return undefined;
+		const painted = new Set(state.bodyViewport.paintedSegments(state.transcriptComponent));
+		const rows: readonly object[] = state.transcript;
+		let first = -1;
+		let last = -1;
+		for (let index = 0; index < rows.length; index++) {
+			if (!painted.has(rows[index])) continue;
+			if (first < 0) first = index;
+			last = index;
+		}
+		if (first < 0) return undefined;
+		// The host's own entries stay through any replacement, at its end.
+		const own = new Set<object>(state.extraEntries);
+		const run = parkedRun(rows, first, last, current, {
+			fixed: (row) => own.has(row),
+			message: (row) => !own.has(row) && "kind" in row,
+		});
+		if (!run) return undefined;
+		const adopted = new Map<string, object>();
+		for (const row of run.adopted) {
+			const key = own.has(row) ? undefined : savedRowKey(row);
+			if (key !== undefined && !adopted.has(key)) adopted.set(key, row);
+		}
+		return { rows: run.retired.filter((row) => !own.has(row)), first: run.first, last: run.last, adopted };
+	}
+
+	/** Own rows already in the transcript as one saved page, such as rows a reader kept through a compaction. */
+	keptPage(rows: readonly object[]): SavedPageHandle {
+		return this.savedPageHandle(new Set(rows) as Set<ChatSessionHostEntry<TExtraEntry>>);
+	}
+
 	/** Own one page displayed by a saved transcript. A page is discarded only after the viewport leaves it. */
 	showSavedPage(
 		messages: readonly AgentSnapshotMessage[],
 		edge: "latest" | "older" | "newer",
-	): { visible: () => boolean; discard: () => void } {
+		after?: object,
+	): SavedPageHandle {
 		const { state } = this;
 		const before = state.transcript.length;
+		// A newer page of a live chat's saved history goes between the page before it and the live window.
+		const at = after === undefined ? -1 : state.transcript.indexOf(after as ChatSessionHostEntry<TExtraEntry>) + 1;
 		if (edge === "latest") this.replaceMessages(messages);
 		else if (edge === "older") this.prependMessages(messages);
 		else {
 			const count = countableTranscriptLength(state);
-			this.appendMessages(messages);
+			if (at > 0) state.liveChat.insertMessages(at, messages);
+			else this.appendMessages(messages);
 			state.newMessages.historyPrepended(countableTranscriptLength(state) - count);
 		}
+		const added = state.transcript.length - before;
 		const owned = new Set(
 			edge === "latest"
 				? state.transcript.filter((e) => !state.extraEntries.includes(e as TExtraEntry))
 				: edge === "older"
-					? state.transcript.slice(0, state.transcript.length - before)
-					: state.transcript.slice(before),
+					? state.transcript.slice(0, added)
+					: at > 0
+						? state.transcript.slice(at, at + added)
+						: state.transcript.slice(before),
 		);
+		return this.savedPageHandle(owned);
+	}
+
+	private savedPageHandle(owned: Set<ChatSessionHostEntry<TExtraEntry>>): SavedPageHandle {
+		const { state } = this;
 		return {
+			lastRow: () => state.transcript.findLast((entry) => owned.has(entry)),
 			visible: () => state.bodyViewport.paintsSegments(state.transcriptComponent, owned),
 			discard: () => {
 				state.liveChat.dropSavedEntries(owned);

@@ -398,6 +398,8 @@ function taskTranscriptSource(
 		...(session.readHistoryChunks ? { readHistoryChunks: session.readHistoryChunks.bind(session) } : {}),
 		...(session.getFallbackEntries ? { getFallbackEntries: session.getFallbackEntries.bind(session) } : {}),
 		...(session.getEarlierCursor ? { getEarlierCursor: session.getEarlierCursor.bind(session) } : {}),
+		...(session.getEntrySeq ? { getEntrySeq: session.getEntrySeq.bind(session) } : {}),
+		...(session.entryReceipt ? { entryReceipt: session.entryReceipt.bind(session) } : {}),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
 		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, renameSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
@@ -399,6 +400,192 @@ test("a live subagent chat reads across a clear without missing output that arri
 		assert.match(host.text(), /archived prompt 0/);
 	} finally {
 		read.resolve();
+		await host.dispose();
+		await session.getSessionStore().close();
+	}
+});
+
+test.each([false, true])(
+	"a live task chat keeps a stateful card's instance across a compaction and when the card is read again (keep %s, #5593)",
+	async (keep) => {
+		const session = SessionManager.inMemory();
+		for (let i = 0; i < 60; i++) await session.appendMessage({ role: "user", content: `turn ${i}`, timestamp: i });
+		let event: ((e: AgentSessionEvent) => void) | undefined;
+		// What a session's save receipt reports: the stored sequence of the entry each emitted message became.
+		const receipts = new WeakMap<object, number>();
+		const source: TaskTranscriptSource = {
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => session.getTaskTranscriptEntries(),
+			getEarlierCursor: () => session.getEarlierCursor(),
+			getEntrySeq: (id) => session.getEntrySeq(id),
+			entryReceipt: (message) => {
+				const seq = receipts.get(message);
+				return seq === undefined ? undefined : { seq };
+			},
+			readHistory: session.readHistory.bind(session),
+			subscribe(listener) {
+				event = listener;
+				return () => {
+					event = undefined;
+				};
+			},
+		};
+		let built = 0;
+		const host = await openTranscript(source, {
+			height: 30,
+			environment: {
+				getChatRenderSettings: () => ({
+					getCustomMessageRenderer: (name) =>
+						name === "stateful-card"
+							? () => {
+									const identity = ++built;
+									return { render: () => [`widget incarnation ${identity}`], invalidate() {} };
+								}
+							: undefined,
+				}),
+			},
+		});
+		const shown = () => /widget incarnation (\d+)/.exec(host.text())?.[1];
+		const emit = async (message: AgentMessage, save: () => Promise<string>) => {
+			event?.({ type: "message_start", message } as AgentSessionEvent);
+			receipts.set(message, session.getEntrySeq(await save())!);
+			event?.({ type: "message_end", message } as AgentSessionEvent);
+			await flush();
+		};
+		try {
+			const card = { role: "custom", customType: "stateful-card", content: "card", display: true, timestamp: 61 };
+			await emit(card as AgentMessage, () => session.appendCustomMessageEntry("stateful-card", "card", true));
+			const cardId = session.getEntries().at(-1)!.id;
+			for (let i = 0; i < 3; i++) {
+				const message = { role: "user" as const, content: `after card ${i}`, timestamp: 70 + i };
+				await emit(message, () => session.appendMessage(message));
+			}
+			assert.equal(shown(), "1");
+			await session.appendCompaction("new context", keep ? cardId : null, 100, verbatimDetails);
+			event?.({
+				type: "compaction_end",
+				reason: "manual",
+				aborted: false,
+				willRetry: false,
+				result: {
+					compactedText: "new context",
+					firstKeptEntryId: keep ? cardId : null,
+					tokensBefore: 100,
+					parameters: verbatimDetails.parameters,
+					stats: verbatimDetails.stats,
+					promptVersion: verbatimDetails.promptVersion,
+					form: "cleared",
+				},
+			});
+			await flush();
+			if (keep) assert.equal(shown(), "1", "the card kept in the new context is the instance that was shown");
+			const readBack = async () => {
+				for (let i = 0; i < 60 && shown() === undefined; i++) {
+					host.inspector.handleInput(PAGE_UP);
+					host.frame();
+					await flush();
+				}
+				return shown();
+			};
+			assert.equal(await readBack(), "1", "the saved card is the instance the live chat showed");
+			host.inspector.handleInput(CTRL_END);
+			for (let i = 0; i < 5; i++) {
+				host.frame();
+				await flush();
+			}
+			assert.equal(await readBack(), "1", "reading the card again does not create another instance");
+			assert.equal(built, 1);
+		} finally {
+			await host.dispose();
+			await session.getSessionStore().close();
+		}
+	},
+);
+
+test("a live task chat compacted while its reader is above the end keeps only their rows and pages on around them (#5593)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 150; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	let event: ((e: AgentSessionEvent) => void) | undefined;
+	let chat: ChatSessionHost | undefined;
+	const source: TaskTranscriptSource = {
+		getSessionId: () => session.getSessionId(),
+		getEntries: () => session.getTaskTranscriptEntries(),
+		getEarlierCursor: () => session.getEarlierCursor(),
+		getEntrySeq: (id) => session.getEntrySeq(id),
+		readHistory: session.readHistory.bind(session),
+		subscribe(listener) {
+			event = listener;
+			return () => {
+				event = undefined;
+			};
+		},
+	};
+	const host = await openTranscript(source, {
+		environment: { createChat: (opts) => (chat = new ChatSessionHost(opts)) },
+	});
+	const held = () =>
+		(
+			chat!
+				.renderBodyRows(80, 0, chat!.bodyRowCount(80))
+				.join("\n")
+				.match(/M-\d{3}/g) ?? []
+		).map((m) => Number(m.slice(2)));
+	const body = () => host.frame().slice(0, 12);
+	try {
+		assert.ok(chat);
+		for (let i = 0; i < 3; i++) {
+			host.frame();
+			host.inspector.handleInput(PAGE_UP);
+		}
+		const parked = body();
+		assert.match(parked.join("\n"), /M-1[0-4]\d/);
+		await session.appendCompaction("new context", null, 100, verbatimDetails);
+		event?.({
+			type: "compaction_end",
+			reason: "manual",
+			aborted: false,
+			willRetry: false,
+			result: {
+				compactedText: "new context",
+				firstKeptEntryId: null,
+				tokensBefore: 100,
+				parameters: verbatimDetails.parameters,
+				stats: verbatimDetails.stats,
+				promptVersion: verbatimDetails.promptVersion,
+				form: "cleared",
+			},
+		});
+		await flush();
+		assert.deepEqual(body(), parked, "the reader keeps the rows they were reading");
+		const shown = host.text();
+		for (const row of held())
+			assert.match(shown, new RegExp(`M-${String(row).padStart(3, "0")}`), `M-${row} is held off screen`);
+		for (let i = 0; i < 30 && !held().includes(60); i++) {
+			host.inspector.handleInput(PAGE_UP);
+			host.frame();
+			await flush();
+		}
+		const above = held();
+		assert.ok(above.includes(60), `older saved pages load above the kept rows: ${above}`);
+		assert.deepEqual(
+			above,
+			Array.from({ length: above.length }, (_, i) => above[0]! + i),
+			`in order, once: ${above}`,
+		);
+		for (let i = 0; i < 60 && !held().includes(149); i++) {
+			host.inspector.handleInput("\x1b[6~");
+			host.frame();
+			await flush();
+		}
+		const below = held();
+		assert.ok(below.includes(149), `newer saved pages reach the new context: ${below}`);
+		assert.deepEqual(
+			below,
+			Array.from({ length: below.length }, (_, i) => below[0]! + i),
+			`in order, once: ${below}`,
+		);
+	} finally {
 		await host.dispose();
 		await session.getSessionStore().close();
 	}
