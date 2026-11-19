@@ -90,7 +90,11 @@ beforeEach(async () => {
 	const path = join(databaseDirectory, "team.sqlite");
 	databaseUrl = pathToFileURL(path).href;
 	await (await openNodeSqliteDatabase(path)).close();
-	observed.settingsLocked = () => lockfile.checkSync(settingsPath, { realpath: false });
+	// A join or leave holds the settings lock synchronously, so nothing refreshes its mtime meanwhile. On Windows a
+	// failed settings write retries its rename for seconds, more under load, so the default 10 s staleness would report
+	// a lock this process still holds as free. No test outlives its timeout, so its locks never look stale here.
+	observed.settingsLocked = () =>
+		lockfile.checkSync(settingsPath, { realpath: false, stale: LIBSQL_SCENARIO_TIMEOUT_MS });
 	observed.tokenOperations = [];
 	observed.settingsRenameFails = false;
 	observed.tokenDeleteFails = false;
