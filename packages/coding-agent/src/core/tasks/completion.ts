@@ -94,9 +94,7 @@ export function completionTitleDescription(text: string): string {
 }
 
 function savedSubject(title: string): string {
-	const subject = completionTitleDescription(title);
-	// Only a clipped subject needs its own backing. Preserve every UTF-16 unit, even an unpaired surrogate.
-	return subject.length === title.length ? subject : Buffer.from(subject, "utf16le").toString("utf16le");
+	return completionTitleText(title).slice(0, 240);
 }
 
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
@@ -368,7 +366,7 @@ export function formatTaskCompletion(
 										: `stopped (${stopReason})`
 									: outcome;
 	const lines = [
-		`${label} ${status}${task?.title ? `: ${completionTitleDescription(task.title)}` : "."}`,
+		`${label} ${status}${task?.title ? `: ${savedSubject(task.title)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
 	];
 	const ranOn = ranOnModelLine(task);
