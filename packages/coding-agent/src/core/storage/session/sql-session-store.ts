@@ -1608,7 +1608,7 @@ export class SqlSessionStore implements SessionStore {
 			let inlinePage =
 				wide && this.chunkRowids === undefined
 					? `${page}, chunked AS MATERIALIZED (SELECT 1 FROM page WHERE chunks > 0 LIMIT 1),
-				payloads AS (SELECT seq,entry_id,chunks,entry_json FROM page WHERE NOT EXISTS (SELECT 1 FROM chunked)
+				payloads AS MATERIALIZED (SELECT seq,entry_id,chunks,entry_json FROM page WHERE NOT EXISTS (SELECT 1 FROM chunked)
 					UNION ALL SELECT 0,'',0,'{}' FROM chunked) ${projection}`
 					: undefined;
 			const rowidPage =
