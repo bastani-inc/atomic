@@ -205,30 +205,32 @@ class ProfileSampler implements StackSampler {
 	private scheduleCollection(): void {
 		if (this.collectionScheduled) return;
 		this.collectionScheduled = true;
-		this.queue = this.queue
-			.then(() => this.stop())
-			.then((profile) => {
-				if (profile !== undefined) this.completed.push(profile);
-				for (const request of this.requests.splice(0)) {
-					request.settle(
-						this.completed.flatMap((completed) =>
-							profileStacksBetween(
-								completed,
-								request.sinceUs - this.profileTimeOffsetUs,
-								request.untilUs - this.profileTimeOffsetUs,
-							),
+		this.queue = this.queue.then(async () => {
+			// Requests arriving after this stop may need samples from the newly started profile.
+			const batch = this.requests.splice(0);
+			const profile = await this.stop();
+			if (profile !== undefined) this.completed.push(profile);
+			for (const request of batch) {
+				request.settle(
+					this.completed.flatMap((completed) =>
+						profileStacksBetween(
+							completed,
+							request.sinceUs - this.profileTimeOffsetUs,
+							request.untilUs - this.profileTimeOffsetUs,
 						),
-					);
-				}
-				this.releaseObservedProfiles();
-				this.collectionScheduled = false;
-			});
+					),
+				);
+			}
+			this.releaseObservedProfiles();
+			this.collectionScheduled = false;
+			if (this.requests.length > 0) this.scheduleCollection();
+		});
 	}
 
 	private releaseObservedProfiles(): void {
 		// A phase can end before the next timer discovers a later stall in the same task. Keep that unread tail,
 		// including a rotation's tail, until every window through the last observed heartbeat has been served.
-		const nextWindowUs = this.observedUs + HEARTBEAT_MS * 1000;
+		const nextWindowUs = this.requests[0]?.sinceUs ?? this.observedUs + HEARTBEAT_MS * 1000;
 		this.completed = this.completed.filter((profile) => profile.endTime + this.profileTimeOffsetUs >= nextWindowUs);
 	}
 

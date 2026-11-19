@@ -54,8 +54,9 @@ function runChild(runtime: (typeof RUNTIMES)[number], mode: string): EventLoopRe
 }
 
 for (const runtime of RUNTIMES) {
-	for (const mode of ["phase", "microtask", "coalesced"]) {
-		test(`the profiler on ${runtime.name} preserves both stalls across a ${mode} boundary (#5544)`, () => {
+	for (const mode of ["phase", "microtask", "microtask-shutdown", "coalesced"]) {
+		const issue = mode === "microtask-shutdown" ? "#5638" : "#5544";
+		test(`the profiler on ${runtime.name} preserves both stalls across a ${mode} boundary (${issue})`, () => {
 			const records = runChild(runtime, mode);
 			const naming = (name: string) =>
 				records.filter(

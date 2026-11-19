@@ -50,8 +50,12 @@ if (process.argv[2] === "rotation") {
 } else {
 	holdStartupPhase(600);
 	markEventLoopStartupComplete();
-	if (process.argv[2] === "microtask") queueMicrotask(() => holdSessionPhase(600));
-	else holdSessionPhase(600);
+	if (process.argv[2] === "microtask" || process.argv[2] === "microtask-shutdown") {
+		queueMicrotask(() => {
+			holdSessionPhase(600);
+			if (process.argv[2] === "microtask-shutdown") markEventLoopShutdown();
+		});
+	} else holdSessionPhase(600);
 	if (process.argv[2] === "coalesced") markEventLoopShutdown();
 }
 await sleep(300);
