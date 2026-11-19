@@ -47,6 +47,7 @@ import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
 import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 import type { StageSessionHolds } from "./stage-session-holds.js";
+import type { StageTurnState } from "./stage-turn-start.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -111,11 +112,23 @@ export interface StageControlHandle {
 	 */
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
 	/**
-	 * Whether the stage's session waits out an automatic retry's backoff, for a handle without an `agentSession` (a
-	 * stage on a local worker). Handles with a session expose it through the session instead: see
-	 * {@link stageWaitsToRetry}.
+	 * A backoff outside the local SDK session: the stage is retrying a failed operation itself or its session
+	 * lives on a worker. See {@link stageWaitsToRetry} for either source.
 	 */
 	readonly isWaitingToRetry?: boolean;
+	/** A worker session has a cancellable retry, even before it announces the next attempt. */
+	readonly isRetrying?: boolean;
+	/** False for a status-only watch on another host, which refuses pause commands. */
+	readonly canPause?: boolean;
+	/**
+	 * When the stage's current turn sent its first request, while the turn is under way (a request runs, or a retry or
+	 * a model switch announced the next one). A turn the stage moved to its next model goes on in a new session that
+	 * holds only the requests since the switch, so a chat opened then counts the turn from here. Undefined between
+	 * turns, and from a handle that does not know it (a stage on an older worker).
+	 */
+	readonly turnStartedAt?: number;
+	/** The stage's turn while it may still go on, for a local worker's watch to hand to the root. */
+	turnState?(): StageTurnState | undefined;
 	/** The model switch seen on the worker, until its next request starts. */
 	readonly modelSwitch?: Extract<AgentSessionEvent, { type: "model_fallback_start" }>;
 	/** Initial activity of a stage on another host, updated by stage publications rather than SDK events. */

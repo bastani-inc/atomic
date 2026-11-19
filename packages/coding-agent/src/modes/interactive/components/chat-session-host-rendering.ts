@@ -212,8 +212,9 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 		}).render(width);
 	}
 	if (!isChatSessionStreaming(state)) {
+		// A notice or an error follows the transcript, so the ended turn's row stays beside it, as in the main chat.
 		const worked = state.workedRun;
-		if (worked === undefined || state.workingLifecycleActive || state.compacting || state.statusMessage) return [];
+		if (worked === undefined || state.workingLifecycleActive || state.compacting) return [];
 		return new AtomicWorkedStatusComponent({
 			message: worked.message,
 			snapshot: worked.snapshot,

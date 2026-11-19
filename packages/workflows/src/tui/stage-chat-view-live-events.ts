@@ -14,7 +14,13 @@ export function applyStageChatLiveHandleEvent(ctx: StageChatViewContext, event: 
 	if (savedInterrupt?.interruptedTurn !== undefined && type === "agent_end") {
 		ctx.chatHost.restoreInterruptedTurn(savedInterrupt.interruptedTurn, { resumeMeterForAgentEnd: true });
 	}
+	// The new session knows only its own first request; the stage owns the whole turn across the switch.
+	if (event.type === "agent_start" && ctx.handle?.turnStartedAt !== undefined)
+		event = { ...event, turnStartedAt: ctx.handle.turnStartedAt };
 	ctx.chatHost.applyAgentEvent(event);
+	// A chat opened after the turn's failed request saw none of it: the stage's handle knows when the turn started.
+	const turnStartedAt = type === "model_fallback_start" ? ctx.handle?.turnStartedAt : undefined;
+	if (turnStartedAt !== undefined) ctx.chatHost.hydrateModelSwitch(turnStartedAt);
 	if (savedInterrupt && type === "agent_end") {
 		const workedRun = ctx.chatHost.workedRunSnapshot();
 		savedInterrupt.interruptedTurn = {

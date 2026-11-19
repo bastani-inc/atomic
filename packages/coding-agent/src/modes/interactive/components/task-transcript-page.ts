@@ -721,14 +721,14 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const chatSession = session.chatSession;
 		if (chatSession && sessionWaitsToRetry(chatSession)) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.hydrateRetryWait();
+			this.chat.hydrateRetryWait(messages, chatSession.turnStartedAt);
 		} else if (chatSession?.retryStatus?.type === "model_fallback_start") {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
-			this.chat.applyAgentEvent(chatSession.retryStatus);
+			this.chat.hydrateModelSwitch(chatSession.turnStartedAt, messages);
 		} else if (session.isRunning?.() === true) {
 			setTaskTurnInterrupted(this.source, this.taskId, false);
 			this.chat.beginExternalPromptLifecycle();
-			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.(), chatSession?.turnStartedAt);
 		} else if (session.isRunning?.() === false) {
 			const lastAssistant = [...messages]
 				.reverse()
