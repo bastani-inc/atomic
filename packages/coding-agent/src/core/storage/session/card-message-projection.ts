@@ -91,7 +91,12 @@ export interface CardPiece {
 	marker: boolean;
 	text?: string;
 }
-function* content(t: Token, role: string, full: boolean, args: ReadonlySet<number> | undefined): Reader<CardPiece> {
+function* content(
+	t: Token,
+	role: string,
+	full: boolean,
+	args: ReadonlySet<number> | "all" | undefined,
+): Reader<CardPiece> {
 	const output: CardPiece = { lines: [], calls: [], nonblank: false, marker: false, ...(full ? { text: "" } : {}) };
 	let pieces = 0,
 		tail = "";
@@ -116,6 +121,7 @@ function* content(t: Token, role: string, full: boolean, args: ReadonlySet<numbe
 	if (t.name === "startString") part(yield* text(t, full));
 	else if (t.name === "startArray") {
 		let index = 0;
+		const wanted = (at: number) => args === "all" || !!args?.has(at);
 		for (let b = yield; b.name !== "endArray"; b = yield, index++) {
 			let type = "",
 				name = "",
@@ -139,7 +145,7 @@ function* content(t: Token, role: string, full: boolean, args: ReadonlySet<numbe
 					v = yield* text(x, full);
 				},
 				arguments: function* (x) {
-					if (args?.has(index)) argumentsValue = yield* json(x);
+					if (wanted(index)) argumentsValue = yield* json(x);
 					else yield* skip(x);
 				},
 			});
@@ -151,7 +157,7 @@ function* content(t: Token, role: string, full: boolean, args: ReadonlySet<numbe
 						index,
 						id,
 						name,
-						...(args?.has(index)
+						...(wanted(index)
 							? {
 									args:
 										argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
@@ -170,7 +176,7 @@ export async function cardPiece(
 	role: string,
 	edit: boolean,
 	full = false,
-	args?: ReadonlySet<number>,
+	args?: ReadonlySet<number> | "all",
 ): Promise<CardPiece> {
 	return read(
 		chunks,
@@ -189,9 +195,64 @@ export async function cardPiece(
 		})(),
 	);
 }
+export interface CardHeader {
+	type?: string;
+	id?: Json;
+	role?: string;
+	toolCallId?: Json;
+}
+/** A row's kind, ID, role and tool call ID, read only as far into the entry as needed. Atomic writes `type` and `id`
+ * before a row's payload, and `role` and `toolCallId` before a message's content, so a large row is not streamed to
+ * find them. A key written later is still found by reading on. */
+export async function cardHeader(chunks: AsyncIterable<Uint8Array>): Promise<CardHeader> {
+	return read(
+		chunks,
+		(function* (): Reader<CardHeader> {
+			const h: CardHeader = {};
+			const seen = new Set<string>();
+			const known = () =>
+				seen.has("type") &&
+				(h.type !== "message" ||
+					(seen.has("id") && seen.has("role") && (h.role !== "toolResult" || seen.has("toolCallId"))));
+			const first = yield;
+			if (first.name !== "startObject") {
+				yield* skip(first);
+				return h;
+			}
+			for (let k = yield; k.name !== "endObject"; k = yield) {
+				const key = yield* stringValue(8);
+				const value = yield;
+				if (key === "type") {
+					seen.add(key);
+					if (value.name === "startString") h.type = yield* stringValue(64);
+					else yield* skip(value);
+				} else if (key === "id") {
+					seen.add(key);
+					h.id = yield* json(value);
+				} else if (key === "message" && value.name === "startObject") {
+					for (let m = yield; m.name !== "endObject"; m = yield) {
+						const field = yield* stringValue(11);
+						const v = yield;
+						if (field === "role") {
+							seen.add(field);
+							if (v.name === "startString") h.role = yield* stringValue(64);
+							else yield* skip(v);
+						} else if (field === "toolCallId") {
+							seen.add(field);
+							h.toolCallId = yield* json(v);
+						} else yield* skip(v);
+						if (known()) return h;
+					}
+				} else yield* skip(value);
+				if (known()) return h;
+			}
+			return h;
+		})(),
+	);
+}
 export async function cardFields(
 	chunks: AsyncIterable<Uint8Array>,
-	kind: "header" | "edit" | "result" | "editedResult" | "replacement" | "launch" | "boundary",
+	kind: "edit" | "result" | "editedResult" | "replacement" | "launch" | "boundary",
 ): Promise<Record<string, Json>> {
 	return read(
 		chunks,
@@ -211,51 +272,45 @@ export async function cardFields(
 					yield* object(t, f);
 				};
 			const fields: Fields =
-				kind === "header"
-					? {
-							type: tag("type"),
-							id: value("id"),
-							message: child({ role: tag("role"), toolCallId: value("toolCallId") }),
-						}
-					: kind === "boundary"
-						? { details: child({ backend: tag("backend") }) }
-						: kind === "edit"
-							? {
-									targetId: value("targetId"),
-									replacement: function* (t) {
-										r.omit = t.name === "nullValue";
-										yield* skip(t);
-									},
-								}
-							: kind === "replacement"
-								? { replacement: child({ content: value("content") }) }
-								: kind === "result" || kind === "editedResult"
-									? {
-											message: child({
-												...(kind === "result" ? { content: value("content") } : {}),
-												details: value("details"),
-												toolCallId: value("toolCallId"),
-												isError: value("isError"),
-												durationMs: value("durationMs"),
-											}),
-										}
-									: {
-											type: tag("type"),
-											customType: tag("customType"),
-											id: value("id"),
-											data: child({
-												version: value("version"),
-												state: tag("state"),
-												runId: tag("runId"),
-												agent: tag("agent"),
-												cwd: tag("cwd"),
-												index: value("index"),
-												childId: value("childId"),
-												launchLeafId: value("launchLeafId"),
-												launchLeafSeq: value("launchLeafSeq"),
-												forked: value("forked"),
-											}),
-										};
+				kind === "boundary"
+					? { details: child({ backend: tag("backend") }) }
+					: kind === "edit"
+						? {
+								targetId: value("targetId"),
+								replacement: function* (t) {
+									r.omit = t.name === "nullValue";
+									yield* skip(t);
+								},
+							}
+						: kind === "replacement"
+							? { replacement: child({ content: value("content") }) }
+							: kind === "result" || kind === "editedResult"
+								? {
+										message: child({
+											...(kind === "result" ? { content: value("content") } : {}),
+											details: value("details"),
+											toolCallId: value("toolCallId"),
+											isError: value("isError"),
+											durationMs: value("durationMs"),
+										}),
+									}
+								: {
+										type: tag("type"),
+										customType: tag("customType"),
+										id: value("id"),
+										data: child({
+											version: value("version"),
+											state: tag("state"),
+											runId: tag("runId"),
+											agent: tag("agent"),
+											cwd: tag("cwd"),
+											index: value("index"),
+											childId: value("childId"),
+											launchLeafId: value("launchLeafId"),
+											launchLeafSeq: value("launchLeafSeq"),
+											forked: value("forked"),
+										}),
+									};
 			yield* object(yield, fields);
 			return r;
 		})(),
