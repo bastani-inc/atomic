@@ -199,7 +199,7 @@ const SHIPPED_SOURCES = ["coding-agent/src", "subagents/src", "tui/src", "interc
 const KEY = String.raw`(?:esc|enter|tab|space|pgup|pgdn|↵|↑↓|↑|↓|←|→|ctrl\+\S|alt\+\S|shift\+tab)`;
 /** Text that reads as a key hint: a key followed by what it does, or a slash command followed by `to ...`. */
 const HINT_TEXT = new RegExp(
-	String.raw`(?:^|·\s|\(|\s{2})(?:${KEY}(?:/${KEY})*\s+(?:to\s+)?[a-z]{3,}|/(?:tasks|agents|workflows)\s+to\s+[a-z])`,
+	String.raw`(?:^|·\s|\(|\s{2})(?:${KEY}(?:/${KEY})*\s+(?:to\s+)?[a-z]{3,}|/(?:tasks|agents)\s+to\s+[a-z])`,
 	"iu",
 );
 /** Calls that draw a hint with its click: a line holding one of these, or near one, draws through it. */

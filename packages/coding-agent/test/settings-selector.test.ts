@@ -10,8 +10,10 @@ import { isDecisionModelUnavailableError } from "../src/core/decision/errors.js"
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
-import { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.js";
-import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
+import {
+	decisionSettingScopes,
+	SettingsSelectorComponent,
+} from "../src/modes/interactive/components/settings-selector.js";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.js";
 import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.js";
@@ -405,7 +407,7 @@ test("router menu edits the project override including Automatic without changin
 		writeFileSync(projectFile, JSON.stringify({ decisionModel: "typesafe/jev-latest", quietStartup: true }));
 		const manager = SettingsManager.create(directory, directory);
 		for (const next of ["", "test/nested/model"]) {
-			const scope = manager.getProjectSettings().decisionModel !== undefined ? "project" : "global";
+			const { decisionModelScope: scope } = decisionSettingScopes(manager.getProjectSettings());
 			const menu = openRouterSubmenu(
 				settingsConfig({
 					decisionModel: manager.getDecisionModel(),
@@ -580,29 +582,6 @@ test("image and UI toggles follow the compaction rows in both terminal kinds (#4
 	}
 });
 
-test("/settings shows Auto-advance after steer with its scope and saves through its callback (#4358)", () => {
-	const onAutoAdvanceAfterSteerChange = vi.fn();
-	const callbacks = { onAutoAdvanceAfterSteerChange } as unknown as SettingsCallbacks;
-	const defaults = buildSettingsItems(settingsConfig({}), callbacks).find(
-		({ id }) => id === "auto-advance-after-steer",
-	);
-	assert.equal(defaults?.label, "Auto-advance after steer");
-	assert.equal(defaults?.currentValue, "true");
-	assert.deepEqual(defaults?.values, ["true", "false"]);
-	assert.ok(defaults?.description?.includes("Saves to global settings"));
-	const off = buildSettingsItems(
-		settingsConfig({ autoAdvanceAfterSteer: false, autoAdvanceAfterSteerScope: "project" }),
-		callbacks,
-	).find(({ id }) => id === "auto-advance-after-steer");
-	assert.equal(off?.currentValue, "false");
-	assert.ok(off?.description?.includes("Saves to project settings"));
-	const change = createSettingsChangeHandler(callbacks);
-	change("auto-advance-after-steer", "false");
-	change("auto-advance-after-steer", "true");
-	assert.deepEqual(onAutoAdvanceAfterSteerChange.mock.calls, [[false], [true]]);
-	assert.doesNotThrow(() => createSettingsChangeHandler({} as SettingsCallbacks)("auto-advance-after-steer", "true"));
-});
-
 test("/settings shows the decision model, its scope and what Automatic means (#4358)", () => {
 	const item = (config: SettingsConfig) =>
 		buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
@@ -611,7 +590,7 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 	assert.equal(item(settingsConfig({ decisionModel: "judge/custom" }))?.currentValue, "judge/custom");
 	assert.equal(
 		item(settingsConfig({}))?.description,
-		"Saves to global settings; decides structured output, stage predictions and readiness after a steer, not the chat model",
+		"Saves to global settings; decides structured output, not the chat model",
 	);
 	const projectConfig = settingsConfig({
 		decisionModel: "auto",
@@ -631,10 +610,6 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 	assert.ok(done.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === "Automatic"));
 	assert.equal(projectConfig.decisionModel, "");
 	assert.equal(typeof item(settingsConfig({}))?.submenu, "function");
-	const noScope = buildSettingsItems(settingsConfig({ decisionModel: "" }), {} as SettingsCallbacks).find(
-		({ id }) => id === "auto-advance-after-steer",
-	);
-	assert.ok(noScope?.description?.includes("Saves to global settings;"));
 });
 
 test("the decision model accessors refuse malformed values with a typed config error naming their source", () => {
