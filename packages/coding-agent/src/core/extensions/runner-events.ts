@@ -8,6 +8,7 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "../system-prompt.ts";
+import { startupRegistrationTokens } from "./loader-bindings.ts";
 import type {
 	AgentBeforeSettleEvent,
 	BeforeAgentStartEvent,
@@ -133,8 +134,17 @@ function shutdownErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-const emitCaughtError = (emitError: EmitExtensionError, extensionPath: string, event: string, error: unknown): void => {
-	emitError({
+/** Local dispatch metadata; extension error listeners and the engine transport do not need the registration token. */
+export const startupErrorHandlerTokens = new WeakMap<ExtensionError, string>();
+
+const emitCaughtError = (
+	emitError: EmitExtensionError,
+	extensionPath: string,
+	event: string,
+	error: unknown,
+	token?: string,
+): void => {
+	const failure: ExtensionError = {
 		extensionPath,
 		event,
 		error:
@@ -144,7 +154,9 @@ const emitCaughtError = (emitError: EmitExtensionError, extensionPath: string, e
 					? error.message
 					: String(error),
 		stack: error instanceof Error ? error.stack : undefined,
-	});
+	};
+	if (token !== undefined) startupErrorHandlerTokens.set(failure, token);
+	emitError(failure);
 };
 
 export function snapshotEventHandlers(extensions: Extension[], event: ExtensionEvent["type"]) {
@@ -160,9 +172,11 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 ): Promise<RunnerEmitResult<TEvent>> {
 	let result: SessionBeforeEventResult | undefined;
 	const promptNotifications: Promise<void>[] = [];
+	const copies = event.type === "session_start" ? new Map<string, number>() : undefined;
 
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, event.type)) {
-		for (const handler of handlers) {
+		const tokens = copies ? startupRegistrationTokens(ext, handlers, copies) : undefined;
+		for (const [index, handler] of handlers.entries()) {
 			// Workflow publishers can retire while a previous handler awaits.
 			if (isCurrent && !isCurrent()) return result as RunnerEmitResult<TEvent>;
 			try {
@@ -188,7 +202,7 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 					if (result.cancel) return result as RunnerEmitResult<TEvent>;
 				}
 			} catch (error) {
-				emitCaughtError(emitError, ext.path, event.type, error);
+				emitCaughtError(emitError, ext.path, event.type, error, tokens?.[index]);
 			}
 		}
 	}
@@ -602,8 +616,10 @@ export async function runResourcesDiscoverHandlers(
 	const promptPaths: ResourcesDiscoverCombinedResult["promptPaths"] = [];
 	const themePaths: ResourcesDiscoverCombinedResult["themePaths"] = [];
 
+	const copies = new Map<string, number>();
 	for (const { ext, handlers } of snapshotEventHandlers(extensions, "resources_discover")) {
-		for (const handler of handlers) {
+		const tokens = startupRegistrationTokens(ext, handlers, copies);
+		for (const [index, handler] of handlers.entries()) {
 			try {
 				const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
 				const result = (await runCallback({ kind: "extension.hook", name: event.type, sourcePath: ext.path }, () =>
@@ -619,7 +635,7 @@ export async function runResourcesDiscoverHandlers(
 					themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
 			} catch (error) {
-				emitCaughtError(emitError, ext.path, "resources_discover", error);
+				emitCaughtError(emitError, ext.path, "resources_discover", error, tokens[index]);
 			}
 		}
 	}

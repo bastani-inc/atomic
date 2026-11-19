@@ -118,6 +118,7 @@ export interface StageEndPayload {
 export interface RunEndPayload {
 	readonly runGeneration?: number;
 	readonly runId: string;
+	readonly finishSequence?: number;
 	readonly status: string;
 	readonly result?: WorkflowOutputValues;
 	readonly error?: string;
@@ -284,6 +285,7 @@ export async function appendRunEnd(api: PersistenceAPI, payload: RunEndPayload):
 		...(terminalPayload.runGeneration !== undefined ? { runGeneration: terminalPayload.runGeneration } : {}),
 		runId: terminalPayload.runId,
 		status: terminalPayload.status,
+		...(terminalPayload.finishSequence === undefined ? {} : { finishSequence: terminalPayload.finishSequence }),
 		...(terminalPayload.result !== undefined ? { result: terminalPayload.result } : {}),
 		...(terminalPayload.error !== undefined ? { error: terminalPayload.error } : {}),
 		...(terminalPayload.exited !== undefined ? { exited: terminalPayload.exited } : {}),
