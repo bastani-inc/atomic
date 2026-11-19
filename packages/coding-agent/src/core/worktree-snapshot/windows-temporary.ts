@@ -1,28 +1,29 @@
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { createRequire } from "node:module";
 import type * as native from "@bastani/atomic-natives";
-import { createModuleRequire } from "../../utils/module-require.js";
 
 let bindings: Partial<typeof native> | null | undefined;
 function windowsBindings(): Partial<typeof native> | null {
 	if (bindings === undefined) {
-		try {
-			bindings = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as Partial<typeof native>;
-		} catch {
-			bindings = null;
+		bindings = null;
+		// The compiled launcher ships the binding next to the executable, not at the bundled module's source URL.
+		for (const anchor of [import.meta.url, process.execPath]) {
+			try {
+				bindings = createRequire(anchor)("@bastani/atomic-natives") as Partial<typeof native>;
+				break;
+			} catch {}
 		}
 	}
 	return bindings;
 }
 
-/** An exclusive Windows file with deletion reserved at creation. Its name cannot be replaced while we use it. */
-export async function openWindowsTemporary(path: string): Promise<{ close(): Promise<unknown> } | undefined> {
+/** Open a new file without sharing deletion. A clock probes with its granted rights; a record reserves delete-on-close. */
+export async function openWindowsTemporary(
+	path: string,
+	kind: "clock" | "record",
+): Promise<{ close(): Promise<unknown> } | undefined> {
 	const create = windowsBindings()?.openWindowsTemporaryFile;
 	try {
-		if (create) return (await create(path)) ?? undefined;
-		if (process.versions.bun) return undefined;
-		// The Windows CRT's _O_TEMPORARY flag is recognized by Node's filesystem implementation.
-		return await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | 0x40);
+		return (await create?.(path, kind === "clock")) ?? undefined;
 	} catch (error) {
 		if (error instanceof Error && error.message === "EEXIST") throw Object.assign(error, { code: "EEXIST" });
 		if ((error as NodeJS.ErrnoException).code === "EEXIST") throw error;

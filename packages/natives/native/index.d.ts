@@ -672,7 +672,7 @@ export interface OmittedRange {
  * Creates a new file without replacing an existing entry. A null result means the filesystem does not support
  * delete-on-close here. An existing name is reported separately so the caller can choose another one.
  */
-export declare function openWindowsTemporaryFile(path: string): Promise<WindowsTemporaryFile | undefined | null>
+export declare function openWindowsTemporaryFile(path: string, clockProbe?: boolean | undefined | null): Promise<WindowsTemporaryFile | undefined | null>
 
 export interface OutcomeReport {
   reportId: string

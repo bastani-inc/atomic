@@ -11,15 +11,11 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 		{
 			use std::{
 				fs::OpenOptions,
-				os::windows::{
-					fs::{MetadataExt, OpenOptionsExt},
-					io::AsRawHandle,
-				},
+				os::windows::fs::{MetadataExt, OpenOptionsExt},
 			};
 			use windows_sys::Win32::Storage::FileSystem::{
-				DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
-				FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-				FileDispositionInfo, SetFileInformationByHandle,
+				DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+				FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
 			};
 			// Do not follow a link at the old probe's name or let another opener move this name before disposition.
 			let Ok(file) = OpenOptions::new()
@@ -38,15 +34,7 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 				let modified_ms =
 					(i128::from(meta.last_write_time()) - 116_444_736_000_000_000) as f64 / 10_000.0;
 				if modified_ms < before_ms {
-					let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
-					unsafe {
-						SetFileInformationByHandle(
-							file.as_raw_handle(),
-							FileDispositionInfo,
-							(&raw const disposition).cast(),
-							std::mem::size_of_val(&disposition) as u32,
-						)
-					};
+					dispose_by_handle(&file);
 				}
 			}
 		}
@@ -59,6 +47,8 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 #[napi]
 pub struct WindowsTemporaryFile {
 	file: Option<File>,
+	#[cfg(windows)]
+	dispose_at_close: bool,
 }
 
 #[napi]
@@ -67,11 +57,34 @@ impl WindowsTemporaryFile {
 	#[napi]
 	pub fn close(&mut self) -> crate::task::Promise<()> {
 		let file = self.file.take();
+		#[cfg(windows)]
+		let dispose = self.dispose_at_close;
 		crate::task::blocking("temporary-file-close", (), move |_| {
+			#[cfg(windows)]
+			if dispose && let Some(file) = &file {
+				dispose_by_handle(file);
+			}
 			drop(file);
 			Ok(())
 		})
 	}
+}
+
+#[cfg(windows)]
+fn dispose_by_handle(file: &File) {
+	use std::os::windows::io::AsRawHandle;
+	use windows_sys::Win32::Storage::FileSystem::{
+		FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
+	};
+	let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+	unsafe {
+		SetFileInformationByHandle(
+			file.as_raw_handle(),
+			FileDispositionInfo,
+			(&raw const disposition).cast(),
+			std::mem::size_of_val(&disposition) as u32,
+		)
+	};
 }
 
 /// Creates a new file without replacing an existing entry. A null result means the filesystem does not support
@@ -79,6 +92,7 @@ impl WindowsTemporaryFile {
 #[napi]
 pub fn open_windows_temporary_file(
 	path: String,
+	clock_probe: Option<bool>,
 ) -> crate::task::Promise<Option<WindowsTemporaryFile>> {
 	crate::task::blocking("temporary-file-open", (), move |_| {
 		#[cfg(windows)]
@@ -87,14 +101,20 @@ pub fn open_windows_temporary_file(
 			use windows_sys::Win32::Storage::FileSystem::{
 				FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 			};
-			match OpenOptions::new()
-				.write(true)
-				.create_new(true)
-				.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-				.custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
-				.open(path)
-			{
-				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(file) })),
+			let dispose_at_close = clock_probe == Some(true);
+			let mut options = OpenOptions::new();
+			options.write(true).create_new(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+			if dispose_at_close {
+				// Acquire whatever rights are granted (including DELETE where allowed). A directory that
+				// allows creation but not deletion still supplies its clock in one open. Asking for
+				// delete-on-close first would pay a slow delete refusal twice on that filesystem.
+				const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
+				options.access_mode(MAXIMUM_ALLOWED);
+			} else {
+				options.custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+			}
+			match options.open(path) {
+				Ok(file) => Ok(Some(WindowsTemporaryFile { file: Some(file), dispose_at_close })),
 				Err(error) if error.kind() == ErrorKind::AlreadyExists => {
 					Err(napi::Error::from_reason("EEXIST"))
 				},
@@ -103,7 +123,7 @@ pub fn open_windows_temporary_file(
 		}
 		#[cfg(not(windows))]
 		{
-			let _ = path;
+			let _ = (path, clock_probe);
 			Ok(None)
 		}
 	})

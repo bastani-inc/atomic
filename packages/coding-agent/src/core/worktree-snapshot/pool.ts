@@ -558,7 +558,7 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
 	const temporary = `${file}.${randomUUID()}.tmp`;
 	const windows = process.platform === "win32";
-	const reservation = windows ? await openWindowsTemporary(temporary) : undefined;
+	const reservation = windows ? await openWindowsTemporary(temporary, "record") : undefined;
 	let created = false;
 	try {
 		await writeFile(temporary, JSON.stringify(record), { mode: 0o600, flag: windows && !reservation ? "wx" : "w" });

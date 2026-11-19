@@ -98,8 +98,10 @@ vi.mock("../src/core/worktree-snapshot/windows-temporary.ts", async (original) =
 	const actual = await original<typeof import("../src/core/worktree-snapshot/windows-temporary.ts")>();
 	return {
 		...actual,
-		openWindowsTemporary: (path: string) =>
-			lockRefusals.deleteOnCloseUnavailable && path.endsWith(".tmp") ? undefined : actual.openWindowsTemporary(path),
+		openWindowsTemporary: (path: string, kind: "record" | "clock") =>
+			lockRefusals.deleteOnCloseUnavailable && path.endsWith(".tmp")
+				? undefined
+				: actual.openWindowsTemporary(path, kind),
 	};
 });
 

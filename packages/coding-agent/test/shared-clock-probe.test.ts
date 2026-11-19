@@ -15,8 +15,34 @@ const io = vi.hoisted(() => ({
 	calls: [] as string[],
 	afterList: undefined as (() => void) | undefined,
 	refuseDelete: false,
+	withoutDeleteOnClose: false,
+	refusalClock: undefined as { now: number; stamp: number } | undefined,
 	stamp: 0,
 }));
+vi.mock("../src/core/worktree-snapshot/windows-temporary.ts", async (original) => {
+	const actual = await original<typeof import("../src/core/worktree-snapshot/windows-temporary.ts")>();
+	return {
+		openWindowsTemporary: (path: string, kind: "record" | "clock") => {
+			const clock = io.refusalClock;
+			if (clock) {
+				if (kind !== "clock") {
+					clock.now += 150; // asking for delete-on-close at creation is refused
+					return undefined;
+				}
+				writeFileSync(path, "", { flag: "wx" });
+				clock.stamp = clock.now;
+				return {
+					close: async () => {
+						clock.now += 150;
+					},
+				}; // one refused disposition on the original handle
+			}
+			return io.withoutDeleteOnClose ? undefined : actual.openWindowsTemporary(path, kind);
+		},
+		sweepWindowsProbe: (path: string, before: number) =>
+			io.withoutDeleteOnClose ? undefined : actual.sweepWindowsProbe(path, before),
+	};
+});
 vi.mock("node:fs/promises", async (original) => {
 	const fs = await original<typeof import("node:fs/promises")>();
 	return {
@@ -24,6 +50,7 @@ vi.mock("node:fs/promises", async (original) => {
 		open: async (...args: Parameters<typeof fs.open>) => {
 			io.calls.push("open");
 			const file = await fs.open(...args);
+			if (io.refusalClock) io.refusalClock.stamp = io.refusalClock.now;
 			const close = file.close.bind(file);
 			file.close = () => {
 				io.calls.push("close");
@@ -35,10 +62,11 @@ vi.mock("node:fs/promises", async (original) => {
 			io.calls.push("stat");
 			const result = await fs.stat(path);
 			io.stamp = result.mtimeMs;
-			return result;
+			return io.refusalClock ? { ...result, mtimeMs: io.refusalClock.stamp } : result;
 		},
 		unlink: (path: string) => {
 			io.calls.push("unlink");
+			if (io.refusalClock) io.refusalClock.now += 150;
 			if (io.refuseDelete) return Promise.reject(Object.assign(new Error("sharing violation"), { code: "EBUSY" }));
 			return fs.unlink(path);
 		},
@@ -55,6 +83,8 @@ afterEach(() => {
 	io.calls.length = 0;
 	io.afterList = undefined;
 	io.refuseDelete = false;
+	io.withoutDeleteOnClose = false;
+	io.refusalClock = undefined;
 	names.length = 0;
 	vi.restoreAllMocks();
 });
@@ -77,6 +107,48 @@ test.runIf(process.platform === "win32")(
 		}
 	},
 );
+
+test.runIf(process.platform === "win32")(
+	"a slow refused delete costs a reading only one refusal and does not skew the offset (#5605, #5674)",
+	async () => {
+		const directory = mkdtempSync(join(tmpdir(), "clock-refused-"));
+		try {
+			await sharedClockOffset(directory); // the periodic sweep is not due during the timed reading
+			const start = Date.now();
+			const clock = { now: start, stamp: 0 };
+			io.refusalClock = clock;
+			io.refuseDelete = true;
+			vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+			const offset = await sharedClockOffset(directory);
+			assert.equal(clock.now - start, 150);
+			assert.equal(offset, 0);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
+
+test("without delete-on-close a reading stays accurate and performs just its original I/O (#5605, #5674)", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "clock-fallback-"));
+	try {
+		io.withoutDeleteOnClose = true;
+		const time = Date.now();
+		vi.spyOn(Date, "now").mockReturnValue(time + 180_000);
+		await sharedClockOffset(directory); // warm the periodic directory sweep
+		io.calls.length = 0;
+		io.refuseDelete = true;
+		const offset = await sharedClockOffset(directory);
+		assert.equal(offset, io.stamp - (time + 180_000));
+		assert.deepEqual(io.calls, ["open", "close", "stat", "unlink"]);
+		assert.equal(readdirSync(directory).length, 1);
+		io.refuseDelete = false;
+		io.calls.length = 0;
+		await sharedClockOffset(directory);
+		assert.deepEqual(io.calls, ["open", "close", "stat", "unlink"]);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
 
 test("filesystem time includes time spent sweeping probes after the measurement (#5674)", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "clock-time-"));

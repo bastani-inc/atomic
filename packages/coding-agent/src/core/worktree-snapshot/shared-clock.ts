@@ -34,16 +34,15 @@ async function removeLeftoverProbes(directory: string, offset: number): Promise<
 	for (const name of await readdir(directory).catch(() => [] as string[])) {
 		if (!PROBE_NAME.test(name)) continue;
 		const probe = join(directory, name);
-		const sweep = process.platform === "win32" ? sweepWindowsProbe(probe, now - LEFTOVER_PROBE_AGE_MS) : undefined;
-		if (sweep) {
-			await sweep.catch(() => {});
-			continue;
-		}
 		const age = await stat(probe).then(
 			(stats) => now - stats.mtimeMs,
 			() => 0,
 		);
-		if (age > LEFTOVER_PROBE_AGE_MS) await unlink(probe).catch(() => {});
+		if (age > LEFTOVER_PROBE_AGE_MS) {
+			// Only ask for deletion access to an old file. On Windows recheck its age on the handle we remove.
+			const sweep = process.platform === "win32" ? sweepWindowsProbe(probe, now - LEFTOVER_PROBE_AGE_MS) : undefined;
+			await (sweep ?? unlink(probe)).catch(() => {});
+		}
 	}
 }
 
@@ -63,7 +62,7 @@ export async function sharedClockOffset(directory: string): Promise<number> {
 		let offset: number;
 		try {
 			const before = Date.now();
-			if (process.platform === "win32") temporary = await openWindowsTemporary(probe);
+			if (process.platform === "win32") temporary = await openWindowsTemporary(probe, "clock");
 			if (temporary === undefined) {
 				const file = await open(probe, "wx");
 				created = true;
