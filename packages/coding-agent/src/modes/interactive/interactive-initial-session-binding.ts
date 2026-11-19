@@ -1,3 +1,4 @@
+import { type InitialBind, initialBindScope } from "../../core/extension-startup-close.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 
@@ -5,9 +6,11 @@ import { releaseStartupChatOutput } from "./interactive-startup-chat-container.t
 export async function bindInitialEagerSession(mode: InteractiveModeBase): Promise<void> {
 	try {
 		mode.initialStartupBinding = true;
+		const bind: InitialBind = { mode, active: true };
 		try {
-			await mode.rebindCurrentSession();
+			await initialBindScope.run(new WeakRef(bind), () => mode.rebindCurrentSession());
 		} finally {
+			bind.active = false;
 			mode.initialStartupBinding = false;
 		}
 		mode.showLoadedResources({

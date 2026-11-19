@@ -42,6 +42,7 @@ import {
 	subscribeSession,
 } from "./event-subscriptions/session-subscription.js";
 import type { EventSource, Subscription } from "./event-subscriptions/types.js";
+import { closingSessions } from "./extension-startup-close.ts";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
@@ -773,6 +774,7 @@ export function closeAgentSession(
 	});
 	const retired = { promise: retirement, resolve: resolveRetired, reject: rejectRetired };
 	session._disposed = true;
+	closingSessions.add(session);
 	session._cacheWarmer?.cancel();
 	sessionClosing(session);
 	const closing = Promise.resolve().then(async () => {

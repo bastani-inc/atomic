@@ -199,6 +199,18 @@ export async function emitSessionShutdownEvent(
 	return false;
 }
 
+// A decorated discovery may reject with an independent catalog request. Only the stock call's
+// own rejected promise identifies a refusal to start this discovery batch.
+const closedStartupDiscoveries = new WeakMap<Promise<unknown>, { runner: ExtensionRunner; error: Error }>();
+export function refusedStartupDiscovery(
+	runner: ExtensionRunner,
+	discover: ExtensionRunner["emitResourcesDiscover"],
+	result: Promise<unknown>,
+): Error | undefined {
+	const refused = closedStartupDiscoveries.get(result);
+	return discover === stockDiscovery && refused?.runner === runner ? refused.error : undefined;
+}
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
@@ -1168,9 +1180,16 @@ export class ExtensionRunner {
 		reason: ResourcesDiscoverEvent["reason"],
 		reportError: (error: ExtensionError) => void = (error) => this.emitError(error),
 	): Promise<ResourcesDiscoverCombinedResult> {
-		return runResourceRegistrationBatch(this.runtime, () =>
-			runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+		const admission: { closed?: Error } = {};
+		const result = runResourceRegistrationBatch(
+			this.runtime,
+			() => runResourcesDiscoverHandlers(this.extensions, this.createContext(), cwd, reason, reportError),
+			false,
+			admission,
 		);
+		if (admission.closed && reason === "startup")
+			closedStartupDiscoveries.set(result, { runner: this, error: admission.closed });
+		return result;
 	}
 
 	/** Collect recovery notices and replay decisions from every handler, in registration order. */
@@ -1196,3 +1215,5 @@ export class ExtensionRunner {
 		);
 	}
 }
+
+const stockDiscovery = ExtensionRunner.prototype.emitResourcesDiscover;
