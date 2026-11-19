@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { test } from "vitest";
@@ -70,7 +71,18 @@ test("isolated /export writes the engine's page and chosen theme at the host's d
 		assert.match(defaultPath, /^[^/\\]+-session-[^/\\]+\.html$/);
 		assert.match(readFileSync(defaultPath, "utf8"), /<html/i);
 		const missing = relative(process.cwd(), join(dir, "missing", "report.html"));
-		await assert.rejects(runtime.session.exportToHtml(missing), { code: "ENOENT", path: missing });
+		// A direct write keeps the relative spelling in ENOENT on POSIX. Windows may qualify it in the error.
+		const nativeError = await writeFile(missing, "").then(
+			() => assert.fail("the destination directory does not exist"),
+			(error: NodeJS.ErrnoException) => error,
+		);
+		assert.equal(nativeError.code, "ENOENT");
+		if (process.platform !== "win32") assert.equal(nativeError.path, missing);
+		await assert.rejects(runtime.session.exportToHtml(missing), {
+			code: "ENOENT",
+			path: nativeError.path,
+			message: nativeError.message,
+		});
 		await runtime.dispose();
 	} finally {
 		if (defaultPath) rmSync(defaultPath, { force: true });
