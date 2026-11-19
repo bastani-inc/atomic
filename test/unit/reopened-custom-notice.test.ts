@@ -5,7 +5,7 @@ import { test, vi } from "vitest";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
-import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
+import type { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { themedChatHostStyle } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { getEditorTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -126,7 +126,7 @@ test("repainting an ordinary task completion does not register fresh card identi
 	}
 });
 
-test("an extension completion repaints and expands without revealing its component prototype (#5690)", () => {
+test("an extension completion repaints without revealing its component prototype (#5690)", () => {
 	const message: CustomMessage = {
 		role: "custom",
 		customType: "task-completion",
@@ -136,8 +136,8 @@ test("an extension completion repaints and expands without revealing its compone
 		timestamp: 1,
 	};
 	let probes = 0;
-	const card = new CustomMessageComponent(message, (entry, { expanded }) => {
-		const text = `Extension: ${entry.content}${expanded ? " (expanded)" : ""}`;
+	const card = new CustomMessageComponent(message, (entry) => {
+		const text = `Extension: ${entry.content}`;
 		return new Proxy(
 			{ invalidate() {}, render: () => [text] },
 			{
@@ -158,27 +158,39 @@ test("an extension completion repaints and expands without revealing its compone
 		message.content = "edited";
 		card.invalidate();
 		assert.deepEqual(rows(), ["Extension: edited"]);
-		card.setExpanded(true);
-		assert.deepEqual(rows(), ["Extension: edited (expanded)"]);
+		card.setOutputPad(2);
+		assert.deepEqual(rows(), ["Extension: edited"]);
 		assert.equal(probes, 0);
 	} finally {
 		card.dispose();
 	}
 });
 
-test("an extension can return a completion card through a forwarding proxy (#5690)", () => {
-	const card = new CustomMessageComponent(
-		{ role: "custom", customType: "task-completion", display: true, details: {}, content: title, timestamp: 1 },
-		(_message, { expanded }) =>
-			new Proxy(
-				new TaskCompletionMessage({ title, taskId: "child", status: "completed", preview: "" }, expanded),
-				{},
-			),
+test("a memoized extension completion card behind a transparent proxy expands and collapses (#5690)", async () => {
+	// Use the same built module instance for the host and the extension's deep import.
+	const components = new URL("../../packages/coding-agent/dist/modes/interactive/components/", import.meta.url);
+	const { CustomMessageComponent: Host }: { CustomMessageComponent: typeof CustomMessageComponent } = await import(
+		new URL("custom-message.js", components).href
 	);
+	const { TaskCompletionMessage: Card }: { TaskCompletionMessage: typeof TaskCompletionMessage } = await import(
+		new URL("task-completion-message.js", components).href
+	);
+	const notice = { title, taskId: "child", status: "completed", preview: "one\ntwo\nthree\nfour\nfive\nsix" } as const;
+	let cached: TaskCompletionMessage | undefined;
+	const card = new Host(
+		{ role: "custom", customType: "ext", display: true, details: {}, content: "", timestamp: 1 },
+		(_message, { expanded }) => (cached ??= new Proxy(new Card(notice, expanded), {})),
+	);
+	const text = () => stripVTControlCharacters(card.render(80).join("\n"));
 	try {
-		card.invalidate();
+		assert.match(text(), /● worker finished/u);
+		assert.doesNotMatch(text(), /six/);
 		card.setExpanded(true);
-		assert.match(stripVTControlCharacters(card.render(120).join("")), /● worker finished/u);
+		assert.match(text(), /six/);
+		card.invalidate();
+		assert.match(text(), /six/);
+		card.setExpanded(false);
+		assert.doesNotMatch(text(), /six/);
 	} finally {
 		card.dispose();
 	}

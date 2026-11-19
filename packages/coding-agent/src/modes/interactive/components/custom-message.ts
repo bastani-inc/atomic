@@ -99,7 +99,7 @@ export class CustomMessageComponent extends Container {
 		if (this.disposed) return;
 		if (this._expanded !== expanded) {
 			this._expanded = expanded;
-			if (TaskCompletionMessage.isCard(this.customComponent)) {
+			if (this.customComponent instanceof TaskCompletionMessage) {
 				this.customComponent.setExpanded(expanded);
 				return;
 			}
