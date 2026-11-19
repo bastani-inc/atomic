@@ -144,7 +144,7 @@ export interface TaskDetailText {
 
 /**
  * What the task inspector and a chat's task footer read and do: a session's own task store, or
- * the tasks of a session that runs in another process (a workflow stage on a local worker). It
+ * the tasks of a session that runs in another process. It
  * names tasks by id, so a view never holds a task lease.
  */
 export interface TaskViewSource {

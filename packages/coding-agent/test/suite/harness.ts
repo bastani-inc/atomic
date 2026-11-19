@@ -18,12 +18,7 @@ import { registerFauxProvider, streamSimple } from "@bastani/atomic-ai/compat";
 import { removeTestDirectory } from "../../../../test/helpers/test-directory-removal.js";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import type {
-	ExtensionRunner,
-	OrchestrationContext,
-	SubagentChildPolicy,
-	ToolDefinition,
-} from "../../src/core/extensions/index.ts";
+import type { ExtensionRunner, SubagentChildPolicy, ToolDefinition } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../../src/core/models-store.ts";
@@ -89,7 +84,6 @@ export interface HarnessOptions {
 	extensionFactories?: Array<ExtensionFactory | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
 	subagentPolicy?: SubagentChildPolicy;
-	orchestrationContext?: OrchestrationContext;
 	finishTurn?: Agent["finishTurn"];
 	/** The agent directory a session kept in a store spills oversized tool results into. */
 	storageAgentDir?: string;
@@ -225,7 +219,6 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,
 		subagentPolicy: options.subagentPolicy,
-		orchestrationContext: options.orchestrationContext,
 		storageAgentDir: options.storageAgentDir,
 		...(options.childSessions !== undefined && options.childSessions !== false
 			? {
@@ -236,7 +229,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 						model,
 						settingsManager: SettingsManager.inMemory(options.settings),
 						resourceLoader: createTestResourceLoader(),
-						builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+						builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 						noTools: "builtin",
 						...child,
 						...(options.childSessions === true ? {} : options.childSessions),

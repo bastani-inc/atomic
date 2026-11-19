@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
 import { fauxAssistantMessage, type TranscriptContext } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
-import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
 import { createHarness, getMessageText } from "./suite/harness.ts";
 
 test.each(["followUp", "interrupt"] as const)(
@@ -25,9 +23,6 @@ test.each(["followUp", "interrupt"] as const)(
 			],
 		});
 		try {
-			(
-				harness.session as AgentSession & { _workflowStageAdmission: WorkflowStageAdmissionBoundary }
-			)._workflowStageAdmission = new WorkflowStageAdmissionBoundary();
 			harness.setResponses([
 				(context) => {
 					requests.push(context);

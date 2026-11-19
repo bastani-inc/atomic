@@ -150,7 +150,7 @@ pi.on("session_start", async (event, ctx) => {
 });
 ```
 
-If the handler throws, the interactive terminal shows the error with the extension's path and keeps the session; print mode, RPC mode, SDK sessions and workflow stages fail startup instead. See [Error Handling](/extensions/api-reference#error-handling).
+If the handler throws, the interactive terminal shows the error with the extension's path and keeps the session; print mode, RPC mode and SDK sessions fail startup instead. See [Error Handling](/extensions/api-reference#error-handling).
 
 #### session_recovery_restore / session_recovery_replay
 
@@ -164,7 +164,7 @@ Notices from either event go into one message for the user and the agent. That m
 
 ```typescript
 pi.on("session_recovery_restore", async (event, ctx) => {
-  // event.reason - "startup" | "resume" | "workflow_stage_resume"
+  // event.reason - "startup" | "resume"
   return { notices: ["Worker reviewer could not be restored and is gone."] };
 });
 
@@ -387,7 +387,7 @@ Each provider request is built from the persisted session after every queued han
 These notification-only events wrap blocking user-facing prompts. Each event has `reason: "ui_prompt" | "project_trust"`, the prompt `kind`, and the prompt `title` when available. Host and status integrations can use the pair to distinguish waiting for the user from active work.
 
 - `ui_prompt`: extension prompts opened through `ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`, `ctx.ui.editor()`, and `ctx.ui.custom()`.
-  Custom inspection/navigation components can pass `{ purpose: "navigation" }` to omit their own prompt span. The default remains `"prompt"`. Nested approval calls still emit events; mounting or hiding the workflow graph is not itself an approval.
+  Custom inspection/navigation components can pass `{ purpose: "navigation" }` to omit their own prompt span. The default remains `"prompt"`. Nested approval calls still emit events.
 - `project_trust`: interactive startup/resume trust dialogs, trust-hook dialogs, borrowed extension-source authorization, and the built-in `/trust` selector. Silent saved/default/CLI decisions and noninteractive startup do not emit artificial waits.
 
 Trust-safe extensions receive a live context before the trust prompt. Newly authorized project extensions load afterward and do not receive historical prompt events. Resume trust dialogs use the outgoing session context; failed preparation leaves that session active.

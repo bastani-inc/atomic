@@ -2,7 +2,6 @@ import type { AgentTool } from "@bastani/atomic-agent-core";
 import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import { detachableTool, forgetDetachableTools } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { isWorkflowStageTaskOwner } from "./agent-session-tasks.js";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
 import { SESSION_HISTORY_TOOL_NAME } from "./compaction/context-clear.js";
 import { hostInputError } from "./extensions/host-input.js";
@@ -111,9 +110,6 @@ export function _refreshToolRegistry(
 
 	const toolRegistry = new Map<string, AgentTool>();
 	forgetDetachableTools(this);
-	// A built-in question belongs to the UI of the session that asks it, and ends with that session, except on a workflow
-	// stage, whose own UI keeps it: only there may it outlive its run.
-	const questionsDetach = isWorkflowStageTaskOwner(this);
 	const wrapSessionTool = (tool: AgentTool): AgentTool => {
 		const builtInQuestion =
 			!this._baseToolsOverride && tool.name === "ask_user_question" && wrappedBuiltInTools.includes(tool);
@@ -137,7 +133,7 @@ export function _refreshToolRegistry(
 		// Inside the scheduler: a call its interrupted turn stopped waiting for no longer holds back later calls (#5486).
 		const scheduled = scheduleToolExecution(withToolAbortGrace(guarded), this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
-		const detachable = builtInQuestion && !questionsDetach ? undefined : definition?.detachable;
+		const detachable = builtInQuestion ? undefined : definition?.detachable;
 		return definition !== undefined && (detachable === true || typeof detachable === "function")
 			? detachableTool(
 					this,
@@ -351,7 +347,6 @@ export function _buildRuntime(
 			this._cwd,
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
-			this._orchestrationContext,
 			this._subagentPolicy,
 			this._intercomPolicy,
 		);

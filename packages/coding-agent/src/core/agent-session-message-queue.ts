@@ -1,7 +1,6 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
-import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import { wakeIdleSessionForHeartbeat } from "./agent-session-heartbeat-wake.ts";
 import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
@@ -19,7 +18,6 @@ import {
 import { markQueuedMessageImages, waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
 import { abort, interruptTurn, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
 import { abortTurnRetries } from "./agent-session-retry.ts";
-import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
 import {
 	forgetAllTypedQueuedTexts,
 	forgetTypedQueuedText,
@@ -48,8 +46,6 @@ import {
 } from "./session-lifecycle-work.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 import { parseSlashCommand } from "./slash-commands.js";
-
-export { transferWorkflowStageDeliveriesTo };
 
 const interruptMutationQueues = new WeakMap<AgentSession, Promise<void>>();
 
@@ -87,8 +83,6 @@ export async function _queueSteer(
 	rawText?: string,
 ): Promise<void> {
 	assertSessionOpen(this);
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueSteer(text, images, typed, rawText);
 	this._steeringMessages.push(text);
 	rememberTypedQueuedText(this, "steer", text, typed);
 	this._emitQueueUpdate();
@@ -118,8 +112,6 @@ export async function _queueFollowUp(
 	rawText?: string,
 ): Promise<void> {
 	assertSessionOpen(this);
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueFollowUp(text, images, typed, rawText);
 	this._followUpMessages.push(text);
 	rememberTypedQueuedText(this, "followUp", text, typed);
 	this._emitQueueUpdate();
@@ -173,8 +165,6 @@ export async function sendCustomMessage<T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: SendMessageOptions,
 ): Promise<void> {
-	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
-	if (currentOwner !== this) return currentOwner.sendCustomMessage(message, options);
 	assertSessionOpen(this);
 	return deliveredMessageTurn(this, () => {
 		const waking = wakeIdleSessionForHeartbeat(this, options);
@@ -186,7 +176,7 @@ export async function sendCustomMessage<T = unknown>(
 
 /**
  * A delivered message starts this session's turn, so the turn runs under this session's own resource admission, or
- * none: never under the scope its sender runs in, such as the workflow run whose notice or stage message it is.
+ * none: never under the scope its sender runs in.
  */
 function deliveredMessageTurn<T>(session: AgentSession, deliver: () => Promise<T>): Promise<T> {
 	return withOwnResourceAdmission(session._resourceAdmission, () => trackSessionWork(session, deliver));
@@ -208,7 +198,7 @@ async function admittedCustomMessage<T>(
 		...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
 		...(options?.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: options.stageAdmissionKey }),
 	} satisfies CustomMessage<T> & { stageAdmissionKey?: string };
-	const boundary = this._subagentMessageAdmission ?? this._workflowStageAdmission;
+	const boundary = this._subagentMessageAdmission;
 	const commit = async (): Promise<void> => {
 		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
 		assertSessionOpen(this);
@@ -221,11 +211,7 @@ async function admittedCustomMessage<T>(
 		boundary && options?.triggerTurn === true ? boundary.serializeMessageDelivery(commit) : commit();
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
-		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
-		if (options?.stayInSession) throw new Error("Workflow stage closed; the message waits for this session");
-		const router = this._orchestrationContext?.lateMessageRouter;
-		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
-		return router.routeMessage(message, options);
+		throw new Error("Subagent execution is terminal and cannot accept messages");
 	}).completion;
 }
 
@@ -235,8 +221,6 @@ export async function sendCustomMessages<T = unknown>(
 	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 	options?: SendMessagesOptions,
 ): Promise<void> {
-	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
-	if (currentOwner !== this) return currentOwner.sendCustomMessages(messages, options);
 	assertSessionOpen(this);
 	return deliveredMessageTurn(this, () => admittedCustomMessages.call(this, messages, options));
 }
@@ -262,7 +246,7 @@ async function admittedCustomMessages<T>(
 		} satisfies CustomMessage<T> & { stageAdmissionKey?: string };
 	});
 	if (appMessages.length === 0) return;
-	const boundary = this._subagentMessageAdmission ?? this._workflowStageAdmission;
+	const boundary = this._subagentMessageAdmission;
 	const commit = async (): Promise<void> => {
 		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
 		assertSessionOpen(this);
@@ -273,22 +257,8 @@ async function admittedCustomMessages<T>(
 		boundary && options?.triggerTurn === true ? boundary.serializeMessageDelivery(commit) : commit();
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
-		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
-		if (options?.stayInSession) throw new Error("Workflow stage closed; the messages wait for this session");
-		const router = this._orchestrationContext?.lateMessageRouter;
-		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
-		return router.routeMessages(messages, options);
+		throw new Error("Subagent execution is terminal and cannot accept messages");
 	}).completion;
-}
-
-export function sealWorkflowStageGeneration(this: AgentSession): void {
-	this._workflowStageAdmission?.seal();
-}
-
-export async function closeWorkflowStageGeneration(this: AgentSession): Promise<void> {
-	await this._workflowStageAdmission?.close();
-	await this.agent?.waitForIdle?.();
-	await this._agentEventQueue;
 }
 
 const pendingCustomMessageSaves = new WeakMap<CustomMessage, PromiseWithResolvers<void>>();
@@ -298,8 +268,7 @@ const pendingCustomMessageSaves = new WeakMap<CustomMessage, PromiseWithResolver
  * settles once it is saved in the session; undefined when no such message waits (#5047).
  */
 export function pendingCustomMessageSaved(session: AgentSession, stageAdmissionKey: string): Promise<void> | undefined {
-	const owner = resolveWorkflowStageDeliveryTarget(session);
-	const message = owner._pendingCustomMessages.find(
+	const message = session._pendingCustomMessages.find(
 		(candidate) => (candidate as StageAdmittedCustomMessage).stageAdmissionKey === stageAdmissionKey,
 	);
 	if (message === undefined) return undefined;
@@ -309,11 +278,6 @@ export function pendingCustomMessageSaved(session: AgentSession, stageAdmissionK
 }
 
 export async function _appendCustomMessage<T>(this: AgentSession, message: CustomMessage<T>): Promise<void> {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) {
-		await owner._appendCustomMessage(message);
-		return;
-	}
 	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
 	const manager = this.sessionManager;
 	const key = stageAdmissionMessage.stageAdmissionKey;
@@ -395,8 +359,6 @@ export function _enqueueInterruptCustomMessage<T>(
 	message: CustomMessage<T>,
 	options?: SendMessageOptions,
 ): Promise<void> {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._enqueueInterruptCustomMessage(message, forwardedMessageOptions(options));
 	assertSessionOpen(this);
 	this._pendingInterruptDeliveries += 1;
 	// Establish the hold synchronously when the interrupt is enqueued, not when
@@ -410,35 +372,27 @@ export function _enqueueInterruptCustomMessage<T>(
 			try {
 				await this._sendInterruptCustomMessageNow(message, options);
 			} finally {
-				// Retirement moves the pending count and hold synchronously. Settle the
-				// same live owner so its queue cannot remain stranded on the replacement.
-				const liveOwner = resolveWorkflowStageDeliveryTarget(this);
-				liveOwner._pendingInterruptDeliveries -= 1;
-				if (liveOwner._pendingInterruptDeliveries === 0) {
-					liveOwner._restoreAndClearActiveInterruptQueueHold();
+				this._pendingInterruptDeliveries -= 1;
+				if (this._pendingInterruptDeliveries === 0) {
+					this._restoreAndClearActiveInterruptQueueHold();
 				}
 			}
 		}),
 	);
 	this._interruptDeliveryQueue = delivery.catch(() => undefined);
 	return delivery.finally(async () => {
-		const liveOwner = resolveWorkflowStageDeliveryTarget(this);
 		if (
-			liveOwner._subagentMessageAdmission?.isOpen() &&
-			liveOwner._pendingInterruptDeliveries === 0 &&
-			liveOwner._activePromptCount === 0 &&
-			!liveOwner.isStreaming &&
-			!liveOwner._disposed &&
-			!sessionGenerationClosing.has(liveOwner) &&
-			!sessionLifetime(liveOwner).aborted
+			this._subagentMessageAdmission?.isOpen() &&
+			this._pendingInterruptDeliveries === 0 &&
+			this._activePromptCount === 0 &&
+			!this.isStreaming &&
+			!this._disposed &&
+			!sessionGenerationClosing.has(this) &&
+			!sessionLifetime(this).aborted
 		) {
-			await liveOwner._runAgentContinuation(async () => {}, "settle");
-		} else if (
-			liveOwner._pendingInterruptDeliveries === 0 &&
-			liveOwner._activePromptCount === 0 &&
-			!liveOwner.isStreaming
-		) {
-			liveOwner._subagentPolicy?.onTurnDrained?.();
+			await this._runAgentContinuation(async () => {}, "settle");
+		} else if (this._pendingInterruptDeliveries === 0 && this._activePromptCount === 0 && !this.isStreaming) {
+			this._subagentPolicy?.onTurnDrained?.();
 		}
 	});
 }
@@ -464,8 +418,6 @@ async function sendInterruptCustomMessageUnlocked<T>(
 			session._activeInterruptAbortMessage = previousAbortMessage;
 		}
 	}
-	const owner = resolveWorkflowStageDeliveryTarget(session);
-	if (owner !== session) return owner._sendInterruptCustomMessageNow(message, forwardedMessageOptions(options));
 	assertSessionOpen(session);
 	if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	if (session._queuedMessagesPaused || holdsTurnsForDetachedResults(session)) {
@@ -485,14 +437,10 @@ export function _sendInterruptCustomMessageNow<T>(
 	message: CustomMessage<T>,
 	options?: SendMessageOptions,
 ): Promise<void> {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._sendInterruptCustomMessageNow(message, forwardedMessageOptions(options));
 	return serializeInterruptMutation(this, () => sendInterruptCustomMessageUnlocked(this, message, options));
 }
 
 export function _ensureActiveInterruptQueueHold(this: AgentSession): InterruptQueueHold {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._ensureActiveInterruptQueueHold();
 	if (this._activeInterruptQueueHold !== undefined) {
 		return this._activeInterruptQueueHold;
 	}
@@ -505,11 +453,6 @@ export function _ensureActiveInterruptQueueHold(this: AgentSession): InterruptQu
 }
 
 export function _restoreAndClearActiveInterruptQueueHold(this: AgentSession): void {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) {
-		owner._restoreAndClearActiveInterruptQueueHold();
-		return;
-	}
 	if (this._queuedMessagesPaused) return;
 	const hold = this._activeInterruptQueueHold;
 	if (hold === undefined) return;
@@ -526,11 +469,6 @@ export function _queueAgentMessage(
 	message: AgentMessage,
 	delivery: "steer" | "followUp" | "interrupt",
 ): void {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) {
-		owner._queueAgentMessage(message, delivery);
-		return;
-	}
 	const hold = delivery === "interrupt" ? this._ensureActiveInterruptQueueHold() : this._activeInterruptQueueHold;
 	if (hold !== undefined) {
 		if (delivery === "followUp") {
@@ -575,8 +513,6 @@ export function _restoreQueuedAgentMessages(this: AgentSession, queues: DrainedA
  * Clear queued text for editor restoration while retaining optional raw custom entries.
  */
 export function clearQueue(this: AgentSession, options?: ClearQueueOptions): ClearedQueue {
-	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner.clearQueue(options);
 	// Input held while the session compacts goes back to the caller too, and is never sent. It is held as typed.
 	const held = cancelHeldInput(this);
 	const steering = [...this._steeringMessages, ...held.steering];
@@ -687,11 +623,8 @@ export const agentSessionMessageQueueMethods = {
 	_queueSteer,
 	_queueFollowUp,
 	_throwIfExtensionCommand,
-	transferWorkflowStageDeliveriesTo,
-	sealWorkflowStageGeneration,
 	sendCustomMessage,
 	sendCustomMessages,
-	closeWorkflowStageGeneration,
 	_appendCustomMessage,
 	_flushPendingCustomMessages,
 	_enqueueInterruptCustomMessage,

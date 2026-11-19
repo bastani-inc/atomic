@@ -49,12 +49,6 @@ describe("ToolDetachmentError messages (#4309)", () => {
 			retryable: false,
 			message: `Tool call ci-1 detached from session ${SESSION_ID} and can no longer use its context (context-detached). Read what the tool's work needs from ctx before the call detaches, or pass it in the tool's arguments.`,
 		},
-		{
-			code: "stage-parked",
-			fields: { sessionId: SESSION_ID },
-			retryable: true,
-			message: `Workflow stage session ${SESSION_ID} is released and cannot launch a task (stage-parked). Wait for the workflow stage to reopen its session, then start the task again. A released stage launches no tasks while it waits.`,
-		},
 	];
 
 	for (const { code, fields, retryable, message } of cases) {
@@ -86,14 +80,7 @@ describe("isToolDetachmentError (#4309)", () => {
 
 	test("accepts a structural copy that crossed a process or realm boundary", () => {
 		assert.equal(isToolDetachmentError(copy), true);
-		for (const code of [
-			"invalid-policy",
-			"unknown-tool-call",
-			"session-busy",
-			"session-closed",
-			"context-detached",
-			"stage-parked",
-		])
+		for (const code of ["invalid-policy", "unknown-tool-call", "session-busy", "session-closed", "context-detached"])
 			assert.equal(isToolDetachmentError({ ...copy, code }), true);
 	});
 
@@ -157,19 +144,6 @@ describe("ToolDetachmentError across a process boundary (#4309)", () => {
 		assert.equal(rehydrated.hint, original.hint);
 		assert.equal(rehydrated.message, original.message);
 		assert.equal(roundTrip(new ToolDetachmentError("session-busy", { sessionId: SESSION_ID })).retryable, true);
-	});
-
-	test("a parked stage's refusal comes back as stage-parked, retryable, with its session (#4309)", () => {
-		const original = new ToolDetachmentError("stage-parked", { sessionId: SESSION_ID });
-
-		const rehydrated = roundTrip(original);
-
-		assert.ok(rehydrated instanceof ToolDetachmentError);
-		assert.ok(isToolDetachmentError(rehydrated));
-		assert.equal(rehydrated.code, "stage-parked");
-		assert.equal(rehydrated.retryable, true);
-		assert.deepEqual(rehydrated.fields, { sessionId: SESSION_ID });
-		assert.equal(rehydrated.message, original.message);
 	});
 
 	test("keeps a bounded cause chain, so the error is still found inside a wrapper on the other side", () => {

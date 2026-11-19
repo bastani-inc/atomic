@@ -36,7 +36,7 @@ const runners = new AsyncLocalStorage<RunnerHandoff>();
 
 /**
  * Runs a callback in the async context of this module's load, outside every session. An owner can outlive the
- * session that first bound it (a workflow stage's), so what it keeps for its lifetime must not start in that
+ * session that first bound it, so what it keeps for its lifetime must not start in that
  * session's async context, which would keep the session reachable.
  */
 const outsideAnySession = AsyncLocalStorage.snapshot();
@@ -233,7 +233,7 @@ export class AgentTaskHost {
 		this.tasksPaused = false;
 	}
 	private authorizeTaskLaunch(): void {
-		if (this.tasksPaused) throw new Error("Workflow stage tasks are paused");
+		if (this.tasksPaused) throw new Error("Tasks are paused");
 		this.launched = true;
 		this.watchHeartbeats();
 	}

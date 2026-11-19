@@ -55,9 +55,7 @@ export type OutputPage = {
 	omittedRanges: Array<{ start: string; end: string }>;
 	nextOffset?: string;
 };
-export type OwnerScope =
-	| { kind: "session"; sessionId: string }
-	| { kind: "workflow-stage"; sessionId: string; runId: string; stageId: string; stageAttemptId: string };
+export type OwnerScope = { kind: "session"; sessionId: string };
 export type WaitPolicy = { kind: "background" } | { kind: "foreground"; budgetMs?: number };
 export type YieldReason = "explicit" | "default-background" | "elapsed" | "intercom-coordination" | "input-needed";
 export type WaitOutcome =
@@ -104,8 +102,7 @@ export type TaskWaitConfiguration =
 	| { kind: "automatic"; commandBudgetMs?: number; agentBudgetMs?: number }
 	| { kind: "until-settled" };
 /**
- * Why a task stopped. `pause` and `quit` stop an agent resumably (a subagent pause or quit, or its workflow stage
- * pausing): it is paused, awaiting resume, not ended. `parent-handoff` is a fresh-start handoff, and also how earlier
+ * Why a task stopped. `pause` and `quit` stop an agent resumably (a subagent pause or quit): it is paused, awaiting resume, not ended. `parent-handoff` is a fresh-start handoff, and also how earlier
  * versions recorded those resumable stops.
  */
 export type CancelCause =
@@ -117,7 +114,7 @@ export type CancelCause =
 	| "pause"
 	| "quit"
 	| "shutdown";
-export type OwnerCloseCause = "session-close" | "stage-close" | "app-shutdown";
+export type OwnerCloseCause = "session-close" | "app-shutdown";
 /** A tool call a released agent waits on. */
 export type ReleasedWaitingCall = { readonly toolCallId: string; readonly toolName: string };
 /**
@@ -164,7 +161,7 @@ export type Cleanup =
 	| { kind: "reaped" }
 	| { kind: "quarantined"; resources: Array<ResourceFailure> }
 	| { kind: "failed"; resources: Array<ResourceFailure> };
-export type PromptRoute = { sessionId: string; promptId: string; stageAttemptId?: string };
+export type PromptRoute = { sessionId: string; promptId: string };
 export type Attention =
 	| { kind: "none" }
 	| { kind: "input-needed"; requestId: string; prompt: string; route: PromptRoute }

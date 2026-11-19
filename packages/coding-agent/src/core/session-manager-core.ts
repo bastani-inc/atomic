@@ -10,7 +10,7 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
-import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
+import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	createBranchSummaryEntry,
 	createCompactionEntry,
@@ -55,7 +55,6 @@ import type {
 	SessionOpenOptions,
 	SessionProjection,
 	SessionTreeNode,
-	SessionWorkflowMetadata,
 	UsageEntry,
 	WorktreeRestoreHostWarning,
 } from "./session-manager-types.ts";
@@ -453,14 +452,7 @@ export class SessionManager {
 		if (options?.id !== undefined) assertValidSessionId(options.id);
 		this.sessionId = options?.id ?? createSessionId();
 		this.fileEntries = [
-			createSessionHeader(
-				this.sessionId,
-				this.cwd,
-				new Date().toISOString(),
-				options?.parentSession,
-				options?.internal,
-				options?.workflow,
-			),
+			createSessionHeader(this.sessionId, this.cwd, new Date().toISOString(), options?.parentSession),
 		];
 		this.lastSeq = 0;
 		this.historyStartSeq = 1;
@@ -521,8 +513,6 @@ export class SessionManager {
 				this.cwd,
 				new Date().toISOString(),
 				options?.parentSession,
-				options?.internal,
-				options?.workflow,
 			);
 			const record = this.recordHeader(header);
 			const store = await this.storeForNewSession();
@@ -541,24 +531,6 @@ export class SessionManager {
 			this.labelTimestampsById.clear();
 			this.restore({ header: record, entries: [], lastSeq: result.lastSeq, epoch: result.epoch }, location);
 			return this.sessionFile;
-		});
-	}
-
-	markSessionInternal(workflow?: SessionWorkflowMetadata): Promise<void> {
-		return this.runMutation(async () => {
-			const previous = this.getHeader()!;
-			if (classifiedWorkflowMetadata(previous)) return;
-			const validWorkflow = validSessionWorkflowMetadata(workflow);
-			if (!validWorkflow) return;
-			await this.loadFullHistory();
-			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
-			const result = await this.store.replace(this.sessionId, this.recordHeader(header), this.getEntries(), {
-				expectSeq: this.lastSeq,
-				...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-			});
-			this.lastSeq = result.lastSeq;
-			this.historyEpoch = result.epoch;
-			this.fileEntries[0] = header;
 		});
 	}
 
@@ -1375,7 +1347,6 @@ export class SessionManager {
 				leafId,
 				cwd: this.cwd,
 				parentSessionId: this.sessionId,
-				workflow: classifiedWorkflowMetadata(this.getHeader()),
 				path: this.getBranch(leafId),
 				labelsById: this.labelsById,
 				labelTimestampsById: this.labelTimestampsById,

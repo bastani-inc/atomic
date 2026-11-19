@@ -1,4 +1,3 @@
-import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { noteMessageSaved } from "./agent-session-persistence-failures.ts";
@@ -316,21 +315,20 @@ async function prepareProtectedAdmission(
 	commitBatch?: (admission: ProtectedAdmission) => void,
 	queuesSavedPrefix: () => boolean = () => true,
 ): Promise<ProtectedAdmission> {
-	// While the initiating workflow tool is still executing, its assistant call
+	// While the initiating tool is still executing, its assistant call
 	// may be ahead of SessionManager's async event writer. Wait only in that
 	// protocol-sensitive phase; at ordinary turn boundaries the hidden steer must
 	// be queued synchronously so agent-core's next native poll observes it.
 	if (session.agent.state.pendingToolCalls.size > 0) await session._agentEventQueue;
-	const owner = resolveWorkflowStageDeliveryTarget(session);
 	const prepared: PreparedCard[] = [];
 	const commit = (): ProtectedAdmission => {
-		const admission = registerProtectedAdmission(owner, prepared, delivery);
+		const admission = registerProtectedAdmission(session, prepared, delivery);
 		if (admission.reconciliations.length > 0) commitBatch?.(admission);
 		return admission;
 	};
 	try {
 		for (const message of customMessageOccurrences(messages)) {
-			const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, delivery);
+			const { card, intentEntryId } = await appendDurableDisplayCard(session, message, delivery);
 			prepared.push({ card, intentEntryId, reconciliation: createProtectedReconciliation(message, intentEntryId) });
 		}
 	} catch (error) {
@@ -359,8 +357,7 @@ function registerProtectedAdmission(
 		return true;
 	});
 	const cards = unread.map((entry) => entry.card);
-	if (owner._disposed && resolveWorkflowStageDeliveryTarget(owner) === owner)
-		return { owner, cards, reconciliations: [] };
+	if (owner._disposed) return { owner, cards, reconciliations: [] };
 	const reconciliations = unread.map((entry) => entry.reconciliation);
 	protectedMessages(owner).push(
 		...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })),
@@ -369,12 +366,11 @@ function registerProtectedAdmission(
 }
 
 function emitProtectedAdmission(admission: ProtectedAdmission): AgentSession {
-	let owner = admission.owner;
+	const owner = admission.owner;
 	for (const card of admission.cards) {
-		owner = resolveWorkflowStageDeliveryTarget(owner);
 		emitDurableDisplayCard(owner, card);
 	}
-	return resolveWorkflowStageDeliveryTarget(owner);
+	return owner;
 }
 
 /** Persist one visible card and register its hidden model-facing turn. */
@@ -409,7 +405,7 @@ export async function joinTurnEndAdmissions(session: AgentSession, signal?: Abor
 }
 
 function trackTurnEndAdmission<T>(session: AgentSession, admission: Promise<T>): Promise<T> {
-	const admissions = turnEndAdmissions.get(resolveWorkflowStageDeliveryTarget(session));
+	const admissions = turnEndAdmissions.get(session);
 	if (admissions !== undefined) {
 		admissions.add(admission);
 		const release = () => admissions.delete(admission);
@@ -477,12 +473,11 @@ export async function queueHeldCustomMessages(
 		if (contextual.length > 0)
 			queued += await queueProtectedStreamingCustomMessages(session, contextual, delivery, queueing);
 		contextual = [];
-		const owner = resolveWorkflowStageDeliveryTarget(session);
-		const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, undefined);
-		const displayed = displayedCards(owner);
+		const { card, intentEntryId } = await appendDurableDisplayCard(session, message, undefined);
+		const displayed = displayedCards(session);
 		if (!displayed.has(intentEntryId)) {
 			displayed.add(intentEntryId);
-			emitDurableDisplayCard(owner, card);
+			emitDurableDisplayCard(session, card);
 		}
 	}
 	if (contextual.length > 0)
@@ -531,12 +526,11 @@ export function markProtectedStreamingCustomMessagePersistenceFailed(
  * read it yet. Clearing the queue restores protected turns, so a queued entry ends only when it is consumed.
  */
 export function hasUnreadProtectedCustomMessage(session: AgentSession, customType: string): boolean {
-	const owner = resolveWorkflowStageDeliveryTarget(session);
-	return protectedMessages(owner).some((entry) => {
+	return protectedMessages(session).some((entry) => {
 		if (entry.phase !== "queued") return false;
 		const intent = completedReconciliationIntent(entry.message.details);
 		if (intent === undefined) return false;
-		const card = owner.sessionManager.getEntry(intent);
+		const card = session.sessionManager.getEntry(intent);
 		return card?.type === "custom_message" && card.customType === customType;
 	});
 }
@@ -690,21 +684,4 @@ export function restoreProtectedStreamingCustomMessages(session: AgentSession, r
 			session._queueAgentMessage(entry.message, entry.delivery);
 		}
 	}
-}
-
-/** Move protection only for message references that transfer with native queues. */
-export function transferProtectedStreamingCustomMessages(
-	source: AgentSession,
-	target: AgentSession,
-	transferred: DrainedAgentQueues,
-): void {
-	const transferredReferences = new Set([...transferred.steering, ...transferred.followUp]);
-	const retained: ProtectedStreamingCustomMessage[] = [];
-	const moved: ProtectedStreamingCustomMessage[] = [];
-	for (const entry of protectedMessages(source)) {
-		if (entry.phase === "queued" && transferredReferences.has(entry.message)) moved.push(entry);
-		else retained.push(entry);
-	}
-	source._protectedStreamingCustomMessages = retained;
-	protectedMessages(target).unshift(...moved);
 }

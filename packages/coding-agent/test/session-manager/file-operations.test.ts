@@ -166,10 +166,7 @@ describe("SessionManager durable prelude persistence", () => {
 	});
 
 	it("persists each admitted pre-start message once before the first task across restart", async () => {
-		const session = await SessionManager.create(tempDir, tempDir, {
-			internal: true,
-			workflow: { runId: "run-2724", stageId: "reviewer-id", stageName: "reviewer" },
-		});
+		const session = await SessionManager.create(tempDir, tempDir);
 		await session.appendModelChange("test-provider", "test-model");
 		await session.appendThinkingLevelChange("high");
 		const admissionKeys = ["intercom:pending-first", "intercom:pending-second"];

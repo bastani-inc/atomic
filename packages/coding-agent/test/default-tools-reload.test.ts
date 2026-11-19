@@ -43,7 +43,6 @@ async function createFileSession(
 		| "excludedTools"
 		| "customTools"
 		| "sessionManager"
-		| "orchestrationContext"
 		| "subagentPolicy"
 	> = {},
 	transactional = true,
@@ -369,37 +368,25 @@ test("resume keeps defaults when no loadout was recorded (#10785)", async () => 
 	assert.deepEqual(session.getActiveToolNames(), getDefaultToolNames());
 });
 
-for (const childKind of ["workflow", "subagent"] as const) {
-	test(`forked ${childKind} keeps injected tools with default tool selection (#3624)`, async () => {
-		const toolName = childKind === "workflow" ? "structured_output" : "child_tool";
-		const session = await createFileSession({
-			sessionManager: await recordedSession(["read", "bash", "edit", "write"]),
-			...(childKind === "workflow"
-				? {
-						orchestrationContext: {
-							kind: "workflow-stage" as const,
-							workflowRunId: "fork-loadout",
-							workflowStageId: "schema",
-							workflowStageName: "Schema",
-							constraints: { disableWorkflowTool: true as const },
-						},
-					}
-				: { subagentPolicy: { depth: 1, managementActions: "restricted" as const, fanoutAuthorized: false } }),
-			customTools: [
-				{
-					name: toolName,
-					label: toolName,
-					description: "Fixture",
-					parameters: Type.Object({}),
-					execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
-				},
-			],
-		});
-		assert.deepEqual(session.getActiveToolNames().sort(), [...getDefaultToolNames(), toolName].sort());
-		await session.reload({ reason: "startup" });
-		assert.deepEqual(session.getActiveToolNames().sort(), [...getDefaultToolNames(), toolName].sort());
+test("forked subagent keeps injected tools with default tool selection (#3624)", async () => {
+	const toolName = "child_tool";
+	const session = await createFileSession({
+		sessionManager: await recordedSession(["read", "bash", "edit", "write"]),
+		subagentPolicy: { depth: 1, managementActions: "restricted", fanoutAuthorized: false },
+		customTools: [
+			{
+				name: toolName,
+				label: toolName,
+				description: "Fixture",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+			},
+		],
 	});
-}
+	assert.deepEqual(session.getActiveToolNames().sort(), [...getDefaultToolNames(), toolName].sort());
+	await session.reload({ reason: "startup" });
+	assert.deepEqual(session.getActiveToolNames().sort(), [...getDefaultToolNames(), toolName].sort());
+});
 
 for (const transactional of [true, false]) {
 	for (const modified of [true, false]) {

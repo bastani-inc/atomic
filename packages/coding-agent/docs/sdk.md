@@ -107,17 +107,14 @@ Use the installed package's ESM exports, not checkout paths or extension-loader 
 
 ```typescript
 import { createAgentSession, type HostInput } from "@bastani/atomic";
-import { workflow } from "@bastani/atomic/workflows";
-import openClaudeDesign from "@bastani/atomic/workflows/builtin/open-claude-design";
 ```
 
-For TypeScript Node applications, use `"type": "module"` in `package.json` and `module: "NodeNext"`, `moduleResolution: "NodeNext"`, and `strict: true` in `tsconfig.json`. Declaration checking works with `skipLibCheck: false`; disabling it is not required. No separate workflows install, ambient module declarations, source aliases, CLI process, or terminal is needed.
+For TypeScript Node applications, use `"type": "module"` in `package.json` and `module: "NodeNext"`, `moduleResolution: "NodeNext"`, and `strict: true` in `tsconfig.json`. Declaration checking works with `skipLibCheck: false`; disabling it is not required. No ambient module declarations, source aliases, CLI process, or terminal is needed.
 
 When upgrading an existing host:
 
 - Remove manual registration of Atomic's shipped builtin extensions. They and their resources are included by default. Use `builtins` to disable packages; use `tools`/`excludedTools` to control tool access. An empty tool allowlist also excludes Intercom.
-- Supply all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) through `extensionBindings.humanInput`. Preserve question text and option values, honor each request's abort signal, and return literal `true` only for explicit approval. No adapter is not consent: ordinary dialogs reject with `HumanInputUnavailable`, while required durable workflow gates remain pending. Do not translate cancellation into approval.
-- Treat a headless workflow launch as acceptance, not completion. Inspect its run ID/status. After reconnecting, resume that run and bind the new adapter with `session.bindExtensions({ humanInput })`; do not start a second run to answer an outstanding question. Restore journal access before retrying a storage failure.
+- Supply all five `HostInput` methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) through `extensionBindings.humanInput`. Preserve question text and option values, honor each request's abort signal, and return literal `true` only for explicit approval. No adapter is not consent: ordinary dialogs reject with `HumanInputUnavailable`. Do not translate cancellation into approval.
 - Always `await session.dispose()` in `finally`, including on failure. Disposal is asynchronous and can reject with `ShutdownFailed` after attempting all cleanup; do not hide that rejection or call `process.exit()` to force a successful shutdown. Each session owns its own work, even when services are shared.
 
 MCP servers and web providers still require their normal configuration and credentials. Importing the SDK does not connect them or take over standard input. Route host diagnostics through `extensionBindings.onDiagnostic`; a missing provider or extractor is an error, not an empty successful result.
@@ -126,7 +123,7 @@ If creation reports `BuiltinUnavailable`, reinstall the complete package and its
 
 ## Migrating from the experimental client
 
-The `@bastani/atomic/client` entrypoint is no longer available because upstream Pi stopped publishing its client and protocol packages. Use `createAgentSession()` from `@bastani/atomic` in-process, or [RPC mode](/rpc) with `--mode rpc` or `@bastani/atomic/rpc-entry`. Pin the previous release if you still need the experimental client. The CLI, RPC mode, extensions and workflows are unaffected.
+The `@bastani/atomic/client` entrypoint is no longer available because upstream Pi stopped publishing its client and protocol packages. Use `createAgentSession()` from `@bastani/atomic` in-process, or [RPC mode](/rpc) with `--mode rpc` or `@bastani/atomic/rpc-entry`. Pin the previous release if you still need the experimental client. The CLI, RPC mode and extensions are unaffected.
 
 ## Experimental Harness factory
 
@@ -138,7 +135,7 @@ For the current supported integration, start with [createAgentSession()](#create
 
 The main factory function for a single `AgentSession`.
 
-`createAgentSession()` includes Atomic's shipped workflows, subagents, MCP, web access and Intercom, plus their bundled resources. It uses normal user, project and configured-package discovery when no `resourceLoader` is supplied. A custom loader supplies your resources; the factory adds shipped builtins without changing the loader's options. Services still need their existing configuration and credentials.
+`createAgentSession()` includes Atomic's shipped subagents, MCP, web access and Intercom, plus their bundled resources. It uses normal user, project and configured-package discovery when no `resourceLoader` is supplied. A custom loader supplies your resources; the factory adds shipped builtins without changing the loader's options. Services still need their existing configuration and credentials.
 
 Use `builtins: { "web-access": false, intercom: false }` to disable specific shipped packages and their resources. Omitted keys remain enabled, including with `builtins: {}`. Tool selection is separate: `tools: []` and `noTools: "all"` expose no tools, including Intercom; `noTools: "all"` also overrides a nonempty allowlist. `excludedTools` wins over selection. Suppression survives reload. See [tool precedence](/sdk/reference#tools) for `defaultTools` and `noTools: "builtin"`.
 
@@ -164,7 +161,7 @@ const { session } = await createAgentSession({
 
 ### Workspaces
 
-Pass `workspace` to bind a session to a repository, branch and worktree. The value comes from `workspace({ … })`, the same one workflows use with `ctx.workflow` and `ctx.task`.
+Pass `workspace` to bind a session to a repository, branch and worktree. The value comes from `workspace({ … })`.
 
 ```typescript
 import { createAgentSession, workspace } from "@bastani/atomic";
@@ -182,7 +179,7 @@ const reviewer = await createAgentSession({ workspace: api.readOnly() });
 - **Children:** subagent children inherit the workspace. A child of a read-only session stays read-only even when it passes its own workspace.
 - **Changes:** `workspaceChangeSet(binding)` returns the committed changes since the base commit, and `publishPullRequest(changeSet, { draft: true })` pushes them and opens a pull request with the GitHub CLI.
 
-Invalid options throw `WorkspaceConfigError`; binding failures reject with `WorkspaceBindingError` (for example `wrong-branch`, `cwd-outside-worktree`, or `git-unavailable` when git cannot be started). Both are checked before the session is created. See [Workspaces](/workflows/api-reference#workspaces) for the resolution rules, the binding record and the full error table.
+Invalid options throw `WorkspaceConfigError`; binding failures reject with `WorkspaceBindingError` (for example `wrong-branch`, `cwd-outside-worktree`, or `git-unavailable` when git cannot be started). Both are checked before the session is created.
 
 ### Shared resource admission
 
@@ -223,7 +220,7 @@ A turn that a delivered message starts (an extension's `sendMessage`, `sendMessa
 
 ### Session storage
 
-`createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, under `session_` table prefixes; workflow runs default to the [journal store](/storage#the-workflow-journal-store). Pass `sessionStore` to choose storage explicitly:
+`createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, under `session_` table prefixes. Pass `sessionStore` to choose storage explicitly:
 
 ```typescript
 const { session } = await createAgentSession({
@@ -233,9 +230,9 @@ const { session } = await createAgentSession({
 
 Other selections are `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, and `{ kind: "adapter", module, options?, secrets?, prefix? }`. `database` must implement the async `SqliteDatabase` facade. Install your own driver and expose an adapter module for a remote database; Atomic bundles only its local `node:sqlite` adapter. See [Storage adapters](/storage).
 
-An application that ships its adapter in its own Atomic package can select it by package name. List the adapter under `storageAdapters` in the package manifest, pass the package directory to `new DefaultResourceLoader({ additionalExtensionPaths: [packageRoot] })` before opening storage, and use `module: "@example/app"` (or `adapter` in settings, `journal`, and the storage variables). The processes Atomic starts receive the resolved module. See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
+An application that ships its adapter in its own Atomic package can select it by package name. List the adapter under `storageAdapters` in the package manifest, pass the package directory to `new DefaultResourceLoader({ additionalExtensionPaths: [packageRoot] })` before opening storage, and use `module: "@example/app"` (or `adapter` in settings and the storage variables). The processes Atomic starts receive the resolved module. See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
 
-`createAgentSession({ storage })` takes a selection in the form of the top-level `storage` setting, such as the one `teamProfileSelection()` returns, for both the session store and the session's `workflow` tool journal; `sessionStore` and `journal` outrank it for their domain. See [Team and CI setup](/guides/team-setup#from-the-sdk).
+`createAgentSession({ storage })` takes a selection in the form of the top-level `storage` setting, such as the one `teamProfileSelection()` returns. An explicit `sessionStore` takes precedence. See [Team and CI setup](/guides/team-setup#from-the-sdk).
 
 `sessionStore` also accepts a `SessionStore` instance. A supplied `sessionManager` takes precedence and remains caller-owned. Otherwise, explicit SDK storage wins over the process-level variables (`ATOMIC_SESSIONS_STORAGE` or the session-directory variable, then `ATOMIC_STORAGE`), `sessions.storage`, shared `storage`, and the persistent default. Memory is never a default or an opening-failure fallback. The `sessionDir` factory option has been removed; use a JSONL `sessionStore` selection instead. See [Session storage settings](/settings#sessions) for scope and path rules, and [Selecting storage per process](/storage#selecting-storage-per-process) to choose storage for the processes a host starts, such as `atomic --mode rpc` children, without editing settings.
 
@@ -266,9 +263,9 @@ Await every `SessionManager` mutation before reading dependent state. Writes res
 
 Pass `extensionBindings.humanInput` to answer extension dialogs and `ask_user_question` in a Node host. `HostInput` requires all five methods: `confirm`, `select`, `input`, `editor` and `questionnaire`. `QuestionParams` and `QuestionnaireResult` are exported from `@bastani/atomic`; questionnaire answers retain their question indices, answer kinds, selections, previews and notes.
 
-Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Route the question to that session, not whichever chat is currently visible, and stop presenting it when the signal aborts. Child sessions inherit an explicitly supplied `humanInput` adapter. In the interactive CLI, subagent questions wait in their own task views and workflow stage questions wait in their stage chats. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation, including subagents launched by workflow stages, since they have no built-in task inspector. Setting `mode: "tui"` alone does not enable held task prompts.
+Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Route the question to that session, not whichever chat is currently visible, and stop presenting it when the signal aborts. Child sessions inherit an explicitly supplied `humanInput` adapter. In the interactive CLI, subagent questions wait in their own task views. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation, since they have no built-in task inspector. Setting `mode: "tui"` alone does not enable held task prompts.
 
-Dialog options include `timeout` in milliseconds when the caller supplied it. The signal aborts when a timeout, cancellation, session shutdown or an answer from a stage chat or `workflow answer` ends a pending request. Stop showing the dialog on abort even if your callback has not returned. A settled host reply does not abort its signal, including when Atomic rejects that reply as invalid.
+Dialog options include `timeout` in milliseconds when the caller supplied it. The signal aborts when a timeout, cancellation or session shutdown ends a pending request. Stop showing the dialog on abort even if your callback has not returned. A settled host reply does not abort its signal, including when Atomic rejects that reply as invalid.
 
 For custom task views, see [Session-local task prompts](/sdk/reference#session-local-task-prompts).
 
@@ -322,7 +319,7 @@ Web provider configuration caches are session-local. Configuration discovery and
 
 ### Worktree snapshots
 
-A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed. The CLI, TUI and `createAgentSession({ sessionManager })` restore missing or drifted checkouts into fresh worktrees before continuing, and `runtime.rehydrate()` does the same when it wakes a session. When `rehydrate()` wakes a session, each checkout the session worked in on this machine (a worktree this machine restored for it, or a checkout whose repository holds the commit of its latest snapshot) stays as it is, even if it changed since, and only the session's other checkouts are checked against its snapshots and restored when missing or different. Snapshot commits are content-addressed, so a clone where Atomic captured exactly the same state counts as one the session worked in; any other clone at the same path, for example on another machine, is checked first. The session's tools resolve paths under every checkout it recorded into the worktree that checkout was restored into. A session opened during another session's or run's work, such as a workflow stage or a subagent started by a tool call, also follows that session's or run's restores, and its own restore of a checkout wins; the restores of unrelated sessions and runs never apply. Pass the stored session directly unless you want to choose its working directory explicitly with `cwd` or bind it with `workspace`:
+A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed. The CLI, TUI and `createAgentSession({ sessionManager })` restore missing or drifted checkouts into fresh worktrees before continuing, and `runtime.rehydrate()` does the same when it wakes a session. When `rehydrate()` wakes a session, each checkout the session worked in on this machine (a worktree this machine restored for it, or a checkout whose repository holds the commit of its latest snapshot) stays as it is, even if it changed since, and only the session's other checkouts are checked against its snapshots and restored when missing or different. Snapshot commits are content-addressed, so a clone where Atomic captured exactly the same state counts as one the session worked in; any other clone at the same path, for example on another machine, is checked first. The session's tools resolve paths under every checkout it recorded into the worktree that checkout was restored into. A session opened during another session’s work, such as a subagent started by a tool call, also follows that session’s restores, and its own restore of a checkout wins; the restores of unrelated sessions never apply. Pass the stored session directly unless you want to choose its working directory explicitly with `cwd` or bind it with `workspace`:
 
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
@@ -332,36 +329,6 @@ const { session } = await createAgentSession({ sessionManager });
 ```
 
 The session is reopened in its restored worktree; restoration rejects with `WorkspaceDriftError` when a checkout cannot be rebuilt. Missing Git fails before restoration with a typed error and remediation hints; a blueprint that fails never does, and is reported as a warning. `createAgentSession` returns once the worktree is restored: its blueprint build goes on behind the first turn, and every tool call of a session working in that worktree waits for it (`await blueprintBuildSettled(session.sessionManager.getSessionId())` waits too), and `onBlueprintBuildFinished(listener)` tells you once it ended, with the warnings a waiting resume would have shown. Set `resume.waitForBlueprint` to `"prompt"` to return only after the build, as before; see [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs). `createAgentSession({ snapshots: { enabled: false } })` turns snapshots off for one session; the other fields (`includeUntracked`, `maxFileBytes`, `maxSnapshotBytes`, `fullEvery`) override `snapshots.*` settings. `captureWorktreeSnapshot()`, `restoreWorktreeSnapshot()`, `verifyWorktree()` and the `WorkspaceBinding` type are exported for hosts and schedulers that move work between machines; `session.sessionManager.getWorktreeRootMappings()` returns the restores a session went through. `latestResumeTimings(session.sessionManager)` returns where the last resume's time went (restore phases, blueprint steps, time to ready) or `undefined`, and `formatResumeTimings()` turns it into the lines `/session snapshot` shows. `session.exportToJsonl()` returns a promise and carries snapshot content inline. See [Resume on any machine](/guides/resume-on-any-machine) for blueprints and [Worktree snapshots](/worktree-snapshots) for the API and error table.
-
-### Workflow journal selection
-
-Standalone workflow `run()` accepts `RunOpts.journal` to choose a local SQLite file, a caller-owned connection, process-local memory, or a supplied `RunJournal`:
-
-```typescript
-import { run } from "@bastani/atomic/workflows";
-
-await run(myWorkflow, inputs, { journal: { path: "./workflow-runs.sqlite" } });
-await run(myWorkflow, inputs, { journal: { memory: true } });
-```
-
-Use `{ database, prefix? }` for an async `SqliteDatabase` facade; Atomic never closes the caller-owned database. To use a driver selected by module specifier, pass `{ adapter, options?, secrets?, prefix? }`. Atomic bundles no remote drivers. A supplied `RunJournal` is used as-is. Memory is an explicit opt-in for tests or ephemeral runs and cannot recover runs after process exit. See [Storage adapters](/storage#selecting-an-adapter).
-
-Custom journals implement the full `RunJournal` interface, including `deleteOwnedRun(lease, expectSeq?)` for atomic lease-fenced deletion with an optional sequence check. A stale lease rejects with `StaleLeaseError` without deleting the successor's data. Open a facade-backed journal with `await SqlRunJournal.open(database, { prefix })`, or use `await openSqlRunJournal(pathOrDatabase?)` for the node adapter. Validate custom journals with `registerRunJournalConformance`; see [Choosing the durable backend](/workflows/api-reference#choosing-the-durable-backend).
-
-To choose the journal for the model-facing `workflow` tool of one SDK session, pass the same selection to `createAgentSession`. A session can use its own journal, for example to isolate tests, without setting `ATOMIC_WORKFLOW_JOURNAL_PATH`:
-
-```typescript
-const first = await createAgentSession({ journal: { path: "./first-runs.sqlite" } });
-const second = await createAgentSession({ journal: { memory: true } });
-```
-
-Without a `journal` option, the session's own `workflows.journal` setting applies, including settings passed through `SettingsManager.inMemory({ workflows: { journal: { path: "./runs.sqlite" } } })`. A `memory: true` journal selected this way belongs to that session alone. Disposing a session closes the journals Atomic opened for it once no other session is using them, so runs kept in a memory journal end with the session. Atomic never closes a database or journal you supply.
-
-Without a per-run or per-session option, `ATOMIC_WORKFLOWS_JOURNAL` or a non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH` wins, then `ATOMIC_STORAGE`, then `workflows.journal`, then shared top-level `storage`. Setting both journal variables is a conflict. Nearer-scope settings replace whole selections. Relative settings paths resolve against the [storage home](/storage#storage-home). The default journal is the [journal store](/storage#the-workflow-journal-store) in `workflows/journal/` under the storage home (`~/.atomic/workflows/journal/` by default), which finds any of its runs by ID; an empty shared selection uses `storage.sqlite` under the storage home (`~/.atomic/storage.sqlite` by default). A run saved in an explicitly selected journal resumes from that journal, or from the store after `atomic storage adopt`. Invalid configuration and storage failures reject rather than switching to memory. See [Workflow storage settings](/settings#workflow-storage) and [Selecting storage per process](/storage#selecting-storage-per-process).
-
-### Intercom in standalone workflows
-
-Workflow stages run by the standalone `run()` API can use Intercom when the stage has access to the `intercom` tool, including with `executionMode: "non_interactive"`. Atomic opens Intercom when an eligible stage starts and closes the workflow route when the run settles. Intercom remains unavailable when a stage excludes the tool or disables its builtin package. A local session that needs to steer a standalone run can join `workflow:<rootRunId>` and send to a stage or `workflow:<rootRunId>/**`. See [Programmatic usage](/workflows/api-reference#programmatic-usage) for details.
 
 ### Intercom group and reach
 
@@ -376,22 +343,20 @@ const { session } = await createAgentSession({
 await session.intercom.setReachable(["doc-1907", "doc-2011"]);
 ```
 
-- `group` is the session's home group. It takes precedence over `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `"group"` and the project group. The session stays an ordinary top-level session and keeps its workflow extension.
+- `group` is the session's home group. It takes precedence over `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `"group"` and the project group. The session stays an ordinary top-level session.
 - `reachable` lists the other groups the session may reach. Missing or empty means none; up to 1,000 groups.
-- The session can `list`, `send` to and `ask` only sessions in `group`, `reachable`, or a subgroup under `group`, plus the workflow stages it starts. A send or ask to any other session is refused with a reason and is not queued.
+- The session can `list`, `send` to and `ask` only sessions in `group`, `reachable`, or a subgroup under `group`. A send or ask to any other session is refused with a reason and is not queued.
 - `groups` shows only `group` and `reachable`, `join` accepts only those names, and `leave` can't remove `group`. A `list` or `status` peek is limited to groups the session reaches, including subgroups under its home.
 - Reach is one way: listing B's group lets the session reach B, not B reach the session. B can still reply to the session's asks.
-- Workflow stages keep their own subgroups under the run's `workflow:<rootRunId>` group, and the session keeps its control over them. A subagent launched with `group: "x"` is placed in `<group>/x`, which the session can reach. Stages and subagents never get the session's `reachable` groups: each reaches only its own group and the subgroups under it.
+- A subagent launched with `group: "x"` is placed in `<group>/x`, which the session can reach. Subagents never get the session's `reachable` groups: each reaches only its own group and the subgroups under it.
 - The Intercom broker holds and enforces the policy, so a client that skips the `intercom` tool cannot get around it. The policy is registered again after a reconnect or a broker restart.
-- A child workflow that runs on a [local worker pool](/workflows/api-reference#programmatic-usage) runs its stages in the worker processes, which follow their own Intercom settings and do not get this policy. Leave `localWorkers` off for sessions that need this isolation.
 
 `createAgentSessionFromServices()` accepts the same `intercom` option, so a runtime factory can pass it through. `session.intercom.setReachable(groups)` takes effect from the session's next Intercom call; its promise settles once the broker holds the new set, or at once while the session is not connected, which then registers with the new set. Narrowing it also leaves any group the session joined that is no longer reachable. `session.intercom.group` and `session.intercom.reachable` report the current policy. On a session created without the option, `group` is `undefined` and `setReachable` rejects with `IntercomPolicyError`; such sessions keep the usual Intercom rules. An invalid `intercom` option (an empty or reserved group name such as `auto`, or more than 1,000 reachable groups) makes `createAgentSession()` reject with `IntercomPolicyError` before anything is created.
 
-### Workflow and subagent children
+### Subagent children
 
 Children inherit the invoking session's model/auth runtime, settings, agent directory, human-input callbacks, and diagnostic sink. Choosing a child model or fallback does not switch to global credentials.
 
-Workflow stages also inherit extensions supplied to the parent's `DefaultResourceLoader` through `additionalExtensionPaths` and `extensionFactories`. Factories run again for each stage. Keep parent-only setup in a session callback such as `session_start`, and return early from that callback when `ctx.subagentPolicy` is set. This skips the setup, not factory construction or handler registration. Do not rely on `pi.subagentPolicy` during factory construction: stage resources can load before the session policy is attached.
 
 The child working directory resolves in this order:
 
@@ -400,37 +365,18 @@ The child working directory resolves in this order:
 3. A supplied child `sessionManager.getCwd()`.
 4. The invoking session's directory, which is the parent's worktree when the parent has a workspace.
 
-Child-relative paths, including workflow report outputs, use the resolved child directory without changing the process working directory.
+Child-relative paths use the resolved child directory without changing the process working directory.
 
 Omitted or `undefined` child options retain inherited configuration, including individual builtin flags and host bindings. Use `humanInput: null` to withdraw input explicitly; empty arrays and other explicit values keep their normal meanings, subject to the parent's capability ceiling.
 
-Child tool selections can narrow the parent's selection, not expand it. Disabled builtin packages, excluded tools, empty allowlists and `noTools: "all"` remain suppressed in children and fallback attempts. Enable a needed capability on the parent before launching a child. Workflow stages and subagents still exclude recursive workflow tooling; subagents retain the single-level delegation limit.
+Child tool selections can narrow the parent's selection, not expand it. Disabled builtin packages, excluded tools, empty allowlists and `noTools: "all"` remain suppressed in children and fallback attempts. Enable a needed capability on the parent before launching a child.
 
-Callbacks may be shared, but request and diagnostic `sessionId` values identify the originating child. Workflow questions also carry their run/stage identity. Group overrides retain the normal Intercom authorization rules. Disabling or excluding Intercom does not create a substitute supervisor grant. Reopening conversation history does not restore child authority.
+Callbacks may be shared, but request and diagnostic `sessionId` values identify the originating child. Group overrides retain the normal Intercom authorization rules. Disabling or excluding Intercom does not create a substitute supervisor grant. Reopening conversation history does not restore child authority.
 
-An explicit child `extensionBindings.humanInput` overrides the inherited host, including for durable stage questionnaires. Setting it to `null` leaves those questions pending; rebinding the parent cannot answer on that child's behalf. Rebind the child to an authorized adapter to continue. Without a child override, pending stage questions follow parent host withdrawal and reattachment.
+An explicit child `extensionBindings.humanInput` overrides the inherited host. Setting it to `null` withdraws input for that child.
 
 You may reuse the same adapter object when explicitly rebinding a child, even after the parent switches hosts. That child selection survives reload. An empty binding object does not select a new host or restore inheritance.
 
-The inherited `isFallbackModelAllowed` predicate also applies when a workflow replaces its stage session to try a fallback. A rejected candidate is not executed. This predicate restricts fallback choices, not an explicitly selected primary model.
-
-### Waiting workflow stages
-
-A workflow stage that only waits on a long tool call does not keep its session in memory. Give the tool `detachable: true` (see [Detachable tool calls](/sdk/reference#detachable-tool-calls)); once a call of it outlasts the stage's `releaseWhenWaiting` threshold, the stage closes its session, frees its admission slot, and reopens the same session from the session store when the result arrives. While its session is released the stage's status is `suspended`:
-
-```typescript
-import { run } from "@bastani/atomic/workflows";
-
-const result = await run(reviewLoop, inputs, {
-  releaseWhenWaiting: { afterMs: 30_000 },
-  onStageLifecycleEvent: (runId, event) => {
-    if (event.type === "stage_waiting") console.log(`${event.stageName} waits on`, event.wait.toolCalls);
-    else console.log(`${event.stageName} resumed after ${event.waitedMs} ms`);
-  },
-});
-```
-
-The option also exists on each task, stage, chain and parallel step, `stage.release()` and `stage.rehydrate()` do the same between prompts, and the `StageWaitError` family reports refused releases. While a stage's session is released, including a stage the workflow held idle past its threshold, `stage.messages` and `stage.agent` throw `StageReleasedError` (`stage-released`): read the transcript with `await stage.readMessages()`, which leaves the session released, or call `await stage.rehydrate()` first. See the [workflow API reference](/workflows/api-reference#releasewhenwaiting) for the details and error codes.
 
 ### AgentSession
 
@@ -513,7 +459,7 @@ Custom messages queued with `persistWhenStreaming: true` survive a successful re
 
 #### Event subscriptions
 
-`session.subscribe(source, handler, options?)` is the session-level form of the workflow [`ctx.subscribe`](/workflows/api-reference#workflowcontext): each event of `source` is handled by `handler(event, child)` without entering the session's context.
+`session.subscribe(source, handler, options?)` calls `handler(event, child)` for each event of `source` without entering the session's context.
 
 ```typescript
 import { githubReviews } from "@bastani/atomic";
@@ -531,7 +477,7 @@ const subscription = session.subscribe(
 - `child.task({ prompt, model?, thinkingLevel?, tools?, noTools?, excludedTools? })` runs a short-lived in-process child session seeded with your prompt and the event, then disposes it. When the session closes, a running child is aborted and disposed, and `child.task` rejects with the session's `AbortError`. If aborting or disposing the child fails, that failure is on the error's `cleanupCause`; when several children of the subscription fail to clean up, `cleanupCause` is an `AggregateError` of their failures. The child inherits this session's model, tool limits and custom tools, and gets a `report_to_subscriber` tool, which an explicit `tools` allowlist keeps; with `noTools: "all"` the child cannot report, so call `child.report()` instead. The child is named `<name>#<n>/<event id>` (the id is URI-encoded), which is also what the report text and `EventReportDetails.child` show. It resolves `{ text, sessionId }`. A session built without `createAgentSession()` has no child sessions; `child.task` then fails with `SubscriptionChildUnavailableError`.
 - `child.report(text)` delivers one `event_report` custom message into this session and starts a turn when it is idle (steering when it is streaming). A report sent while the session is in a turn is saved in the transcript before `report()` returns, so it survives a crash before the session reads it. Its `details` are `{ subscriptionId, eventId, child }`.
 
-`options` takes `name`, `maxConcurrent` (default 4) and `maxRate`, with the semantics of `ctx.subscribe`. The session transcript records the subscription and each processed event id as custom entries, which never enter model context, so a session reopened on the same transcript drops events it already handled. Each child session that finishes adds one `event_subscription_child` entry with the child's name, event id, session id, number of reports and the first 500 characters of its answer, so you can see what each event did. Subscribing again in the same session starts a new subscription that handles every event again. If writing the subscription record or a processed-event record fails, `done` rejects with a `SubscriptionRecordError` (the handler itself succeeded, and the event is handled again after a reopen). Disposing the session cancels its subscriptions; their `done` rejects with an `AbortError`, and an event whose handler was still running is not recorded as processed. The returned `Subscription` has `id`, `done`, `stats()` and `close()`; pass `id` to `publishEvent()` to bridge your own webhooks. Event sources, `publishEvent` and the `SubscriptionError` family are documented in the [workflow API reference](/workflows/api-reference#event-sources).
+`options` takes `name`, `maxConcurrent` (default 4) and `maxRate`. The session transcript records the subscription and each processed event id as custom entries, which never enter model context, so a session reopened on the same transcript drops events it already handled. Each child session that finishes adds one `event_subscription_child` entry with the child's name, event id, session id, number of reports and the first 500 characters of its answer, so you can see what each event did. Subscribing again in the same session starts a new subscription that handles every event again. If writing the subscription record or a processed-event record fails, `done` rejects with a `SubscriptionRecordError` (the handler itself succeeded, and the event is handled again after a reopen). Disposing the session cancels its subscriptions; their `done` rejects with an `AbortError`, and an event whose handler was still running is not recorded as processed. The returned `Subscription` has `id`, `done`, `stats()` and `close()`; pass `id` to `publishEvent()` to bridge your own webhooks.
 
 #### Finishing admitted work
 
@@ -549,7 +495,7 @@ Transactional reload dispatches candidate `session_start` before commit. Use `pu
 
 For synchronous identity handoff, use `publishExtensionContextEffect(ctx, effect, "commit")`. This phase runs after the transaction commits and before predecessor authority is revoked or any retirement work is awaited. It must not return a promise or start asynchronous work; asynchronous callbacks are rejected and reported. The default `"start"` phase still runs after retirement, when reporter and task-host startup is safe.
 
-Register generation-owned observer disposal with `registerExtensionContextRetirementEffect(ctx, dispose)` during `session_start`. Disposal is synchronous, runs before authority revocation and before rollback invalidation, and is independent of `session_shutdown` handler order. The returned function unregisters the effect. Keep awaited resource cleanup in `session_shutdown`; observer disposal must not quit or checkpoint preserved workflows.
+Register generation-owned observer disposal with `registerExtensionContextRetirementEffect(ctx, dispose)` during `session_start`. Disposal is synchronous, runs before authority revocation and before rollback invalidation, and is independent of `session_shutdown` handler order. The returned function unregisters the effect. Keep awaited resource cleanup in `session_shutdown`.
 
 ```typescript
 import { publishExtensionContextEffect, type ExtensionFactory } from "@bastani/atomic";
@@ -784,13 +730,13 @@ If the session is idle and already has messages when either is called, it starts
 
 `clearQueue()` removes the queued steering and follow-up messages and returns them. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` holds the same messages, in the same order, as they were submitted: give the user those to send again, so the hooks and expansions run once more and not twice. `typed` is left out when every message was queued as submitted.
 
-`images` holds each message's images at the same index as its text, with `undefined` for a message sent without images, so a caller that queues the messages again can give each one its own images back. It is left out when no cleared message had images. A workflow stage that gives up its session while it waits uses it, so messages queued at that moment reach the reopened session with their images.
+`images` holds each message's images at the same index as its text, with `undefined` for a message sent without images, so a caller that queues the messages again can give each one its own images back. It is left out when no cleared message had images.
 
 `pauseQueuedMessages()` synchronously holds existing raw steering/follow-up entries before an abort boundary. Later context-bearing arrivals also stay queued without starting a provider turn. These include trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls.
 
 The hold preserves content blocks, optional data, duplicate identities, raw text, message types, and order within each queue kind. Non-trigger custom messages remain history-only and do not start a turn.
 
-`resumeQueuedMessages()` releases the hold exactly once but does **not** start or continue a model turn. Its promise resolves to `true` only when it released raw held steering/follow-up work, or `false` when none existed. The caller must use its explicit resume action, such as interactive chat submission or workflow resume, to drive execution.
+`resumeQueuedMessages()` releases the hold exactly once but does **not** start or continue a model turn. Its promise resolves to `true` only when it released raw held steering/follow-up work, or `false` when none existed. The caller must use its explicit resume action, such as interactive chat submission, to drive execution.
 
 `clearQueue()` clears the paused flag when it explicitly removes the final unowned held item. If a protected or interrupt-owned item remains, the gate stays paused.
 

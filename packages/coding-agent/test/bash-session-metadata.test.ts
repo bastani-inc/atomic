@@ -41,28 +41,18 @@ function text(result: Awaited<ReturnType<ReturnType<typeof createBashTool>["exec
 const printSessionEnvironment =
 	'printf \'%s\\n\' "$ATOMIC_SESSION_ID" "$PI_SESSION_ID" "$ATOMIC_SESSION_FILE" "$PI_SESSION_FILE" "$ATOMIC_PROVIDER" "$PI_PROVIDER" "$ATOMIC_MODEL" "$PI_MODEL" "$ATOMIC_REASONING_LEVEL" "$PI_REASONING_LEVEL"';
 
-async function createSession(options: { persisted?: boolean; stage?: string } = {}) {
+async function createSession(options: { persisted?: boolean } = {}) {
 	const { cwd, agentDir } = makeRoot();
 	const sessionManager =
 		options.persisted === false
 			? SessionManager.inMemory(cwd)
 			: await SessionManager.create(cwd, join(agentDir, "sessions"));
-	const orchestrationContext = options.stage
-		? {
-				kind: "workflow-stage" as const,
-				workflowRunId: "run-metadata",
-				workflowStageId: options.stage,
-				workflowStageName: options.stage,
-				constraints: { disableWorkflowTool: true as const },
-			}
-		: undefined;
 	const result = await createAgentSession({
 		cwd,
 		agentDir,
 		model,
 		thinkingLevel: "high",
 		sessionManager,
-		orchestrationContext,
 		builtins: NO_BUILTINS,
 	});
 	expect(packageExtensionPaths(result.extensionsResult)).toEqual([]);
@@ -229,9 +219,9 @@ describe("session-aware bash environment", () => {
 		await disposal;
 	});
 
-	it("keeps concurrent main and workflow-stage snapshots isolated", async () => {
+	it("keeps concurrent session snapshots isolated", async () => {
 		const main = await createSession({ persisted: false });
-		const stage = await createSession({ persisted: false, stage: "stage-one" });
+		const stage = await createSession({ persisted: false });
 		const mainBash = main.session.agent.state.tools.find((tool) => tool.name === "bash")!;
 		const stageBash = stage.session.agent.state.tools.find((tool) => tool.name === "bash")!;
 		const command = 'printf \'%s:%s\\n\' "$ATOMIC_SESSION_ID" "$PI_SESSION_ID"';

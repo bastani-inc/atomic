@@ -5,7 +5,6 @@ import type { ReleaseWhenIdleOptions } from "./agent-session-release.ts";
 import type { ExtensionBindings } from "./agent-session-types.js";
 import type {
 	LoadExtensionsResult,
-	OrchestrationContext,
 	SessionStartEvent,
 	SubagentChildPolicy,
 	ToolDefinition,
@@ -124,15 +123,12 @@ export interface CreateAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Host bindings installed before extension startup. Rebinding does not replay startup. */
 	extensionBindings?: ExtensionBindings;
-	/** Session-scoped orchestration policy exposed to extension/tool handlers. */
-	orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child. */
 	subagentPolicy?: SubagentChildPolicy;
 	/**
 	 * The session's Intercom home group and the other groups it may reach. `group` replaces the group from
-	 * `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project; the session keeps its workflow extension. The session
-	 * lists, sends to and asks only sessions in `group`, `reachable`, or subgroups under `group`, and the workflow stages
-	 * it starts. It joins only `group` and `reachable` and can't leave `group`. Reach is one way. The broker enforces it. Change
+	 * `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project. The session
+	 * lists, sends to and asks only sessions in `group`, `reachable`, or subgroups under `group`. It joins only `group` and `reachable` and can't leave `group`. Reach is one way. The broker enforces it. Change
 	 * `reachable` later with `session.intercom.setReachable(groups)`. Invalid values throw `IntercomPolicyError`.
 	 */
 	intercom?: import("./intercom-policy.ts").IntercomSessionOptions;
@@ -144,7 +140,7 @@ export interface CreateAgentSessionOptions {
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
 	/**
 	 * Internal: the launching session's project history. Supplied by the parent's child-session options, so
-	 * `history://` in a workflow stage or a subagent reads the project's sessions and workflow runs.
+	 * `history://` in a subagent reads the project's sessions.
 	 */
 	inheritedHistory?: import("./tools/history-protocol.ts").ProjectHistory;
 	/**
@@ -158,7 +154,7 @@ export interface CreateAgentSessionOptions {
 	/**
 	 * Receives the usage of every model call this session makes, and of every call its own child sessions report.
 	 * A parent's child session options set it, so the parent emits `child_session_usage` for each call a subagent
-	 * child makes and a workflow stage charges its subagents' spend (#5053).
+	 * child makes.
 	 */
 	parentUsageSink?: (usage: import("@bastani/atomic-ai/compat").Usage) => void;
 	/**

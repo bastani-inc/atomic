@@ -345,7 +345,6 @@ export function _preparePromptAndToolLoadout(
 export function preservesInitialToolLoadout(session: AgentSession): boolean {
 	return (
 		(!session._usesDefaultTools && session._initialActiveToolNames !== undefined) ||
-		session._orchestrationContext?.kind === "workflow-stage" ||
 		(session._subagentPolicy?.depth ?? 0) >= 1
 	);
 }

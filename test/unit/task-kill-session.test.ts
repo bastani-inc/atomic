@@ -8,14 +8,11 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { CancelReceipt } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { BashToolDetails } from "../../packages/coding-agent/src/core/tools/bash.js";
-import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { sleep } from "../helpers/runtime.js";
 
-for (const stage of [false, true]) {
-	test(`actual ${stage ? "workflow-stage" : "main"} session registers and binds shell kill to its own tasks`, async () => {
+	test("an actual session registers and binds shell kill to its own tasks", async () => {
 		const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
-		const boundary = new WorkflowStageAdmissionBoundary();
 		const makeSession = () =>
 			new AgentSession({
 				agent: new Agent({
@@ -28,18 +25,6 @@ for (const stage of [false, true]) {
 				sessionManager: SessionManager.inMemory(),
 				settingsManager: SettingsManager.inMemory(),
 				resourceLoader: createTestResourceLoader(),
-				...(stage
-					? {
-							orchestrationContext: {
-								kind: "workflow-stage" as const,
-								workflowRunId: "run",
-								workflowStageId: "stage",
-								workflowStageName: "stage",
-								constraints: { disableWorkflowTool: true },
-								messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
-							},
-						}
-					: {}),
 			});
 		const session = makeSession();
 		try {
@@ -65,8 +50,6 @@ for (const stage of [false, true]) {
 				await sleep(10);
 			}
 		} finally {
-			if (stage) await boundary.close();
 			session.dispose();
 		}
 	});
-}

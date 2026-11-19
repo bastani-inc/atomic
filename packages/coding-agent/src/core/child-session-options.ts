@@ -28,7 +28,7 @@ export function inheritChildSessionOptionsWithDefaults(
 	defaultToolNames: readonly string[],
 ): CreateAgentSessionOptions {
 	const builtins = { ...parent.builtins, ...definedOptions(child.builtins) };
-	for (const name of ["workflows", "subagents", "mcp", "web-access", "intercom"] as const) {
+	for (const name of ["subagents", "mcp", "web-access", "intercom"] as const) {
 		if (parent.builtins?.[name] === false) builtins[name] = false;
 	}
 	const ceiling = parent.noTools === "all" ? [] : parent.tools;
