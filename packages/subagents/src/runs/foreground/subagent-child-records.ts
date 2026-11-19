@@ -13,7 +13,12 @@ import {
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
-import { isReleasedChildError, ReleasedChildError, type ReleasedChildErrorCode } from "./released-child-errors.js";
+import {
+	isReleasedChildError,
+	ReleasedChildError,
+	type ReleasedChildErrorCode,
+	releasedChildErrorSubject,
+} from "./released-child-errors.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	findAppendedSubagentChildRecord,
@@ -1047,7 +1052,9 @@ export async function recordSubagentChildWakeFailure(
 			wakeFailure: {
 				...(latest.taskId === undefined ? {} : { taskId: latest.taskId }),
 				code: failure.code,
-				reason: failure.fields.reason ?? failure.message,
+				// Shown before the code and the hint, so not the message, which ends with them, also for a copy that
+				// crossed a JSON boundary (#5551).
+				reason: failure.fields?.reason ?? releasedChildErrorSubject(failure),
 				hint: failure.hint,
 				...(reported ? { reported } : {}),
 			},
@@ -1101,10 +1108,10 @@ export function readSubagentChildRecords(
 }
 
 /** Resolve a child by its child id (`<runId>:<index>`), launch task id, or original intercom name. */
-export function findSubagentChildRecord(
-	records: ReadonlyMap<string, SubagentChildRecord>,
+export function findSubagentChildRecord<T extends Pick<SubagentChildRecord, "taskId" | "intercomTarget">>(
+	records: ReadonlyMap<string, T>,
 	id: string,
-): SubagentChildRecord | undefined {
+): T | undefined {
 	const target = id.trim();
 	const direct = records.get(target);
 	if (direct) return direct;
