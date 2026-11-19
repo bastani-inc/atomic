@@ -110,11 +110,6 @@ export class SettingsManager {
 	private settings: Settings;
 	private projectTrusted: boolean;
 	private legacyWorkflowPaths: Partial<Record<SettingsScope, string[]>> = {};
-
-	/** Migration input only: recipe paths from settings files this manager was allowed to read. */
-	getLegacyWorkflowFilePaths(scope: SettingsScope): string[] {
-		return [...(this.legacyWorkflowPaths[scope] ?? [])];
-	}
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
