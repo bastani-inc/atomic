@@ -228,6 +228,8 @@ export type InteractiveEngineCommand =
 			 * predates the field omits it, and the engine TUI keeps reporting "regular".
 			 */
 			hostMode?: TuiMode;
+			/** The display's colour depth, sent on the first frame; the engine's stdout is a pipe. */
+			colorDepth?: number;
 	  }
 	/** A key for the component; `hint` when a click on a key hint sent it, which acts whatever the prompt holds. */
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string; hint?: true }
@@ -868,6 +870,9 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			width: value.width,
 			rows: value.rows,
 			...(renderSettings === undefined ? {} : { renderSettings }),
+			...(value.colorDepth === 1 || value.colorDepth === 4 || value.colorDepth === 8 || value.colorDepth === 24
+				? { colorDepth: value.colorDepth }
+				: {}),
 			...(hostMode === undefined ? {} : { hostMode }),
 		};
 	}
