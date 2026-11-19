@@ -11,7 +11,6 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { open, readdir, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import lockfile, { type LockOptions } from "proper-lockfile";
 
 const PROBE_NAME = /^\.clock-[0-9a-f]{16}\.probe$/;
@@ -23,36 +22,23 @@ const PROBE_NAME = /^\.clock-[0-9a-f]{16}\.probe$/;
  */
 export const LEFTOVER_PROBE_AGE_MS = 10 * 60_000;
 
-/**
- * How often the delete of a probe that Windows refuses for a moment is tried in all, 20 ms apart: about two seconds, as
- * for a refused rename. Another program that has the new file open (an antivirus scan, the indexer) refuses it with
- * EPERM, EACCES or EBUSY.
- */
-const PROBE_DELETE_ATTEMPTS = 100;
-const PROBE_DELETE_RETRY_MS = 20;
-const TRANSIENT_DELETE_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
-
 /** When each directory's leftover probes were last removed by this process, by this process's clock. */
 const sweptAt = new Map<string, number>();
 
-/** The probes of this process that it could not delete even after trying again, by directory. */
+/** The probes of this process that it could not delete, by directory. */
 const undeleted = new Map<string, string[]>();
 
 /**
- * Deletes `probe`, trying again a delete that Windows refuses for a moment, `attempts` times in all. Whether it is
- * gone; any error is kept from the caller.
+ * Deletes `probe` with one attempt, never waiting to try again: a lock's refresh reads the filesystem's clock, and must
+ * not wait out another program (an antivirus scan, the indexer) that has the new file open and makes Windows refuse
+ * the delete. Whether it is gone; any error is kept from the caller.
  */
-async function deleteProbe(probe: string, attempts: number): Promise<boolean> {
-	for (let attempt = 1; ; attempt++) {
-		try {
-			await unlink(probe);
-			return true;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code ?? "";
-			if (code === "ENOENT") return true;
-			if (process.platform !== "win32" || attempt >= attempts || !TRANSIENT_DELETE_CODES.has(code)) return false;
-			await sleep(PROBE_DELETE_RETRY_MS);
-		}
+async function deleteProbe(probe: string): Promise<boolean> {
+	try {
+		await unlink(probe);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT";
 	}
 }
 
@@ -64,7 +50,7 @@ async function removeUndeletedProbes(directory: string): Promise<void> {
 	const own = undeleted.get(directory);
 	if (own === undefined) return;
 	undeleted.delete(directory);
-	for (const probe of own) await deleteProbe(probe, 1);
+	for (const probe of own) await deleteProbe(probe);
 }
 
 /** Removes the probes in `directory` older than {@link LEFTOVER_PROBE_AGE_MS}, at most once per that age. */
@@ -87,10 +73,10 @@ async function removeLeftoverProbes(directory: string, offset: number): Promise<
 /**
  * How far the clock of the filesystem holding `directory` runs ahead of this process's clock, in milliseconds: the
  * mtime the filesystem stamps on a file created in `directory` now, less this process's time now. The probe file,
- * `.clock-<random hex>.probe`, is removed at once; a delete that Windows refuses for a moment is tried again for about
- * two seconds, and a probe still not deleted then is deleted by this process's next probe in `directory`. 0, this
- * process's own clock, when no file can be created there. Probes a process left when it stopped mid-probe, or could
- * not delete, are removed once they are {@link LEFTOVER_PROBE_AGE_MS} old by the filesystem's clock.
+ * `.clock-<random hex>.probe`, is removed at once; when its delete fails, as when Windows refuses it for a moment, the
+ * delete is tried again by this process's next probe in `directory`. 0, this process's own clock, when no file can be
+ * created there. Probes a process left when it stopped mid-probe, or could not delete, are removed once they are
+ * {@link LEFTOVER_PROBE_AGE_MS} old by the filesystem's clock.
  */
 export async function sharedClockOffset(directory: string): Promise<number> {
 	// Random bytes, not a UUID: the probe's name never takes a UUID the caller's own records draw.
@@ -107,7 +93,7 @@ export async function sharedClockOffset(directory: string): Promise<number> {
 	} catch {
 		// No file can be created or read in `directory`: this process's own clock.
 	}
-	const kept = created && !(await deleteProbe(probe, PROBE_DELETE_ATTEMPTS));
+	const kept = created && !(await deleteProbe(probe));
 	await removeUndeletedProbes(directory);
 	if (offset !== undefined) await removeLeftoverProbes(directory, offset);
 	// Recorded only now, so that the next probe in `directory`, not this one, tries it again.
