@@ -1,5 +1,5 @@
 import type { SqliteExecutor, SqliteRow } from "../storage/database.js";
-import { SESSION_INDEX_RETIRED_PREFIX, type SnapshotIndexTables } from "./blob-store.js";
+import { SESSION_INDEX_RETIRED_PREFIX, type SnapshotIndexTables } from "./blob-store.ts";
 
 /** Old index rows a single cleanup transaction can release. */
 export const SESSION_RESET_BATCH = 1_000;
