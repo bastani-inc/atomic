@@ -379,20 +379,20 @@ export class TwoBrokerHarness {
 	}
 
 	/**
-	 * #5607: the next claim of an id back for `returnAddress` (`stallableIdClaims`) gets no answer from the shared database,
-	 * and the broker making it does not run for `stallMs` right after it asked. Optionally a second due callback
-	 * occupies the broker for `overdueCallbackMs` before it can poll for I/O. The next binding request can take
-	 * `freshBindingDelayMs` from when the broker issues it.
+	 * Stall the broker after it requests the preferred binding. With a serial writer, the confirmation is ready on
+	 * resume and subsequent bindings each hold the writer. Otherwise the confirmation is withheld; a second callback
+	 * can stall the broker again while the first fresh binding or the following known-session write is in flight.
 	 */
 	stallIdClaim(
 		returnAddress: string,
 		stallMs: number,
 		overdueCallbackMs?: number,
-		freshBindingDelayMs?: number,
+		writeDelayMs?: number,
+		slowWrite: "fresh binding" | "serial bindings" | "known session" = "fresh binding",
 	): void {
 		writeFileSync(
 			join(this.root, ID_CLAIM_STALL_GATE),
-			JSON.stringify({ returnAddress, stallMs, overdueCallbackMs, freshBindingDelayMs }),
+			JSON.stringify({ returnAddress, stallMs, overdueCallbackMs, writeDelayMs, slowWrite }),
 		);
 	}
 

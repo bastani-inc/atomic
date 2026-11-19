@@ -6,6 +6,7 @@ import { afterAll, beforeAll, test, vi } from "vitest";
 import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
+	TWO_BROKER_STORAGE_PREFIX,
 	TwoBrokerHarness,
 	type TwoBrokerHarnessOptions,
 	twoBrokerHarnessStartTimeoutMs,
@@ -14,8 +15,8 @@ import { IntercomWireProxy } from "../helpers/intercom-wire-proxy.js";
 
 /**
  * #5607: with multi-node routing, a session that registers again asks for its Intercom id back, and its broker waits a
- * bounded time for the shared database to confirm the id. A broker that stalls must read a ready confirmation,
- * but not delay a fresh id when there is no confirmation and the client's registration deadline is running.
+ * bounded time for the shared database to confirm the id. The client's deadline also includes time waiting for the
+ * broker to accept the socket, bind the chosen id and publish it for other brokers.
  */
 
 const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { stallableIdClaims: true, parkableRegistrations: true };
@@ -90,12 +91,25 @@ test(
 	TEST_TIMEOUT_MS,
 );
 
-async function reconnectWithSlowFreshBinding(socketPath?: string) {
-	const original = await harness.connect("a", unique("returning"));
+type SlowWrite = "fresh binding" | "serial bindings" | "known session";
+
+async function reconnectWithSlowWrite(slowWrite: SlowWrite, socketPath?: string) {
+	const observer = await harness.connect("a", unique("observer"));
+	const original = await harness.connect("b", unique("returning"));
 	const preferredSessionId = original.sessionId;
 	await original.client.disconnect({ resumable: true });
 	original.disconnected = true;
-	harness.stallIdClaim(original.returnAddress, 2_800, 3_200, 3_050);
+	// Start on the other broker after the old lease is released. Otherwise the timed registration can wait on
+	// the old connection's own departure instead of measuring the cost of the binding or the known-session write.
+	await vi.waitFor(
+		async () => {
+			assert.ok(!(await observer.client.listSessions()).some((session) => session.id === preferredSessionId));
+		},
+		{ timeout: 15_000 },
+	);
+	if (slowWrite === "serial bindings")
+		harness.stallIdClaim(original.returnAddress, 3_500, undefined, 3_050, slowWrite);
+	else harness.stallIdClaim(original.returnAddress, 2_800, 3_200, 3_050, slowWrite);
 	const back = await harness.connect("a", original.name, {
 		returnAddress: original.returnAddress,
 		preferredSessionId,
@@ -103,20 +117,22 @@ async function reconnectWithSlowFreshBinding(socketPath?: string) {
 		socketPath,
 	});
 	assert.ok(harness.idClaimStalled(original.returnAddress));
-	assert.notEqual(back.sessionId, preferredSessionId);
-	return back;
+	if (slowWrite !== "serial bindings") assert.notEqual(back.sessionId, preferredSessionId);
+	return { back, preferredSessionId };
 }
 
-test(
-	"a late-accepted registration gets its fresh id before the client deadline when the store responds during a second broker stall (#5607)",
-	async () => {
+const slowWrites = ["fresh binding", "serial bindings", "known session"] as const;
+
+test.each(slowWrites)(
+	"a late-accepted registration finishes before the client deadline with a slow %s write (#5607)",
+	async (slowWrite) => {
 		const socketPath = getBrokerSocketPath(process.platform, join(harness.root, "front"));
 		const proxy = new IntercomWireProxy(socketPath, harness.socketPath("a"));
 		await proxy.listen();
 		try {
 			proxy.hold(() => true);
 			await Promise.all([
-				reconnectWithSlowFreshBinding(socketPath),
+				reconnectWithSlowWrite(slowWrite, socketPath),
 				(async () => {
 					await vi.waitFor(() => assert.equal(proxy.heldConnections(), 1), { interval: 10, timeout: 15_000 });
 					await delay(2_600);
@@ -130,15 +146,27 @@ test(
 	TEST_TIMEOUT_MS,
 );
 
-test(
-	"a peer can send to the acknowledged fresh id immediately when the store responds during a second broker stall (#5607)",
-	async () => {
+test.each(slowWrites)(
+	"a peer can list and send to the acknowledged id immediately with a slow %s write (#5607)",
+	async (slowWrite) => {
 		const peer = await harness.connect("b", unique("peer"));
-		const back = await reconnectWithSlowFreshBinding();
+		const { back, preferredSessionId } = await reconnectWithSlowWrite(slowWrite);
 		const listed = await peer.client.listSessions();
 		const sent = await peer.client.send(back.sessionId, { text: "at registration" });
 		assert.equal(sent.delivered, true, sent.reason);
 		assert.ok(listed.some((session) => session.id === back.sessionId));
+		if (slowWrite === "serial bindings") {
+			// Even when the peer saw the ID in time, an unused binding must not occupy the store's writer.
+			const store = await harness.openSharedStorage("b");
+			const unused = await store.all(
+				`SELECT intercom_session_id FROM ${TWO_BROKER_STORAGE_PREFIX}intercom_session_bindings
+				 WHERE return_address = ? AND intercom_session_id NOT IN (?, ?)`,
+				back.returnAddress,
+				preferredSessionId,
+				back.sessionId,
+			);
+			assert.deepEqual(unused, []);
+		}
 	},
 	TEST_TIMEOUT_MS,
 );

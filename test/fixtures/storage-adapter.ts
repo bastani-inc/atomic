@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { openNodeSqliteDatabase, wrapNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { StorageAdapterModule } from "../../packages/coding-agent/src/core/storage/provider.js";
 
 const cleanupFailure = new StorageUnavailableError(
@@ -142,19 +143,20 @@ function withPresenceReadGate(database: SqliteDatabase, gate: string): SqliteDat
 }
 
 /**
- * #5607: the broker stalls while it claims an id back for the return address named in the file at `gate` (JSON
- * `{ returnAddress, stallMs, overdueCallbackMs?, freshBindingDelayMs? }`). The database binds the id but its answer never reaches
- * the broker. After it asks, its event loop does not run for `stallMs`, as on a host that stops scheduling it. Once: the
- * file is removed as it fires, and `<gate>.stalled` names the address.
+ * #5607: stall the broker during the named return address's preferred claim, after SQLite commits. Only this process
+ * stops. The client deadline and the service time of a request already issued continue to elapse.
  */
 function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabase {
 	let nextBindingDelayMs: number | undefined;
+	let slowBindings: { address: string; ms: number } | undefined;
+	let slowRecord: { address: string; ms: number } | undefined;
 	const stallIfNamed = async <T>(returnAddress: SqliteValue | undefined, answer: T): Promise<T> => {
 		let named: {
 			readonly returnAddress?: unknown;
 			readonly stallMs?: unknown;
 			readonly overdueCallbackMs?: unknown;
-			readonly freshBindingDelayMs?: unknown;
+			readonly writeDelayMs?: unknown;
+			readonly slowWrite?: unknown;
 		} = {};
 		try {
 			named = JSON.parse(readFileSync(gate, "utf8")) as typeof named;
@@ -168,18 +170,33 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 		writeFileSync(`${gate}.stalled`, `${returnAddress}\n`);
 		const stall = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 		const { stallMs, overdueCallbackMs } = named;
-		if (typeof named.freshBindingDelayMs === "number") nextBindingDelayMs = named.freshBindingDelayMs;
+		if (typeof named.writeDelayMs === "number" && typeof returnAddress === "string") {
+			if (named.slowWrite === "serial bindings") slowBindings = { address: returnAddress, ms: named.writeDelayMs };
+			else if (named.slowWrite === "known session") slowRecord = { address: returnAddress, ms: named.writeDelayMs };
+			else nextBindingDelayMs = named.writeDelayMs;
+		}
+		// Store I/O that became ready during suspension is dispatched after the overdue timers.
+		const reply = named.slowWrite === "serial bindings"
+			? new Promise<T>((resolve) => setTimeout(() => setImmediate(() => resolve(answer)), 25))
+			: new Promise<T>(() => {});
 		if (typeof overdueCallbackMs === "number") {
 			// Both timers come due during the stall: the claim deadline first, then this unrelated callback before poll.
 			setTimeout(() => stall(overdueCallbackMs), stallMs);
 		}
 		stall(stallMs);
-		return new Promise<T>(() => {});
+		return reply;
 	};
 	return {
 		descriptor: database.descriptor,
 		exec: (sql) => database.exec(sql),
-		run: (sql, ...params) => database.run(sql, ...params),
+		run: async (sql, ...params) => {
+			if (slowRecord && /^\s*INSERT INTO \w*intercom_known_sessions\b/u.test(sql) && params[4] === slowRecord.address) {
+				const { ms } = slowRecord;
+				slowRecord = undefined;
+				await delay(ms);
+			}
+			return database.run(sql, ...params);
+		},
 		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.get<T>(sql, ...params),
 		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.all<T>(sql, ...params),
 		transaction: async (callback, options) => {
@@ -199,9 +216,10 @@ function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabas
 				(tx) =>
 					callback({
 						exec: (sql) => tx.exec(sql),
-						run: (sql, ...params) => {
+						run: async (sql, ...params) => {
 							if (/^\s*INSERT INTO \w*intercom_session_bindings\(.*\)\s*VALUES \(\?, \?,/su.test(sql)) {
 								returnAddress = params[1];
+								if (slowBindings && returnAddress === slowBindings.address) await delay(slowBindings.ms);
 							}
 							return tx.run(sql, ...params);
 						},
@@ -238,7 +256,20 @@ export default {
 		if (typeof options.openGate === "string" && context.domain === "intercom") {
 			await passStorageOpenGate(options.openGate);
 		}
-		const database = await openNodeSqliteDatabase(String(options.path));
+		// A caller-owned connection can complete an uncontended binding before the next overdue broker callback.
+		const path = String(options.path);
+		const connection = typeof options.idClaimStallGate === "string" ? new (await import("node:sqlite")).DatabaseSync(path) : undefined;
+		const database = connection ? wrapNodeSqliteDatabase(connection) : await openNodeSqliteDatabase(path);
+		if (connection) {
+			const close = database.close.bind(database);
+			database.close = async () => {
+				try {
+					await close();
+				} finally {
+					connection.close();
+				}
+			};
+		}
 		await database.exec("CREATE TABLE IF NOT EXISTS adapter_probe (options TEXT, domain TEXT)");
 		await database.run("INSERT INTO adapter_probe VALUES (?, ?)", JSON.stringify(options), context.domain);
 		if (typeof options.lifecycle === "string") {
