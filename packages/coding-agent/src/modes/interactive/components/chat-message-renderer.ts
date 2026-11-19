@@ -24,6 +24,7 @@ import { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
 import { extractMessageText } from "./chat-session-host-utils.ts";
 import { compactionBoundaryFromMessage } from "./compaction-boundary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
+import { fromChatComponentFactory } from "./renderer-disposal.js";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import type { TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./task-row.js";
@@ -932,7 +933,7 @@ export function renderHostedChatEntry(
 					}),
 				);
 				seeding = false;
-				return component;
+				return fromChatComponentFactory(component);
 			}
 			let seeding = true;
 			const ui = {
@@ -1008,7 +1009,7 @@ export function renderHostedChatEntry(
 					}),
 				);
 				seeding = false;
-				return component;
+				return fromChatComponentFactory(component);
 			}
 			const component = new CustomMessageComponent(
 				messageEntry.message,

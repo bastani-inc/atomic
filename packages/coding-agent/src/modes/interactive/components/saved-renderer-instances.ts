@@ -1,9 +1,6 @@
 import { type Component, WindowedContainer } from "@bastani/atomic-tui";
-import {
-	RemoteCustomMessageComponent,
-	RemoteToolExecutionComponent,
-} from "../../interactive-engine/remote-renderer.ts";
-import { disposeRenderer } from "./renderer-disposal.js";
+import { remoteHistoryRow } from "../../interactive-engine/remote-renderer.ts";
+import { declaresHistoryReplayable, disposeRenderer, isChatFactoryProduct } from "./renderer-disposal.js";
 
 /** A renderer may keep widget state that is not in the stored row. Only these exceptions (not stock rows or
  * their page) survive eviction, keyed by the saved occurrence and sub-block within this session. */
@@ -17,12 +14,15 @@ export class SavedRendererInstances {
 		if (group) this.retired.delete(group);
 		return group;
 	}
+	private stateful(c: Component): boolean {
+		const remote = remoteHistoryRow(c);
+		if (remote) return !remote.historyReplayable;
+		return isChatFactoryProduct(c)
+			? !declaresHistoryReplayable(c)
+			: c.selectionTextMayChangeOnReplay === true && c.historyReplayable !== true;
+	}
 	private needed(c: Component): boolean {
-		return (
-			c.selectionTextMayChangeOnReplay === true &&
-			c.historyReplayable !== true &&
-			!((c instanceof RemoteToolExecutionComponent || c instanceof RemoteCustomMessageComponent) && c.unrendered)
-		);
+		return this.stateful(c) && !remoteHistoryRow(c)?.unrendered;
 	}
 	private settle(key: string): void {
 		const group = this.kept.get(key);
@@ -34,13 +34,14 @@ export class SavedRendererInstances {
 		if (position)
 			for (let part = 0; part < components.length; part++)
 				WindowedContainer.markHistoryComponent(components[part]!, this.source, position.seq, position.block, part);
-		if (!components.some((c) => c.selectionTextMayChangeOnReplay === true && c.historyReplayable !== true)) return;
+		if (!components.some((c) => this.stateful(c))) return;
 		this.kept.set(key, components);
 		for (const component of components) {
 			this.owner.set(component, key);
-			if (component instanceof RemoteToolExecutionComponent || component instanceof RemoteCustomMessageComponent) {
+			const remote = remoteHistoryRow(component);
+			if (remote) {
 				const weak = new WeakRef(this);
-				component.onReplayabilityChange(() => weak.deref()?.settle(key));
+				remote.onReplayabilityChange(() => weak.deref()?.settle(key));
 			}
 		}
 	}

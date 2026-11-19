@@ -2287,7 +2287,7 @@ export class SqlSessionStore implements SessionStore {
 			};
 			// The other ID that names the same reference: `<id>:<block>` for a block, the rest of a `<root>:<digits>` ID.
 			const other = `CASE WHEN c.idx >= 0 THEN s.entry_id || ':' || CAST(c.idx AS TEXT)
-				WHEN c.suffix > 0 AND c.suffix < length(s.entry_id) AND substr(s.entry_id, length(s.entry_id) - c.suffix + 1, 1) = ':'
+				WHEN c.suffix > 0 AND c.suffix <= length(s.entry_id) AND substr(s.entry_id, length(s.entry_id) - c.suffix + 1, 1) = ':'
 				THEN substr(s.entry_id, 1, length(s.entry_id) - c.suffix) END`;
 			const values = candidates.map(
 				() => `(CAST(? AS ${this.dialect.types.int}), CAST(? AS INTEGER), CAST(? AS INTEGER))`,

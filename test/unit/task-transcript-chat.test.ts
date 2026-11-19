@@ -208,55 +208,57 @@ test("PageUp is a plain scroll and earlier history loads near the top under the 
 	}
 });
 
-test("a saved task chat revisits the same stateful extension instance after its page is evicted (#5593)", async () => {
-	const session = SessionManager.inMemory();
-	await session.appendCustomMessageEntry("stateful-card", "raw", true);
-	for (let i = 0; i < 320; i++) await session.appendMessage({ role: "user", content: `saved-${i}`, timestamp: i });
-	let built = 0;
-	const host = await openTranscript(
-		{
-			getSessionId: () => session.getSessionId(),
-			getEntries: () => [],
-			readHistory: session.readHistory.bind(session),
-			loadHistory: async () => {
-				throw new Error("whole archive loaded");
+test.each(["message renderer", "external component factory"] as const)(
+	"a saved task chat revisits the same stateful %s instance after its page is evicted (#5593)",
+	async (kind) => {
+		const session = SessionManager.inMemory();
+		await session.appendCustomMessageEntry("stateful-card", "raw", true);
+		for (let i = 0; i < 320; i++) await session.appendMessage({ role: "user", content: `saved-${i}`, timestamp: i });
+		let built = 0;
+		const widget = () => {
+			const identity = ++built;
+			return { render: () => [`widget incarnation ${identity}`], invalidate() {} };
+		};
+		const host = await openTranscript(
+			{
+				getSessionId: () => session.getSessionId(),
+				getEntries: () => [],
+				readHistory: session.readHistory.bind(session),
+				loadHistory: async () => {
+					throw new Error("whole archive loaded");
+				},
 			},
-		},
-		{
-			environment: {
-				getChatRenderSettings: () => ({
-					getCustomMessageRenderer: (name) =>
-						name === "stateful-card"
-							? () => {
-									const identity = ++built;
-									return { render: () => [`widget incarnation ${identity}`], invalidate() {} };
-								}
-							: undefined,
-				}),
+			{
+				environment: {
+					getChatRenderSettings: () =>
+						kind === "external component factory"
+							? { createCustomMessageComponent: widget }
+							: { getCustomMessageRenderer: (name) => (name === "stateful-card" ? widget : undefined) },
+				},
 			},
-		},
-	);
-	const visit = async () => {
-		host.inspector.handleInput(CTRL_HOME);
-		for (let i = 0; i < 45; i++) {
-			const value = /widget incarnation (\d+)/.exec(host.text())?.[1];
-			if (value) return value;
+		);
+		const visit = async () => {
+			host.inspector.handleInput(CTRL_HOME);
+			for (let i = 0; i < 45; i++) {
+				const value = /widget incarnation (\d+)/.exec(host.text())?.[1];
+				if (value) return value;
+				await flush();
+			}
+			throw new Error("widget not in view");
+		};
+		try {
+			host.frame();
+			const first = await visit();
+			host.inspector.handleInput(CTRL_END);
 			await flush();
+			assert.match(host.text(), /saved-319/);
+			assert.equal(await visit(), first);
+		} finally {
+			await host.dispose();
+			await session.getSessionStore().close();
 		}
-		throw new Error("widget not in view");
-	};
-	try {
-		host.frame();
-		const first = await visit();
-		host.inspector.handleInput(CTRL_END);
-		await flush();
-		assert.match(host.text(), /saved-319/);
-		assert.equal(await visit(), first);
-	} finally {
-		await host.dispose();
-		await session.getSessionStore().close();
-	}
-});
+	},
+);
 
 test("a new scroll request does not wait for an obsolete task page after jumping to the tail (#5593)", async () => {
 	const session = SessionManager.inMemory();

@@ -83,6 +83,11 @@ function jsonValue(value: unknown): JsonValue {
 	return encoded === undefined ? null : (JSON.parse(encoded) as JsonValue);
 }
 
+const remoteRows = new WeakSet<Component>();
+/** Identify our renderer without walking an opaque extension widget's prototype chain. */
+export function remoteHistoryRow(component: Component): RemoteRenderer | undefined {
+	return remoteRows.has(component) ? (component as RemoteRenderer) : undefined;
+}
 abstract class RemoteRenderer implements Component {
 	readonly selectionTextMayChangeOnReplay = true;
 	private inspectHistoryReplay = false;
@@ -127,6 +132,7 @@ abstract class RemoteRenderer implements Component {
 	constructor(runtime: IsolatedInteractiveRuntime, requestRender: () => void) {
 		this.runtime = runtime;
 		this.requestRender = requestRender;
+		remoteRows.add(this);
 		this.routes = rendererRoutes(runtime);
 		this.routes.rows.set(this.componentId, this);
 	}

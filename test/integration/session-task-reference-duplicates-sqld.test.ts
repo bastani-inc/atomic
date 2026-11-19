@@ -170,12 +170,19 @@ for (const backend of storageBackends) {
 					entry("X"),
 					entry("Y:1"),
 					entry("X:12"),
+					entry(""),
+					entry(":1"),
 				]);
 				const find = (candidates: readonly SessionTaskReferenceCandidate[]) =>
 					store.findTaskReferenceDuplicateCandidates("s", { epoch, throughSeq: lastSeq, candidates });
 				assert.deepEqual(await find([{ seq: 3, contentIndex: 1 }]), { seqs: [1, 2] });
 				assert.deepEqual(await find([{ seq: 2, suffixChars: 2 }]), { seqs: [1] });
 				assert.deepEqual(await find([{ seq: 5, suffixChars: 3 }]), { seqs: [1, 3] });
+				assert.deepEqual(
+					await find([{ seq: 7, suffixChars: 2 }]),
+					{ seqs: [6] },
+					"an imported empty entry ID can also be the root of a block reference",
+				);
 				assert.deepEqual(await find([{ seq: 2 }]), { seqs: [] });
 				assert.deepEqual(
 					await find([
