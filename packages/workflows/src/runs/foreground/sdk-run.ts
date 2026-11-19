@@ -123,7 +123,7 @@ function withDefaultAgentSessionAdapter(opts: RunOpts): RunOpts {
 		...opts,
 		adapters: {
 			...opts.adapters,
-			agentSession: createAgentSessionAdapter(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+			agentSession: createAgentSessionAdapter(opts.cwd === undefined ? {} : { cwd: opts.cwd }, opts.stageUiBroker),
 		},
 	};
 }

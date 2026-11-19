@@ -1,4 +1,6 @@
 /** Read-only host-style operator tool message renderer for a durable `ctx.tool` graph node. */
+import { hintKeyParts } from "@bastani/atomic";
+import { clickableKeysHint } from "@bastani/atomic-tui";
 import type { ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import type { ToolPayloadValue } from "../shared/tool-payload-bounds.js";
 import {
@@ -104,7 +106,12 @@ function styledError(text: string, theme: GraphTheme | undefined): string {
 function expandHintLine(earlier: number, expandKey: string, pad: string, theme: GraphTheme | undefined): string {
 	const lead = `... (${earlier} earlier lines`;
 	if (expandKey.length === 0) return `${pad}${styledMuted(`${lead})`, theme)}`;
-	return `${pad}${styledMuted(`${lead}, `, theme)}${styledDim(expandKey, theme)}${styledMuted(" Expand)", theme)}`;
+	if (theme === undefined) return `${pad}${lead}, ${expandKey} Expand)`;
+	const expand = clickableKeysHint(
+		hintKeyParts(expandKey).map((part) => ({ ...part, text: styledDim(part.text, theme) })),
+		styledMuted(" Expand", theme),
+	);
+	return `${pad}${styledMuted(`${lead}, `, theme)}${expand}${styledMuted(")", theme)}`;
 }
 
 function toolBackground(status: ToolNodeStatus, theme: GraphTheme): string {

@@ -1509,3 +1509,105 @@ function decodeModifyOtherKeysPrintable(data: string): string | undefined {
 export function decodePrintableKey(data: string): string | undefined {
 	return decodeKittyPrintable(data) ?? decodeModifyOtherKeysPrintable(data);
 }
+
+const UNMODIFIED_KEY_INPUT: Record<string, string> = {
+	escape: "\x1b",
+	esc: "\x1b",
+	enter: "\r",
+	return: "\r",
+	tab: "\t",
+	space: " ",
+	backspace: "\x7f",
+	up: "\x1b[A",
+	down: "\x1b[B",
+	right: "\x1b[C",
+	left: "\x1b[D",
+	home: "\x1b[H",
+	end: "\x1b[F",
+	insert: "\x1b[2~",
+	delete: "\x1b[3~",
+	pageup: "\x1b[5~",
+	pagedown: "\x1b[6~",
+	clear: "\x1b[E",
+	f1: "\x1bOP",
+	f2: "\x1bOQ",
+	f3: "\x1bOR",
+	f4: "\x1bOS",
+	f5: "\x1b[15~",
+	f6: "\x1b[17~",
+	f7: "\x1b[18~",
+	f8: "\x1b[19~",
+	f9: "\x1b[20~",
+	f10: "\x1b[21~",
+	f11: "\x1b[23~",
+	f12: "\x1b[24~",
+};
+
+const KITTY_KEY_CODEPOINTS: Record<string, number> = {
+	escape: CODEPOINTS.escape,
+	esc: CODEPOINTS.escape,
+	enter: CODEPOINTS.enter,
+	return: CODEPOINTS.enter,
+	tab: CODEPOINTS.tab,
+	space: CODEPOINTS.space,
+	backspace: CODEPOINTS.backspace,
+};
+
+const CSI_TILDE_KEYS: Record<string, number> = {
+	insert: 2,
+	delete: 3,
+	pageup: 5,
+	pagedown: 6,
+	f1: 11,
+	f2: 12,
+	f3: 13,
+	f4: 14,
+	f5: 15,
+	f6: 17,
+	f7: 18,
+	f8: 19,
+	f9: 20,
+	f10: 21,
+	f11: 23,
+	f12: 24,
+};
+const CSI_LETTER_KEYS: Record<string, string> = { up: "A", down: "B", right: "C", left: "D", home: "H", end: "F" };
+
+/**
+ * The terminal input a press of `keyId` sends, as `matchesKey` reads it: what a click on a key hint feeds to the
+ * input path so it acts exactly as the key. Undefined for a key id no input matches.
+ */
+export function keyInputData(keyId: KeyId): string | undefined {
+	const parsed = parseKeyId(keyId);
+	if (!parsed) return undefined;
+	const { key, ctrl, shift, alt, super: superModifier } = parsed;
+	let modifier = 0;
+	if (shift) modifier |= MODIFIERS.shift;
+	if (alt) modifier |= MODIFIERS.alt;
+	if (ctrl) modifier |= MODIFIERS.ctrl;
+	if (superModifier) modifier |= MODIFIERS.super;
+	const candidates: string[] = [];
+	const unmodified = UNMODIFIED_KEY_INPUT[key];
+	if (modifier === 0 && unmodified !== undefined) candidates.push(unmodified);
+	if (key.length === 1) {
+		if (modifier === 0) candidates.push(key);
+		const rawCtrl = rawCtrlChar(key);
+		if (modifier === MODIFIERS.ctrl && rawCtrl) candidates.push(rawCtrl);
+		if (modifier === MODIFIERS.alt) candidates.push(`\x1b${key}`);
+		if (modifier === MODIFIERS.shift && key >= "a" && key <= "z") candidates.push(key.toUpperCase());
+		candidates.push(`\x1b[${key.charCodeAt(0)};${modifier + 1}u`);
+	}
+	if (key === "clear") {
+		if (modifier === MODIFIERS.shift) candidates.push(...LEGACY_SHIFT_SEQUENCES.clear);
+		if (modifier === MODIFIERS.ctrl) candidates.push(...LEGACY_CTRL_SEQUENCES.clear);
+	}
+	if (key === "tab" && modifier === MODIFIERS.shift) candidates.push("\x1b[Z");
+	if (key === "enter" && modifier === MODIFIERS.alt) candidates.push("\x1b\r");
+	const codepoint = KITTY_KEY_CODEPOINTS[key];
+	if (codepoint !== undefined) candidates.push(`\x1b[${codepoint};${modifier + 1}u`);
+	const tilde = CSI_TILDE_KEYS[key];
+	if (tilde !== undefined) candidates.push(`\x1b[${tilde};${modifier + 1}~`);
+	const letter = CSI_LETTER_KEYS[key];
+	if (letter !== undefined) candidates.push(`\x1b[1;${modifier + 1}${letter}`);
+	return candidates.find((candidate) => matchesKey(candidate, keyId));
+}

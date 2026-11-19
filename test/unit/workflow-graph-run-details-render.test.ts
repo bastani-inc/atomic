@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -43,7 +43,7 @@ function view(run: RunSnapshot, rows: number): GraphView {
 }
 
 function lines(graph: GraphView, width: number): string[] {
-	return graph.render(width).map(stripVTControlCharacters);
+	return graph.render(width).map(stripTerminalSequences);
 }
 
 describe("workflow run-details rendering (#5224)", () => {

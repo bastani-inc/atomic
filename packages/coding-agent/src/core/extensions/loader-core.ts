@@ -10,6 +10,8 @@ import {
 	isSyntheticPath,
 } from "../source-info.ts";
 import { endTimingSpan, startTimingSpan } from "../timings.ts";
+import { getBuiltinExtensionEntryLabel } from "./builtin-extension-entry-labels.ts";
+import { installBuiltinChildRecordWriter } from "./builtin-subagent-record-writer.js";
 import { createExtensionAPI } from "./loader-api.ts";
 import {
 	bindRegistrationCallbacks,
@@ -19,6 +21,7 @@ import {
 	prepareRegistrationCallbacks,
 	reconcileRegistration,
 	registrationFields,
+	resolveInvocationRuntime,
 } from "./loader-bindings.ts";
 import {
 	emptyWorkflowResourceProvider,
@@ -32,6 +35,8 @@ import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResul
 
 /** Associate extension runtimes with the event bus used to construct their APIs. */
 const runtimeEventBuses = new WeakMap<ExtensionRuntime, EventBus>();
+// Only loading the actual shipped file grants this identity; a custom loader's claimed source path does not.
+const subagentFactories = new WeakSet<ExtensionFactory>();
 
 interface ExtensionSource {
 	identity: symbol;
@@ -194,6 +199,7 @@ async function loadExtension(
 			};
 		}
 
+		if (getBuiltinExtensionEntryLabel(resolvedPath) === "subagents") subagentFactories.add(factory);
 		const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`, "extensions");
 		const extension = await loadOwnedExtensionFromFactory(
 			[],
@@ -269,6 +275,8 @@ async function loadOwnedExtensionFromFactory(
 		registrationSource,
 	);
 	try {
+		if (subagentFactories.has(factory))
+			installBuiltinChildRecordWriter(transaction.api, () => resolveInvocationRuntime(runtime));
 		await factory(transaction.api);
 		transaction.commit();
 	} catch (error) {

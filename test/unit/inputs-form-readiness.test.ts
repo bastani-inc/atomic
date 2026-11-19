@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { type Terminal, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import type { HostInputFormField } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { HostInputFormComponent } from "../../packages/coding-agent/src/modes/interactive/components/host-input-form.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 class QuietTerminal implements Terminal {
 	columns = 100;
@@ -84,7 +84,7 @@ test("control sequences in field names, descriptions, choices, and values are sa
 		host.component.handleInput("\t");
 		const hostLinesFocused1 = host.component.render(80);
 		for (const rawLine of [...hostLinesFocused0, ...hostLinesFocused1]) {
-			const line = rawLine.replace(/\x1b_pi:(?:\/?fc|c)\x07/g, "");
+			const line = rawLine.replace(/\x1b_pi:(?:\/?fc|c|\/h|h:[^\x07\x1b]*)\x07/g, "");
 			assert.equal(line.includes("\x1b[2J"), false, `host leaked CSI 2J for ${JSON.stringify(payload)}`);
 			assert.equal(line.includes("\x1b]52;"), false, `host leaked OSC 52 for ${JSON.stringify(payload)}`);
 			assert.equal(line.includes("\x1b]0;"), false, `host leaked OSC 0 for ${JSON.stringify(payload)}`);
