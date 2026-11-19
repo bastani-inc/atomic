@@ -18,7 +18,7 @@ beforeEach(() => {
 afterEach(() => setKeybindings(previousKeys));
 
 function item(id: string, state: AgentPanelItem["state"]): AgentPanelItem {
-	return { id: `run:${id}`, kind: "workflow", state, name: id, task: "Build release" };
+	return { id: `run:${id}`, kind: "agent", state, name: id, task: "Build release" };
 }
 
 function harness(initial: AgentPanelItem[]) {

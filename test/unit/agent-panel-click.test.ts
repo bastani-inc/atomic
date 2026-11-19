@@ -31,7 +31,7 @@ function agent(id: string): TaskRecord {
 }
 
 function workflow(id: string, name: string): AgentPanelItem {
-	return { id, kind: "workflow", state: "running", name, task: "stage build", progress: { done: 1, total: 3 } };
+	return { id, kind: "agent", state: "running", name, task: "stage build", progress: { done: 1, total: 3 } };
 }
 
 /** A session whose panel lists `tasks` (subagents) and `runs` (workflow runs that record what opened them). */
@@ -197,7 +197,8 @@ test("a click opens the row that was painted under it, even after the rows chang
 	let repaint = () => {};
 	const widget = mountWidget(session, noInspector, () => repaint());
 	const painted = plain(widget.render(80));
-	const row = 0;
+	const row = painted.findIndex((line) => /run-[ab]/.test(line));
+	assert.notEqual(row, -1, painted.join("\n"));
 	const [top, other] = painted[row]?.includes("run-a") ? ["a", "b"] : ["b", "a"];
 
 	// The other run now waits for an answer and ranks first; the panel has not painted that yet.

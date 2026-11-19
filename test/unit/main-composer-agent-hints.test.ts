@@ -193,16 +193,7 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 			setItems([
 				{ id: "ext:t1", kind: "agent", state: "running", name: "debugger", task: "#5220 spawn lock" },
 				{ id: "ext:t2", kind: "agent", state: "running", name: "worker", task: "fix shipping batches" },
-				{
-					id: "run:r1",
-					kind: "workflow",
-					state: "running",
-					name: "ralph",
-					task: "stage implement",
-					progress: { done: 3, total: 5 },
-				},
 			]);
-			// The workflow run is a row ↓ can focus, but not an agent.
 			const twoAgentsWorking = stripTerminalSequences(footer.render(width)[0] ?? "");
 			assert.equal(twoAgentsWorking, "esc to interrupt · ↓ 2 agents · ? keys");
 
@@ -228,25 +219,10 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 			setItems([
 				{ id: "ext:t1", kind: "agent", state: "done", name: "debugger", task: "#5220 spawn lock" },
 				{ id: "ext:t2", kind: "agent", state: "done", name: "worker", task: "fix shipping batches" },
-				{
-					id: "run:r1",
-					kind: "workflow",
-					state: "stopped",
-					name: "ralph",
-					task: "stage implement",
-					progress: { done: 3, total: 5 },
-				},
 			]);
 
 			dismissedAgentPanelItems(session).add("ext:t1");
 			dismissedAgentPanelItems(session).add("ext:t2");
-			// Only the stopped workflow run is left: ↓ still focuses its row, but it is not an agent.
-			const workflowOnly = stripTerminalSequences(footer.render(width)[0] ?? "");
-			assert.equal(workflowOnly.includes("↓"), false, workflowOnly);
-			assert.ok(workflowOnly.endsWith(" · ? keys"), workflowOnly);
-			assert.equal(pressDown(), true);
-
-			dismissedAgentPanelItems(session).add("run:r1");
 			assert.equal(stripTerminalSequences(footer.render(width)[0] ?? "").includes("↓"), false);
 			assert.equal(pressDown(), false);
 		});
@@ -270,10 +246,10 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 
 	test("navigation sheets hide main-chat hints while retaining the idle model footer (#5224)", async () => {
 		const { mode, footer, setWorking, setNavigationActive } = createHarness({
-			initialItems: [{ id: "run:waiting", kind: "workflow", state: "input", name: "review", task: "Approve?" }],
+			initialItems: [{ id: "run:waiting", kind: "agent", state: "input", name: "review", task: "Approve?" }],
 		});
 		await mode.setupKeyHandlers();
-		assert.match(stripTerminalSequences(footer.render(160)[0] ?? ""), /\) · 1 needs input · \? keys$/u);
+		assert.match(stripTerminalSequences(footer.render(160)[0] ?? ""), /\) · ↓ 1 agent · 1 needs input · \? keys$/u);
 		setNavigationActive(true);
 		const sheetFooter = footer.render(160).map(stripTerminalSequences).join("\n");
 		assert.match(sheetFooter, /claude-sonnet-4-5/u);
@@ -281,7 +257,10 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 		setWorking(true);
 		assert.deepEqual(footer.render(160), []);
 		setNavigationActive(false);
-		assert.equal(stripTerminalSequences(footer.render(160)[0] ?? ""), "esc to interrupt · 1 needs input · ? keys");
+		assert.equal(
+			stripTerminalSequences(footer.render(160)[0] ?? ""),
+			"esc to interrupt · ↓ 1 agent · 1 needs input · ? keys",
+		);
 	});
 
 	test("unbound app.agents.focus is omitted from the footer and overlay even when items exist (#5239)", () => {
@@ -319,7 +298,7 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 
 	test("Down arrow is left to a custom editor with an empty getText() and opens the agent panel again once the default editor is restored (#5239)", async () => {
 		const { mode, keybindings, customs, pressDown } = createHarness({
-			initialItems: [{ id: "run:1", kind: "workflow", state: "running", name: "other-flow", task: "stage one" }],
+			initialItems: [{ id: "run:1", kind: "agent", state: "running", name: "other-flow", task: "stage one" }],
 		});
 		await mode.setupKeyHandlers();
 
