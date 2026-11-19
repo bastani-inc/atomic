@@ -202,12 +202,15 @@ export async function cleanupForkStaging(
 	table: string,
 	budget: number,
 ): Promise<void> {
+	const lapsed = `SELECT transfer_id FROM ${table} WHERE kind = ${LEASE} AND size < ${dialect.nowMs} LIMIT 1`;
+	// Usually nothing lapsed: one read, without taking the write lock.
+	if ((await database.get(lapsed)) === undefined) return;
 	while (budget > 0) {
 		budget--;
 		const token = randomId();
 		const claimed = await database.transaction(async (tx) => {
 			const row = await tx.get<SqliteRow & { transfer_id: string }>(
-				`SELECT transfer_id FROM ${table} WHERE kind = ${LEASE} AND size < ${dialect.nowMs} LIMIT 1${dialect.lockClause("update-skip-locked")}`,
+				`${lapsed}${dialect.lockClause("update-skip-locked")}`,
 			);
 			if (row === undefined) return undefined;
 			const { changes } = await tx.run(
