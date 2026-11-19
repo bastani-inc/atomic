@@ -6,7 +6,7 @@ import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
 import { pathExists } from "../../utils/path-exists.ts";
 import { abortSnapshotCollectionsOn, runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
-import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
+import type { SqliteDatabase, SqliteValue } from "./database.js";
 import {
 	StorageAdapterLoadError,
 	StorageConfigError,
@@ -16,10 +16,8 @@ import {
 	StoreClosedError,
 } from "./errors.js";
 import { storageHomeDir, storageHomeDirAsync } from "./file-identity.js";
-import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
-import type { RunJournal } from "./run-journal.js";
 import type { InMemorySecretRef } from "./selection.js";
 import { selectStorage } from "./selection.js";
 import type { SessionStore } from "./session/types.js";
@@ -89,12 +87,6 @@ function relativeSecretPaths(file: string, agentDir: string, home: string): Rela
 	return paths;
 }
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
-export type RunJournalOption =
-	| { path: string; prefix?: string }
-	| { database: SqliteDatabase; prefix?: string }
-	| { memory: true }
-	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string }
-	| RunJournal;
 export type StorageSelection =
 	| { readonly kind: "memory" }
 	| { readonly kind: "jsonl"; readonly dir: string }
@@ -106,16 +98,11 @@ export type StorageSelection =
 			readonly options?: AdapterOptions;
 			readonly secrets?: Readonly<Record<string, SecretRef>>;
 			readonly prefix?: string;
-	  }
-	/**
-	 * The local journal store (#4325): one logical run journal kept as a catalog plus SQLite shard files in `dir`. It is
-	 * the default workflow journal and holds no sessions.
-	 */
-	| { readonly kind: "sharded"; readonly dir: string };
+	  };
 export interface StorageOpenContext {
 	readonly agentDir: string;
 	/** `intercom`: the shared Intercom broker state that multi-node brokers open on the top-level selection. */
-	readonly domain: "sessions" | "journal" | "intercom";
+	readonly domain: "sessions" | "intercom";
 	readonly signal?: AbortSignal;
 	/**
 	 * Reads the selection's `secrets[name]` reference again, on every call: a file rotated in place yields its new
@@ -136,26 +123,6 @@ export interface StorageAdapterModule {
 		context: StorageOpenContext,
 		storage: { readonly prefix?: string },
 	): Promise<SessionStore>;
-	openRunJournal?(
-		options: AdapterOptions,
-		context: StorageOpenContext,
-		storage: { readonly prefix?: string },
-	): Promise<RunJournal>;
-}
-export interface JournalFactories {
-	memory(descriptor: StorageDescriptor): RunJournal;
-	sql(database: SqliteDatabase, options: { readonly prefix?: string }): Promise<RunJournal>;
-	/**
-	 * Opens the journal store in `directory`, each of whose shard files `openShard` opens as a SQLite run journal, and
-	 * adopts `legacyJournal` in place when it holds workflow runs.
-	 */
-	store?(
-		directory: string,
-		openShard: (path: string) => Promise<RunJournal>,
-		legacyJournal: string,
-	): Promise<RunJournal>;
-	/** Live modules a journal adapter imports by specifier, such as the running `@bastani/atomic/workflows`. */
-	readonly hostModules?: Readonly<Record<string, object>>;
 }
 
 const databaseIds = new WeakMap<SqliteDatabase, number>();
@@ -196,7 +163,6 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 		const path = selection.path === "" || selection.path === ":memory:" ? selection.path : resolve(selection.path);
 		return JSON.stringify(["sqlite", path, selection.prefix ?? ""]);
 	}
-	if (selection.kind === "sharded") return JSON.stringify(["sharded", resolve(selection.dir)]);
 	if (selection.kind === "adapter") {
 		const options = Object.entries(selection.options ?? {})
 			.sort(([a], [b]) => a.localeCompare(b))
@@ -286,11 +252,10 @@ function createAdapterImports(): AdapterImports {
 /**
  * Loads an adapter module the way the extension loader loads extensions: `@bastani/atomic/storage` (and
  * `@bastani/atomic`) resolve to this host's own modules, so adapters need no installed copy of Atomic and share its
- * error classes. `hostModules` adds live modules by specifier; run journals pass the running
- * `@bastani/atomic/workflows`. The ES module and TypeScript files the adapter imports by path get the same host
- * modules; nested CommonJS files resolve them from `node_modules`. A package name selects an adapter listed by an
- * installed Atomic package; other specifiers, and package names no installed package lists, resolve from the agent
- * directory.
+ * error classes. `hostModules` adds live modules by specifier. The ES module and TypeScript files the adapter imports
+ * by path get the same host modules; nested CommonJS files resolve them from `node_modules`. A package name selects an
+ * adapter listed by an installed Atomic package; other specifiers, and package names no installed package lists,
+ * resolve from the agent directory.
  */
 export async function loadStorageAdapter(
 	module: string,
@@ -335,7 +300,7 @@ export async function loadStorageAdapter(
 			adapter === null ||
 			typeof adapter !== "object" ||
 			adapter.atomicStorageAdapter !== 1 ||
-			[adapter.openDatabase, adapter.openSessionStore, adapter.openRunJournal].some(
+			[adapter.openDatabase, adapter.openSessionStore].some(
 				(hook) => hook !== undefined && typeof hook !== "function",
 			)
 		) {
@@ -449,16 +414,10 @@ const sharedDatabases = new Map<string, SharedDatabase>();
 
 export interface StorageProvider {
 	openSessionStore(selection: StorageSelection, context: StorageOpenContext): Promise<SessionStore>;
-	openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal>;
 }
 
-export const StorageProvider: new (journals?: JournalFactories) => StorageProvider = class {
-	private readonly journals?: JournalFactories;
+export const StorageProvider: new () => StorageProvider = class {
 	private readonly databases = sharedDatabases;
-
-	constructor(journals?: JournalFactories) {
-		this.journals = journals;
-	}
 
 	async openSessionStore(selection: StorageSelection, context: StorageOpenContext): Promise<SessionStore> {
 		return this.open<SessionStore>(selection, context, {
@@ -481,35 +440,6 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		});
 	}
 
-	async openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal> {
-		const journals = this.journals;
-		if (!journals) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");
-		if (selection?.kind === "sharded") {
-			if (typeof selection.dir !== "string" || selection.dir.length === 0)
-				throw new StorageConfigError("sdk", "dir", "invalid-dir");
-			if (!journals.store) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");
-			return withIdempotentClose(
-				await journals.store(
-					selection.dir,
-					(path) => this.openRunJournal({ kind: "sqlite", path }, context),
-					legacyDefaultJournalPath(selection.dir),
-				),
-			);
-		}
-		return this.open<RunJournal>(selection, context, {
-			memory: () => journals.memory({ adapter: "memory", location: ":memory:" }),
-			hostModules: journals.hostModules,
-			direct: (adapter, options, storage, adapterContext) =>
-				adapter.openRunJournal?.(options, adapterContext, storage),
-			sql: async (database, options) => {
-				const journal = await journals.sql(database, options);
-				const createRun = journal.createRun.bind(journal);
-				journal.createRun = (header) => createRun({ ...header, storage: { ...database.descriptor } });
-				return journal;
-			},
-		});
-	}
-
 	private async open<T extends { close(): Promise<void> }>(
 		selection: StorageSelection,
 		context: StorageOpenContext,
@@ -522,14 +452,12 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 				storage: { readonly prefix?: string },
 				context: StorageOpenContext,
 			): Promise<T> | undefined;
-			hostModules?: Readonly<Record<string, object>>;
 			sql(database: SqliteDatabase, options: { readonly prefix?: string }): Promise<T>;
 		},
 	): Promise<T> {
 		if (selection === null || typeof selection !== "object" || Array.isArray(selection)) {
 			throw new StorageConfigError("sdk", "storage", "selection-object-required");
 		}
-		if (selection.kind === "sharded") throw new StorageConfigError("sdk", "dir", "adapter-domain-unsupported");
 		if (!["memory", "jsonl", "sqlite", "database", "adapter"].includes(selection.kind)) {
 			throw new StorageConfigError("sdk", "storage", "invalid-kind");
 		}
@@ -567,7 +495,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		validateStoragePrefix(selection.prefix);
 		let openDatabase: () => Promise<SqliteDatabase>;
 		if (selection.kind === "adapter") {
-			const adapter = await loadStorageAdapter(selection.module, context, factories.hostModules);
+			const adapter = await loadStorageAdapter(selection.module, context);
 			const adapterContext = adapterOpenContext(selection, context);
 			const options = await resolveAdapterOptions(selection, adapterContext, adapter.liveSecrets);
 			try {

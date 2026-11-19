@@ -24,7 +24,6 @@ export * from "./fenced-paths.js";
 export {
 	claimFileAtomically,
 	claimFileAtomicallyAsync,
-	defaultJournalStoreDirectoryAsync,
 	defaultSessionDatabasePath,
 	defaultSessionDatabasePathAsync,
 	defaultSharedStoragePath,
@@ -41,8 +40,6 @@ export {
 	workflowsStorageDir,
 	workflowsStorageDirAsync,
 } from "./file-identity.js";
-export * from "./journal-adoption.js";
-export * from "./journal-catalog.js";
 export * from "./migrations.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
@@ -56,14 +53,12 @@ export {
 export {
 	POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
 	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
-	POSTGRES_POOL_SESSION_PREFIX,
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 	renderStorageIdentifiers,
 	storageMigrationTable,
 	validateStoragePrefix,
 } from "./prefix.js";
 export * from "./provider.js";
-export * from "./run-journal.js";
 export { assertStorageSchemaVersion, assertStoredSchemaVersion } from "./schema.js";
 export {
 	getTeamProfile,
@@ -80,7 +75,6 @@ export {
 	type StorageSettingsSelection,
 	selectStorage,
 	selectStorageAsync,
-	selectsDefaultJournalStore,
 	TEAM_PREFIX_ENV,
 	TEAM_PROFILE_ENV,
 	TEAM_TOKEN_ENV,

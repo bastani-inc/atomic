@@ -101,7 +101,6 @@ interface SettledStorageHome {
 	readonly home: string;
 	readonly defaultHome?: boolean;
 	readonly workflowsDir: string;
-	readonly journalStoreDir: string;
 	readonly sessionDatabasePath: string;
 	readonly sharedStoragePath: string;
 	readonly adoptedClaim?: string;
@@ -514,7 +513,6 @@ function createStorageHomeEntry(
 	return {
 		home,
 		workflowsDir,
-		journalStoreDir: join(workflowsDir, "journal"),
 		sessionDatabasePath: join(workflowsDir, "journal.sqlite"),
 		sharedStoragePath: join(home, "storage.sqlite"),
 		...(adoptedClaim === undefined ? {} : { adoptedClaim }),
@@ -1875,24 +1873,6 @@ export function workflowsStorageDir(agentDir?: string, settings?: StorageHomeSet
 
 export async function workflowsStorageDirAsync(agentDir?: string, settings?: StorageHomeSettings): Promise<string> {
 	return (await resolveStorageHomeEntryAsync(agentDir, settings)).workflowsDir;
-}
-
-export function defaultJournalStoreDirectory(agentDir: string, settings?: StorageHomeSettings): string {
-	return runStorageStepsSync(resolveStorageHomeEntrySteps(agentDir, settings)).journalStoreDir;
-}
-
-export async function defaultJournalStoreDirectoryAsync(
-	agentDir: string,
-	settings?: StorageHomeSettings,
-): Promise<string> {
-	return (await resolveStorageHomeEntryAsync(agentDir, settings)).journalStoreDir;
-}
-
-export function* defaultJournalStoreDirectorySteps(
-	agentDir: string,
-	settings?: StorageHomeSettings,
-): StorageSteps<string> {
-	return (yield* resolveStorageHomeEntrySteps(agentDir, settings)).journalStoreDir;
 }
 
 export function defaultSessionDatabasePath(agentDir?: string, settings?: StorageHomeSettings): string {

@@ -356,10 +356,9 @@ async function constructAgentSession(
 	if (workspace !== undefined) await assertSessionManagerInWorktreeAsync(workspace, options.sessionManager);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	await validateProcessStorageAsync(agentDir);
-	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
-	// `journal`; an unused selection needs no adapter, while the process's own profile is still checked.
-	const storageUsed =
-		(options.sessionManager === undefined && options.sessionStore === undefined) || options.journal === undefined;
+	// `storage` backs the sessions only without `sessionManager` and `sessionStore`; an unused selection needs no
+	// adapter, while the process's own profile is still checked.
+	const storageUsed = options.sessionManager === undefined && options.sessionStore === undefined;
 	await assertTeamAdapterInstalled(agentDir, storageUsed ? options.storage : undefined);
 	const suppliedSession =
 		options.cwd === undefined && workspace === undefined
