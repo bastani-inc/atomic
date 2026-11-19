@@ -616,7 +616,7 @@ Response:
 
 #### abort_retry
 
-Abort an in-progress retry (cancel the delay and stop retrying).
+Cancel a retry or fallback already in progress. If the first request is still running and no retry has started, `abort_retry` does nothing. Use `abort` to interrupt that request.
 
 ```json
 {"type": "abort_retry"}

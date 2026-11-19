@@ -43,7 +43,7 @@
 - Reopening a session that recorded a subagent's release only in its notice title now shows `◌` and the tool calls it was waiting on, instead of `◼ stopped`. Older notices that recorded a pause or quit show `⏸` ([#5563](https://github.com/bastani-inc/atomic/issues/5563)).
 - Switching between subagent chats no longer brings a stopped child back into its chat footer. A workflow that resumes and blocks again between panel updates reappears alongside active work, even within the same millisecond ([#5567](https://github.com/bastani-inc/atomic/issues/5567)).
 - Reopening a chat during a provider retry or model switch now shows the wait already in progress. A follow-up delivery warning no longer replaces the working line in subagent or stage chats ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
-- Pressing Esc while a chat switches to a fallback model now ends the turn without sending the pending request. A new message can still retry normally ([#5564](https://github.com/bastani-inc/atomic/issues/5564)).
+- Pressing Esc while a chat switches to a fallback model now ends the turn without sending the pending request. A new message can still retry normally, and `abort_retry` during the first request does not disable a later retry ([#5564](https://github.com/bastani-inc/atomic/issues/5564)).
 
 ## [0.9.89] - 2026-11-18
 

@@ -307,6 +307,32 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.faux.state.callCount).toBe(4);
 	});
 
+	it.each([
+		["abortRetry", 2],
+		["interruptTurn", 1],
+	] as const)("%s during the first request leaves %i provider calls after a 503 (#5564)", async (command, calls) => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		const entered = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		harness.setResponses([
+			async () => {
+				entered.resolve();
+				await finish.promise;
+				throw new Error("503 service unavailable");
+			},
+			fauxAssistantMessage("recovered"),
+		]);
+		const turn = harness.session.prompt("first request");
+		await entered.promise;
+		const retrying = harness.session.isRetrying;
+		const interrupted = harness.session[command]();
+		finish.resolve();
+		await Promise.all([turn, interrupted]);
+		expect(retrying).toBe(false);
+		expect(harness.faux.state.callCount).toBe(calls);
+	});
+
 	it("a failed retry reporting its error after the interrupt cannot reopen the sequence (#5564)", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } } });
 		harnesses.push(harness);

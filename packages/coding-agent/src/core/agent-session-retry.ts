@@ -629,6 +629,11 @@ function finishCancelledRetry(this: AgentSession): void {
 }
 
 export function abortRetry(this: AgentSession): void {
+	if (this.isRetrying) abortTurnRetries.call(this);
+}
+
+/** A whole-turn interrupt also prevents a first request that fails late from starting a retry. */
+export function abortTurnRetries(this: AgentSession): void {
 	this._retryGeneration = (this._retryGeneration ?? 0) + 1;
 	// The next attempt may already be preparing its request when an interactive or RPC interrupt arrives.
 	if (this.isRetrying && this.agent.state.isStreaming) this.agent.abort();
