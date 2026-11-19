@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { test } from "vitest";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
@@ -61,9 +61,13 @@ test("/export to HTML on the isolated host is written by the engine, which holds
 		const typed = relative(process.cwd(), join(dir, "page.html"));
 		const path = await runtime.session.exportToHtml(typed, { themeName: "light" });
 		// The host has no extensions, so it leaves the page to the engine, at the path the user named from the host's
-		// working directory.
-		assert.deepEqual(probe.exports, [{ outputPath: join(dir, "page.html"), themeName: "light" }]);
-		assert.equal(path, join(dir, "page.html"));
+		// working directory; the status names it as it was typed.
+		assert.equal(probe.exports.length, 1);
+		assert.equal(probe.exports[0]?.themeName, "light");
+		const handed = probe.exports[0]?.outputPath ?? "";
+		assert.ok(isAbsolute(handed), handed);
+		assert.equal(resolve(handed), join(dir, "page.html"));
+		assert.equal(path, typed);
 		assert.equal(existsSync(join(dir, "page.html")), false, "the host writes no page of its own");
 
 		await runtime.session.exportToHtml();
@@ -76,3 +80,37 @@ test("/export to HTML on the isolated host is written by the engine, which holds
 		await harness.cleanup();
 	}
 });
+
+// Windows resolves `..` in a path before it follows a link, so there the path below names the `report.html` beside
+// the link.
+test.skipIf(process.platform === "win32")(
+	"/export through a linked directory and `..` on the isolated host writes where the in-process export does (#5531)",
+	async () => {
+		const harness = await createHarness();
+		const dir = mkdtempSync(join(tmpdir(), "atomic-isolated-export-link-"));
+		try {
+			mkdirSync(join(dir, "physical", "deep"), { recursive: true });
+			symlinkSync(join("physical", "deep"), join(dir, "link"));
+			writeFileSync(join(dir, "report.html"), "someone else's page");
+			// The engine writes the page the way an in-process export does (taken before the host replaces the method).
+			const engineExport = harness.session.exportToHtml.bind(harness.session);
+			const probe = exportingClient();
+			probe.client.exportHtml = async (outputPath?: string, options: { themeName?: string } = {}) => ({
+				path: await engineExport(outputPath, options),
+			});
+			const runtime = isolatedRuntime(harness, probe.client);
+			// `link/../report.html` from the host's working directory: `..` leaves the directory the link points to.
+			const typed = `${relative(process.cwd(), join(dir, "link"))}${sep}..${sep}report.html`;
+
+			const path = await runtime.session.exportToHtml(typed);
+
+			assert.match(readFileSync(join(dir, "physical", "report.html"), "utf8"), /<html/i);
+			assert.equal(readFileSync(join(dir, "report.html"), "utf8"), "someone else's page");
+			assert.equal(path, typed, "the status names the path as it was typed");
+			await runtime.dispose();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			await harness.cleanup();
+		}
+	},
+);

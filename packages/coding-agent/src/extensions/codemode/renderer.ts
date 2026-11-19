@@ -170,16 +170,18 @@ function nestedCall(call: CodemodeNestedCall, theme: Theme, expanded: boolean, c
 	});
 }
 
-export const codemodeRenderers: Pick<
+type CodemodeRenderers = Pick<
 	ToolDefinition<typeof codemodeSchema, CodemodeToolDetails>,
 	"renderCall" | "renderResult"
-> = {
-	renderCall(args, theme, context) {
-		const state = context.state as CodemodeRenderState;
-		state.scriptHighlighter ??= new CodeHighlighter();
-		return new CodemodeCall(str(args?.code), theme, context.expanded, state.scriptHighlighter);
-	},
-	renderResult(result, options, theme, context) {
+>;
+
+/**
+ * Draws a codemode result: the calls the script made, their model costs, the output and where the full output is.
+ * The lines the result starts with, saying how the script ended and how long it ran, are left out unless
+ * `withScriptHeader` keeps them.
+ */
+function codemodeResultRenderer(withScriptHeader: boolean): NonNullable<CodemodeRenderers["renderResult"]> {
+	return (result, options, theme, context) => {
 		const records: Component[] = [];
 		const calls = result.details?.calls ?? [];
 		if (calls.length) {
@@ -208,7 +210,8 @@ export const codemodeRenderers: Pick<
 				);
 		}
 		const [first, ...rest] = result.content;
-		const content = first?.type === "text" && SCRIPT_HEADER.test(first.text) ? rest : result.content;
+		const content =
+			!withScriptHeader && first?.type === "text" && SCRIPT_HEADER.test(first.text) ? rest : result.content;
 		const output = options.isPartial ? "" : getTextOutput({ ...result, content }, context.showImages).trim();
 		if (output) {
 			const styled = terminalDisplayText(replaceTabs(output))
@@ -222,5 +225,23 @@ export const codemodeRenderers: Pick<
 				new Text(theme.fg("muted", `Full output: ${terminalDisplayText(result.details.fullOutputPath)}`), 0, 0),
 			);
 		return new ToolBlockRecords(records);
+	};
+}
+
+export const codemodeRenderers: CodemodeRenderers = {
+	renderCall(args, theme, context) {
+		const state = context.state as CodemodeRenderState;
+		state.scriptHighlighter ??= new CodeHighlighter();
+		return new CodemodeCall(str(args?.code), theme, context.expanded, state.scriptHighlighter);
 	},
+	renderResult: codemodeResultRenderer(false),
+};
+
+/**
+ * The renderers for a saved session's export: the call as the chat draws it, and the result with the lines saying how
+ * the script ended and how long it ran, which that export has always shown.
+ */
+export const savedCodemodeRenderers: CodemodeRenderers = {
+	...codemodeRenderers,
+	renderResult: codemodeResultRenderer(true),
 };
