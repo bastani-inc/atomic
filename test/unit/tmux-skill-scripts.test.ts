@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -136,6 +136,188 @@ describe.skipIf(process.platform === "win32")("bundled tmux skill helper scripts
 		assert.equal(late.exitCode, 1);
 		assert.match(late.stderr, /^Timed out after 01s waiting for pattern: ready$/mu);
 		assert.doesNotMatch(late.stderr, /unbound variable|value too great/u);
+	});
+
+	test("wait-for-text times out when a pending capture delivers a late marker (#5566)", () => {
+		const socketDir = mkdtempSync("/tmp/ats-");
+		socketDirs.push(socketDir);
+		const socket = join(socketDir, "server");
+		const realTmux = spawnSyncCollect(["bash", "-c", "command -v tmux"]).stdout.toString().trim();
+		const tmux = (...args: string[]) => spawnSyncCollect([realTmux, "-S", socket, ...args]);
+		try {
+			if (realTmux) {
+				const pane = tmux(
+					"-f",
+					"/dev/null",
+					"new-session",
+					"-d",
+					"-s",
+					"probe",
+					"tmux wait-for release; printf 'late-marker\\n'; tmux wait-for -S printed; exec cat",
+				);
+				assert.equal(pane.exitCode, 0, pane.stderr.toString());
+			}
+			// The producer cannot print until two seconds into the first capture. On hosts without
+			// tmux the stand-in delivers the same marker, still through the real wait script.
+			writeFileSync(
+				join(stubBin, "tmux"),
+				`#!/usr/bin/env bash
+sleep 2
+if [[ -z "$REAL_TMUX" ]]; then echo late-marker; exit 0; fi
+"$REAL_TMUX" -S "$SOCKET" wait-for -S release
+"$REAL_TMUX" -S "$SOCKET" wait-for printed
+exec "$REAL_TMUX" -S "$SOCKET" "$@"
+`,
+			);
+			const result = run("wait-for-text.sh", ["-t", "probe:0.0", "-p", "late-marker", "-T", "1"], {
+				REAL_TMUX: realTmux,
+				SOCKET: socket,
+			});
+			assert.equal(result.exitCode, 1, result.stderr);
+			assert.match(result.stderr, /^Timed out after 1s waiting for pattern: late-marker$/mu);
+		} finally {
+			if (realTmux) tmux("kill-server");
+		}
+	});
+
+	test("wait-for-text includes a stalled pattern check in its timeout (#5566)", () => {
+		const grepPath = join(stubBin, "grep");
+		writeFileSync(
+			grepPath,
+			'#!/bin/sh\nif [ ! -f "$HOME/checked" ]; then touch "$HOME/checked"; sleep 6; fi\nexec /usr/bin/grep "$@"\n',
+		);
+		chmodSync(grepPath, 0o755);
+		const result = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "ready", "-T", "1"], { STUB_PANE: "ready" });
+		assert.equal(result.exitCode, 1, result.stderr);
+		assert.match(result.stderr, /Timed out after 1s/u);
+		assert.ok(result.elapsedMs < 5_000, `took ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text does not restart its timeout after a slow timer check (#5566)", () => {
+		const sleepPath = join(stubBin, "sleep");
+		writeFileSync(sleepPath, '#!/bin/sh\nif [ "$1" = 0.0 ]; then /bin/sleep 6; fi\nexec /bin/sleep "$@"\n');
+		chmodSync(sleepPath, 0o755);
+		const result = run("wait-for-text.sh", ["-t", "s", "-F", "-p", "ready", "-T", "1"], { STUB_PANE: "ready" });
+		assert.equal(result.exitCode, 1, result.stderr);
+		assert.match(result.stderr, /Timed out after 1s/u);
+		assert.ok(result.elapsedMs < 5_000, `took ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text refuses to poll without a fractional sleep timer (#5566)", () => {
+		const sleepPath = join(stubBin, "sleep");
+		writeFileSync(sleepPath, '#!/bin/sh\ncase "$1" in *.*) exit 1 ;; esac\nexec /bin/sleep "$@"\n');
+		chmodSync(sleepPath, 0o755);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready"], { STUB_PANE: "ready" });
+		assert.notEqual(result.exitCode, 0);
+		assert.match(result.stderr, /sleep.*fractional seconds/u);
+	});
+
+	test("wait-for-text does not wrap a long decimal timeout into an expired deadline (#5566)", () => {
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "18446744073709551616"], {
+			STUB_PANE: "ready",
+		});
+		assert.equal(result.exitCode, 0, result.stderr);
+	});
+
+	test("wait-for-text does not capture even a matching pane with a zero timeout (#5566)", () => {
+		writeFileSync(join(stubBin, "tmux"), '#!/usr/bin/env bash\ntouch "$HOME/probed"\necho ready\n');
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "0"]);
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stderr, /Timed out after 0s/u);
+		assert.equal(existsSync(join(dir, "probed")), false);
+	});
+
+	test("wait-for-text times out with the last capture when the next one stalls (#5566)", () => {
+		writeFileSync(
+			join(stubBin, "tmux"),
+			`#!/usr/bin/env bash
+if [[ -f "$HOME/probed" ]]; then exec sleep 60; fi
+touch "$HOME/probed"
+echo working
+`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "1", "-i", "0.01"]);
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stderr, /Timed out after 1s[\s\S]*Last 1000 lines from s:\nworking/u);
+	});
+
+	test("wait-for-text keeps the last complete snapshot when a replacement is interrupted (#5566)", () => {
+		const bashEnv = join(dir, "file-limit");
+		writeFileSync(bashEnv, "ulimit -f 1\n");
+		writeFileSync(
+			join(stubBin, "tmux"),
+			'#!/bin/sh\nif [ -f "$HOME/probed" ]; then yes incomplete | head -n 600; else touch "$HOME/probed"; echo working; fi\n',
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready", "-T", "1", "-i", "0.01"], {
+			BASH_ENV: bashEnv,
+		});
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stderr, /Last 1000 lines from s:\nworking\n$/u);
+	});
+
+	test("wait-for-text removes scratch when interrupted just after allocation (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-allocation");
+		writeFileSync(
+			bashEnv,
+			`trap 'if [[ $BASH_SUBSHELL == 0 && -n \${scratch:-} && -d $scratch && ! -f $HOME/allocated ]]; then echo "$scratch" >"$HOME/allocated"; builtin kill -TERM "$$"; fi' DEBUG\n`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "ready"], { BASH_ENV: bashEnv });
+		assert.notEqual(result.exitCode, 0);
+		assert.equal(existsSync(readFileSync(join(dir, "allocated"), "utf8").trim()), false);
+	});
+
+	test("wait-for-text cancels its worker even if interrupted during launch (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-launch");
+		// Interrupt this shell at launch and again just before it stops its own worker.
+		writeFileSync(
+			bashEnv,
+			`
+interrupt() { if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then touch "$HOME/interrupted"; builtin kill -TERM "$$"; fi; }
+kill() {
+  if [[ $1 == -KILL && ! -f "$HOME/interrupted-again" ]]; then touch "$HOME/interrupted-again"; builtin kill -HUP "$$"; fi
+  builtin kill "$@"
+}
+trap interrupt DEBUG
+`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
+		assert.ok(existsSync(join(dir, "interrupted")));
+		assert.ok(existsSync(join(dir, "interrupted-again")));
+		assert.notEqual(result.exitCode, 0);
+		assert.ok(result.elapsedMs < 6_000, `worker still held the pipes for ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text stops a running capture even when it cannot record cancellation (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-capture");
+		writeFileSync(bashEnv, `tmux() { rm -rf -- "$scratch"; builtin kill -TERM "$$"; exec /bin/sleep 8; }\n`);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
+		assert.notEqual(result.exitCode, 0);
+		assert.ok(result.elapsedMs < 6_000, `capture still held the pipes for ${Math.round(result.elapsedMs)} ms`);
+	});
+
+	test("wait-for-text does not poll after cancellation races worker startup (#5566)", () => {
+		const bashEnv = join(dir, "interrupt-launch");
+		// Hold the worker at startup until the signal has been delivered. Its new children
+		// therefore cannot receive that earlier signal: they must observe cancellation.
+		writeFileSync(
+			bashEnv,
+			`
+interrupt() {
+  if [[ $BASH_SUBSHELL == 0 && ! -f "$HOME/interrupted" && -n $(jobs -p) ]]; then
+    touch "$HOME/interrupted"; builtin kill -TERM "$$"
+  elif [[ $BASH_SUBSHELL == 1 && $BASH_COMMAND == 'set +m' ]]; then
+    while [[ ! -f "$HOME/delivered" ]]; do /bin/sleep .01; done
+  fi
+}
+kill() { if [[ $1 == -KILL ]]; then touch "$HOME/delivered"; return 0; fi; builtin kill "$@"; }
+set -T
+trap interrupt DEBUG
+`,
+		);
+		const result = run("wait-for-text.sh", ["-t", "s", "-p", "missing", "-T", "8"], { BASH_ENV: bashEnv });
+		assert.ok(existsSync(join(dir, "interrupted")));
+		assert.notEqual(result.exitCode, 0);
+		assert.ok(result.elapsedMs < 6_000, `worker still held the pipes for ${Math.round(result.elapsedMs)} ms`);
 	});
 
 	test("wait-for-text never counts a failed pane capture as a match", () => {

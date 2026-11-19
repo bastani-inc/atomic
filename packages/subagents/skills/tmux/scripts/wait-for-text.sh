@@ -5,7 +5,9 @@ usage() {
   cat <<'USAGE'
 Usage: wait-for-text.sh -t target -p pattern [options]
 
-Poll a tmux pane for text and exit when found.
+Poll a tmux pane for text and exit when found before the deadline. A zero
+second timeout does not inspect the pane. The deadline relies on the system's
+sleep: if the OS cannot start or run sleep on time, the helper may return late.
 
 The search includes echoed input and scrollback. For command completion, use a
 unique marker whose full text does not appear in the command sent to tmux.
@@ -57,44 +59,125 @@ if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# grep returns 1 for a valid pattern with no input; syntax errors must not poll.
-grep "$grep_flag" -- "$pattern" </dev/null >/dev/null || {
-  status=$?
-  if (( status != 1 )); then
-    exit "$status"
+# /proc/uptime gives hundredths of a second. Use the system monotonic clock on
+# hosts without it; wall time can jump backwards while a capture is pending.
+monotonic_cs() {
+  if [[ -r /proc/uptime ]]; then
+    local seconds fraction rest
+    IFS='. ' read -r seconds fraction rest </proc/uptime || return 1
+    fraction=${fraction}00
+    printf '%s%s\n' "$seconds" "${fraction:0:2}"
+  else
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.0f\n", int(100 * clock_gettime(CLOCK_MONOTONIC))'
   fi
 }
 
+if ! start=$(monotonic_cs); then
+  echo 'A monotonic clock is required: enable /proc/uptime or install Perl with Time::HiRes.' >&2
+  exit 1
+fi
 if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux not found in PATH" >&2
   exit 1
 fi
+# A child created during group cancellation must also see that the wait ended.
+active() { [[ -d "$scratch" && ! -e "$scratch/stopped" ]]; }
+# Bound each timer sleep to a day, not the overall wait. Large decimal budgets
+# must not overflow shell arithmetic or the platform's sleep primitive.
+remaining_cs() {
+  local now
+  active || return 1
+  now=$(monotonic_cs) || return 1
+  awk -v elapsed="$((10#$now - 10#$start))" -v timeout="$timeout" '
+    BEGIN { left = timeout * 100 - elapsed; if (left <= 0) exit 1; printf "%.0f\n", (left > 8640000 ? 8640000 : left) }'
+}
+before_deadline() { remaining_cs >/dev/null; }
 
-# End time in epoch seconds (integer, good enough for polling)
-start_epoch=$(date +%s)
-deadline=$((start_epoch + 10#$timeout))
-
-while true; do
-  # -J joins wrapped lines, -S uses negative index to read last N lines
-  if pane_text="$(tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null)" &&
-    printf '%s\n' "$pane_text" | grep $grep_flag -- "$pattern" >/dev/null 2>&1; then
-    exit 0
+scratch=""
+worker=""
+stop_worker() {
+  if [[ -n "$worker" ]]; then
+    # The shell reports a failed write; losing scratch must not prevent group cleanup.
+    : >"$scratch/stopped" || :
+    kill -KILL -- "-$worker" 2>/dev/null || :
+    # Windows delivers a group signal to its current members. A Windows child
+    # created during that delivery can otherwise live past the helper's exit.
+    case $OSTYPE in
+      msys*|cygwin*)
+        while builtin kill -0 -- "-$worker" 2>/dev/null; do
+          kill -KILL -- "-$worker" 2>/dev/null || break
+        done ;;
+    esac
+    worker=""
   fi
+}
+trap 'stop_worker; if [[ -n "$scratch" ]]; then rm -rf -- "$scratch"; fi' EXIT
+# Stop an owned group immediately, or remember the signal until its PID is saved.
+# A second interrupt must not cut off the first one's cleanup.
+cancelled=0
+trap 'trap "" HUP INT TERM; cancelled=1; stop_worker' HUP INT TERM
+# Let mktemp report the path it created, even if the caller's whole group is interrupted.
+scratch=$(trap '' HUP INT TERM; exec mktemp -d)
+(( ! cancelled )) || exit 1
+: >"$scratch/pane"
 
-  now=$(date +%s)
-  if (( now >= deadline )); then
-    echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
-    echo "Last ${lines} lines from $target:" >&2
-    printf '%s\n' "$pane_text" >&2
-    exit 1
-  fi
+poll() {
+  local pane_text rc
+  active || return 124
+  LC_NUMERIC=C sleep 0.0 2>/dev/null || return 125
+  # Check the pattern inside the timed worker: even the first grep can stall.
+  grep "$grep_flag" -- "$pattern" </dev/null >/dev/null || {
+    rc=$?
+    (( rc == 1 )) || return "$rc"
+  }
+  while before_deadline; do
+    if pane_text=$(tmux capture-pane -p -J -t "$target" -S "-${lines}" 2>/dev/null) &&
+      printf '%s\n' "$pane_text" >"$scratch/next" && mv -f "$scratch/next" "$scratch/pane"; then
+      if before_deadline && grep "$grep_flag" -- "$pattern" "$scratch/pane" >/dev/null 2>&1 && before_deadline; then
+        return 0
+      fi
+    fi
+    active || return 124
+    sleep "$interval" || return "$?"
+  done
+  return 124
+}
 
-  # Sleep no longer than the time left, so the last probe happens at the deadline
-  # instead of up to a full interval past it. Sleep still rejects invalid intervals.
-  wait_interval="$interval"
-  if [[ "$interval" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
-    wait_interval=$(awk -v interval="$interval" -v remaining="$((deadline - now))" \
-      'BEGIN { print (interval + 0 > remaining ? remaining : interval) }')
-  fi
-  sleep "$wait_interval"
-done
+watch_deadline() {
+  local remaining duration
+  while remaining=$(remaining_cs); do
+    printf -v duration '%d.%02d' "$((remaining / 100))" "$((remaining % 100))"
+    active || break
+    LC_NUMERIC=C sleep "$duration" 2>/dev/null || { echo 125 2>/dev/null; return; }
+  done
+  echo 124 2>/dev/null
+}
+
+# The poll and its timer share a private process group. The first status on the
+# pipe wins. Stopping the group cancels the other, even inside tmux or sleep.
+set -m
+(
+  set +m
+  IFS= read -r result < <(
+    (status=0; poll || status=$?; echo "$status" 2>/dev/null) &
+    watch_deadline &
+    wait
+  )
+  exit "$result"
+) &
+worker=$!
+(( ! cancelled )) || exit 1
+status=0
+wait "$worker" 2>/dev/null || status=$?
+stop_worker
+(( ! cancelled )) || exit 1
+if [[ "$status" == 125 ]]; then
+  echo 'The wait timer requires a sleep command that accepts fractional seconds.' >&2
+  exit 1
+fi
+if [[ "$status" != 124 ]]; then exit "$status"; fi
+
+echo "Timed out after ${timeout}s waiting for pattern: $pattern" >&2
+echo "Last ${lines} lines from $target:" >&2
+cat "$scratch/pane" >&2
+exit 1
