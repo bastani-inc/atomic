@@ -129,9 +129,7 @@ describe("a database 0.9.90 shared, with its workflow tables", () => {
 				// The version tables of the workflow stores stay in public at a version no earlier release opens.
 				for (const fence of ["wf_meta", "wf_runs_pool_meta", "wf_ps_session_meta"]) {
 					const column = fence === "wf_runs_pool_meta" ? "version" : "schema_version";
-					const fenced = await moved.all<Record<string, unknown>>(
-						`SELECT ${column} AS version FROM public.${fence}`,
-					);
+					const fenced = await moved.all(`SELECT ${column} AS version FROM public.${fence}`);
 					assert.deepEqual(
 						fenced.map((entry) => Number(entry.version)),
 						[POSTGRES_MOVED_SCHEMA_VERSION],
