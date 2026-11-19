@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { StoreClosedError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
@@ -12,6 +13,36 @@ import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/sto
 import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { seedCatalogSeries } from "../helpers/seed-catalog-series.js";
 import { storageBackends } from "../helpers/storage-backends.js";
+
+// Only the fixture's three AFTER INSERT snapshot-index triggers are suspended. PostgreSQL can toggle them;
+// SQLite needs their original definitions to restore them. Both changes are atomic and leave other triggers alone.
+async function seedTextOnlyEntries(database: SqliteDatabase, table: string, seed: () => Promise<void>): Promise<void> {
+	const names = ["snapshot_links", "snapshot_pending", "snapshot_refs"].map((suffix) => `${table}_${suffix}`);
+	const postgres = dialectOf(database).name === "postgres";
+	const find = `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND name IN (?, ?, ?) ORDER BY name`;
+	const definitions = await database.transaction(async (tx) => {
+		if (postgres) {
+			for (const name of names) await tx.exec(`ALTER TABLE ${table} DISABLE TRIGGER ${name}`);
+			return [];
+		}
+		const rows = await tx.all<SqliteRow & { name: string; sql: string }>(find, table, ...names);
+		expect(rows.map((row) => row.name)).toEqual(names);
+		for (const name of names) await tx.exec(`DROP TRIGGER ${name}`);
+		return rows;
+	});
+	try {
+		await seed();
+	} finally {
+		await database.transaction(async (tx) => {
+			if (postgres) {
+				for (const name of names) await tx.exec(`ALTER TABLE ${table} ENABLE TRIGGER ${name}`);
+			} else {
+				for (const { sql } of definitions) await tx.exec(sql);
+				expect(await tx.all(find, table, ...names)).toEqual(definitions);
+			}
+		});
+	}
+}
 
 const MESSAGES = 700_000;
 const AT = "2026-11-18T00:00:00Z";
@@ -35,21 +66,15 @@ for (const backend of storageBackends) {
 						entry,
 					]);
 					const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
-					// These text-only messages contain no snapshot references. Avoid per-row reference invalidation during
-					// fixture creation, and restore every trigger before exercising the listing.
-					const postgres = dialectOf(database).name === "postgres";
-					if (postgres) await database.exec(`ALTER TABLE ${tables.entries} DISABLE TRIGGER USER`);
-					try {
-						await seedCatalogSeries(
+					await seedTextOnlyEntries(database, tables.entries, () =>
+						seedCatalogSeries(
 							database,
 							2,
 							MESSAGES,
 							`INSERT INTO ${tables.entries}(session_id, seq, entry_id, entry_json, chunks)
 							SELECT 'big', i, 'm-' || i, '{"type":"message","id":"m-' || i || '","parentId":null,"timestamp":"${AT}","message":{"role":"user","content":"m-' || i || '","timestamp":${Date.parse(AT)}}}', 0 FROM n`,
-						);
-					} finally {
-						if (postgres) await database.exec(`ALTER TABLE ${tables.entries} ENABLE TRIGGER USER`);
-					}
+						),
+					);
 					await seedCatalogSeries(
 						database,
 						2,
