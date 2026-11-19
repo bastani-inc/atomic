@@ -272,7 +272,11 @@ export async function dumpLegacyWorkflowTables(
 			like,
 			like,
 		);
-		for (const object of objects) out.push(`${object.kind} ${object.name}: ${object.definition}`);
+		// Definitions name their schema; the same tables moved to another schema keep the same definitions.
+		const schema = (await database.get<SqliteRow & { schema: string }>("SELECT current_schema() AS schema"))!.schema;
+		const unqualified = new RegExp(`\\b(?:public|atomic|${schema})\\.`, "g");
+		for (const object of objects)
+			out.push(`${object.kind} ${object.name}: ${object.definition.replace(unqualified, "")}`);
 	} else {
 		const objects = await database.all<SqliteRow & { type: string; name: string; sql: string | null }>(
 			"SELECT type, name, sql FROM sqlite_master WHERE tbl_name LIKE ? ESCAPE '\\' ORDER BY type, name",
