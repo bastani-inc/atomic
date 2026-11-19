@@ -32,7 +32,7 @@ initTheme("dark");
 
 const healthyRow: AgentPanelItem = {
 	id: "run:healthy",
-	kind: "workflow",
+	kind: "agent",
 	state: "running",
 	name: "ralph",
 	task: "stage build",

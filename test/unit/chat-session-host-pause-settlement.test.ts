@@ -234,11 +234,8 @@ test.each(["idle", "streaming", "local"] as const)("warnings clear on later %s i
 	});
 	try {
 		host.showWarning("Task inspection is unavailable in this host.");
-		host.clearBusyForTerminalWorkflowStage();
 		assert.equal(host.statusText(), "Task inspection is unavailable in this host.");
 		await host.submit("auto", path === "local" ? "/quit" : "next input");
-		assert.equal(host.statusText(), "");
-		host.clearBusyForTerminalWorkflowStage();
 		assert.equal(host.statusText(), "");
 	} finally {
 		host.dispose();

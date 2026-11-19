@@ -52,7 +52,7 @@ const plain = (lines: string[]) => lines.map((line) => stripVTControlCharacters(
 function waitingItem(id: string, choices: string[]): AgentPanelItem {
 	return {
 		id,
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: id.replace(/^run:/, ""),
 		task: "stage plan",
@@ -97,7 +97,7 @@ test("digit for a drawn and offered choice inserts the choice after clearing a n
 	const fixture = taskFixture();
 	const items: AgentPanelItem[] = [
 		waitingItem("run:question", ["A", "B", "C", "D", "E"]),
-		{ id: "run:working", kind: "workflow", state: "running", name: "working", task: "stage run" },
+		{ id: "run:working", kind: "agent", state: "running", name: "working", task: "stage run" },
 	];
 	let releaseStop!: () => void;
 	const source: TaskBoardSource = {
@@ -141,7 +141,7 @@ test("stopNotice is evaluated once per renderBoard so an expiring confirm window
 	const fixture = taskFixture();
 	const items: AgentPanelItem[] = [
 		waitingItem("run:question", ["A", "B", "C", "D", "E"]),
-		{ id: "run:working", kind: "workflow", state: "running", name: "working", task: "stage run" },
+		{ id: "run:working", kind: "agent", state: "running", name: "working", task: "stage run" },
 	];
 	const source: TaskBoardSource = {
 		items: () => items,
@@ -282,7 +282,7 @@ test("a waiting item without an answerable question does not offer a reply box i
 		items: () => [
 			{
 				id: "run:custom",
-				kind: "workflow",
+				kind: "agent",
 				state: "input",
 				name: "custom-ui",
 				task: "stage form",
@@ -317,7 +317,7 @@ test("an extension open that throws keeps /tasks open, shows a failure notice, a
 		items: () => [
 			{
 				id: "run:broken",
-				kind: "workflow",
+				kind: "agent",
 				state: "running",
 				name: "broken-run",
 				task: "stage build",
@@ -480,7 +480,7 @@ test("finished-while-armed notice clears in AgentPanelFocus and /tasks when the 
 	});
 	const runningRow: AgentPanelRow = {
 		id: "run:deploy",
-		kind: "workflow",
+		kind: "agent",
 		state: "running",
 		name: "deploy",
 		task: "stage build",
@@ -561,7 +561,7 @@ test("answer and stop failures after /tasks is disposed report through the host 
 		let stopAttempt = 0;
 		const items: AgentPanelItem[] = [
 			waitingItem("run:ralph", ["Yes"]),
-			{ id: "run:build", kind: "workflow", state: "running", name: "build", task: "stage 1" },
+			{ id: "run:build", kind: "agent", state: "running", name: "build", task: "stage 1" },
 		];
 		const source: TaskBoardSource = {
 			items: () => items,
