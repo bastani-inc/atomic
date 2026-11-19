@@ -180,7 +180,7 @@ async function launchInterruptedChild(cwd: string, sessionManager: SessionManage
 					await sessionManager.appendCustomEntry(customType, data);
 				},
 			},
-			{ sessionManager, orchestrationContext: undefined },
+			{ sessionManager },
 		),
 		runtime: {
 			runSync: (...args) =>
