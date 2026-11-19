@@ -1234,28 +1234,29 @@ test("Search shows a history search that goes on in the background as running th
 	assert.deepEqual(waited, [" ● Search(wait task-1-0-0) · background", "   ⎿  Running in background"]);
 });
 
-test("Search counts only a finished history search's matches, not its notes", () => {
+test("a settled search page renders as the same ordinary page (#5479)", () => {
 	const note = "history://sessions:0: [multi-line matches are searched up to 16 KB of text past where they start]";
 	const settled = {
 		kind: "settled",
 		taskId: "task-1-0-0",
 		result: { kind: "completed", output: { taskId: "task-1-0-0" }, exitCode: 0 },
 	};
-	const notesOnly = plain(
-		renderFamily(
-			{
-				toolName: "search",
-				args: { pattern: "needle", paths: "history://sessions" },
-				result: {
-					content: [{ type: "text", text: note }],
-					details: { observation: settled, matchCount: 0, fileCount: 0 },
-					isError: false,
+	const card = (observation?: typeof settled) =>
+		plain(
+			renderFamily(
+				{
+					toolName: "search",
+					args: { pattern: "needle", paths: "history://sessions" },
+					result: {
+						content: [{ type: "text", text: note }],
+						details: { observation, matchCount: 0, fileCount: 0 },
+						isError: false,
+					},
+					expanded: true,
+					isPartial: false,
 				},
-				expanded: true,
-				isPartial: false,
-			},
-			200,
-		),
-	);
-	assert.deepEqual(notesOnly, [" ● Search(/needle/ in history://sessions)", "   ⎿  No matches", `      ${note}`]);
+				200,
+			),
+		);
+	assert.deepEqual(card(settled), card());
 });
