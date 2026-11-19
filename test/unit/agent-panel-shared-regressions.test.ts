@@ -41,7 +41,7 @@ async function flush(): Promise<void> {
 }
 
 function makePanelRun(id: string, state: AgentPanelItem["state"]): AgentPanelItem {
-	return { id, kind: "workflow", state, name: id.slice(4), task: "stage build", elapsedMs: 1_000 };
+	return { id, kind: "agent", state, name: id.slice(4), task: "stage build", elapsedMs: 1_000 };
 }
 
 function createPanelHarness(initial: AgentPanelItem[]) {

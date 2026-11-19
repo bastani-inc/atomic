@@ -3,10 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { matchesKey } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
-import {
-	type AgentPanelItem,
-	AgentPanelSourceHub,
-} from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import type { TaskRecord } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
@@ -52,12 +49,6 @@ function shell(id: string): TaskRecord {
 	return { ...taskRecord(id, "command"), title: `sleep 300 # ${id}` };
 }
 
-function workflowSession(items: readonly AgentPanelItem[]) {
-	const hub = new AgentPanelSourceHub();
-	hub.register({ items: () => items, subscribe: () => () => {} });
-	return { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-}
-
 function mountPanel(session: object, onCounts?: (counts: AgentPanelCounts) => void) {
 	let widget: { render(width: number): string[] } | undefined;
 	const dispose = bindAgentPanel(
@@ -75,9 +66,9 @@ function mountPanel(session: object, onCounts?: (counts: AgentPanelCounts) => vo
 	return { dispose, lines, mounted: () => widget !== undefined };
 }
 
-const workflowRow: AgentPanelItem = {
+const extensionAgent: AgentPanelItem = {
 	id: "run:wf",
-	kind: "workflow",
+	kind: "agent",
 	state: "running",
 	name: "ralph",
 	task: "stage build",
@@ -113,35 +104,6 @@ for (const width of [80, 160]) {
 		}
 	});
 }
-
-test("a panel with only workflow runs shows no main row, focused or not", () => {
-	const session = workflowSession([workflowRow]);
-	const panel = mountPanel(session);
-	try {
-		const lines = panel.lines(80);
-		assert.equal(lines.length, 1, lines.join("\n"));
-		assert.match(lines[0]!, /^ {2}\S ralph/);
-	} finally {
-		panel.dispose();
-	}
-
-	const calls: string[] = [];
-	const focus = new AgentPanelFocus(new KeybindingsManager(), {
-		open: (row) => calls.push(`open ${row.id}`),
-		stop: () => {},
-		dismiss: () => {},
-		close: () => calls.push("close"),
-	});
-	focus.update([workflowRow as AgentPanelRow]);
-	focus.enter();
-	assert.equal(focus.showMain, false);
-	assert.equal(focus.selectedId, "run:wf");
-	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
-	press("\x1b[H");
-	assert.equal(focus.selectedId, "run:wf", "Home stays on the first row when there is no main row");
-	press("\x1b[A");
-	assert.deepEqual(calls, ["close"], "↑ on the first row returns to the prompt");
-});
 
 test("with only shells running there are no rows: the hint counts them and points to /tasks", () => {
 	const session = {};
@@ -200,7 +162,7 @@ test("the focused panel keeps main above its eight rows when subagents are liste
 		close: () => {},
 	});
 	const rows: AgentPanelRow[] = [
-		workflowRow as AgentPanelRow,
+		extensionAgent as AgentPanelRow,
 		{ id: "task:a", kind: "agent", state: "running", name: "worker", task: "fix" },
 	];
 	focus.update(rows);

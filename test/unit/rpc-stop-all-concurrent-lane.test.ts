@@ -3,7 +3,8 @@ import { test } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import { AgentPanelSourceHub } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.ts";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { bindTaskResumer } from "../../packages/coding-agent/src/core/tasks/task-resumer.js";
 import {
 	createStopAllChord,
 	createStopAllNotices,
@@ -17,6 +18,7 @@ import {
 } from "../../packages/coding-agent/src/modes/rpc/rpc-input-scheduler.ts";
 import type { RpcResponse } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { sleep } from "../helpers/runtime.js";
+import { taskFixture } from "../helpers/task-projection.js";
 
 const CTRL_X = "\x18";
 const CTRL_K = "\x0b";
@@ -27,10 +29,15 @@ test("clears an expired stop-all notice and opens the agent panel while stop_all
 	const quitGate = new Promise<void>((resolve) => {
 		releaseQuit = resolve;
 	});
-	const hub = new AgentPanelSourceHub();
-	hub.register({
-		items: () => [{ id: "workflow:r1", kind: "workflow", name: "deploy", task: "stage build", state: "running" }],
-		subscribe: () => () => {},
+	const tasks = taskFixture();
+	await tasks.start("Build the app");
+	const unbind = bindTaskResumer(tasks.supervisor, {
+		readOnlyReason: () => undefined,
+		resume: async () => ({ ok: false, reason: "not stopped" }),
+		stop: async () => {
+			await quitGate;
+			return { ok: true };
+		},
 	});
 	const session = Object.create(AgentSession.prototype, {
 		extensionRunner: {
@@ -41,19 +48,10 @@ test("clears an expired stop-all notice and opens the agent panel while stop_all
 					},
 					notify: () => {},
 				}),
-				getAgentPanelSourceHub: () => hub,
-			},
-		},
-		workflows: {
-			value: {
-				listRuns: async () => [{ runId: "r1", status: "running", endedAt: undefined }],
-				quit: async () => {
-					await quitGate;
-					return { status: "quit", failedRuns: [] };
-				},
 			},
 		},
 	}) as AgentSession;
+	bindOwnerTaskStore(session, tasks.store);
 	const runtimeHost = Object.create(AgentSessionRuntime.prototype, {
 		services: { value: { agentDir: "/fixture" } },
 	}) as AgentSessionRuntime;
@@ -190,7 +188,7 @@ test("clears an expired stop-all notice and opens the agent panel while stop_all
 			responses.some((response) => response.command === "stop_all_background" && response.success),
 			true,
 		);
-		assert.equal(statuses.at(-1), "Stopped 1 workflow run.");
+		assert.equal(statuses.at(-1), "Stopped 1 subagent.");
 
 		timers.shift()?.();
 		await sleep(20);
@@ -198,5 +196,7 @@ test("clears an expired stop-all notice and opens the agent panel while stop_all
 		assert.equal(statuses.at(-1), undefined);
 	} finally {
 		releaseQuit();
+		unbind();
+		await tasks.dispose();
 	}
 });

@@ -17,7 +17,6 @@ export const RETAINED_TOOL_RENDERERS = new Set([
 	"kill",
 	"intercom",
 	"contact_supervisor",
-	"workflow",
 	"subagent",
 	"web_search",
 	"fetch_content",

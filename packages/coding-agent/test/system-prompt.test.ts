@@ -257,7 +257,7 @@ describe("buildSystemPrompt", () => {
 	test("routes bundled extension questions to readable guides under the docs root", () => {
 		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
 		assert.ok(prompt.includes(`Additional docs: ${getDocsPath()}`));
-		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "workflows"]) {
+		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "orchestration"]) {
 			assert.ok(prompt.includes(`docs/${topic}.md`), `Missing documentation route for ${topic}`);
 			assert.match(readFileSync(join(getDocsPath(), `${topic}.md`), "utf8"), /^# /m);
 		}
@@ -277,7 +277,7 @@ describe("buildSystemPrompt", () => {
 		);
 		assert.match(
 			prompt,
-			/When workflow TypeScript code owns the sequence and postcondition, call the CLI from inside ctx\.tool, one process per command, parsing its JSON envelope, forwarding the signal, with a finite timeoutMs/,
+			/In a codemode script, use the permitted shell tool to run one CLI command at a time, parse its JSON response and set a finite timeout/,
 		);
 		assert.match(prompt, /make one bounded `npm install -g agent-desktop` attempt and report its side effects/);
 		assert.match(prompt, /never run `npx skills add` for it or copy a skill into other agent directories/);
@@ -403,16 +403,17 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("session memory (#4252)", () => {
-		test("points at history:// as the way to recall earlier sessions and workflow runs", () => {
+		test("points at history:// as the way to recall earlier sessions", () => {
 			const prompt = buildSystemPrompt({ contextFiles: [], skills: [], cwd: process.cwd() });
 
 			assert.ok(prompt.includes("**Session memory**"));
 			assert.ok(prompt.includes("available as memory even in a fresh session"));
 			assert.ok(prompt.includes("Recall it through `history://` rather than searching storage files on disk"));
 			assert.ok(prompt.includes("the default store is SQLite, which `rg` cannot read"));
-			assert.ok(prompt.includes("`read history://sessions` and `read history://workflows`"));
-			assert.ok(prompt.includes("`read history://sessions/<id>:N-M` and `read history://workflows/<runId>`"));
-			assert.ok(prompt.includes("`search` accepts the same URLs, or `history://` for both"));
+			assert.ok(prompt.includes("`read history://sessions` lists"));
+			assert.ok(prompt.includes("`read history://sessions/<id>:N-M` opens"));
+			assert.doesNotMatch(prompt, /history:\/\/workflows/);
+			assert.ok(prompt.includes("`search` accepts the same URLs, or `history://` for session search"));
 			assert.ok(prompt.includes("the user refers to earlier or recent work or asks what was being worked on"));
 			assert.ok(prompt.includes("when a task resembles one done before"));
 			assert.ok(prompt.includes("read narrow ranges, and prefer the most recent records"));
@@ -447,7 +448,7 @@ describe("buildSystemPrompt", () => {
 			assert.ok(withSearch.includes("`search` accepts the same URLs"));
 		});
 
-		test("guides choosing a workflow, verification and estimates by earlier work and stated preferences (#4648)", () => {
+		test("guides task planning, verification and estimates by earlier work and stated preferences (#4648)", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read"],
 				contextFiles: [],
@@ -457,10 +458,9 @@ describe("buildSystemPrompt", () => {
 
 			assert.ok(
 				prompt.includes(
-					"before choosing between a workflow and inline work, how to verify a change, or how long it will take: comparable earlier sessions and runs, and the preferences the user stated in them, guide those choices.",
+					"before deciding how to carry out or verify a change, or how long it will take: comparable earlier sessions, and the preferences the user stated in them, guide those choices.",
 				),
 			);
-			assert.ok(prompt.includes("Missing or sparse history is not by itself a reason to work inline."));
 		});
 
 		test("recalls prior work from source control and its hosting provider alongside history:// with a shell (#4648)", () => {
@@ -520,14 +520,7 @@ describe("buildSystemPrompt", () => {
 				const workflowsDir = join(agentDir, "workflows");
 
 				assert.ok(guidance.includes(join(workflowsDir, "journal.sqlite")));
-				assert.ok(
-					guidance.includes(
-						`workflow runs in the journal store \`${join(workflowsDir, "journal")}/\` (a catalog plus shard files)`,
-					),
-				);
 				assert.ok(guidance.includes(getDefaultSessionDirPath(project, agentDir)));
-				assert.ok(guidance.includes(`${join(workflowsDir, "runs")}/<runId>/`));
-				assert.ok(guidance.includes("`ATOMIC_WORKFLOW_ARTIFACT_DIR` moves them"));
 				assert.ok(guidance.includes("`atomic storage status` shows the store actually in use"));
 				assert.ok(guidance.indexOf("history://") < guidance.indexOf("journal.sqlite"));
 				assert.ok(guidance.includes("Only as a fallback"));

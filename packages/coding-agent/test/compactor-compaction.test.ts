@@ -359,7 +359,6 @@ describe("compaction with a configured compactor model", () => {
 				cwd: process.cwd(),
 				currentSessionId: harness.session.sessionId,
 				sessionStore: () => harness?.sessionManager.getSessionStore(),
-				workflows: () => undefined,
 			});
 			const history = String(await router.read?.(`history://sessions/${harness.session.sessionId}`));
 			const everything = JSON.stringify({
