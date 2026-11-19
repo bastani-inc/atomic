@@ -15,16 +15,23 @@ import { createTestUiContext } from "./native-test-ui.ts";
 // The real CLI completes lazy startup via a transactional reload of an initially empty loader.
 // Unlike schema-only discovery tests, session_start must see the successor tool registry here.
 it.each([
-	{ exposure: undefined, expected: "codemode" },
-	{ exposure: "deferred" as const, expected: "tool_search" },
+	{ exposure: undefined, expected: "codemode", active: true, settings: ["read"] },
+	{ exposure: undefined, expected: "codemode", active: false, settings: ["-codemode"] },
+	{ exposure: undefined, expected: "codemode", active: false, tools: ["-codemode"] },
+	{ exposure: "deferred" as const, expected: "tool_search", active: true },
 ])(
-	"lazy transactional startup activates native $expected discovery without an unreachable warning",
-	async ({ exposure, expected }) => {
+	"lazy MCP discovery: $expected active=$active with defaultTools=$settings and CLI tools=$tools",
+	async ({ exposure, expected, active, settings, tools }) => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-native-discovery-reload-"));
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir);
 		const notifications: string[] = [];
 		const settingsManager = SettingsManager.create(cwd, agentDir);
+		if (settings) {
+			// Layer a project-style override on a plain global list: the effective list alone loses a subtraction.
+			settingsManager.applyOverrides({ defaultTools: ["read", "codemode"] });
+			settingsManager.applyOverrides({ defaultTools: settings });
+		}
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,
@@ -62,6 +69,7 @@ it.each([
 			model: getModel("openai", "gpt-6.1-sol-fast"),
 			sessionManager: SessionManager.inMemory(cwd),
 			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			tools,
 		});
 		try {
 			await session.bindExtensions({
@@ -72,8 +80,8 @@ it.each([
 			expect(session.getAllTools().find((tool) => tool.name === expected)?.sourceInfo.path).toBe(
 				expected === "codemode" ? "builtin:codemode" : "builtin:tool-search",
 			);
-			expect(session.getActiveToolNames()).toContain(expected);
-			expect(notifications.some((message) => message.includes("neither is active"))).toBe(false);
+			expect(session.getActiveToolNames().includes(expected)).toBe(active);
+			expect(notifications.some((message) => message.includes("neither is active"))).toBe(!active);
 		} finally {
 			await session.dispose();
 			rmSync(cwd, { recursive: true, force: true });
