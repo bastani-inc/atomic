@@ -152,6 +152,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
 	private streamingEpoch = 0;
+	private turnStartedAt?: number;
 	private retryStatus?: SessionRetryStatus;
 	private retryStatusEpoch = 0;
 	private panelCounts: AgentPanelCounts = { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 };
@@ -255,6 +256,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			clearActivity: () => {
 				this.streaming = false;
 				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
 				this.retryStatus = undefined;
 				this.retryStatusEpoch++;
 				this.compacting = false;
@@ -474,7 +476,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
 			if (retryStatusEpoch === this.retryStatusEpoch) this.retryStatus = state.retryStatus;
-			if (streamingEpoch === this.streamingEpoch) this.streaming = state.isStreaming;
+			if (streamingEpoch === this.streamingEpoch) {
+				this.streaming = state.isStreaming;
+				this.turnStartedAt = state.turnStartedAt;
+			}
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
 			this.compactionStartedAt = state.isCompacting
@@ -924,6 +929,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}),
 			isStreaming: { configurable: true, get: () => this.streaming },
 			retryStatus: { configurable: true, get: () => this.retryStatus },
+			turnStartedAt: { configurable: true, get: () => this.turnStartedAt },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
 			compactionStartedAt: { configurable: true, get: () => this.compactionStartedAt },
@@ -1465,6 +1471,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		}
 		switch (event.type) {
 			case "agent_start":
+				this.turnStartedAt = event.turnStartedAt;
 				this.streamingEpoch++;
 				this.streaming = true;
 				break;
@@ -1472,6 +1479,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.streamingEpoch++;
 				this.streaming = false;
 				this.dispatchBestEffort("refresh session view", this.refreshSessionView());
+				break;
+			case "agent_settled":
+				this.streamingEpoch++;
+				this.turnStartedAt = undefined;
 				break;
 			case "compaction_start":
 				this.compacting = true;

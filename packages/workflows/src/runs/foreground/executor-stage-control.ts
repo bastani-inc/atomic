@@ -16,6 +16,7 @@ import type {
 } from "./stage-runner-types.js";
 import { StageSessionHolds } from "./stage-session-holds.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
+import { StageTurnStart } from "./stage-turn-start.js";
 
 export function createStageControlHandle(runtime: LiveStageRuntime): StageControlHandle {
 	const messagePreparation = (): StageUserMessagePreparation => {
@@ -76,11 +77,13 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
 	let retryWait: StageRetryWait;
 	const holds = new StageSessionHolds();
-	// One lifetime subscription feeds both runtime projections, so the queue stays
+	const turnStart = new StageTurnStart();
+	// One lifetime subscription feeds the runtime projections, so the queue stays
 	// current while no stage chat is mounted.
 	const unsubscribeStageEvents = runtime.innerCtx.subscribe((event) => {
 		toolExecutions.record(event);
 		queuedUserMessages.record(event);
+		turnStart.record(event);
 		retryWait = stageRetryWaitAfter(retryWait, event);
 		holds.observe(event);
 		if (event.type === "task_cleanup_quarantined")
@@ -133,6 +136,12 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		get messages() {
 			// The chat and transcript surfaces read this at any time: a released stage shows none here, never throws.
 			return runtime.innerCtx.__residentMessages();
+		},
+		get turnStartedAt() {
+			return turnStart.turnStartedAt();
+		},
+		turnState() {
+			return turnStart.state();
 		},
 		get agentSession() {
 			return runtime.innerCtx.__agentSession();

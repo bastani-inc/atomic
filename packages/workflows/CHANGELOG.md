@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The bundled `show-me` skill now runs only when you type `/skill:show-me`, as its upstream HumanLayer skill does; the model no longer loads it on its own.
 - The `prompt-engineer` GPT-6.2 guide now says where reusable instructions belong: GPT-6.2 appends the Responses API's top-level `instructions` after `input`, so a `developer` message at the start of `input` keeps them in the cached prefix. The Claude Opus 5.5 guide adds that its progress notes arrive as thinking blocks a client must request to show, and the `max_tokens` Anthropic used for long agentic coding turns. The Claude Fable 5.2 page follows Anthropic's revised guide: a new code-ownership sentence and its measurements, new subagent and caution advice, and the `null` refusal category. The Claude Haiku 5.5 page notes that `budget_tokens` now returns an error, and the GPT-6 and GPT-6.1 pages link to OpenAI's GPT-6 guide again and follow its current text, which moved the per-model descriptions into the model pages.
 - In a stage chat, a click anywhere on a stage notice with detail, such as a task whose process cleanup is still being confirmed, shows or hides that detail, as Ctrl+O does for every notice.
+- A stage's `subscribe` listeners now see `model_fallback_start` when the stage moves a failed request to the next model in its `fallbackModels`, and `model_fallback_end` (`success: false`) when the turn ends, or the stage is paused, before that model's request starts, as a session's own model fallback reports them ([#5535](https://github.com/bastani-inc/atomic/issues/5535)).
 
 ### Fixed
 
@@ -30,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Clicking the stage summary in a workflow run's preview opens that run, including on the first click from another pane.
 - A graph node opens on a click, once the button is released where it was pressed, instead of on the press, so dragging across the run graph selects its text rather than opening the stage under the pointer.
 - A stage chat opened during a provider backoff or model switch shows `retrying…` or `switching model…` even when the session still reads as streaming, including on a worker. When the worker exits or is replaced, the stage and its subagent chats clear the old wait; a remote stage reopens on the replacement’s own session ([#5572](https://github.com/bastani-inc/atomic/issues/5572)).
+- A stage chat keeps counting a turn when the stage moves a failed request to the next model in its `fallbackModels`, instead of reading `for 0s` for the fallback model's answer. A chat opened during or after the move, also for a stage on a local worker, counts from the turn's first request, and shows `switching model…` while the move is under way ([#5535](https://github.com/bastani-inc/atomic/issues/5535)).
 
 ## [0.9.89] - 2026-11-18
 
