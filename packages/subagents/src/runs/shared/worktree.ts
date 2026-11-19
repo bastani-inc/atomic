@@ -15,6 +15,7 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
+import { errorCode } from "../../shared/exclusive-file-publication.js";
 import { pathExists } from "../../shared/path-exists.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -241,9 +242,11 @@ const stalledCheck = new AsyncLocalStorage<() => void>();
 
 export async function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<GitResult> {
 	const onStall = stalledCheck.getStore();
+	const gitEnv = createGitEnvironment({ ...env, GIT_OPTIONAL_LOCKS: "0" }, createChildProcessEnvironment());
+	// Never inherit a caller's index. Only patch capture selects an alternative to this worktree's own index.
+	if (env.GIT_INDEX_FILE) gitEnv.GIT_INDEX_FILE = env.GIT_INDEX_FILE;
 	const result = await spawnCollect("git", ["-C", cwd, ...args], {
-		// A bounded check takes no optional lock, so stopping it never leaves an index.lock behind.
-		env: createGitEnvironment(onStall ? { ...env, GIT_OPTIONAL_LOCKS: "0" } : env, createChildProcessEnvironment()),
+		env: gitEnv,
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 		...(onStall && { timeout: STALLED_CHECK_GIT_TIMEOUT_MS }),
 	});
@@ -807,26 +810,40 @@ async function captureWorktreeDiff(
 	agent: string,
 	patchPath: string,
 ): Promise<WorktreeDiff> {
-	await removeSyntheticPathsBeforeDiff(worktree);
-	await runGitChecked(worktree.path, ["add", "-A"]);
-	const diffStat = (await runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit])).trim();
-	const numstat = await runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
-	await writePatchFile(patchPath, (partialPath) =>
-		runGitChecked(worktree.path, ["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
-	);
-	const parsed = parseNumstat(numstat);
-	return {
-		index: worktree.index,
-		agent,
-		branch: worktree.branch,
-		diffStat,
-		filesChanged: parsed.filesChanged,
-		insertions: parsed.insertions,
-		deletions: parsed.deletions,
-		patchPath,
-		worktreePath: worktree.path,
-		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
-	};
+	const gitDir = (await runGitChecked(worktree.path, ["rev-parse", "--absolute-git-dir"])).trimEnd();
+	const index = path.join(gitDir, "index");
+	// Another Git operation is editing this checkout: keep it and retry capture on a later sweep.
+	if (await pathExists(`${index}.lock`)) throw new Error(`Worktree index is locked: ${index}.lock`);
+	const scratch = await fs.mkdtemp(path.join(gitDir, "atomic-capture-"));
+	try {
+		const snapshot = path.join(scratch, "index");
+		try {
+			await fs.copyFile(index, snapshot);
+		} catch (error) {
+			// Git treats a missing index as empty. Let add create only the temporary one in that case.
+			if (errorCode(error) !== "ENOENT") throw error;
+		}
+		const git = (args: string[]) => runGitChecked(worktree.path, args, { GIT_INDEX_FILE: snapshot });
+		await removeSyntheticPathsBeforeDiff(worktree);
+		await git(["add", "-A"]);
+		const diffStat = (await git(["diff", "--cached", "--stat", setup.baseCommit])).trim();
+		const numstat = await git(["diff", "--cached", "--numstat", setup.baseCommit]);
+		await writePatchFile(patchPath, (partialPath) =>
+			git(["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
+		);
+		return {
+			index: worktree.index,
+			agent,
+			branch: worktree.branch,
+			diffStat,
+			...parseNumstat(numstat),
+			patchPath,
+			worktreePath: worktree.path,
+			...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
+		};
+	} finally {
+		await fs.rm(scratch, { recursive: true, force: true });
+	}
 }
 /**
  * Have git write the patch to a file of its own, so no output buffer caps it, and put it at `patchPath` only once it

@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
@@ -3790,6 +3799,208 @@ test("an SDK foreground batch reports its children's final worktree state, not a
 		first.resolve();
 		second.resolve();
 		await batch;
+	}
+});
+
+// A successful clean filter that waits for the test to release it, once, before copying stdin to stdout.
+function holdGitFilter(cwd: string, pattern: string) {
+	const marker = join(cwd, ".git", "filter-started").replaceAll("\\", "/");
+	const release = join(cwd, ".git", "filter-release").replaceAll("\\", "/");
+	writeFileSync(join(cwd, ".git", "info", "attributes"), `${pattern} filter=hold\n`);
+	gitOutput(cwd, [
+		"config",
+		"filter.hold.clean",
+		`touch '${marker}'; while ! test -f '${release}'; do sleep 0.1; done; cat`,
+	]);
+	return {
+		started: () => vi.waitFor(() => assert.ok(existsSync(marker)), { timeout: RECORD_WAIT_MS, interval: 10 }),
+		release: () => writeFileSync(release, "release"),
+	};
+}
+
+function rejectSdkInput(h: Harness, prepare?: (cwd: string) => void) {
+	const refused = Promise.withResolvers<{ childId: string; error: Error }>();
+	const storage = vi.spyOn(artifactStorage, "getArtifactsDir").mockResolvedValue(join(h.cwd, "artifacts"));
+	cleanups.push(async () => {
+		storage.mockRestore();
+	});
+	const runSync = h.deps.runtime!.runSync!;
+	const { execute } = createSubagentExecutor({
+		...h.deps,
+		runtime: {
+			...h.deps.runtime,
+			async runSync(cwd, agents, agent, task, options) {
+				if (!task.includes("refuse-input")) return runSync(cwd, agents, agent, task, options);
+				assert.ok(options.artifactsDir && options.cwd);
+				const paths = artifactStorage.getArtifactPaths(options.artifactsDir, options.runId, agent, options.index);
+				mkdirSync(paths.inputPath, { recursive: true });
+				prepare?.(options.cwd);
+				try {
+					return await runSync(cwd, agents, agent, task, options);
+				} catch (error) {
+					assert.ok(error instanceof Error);
+					refused.resolve({ childId: `${options.runId}:${options.index}`, error });
+					throw error;
+				}
+			},
+		},
+	});
+	return {
+		launch: (...tasks: string[]) =>
+			execute(
+				"input",
+				{ tasks: tasks.map((task) => ({ agent: "worker", task })), worktree: true },
+				new AbortController().signal,
+				undefined,
+				h.ctx,
+			),
+		refused: refused.promise,
+	};
+}
+
+for (const sibling of ["finishes", "hands off"] as const)
+	test(`an SDK startup rejection keeps its original reason when a sibling ${sibling} (#5600)`, async () => {
+		const h = harness({ ownerless: true });
+		initGitRepository(h.cwd);
+		const done = Promise.withResolvers<void>();
+		h.finishOn.set("live-sibling", done);
+		const sdk = rejectSdkInput(h);
+		const batch = sdk.launch("refuse-input", "live-sibling");
+		const { childId, error } = await sdk.refused;
+		const failed = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
+		try {
+			if (sibling === "finishes") done.resolve();
+			else {
+				await h.waitForLatest(`${failed.runId}:1`, (r) => !!r.childSessionId);
+				const handoff = h.runs.find((r) => r.task.includes("live-sibling"))?.options.onIntercomDetachCommit;
+				assert.ok(handoff);
+				handoff();
+			}
+			const reply = await batch;
+			const rejection = reply.details.results[0]?.taskResponse;
+			assert.match(error.message, /EISDIR|EPERM/);
+			assert.deepEqual(rejection, {
+				kind: "unstarted",
+				reason: { kind: "rejected", error: { code: "SpawnFailed", message: error.message } },
+			});
+			const hold = /worktree kept until/i;
+			assert.equal(hold.test(text(reply)), sibling === "hands off");
+			const args = {
+				tasks: ["refuse-input", "live-sibling"].map((task) => ({ agent: "worker", task })),
+				worktree: true,
+			};
+			const cards = [false, true].map((expanded) => launchCard(h, reply, args, expanded));
+			for (const paint of cards) assert.equal(hold.test(paint()), sibling === "hands off");
+			done.resolve();
+			await waitForWorktreeCleanup(h, failed);
+			for (const paint of cards) assert.doesNotMatch(paint(), hold);
+		} finally {
+			done.resolve();
+			await batch;
+			await waitForWorktreeCleanup(h, failed);
+		}
+	});
+
+test("an SDK input write failure stops the execution clock before Git captures the worktree (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const filter = holdGitFilter(h.cwd, "*.slow");
+	const sdk = rejectSdkInput(h, (cwd) => writeFileSync(join(cwd, "edited.slow"), "save this edit\n"));
+	const batch = sdk.launch("refuse-input");
+	try {
+		const { childId, error } = await sdk.refused;
+		assert.match(error.message, /EISDIR|EPERM/);
+		await filter.started();
+		const duringCleanup = Date.now();
+		await vi.waitFor(() => assert.ok(Date.now() > duringCleanup));
+		filter.release();
+		await batch;
+		const record = await h.waitForLatest(childId, (r) => r.terminalStatus === "error");
+		assert.ok(record.elapsedSpan && record.elapsedMs !== undefined);
+		assert.ok(
+			record.elapsedMs <= duringCleanup - record.elapsedSpan.dispatchedAt,
+			`recorded ${record.elapsedMs} ms, but Git was already running ${duringCleanup - record.elapsedSpan.dispatchedAt} ms after dispatch`,
+		);
+	} finally {
+		filter.release();
+		await batch;
+	}
+});
+
+for (const action of ["pause", "quit"] as const)
+	test(`${action} all stops a plain child before waiting for a different child's Git cleanup (#5600)`, async () => {
+		const h = harness();
+		initGitRepository(h.cwd);
+		const first = Promise.withResolvers<void>();
+		const second = Promise.withResolvers<void>();
+		h.finishOn.set("managed-child", first);
+		h.finishOn.set("plain-child", second);
+		const [managed] = await launchWorktreeRun(h, ["managed-child"]);
+		assert.ok(managed?.taskId);
+		await h.waitForLatest(managed.childId, (record) => !!record.childSessionId);
+		const launch = await h.call({ agent: "worker", task: "plain-child" });
+		assert.notEqual(launch.isError, true, text(launch));
+		const plain = await vi.waitFor(
+			() => {
+				const row = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(r) => r.childId !== managed.childId && r.childSessionId,
+				);
+				assert.ok(row?.taskId);
+				return row;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const file = join(managed.cwd, "seed.txt");
+		writeFileSync(file, readFileSync(file, "utf8").replace("seed", "tide"));
+		utimesSync(file, 0, 0); // Same byte length, different mtime: git status must inspect its contents.
+		const filter = holdGitFilter(h.cwd, "seed.txt");
+		const stop = h.call({ action, all: true });
+		try {
+			await filter.started();
+			second.resolve();
+			const stopped = await h.waitForLatest(plain.childId, (r) => r.state === "terminal");
+			assert.equal(stopped.terminalStatus, action === "pause" ? "paused" : "quit");
+		} finally {
+			filter.release();
+			first.resolve();
+			second.resolve();
+			await stop;
+		}
+	});
+
+test("pausing after an SDK handoff preserves staged and unstaged edits in the retained worktree (#5600)", async () => {
+	const h = harness({ ownerless: true });
+	initGitRepository(h.cwd);
+	const done = Promise.withResolvers<void>();
+	h.finishOn.set("handoff", done);
+	const launch = h.call({ tasks: [{ agent: "worker", task: "handoff" }], worktree: true });
+	try {
+		const child = await vi.waitFor(
+			() => {
+				const row = [...readSubagentChildRecords(h.sessionManager.getEntries()).values()].find(
+					(r) => r.childSessionId,
+				);
+				assert.ok(row);
+				return row;
+			},
+			{ timeout: RECORD_WAIT_MS },
+		);
+		const file = join(child.cwd, "seed.txt");
+		writeFileSync(file, "staged draft\n");
+		gitOutput(child.cwd, ["add", "seed.txt"]);
+		writeFileSync(file, "unstaged edit\n");
+		assert.ok(h.runs[0]?.options.onIntercomDetachCommit);
+		h.runs[0].options.onIntercomDetachCommit();
+		assert.ok((await launch).details.results[0]?.detached);
+		const staged = gitOutput(child.cwd, ["show", ":seed.txt"]);
+		assert.equal(staged.trim(), "staged draft");
+		const paused = await h.call({ action: "pause", id: child.childId });
+		assert.notEqual(paused.isError, true, text(paused));
+		assert.equal(gitOutput(child.cwd, ["show", ":seed.txt"]), staged);
+		assert.equal(readFileSync(file, "utf8"), "unstaged edit\n");
+	} finally {
+		done.resolve();
+		await launch;
 	}
 });
 

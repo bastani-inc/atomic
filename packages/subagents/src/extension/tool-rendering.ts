@@ -1317,6 +1317,17 @@ export function renderSubagentToolResult(
 			const blocks = Array.from({ length: count }, (_, index) => {
 				const child = children.get(index);
 				const progress = progressBySlot.get(index);
+				if (d.rejectedWorktrees?.[index] && child?.taskResponse?.kind === "unstarted") {
+					return buildOutcomeToolBlock({
+						slot: index,
+						outcome: child.taskResponse,
+						identity: child,
+						result,
+						expanded: options.expanded,
+						theme,
+						context,
+					});
+				}
 				if (child?.detached && d.runId) {
 					const record = subagentChildIndexEntry(`${d.runId}:${child.progress?.index ?? index}`);
 					if (record?.taskId)

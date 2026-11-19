@@ -312,6 +312,11 @@ export async function runParallelPath(
 			worktreeSetup: worktreeSetup as WorktreeSetup | undefined,
 			runtime: deps.runtime,
 		});
+		const rejectedWorktrees =
+			runWorktrees &&
+			results.map(({ taskResponse }, index) =>
+				taskResponse?.kind === "unstarted" && taskResponse.reason.kind === "rejected" ? { runId, index } : null,
+			);
 		if (ctx.getAgentTaskHost) {
 			const response: import("../../../../coding-agent/src/core/tasks/contracts.js").ModelParallelResponse = {
 				kind: "parallel",
@@ -324,18 +329,13 @@ export async function runParallelPath(
 				})),
 			};
 			const reply = await parallelTaskToolResultWithOutput(response, ctx.getAgentTaskHost());
-			return withRejectedWorktrees(
-				reply,
-				runWorktrees &&
-					response.slots.map(({ ordinal, outcome }) =>
-						outcome.kind === "unstarted" && outcome.reason.kind === "rejected" ? { runId, index: ordinal } : null,
-					),
-			);
+			return withRejectedWorktrees(reply, rejectedWorktrees);
 		}
 		// A sibling may have released the batch since this child finished. Report only its own current worktree.
 		if (runWorktrees) {
 			for (const [index, result] of results.entries()) {
-				if (result.worktreeNote) result.worktreeNote = currentChildWorktreeNote(runId, index);
+				if (result.worktreeNote)
+					result.worktreeNote = rejectedWorktrees?.[index] ? undefined : currentChildWorktreeNote(runId, index);
 			}
 		}
 		for (let i = 0; i < results.length; i++) {
@@ -356,6 +356,7 @@ export async function runParallelPath(
 			runId,
 			results,
 			parentAskYielded: false,
+			...(rejectedWorktrees?.some(Boolean) ? { rejectedWorktrees } : {}),
 			progress: params.includeProgress ? allProgress : undefined,
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});

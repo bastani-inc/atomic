@@ -475,7 +475,12 @@ export function createExecutionBurstDispatcher(input: {
 		if (items.length === 1) {
 			const item = items[0]!;
 			try {
-				resolveItem(item, await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx));
+				const result = await input.execute(item.id, item.params, item.signal, item.onUpdate, item.ctx);
+				// SDK refusals have no host receipt. Report their worktree state at delivery, just as for routed slots.
+				resolveItem(
+					item,
+					result.details?.taskResponse ? result : withRejectedWorktrees(result, result.details?.rejectedWorktrees),
+				);
 			} catch (error) {
 				rejectItem(item, error instanceof Error ? error : new Error(String(error)));
 			} finally {

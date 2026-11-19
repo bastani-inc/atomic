@@ -293,9 +293,11 @@ async function stopHostChild(
 	host: AgentTaskHost,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
+	onRequested?: () => void,
 ): Promise<{ readonly failure?: string; readonly neverStarted?: boolean }> {
 	const taskId = record.taskId as TaskId;
 	if (isFinishingWorktreeTask(taskId)) {
+		onRequested?.(); // Already finishing: there is no cancel to issue.
 		await waitForSettlement(host, taskId);
 		return {};
 	}
@@ -304,6 +306,7 @@ async function stopHostChild(
 	parkRunWorktree(record.runId, record.index);
 	// A typed resumable stop: its parent is told it is paused and awaiting resume, never that it ended.
 	const cancelled = await host.cancelTask(taskId, status === "quit" ? "quit" : "pause");
+	onRequested?.();
 	if (!cancelled.ok) {
 		takeSubagentChildStop(taskId);
 		const note = await boundedWorktreeReply(record.runId, unparkRunWorktree(record.runId, record.index));
@@ -341,13 +344,16 @@ async function stopLiveChild(
 	host: AgentTaskHost | undefined,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
+	onRequested?: () => void,
 ): Promise<LiveChildStop> {
 	let neverStarted = false;
 	if (record.taskId !== undefined && isLiveOwnerlessChild(record.taskId)) {
 		neverStarted = isQueuedOwnerlessChild(record.taskId);
-		await stopOwnerlessChild(record.taskId, status);
+		const settled = stopOwnerlessChild(record.taskId, status);
+		onRequested?.();
+		await settled;
 	} else if (host) {
-		const stop = await stopHostChild(deps, host, record, status);
+		const stop = await stopHostChild(deps, host, record, status, onRequested);
 		if (stop.failure) return { kind: "failed", reason: stop.failure };
 		neverStarted = stop.neverStarted === true;
 	} else return { kind: "failed", reason: "it is not running in this process" };
@@ -455,10 +461,23 @@ async function stopChildren(
 		failures.push(
 			`${label(record)} is not running (${record.state === "terminal" ? (record.terminalStatus ?? "settled") : "not live in this process"}); there is nothing to ${action}.`,
 		);
-	for (const record of targets) {
-		const key = childHoldKey(subagentChildOwner(ctx).sessionId, record.childId);
-		if (isLive(record)) {
-			reportLive(record, await stopLiveChild(deps, ctx, host, record, status));
+	// Preserve the host's cancel order (queued first). The next request waits only for the previous cancel
+	// acknowledgement, not for the child to settle, save its changes, or release its worktree.
+	let requested: Promise<void> | undefined;
+	const stops = await Promise.all(
+		targets.map((record) => {
+			if (!isLive(record)) return undefined;
+			const next = Promise.withResolvers<void>();
+			const issue = () => stopLiveChild(deps, ctx, host, record, status, next.resolve);
+			const stop = requested ? requested.then(issue) : issue();
+			requested = next.promise;
+			return stop.finally(next.resolve);
+		}),
+	);
+	for (const [index, record] of targets.entries()) {
+		const stop = stops[index];
+		if (stop) {
+			reportLive(record, stop);
 			continue;
 		}
 		const stopped = stoppedAs(record);
@@ -484,7 +503,7 @@ async function stopChildren(
 		}
 		children.push(childDetails(latest, status));
 		if (stopped) {
-			releasePausedChildHold(key);
+			releasePausedChildHold(childHoldKey(subagentChildOwner(ctx).sessionId, record.childId));
 			lines.push(
 				`Quit paused ${label(latest)}: paused · awaiting resume. It stays resumable with { action: "resume", id: "${latest.childId}", message? }.`,
 			);

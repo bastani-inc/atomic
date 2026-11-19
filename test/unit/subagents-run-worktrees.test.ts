@@ -92,6 +92,20 @@ function assertAtomicSetupPresent(worktreePath: string, why: string): void {
 	);
 }
 
+test("saving a worktree patch does not recreate a missing index (#5600)", async () => {
+	const repo = await repositoryWithSetupSources();
+	const { setup } = await worktreeRun(repo);
+	const tree = setup.worktrees[0]!;
+	const index = join((await runGitChecked(tree.path, ["rev-parse", "--absolute-git-dir"])).trimEnd(), "index");
+	unlinkSync(index);
+	writeFileSync(join(tree.path, "draft.txt"), "include this draft\n");
+	const [diff] = await diffWorktrees(setup, ["worker"], join(repo, "..", "diffs"));
+	assert.ok(diff);
+	assert.equal(diff.captureError, undefined);
+	assert.match(readFileSync(diff.patchPath, "utf8"), /include this draft/);
+	assert.equal(existsSync(index), false);
+});
+
 test("resuming a paused child in its kept worktree restores the node_modules link and settings its run's diff removed (#3784)", async () => {
 	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);

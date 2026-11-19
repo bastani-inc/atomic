@@ -308,14 +308,15 @@ export function runOwnerlessChild(input: {
 			}
 			return child;
 		} catch (error) {
+			// Setup can throw before the runner freezes its span. Waiting for Git is not execution time.
+			elapsedSpan.endedAt ??= Date.now();
 			if (isExecutionTicket(input.schedule)) input.schedule.onEntered();
 			if (takeSubagentChildStop(launchId) !== undefined) unparkRunWorktree(runId, index);
 			finishing = !!finishWorktree;
-			const note = finishWorktree && (await finishWorktree());
+			if (finishWorktree) await finishWorktree();
 			// Its owner closed: its latest record stays `running`, so reopening the owner restores it.
 			if (input.ownerSignal?.aborted !== true) record("terminal", "error");
 			finish();
-			if (note) throw new Error(`${String(error)}. ${note}`, { cause: error });
 			throw error;
 		}
 	};
