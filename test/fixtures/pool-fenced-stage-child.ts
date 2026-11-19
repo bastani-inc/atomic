@@ -109,7 +109,7 @@ export const child = workflow({
 			modelRuntime,
 			model: modelRuntime.getModel("pool-fixture", "fixture")!,
 			settingsManager,
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			...(resourceLoader === undefined ? {} : { resourceLoader }),
 		} as never);
 		const text = stage.complete("Reply");

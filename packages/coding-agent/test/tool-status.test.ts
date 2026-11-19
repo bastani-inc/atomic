@@ -52,7 +52,7 @@ test.each([
 			services,
 			sessionManager: SessionManager.inMemory(cwd),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			tools,
 		});
 		try {
@@ -83,7 +83,7 @@ async function withSession<T>(
 		cwd,
 		agentDir: join(cwd, "agent"),
 		model: getModel("anthropic", "claude-sonnet-4-5")!,
-		builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		settingsManager: SettingsManager.inMemory(),
 		sessionManager: SessionManager.inMemory(cwd),
 		...options,

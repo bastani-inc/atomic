@@ -72,7 +72,6 @@ const PUBLISHED_DEPENDENCY_SECTIONS: readonly DependencySectionName[] = [
 ];
 
 const BUNDLED_PACKAGE_MANIFESTS: readonly PackageDependencySections[] = [
-	workflowsPackageJson,
 	subagentsPackageJson,
 	mcpPackageJson,
 	webAccessPackageJson,

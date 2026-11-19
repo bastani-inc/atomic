@@ -1,7 +1,6 @@
 // #3105: copied unchanged into a real npm installation; never use checkout imports or CLI hosts.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -23,18 +22,14 @@ import {
 	removeFixtureRoot,
 	withoutSqliteExperimentalWarning,
 } from "./sdk-host-fixture-support.mjs";
-const DURABLE_PHASE_TIMEOUT_MS = 30_000;
 assert.equal(process.versions.bun, undefined);
 assert.ok(!process.stdin.isTTY && !process.stdout.isTTY);
 const installedRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), "node_modules"));
-for (const specifier of [
-	"@bastani/atomic",
-	"@bastani/atomic-ai",
-	"@bastani/atomic/workflows",
-	"@bastani/atomic/workflows/builtin",
-	"@bastani/atomic/workflows/builtin/open-claude-design",
-]) {
+for (const specifier of ["@bastani/atomic", "@bastani/atomic-ai", "@bastani/atomic/storage", "@bastani/atomic/rpc-entry"]) {
 	assert.ok(realpathSync(fileURLToPath(import.meta.resolve(specifier))).startsWith(installedRoot), specifier);
+}
+for (const specifier of ["@bastani/atomic/workflows", "@bastani/atomic/workflows/builtin", "@bastani/atomic/workflows/builtin/goal"]) {
+	assert.throws(() => import.meta.resolve(specifier), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
 }
 // Fail rather than merely count forbidden import-time host effects.
 const original = {
@@ -60,8 +55,6 @@ syncBuiltinESMExports();
 let sdk;
 try {
 	sdk = await import("@bastani/atomic");
-	await import("@bastani/atomic/workflows");
-	await import("@bastani/atomic/workflows/builtin");
 } finally {
 	net.Socket.prototype.connect = original.connect;
 	globalThis.fetch = original.fetch;
@@ -76,7 +69,7 @@ const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager,
 const mode = process.argv[2];
 const root = process.argv[3] ?? mkdtempSync(join(tmpdir(), "sdk-h-"));
 process.env.ATOMIC_CODING_AGENT_DIR = join(root, "agent");
-const disabled = { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false };
+const disabled = { subagents: false, mcp: false, intercom: false, "web-access": false };
 const settingsManager = SettingsManager.inMemory({ sessionSummary: { enabled: false }, retry: { enabled: false } });
 const modelRuntime = await ModelRuntime.create({
 	authPath: join(root, "auth"),
@@ -96,321 +89,30 @@ const tool = (session, name) => {
 	return found;
 };
 const call = (session, name, args) => tool(session, name).execute(name, args, new AbortController().signal);
-async function until(check) {
-	const deadline = Date.now() + DURABLE_PHASE_TIMEOUT_MS;
-	while (true) {
-		try {
-			return await check();
-		} catch (error) {
-			if (Date.now() >= deadline) throw error;
-			await delay(20);
-		}
-	}
-}
 function emitAssistant(stream, message) {
 	stream.push({ type: "start", partial: { ...message, content: [], stopReason: "pending" } });
 	stream.push({ type: "done", reason: message.stopReason, message });
 	stream.end(message);
 }
-const host = (confirm) => ({
-	input: async () => "  durable text  ",
-	confirm,
-	select: async () => undefined,
-	editor: async () => "",
-	questionnaire: async () => ({ answers: [], cancelled: true }),
-});
 try {
-	if (mode?.startsWith("persist-")) {
-		const directory = join(root, ".atomic", "workflows");
-		mkdirSync(directory, { recursive: true });
-		const source = readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url));
-		writeFileSync(join(directory, "sdk-host-durable.ts"), source);
-		const hash = createHash("sha256").update(source).digest("hex");
-		process.env.ATOMIC_FAULT_TEST_HOME = root;
-		const identities = [],
-			diagnostics = [];
-		const pending = Promise.withResolvers();
-		const bindings = {
-			humanInput: host(async (_title, _message, identity) => {
-				identities.push(identity);
-				return pending.promise;
-			}),
-			onDiagnostic: (entry) => diagnostics.push(entry),
-		};
-		const { session } = await createAgentSession({
-			...options(),
-			builtins: { ...disabled, workflows: true },
-			extensionBindings: mode === "persist-start" ? bindings : { humanInput: null },
-		});
-		const status = async () => (await call(session, "workflow", { action: "status" })).details;
-		try {
-			if (mode === "persist-start") {
-				await call(session, "workflow", { action: "run", workflow: "sdk-host-durable", inputs: {} });
-				await until(() => assert.equal(identities.length, 1));
-				const details = await status();
-				const runId = details.runs[0].runId;
-				assert.equal(details.runs[0].awaitingInputCount, 1);
-				assert.equal(
-					readFileSync(join(root, "receipts.jsonl"), "utf8"),
-					`${JSON.stringify({ text: "  durable text  " })}\n`,
-				);
-				await session.bindExtensions({ humanInput: null });
-				assert.equal(identities[0].signal.aborted, true);
-				pending.resolve(true);
-				const stopped = await call(session, "workflow", { action: "quit", runId });
-				assert.equal(stopped.details.status, "paused", JSON.stringify(stopped));
-				assert.equal(existsSync(join(root, "effects.jsonl")), false);
-				assert.doesNotMatch(JSON.stringify(diagnostics), /NON-DURABLY|durable backend unavailable/);
-				writeFileSync(
-					join(root, "handoff.json"),
-					JSON.stringify({ runId, hash, requestId: identities[0].requestId }),
-				);
-			} else {
-				const saved = JSON.parse(readFileSync(join(root, "handoff.json"), "utf8"));
-				assert.equal(hash, saved.hash);
-				const resumed = await call(session, "workflow", { action: "resume", runId: saved.runId });
-				assert.notEqual(resumed.isError, true, JSON.stringify(resumed));
-				assert.equal(resumed.details.status, "running", JSON.stringify(resumed));
-				await until(async () => {
-					const details = await status();
-					assert.ok(
-						details.runs.some((run) => run.runId === saved.runId && run.awaitingInputCount === 1),
-						JSON.stringify(details),
-					);
-				});
-				assert.equal(existsSync(join(root, "effects.jsonl")), false);
-				await session.bindExtensions({
-					humanInput: {
-						...host(async (_title, _message, identity) => {
-							identities.push(identity);
-							return true;
-						}),
-						input: async () => {
-							throw new Error("completed input replayed");
-						},
-					},
-				});
-				await until(async () =>
-					assert.ok((await status()).runs.some((run) => run.runId === saved.runId && run.status === "completed")),
-				);
-				assert.equal(identities.length, 1);
-				assert.notEqual(identities[0].requestId, saved.requestId);
-				for (const file of ["receipts.jsonl", "effects.jsonl"])
-					assert.equal(
-						readFileSync(join(root, file), "utf8"),
-						`${JSON.stringify({ text: "  durable text  " })}\n`,
-					);
-			}
-		} finally {
-			await session.dispose();
-		}
-	} else if (mode?.startsWith("gate-")) {
-		const reply = mode.slice(5);
-		const source = readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url));
-		const hash = createHash("sha256").update(source).digest("hex");
-		const directory = join(root, ".atomic", "workflows");
-		mkdirSync(directory, { recursive: true });
-		const definition = join(directory, "sdk-host-durable.ts");
-		writeFileSync(definition, source);
-		process.env.ATOMIC_FAULT_TEST_HOME = root;
-		const late = Promise.withResolvers();
-		const identities = [];
-		const callbacks = [];
-		const progression = [];
-		const phases = [];
-		let previousProgress;
-		let lastPoll;
-		let pollCount = 0;
-		let details;
-		let trueResponseResolvedAt;
-		const trueAnswer = Promise.withResolvers();
-		const recordCallback = async (kind, identity, value) => {
-			const { requestId, sessionId, workflowRunId, workflowStageId } = identity;
-			if (callbacks.length >= 64) callbacks.shift();
-			callbacks.push({ kind, event: "invoked", observedAt: Date.now(), requestId, sessionId, workflowRunId, workflowStageId });
-			try {
-				return await value;
-			} finally {
-				if (callbacks.length >= 64) callbacks.shift();
-				callbacks.push({ kind, event: "returned", observedAt: Date.now(), requestId });
-			}
-		};
-		const humanInput = {
-			...host(async (_title, _message, identity) => {
-				identities.push(identity);
-				const response = reply === "stale" || reply === "duplicate" ? late.promise
-					: reply === "true" ? trueAnswer.promise
-					: reply === "cancel" ? undefined : reply === "invalid" ? "true" : false;
-				const value = await recordCallback("confirm", identity, response);
-				if (reply === "true") trueResponseResolvedAt = Date.now();
-				return value;
-			}),
-			input: async (_title, _message, identity) => recordCallback("input", identity, "  durable text  "),
-		};
-		const waitForPhase = async (phase, check) => {
-			const startedAt = Date.now();
-			const entry = { phase, startedAt, deadline: startedAt + DURABLE_PHASE_TIMEOUT_MS };
-			if (phases.length >= 64) phases.shift();
-			phases.push(entry);
-			try {
-				while (true) {
-					try {
-						return await check();
-					} catch (error) {
-						if (Date.now() >= entry.deadline) throw error;
-						await delay(20);
-					}
-				}
-			} finally {
-				entry.endedAt = Date.now();
-			}
-		};
-		const { session } = await createAgentSession({
-			...options(),
-			builtins: { ...disabled, workflows: true },
-			extensionBindings: { humanInput: reply === "missing" ? null : humanInput },
-		});
-		try {
-			phases.push({ phase: "admission", startedAt: Date.now() });
-			await call(session, "workflow", { action: "run", workflow: "sdk-host-durable", inputs: {} });
-			phases[0].endedAt = Date.now();
-			const status = async () => {
-				details = (await call(session, "workflow", { action: "status" })).details;
-				const state = {
-					runs: details.runs.map(({ runId, status, phase, lastProgressAt, awaitingInputCount }) => ({ runId, status, phase, lastProgressAt, awaitingInputCount })),
-					snapshots: details.snapshots.map((run) => ({
-						id: run.id, status: run.status, phase: run.phase, lastProgressAt: run.lastProgressAt,
-						stages: run.stages.map(({ id, name, status, startedAt, endedAt, awaitingInputSince, pendingPrompt }) => ({ id, name, status, startedAt, endedAt, awaitingInputSince, promptId: pendingPrompt?.id })),
-						toolNodes: (run.toolNodes ?? []).map(({ id, name, status, startedAt, endedAt }) => ({ id, name, status, startedAt, endedAt })),
-					})),
-				};
-				lastPoll = { observedAt: Date.now(), poll: ++pollCount, ...state };
-				const serialized = JSON.stringify(state);
-				if (serialized !== previousProgress) {
-					previousProgress = serialized;
-					if (progression.length === 64) progression.shift();
-					progression.push(lastPoll);
-				}
-				return details;
-			};
-			if (reply === "duplicate") {
-				await waitForPhase("duplicate-readiness", () => assert.equal(identities.length, 1));
-				late.resolve(true);
-				late.resolve(true);
-			}
-			if (["missing", "cancel", "stale", "invalid"].includes(reply)) {
-				await waitForPhase("pending-input", async () => {
-					const details = await status();
-					assert.equal(details.runs[0]?.awaitingInputCount, 1);
-					if (reply !== "missing") assert.equal(identities.length, 1);
-				});
-				if (reply === "stale") {
-					await session.bindExtensions({ humanInput: null });
-					assert.equal(identities[0].signal.aborted, true);
-					late.resolve(true);
-					await delay(30);
-				}
-				assert.equal((await status()).runs[0].status, "running");
-				assert.equal(existsSync(join(root, "effects.jsonl")), false);
-			} else {
-				if (reply === "true") {
-					await waitForPhase("confirm-readiness", async () => {
-						const details = await status();
-						assert.equal(identities.length, 1, "approval must be presented exactly once");
-						const identity = identities[0];
-						for (const key of ["requestId", "workflowRunId", "workflowStageId", "sessionId"])
-							assert.equal(typeof identity?.[key], "string", `approval identity missing ${key}`);
-						const run = details.runs.find((entry) => entry.runId === identity.workflowRunId);
-						assert.ok(run, "approval workflow run is not publicly visible");
-						assert.equal(run.awaitingInputCount, 1);
-						assert.ok(
-							run.awaitingInput.some(
-								(input) => input.promptKind === "confirm" && input.stageId === identity.workflowStageId,
-							),
-							"matching confirm is not pending",
-						);
-						assert.equal(trueResponseResolvedAt, undefined, "approval was released before readiness");
-						assert.equal(
-							readFileSync(join(root, "receipts.jsonl"), "utf8"),
-							`${JSON.stringify({ text: "  durable text  " })}\n`,
-						);
-						assert.equal(existsSync(join(root, "effects.jsonl")), false);
-					});
-					phases.push({ phase: "answer-release", observedAt: Date.now() });
-					trueAnswer.resolve(true);
-				}
-				const details = await waitForPhase("completion", async () => {
-					const result = await status();
-					assert.equal(result.runs[0]?.status, "completed");
-					return result;
-				});
-				if (reply === "true") assert.ok(trueResponseResolvedAt, "approval response has not returned");
-				const approved = reply === "true" || reply === "duplicate";
-				assert.deepEqual(details.snapshots[0].result, { text: "  durable text  ", approved });
-				assert.equal(
-					readFileSync(join(root, "receipts.jsonl"), "utf8"),
-					`${JSON.stringify({ text: "  durable text  " })}\n`,
-				);
-				assert.equal(existsSync(join(root, "effects.jsonl")), approved);
-				if (approved)
-					assert.equal(
-						readFileSync(join(root, "effects.jsonl"), "utf8"),
-						`${JSON.stringify({ text: "  durable text  " })}\n`,
-					);
-				await session.bindExtensions({});
-				assert.equal(identities.length, 1, "completed approval was presented again");
-			}
-			assert.equal(createHash("sha256").update(readFileSync(definition)).digest("hex"), hash);
-		} catch (error) {
-			const observedAt = Date.now();
-			const sideEffects = Object.fromEntries(["receipts.jsonl", "effects.jsonl"].map((file) => [
-				file, existsSync(join(root, file)) ? readFileSync(join(root, file), "utf8").slice(0, 4096) : null,
-			]));
-			console.error(JSON.stringify({ host: "packed-node", reply, observedAt, phases, sideEffects, details, progression, lastPoll, callbacks, error: String(error) }));
-			throw error;
-		} finally {
-			trueAnswer.resolve(false);
-			await session.dispose();
-		}
-	} else if (mode === "children") {
+	if (mode === "children") {
 		// Production routing is essential: test hosts intentionally replace stage/subagent sessions.
 		process.env.NODE_ENV = "production";
 		delete process.env.NODE_TEST_CONTEXT;
-		const { createAssistantMessageEventStream, getCurrentTools, getModel } = await import("@bastani/atomic-ai/compat");
+		const { createAssistantMessageEventStream, getModel } = await import("@bastani/atomic-ai/compat");
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5"), provider: "packed-child", id: "fixture" };
 		let childCalls = 0;
-		const observed = [];
-		const params = {
-			questions: [
-				{
-					question: "  exact child question\n",
-					header: " Raw ",
-					options: [
-						{ label: " Yes ", description: " accept ", preview: " raw preview\n" },
-						{ label: " No ", description: " refuse " },
-					],
-				},
-			],
-		};
 		modelRuntime.registerProvider(model.provider, {
 			api: model.api,
 			baseUrl: model.baseUrl,
 			apiKey: "fixture",
 			models: [model],
-			streamSimple: (_model, context) => {
+			streamSimple: () => {
 				childCalls++;
-				const tools = context.tools ?? getCurrentTools(context.messages ?? []);
-				observed.push({ tools: tools.map((tool) => tool.name), messages: context.messages });
-				const ask =
-					tools.length === 1 &&
-					tools[0].name === "ask_user_question" &&
-					!context.messages.some((message) => message.role === "toolResult");
 				const stream = createAssistantMessageEventStream();
 				const message = {
 					role: "assistant",
-					content: ask
-						? [{ type: "toolCall", id: `question-${childCalls}`, name: "ask_user_question", arguments: params }]
-						: [{ type: "text", text: "child complete" }],
+					content: [{ type: "text", text: "child complete" }],
 					api: model.api,
 					provider: model.provider,
 					model: model.id,
@@ -422,58 +124,19 @@ try {
 						totalTokens: 2,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-					stopReason: ask ? "toolUse" : "stop",
+					stopReason: "stop",
 					timestamp: Date.now(),
 				};
 				emitAssistant(stream, message);
 				return stream;
 			},
 		});
-		const directory = join(root, ".atomic", "workflows");
-		mkdirSync(directory, { recursive: true });
 		mkdirSync(join(root, ".atomic", "agents"), { recursive: true });
 		writeFileSync(
 			join(root, ".atomic", "agents", "packed.md"),
 			"---\nname: packed\ndescription: Packed child\nmodel: packed-child/fixture\ntools: read\n---\nReply once.\n",
 		);
-		writeFileSync(
-			join(directory, "nested-child.ts"),
-			`import { workflow } from "@bastani/atomic/workflows";
-export default workflow({ name: "nested-child", description: "nested", inputs: {}, outputs: {}, run: async ctx => {
- await ctx.stage("reviewer", { model: "packed-child/fixture", tools: ["ask_user_question"], builtins: ${JSON.stringify(disabled)} }).prompt("ask the host"); return {};
-} });`,
-		);
-		writeFileSync(
-			join(directory, "children.ts"),
-			`import { workflow } from "@bastani/atomic/workflows";
-import child from "./nested-child.ts";
-export default workflow({ name: "children", description: "children", inputs: {}, outputs: {}, run: async ctx => { await ctx.workflow(child); return {}; } });`,
-		);
-		const received = [],
-			identities = [];
-		const { session } = await createAgentSession({
-			...options(),
-			model,
-			extensionBindings: {
-				humanInput: {
-					...host(async () => true),
-					questionnaire: async (questions, identity) => {
-						received.push(questions);
-						identities.push(identity);
-						return {
-							cancelled: false,
-							answers: questions.questions.map((question, questionIndex) => ({
-								questionIndex,
-								question: question.question,
-								kind: "option",
-								answer: question.options[0].label,
-								preview: question.options[0].preview,
-							})),
-						};
-					},
-				},
-			},
-		});
+		const { session } = await createAgentSession({ ...options(), model });
 		try {
 			const launched = await call(session, "subagent", {
 				agent: "packed",
@@ -489,20 +152,6 @@ export default workflow({ name: "children", description: "children", inputs: {},
 			assert.ok(childCalls > 0, `subagent did not use the in-process provider: ${JSON.stringify(result)}`);
 			assert.equal(result.details.taskResponse.observation.result.kind, "completed", JSON.stringify(result));
 			assert.equal(Number(result.details.taskRecords[0].output.byteCount), Buffer.byteLength("child complete"));
-			await call(session, "workflow", { action: "run", workflow: "children", inputs: {} });
-			const details = await until(async () => {
-				const status = (await call(session, "workflow", { action: "status" })).details;
-				assert.ok(
-					status.runs.some((run) => run.name === "children" && run.status === "completed"),
-					JSON.stringify(status),
-				);
-				return status;
-			});
-			assert.deepEqual(received[0], params, JSON.stringify(observed));
-			assert.equal(received.length, 2, "questionnaire plus stage readiness");
-			assert.notEqual(identities[0].sessionId, session.sessionId);
-			assert.equal(identities[0].workflowStageId, identities[1].workflowStageId);
-			assert.notEqual(identities[0].workflowRunId, details.runs.find((run) => run.name === "children").runId);
 		} finally {
 			await session.dispose();
 		}
@@ -692,14 +341,11 @@ for await (const line of createInterface({ input: process.stdin })) {
 		const invocations = [
 			["write", { path: "receipt.txt", content: "packed coding tool" }],
 			["read", { path: "receipt.txt" }],
-			["workflow", { action: "status" }],
 			["subagent", { action: "list" }],
 			["mcp__packed__echo", { text: "packed SDK dispatch" }],
 			["web_search", { query: "fixture", provider: "gemini" }],
-			["intercom", { action: "list" }],
+			["intercom", { action: "send", message: "fixture" }],
 		];
-		// No broker acquisition: intercom's missing target validation is still real tool dispatch.
-		invocations[6] = ["intercom", { action: "send", message: "fixture" }];
 		let index = 0;
 		modelRuntime.registerProvider(model.provider, {
 			api: model.api,
@@ -798,26 +444,10 @@ for await (const line of createInterface({ input: process.stdin })) {
 			return results;
 		})();
 		try {
-			for (const reply of ["true", "false", "cancel", "missing", "stale", "invalid", "duplicate"])
-				await run("./consumer-parity.mjs", [`gate-${reply}`]);
 			await run("./consumer-parity.mjs", ["lifecycle"]);
 			await run("./consumer-parity.mjs", ["prompt"]);
 			await run("./consumer-parity.mjs", ["malformed-arguments"]);
-			const persisted = join(root, "persisted");
-			mkdirSync(persisted);
-			await run("./consumer-parity.mjs", ["persist-start", persisted]);
-			await run("./consumer-parity.mjs", ["persist-resume", persisted]);
 			await run("./consumer-parity.mjs", ["children"]);
-			const durable = JSON.parse((await run("./sdk-host-built-node.mjs", [], {
-				ATOMIC_MANAGED_TEST_HOME: process.env.HOME,
-			})).trim());
-			assert.equal(durable.effects, 1);
-			assert.equal(
-				durable.hash,
-				createHash("sha256")
-					.update(readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url)))
-					.digest("hex"),
-			);
 		} finally {
 			for (const result of await independentHosts) {
 				if (result.status === "rejected") throw result.reason;
@@ -826,14 +456,6 @@ for await (const line of createInterface({ input: process.stdin })) {
 	}
 } finally {
 	await awaitFixtureBrokerExit(join(root, "agent"));
-	if (!mode?.startsWith("persist-")) await removeFixtureRoot(root);
+	await removeFixtureRoot(root);
 }
-if (!mode)
-	console.log(
-		JSON.stringify({
-			packedConsumer: true,
-			hash: createHash("sha256")
-				.update(readFileSync(new URL("./sdk-host-durable-workflow.ts", import.meta.url)))
-				.digest("hex"),
-		}),
-	);
+if (!mode) console.log(JSON.stringify({ packedConsumer: true }));

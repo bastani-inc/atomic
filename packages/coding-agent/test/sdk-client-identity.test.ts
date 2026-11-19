@@ -143,7 +143,7 @@ describe("createAgentSession client identity", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
-			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+			builtins: { subagents: false, mcp: false, "web-access": false },
 		});
 
 		try {
@@ -243,7 +243,7 @@ describe("createAgentSession client identity", () => {
 				modelRuntime: getModelRuntime(modelRegistry),
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
-				builtins: { workflows: false, subagents: false, mcp: false, "web-access": false },
+				builtins: { subagents: false, mcp: false, "web-access": false },
 			});
 			let captured: Headers | undefined;
 			try {

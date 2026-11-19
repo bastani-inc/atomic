@@ -1,6 +1,7 @@
 import { realpath } from "node:fs";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 import { promisify } from "node:util";
+import { BUILTIN_PACKAGE_DIR_NAMES } from "./builtin-install-layout.ts";
 import { getAllBuiltinPackageLocations, getBuiltinPackageLocations } from "./builtin-packages.ts";
 import { getExtensionRuntimeEventBus, instantiateExtensions, loadExtensions } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
@@ -30,7 +31,6 @@ class BuiltinResourceLoader implements ResourceLoader {
 	private readonly agentDir: string;
 	private readonly builtins: Partial<Record<AtomicBuiltin, boolean>>;
 	private disabledRoots: string[] = [];
-	private readonly disableWorkflowExtension: boolean;
 	private readonly ownsDiscovery: boolean;
 	private readonly realPaths = new Map<string, string>();
 	private canonical(path: string): string {
@@ -72,19 +72,17 @@ class BuiltinResourceLoader implements ResourceLoader {
 		cwd: string,
 		agentDir: string,
 		builtins?: Partial<Record<AtomicBuiltin, boolean>>,
-		disableWorkflowExtension = false,
 		ownsDiscovery?: boolean,
 	) {
 		const scope = sessionLifecycleCreation.getStore()?.scope;
 		this.ownsDiscovery =
 			ownsDiscovery ??
 			(scope !== undefined && sessionLifecycleScopes.get(delegate.getExtensions().runtime) === scope);
-		this.disableWorkflowExtension = disableWorkflowExtension;
 		this.delegate = delegate;
 		this.cwd = cwd;
 		this.agentDir = agentDir;
 		this.builtins = {};
-		for (const name of ["workflows", "subagents", "mcp", "web-access", "intercom"] as const) {
+		for (const name of BUILTIN_PACKAGE_DIR_NAMES) {
 			if (builtins && name in builtins) this.builtins[name] = builtins[name];
 		}
 		this.assets = new DefaultResourceLoader({
@@ -126,7 +124,6 @@ class BuiltinResourceLoader implements ResourceLoader {
 				return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 			});
 			if (!builtin) return true;
-			if (this.disableWorkflowExtension && builtin.distDirName === "workflows") return false;
 			if (identities.has(builtin.packageName)) return false;
 			identities.add(builtin.packageName);
 			return true;
@@ -153,8 +150,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 				resource.enabled &&
 				!locations.some(
 					(location) =>
-						(identities.has(location.packageName) ||
-							(this.disableWorkflowExtension && location.distDirName === "workflows")) &&
+						identities.has(location.packageName) &&
 						this.canonical(resource.path).startsWith(`${this.canonical(location.packageDir)}${sep}`),
 				),
 		);
@@ -304,14 +300,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 	): Promise<ResourceLoaderReloadTransaction> {
 		if (!this.delegate.prepareReload) throw new Error("Resource loader does not support transactional reload");
 		const transaction = await this.delegate.prepareReload(settings, options);
-		const candidate = new BuiltinResourceLoader(
-			transaction.loader,
-			this.cwd,
-			this.agentDir,
-			this.builtins,
-			this.disableWorkflowExtension,
-			true,
-		);
+		const candidate = new BuiltinResourceLoader(transaction.loader, this.cwd, this.agentDir, this.builtins, true);
 		sessionLifecycleScopes.set(candidate, lifecycleScopeForOwner(this));
 		await candidate.initialize();
 		const publish = () => {
@@ -349,16 +338,14 @@ export async function withBuiltinResourceLoader(
 	cwd: string,
 	agentDir: string,
 	builtins?: Partial<Record<AtomicBuiltin, boolean>>,
-	disableWorkflowExtension = false,
 ): Promise<ResourceLoader> {
 	if (
 		loader instanceof BuiltinResourceLoader &&
 		builtins === undefined &&
-		!disableWorkflowExtension &&
 		sessionLifecycleScopes.get(loader) === sessionLifecycleCreation.getStore()?.scope
 	)
 		return loader;
-	const composed = new BuiltinResourceLoader(loader, cwd, agentDir, builtins, disableWorkflowExtension);
+	const composed = new BuiltinResourceLoader(loader, cwd, agentDir, builtins);
 	await composed.initialize();
 	return composed;
 }

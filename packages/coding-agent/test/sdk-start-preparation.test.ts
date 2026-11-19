@@ -29,7 +29,7 @@ test("creating sessions does not wait for this process's unanswered marker start
 				agentDir: directory,
 				sessionManager: SessionManager.inMemory(directory),
 				settingsManager: SettingsManager.inMemory(),
-				builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+				builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			});
 			await session.dispose();
 		}

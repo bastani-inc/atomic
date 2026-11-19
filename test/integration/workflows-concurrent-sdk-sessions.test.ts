@@ -75,7 +75,7 @@ function hostedSession(label: string): HostedSession {
 	};
 	const stageOptions = {
 		sessionDir: join(cwd, "stage-sessions"),
-		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 		model: "host-questionnaire-fixture/fixture",
 		cwd,
 		agentDir: join(cwd, "agent"),

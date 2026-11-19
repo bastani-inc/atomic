@@ -12,7 +12,7 @@ import { createAgentSessionAdapter, run, workflow } from "../../packages/workflo
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
+const BUILTINS = { subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 /** The SDK stage adapter over a faux model, with a count of how many real sessions it disposed. */
 async function fauxSdkAdapter(

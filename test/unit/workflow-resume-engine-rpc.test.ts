@@ -12,17 +12,11 @@ import {
 } from "../../packages/coding-agent/src/core/workflow-resume.js";
 import { sessionInfoFromPickerRow } from "../../packages/coding-agent/src/modes/interactive/components/host-session-picker.js";
 import { parseInteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
-import {
-	createEngineHostPair,
-	type EngineHostPair,
-} from "../../packages/coding-agent/test/helpers/in-process-engine-pair.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 
 const harnesses: Harness[] = [];
-const pairs: EngineHostPair[] = [];
 
 afterEach(async () => {
-	for (const pair of pairs.splice(0)) await pair.cleanup();
 	for (const harness of harnesses.splice(0)) await harness.cleanup();
 });
 
@@ -223,102 +217,5 @@ describe("workflow resume engine plumbing (#5256)", () => {
 			() => listWorkflowResumeEntries(nonFiniteHarness.session),
 			/Invalid workflow resume catalog/,
 		);
-	});
-
-	test("serializes IsolatedInteractiveRuntime methods over RPC and processes other RPC commands while resume confirmation is pending", async () => {
-		const row = sampleRow({ canDelete: false });
-		const listedTargets: Array<string | undefined> = [];
-		const confirmGate = Promise.withResolvers<boolean>();
-		let resumeStarted = false;
-		const deleted: string[] = [];
-
-		const pair = await createEngineHostPair({
-			engineExtensions: [
-				(pi) => {
-					pi.registerWorkflowRunControl({
-						listRuns: async () => [],
-						getRun: async () => {
-							throw new Error("unused");
-						},
-						getStages: async () => [],
-						pause: async () => ({ action: "pause", runId: "wf-1", status: "noop", message: "" }),
-						quit: async () => ({ action: "quit", runId: "wf-1", status: "noop", message: "" }),
-						resume: async () => ({ action: "resume", runId: "wf-1", status: "noop", message: "" }),
-						waitForSettled: async () => {},
-						listResumeEntries: async (target) => {
-							listedTargets.push(target);
-							return [row];
-						},
-						resumeFromPicker: async (target, ctx) => {
-							if (target === "rejected") throw new Error("Resume failed");
-							resumeStarted = true;
-							assert.equal(typeof ctx.ui.custom, "function");
-							await confirmGate.promise;
-						},
-						deleteResumeEntry: async (runId) => {
-							if (runId === "locked") throw new Error("Run is currently active");
-							deleted.push(runId);
-						},
-					});
-				},
-			],
-		});
-		pairs.push(pair);
-
-		const entries = await pair.runtime.getWorkflowResumeEntries();
-		assert.deepEqual(entries, [row]);
-		const targetedEntries = await pair.runtime.getWorkflowResumeEntries("wf-cross-project");
-		assert.deepEqual(targetedEntries, [row]);
-		assert.deepEqual(listedTargets, [undefined, "wf-cross-project"]);
-
-		const pendingResume = pair.runtime.resumeWorkflowFromPicker("wf-123");
-		await pair.drain();
-		assert.equal(resumeStarted, true);
-
-		let concurrentEntriesResolved = false;
-		const concurrentEntries = await pair.runtime.getWorkflowResumeEntries().then((result) => {
-			concurrentEntriesResolved = true;
-			return result;
-		});
-		assert.equal(concurrentEntriesResolved, true);
-		assert.deepEqual(concurrentEntries, [row]);
-
-		await pair.runtime.deleteWorkflowFromPicker("wf-123");
-		assert.deepEqual(deleted, ["wf-123"]);
-		await assert.rejects(() => pair.runtime.deleteWorkflowFromPicker("locked"), /Run is currently active/);
-
-		confirmGate.resolve(true);
-		assert.equal(await pendingResume, true);
-		await assert.rejects(() => pair.runtime.resumeWorkflowFromPicker("rejected"), /Resume failed/);
-
-		const barePair = await createEngineHostPair({});
-		pairs.push(barePair);
-		assert.deepEqual(await barePair.runtime.getWorkflowResumeEntries(), []);
-		assert.equal(await barePair.runtime.resumeWorkflowFromPicker("wf-123"), false);
-		await assert.rejects(
-			() => barePair.runtime.deleteWorkflowFromPicker("wf-123"),
-			/Workflow run deletion is unavailable for this session/,
-		);
-
-		const malformedPair = await createEngineHostPair({
-			engineExtensions: [
-				(pi) => {
-					pi.registerWorkflowRunControl({
-						listRuns: async () => [],
-						getRun: async () => {
-							throw new Error("unused");
-						},
-						getStages: async () => [],
-						pause: async () => ({ action: "pause", runId: "wf-1", status: "noop", message: "" }),
-						quit: async () => ({ action: "quit", runId: "wf-1", status: "noop", message: "" }),
-						resume: async () => ({ action: "resume", runId: "wf-1", status: "noop", message: "" }),
-						waitForSettled: async () => {},
-						listResumeEntries: async () => null as unknown as readonly HostSessionPickerRow[],
-					});
-				},
-			],
-		});
-		pairs.push(malformedPair);
-		await assert.rejects(() => malformedPair.runtime.getWorkflowResumeEntries(), /Invalid workflow resume catalog/);
 	});
 });

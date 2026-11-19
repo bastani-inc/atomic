@@ -28,7 +28,7 @@ import { normalizeRenderedOutput } from "./interactive-mode-status-helpers.js";
 
 /** Each case builds a real interactive host over a real session, which is slow on loaded Windows runners. */
 const INTERACTIVE_HOST_TIMEOUT_MS = 90_000;
-const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 class FakeTerminal implements Terminal {
 	columns = 160;
