@@ -33,7 +33,7 @@ bun add -g @bastani/atomic
 
 Atomic does not require package install scripts. Add `--ignore-scripts` if you want to disable dependency lifecycle scripts during a package install.
 
-Workflow persistence uses a local SQLite journal store by default, in `~/.atomic/workflows/journal/`. No database server or separate database installation is needed, and Atomic manages the store's files itself. To isolate runs in one file, use `ATOMIC_WORKFLOW_JOURNAL_PATH` or the [workflow storage settings](/settings#workflow-storage). To share runs across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
+Sessions are kept in a local SQLite database by default, `~/.atomic/workflows/journal.sqlite`. No database server or separate database installation is needed, and Atomic manages the file itself. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
 Keep a standalone archive's complete directory, including `node_modules`, libraries, and licenses. Package managers select the runtime for your platform automatically.
 
@@ -114,16 +114,18 @@ Override the launcher directory (default `~/.local/bin` on macOS/Linux, `%LOCALA
 
 Optional. The installer finds the latest release and confirms a pinned `ATOMIC_VERSION` through github.com, so most installs make no GitHub API request. It asks the API only when github.com gives no clear answer, and without a token the API allows 60 requests an hour per network address. If the installer reports that GitHub's API rate limit was reached, set a token (for example `GITHUB_TOKEN=$(gh auth token)`) or try again later. Curl and GNU Wget keep the token in a protected temporary file instead of process arguments. BusyBox Wget remains supported without a token, and with a token when the latest-release redirect avoids the API; if an authenticated API fallback is needed, install curl or GNU Wget rather than exposing the token.
 
-### Which runtime runs your workflows
+<a id="which-runtime-runs-your-workflows" />
 
-How you install Atomic decides which runtime hosts it: a package-manager install runs under Node, while the standalone binaries are Bun-compiled and run under Bun. Authored workflows execute inside whichever host is active, so a workflow that reaches for a `Bun.*` global runs only under the standalone binary and fails with `Bun is not defined` under an npm install. Installing Bun separately does not change that — the npm install still runs on Node. Write workflow code against APIs both hosts provide, such as `node:child_process` and `node:fs`; see [Custom Workflow Authoring](/workflows/authoring) for the rule and worked examples.
+### Which runtime runs Atomic?
+
+A package-manager install runs on Node; the standalone binaries run on Bun. Installing Bun separately does not change which runtime hosts an npm-installed Atomic. [Codemode scripts](/codemode) run in a JavaScript sandbox with no direct Node or Bun APIs.
 
 ### Git
 
-Atomic needs git 2.30.0 or newer for workflow worktrees, git packages, and the footer branch. It uses the first `git` in an absolute directory on your `PATH` (never the working directory) when that git runs and reports 2.30.0 or newer. Otherwise it downloads a portable git, the build GitHub Desktop ships from [desktop/dugite-native](https://github.com/desktop/dugite-native), the same way it provides `fd` and `rg`:
+Atomic needs git 2.30.0 or newer for worktrees, git packages, and the footer branch. It uses the first `git` in an absolute directory on your `PATH` (never the working directory) when that git runs and reports 2.30.0 or newer. Otherwise it downloads a portable git, the build GitHub Desktop ships from [desktop/dugite-native](https://github.com/desktop/dugite-native), the same way it provides `fd` and `rg`:
 
 - **Where:** `~/.atomic/agent/bin/git/` (under the directory `ATOMIC_CODING_AGENT_DIR` points to, when set).
-- **When:** at interactive startup, before a workflow run starts, and the first time a git package is installed or updated. Run `/tools` to see which git Atomic uses, its version, and why none is available.
+- **When:** at interactive startup and the first time a git package is installed or updated. Run `/tools` to see which git Atomic uses, its version, and why none is available.
 - **Verified:** Atomic pins one release and checks every download against a SHA-256 stored in its source. A download that does not match is discarded and nothing is installed.
 - **Updates:** when a new Atomic version pins a different git release, the next start that can reach github.com selects the new release. Commands already using an older release keep their executable and helper paths. Offline, or after a failed download, the older copy keeps working, Atomic says so once, and `/tools` shows why; it tries again at the next start.
 - **Platforms:** macOS x64 and arm64, Linux x64, arm64, and armv7 with glibc 2.34 or newer, and Windows x64, arm64, and x86.

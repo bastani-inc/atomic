@@ -1,6 +1,6 @@
 /**
  * `atomic team join|status|leave`: the recommended team layout as one command, over the SDK's `joinTeam`,
- * `selectTeamProfile` and `leaveTeam`. Workflow runs and Intercom routing share a team database; sessions stay local.
+ * `selectTeamProfile` and `leaveTeam`. Intercom routing shares a team database; sessions stay local.
  */
 
 import { APP_NAME } from "../config.js";
@@ -33,7 +33,7 @@ const HELP = `Usage:
   ${APP_NAME} team leave
 
 Commands:
-  join     Share workflow runs and Intercom with your team through a libSQL / Turso database while
+  join     Share Intercom routing with your team through a libSQL / Turso database while
            sessions stay on this machine. Checks the token and the connection with
            ${LIBSQL_ADAPTER_PACKAGE}, stores the token in the agent directory (mode 600), sets the
            global \`storage\` setting to the team database and \`sessions.storage\` to the local store in
@@ -61,9 +61,9 @@ export type TeamCommand =
 	| { readonly kind: "leave" };
 
 const PROFILE_DESCRIPTIONS: Readonly<Record<TeamProfileName, string>> = {
-	individual: "sessions and workflow runs on this machine; Intercom on this machine only",
-	team: "sessions on this machine; workflow runs and Intercom on the team database",
-	ci: "sessions, workflow runs and Intercom on the team database",
+	individual: "sessions on this machine; Intercom on this machine only",
+	team: "sessions on this machine; Intercom on the team database",
+	ci: "sessions and Intercom on the team database",
 	custom: "matches no preset; see the selections below",
 };
 
@@ -299,7 +299,7 @@ export async function runTeamCommand(args: readonly string[], options: TeamComma
 		const profile = selectTeamProfile({ agentDir: options.agentDir, cwd: options.cwd });
 		const described =
 			profile.profile === "custom"
-				? `sessions: ${profile.sessions}; workflow runs: ${profile.journal}; Intercom: ${profile.intercom}`
+				? `sessions: ${profile.sessions}; Intercom: ${profile.intercom}`
 				: PROFILE_DESCRIPTIONS[profile.profile];
 		log(`Profile: ${profile.profile} (${described})`);
 		return restarted ? 0 : 1;

@@ -5,7 +5,12 @@ import { beforeAll, test } from "vitest";
 import { ChatSessionHost, type ChatSessionHostStyle } from "../../packages/coding-agent/src/index.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.ts";
-import { deferred, waitForMicrotasks } from "./executor-shared.ts";
+
+const deferred = <T = void>() => Promise.withResolvers<T>();
+async function waitForMicrotasks(): Promise<void> {
+	await new Promise<void>((resolve) => queueMicrotask(resolve));
+	await new Promise<void>((resolve) => queueMicrotask(resolve));
+}
 
 beforeAll(() => initTheme("dark", false));
 
@@ -234,11 +239,8 @@ test.each(["idle", "streaming", "local"] as const)("warnings clear on later %s i
 	});
 	try {
 		host.showWarning("Task inspection is unavailable in this host.");
-		host.clearBusyForTerminalWorkflowStage();
 		assert.equal(host.statusText(), "Task inspection is unavailable in this host.");
 		await host.submit("auto", path === "local" ? "/quit" : "next input");
-		assert.equal(host.statusText(), "");
-		host.clearBusyForTerminalWorkflowStage();
 		assert.equal(host.statusText(), "");
 	} finally {
 		host.dispose();

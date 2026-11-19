@@ -7,7 +7,6 @@ import { resolvePath } from "../../utils/paths.ts";
 import { SessionStorageSelectionSchema, StorageSelectionSchema } from "../settings-schema.ts";
 import { StorageConfigError, StoragePrefixError } from "./errors.js";
 import {
-	defaultJournalStoreDirectorySteps,
 	defaultSessionDatabasePathSteps,
 	defaultSharedStoragePathSteps,
 	runStorageSteps,
@@ -24,16 +23,17 @@ import {
 	environmentTeamProfileAsync,
 	environmentTeamProfileSelection,
 	selectStorageSteps,
-	selectsDefaultJournalStore,
 	TEAM_PROFILE_ENV,
 } from "./selection.js";
 
 export const STORAGE_ENV = "ATOMIC_STORAGE";
 export const SESSIONS_STORAGE_ENV = "ATOMIC_SESSIONS_STORAGE";
-export const WORKFLOWS_JOURNAL_ENV = "ATOMIC_WORKFLOWS_JOURNAL";
-export const WORKFLOW_JOURNAL_PATH_ENV = "ATOMIC_WORKFLOW_JOURNAL_PATH";
 
-export type StorageDomain = "sessions" | "journal";
+/**
+ * `sessions`: the session store, which has variables of its own. `shared`: the shared selection alone (`--storage`,
+ * `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`), as `atomic storage migrate` and the team layout read it.
+ */
+export type StorageDomain = "sessions" | "shared";
 export type StorageFlag = "--storage" | "--storage-file";
 export interface StorageFlagArgument {
 	readonly flag: StorageFlag;
@@ -140,14 +140,11 @@ function environmentChoices(agentDir: string) {
 		const text = environmentValue(field);
 		if (text === undefined) return undefined;
 		const value = parseSelection(text, schema, "env", field);
-		if (field === WORKFLOWS_JOURNAL_ENV && !("dir" in value) && selectsDefaultJournalStore(value))
-			return { selection: { kind: "sharded", dir: agentDir }, source: "env", field };
 		return chooseAt(value, "env", field, agentDir);
 	};
 	const team = environmentTeamProfileSelection();
 	return {
 		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema),
-		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema),
 		shared: read(STORAGE_ENV, StorageSelectionSchema),
 		team: team === undefined ? undefined : chooseAt(team, "env", TEAM_PROFILE_ENV, agentDir),
 		teamValue: team,
@@ -166,7 +163,7 @@ export async function validateProcessStorageAsync(agentDir: string): Promise<voi
 }
 
 /**
- * The process-level storage selection for one domain: `--storage`/`--storage-file`, then the domain
+ * The process-level storage selection for one domain: `--storage`/`--storage-file`, then, for sessions, the domain
  * variable or its legacy path variable, then `ATOMIC_STORAGE`, then the `ATOMIC_PROFILE=ci` team database.
  * `undefined` leaves the choice to settings.
  * Every set storage variable is validated, whichever one applies.
@@ -200,8 +197,8 @@ export function* selectProcessStorageSteps(
 	agentDir: string,
 	cwd: string,
 ): StorageSteps<ProcessStorageChoice | undefined> {
-	const legacyField = domain === "sessions" ? ENV_SESSION_DIR : WORKFLOW_JOURNAL_PATH_ENV;
-	const legacy = environmentValue(legacyField);
+	const legacyField = ENV_SESSION_DIR;
+	const legacy = domain === "sessions" ? environmentValue(legacyField) : undefined;
 	const validated = environmentChoices(agentDir);
 	const settings = storageSettingsSteps<StorageHomeSettings | undefined>;
 	const baseDir = function* (path: string): StorageSteps<string> {
@@ -213,9 +210,6 @@ export function* selectProcessStorageSteps(
 	const sharedDefault = function* (): StorageSteps<string> {
 		return yield* defaultSharedStoragePathSteps(agentDir, yield* settings());
 	};
-	const journalDefault = function* (): StorageSteps<string> {
-		return yield* defaultJournalStoreDirectorySteps(agentDir, yield* settings());
-	};
 	function* resolveEnv(
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
@@ -224,8 +218,6 @@ export function* selectProcessStorageSteps(
 		const text = environmentValue(field);
 		if (text === undefined) return undefined;
 		const value = parseSelection(text, schema, "env", field);
-		if (field === WORKFLOWS_JOURNAL_ENV && !("dir" in value) && selectsDefaultJournalStore(value))
-			return { selection: { kind: "sharded", dir: yield* journalDefault() }, source: "env", field };
 		return yield* chooseSteps(value, "env", field, baseDir, defaultPath);
 	}
 	const cli = registry[CLI_SELECTION];
@@ -235,21 +227,13 @@ export function* selectProcessStorageSteps(
 		}
 		return yield* chooseSteps(cli.value, "cli", cli.field, baseDir, sharedDefault);
 	}
-	const domainField = domain === "sessions" ? SESSIONS_STORAGE_ENV : WORKFLOWS_JOURNAL_ENV;
-	const domainChoice = domain === "sessions" ? validated.sessions : validated.journal;
-	if (domainChoice !== undefined) {
+	if (domain === "sessions" && validated.sessions !== undefined) {
 		if (legacy !== undefined) {
-			throw new StorageConfigError("env", `${domainField}, ${legacyField}`, "conflicting-overrides");
+			throw new StorageConfigError("env", `${SESSIONS_STORAGE_ENV}, ${legacyField}`, "conflicting-overrides");
 		}
-		return yield* resolveEnv(
-			domainField,
-			domain === "sessions" ? SessionStorageSelectionSchema : StorageSelectionSchema,
-			domainDefault,
-		);
+		return yield* resolveEnv(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema, domainDefault);
 	}
 	if (legacy !== undefined) {
-		if (domain === "journal")
-			return { selection: { kind: "sqlite", path: legacy }, source: "env", field: legacyField };
 		try {
 			return { selection: { kind: "jsonl", dir: resolvePath(legacy, cwd) }, source: "env", field: legacyField };
 		} catch {
@@ -269,7 +253,7 @@ export function hasProcessStorageSelection(domain: StorageDomain): boolean {
 		registry[CLI_SELECTION] !== undefined ||
 		(domain === "sessions"
 			? [SESSIONS_STORAGE_ENV, ENV_SESSION_DIR, STORAGE_ENV, TEAM_PROFILE_ENV]
-			: [WORKFLOWS_JOURNAL_ENV, WORKFLOW_JOURNAL_PATH_ENV, STORAGE_ENV, TEAM_PROFILE_ENV]
+			: [STORAGE_ENV, TEAM_PROFILE_ENV]
 		).some((name) => environmentValue(name) !== undefined)
 	);
 }

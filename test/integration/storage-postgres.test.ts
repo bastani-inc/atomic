@@ -665,7 +665,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 					{ url: roleUrl.href },
 					{
 						agentDir: directory,
-						domain: "journal",
+						domain: "sessions",
 						secret: async (secret) => {
 							assert.equal(secret, "password");
 							return (await readFile(file, "utf8")).trimEnd();

@@ -43,7 +43,7 @@ function message(id: string, text = "hello"): Message {
 	return { id, timestamp: 1, content: { text } };
 }
 
-test("non-agent recipients cannot create deliveries, pending questions or future queues through any send route", () => {
+test("non-agent recipients cannot create deliveries or pending questions through any send route", () => {
 	const senderSocket = {} as net.Socket;
 	const controlSocket = {} as net.Socket;
 	const sender = session("sender", "sender", senderSocket);
@@ -54,13 +54,11 @@ test("non-agent recipients cannot create deliveries, pending questions or future
 		[sender.info.id, sender],
 		[control.info.id, control],
 	]);
-	const canonical = "workflow:11111111-1111-4111-8111-111111111111/control";
 	const cache = new DeliveredMessageCache();
 	const pending = new PendingQuestionIndex();
 	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
-	let queued = 0;
 	for (const type of ["send", "supervisor_send"]) {
-		for (const to of [control.info.id, "CONTROL", canonical]) {
+		for (const to of [control.info.id, "CONTROL"]) {
 			for (const expectsReply of [false, true]) {
 				const id = `${type}-${to}-${expectsReply}`;
 				const outgoing = { ...message(id), expectsReply };
@@ -76,11 +74,6 @@ test("non-agent recipients cannot create deliveries, pending questions or future
 					},
 					new SupervisorChannelCache(),
 					pending,
-					() => {
-						queued++;
-						return true;
-					},
-					(target) => (target === canonical ? control : undefined),
 				);
 				assert.equal(cache.lookup(id, buildMessageSendSignature(to, outgoing, sender.info.id)), "miss");
 				assert.equal(writes.at(-1)?.message.type, "delivery_failed");
@@ -92,11 +85,10 @@ test("non-agent recipients cannot create deliveries, pending questions or future
 		false,
 	);
 	assert.deepEqual(pending.takeForTarget(control.info.id), []);
-	assert.equal(queued, 0);
 
 	// A hidden control's display name must not make a real same-name agent ambiguous.
 	const agent = session("agent-id", "Control", {} as net.Socket);
-	agent.info.status = "tool:workflow";
+	agent.info.status = "tool:bash";
 	sessions.set(agent.info.id, agent);
 	handleBrokerSend(
 		senderSocket,
@@ -264,9 +256,9 @@ test("a deduplicated question rebinds only its accepted target and sender group 
 	const originalSocket = {} as net.Socket;
 	const reconnectedSocket = {} as net.Socket;
 	const targetSocket = {} as net.Socket;
-	const logicalTarget = "workflow:4ac72924-c452-4e5f-9e63-2435722109f7/reviewer";
-	const senderGroup = "workflow:4ac72924-c452-4e5f-9e63-2435722109f7";
-	const targetGroup = `${senderGroup}/reviewers`;
+	const logicalTarget = "reviewer";
+	const senderGroup = "reviewers";
+	const targetGroup = senderGroup;
 	const original = {
 		...session("sender-old", "sender", originalSocket, "stable-sender"),
 		registrationGroup: "default",
@@ -275,7 +267,7 @@ test("a deduplicated question rebinds only its accepted target and sender group 
 	original.info.groups = ["default", senderGroup];
 	const target = { ...session("target", "reviewer", targetSocket), registrationGroup: targetGroup };
 	target.info.group = targetGroup;
-	target.info.groups = [targetGroup];
+	target.info.groups = [targetGroup, "default"];
 	const sessions = new Map<string, BrokerConnectedSession>([
 		[original.info.id, original],
 		[target.info.id, target],
@@ -298,9 +290,6 @@ test("a deduplicated question rebinds only its accepted target and sender group 
 			write,
 			new SupervisorChannelCache(),
 			pending,
-			undefined,
-			() => target,
-			() => true,
 		);
 
 	send(originalSocket, original.info.id);
@@ -329,7 +318,7 @@ test("a deduplicated question rebinds only its accepted target and sender group 
 	assert.equal(
 		pending.matchesReply(target.info.id, reconnected.info.id, question.id),
 		false,
-		"changed sender groups cannot claim the accepted cross-group reply route",
+		"changed sender groups cannot claim the accepted reply route",
 	);
 
 	const changedPayload = { ...question, content: { text: "changed" } };
@@ -909,11 +898,14 @@ test("broker wire send keeps omitted retry fields compatible but rejects malform
 	);
 });
 
-test("broker rejects every malformed durable message field before pending routing", () => {
+test("broker rejects every malformed durable message field before routing", () => {
 	const senderSocket = {} as net.Socket;
-	const sessions = new Map<string, BrokerConnectedSession>([["sender", session("sender", "sender", senderSocket)]]);
-	const writes: BrokerMessage[] = [];
-	let pendingRoutes = 0;
+	const recipientSocket = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([
+		["sender", session("sender", "sender", senderSocket)],
+		["recipient", session("recipient", "recipient", recipientSocket)],
+	]);
+	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
 	const malformedMessages = [
 		{ id: "bad-reply-error", timestamp: 1, replyError: { bad: true }, content: { text: "bad" } },
 		{ id: "bad-source", timestamp: 1, source: {}, content: { text: "bad" } },
@@ -926,25 +918,22 @@ test("broker rejects every malformed durable message field before pending routin
 	for (const malformed of malformedMessages) {
 		handleBrokerSend(
 			senderSocket,
-			{ type: "send", to: "workflow:4ac72924-c452-4e5f-9e63-2435722109f7/reviewer", message: malformed },
+			{ type: "send", to: "recipient", message: malformed },
 			"sender",
 			sessions,
 			new DeliveredMessageCache(),
-			(_socket, value) => {
-				writes.push(value);
-				return true;
-			},
-			undefined,
-			undefined,
-			() => {
-				pendingRoutes++;
+			(socket, value) => {
+				writes.push({ socket, message: value });
 				return true;
 			},
 		);
 	}
-	assert.equal(pendingRoutes, 0);
+	assert.equal(
+		writes.some((entry) => entry.socket === recipientSocket),
+		false,
+	);
 	assert.deepEqual(
-		writes.map((entry) => entry.type === "delivery_failed" && [entry.messageId, entry.reason]),
+		writes.map(({ message }) => message.type === "delivery_failed" && [message.messageId, message.reason]),
 		malformedMessages.map((entry) => [entry.id, "Invalid message format"]),
 	);
 });
@@ -1242,7 +1231,7 @@ test.each(["delivery lookup", "reservation"] as const)(
 	},
 );
 
-test("explicit reply recipient binding is validated, retained in authority, and cannot queue", () => {
+test("explicit reply recipient binding is validated and retained in authority", () => {
 	const sender = session("sender", "sender", {} as net.Socket);
 	const recipient = session("recipient", "recipient", {} as net.Socket);
 	const sessions = new Map([
@@ -1251,7 +1240,6 @@ test("explicit reply recipient binding is validated, retained in authority, and 
 	]);
 	const cache = new DeliveredMessageCache();
 	const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
-	let queued = 0;
 	type SendFrame = Extract<ClientMessage, { type: "send" | "supervisor_send" }>;
 	// Wire validation must also cover values excluded by the valid protocol type.
 	type SendOverrides = Partial<Omit<SendFrame, "expectedRecipientId">> & {
@@ -1275,10 +1263,6 @@ test("explicit reply recipient binding is validated, retained in authority, and 
 			},
 			new SupervisorChannelCache(),
 			new PendingQuestionIndex(),
-			() => {
-				queued++;
-				return true;
-			},
 		);
 		return writes.at(-1)!.message;
 	};
@@ -1295,10 +1279,8 @@ test("explicit reply recipient binding is validated, retained in authority, and 
 			expectedRecipientId: recipient.info.id,
 			message: { ...message("ask-not-reply"), replyTo: "thread", expectsReply: true },
 		},
-		{ expectedRecipientId: recipient.info.id, to: "workflow:11111111-1111-4111-8111-111111111111/future" },
 	] satisfies SendOverrides[])
 		assert.equal(send(frame).type, "delivery_failed");
-	assert.equal(queued, 0);
 	assert.equal(writes.filter((entry) => entry.socket === recipient.socket).length, 0);
 	assert.equal(send({ expectedRecipientId: recipient.info.id }).type, "delivered");
 	assert.equal(send({ expectedRecipientId: recipient.info.id }).type, "delivered");
@@ -1368,12 +1350,7 @@ function askedPair(label: string) {
 			() => true,
 			new SupervisorChannelCache(),
 			pending,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
 			writeConfirmed,
-			undefined,
 			undefined,
 			receipts,
 		);
@@ -1429,10 +1406,6 @@ test("a reply that reaches the broker before the write of its ask is confirmed w
 			},
 			new SupervisorChannelCache(),
 			pending,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
 			writeConfirmed,
 		);
 	send(asker, target.info.id, { ...message("question-unconfirmed"), expectsReply: true });

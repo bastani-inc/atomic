@@ -27,7 +27,7 @@ test("temporaryAgentDir creates .atomic/agent under a new agent-home directory i
 });
 
 test("temporaryAgentDir names the missing run directory instead of creating one elsewhere", () => {
-	assert.throws(() => temporaryAgentDir(undefined), /^Error: ATOMIC_WORKFLOW_ARTIFACT_DIR is unset/u);
+	assert.throws(() => temporaryAgentDir(undefined), /^Error: ATOMIC_TEST_RUN_DIR is unset/u);
 });
 
 test("replaceEnvironmentVariable puts back a previous value, or the variable's absence", () => {
@@ -48,7 +48,7 @@ describe("installTemporaryAgentDirDefault", () => {
 		const run = makeTempDirectory("atomic-agent-dir-default-");
 		try {
 			const env: NodeJS.ProcessEnv = {
-				ATOMIC_WORKFLOW_ARTIFACT_DIR: run,
+				ATOMIC_TEST_RUN_DIR: run,
 				ATOMIC_CODING_AGENT_DIR: "/home/u/.atomic/agent",
 				PI_CODING_AGENT_DIR: "/home/u/.pi/agent",
 				HOME: "/home/u",
@@ -56,7 +56,7 @@ describe("installTemporaryAgentDirDefault", () => {
 			const agentDir = installTemporaryAgentDirDefault(env);
 			assert.match(relative(run, agentDir), /^agent-home-[^/\\]{6}[/\\]\.atomic[/\\]agent$/u);
 			assert.deepEqual(env, {
-				ATOMIC_WORKFLOW_ARTIFACT_DIR: run,
+				ATOMIC_TEST_RUN_DIR: run,
 				ATOMIC_CODING_AGENT_DIR: agentDir,
 				HOME: "/home/u",
 			});
@@ -68,7 +68,7 @@ describe("installTemporaryAgentDirDefault", () => {
 
 	test("changes nothing when the run directory is unset", () => {
 		const env: NodeJS.ProcessEnv = { ATOMIC_CODING_AGENT_DIR: "/kept", PI_CODING_AGENT_DIR: "/kept-pi" };
-		assert.throws(() => installTemporaryAgentDirDefault(env), /^Error: ATOMIC_WORKFLOW_ARTIFACT_DIR is unset/u);
+		assert.throws(() => installTemporaryAgentDirDefault(env), /^Error: ATOMIC_TEST_RUN_DIR is unset/u);
 		assert.deepEqual(env, { ATOMIC_CODING_AGENT_DIR: "/kept", PI_CODING_AGENT_DIR: "/kept-pi" });
 	});
 });
@@ -76,7 +76,7 @@ describe("installTemporaryAgentDirDefault", () => {
 const inherited = process.env[AGENT_DIR_ENV];
 
 test("the shared test setup gave this file an agent directory of its own before it loaded (#4473)", () => {
-	const run = process.env.ATOMIC_WORKFLOW_ARTIFACT_DIR ?? "";
+	const run = process.env.ATOMIC_TEST_RUN_DIR ?? "";
 	assert.match(relative(run, inherited ?? ""), /^agent-home-[^/\\]{6}[/\\]\.atomic[/\\]agent$/u);
 	assert.equal(Object.hasOwn(process.env, "PI_CODING_AGENT_DIR"), false);
 });

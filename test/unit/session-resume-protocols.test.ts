@@ -8,7 +8,6 @@ import { unconsumedIntercomInbox } from "../../packages/intercom/durable-inbox.t
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.ts";
 import { OutboundAsks } from "../../packages/intercom/outbound-asks.ts";
 import { ReplyTracker, restorePendingInboundAsks } from "../../packages/intercom/reply-tracker.ts";
-import { scanInFlightRuns } from "../../packages/workflows/src/shared/persistence-restore.ts";
 
 const timestamp = "2026-11-16T00:00:00.000Z";
 function session() {
@@ -225,27 +224,6 @@ test("resume keeps child insertion order and merged state without rewriting its 
 			entry,
 			s.entries.find((e) => e.id === entry.id),
 		);
-});
-
-test("resume keeps in-flight workflow runs but drops completed workflow lifecycles (#5249)", () => {
-	const s = session();
-	for (const runId of ["done", "live"]) {
-		s.custom("workflow.run.start", { runId, name: runId, inputs: {}, ts: 1 });
-		s.custom("workflow.stage.start", { runId, stageId: `${runId}-stage` });
-	}
-	s.custom("workflow.run.end", { runId: "done" });
-	const resume = s.resume();
-	const ids = Object.values(resume.recovery.workflowStarts ?? {}).map(
-		(seq) => (s.entries[seq - 1] as { data: { runId: string } }).data.runId,
-	);
-	assert.deepEqual(
-		ids,
-		scanInFlightRuns(s.entries as Parameters<typeof scanInFlightRuns>[0]).map((run) => run.runId),
-	);
-	assert.equal(
-		resume.state.some(({ entry }) => entry.type === "custom" && (entry.data as { runId?: string })?.runId === "done"),
-		false,
-	);
 });
 
 test("resume preserves parked tasks whose entry id is an unusual valid string (#5249)", () => {

@@ -78,12 +78,3 @@ test.each([
 	},
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
 );
-
-// #3105: SDK-started refresh must settle before cleanup, including failed factory replay.
-test.each(["dispose", "reload", "control", "error", "replay", "replay-error", "overlap", "self"])(
-	"built Node workflow refresh ownership (%s)",
-	(mode) => {
-		expectVerifiedFixture("sdk-host-refresh-drain.mjs", [mode]);
-	},
-	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
-);

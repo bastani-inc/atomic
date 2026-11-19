@@ -184,23 +184,15 @@ test("failed new-session creation preserves the active session and permits retry
 	assert.deepEqual((await store.load(manager.getSessionId())).entries, []);
 });
 
-test("header changes and label failures publish only successful commits", async () => {
+test("label changes publish only successful commits", async () => {
 	const store = new ControlledStore();
 	const manager = await SessionManager.create(store, "/project");
 	const id = await manager.appendMessage(message("root"));
-	const before = manager.getHeader();
 	const failure = new SessionConflictError(manager.getSessionId(), 1, 2);
 	store.failure = failure;
-	await assert.rejects(
-		manager.markSessionInternal({ runId: "run", stageId: "stage", stageName: "name" }),
-		(error) => error === failure,
-	);
-	assert.equal(manager.getHeader(), before);
 	await assert.rejects(manager.appendLabelChange(id, "label"), (error) => error === failure);
 	assert.equal(manager.getLabel(id), undefined);
 	store.failure = undefined;
-	await manager.markSessionInternal({ runId: "run", stageId: "stage", stageName: "name" });
-	assert.equal((await store.load(manager.getSessionId())).header.internal, true);
 	await manager.appendLabelChange(id, "label");
 	assert.equal(manager.getLabel(id), "label");
 });

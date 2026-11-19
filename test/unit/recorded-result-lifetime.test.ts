@@ -5,7 +5,7 @@ import { test } from "vitest";
 import type { TaskCompletionNotice } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../../packages/coding-agent/src/core/tasks/completion-message.js";
 import type { Sequence } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { recordStageWaitToolResults } from "../../packages/workflows/src/shared/stage-wait.js";
+
 import { taskRecord } from "../helpers/task-record.js";
 
 function exposedGc(): () => void {
@@ -106,35 +106,4 @@ test("retaining completed notices does not pin more discarded title buffers than
 		},
 	);
 	assert.ok(actual < reference + 12 * 1024 * 1024, `the notices retained ${actual} bytes vs ${reference}`);
-});
-
-test("a fitting stage result releases earlier objects before a later conversion (#5691)", async () => {
-	const refs: WeakRef<object>[] = [];
-	const early = Array.from({ length: 32 }, (_, id) => {
-		const entry = { id };
-		refs.push(new WeakRef(entry));
-		return entry;
-	});
-	const details = {
-		early,
-		report: Object.defineProperty({}, "toJSON", {
-			value() {
-				early.length = 0;
-				for (let i = 0; i < 5; i++) gc();
-				return { active: refs.filter((ref) => ref.deref() !== undefined).length };
-			},
-		}),
-	};
-	await turn(); // WeakRefs created in this turn keep their targets until the next one.
-	const [answer] = recordStageWaitToolResults([
-		{ toolCallId: "id", toolName: "watch", isError: false, result: { content: [], details } },
-	]);
-	assert.ok(answer && !answer.isError);
-	const recorded = answer.details as { early: { id: number }[]; report: { active: number } };
-	assert.deepEqual(
-		recorded.early.map(({ id }) => id),
-		Array.from({ length: 32 }, (_, id) => id),
-	);
-	// A runtime can keep its last loop temporary alive; it must not keep the serialized collection.
-	assert.ok(recorded.report.active <= 1, `the conversion recorded ${recorded.report.active} active entries`);
 });

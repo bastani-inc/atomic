@@ -9,19 +9,15 @@ import {
 import {
 	isWorkspaceGitError,
 	isWorkspaceSnapshotError,
-	rehydrateWorkspaceError,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.js";
 import {
 	setWorktreeSnapshotExcludedRootsForTest,
 	worktreeSnapshotExcludedRoots,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/excluded-roots.js";
 import { runGit, setWorktreeSnapshotGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
-import { run } from "../../packages/workflows/src/engine/run.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
+
 import { repositoryRoot } from "../../vitest.base.js";
-import { closeSnapshotJournals, openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
+
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 const checkout = resolve(repositoryRoot);
@@ -45,7 +41,7 @@ beforeEach(() => {
 afterEach(async () => {
 	setWorktreeSnapshotExcludedRootsForTest(previousRoots);
 	restoreResolver();
-	await closeSnapshotJournals();
+
 	sandbox.dispose();
 });
 
@@ -82,32 +78,6 @@ test("recording the checkout or a directory in it is unavailable and starts no G
 		assert.equal(reason.code, "not-a-repository");
 		assert.equal(reason.subject, directory);
 	}
-	assert.equal(resolutions, 0);
-});
-
-test("a workflow that runs in the checkout records no snapshot of it (#4414)", async () => {
-	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
-	const store = createStore();
-	const definition = workflow({
-		name: "checkout-isolation",
-		description: "",
-		inputs: {},
-		outputs: {},
-		run: async (ctx) => {
-			await ctx.tool("one", {}, async () => "done");
-			await ctx.tool("two", {}, async () => "done");
-			return {};
-		},
-	});
-	const result = await run(definition, {}, { cwd: checkout, durableBackend: fixture.backend, store });
-	assert.equal(result.status, "completed");
-	assert.deepEqual(await listWorkflowSnapshotBoundaries(fixture.journal, result.runId), []);
-	const reason = store.run(result.runId)?.snapshotUnavailable;
-	assert.ok(reason);
-	const error = rehydrateWorkspaceError(reason);
-	assert.ok(isWorkspaceSnapshotError(error));
-	assert.equal(error.code, "not-a-repository");
-	assert.equal(error.subject, checkout);
 	assert.equal(resolutions, 0);
 });
 

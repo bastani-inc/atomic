@@ -36,7 +36,6 @@ type RelativeSpecifier = {
 const repositoryRoot = resolve(moduleDir(import.meta.url), "../..");
 const packageSources: readonly PackageSource[] = [
 	{ name: "@bastani/atomic", root: join(repositoryRoot, "packages/coding-agent/src") },
-	{ name: "@bastani/workflows", root: join(repositoryRoot, "packages/workflows") },
 	{ name: "@bastani/subagents", root: join(repositoryRoot, "packages/subagents") },
 	{ name: "@bastani/mcp", root: join(repositoryRoot, "packages/mcp") },
 	{ name: "@bastani/web-access", root: join(repositoryRoot, "packages/web-access") },

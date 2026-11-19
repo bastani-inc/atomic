@@ -40,7 +40,7 @@ export type EngineTaskInspectorMount = Pick<ExtensionUIContext, "custom"> & {
 /**
  * The isolated engine's `/tasks`, opened from the host's chat. Its transcripts show tool output as the host chat does
  * (the engine's own state stands in until a render request carries the host's), and Ctrl+O there changes it for this
- * inspector only, as an attached stage chat keeps its own.
+ * inspector only.
  */
 export function engineTaskInspectorUi(
 	ui: Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "notify" | "getFooterDataProvider">,

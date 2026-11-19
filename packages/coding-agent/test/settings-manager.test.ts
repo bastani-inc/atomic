@@ -24,6 +24,36 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	it("keeps removed workflow settings like any unknown setting, in memory and on save", async () => {
+		const path = join(agentDir, "settings.json");
+		const value = { paths: ["./recipes"], localWorkers: "no longer validated" };
+		// The same file with the removed names, then with names Atomic never had.
+		const run = async (workflows: string, showUnknownTargetWarnings: string) => {
+			writeFileSync(
+				path,
+				JSON.stringify({ [workflows]: value, theme: "light", intercom: { [showUnknownTargetWarnings]: true } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			const errors = manager.drainErrors();
+			const loaded = JSON.stringify(manager.getSettings());
+			manager.setTheme("dark");
+			await manager.flush();
+			return { errors, loaded, saved: readFileSync(path, "utf-8") };
+		};
+		const rename = (text: string) =>
+			text
+				.replaceAll("neverASetting", "workflows")
+				.replaceAll("neverAnIntercomSetting", "showUnknownTargetWarnings");
+		const unknown = await run("neverASetting", "neverAnIntercomSetting");
+		const removed = await run("workflows", "showUnknownTargetWarnings");
+		assert.deepEqual(removed, {
+			errors: unknown.errors,
+			loaded: rename(unknown.loaded),
+			saved: rename(unknown.saved),
+		});
+		assert.deepEqual(JSON.parse(removed.saved).workflows, value);
+	});
+
 	it("creates a global device ID and ignores project device IDs", async () => {
 		const settingsPath = join(agentDir, "settings.json");
 		writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));

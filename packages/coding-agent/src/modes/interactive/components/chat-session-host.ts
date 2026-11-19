@@ -53,7 +53,6 @@ import {
 	transcriptEntryName,
 } from "./chat-session-host-rendering.ts";
 import {
-	clearChatSessionBusyForTerminalWorkflowStage,
 	disposeChatSession,
 	isChatSessionBashRunning,
 	isChatSessionStreaming,
@@ -470,7 +469,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * Shows a saved conversation. A call in `inFlightToolCallIds` has no result yet because its stage waits for one,
+	 * Shows a saved conversation. A call in `inFlightToolCallIds` has no result yet because its agent waits for one,
 	 * so it shows as pending, not as interrupted, and the call's own end replaces it with the result.
 	 */
 	async loadSession(
@@ -531,7 +530,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 				: undefined;
 		}
 		const store = session ? getOwnerTaskStore(session) : undefined;
-		// A session in another process (a workflow stage on a local worker) has no store here; the host
+		// A session in another process has no store here; the host
 		// supplies a source that reads its tasks there.
 		const source = store ? ownerTaskViewSource(store) : this.state.getTaskSource?.();
 		if (store === this.taskStore && source === this.taskSource) return;
@@ -590,7 +589,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 * a retry lifecycle this re-attached host is not inside, and no event exists
 	 * to clear it after the summary finishes. An absent paintable reason is a
 	 * no-op unless this host is actively showing a compaction label, so unrelated
-	 * workflow delivery busy state is preserved.
+	 * prompt delivery busy state is preserved.
 	 */
 	hydrateCompactionStatus(reason: CompactionReason | undefined, startedAt?: number): void {
 		const compactionReason = reason === "branchSummary" ? undefined : reason;
@@ -935,10 +934,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		syncChatSessionAnimationTick(this.state);
 	}
 
-	clearBusyForTerminalWorkflowStage(): void {
-		clearChatSessionBusyForTerminalWorkflowStage(this.state);
-	}
-
 	snapshotInterruptedTurn(): ChatSessionInterruptedTurnSnapshot | undefined {
 		const snapshot = chatSessionWorkingMeta(this.state);
 		const now = Date.now();
@@ -987,8 +982,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	/**
-	 * Start Working for an accepted prompt delivered outside this host — a
-	 * workflow definition auto-sending to its own retained stage. Returns the
+	 * Start Working for an accepted prompt delivered outside this host. Returns the
 	 * lifecycle token to hand back to `settleExternalPromptLifecycle`.
 	 */
 	beginExternalPromptLifecycle(): number | undefined {

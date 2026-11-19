@@ -33,7 +33,6 @@ test("repeated output-cap continuations stay working across quiet waits and sett
 		extensionFactories: [
 			createHerdrExtension({ env: fake.env, enabled: () => true }),
 			(pi) => {
-				pi.registerWorkflowActivityPublisher().publishSnapshot({ availability: "ready", roots: [] });
 				pi.on("agent_start", async () => {
 					await fake.waitFor(++completedReports);
 				});

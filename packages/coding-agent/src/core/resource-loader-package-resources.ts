@@ -1,15 +1,21 @@
-import { createExtensionRuntime, type WorkflowResourceProvider } from "./extensions/loader.ts";
+import { createExtensionRuntime, type PackageMcpServerSource } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
-import type { PathMetadata, ResolvedMcpServer, ResolvedPaths, ResolvedResource } from "./package-manager.ts";
+import type {
+	PackageDiscovery,
+	PathMetadata,
+	ResolvedMcpServer,
+	ResolvedPaths,
+	ResolvedResource,
+} from "./package-manager-types.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { resolveResourcePath } from "./resource-loader-paths.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot, ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
 import { createSourceInfo } from "./source-info.ts";
 
-export function emptyResolvedPaths(): ResolvedPaths {
-	return { extensions: [], skills: [], prompts: [], themes: [], workflows: [], mcpServers: [] };
+export function emptyResolvedPaths(): PackageDiscovery {
+	return { extensions: [], skills: [], prompts: [], themes: [], legacyWorkflowFiles: [], mcpServers: [] };
 }
 
 export async function resolvePackageResourcePaths(
@@ -20,9 +26,9 @@ export async function resolvePackageResourcePaths(
 		trustedBorrowedProjectLocalSources?: Set<string>;
 	},
 ): Promise<{
-	resolvedPaths: ResolvedPaths;
-	cliExtensionPaths: ResolvedPaths;
-	builtinPackagePaths: ResolvedPaths;
+	resolvedPaths: PackageDiscovery;
+	cliExtensionPaths: PackageDiscovery;
+	builtinPackagePaths: PackageDiscovery;
 }> {
 	const state = resourceInternals(loader);
 	if (!options?.useLoadedSettings) await state.settingsManager.reload();
@@ -47,7 +53,7 @@ export async function resolvePackageResourcePaths(
 	return { resolvedPaths, cliExtensionPaths, builtinPackagePaths };
 }
 
-function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
+function markBundledResources(paths: PackageDiscovery): PackageDiscovery {
 	const mark = <T extends ResolvedResource | ResolvedMcpServer>(resources: T[]): T[] =>
 		resources.map((resource) => ({
 			...resource,
@@ -58,7 +64,7 @@ function markBundledResources(paths: ResolvedPaths): ResolvedPaths {
 		skills: mark(paths.skills),
 		prompts: mark(paths.prompts),
 		themes: mark(paths.themes),
-		workflows: mark(paths.workflows),
+		legacyWorkflowFiles: mark(paths.legacyWorkflowFiles),
 		mcpServers: mark(paths.mcpServers),
 	};
 }
@@ -74,8 +80,8 @@ export async function resolveTrustedBorrowedProjectLocalSources(
 		includeProjectLocalResources: true,
 	});
 	const resourcesBySource = new Map<string, ResolvedResource[]>();
-	const { extensions, skills, prompts, themes, workflows } = cliExtensionPaths;
-	for (const resources of [extensions, skills, prompts, themes, workflows]) {
+	const { extensions, skills, prompts, themes, legacyWorkflowFiles } = cliExtensionPaths;
+	for (const resources of [extensions, skills, prompts, themes, legacyWorkflowFiles]) {
 		for (const resource of resources) {
 			if (!resource.metadata.borrowedProjectLocal) {
 				continue;
@@ -100,7 +106,10 @@ export async function resolveTrustedBorrowedProjectLocalSources(
 	return trustedSources;
 }
 
-export function filterBorrowedProjectLocalResources(paths: ResolvedPaths, trustedSources: Set<string>): ResolvedPaths {
+export function filterBorrowedProjectLocalResources(
+	paths: PackageDiscovery,
+	trustedSources: Set<string>,
+): PackageDiscovery {
 	const filterResources = <T extends ResolvedResource | ResolvedMcpServer>(resources: T[]): T[] =>
 		resources.filter(
 			(resource) => !resource.metadata.borrowedProjectLocal || trustedSources.has(resource.metadata.source),
@@ -110,33 +119,13 @@ export function filterBorrowedProjectLocalResources(paths: ResolvedPaths, truste
 		skills: filterResources(paths.skills),
 		prompts: filterResources(paths.prompts),
 		themes: filterResources(paths.themes),
-		workflows: filterResources(paths.workflows),
+		legacyWorkflowFiles: filterResources(paths.legacyWorkflowFiles),
 		mcpServers: filterResources(paths.mcpServers),
 		installFailures: paths.installFailures,
 	};
 }
 
-function enabledWorkflowResources(resources: ResolvedResource[]): ResolvedResource[] {
-	return resources.filter((resource) => resource.enabled);
-}
-
-function enabledPackageWorkflowResources(resources: ResolvedResource[]): ResolvedResource[] {
-	return resources.filter((resource) => resource.enabled && resource.metadata.origin === "package");
-}
-
-export function collectWorkflowResources(
-	resolvedPaths: ResolvedPaths,
-	cliExtensionPaths: ResolvedPaths,
-	builtinPackagePaths: ResolvedPaths,
-): ResolvedResource[] {
-	return [
-		...enabledWorkflowResources(cliExtensionPaths.workflows),
-		...enabledPackageWorkflowResources(resolvedPaths.workflows),
-		...enabledPackageWorkflowResources(builtinPackagePaths.workflows),
-	];
-}
-
-/** Enabled manifest MCP servers in workflow-resource order; the first package declaring a name wins. */
+/** Enabled manifest MCP servers in discovery order; the first package declaring a name wins. */
 export function collectMcpServerContributions(
 	resolvedPaths: ResolvedPaths,
 	cliExtensionPaths: ResolvedPaths,
@@ -159,11 +148,9 @@ export function collectMcpServerContributions(
 	return [...contributions.values()];
 }
 
-export function createWorkflowResourceProvider(loader: DefaultResourceLoader): WorkflowResourceProvider {
+export function createPackageMcpServerSource(loader: DefaultResourceLoader): PackageMcpServerSource {
 	const state = resourceInternals(loader);
 	return {
-		get: () => state.workflowResources,
-		refresh: () => state.refreshWorkflowResources(),
 		getMcpServers: () => state.mcpServerContributions,
 	};
 }

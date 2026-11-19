@@ -45,10 +45,6 @@ import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.js";
-import {
-	type PiCodingAgentSdk,
-	prepareAtomicStageSessionOptions,
-} from "../../packages/workflows/src/extension/atomic-stage-session.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const RECORD_POLL_MS = 10;
@@ -76,29 +72,21 @@ const agent: AgentConfig = {
 	inheritSkills: false,
 };
 
-type OrchestrationContext = ExtensionContext["orchestrationContext"];
-
 interface Parent {
 	readonly sessionManager: SessionManager;
 	readonly ctx: (host: AgentTaskHost) => ExtensionContext;
 	readonly pi: SubagentChildRestoreDeps["pi"];
 	readonly authorizations: string[];
 	readonly awaitedPeers: Array<{ name: string; group?: string }>;
-	readonly ownedRuns: string[];
 	/** What the parent asked Intercom's broker to hold for its restoring children, in order. */
 	readonly holds: Array<
 		{ reserve: string; aliases: readonly string[]; group?: string } | { release: string; gone?: string }
 	>;
 }
 
-function parentSession(
-	cwd: string,
-	orchestrationContext?: OrchestrationContext,
-	sessionManager: SessionManager = SessionManager.inMemory(cwd),
-): Parent {
+function parentSession(cwd: string, sessionManager: SessionManager = SessionManager.inMemory(cwd)): Parent {
 	const authorizations: string[] = [];
 	const awaitedPeers: Array<{ name: string; group?: string }> = [];
-	const ownedRuns: string[] = [];
 	const holds: Parent["holds"] = [];
 	const events = {
 		on: () => () => {},
@@ -140,16 +128,6 @@ function parentSession(
 		},
 		getSessionName: () => "parent-session",
 	} as unknown as SubagentChildRestoreDeps["pi"];
-	const boundary = orchestrationContext
-		? {
-				...orchestrationContext,
-				messageAdmission: {
-					boundary: {
-						registerOwnedSubagentRun: (runId: string) => ownedRuns.push(runId),
-					},
-				},
-			}
-		: undefined;
 	const ctx = (host: AgentTaskHost) =>
 		({
 			cwd,
@@ -158,9 +136,8 @@ function parentSession(
 			modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
 			model: undefined,
 			thinkingLevel: undefined,
-			...(boundary ? { orchestrationContext: boundary } : {}),
 		}) as unknown as ExtensionContext;
-	return { sessionManager, ctx, pi, authorizations, awaitedPeers, ownedRuns, holds };
+	return { sessionManager, ctx, pi, authorizations, awaitedPeers, holds };
 }
 
 function records(parent: Parent): SubagentChildRecord[] {
@@ -244,6 +221,35 @@ function restoreDeps(parent: Parent, launched: RunSyncOptions[]): SubagentChildR
 		},
 	};
 }
+
+test("session recovery leaves a former workflow stage's saved children alone", async () => {
+	const cwd = makeTempDirectory("subagent-retired-stage-");
+	const parent = parentSession(cwd);
+	const host = taskHost("recovery");
+	try {
+		await parent.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			version: 1,
+			childId: "previous:0",
+			runId: "previous",
+			index: 0,
+			agent: "worker",
+			state: "running",
+			cwd,
+			owner: {
+				kind: "workflow-stage",
+				sessionId: parent.sessionManager.getSessionId(),
+				workflowRunId: "old",
+				workflowStageId: "one",
+				workflowStageName: "One",
+			},
+		});
+		assert.deepEqual(await restoreSubagentChildren(restoreDeps(parent, []), parent.ctx(host)), []);
+		assert.equal(records(parent).length, 1);
+	} finally {
+		await host.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
 
 test("a background child is recorded at launch and stays restorable when its owner closes (#3760)", async () => {
 	const cwd = makeTempDirectory("subagent-child-record-");
@@ -697,7 +703,7 @@ test("a forked session never restores or reports the background children of the 
 	try {
 		const original = await SessionManager.create(cwd, join(cwd, "sessions"));
 		await original.appendMessage({ role: "user", content: "parent request", timestamp: Date.now() });
-		const parent = parentSession(cwd, undefined, original);
+		const parent = parentSession(cwd, original);
 		await launchInterruptedChild(cwd, parent, "fork1");
 		const sessionFile = original.getSessionFile();
 		assert.ok(sessionFile, "the original session is file-backed");
@@ -715,7 +721,7 @@ test("a forked session never restores or reports the background children of the 
 				records(parent).length,
 				"the fork carries a copy of the original's child records",
 			);
-			const forked = parentSession(cwd, undefined, fork);
+			const forked = parentSession(cwd, fork);
 			const launched: RunSyncOptions[] = [];
 			assert.deepEqual(await restoreSubagentChildren(restoreDeps(forked, launched), forked.ctx(resumedHost)), []);
 			const byId = await restoreSubagentChild(restoreDeps(forked, launched), forked.ctx(resumedHost), "fork1:0");
@@ -728,44 +734,6 @@ test("a forked session never restores or reports the background children of the 
 		const [outcome] = await restoreSubagentChildren(restoreDeps(parent, launched), parent.ctx(resumedHost));
 		assert.equal(outcome?.kind, "restored", "the session that launched the child still restores it");
 		assert.equal(launched.length, 1);
-		if (outcome?.kind === "restored") await resumedHost.waitForTask(outcome.taskId as TaskId);
-	} finally {
-		await resumedHost.close("session-close");
-		removeTempDirectory(cwd);
-	}
-});
-
-test("a resumed workflow stage restores its children in the run's invocation group (#3760)", async () => {
-	const cwd = makeTempDirectory("subagent-child-stage-");
-	const rootRunId = "6c1f8b2e-7d3a-4e5f-9a1b-2c3d4e5f6a7b";
-	const group = `workflow:${rootRunId}`;
-	const resumedHost = taskHost("stage-after-restart");
-	try {
-		const parent = parentSession(cwd, {
-			kind: "workflow-stage",
-			workflowRunId: rootRunId,
-			workflowStageId: "lane-id",
-			workflowStageName: "lane",
-			constraints: { disableWorkflowTool: true },
-			intercomGroup: group,
-		});
-		const original = await launchInterruptedChild(cwd, parent, "stage1", group);
-		assert.deepEqual(original.owner, {
-			kind: "workflow-stage",
-			sessionId: parent.sessionManager.getSessionId(),
-			workflowRunId: rootRunId,
-			workflowStageId: "lane-id",
-			workflowStageName: "lane",
-		});
-		const launched: RunSyncOptions[] = [];
-		const [outcome] = await restoreSubagentChildren(restoreDeps(parent, launched), parent.ctx(resumedHost));
-		assert.equal(outcome?.kind, "restored");
-		assert.deepEqual(parent.ownedRuns, ["stage1"]);
-		assert.equal(launched[0]?.intercomGroup, group);
-		assert.equal(launched[0]?.intercomSessionName, "subagent-worker-stage1-1");
-		assert.equal(launched[0]?.workflowStageSubagentGuard, true);
-		assert.deepEqual(parent.authorizations, ["subagent-worker-stage1-1"]);
-		assert.deepEqual(parent.awaitedPeers, [{ name: "subagent-worker-stage1-1", group }]);
 		if (outcome?.kind === "restored") await resumedHost.waitForTask(outcome.taskId as TaskId);
 	} finally {
 		await resumedHost.close("session-close");
@@ -1006,69 +974,6 @@ test("only the children reported gone are recorded gone; a restored child keeps 
 	}
 });
 
-async function workflowStagePolicy(cwd: string): Promise<ExtensionContext["subagentPolicy"]> {
-	const sdk = {
-		getAgentDir: () => cwd,
-		SettingsManager: { create: () => ({}) },
-		DefaultResourceLoader: class {
-			async reload() {}
-		},
-		createAgentSession: async () => {
-			throw new Error("not used");
-		},
-	} as unknown as PiCodingAgentSdk;
-	const options = await prepareAtomicStageSessionOptions({ cwd }, sdk);
-	assert.ok(options?.subagentPolicy, "workflow stages carry a subagent policy");
-	return options.subagentPolicy;
-}
-
-test("the subagents extension restores a resumed workflow stage's children despite its stage policy (#3760)", async () => {
-	const cwd = makeTempDirectory("subagent-child-extension-stage-");
-	const rootRunId = "0b6f6a77-5c1d-4f0e-8d3a-2b1c4d5e6f70";
-	const group = `workflow:${rootRunId}`;
-	const resumedHost = taskHost("stage-after-restart");
-	try {
-		const stage = parentSession(cwd, {
-			kind: "workflow-stage",
-			workflowRunId: rootRunId,
-			workflowStageId: "coordinator-id",
-			workflowStageName: "coordinator",
-			constraints: { disableWorkflowTool: true },
-			intercomGroup: group,
-		});
-		const original = await launchInterruptedChild(cwd, stage, "wfext1", group);
-		rmSync(original.childSessionFile!, { force: true });
-		const handlers = new Map<
-			string,
-			(event: object, ctx: ExtensionContext) => Promise<{ notices?: string[] } | undefined>
-		>();
-		registerSubagentExtension({
-			registerTool: () => {},
-			registerCommand: () => {},
-			registerMessageRenderer: () => {},
-			sendMessage: () => {},
-			on: (
-				event: string,
-				handler: (event: object, ctx: ExtensionContext) => Promise<{ notices?: string[] } | undefined>,
-			) => handlers.set(event, handler),
-			events: { on: () => () => {}, emit: () => {} },
-			getSessionName: () => "coordinator-stage",
-		} as unknown as ExtensionAPI);
-		const restore = handlers.get("session_recovery_restore");
-		assert.ok(restore);
-		const resumedStage = {
-			...stage.ctx(resumedHost),
-			subagentPolicy: await workflowStagePolicy(cwd),
-		} as ExtensionContext;
-		const result = await restore({ type: "session_recovery_restore", reason: "workflow_stage_resume" }, resumedStage);
-		assert.equal(result?.notices?.length, 1, "the stage's interrupted child must go through restoration");
-		assert.match(result!.notices![0]!, /`subagent-worker-wfext1-1` \(worker\) did not survive the restart/);
-	} finally {
-		await resumedHost.close("session-close");
-		removeTempDirectory(cwd);
-	}
-});
-
 async function openDefaultStore(cwd: string): Promise<SessionStore> {
 	return resolveSessionStore(cwd, {
 		sessionStore: { kind: "sqlite", path: join(cwd, "sessions.sqlite"), prefix: "" },
@@ -1091,7 +996,7 @@ async function launchForkedSqliteChild(
 		await parentManager.appendModelChange(setup.parentModel.provider, setup.parentModel.id);
 		await parentManager.appendThinkingLevelChange(setup.parentThinking);
 	}
-	const parent = parentSession(cwd, undefined, parentManager);
+	const parent = parentSession(cwd, parentManager);
 	const forked = await createForkContextResolver(parentManager, "fork").sessionManagerForIndex(0);
 	assert.ok(forked);
 	assert.equal(forked.getSessionFile(), undefined, "a SQLite child session has no session file");
@@ -1102,7 +1007,7 @@ async function launchForkedSqliteChild(
 
 async function resumeSqliteParent(cwd: string, parentId: string) {
 	const store = await openDefaultStore(cwd);
-	const parent = parentSession(cwd, undefined, await SessionManager.open(store, parentId, cwd));
+	const parent = parentSession(cwd, await SessionManager.open(store, parentId, cwd));
 	return { store, parent };
 }
 

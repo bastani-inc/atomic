@@ -47,7 +47,7 @@ if (positionals[0] === "wait") {
  console.log(JSON.stringify(await wait(values.dir, values["run-id"], values.barrier, values["command-id"], Number(values["after-revision"]))));
 } else {
  assert.equal(positionals[0], "run"); assert.ok(values["evidence-root"]);
- assert.ok(values.chat === "main" || values.chat === "workflow");
+ assert.ok(values.chat === "main");
  const nonce = randomUUID(); const directory = resolve(values["evidence-root"], nonce);
  mkdirSync(dirname(directory), { recursive: true });
  assert.ok(!existsSync(directory), "Refuse evidence reuse");

@@ -35,12 +35,6 @@ export interface InboundMessageEntry {
    */
   historyOnly?: true;
   /**
-   * A card a workflow stage's pending-stage queue handed over (#4391). That queue owns its delivery and has recorded it
-   * delivered, so a session recovery replays the card whatever its sender's liveness: the message never expects a
-   * reply, and nothing else delivers it again.
-   */
-  stageQueued?: true;
-  /**
    * A message a subagent received before its first turn, written as context for that turn. A retry of a stalled start
    * carries it to the session that runs.
    */

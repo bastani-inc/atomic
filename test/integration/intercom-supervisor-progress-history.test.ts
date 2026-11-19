@@ -16,7 +16,6 @@ type Inbound = (
 	from: SessionInfo,
 	message: Message,
 	channel?: "supervisor",
-	preStart?: boolean,
 ) => void | Promise<void>;
 const sender: SessionInfo = {
 	id: "child-id",
@@ -105,8 +104,8 @@ function fixture() {
 		async emit(name: string) {
 			for (const handler of lifecycle.get(name) ?? []) await handler({ type: name }, context);
 		},
-		deliver(message: Message, channel?: "supervisor", preStart = false) {
-			return inbound(context, sender, message, channel, preStart);
+		deliver(message: Message, channel?: "supervisor") {
+			return inbound(context, sender, message, channel);
 		},
 		render(message: (typeof admitted)[number]) {
 			assert.ok(renderer);
@@ -207,7 +206,7 @@ test("session replacement retires queued supervisor progress and frames new-sess
 });
 
 // #3039: blocking exchanges and peer-authored headings do not become supervisor snapshots.
-test("trusted channel framing preserves asks, interviews, replies, feedback and pre-start context", async () => {
+test("trusted channel framing preserves asks, interviews, replies and feedback", async () => {
 	const current = fixture();
 	await current.emit("session_start");
 	try {
@@ -225,11 +224,6 @@ test("trusted channel framing preserves asks, interviews, replies, feedback and 
 		assert.match(current.admitted[0]!.content, /To reply/);
 		assert.match(current.admitted[1]!.content, /To reply/);
 		assert.match(current.admitted[3]!.content, /Intercom delivery failed/);
-		await current.deliver({ id: "pre-start", timestamp: 1, content: { text: "snapshot" } }, "supervisor", true);
-		assert.match(
-			current.admitted[5]!.content,
-			/Messages received before you started[\s\S]*Historical supervisor update/,
-		);
 	} finally {
 		await current.emit("session_shutdown");
 	}

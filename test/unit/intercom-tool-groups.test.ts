@@ -154,14 +154,10 @@ test("list distinguishes a retained terminal child's reply capability from idle 
 	assert.match(live.content[0]?.text ?? "", /idle, replyCapability: live/);
 });
 
-test("heavy tool guidance teaches exact known workflow-stage targets without replacing live sessions", () => {
+test("heavy tool guidance teaches live session targets, without workflow-stage targets", () => {
 	const { tool } = fixture();
 	const guidance = `${tool.description}\n${tool.parameters.properties?.to?.description ?? ""}`;
-	assert.ok(guidance.includes("`workflow:<rootRunId>/<segment>[/<segment>...]`"));
-	assert.match(guidance, /sticky for every future\s+stage/i);
-	assert.ok(guidance.includes("`workflow:<rootRunId>/**`"));
-	assert.match(guidance, /looks like a typo of a known stage/);
-	assert.doesNotMatch(guidance, /notInKnownSet/);
+	assert.doesNotMatch(guidance, /workflow/i);
 	assert.match(guidance, /live session/i);
 	assert.match(guidance, /retries recoverable disconnects internally up to three times/);
 	assert.match(tool.promptSnippet ?? "", /retry reconnects internally/);

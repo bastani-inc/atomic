@@ -3,11 +3,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { parseStorageCommand, runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
-import {
-	parseWorkerCommand,
-	WorkerCommandError,
-	workerJournalSelection,
-} from "../../packages/coding-agent/src/cli/worker-command.js";
 import { isTeamProfileConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	POSTGRES_ADAPTER_PACKAGE,
@@ -160,51 +155,6 @@ describe("atomic storage join postgres:// arguments (#4793)", () => {
 		assert.throws(() => parseStorageCommand(["import", "in", "--limit", "2"]), /Unknown option --limit/);
 		assert.throws(() => parseStorageCommand(["join", URL_, "--storage", "{}"]), /Unknown option --storage/);
 		assert.throws(() => parseStorageCommand(["join", URL_, "--auth"]), /--auth needs a value/);
-	});
-});
-
-describe("atomic worker --db postgres:// (#4793)", () => {
-	test("passes the password by file reference to a Postgres journal selection (#4793)", () => {
-		const command = parseWorkerCommand(["start", "--db", URL_, "--password-file", "pg-password", "--prefix", "p_"], {
-			cwd: root,
-			cpus: 4,
-		});
-		assert.equal(command.kind, "start");
-		assert.ok(command.kind === "start" && command.database !== undefined);
-		assert.deepEqual(workerJournalSelection(command.database), {
-			adapter: POSTGRES_ADAPTER_PACKAGE,
-			options: { url: URL_ },
-			secrets: { password: { file: passwordFile } },
-			prefix: "p_",
-		});
-		const tokenCommand = parseWorkerCommand(["status", "--db", URL_, "--token-file", passwordFile], { cwd: root });
-		assert.ok(tokenCommand.kind === "status" && tokenCommand.database !== undefined);
-		assert.deepEqual(workerJournalSelection(tokenCommand.database).secrets, { password: { file: passwordFile } });
-		const auth = parseWorkerCommand(["start", "--db", URL_, "--auth", "gcp"], { cwd: root });
-		assert.ok(auth.kind === "start" && auth.database !== undefined);
-		assert.deepEqual(workerJournalSelection(auth.database), {
-			adapter: POSTGRES_ADAPTER_PACKAGE,
-			options: { url: URL_, auth: "gcp-iam" },
-		});
-	});
-
-	test("refuses a Postgres --db without one credential source, or with a password in it (#4793)", () => {
-		const refused = (args: readonly string[], field: string) =>
-			assert.throws(
-				() => parseWorkerCommand(args, { cwd: root }),
-				(error: unknown) =>
-					error instanceof WorkerCommandError && error.field === field && !error.message.includes(PASSWORD),
-				args.join(" "),
-			);
-		refused(["start", "--db", URL_], "--password-file");
-		refused(
-			["start", "--db", URL_, "--password-file", "a", "--token-file", "b"],
-			"--password-file, --token-file, --auth",
-		);
-		refused(["start", "--db", `postgres://atomic:${PASSWORD}@db/atomic`, "--auth", "aws"], "--db");
-		refused(["start", "--db", "libsql://pool.example.turso.io", "--password-file", "a"], "--password-file");
-		refused(["start", "--password-file", "a"], "--password-file");
-		refused(["start", "--auth", "aws"], "--auth");
 	});
 });
 
@@ -447,15 +397,15 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 		const fake = installFakePostgres();
 		selectPostgres("db.example.com");
 		const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
-		const journal = status.domains.find((domain) => domain.domain === "journal");
+		const sessions = status.domains.find((domain) => domain.domain === "sessions");
 		assert.equal(
-			journal?.selection,
+			sessions?.selection,
 			`PostgreSQL postgres://db.example.com:5432/atomic via ${POSTGRES_ADAPTER_PACKAGE} (prefix team_)`,
 		);
-		assert.equal(journal?.probe?.adapter?.loaded, true);
-		assert.equal(journal?.probe?.connection.status, "ok");
+		assert.equal(sessions?.probe?.adapter?.loaded, true);
+		assert.equal(sessions?.probe?.connection.status, "ok");
 		assert.match(
-			journal?.probe?.connection.detail ?? "",
+			sessions?.probe?.connection.detail ?? "",
 			/^postgres postgres:\/\/db\.example\.com:5432\/atomic answered in \d+ ms, PostgreSQL 16\.4$/,
 		);
 		assert.equal(fake.opens()[0]?.password, PASSWORD);
@@ -477,7 +427,7 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 		] as const) {
 			selectPostgres(host);
 			const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
-			const detail = status.domains.find((domain) => domain.domain === "journal")?.probe?.connection.detail ?? "";
+			const detail = status.domains.find((domain) => domain.domain === "sessions")?.probe?.connection.detail ?? "";
 			assert.ok(detail.endsWith(`, PostgreSQL 16.4; ${wakeUps}`), detail);
 		}
 	});
@@ -487,9 +437,9 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 		selectPostgres("hang");
 		const started = Date.now();
 		const status = await collectStorageStatus({ cwd: project, agentDir, probe: true, probeTimeoutMs: 100 });
-		const journal = status.domains.find((domain) => domain.domain === "journal");
-		assert.equal(journal?.probe?.connection.status, "failed");
-		assert.match(journal?.probe?.connection.detail ?? "", /^The database did not answer within 0\.1 s/);
+		const sessions = status.domains.find((domain) => domain.domain === "sessions");
+		assert.equal(sessions?.probe?.connection.status, "failed");
+		assert.match(sessions?.probe?.connection.detail ?? "", /^The database did not answer within 0\.1 s/);
 		assert.ok(Date.now() - started < 10_000);
 	});
 
@@ -506,10 +456,9 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 			probeTimeoutMs: PROBE_TIMEOUT_MS,
 		});
 		const sessions = status.domains.find((domain) => domain.domain === "sessions");
-		const journal = status.domains.find((domain) => domain.domain === "journal");
 		assert.equal(sessions?.probe?.adapter?.loaded, true);
-		assert.equal(journal?.probe?.connection.status, "failed");
-		assert.match(journal?.probe?.connection.detail ?? "", /^The database did not answer within 0\.1 s/);
+		assert.equal(sessions?.probe?.connection.status, "failed");
+		assert.match(sessions?.probe?.connection.detail ?? "", /^The database did not answer within 0\.1 s/);
 		assert.equal(fake.opens().length, 1);
 		assert.ok(Date.now() - started < 10_000);
 	});
@@ -543,23 +492,13 @@ describe("Postgres selections in team join and export (#4793)", () => {
 			adapter: POSTGRES_ADAPTER_PACKAGE,
 			options: { url: "postgres://atomic@refused/atomic" },
 		});
-		const result = await storage(["export", join(root, "out"), "--workflows", "--storage", named]);
+		const result = await storage(["export", join(root, "out"), "--storage", named]);
 		assert.equal(result.code, 1);
-		assert.match(result.err, /cannot be opened: connect ECONNREFUSED/);
+		assert.match(result.err, /connect ECONNREFUSED/);
 		mkdirSync(join(root, "in"));
 		const memory = await storage(["import", join(root, "in"), "--storage", '{"path":":memory:"}']);
 		assert.equal(memory.code, 1);
 		assert.match(memory.err, /keeps nothing/);
 		assert.equal(existsSync(join(project, ":memory:")), false);
-	});
-
-	test("a named Postgres selection is read without a client-side transaction (#4793)", async () => {
-		const fake = installFakePostgres();
-		const named = JSON.stringify({ adapter: POSTGRES_ADAPTER_PACKAGE, options: { url: URL_ } });
-		const result = await storage(["export", join(root, "out"), "--workflows", "--storage", named]);
-		assert.equal(result.code, 0, result.err);
-		assert.match(result.err, /it has no workflow runs in the current journal format/);
-		const statements = fake.opens().flatMap((entry) => (entry.query === undefined ? [] : [entry.query]));
-		assert.ok(!statements.some((sql) => /^(BEGIN|COMMIT)/.test(sql)), statements.join("; "));
 	});
 });

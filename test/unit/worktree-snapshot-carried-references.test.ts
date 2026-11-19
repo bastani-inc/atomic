@@ -11,18 +11,10 @@ import {
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
-import { openSqlPoolQueue, type SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { isStaleLeaseError, type Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import { countingDatabase } from "../helpers/counting-database.js";
+import { seedLegacyWorkflowTables } from "../helpers/legacy-store-0990.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
-import {
-	ageBlobs,
-	dropSnapshotIndex,
-	startRun,
-	syntheticSnapshot,
-	textBlob,
-} from "../helpers/snapshot-reference-index.js";
+import { ageBlobs, dropSnapshotIndex, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 /**
@@ -52,27 +44,26 @@ afterEach(async () => {
 	await removeLibsqlDirectory(directory);
 });
 
-interface RootPool {
-	readonly database: SqliteDatabase;
-	readonly journal: SqlRunJournal;
-	readonly queue: SqlPoolQueue;
-	readonly blobs: SqlSnapshotBlobStore;
-	readonly lease: Lease;
-}
-
-/** A run journal whose root `root` holds its lease, with the pool's tables beside it and their index triggers. */
-async function openRootPool(subject: Subject, options: { readonly indexed?: boolean } = {}): Promise<RootPool> {
+/** Write raw legacy pool rows; assertions inspect the current snapshot store, not a workflow worker. */
+async function openRootPool(subject: Subject, options: { readonly indexed?: boolean } = {}) {
 	const database = await subject.open(directory);
-	const journal = await SqlRunJournal.open(database);
-	closers.push(async () => {
-		await journal.close();
-		await database.close();
-	});
-	const queue = await openSqlPoolQueue(journal);
-	const lease = await startRun(journal, "root");
-	// The pool's tables appeared after the journal opened its blob store: a collection, or this, indexes them.
-	if (options.indexed !== false) await journal.snapshotBlobs.completeIndex();
-	return { database, journal, queue, blobs: journal.snapshotBlobs, lease };
+	closers.push(() => database.close());
+	const blobs = await SqlSnapshotBlobStore.open(database);
+	await seedLegacyWorkflowTables(database);
+	await database.run(
+		"INSERT INTO wf_runs(run_id,name,cwd,created_at,status,header_json) VALUES ('root','root','/',1,'running','{}')",
+	);
+	if (options.indexed !== false) await blobs.completeIndex();
+	const hold = async (snapshot: WorktreeSnapshot) => {
+		await database.run(
+			"INSERT INTO wf_runs_pool_root_snapshot(root,epoch,snapshot) VALUES ('root',1,?) ON CONFLICT(root) DO UPDATE SET snapshot=excluded.snapshot",
+			JSON.stringify(snapshot),
+		);
+	};
+	const release = async () => {
+		await database.run("DELETE FROM wf_runs_pool_root_snapshot WHERE root='root'");
+	};
+	return { database, blobs, hold, release };
 }
 
 /** The descriptor of child `id`'s work, carrying `snapshot` when given, as the root queues it. */
@@ -206,13 +197,13 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 		await database.run("DELETE FROM wf_runs_pool_root_snapshot WHERE root = 'root'");
 	});
 
-	test("the root's binding keeps its snapshot's blobs at graceSeconds 0 while its pool holds it, and its incarnation lets it go", async () => {
-		const { database, queue, blobs, lease } = await openRootPool(subject);
+	test("the legacy root snapshot row retains blobs at zero grace until replaced or deleted", async () => {
+		const { database, hold, release, blobs } = await openRootPool(subject);
 		const [first, bundle, second, orphan] = blobsNamed("first", "bundle", "second", "orphan");
 		await blobs.putBlobs([first!, bundle!, orphan!]);
 		await ageBlobs(database, blobs.table, 10_000);
 
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("s1", [first!.hash], { bundle: bundle!.hash }));
+		await hold(syntheticSnapshot("s1", [first!.hash], { bundle: bundle!.hash }));
 		assert.deepEqual(
 			await collectAtZeroGrace(blobs),
 			[orphan!.hash],
@@ -220,95 +211,38 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 		);
 
 		await blobs.putBlobs([second!]);
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("s2", [null, second!.hash]));
+		await hold(syntheticSnapshot("s2", [null, second!.hash]));
 		assert.deepEqual(await collectAtZeroGrace(blobs), sorted([first!.hash, bundle!.hash]), "the new one replaces it");
 
-		for (const stale of [
-			{ ...lease, epoch: lease.epoch + 1 },
-			{ ...lease, holderId: "another-holder" },
-			{ runId: "never-started", holderId: lease.holderId, epoch: 1 },
-		]) {
-			await assert.rejects(queue.holdRootSnapshot(stale, syntheticSnapshot("stale", [first!.hash])), (error) => {
-				assert.ok(isStaleLeaseError(error), String(error));
-				assert.deepEqual(
-					[error.code, error.runId, error.heldEpoch, error.currentEpoch],
-					["stale_lease", stale.runId, stale.epoch, stale.runId === "root" ? lease.epoch : 0],
-				);
-				return true;
-			});
-		}
-		await queue.releaseRootSnapshot({ ...lease, epoch: lease.epoch - 1 });
-		assert.deepEqual(
-			await collectAtZeroGrace(blobs),
-			[],
-			"an earlier incarnation's release leaves a later one's record",
-		);
 		assert.deepEqual(await carriedRefs(database), [["root:root", second!.hash]]);
 
-		await queue.releaseRootSnapshot(lease);
+		await release();
 
 		assert.deepEqual(await collectAtZeroGrace(blobs), [second!.hash]);
 		assert.deepEqual(await database.all("SELECT root FROM wf_runs_pool_root_snapshot"), []);
 	});
 
-	test("a resumed root without a snapshot drops its earlier hold but not queued references or a newer incarnation's hold (#4503)", async () => {
-		const { database, journal, queue, blobs, lease } = await openRootPool(subject);
-		const [rootOnly, queued] = blobsNamed("root only", "queued");
-		await blobs.putBlobs([rootOnly!, queued!]);
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("old-root", [rootOnly!.hash, queued!.hash]));
-		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("queued", [queued!.hash])));
-		await journal.release(lease);
-		const resumed = await journal.acquire("root", "resumed-holder");
-		assert.ok(resumed.status === "acquired");
-		assert.ok(resumed.lease.epoch > lease.epoch);
-
-		await queue.holdRootSnapshot(resumed.lease, undefined);
-
-		assert.deepEqual(await collectAtZeroGrace(blobs), [rootOnly!.hash]);
-		assert.deepEqual(await carriedRefs(database), [["work:w1", queued!.hash]]);
-		await queue.holdRootSnapshot(resumed.lease, undefined);
-		await journal.release(resumed.lease);
-		const newer = await journal.acquire("root", "newer-holder");
-		assert.ok(newer.status === "acquired");
-		await blobs.putBlobs([rootOnly!]);
-		await queue.holdRootSnapshot(newer.lease, syntheticSnapshot("new-root", [rootOnly!.hash]));
-		for (const stale of [lease, resumed.lease, { ...newer.lease, holderId: "another-holder" }]) {
-			await assert.rejects(queue.holdRootSnapshot(stale, undefined), (error) => {
-				assert.ok(isStaleLeaseError(error));
-				assert.equal(error.code, "stale_lease");
-				assert.equal(error.currentEpoch, newer.lease.epoch);
-				return true;
-			});
-		}
-		await queue.releaseRootSnapshot(resumed.lease);
-		assert.deepEqual(await collectAtZeroGrace(blobs), []);
-		assert.deepEqual(await carriedRefs(database), [
-			["root:root", rootOnly!.hash],
-			["work:w1", queued!.hash],
-		]);
-	});
-
 	test("deleting the root run lets go of every snapshot its work and its binding carried", async () => {
-		const { database, journal, queue, blobs, lease } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [first, second, bound] = blobsNamed("first", "second", "bound");
 		await blobs.putBlobs([first!, second!, bound!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [first!.hash])));
 		await queueWork(database, "w2", descriptor("w2", syntheticSnapshot("s2", [second!.hash])));
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("bound", [bound!.hash]));
+		await hold(syntheticSnapshot("bound", [bound!.hash]));
 		assert.deepEqual(await collectAtZeroGrace(blobs), []);
 
-		await journal.deleteRun("root");
+		await database.run("DELETE FROM wf_runs WHERE run_id = ?", "root");
 
 		assert.deepEqual(await collectAtZeroGrace(blobs), sorted([first!.hash, second!.hash, bound!.hash]));
 		assert.deepEqual(await carriedRefs(database), []);
 	});
 
 	test("rows queued before their table had index triggers are indexed before a sweep deletes anything", async () => {
-		const { database, queue, blobs, lease } = await openRootPool(subject, { indexed: false });
+		const { database, hold, blobs } = await openRootPool(subject, { indexed: false });
 		const [queued, bound, orphan] = blobsNamed("queued", "bound", "orphan");
 		await blobs.putBlobs([queued!, bound!, orphan!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [queued!.hash])));
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("bound", [bound!.hash]));
+		await hold(syntheticSnapshot("bound", [bound!.hash]));
 		assert.deepEqual(await carriedRefs(database), [], "nothing indexed them yet");
 
 		const deleted = await blobs.sweep({ graceSeconds: 0 });
@@ -321,11 +255,11 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("an index an earlier build wrote, without carried references, is migrated forward on open and backfilled before a sweep deletes anything", async () => {
-		const { database, queue, blobs, lease } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [queued, later, bound, orphan] = blobsNamed("queued", "later", "bound", "orphan");
 		await blobs.putBlobs([queued!, later!, bound!, orphan!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [queued!.hash])));
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("bound", [bound!.hash]));
+		await hold(syntheticSnapshot("bound", [bound!.hash]));
 		for (const { name } of await database.all<{ name: string }>(
 			"SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE '%snapshot_carried%'",
 		))
@@ -369,12 +303,12 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("references of rows deleted while the index triggers were missing do not outlive them once the triggers are installed again", async () => {
-		const { database, queue, blobs, lease } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [gone, kept, bound] = blobsNamed("gone", "kept", "bound");
 		await blobs.putBlobs([gone!, kept!, bound!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [gone!.hash])));
 		await queueWork(database, "w2", descriptor("w2", syntheticSnapshot("s2", [kept!.hash])));
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("bound", [bound!.hash]));
+		await hold(syntheticSnapshot("bound", [bound!.hash]));
 		for (const { name } of await database.all<{ name: string }>(
 			"SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE '%snapshot_carried%'",
 		))
@@ -389,11 +323,11 @@ describe.each(subjects)("snapshots dispatched work carries, on $name (#4503)", (
 	});
 
 	test("a database written before the reference index existed keeps what its pool carries through the first collection", async () => {
-		const { database, queue, blobs, lease } = await openRootPool(subject);
+		const { database, hold, blobs } = await openRootPool(subject);
 		const [queued, bound, orphan] = blobsNamed("queued", "bound", "orphan");
 		await blobs.putBlobs([queued!, bound!, orphan!]);
 		await queueWork(database, "w1", descriptor("w1", syntheticSnapshot("s1", [queued!.hash])));
-		await queue.holdRootSnapshot(lease, syntheticSnapshot("bound", [bound!.hash]));
+		await hold(syntheticSnapshot("bound", [bound!.hash]));
 		await dropSnapshotIndex(database);
 		await ageBlobs(database, blobs.table, 10_000);
 
@@ -437,7 +371,7 @@ async function carriedByRows(database: SqliteDatabase): Promise<Set<string>> {
 describe.each(subjects)("random pool histories on $name keep exactly what their rows carry (#4503)", (subject) => {
 	test.each([1, 2, 3, 4])("seed %i", async (seed) => {
 		const rng = random(seed);
-		const { database, queue, blobs, lease } = await openRootPool(subject, { indexed: false });
+		const { database, hold, release, blobs } = await openRootPool(subject, { indexed: false });
 		const stored = blobsNamed(...Array.from({ length: 24 }, (_, index) => `${seed}-${index}`));
 		await blobs.putBlobs(stored);
 		const snapshot = (): WorktreeSnapshot | undefined =>
@@ -466,8 +400,8 @@ describe.each(subjects)("random pool histories on $name keep exactly what their 
 				await database.run("DELETE FROM wf_runs_work WHERE id = ?", id);
 			} else if (action === 4) {
 				const held = snapshot();
-				if (held === undefined) await queue.releaseRootSnapshot(lease);
-				else await queue.holdRootSnapshot(lease, held);
+				if (held === undefined) await release();
+				else await hold(held);
 			} else await database.run("UPDATE wf_runs_work SET state = 'leased' WHERE id = ?", rng.pick(queued));
 		}
 		const expected = await carriedByRows(database);

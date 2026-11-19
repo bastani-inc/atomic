@@ -247,7 +247,6 @@ test("a paused, quit or live child keeps only the new results for later and igno
 	for (const [state, status] of [
 		["terminal", "paused"],
 		["terminal", "quit"],
-		["terminal", "stage-paused"],
 		["running", undefined],
 	] as const) {
 		assert.deepEqual(decideReleasedChildWake(record(state, status, [result("a")]), [toolWake("b"), toolWake("b")]), {
@@ -262,7 +261,7 @@ test("a paused, quit or live child keeps only the new results for later and igno
 });
 
 test("an ended child takes nothing, and a settled one is woken by a new result or by results it holds (#4326)", () => {
-	for (const status of ["killed", "stage-closed", "gone"])
+	for (const status of ["killed", "gone"])
 		assert.deepEqual(decideReleasedChildWake(record("terminal", status), [toolWake("a"), intercomWake]), {
 			kind: "ignore",
 		});

@@ -1,4 +1,4 @@
-import type { Component } from "@bastani/atomic-tui";
+import { type Component, Text } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
@@ -51,6 +51,11 @@ describe("first-run onboarding", () => {
 		expect(ONBOARDING_COPY).toContain("run `/login` first");
 		expect(ONBOARDING_COPY).not.toContain("Paste a ticket");
 		expect(ONBOARDING_COPY).not.toContain("/chat");
+	});
+
+	it("renders every onboarding line on one row of an 80-column terminal", () => {
+		const rows = new Text(ONBOARDING_COPY, 1, 0).render(80);
+		expect(rows).toHaveLength(ONBOARDING_COPY.split("\n").length);
 	});
 
 	it("gates first-run onboarding on an empty started session and missing onboardedVersion", () => {

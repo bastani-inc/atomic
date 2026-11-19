@@ -208,13 +208,13 @@ For sessions with a parent (created via `/fork`, `/clone`, or `newSession({ pare
 {"type":"session","version":4,"id":"uuid","createdAt":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSessionId":"original-session-id"}
 ```
 
-Workflow-owned sessions carry both `internal: true` and complete `workflow` linkage. Atomic writes this classification before the transcript becomes visible wherever possible, including workflow stage forks and fresh/forked subagents. A session is excluded from normal resume history only when `internal` is the exact boolean `true` and `workflow.runId`, `workflow.stageId`, and `workflow.stageName` are all non-empty strings:
+Sessions that the workflow stages of earlier releases wrote carry both `internal: true` and complete `workflow` linkage. This release writes no `workflow` linkage, and every session store keeps the linkage of a session it already holds, so export and import carry it unchanged. A session is excluded from normal resume history only when `internal` is the exact boolean `true` and `workflow.runId`, `workflow.stageId`, and `workflow.stageName` are all non-empty strings:
 
 ```json
 {"type":"session","version":4,"id":"uuid","createdAt":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","internal":true,"workflow":{"runId":"run-1","stageId":"stage-build","stageName":"build"}}
 ```
 
-Malformed or incomplete workflow markers remain visible in normal history. Atomic does not infer workflow ownership from `parentSessionId`, so ordinary user-created forks are unaffected. Valid workflow classification is inherited when an internal workflow transcript is branched or forked.
+Malformed or incomplete workflow markers remain visible in normal history. Atomic does not infer workflow ownership from `parentSessionId`, so ordinary user-created forks are unaffected.
 
 ### SessionMessageEntry
 
@@ -313,7 +313,7 @@ Extension state persistence. Does NOT participate in LLM context.
 
 Use `customType` to identify your extension's entries on reload.
 
-Atomic records one of its own: when the oversized result of an agent released while it waited (a workflow stage or a background subagent) is stored with the session in its session store, a `custom` entry with `customType: "atomic.tool-output"` names it, written before the tool result whose text points to `tool-output://<sha256>`:
+Atomic records one of its own: when the oversized result of an agent released while it waited (a background subagent) is stored with the session in its session store, a `custom` entry with `customType: "atomic.tool-output"` names it, written before the tool result whose text points to `tool-output://<sha256>`:
 
 ```json
 {"type":"custom","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:21:00.000Z","customType":"atomic.tool-output","data":{"toolCallId":"call_1","hash":"9c56…","bytes":1048576}}
@@ -491,32 +491,24 @@ Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations.
 ### Static Creation Methods
 
 - `SessionManager.create(cwd, sessionDir?, options?)` - New session in configured storage, or explicit JSONL when a directory is supplied.
-- `SessionManager.create(store, cwd, options?)` - New session in a supplied `SessionStore`. Workflow-owned sessions require the pair `internal: true` and `workflow: { runId, stageId, stageName }`.
+- `SessionManager.create(store, cwd, options?)` - New session in a supplied `SessionStore`.
 - `SessionManager.open(store, sessionId, cwdOverride?, options?)` - Open an existing session by exact ID in that store. A missing ID raises `SessionNotFoundError`; it does not create a session. A compacted session opens at its current context window. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` do the same. Use `readHistory()` for entries before the window.
 - `SessionManager.open(path, sessionDir?, cwdOverride?)` - Open a JSONL file directly, creating it if missing. This is a file API, not the CLI session selector.
-- `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)` - Continue the most recent regular session or create one. Pass `{ includeInternal: true }` only to include workflow sessions.
+- `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)` - Continue the most recent regular session or create one. Pass `{ includeInternal: true }` only to include internal sessions.
 - `SessionManager.inMemory(cwd?, options?)` - Create an empty, private, memory-only session synchronously. To seed it, use `await SessionManager.inMemory(cwd, options, entries)` and do not change the supplied entries until it resolves. The store keeps the history; the manager opens at the current window.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)` - Fork a JSONL file into the configured or explicit destination. To fork a database session, open it by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.
 - `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)` - Import a JSONL export without changing its ID, upgrading older supported formats. An existing ID raises `SessionExistsError`.
 
 ### Static Listing Methods
 
-- `SessionManager.list(cwd, storeOrDir?, onProgress?, options?)` - List project sessions. Internal workflow sessions are excluded by default.
-- `SessionManager.listAll(storeOrDir?, onProgress?, options?)` - List sessions across projects in the selected store. Both methods accept `{ includeInternal: true, signal }` to include workflow sessions or cancel listing.
+- `SessionManager.list(cwd, storeOrDir?, onProgress?, options?)` - List project sessions. Internal sessions are excluded by default.
+- `SessionManager.listAll(storeOrDir?, onProgress?, options?)` - List sessions across projects in the selected store. Both methods accept `{ includeInternal: true, signal }` to include internal sessions or cancel listing.
 
-Use the returned `SessionInfo.id` to select a session. Its `path` contains a JSONL location when available and otherwise the ID; do not treat it as a filesystem path. To list workflow sessions in the active store:
-
-```typescript
-const stages = await SessionManager.list(cwd, manager.getSessionStore(), undefined, { includeInternal: true });
-for (const stage of stages.filter((session) => session.internal)) {
-  console.log(stage.workflow?.runId, stage.workflow?.stageId, stage.id);
-}
-```
+Use the returned `SessionInfo.id` to select a session. Its `path` contains a JSONL location when available and otherwise the ID; do not treat it as a filesystem path.
 
 ### Instance Methods - Session Management
 
-- `newSession(options?)` - Start a new session. Options include `parentSession`, `internal`, and workflow run/stage linkage; classification requires a complete marker pair.
-- `markSessionInternal(workflow?)` - Apply valid workflow ownership to the current session, repairing malformed markers while preserving an existing valid marker.
+- `newSession(options?)` - Start a new session. Options include `parentSession`.
 - `setSessionFile(path)` - Switch to a JSONL file directly. For ID-based loading, use `SessionManager.open(store, sessionId)` to obtain a new manager.
 - `createBranchedSession(leafId)` - Extract a branch into a new session in the same store
 - `forkTo(cwd, targetStoreOrDir?, options?)` - Copy the conversation into a new session at the destination
@@ -567,7 +559,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
 - `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones a `{ history: "tail" }` manager does not hold in pages and keeping none of them. Resolves with the last sequence visited
 - `getAdmissionKeys().has(key)` - Test a persisted admission key synchronously. A resume keeps packed 128-bit digests, not original admission-key strings. The decision to admit or reject a duplicate is unchanged
-- `getSessionRecoveryState()` - Packed admission-key digests, delivered Intercom message IDs and pooled workflow delivery IDs used to prevent duplicate deliveries after resume
+- `getSessionRecoveryState()` - Packed admission-key digests, delivered Intercom message IDs and the delivery IDs an earlier release's pooled workflow stage recorded (`deliveryOpIds`), used to prevent duplicate deliveries after resume
 - `getHeader()` - Session header metadata
 - `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
 - `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named

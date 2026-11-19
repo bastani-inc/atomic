@@ -250,7 +250,7 @@ export async function _checkCompaction(
 	if (shouldCompact(contextTokens, contextWindow, settings)) {
 		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage, desiredMaxOutput, isLiveTurnCompletion);
 		// A turn that is not retried keeps its answer as the session's last answer for its readers (the caller, RPC,
-		// a workflow stage). The clear runs just before the next model request instead.
+		// a child session). The clear runs just before the next model request instead.
 		if (!willRetry && isLiveTurnCompletion) return;
 		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
 			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {

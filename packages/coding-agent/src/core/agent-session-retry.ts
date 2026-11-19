@@ -128,7 +128,7 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	// The same request gets the same content-filter refusal, so with `retry.fallbackOnContentFilter` it goes
 	// straight to the next fallback candidate. Otherwise safety/refusal errors remain bounded same-model
 	// retries that do not spend another provider candidate. The refusal grammar lives in the shared
-	// classifier so this decision cannot drift from workflow fallback handling.
+	// classifier.
 	if (isContentFilterRefusal(message) && fallsBackOnContentFilter.call(this)) return false;
 	if (isSafetyRefusalFailure(message)) return true;
 	if (isRetryableSameModelFailure(message)) return true;
@@ -564,7 +564,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	ensureRetryPromise(this);
 
 	// One shared policy decides the bounded same-model budget and its backoff, so
-	// main chat and workflow stages cannot drift apart on the same settings. The
+	// each session applies the same settings. The
 	// counter still advances on the exhausting attempt, so `_trySwitchToFallbackModel`
 	// closes the retry lifecycle before the fallback lifecycle opens.
 	const decision = nextRetryDecision(

@@ -3,7 +3,6 @@ import { isActivePanelState, isRestingPanelRow, panelRowListed } from "../../../
 import {
 	type AgentPanelItem,
 	type AgentPanelState,
-	agentPanelItemReadAt,
 	agentPanelTaskId,
 	isInterruptedPanelTask,
 	markInterruptedPanelTask,
@@ -11,7 +10,6 @@ import {
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import {
 	bindTaskClock,
-	liveElapsedFromRead,
 	shownSpanMs,
 	TaskElapsedClocks,
 	taskClockOf,
@@ -53,7 +51,6 @@ const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◌◼✓✗�
 const SGR_SEQUENCE = /\x1b\[[\d;:]*m/g;
 const MAX_CACHED_LINE_WIDTHS = 512;
 const singleCellLineWidths = new Map<string, number>();
-const BARS_16 = Array.from({ length: 17 }, (_, filled) => "▰".repeat(filled) + "▱".repeat(16 - filled));
 let glyphThemeRef: ReturnType<typeof getGlobalTheme>;
 let glyphNoColor: string | undefined;
 let glyphReducedMotion: string | undefined;
@@ -156,15 +153,6 @@ export function formatPanelTokens(tokens: number): string {
 	return `${amount.toFixed(1)}${units[unit]}`;
 }
 
-export function panelProgressBar(done: number, total: number, cells = 16): string {
-	const ratio = Number.isFinite(done) && Number.isFinite(total) && total > 0 ? done / total : 0;
-	const clamped = Math.max(0, Math.min(1, ratio));
-	if (cells === 16) return BARS_16[Math.round(clamped * 16)]!;
-	const size = Number.isFinite(cells) ? Math.max(0, Math.min(1024, Math.floor(cells))) : 0;
-	const filled = Math.round(clamped * size);
-	return "▰".repeat(filled) + "▱".repeat(size - filled);
-}
-
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
 	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
@@ -173,7 +161,6 @@ export class AgentPanelModel {
 	 * rest from (`AgentPanelItem.runGeneration`).
 	 */
 	private readonly retired = new Map<string, { pass: number; run: string | undefined }>();
-	private readonly readAt = new WeakMap<AgentPanelRow, number>();
 	private readonly bases = new WeakMap<AgentPanelRow, AgentPanelRow>();
 	private pass = 0;
 	private finishedGeneration = 0;
@@ -195,8 +182,7 @@ export class AgentPanelModel {
 		return { now: this.now(), pass: ++this.pass };
 	}
 	/**
-	 * Whether a finished row stays listed. Only a row its owner keeps stays, such as a workflow run not opened yet or a
-	 * stopped subagent while something is active; the rest leave the moment they finish.
+	 * Whether a finished row stays listed, such as a stopped subagent while something is active.
 	 */
 	keepFinished(id: string, keep: boolean, now: number, pass: number, native = false): boolean {
 		if (!keep) return false;
@@ -254,16 +240,6 @@ export class AgentPanelModel {
 			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
 		}
 		const running = taskClockRunning(state);
-		if (row.kind === "workflow") {
-			if (!running || row.elapsedMs === undefined) return row;
-			let since = agentPanelItemReadAt(row) ?? this.readAt.get(row);
-			if (since === undefined) {
-				since = now;
-				this.readAt.set(row, since);
-			}
-			const elapsedMs = liveElapsedFromRead(row.elapsedMs, since, running, now);
-			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
-		}
 		const taskId = agentPanelTaskId(row.id) ?? row.id;
 		const sourceClocks = taskClockOf(row);
 		if (sourceClocks === undefined) this.hasLocalClocks = true;
@@ -286,7 +262,7 @@ export class AgentPanelModel {
 		this.bases.set(copy, base);
 		return copy;
 	}
-	/** The listed rows, in panel order. `keep` says whether a finished workflow run stays: nobody has opened it yet. */
+	/** The listed rows, in panel order. */
 	rows(
 		rows: readonly AgentPanelRow[],
 		keep: (row: AgentPanelRow) => boolean = () => false,
@@ -312,7 +288,7 @@ export class AgentPanelModel {
 			const finished = FINISHED.has(state) && !isInterruptedPanelTask(row);
 			const retired = resting && this.retireResting(row.id, active, pass, row.runGeneration);
 			if (!panelRowListed(row.kind, state, finished, { active, retired, kept: finished && keep(row) })) {
-				if (retired && row.kind !== "workflow") hidden.push(row);
+				if (retired) hidden.push(row);
 				continue;
 			}
 			if (finished) {
@@ -339,7 +315,7 @@ export class AgentPanelModel {
 			const row = ordered[index]!;
 			const state = states.get(row)!;
 			ordered[index] = this.withElapsed(row, now, state);
-			if (row.kind !== "workflow" && state !== "queued" && taskClockOf(row) === undefined) {
+			if (state !== "queued" && taskClockOf(row) === undefined) {
 				localClockIds.add(agentPanelTaskId(row.id) ?? row.id);
 			}
 		}
@@ -416,13 +392,6 @@ function rightColumn(row: AgentPanelRow, width: number): string {
 	return elapsed.length > 0 ? `${word} · ${elapsed}` : word;
 }
 
-function taskColumn(row: AgentPanelRow, cleanTask: string, width: number): string {
-	if (row.kind === "workflow" && row.progress !== undefined && width >= 60) {
-		return `${panelProgressBar(row.progress.done, row.progress.total)}  ${row.progress.done}/${row.progress.total} stages`;
-	}
-	return cleanTask;
-}
-
 export interface AgentPanelRenderOptions {
 	readonly selectedId?: string;
 	readonly frame?: number;
@@ -434,7 +403,7 @@ export interface AgentPanelRenderOptions {
 	readonly showMain?: boolean;
 }
 
-/** The main-chat row leads the panel whenever it lists a subagent; a panel of workflow runs has none. */
+/** The main-chat row leads the panel whenever it lists a subagent. */
 export function panelShowsMain(rows: readonly Pick<AgentPanelRow, "kind">[]): boolean {
 	return rows.some((row) => row.kind === "agent");
 }
@@ -517,7 +486,7 @@ export function renderAgentPanelRows(
 			dim ? style.dim(glyph(raw, style, undefined)) : glyph(raw, style, options.frame),
 			cleanName,
 			nameWidths[i]!,
-			taskColumn(raw, cleanTask, width),
+			cleanTask,
 			rightColumn(raw, width),
 			dim,
 			queued,

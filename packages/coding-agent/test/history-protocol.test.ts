@@ -3,11 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import type {
-	WorkflowRunControl,
-	WorkflowRunDetail,
-	WorkflowRunSummary,
-} from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
@@ -24,7 +19,7 @@ import {
 	type SessionStore,
 	type SessionSummary,
 } from "../src/core/storage/session/types.js";
-import { createHistoryRouter, type WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
+import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 import { createToolDefinition } from "../src/core/tools/index.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
@@ -191,7 +186,6 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 				cwd: PROJECT,
 				currentSessionId: CURRENT_ID,
 				sessionStore: () => store,
-				workflows: () => undefined,
 			});
 			const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
 			const read = async (path: string) =>
@@ -285,129 +279,14 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 	});
 });
 
-function runSummary(runId: string, startedAt: number, name: string): WorkflowRunSummary {
-	return {
-		runId,
-		name,
-		status: "completed",
-		startedAt,
-		elapsedMs: 1000,
-		activeStages: [],
-		awaitingInputCount: 0,
-		awaitingInput: [],
-	};
-}
-
-/** A workflow backend Atomic has never seen: run control over a plain in-memory table. */
-function customRunControl(): WorkflowRunControl {
-	const details = new Map<string, WorkflowRunDetail>([
-		[
-			"run-new",
-			{
-				runId: "run-new",
-				name: "ship-release",
-				status: "completed",
-				startedAt: BASE + DAY,
-				inputs: { target: "the 2.0 launch" },
-				stages: [{ id: "s1", name: "build", status: "completed", sessionId: "recent-session" }],
-				result: { artifact: "release-notes.md" },
-			},
-		],
-		[
-			"run-old",
-			{
-				runId: "run-old",
-				name: "triage-bugs",
-				status: "failed",
-				startedAt: BASE,
-				inputs: {},
-				stages: [],
-				error: "the tracker was unreachable",
-			},
-		],
-	]);
-	const unsupported = async (): Promise<never> => {
-		throw new Error("unused");
-	};
-	return {
-		listRuns: async () => [
-			runSummary("run-old", BASE, "triage-bugs"),
-			runSummary("run-new", BASE + DAY, "ship-release"),
-		],
-		getRun: async (runId) => {
-			const found = details.get(runId);
-			if (!found) throw new Error(`no such run ${runId}`);
-			return found;
-		},
-		getStages: unsupported,
-		pause: unsupported,
-		quit: unsupported,
-		resume: unsupported,
-		waitForSettled: async () => {},
-	};
-}
-
-describe("history:// workflows through a workflow backend Atomic has never seen (#4252)", () => {
-	const router = createHistoryRouter({
-		cwd: PROJECT,
-		sessionStore: () => undefined,
-		workflows: () => customRunControl(),
-	});
-	const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
-	const read = async (path: string) =>
-		text(await createReadToolDefinition(PROJECT).execute("read", { path }, undefined, undefined, ctx as never));
-	const search = async (pattern: string, paths: string) =>
-		text(
-			await createSearchToolDefinition(PROJECT).execute(
-				"search",
-				{ pattern, paths },
-				undefined,
-				undefined,
-				ctx as never,
-			),
-		);
-
-	it("lists runs newest first", async () => {
-		const lines = (await read("history://workflows"))
-			.split("\n")
-			.filter((line) => line.startsWith("history://workflows/"));
-		assert.deepEqual(
-			lines.map((line) => line.split(" | ")[0]),
-			["history://workflows/run-new", "history://workflows/run-old"],
-		);
-		assertIncludes(lines[0], "ship-release");
-	});
-
-	it("reads a run with its stages linked to their sessions, and a unique id prefix", async () => {
-		const detail = await read("history://workflows/run-new");
-		assertIncludes(detail, "the 2.0 launch");
-		assertIncludes(detail, "history://sessions/recent-session");
-		assertIncludes(detail, "release-notes.md");
-		assertIncludes(await read("history://workflows/run-n"), "ship-release");
-		await assert.rejects(read("history://workflows/run-"), /ambiguous/);
-		await assert.rejects(read("history://workflows/elsewhere"), /not found in this project/);
-	});
-
-	it("searches runs and reports the run URL with a line number", async () => {
-		assert.match(await search("unreachable", "history://workflows"), /history:\/\/workflows\/run-old:\d+:/);
-		assertIncludes(await search("launch", "history://"), "history://workflows/run-new");
-	});
-
-	it("reports unavailable workflow history when no run control is registered", async () => {
-		const bare = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => undefined });
-		await assert.rejects(async () => bare.read?.("history://workflows"), /Workflow history is unavailable/);
-		await assert.rejects(async () => bare.read?.("history://sessions"), /Session history is unavailable/);
-	});
-});
-
 describe("history:// URLs (#4252)", () => {
-	const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => undefined });
+	const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined });
 
 	it("describes itself at the root and refuses unknown resources and parameters", async () => {
 		assertIncludes(String(await router.read?.("history://")), "history://sessions");
 		await assert.rejects(async () => router.read?.("history://notes"), /Unknown history resource: notes/);
 		await assert.rejects(
-			async () => router.read?.("history://workflows?project=all"),
+			async () => router.read?.("history://sessions?unsupported=all"),
 			/Unsupported history query parameter/,
 		);
 		await assert.rejects(async () => router.read?.("history://sessions?limit=0"), /between 1 and 200/);
@@ -430,37 +309,6 @@ describe("history:// URLs (#4252)", () => {
 	});
 });
 
-describe("history:// workflows prefer the project listing (#4252)", () => {
-	it("uses listProjectRuns when the run control has it and listRuns otherwise", async () => {
-		const base = customRunControl();
-		const userStarted = runSummary("run-user", BASE + 2 * DAY, "user-started");
-		const withProjectListing: WorkflowRunControl = {
-			...base,
-			listProjectRuns: async () => [userStarted, ...(await base.listRuns({ includeDurable: true }))],
-			getRun: async (runId) =>
-				runId === "run-user"
-					? {
-							runId,
-							name: "user-started",
-							status: "completed",
-							startedAt: userStarted.startedAt,
-							inputs: {},
-							stages: [],
-						}
-					: base.getRun(runId),
-		};
-		const read = async (control: WorkflowRunControl) =>
-			String(
-				await createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => control }).read?.(
-					"history://workflows",
-				),
-			);
-		assertIncludes(await read(withProjectListing), "history://workflows/run-user");
-		assertExcludes(await read(base), "run-user");
-		assertIncludes(await read(base), "history://workflows/run-new");
-	});
-});
-
 /** Structural cost: the test writes 230 sessions, and a JSONL store writes one locked file per session. */
 const PAGING_TEST_TIMEOUT_MS = 120_000;
 
@@ -477,12 +325,11 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	async function opened(workflows?: () => WorkflowRunControl | undefined) {
+	async function opened() {
 		const { store, close } = await backend.open(dir);
 		const router = createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => store,
-			workflows: workflows ?? (() => undefined),
 		});
 		const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
 		const read = async (path: string) =>
@@ -648,89 +495,6 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 				assert.ok(label, `search label for ${query}`);
 				assertIncludes(await read(`${label[1]}:${label[2]}-${label[2]}`), "secret roadmap");
 			}
-			const hasLink = await read("history://sessions/beta-session?project=all");
-			assertExcludes(hasLink, "history://workflows/");
-		} finally {
-			await close();
-		}
-	});
-
-	it("opens a stage session that ran outside the project through the project's run", async () => {
-		const { store, read, close } = await opened(() => customRunControl());
-		try {
-			const stageHeader = (id: string, runId: string) => ({
-				...header(id, "/projects/alpha-worktree", BASE),
-				internal: true as const,
-				workflow: { runId, stageId: "s1", stageName: "build" },
-			});
-			await store.create(stageHeader("recent-session-stage", "run-new"), [
-				entry("s", "stage transcript text", BASE + 1000),
-			]);
-			await store.create(stageHeader("stray-stage", "unknown-run"), [
-				entry("s", "unvouched stage text", BASE + 1000),
-			]);
-			const opened = await read("history://sessions/recent-session-stage");
-			assertIncludes(opened, "stage transcript text");
-			assertIncludes(opened, "history://workflows/run-new");
-			await assert.rejects(read("history://sessions/stray-stage"), /another project/);
-		} finally {
-			await close();
-		}
-	});
-
-	it("searches the transcripts of a run's stages, which session listings leave out", async () => {
-		const base = customRunControl();
-		const control: WorkflowRunControl = {
-			...base,
-			getRun: async (runId) => {
-				const detail = await base.getRun(runId);
-				if (runId !== "run-new") return detail;
-				return {
-					...detail,
-					stages: [
-						{ id: "s1", name: "build", status: "completed", sessionId: "stage-session" },
-						{ id: "s2", name: "deploy", status: "failed", sessionId: "never-saved-stage" },
-					],
-				};
-			},
-		};
-		const { store, read, search, close } = await opened(() => control);
-		try {
-			await store.create(
-				{
-					...header("stage-session", resolve("/projects/alpha-worktree"), BASE),
-					internal: true,
-					workflow: { runId: "run-new", stageId: "s1", stageName: "build" },
-				},
-				[entry("s", "the flaky handshake came from a stale certificate", BASE + 1000)],
-			);
-			for (const url of ["history://", "history://workflows", "history://workflows/run-new"]) {
-				const found = await search("stale certificate", url);
-				const label = found.match(/(history:\/\/sessions\/stage-session):(\d+):/);
-				assert.ok(label, `stage transcript match for ${url}:\n${found}`);
-				assertExcludes(found, "unreadable");
-				assertIncludes(await read(`${label[1]}:${label[2]}-${label[2]}`), "stale certificate");
-			}
-		} finally {
-			await close();
-		}
-	});
-
-	it("says which history a search of history:// could not reach, and why", async () => {
-		const failing: WorkflowRunControl = {
-			...customRunControl(),
-			listRuns: async () => {
-				throw new Error("the workflow journal is locked");
-			},
-		};
-		const { store, search, close } = await opened(() => failing);
-		try {
-			await store.create(header("launch-notes", PROJECT, BASE), [entry("l", "launch checklist", BASE + 1000)]);
-			const found = await search("launch", "history://");
-			assertIncludes(found, "history://sessions/launch-notes:");
-			assertIncludes(found, "workflow runs not searched: the workflow journal is locked");
-			const nothing = await search("no such phrase", "history://");
-			assertIncludes(nothing, "workflow runs not searched: the workflow journal is locked");
 		} finally {
 			await close();
 		}
@@ -744,34 +508,14 @@ describe("history:// in a session whose own transcript is kept apart from the pr
 		await project.create(header("earlier-session", PROJECT, BASE), [
 			entry("e", "we chose the retry budget of three attempts", BASE + 1000),
 		]);
-		await project.create(
-			{
-				...header("stage-session", PROJECT, BASE + DAY),
-				internal: true,
-				workflow: { runId: "run-new", stageId: "s1", stageName: "build" },
-			},
-			[entry("s", "the stage pinned the toolchain", BASE + DAY + 1000)],
-		);
 		await own.create(header(CURRENT_ID, PROJECT, BASE + 2 * DAY), [
 			entry("c", "the subagent's own scratch note", BASE + 2 * DAY + 1000),
 		]);
-		const history: WorkflowRunHistory = {
-			listRuns: async () => [runSummary("run-new", BASE + DAY, "ship-release")],
-			getRun: async (runId) => ({
-				runId,
-				name: "ship-release",
-				status: "completed",
-				startedAt: BASE + DAY,
-				inputs: { target: "the 2.0 launch" },
-				stages: [{ id: "s1", name: "build", status: "completed", sessionId: "stage-session" }],
-			}),
-		};
 		const router = createHistoryRouter({
 			cwd: PROJECT,
 			currentSessionId: CURRENT_ID,
 			sessionStore: () => own,
 			projectSessionStore: () => project,
-			workflows: () => history,
 		});
 		const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
 		const read = async (path: string) =>
@@ -796,18 +540,13 @@ describe("history:// in a session whose own transcript is kept apart from the pr
 		assertExcludes(listing, `history://sessions/${CURRENT_ID}`);
 		assertIncludes(await read("history://sessions/earlier-session"), "retry budget of three attempts");
 		assertIncludes(await read(`history://sessions/${CURRENT_ID}`), "the subagent's own scratch note");
-		assertIncludes(await read("history://sessions/stage-session"), "the stage pinned the toolchain");
 	});
 
-	it("searches the project's sessions, its own transcript, and runs with their stage transcripts (#4648)", async () => {
+	it("searches the project's sessions and its own transcript (#4648)", async () => {
 		const { search } = await opened();
 		assertIncludes(await search("retry budget", "history://sessions"), "history://sessions/earlier-session:");
 		assertIncludes(await search("scratch note", `history://sessions/${CURRENT_ID}`), "scratch note");
-		assertIncludes(await search("pinned the toolchain", "history://workflows"), "history://sessions/stage-session:");
-		const both = await search("retry budget|2.0 launch", "history://");
-		assertIncludes(both, "history://sessions/earlier-session:");
-		assertIncludes(both, "history://workflows/run-new:");
-		assertExcludes(both, "not searched");
+		assertIncludes(await search("retry budget", "history://"), "history://sessions/earlier-session:");
 	});
 
 	it("lists the project's sessions also when no current session is named (#4648)", async () => {
@@ -817,23 +556,8 @@ describe("history:// in a session whose own transcript is kept apart from the pr
 			cwd: PROJECT,
 			sessionStore: () => new MemorySessionStore(),
 			projectSessionStore: () => project,
-			workflows: () => undefined,
 		});
 		assertIncludes(String(await router.read?.("history://sessions")), "history://sessions/earlier-session");
-	});
-
-	it("links a stage's run only in this project's view of its transcript (#4648)", async () => {
-		const { read } = await opened();
-		assertIncludes(await read("history://sessions/stage-session"), "(history://workflows/run-new)");
-		const everywhere = await read("history://sessions/stage-session?project=all");
-		assertIncludes(everywhere, "the stage pinned the toolchain");
-		assertExcludes(everywhere, "history://workflows/run-new");
-	});
-
-	it("reads workflow runs through a source that can only list and read them (#4648)", async () => {
-		const { read } = await opened();
-		assertIncludes(await read("history://workflows"), "history://workflows/run-new | ");
-		assertIncludes(await read("history://workflows/run-new"), "transcript history://sessions/stage-session");
 	});
 });
 
@@ -864,7 +588,6 @@ describe("history:// outlines of long sessions keep every turn across continuati
 		return createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => store,
-			workflows: () => undefined,
 			budget: { ...(bytes === undefined ? {} : { bytes }), ...(timeMs === undefined ? {} : { timeMs }) },
 		});
 	}
@@ -974,7 +697,6 @@ describe("history:// session searches cut to fit their byte budget lose no match
 		const router = createHistoryRouter({
 			cwd: PROJECT,
 			sessionStore: () => store,
-			workflows: () => undefined,
 			...(bytes === undefined ? {} : { budget: { bytes } }),
 		});
 		const hits = new Set<string>();

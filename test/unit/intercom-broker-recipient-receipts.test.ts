@@ -52,11 +52,6 @@ function fixture(options: { acknowledgesReceipt?: boolean; senderTimeoutMs?: num
 			questions,
 			undefined,
 			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
 			receipts,
 		);
 	const toSender = () => writes.filter((write) => write.socket === sender.socket).map((write) => write.message);

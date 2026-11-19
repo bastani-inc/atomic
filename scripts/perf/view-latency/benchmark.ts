@@ -1,11 +1,9 @@
 #!/usr/bin/env bun
 /**
- * View-latency benchmark: keystroke-to-paint and stream-chunk-to-paint latency of the main chat, an attached workflow
- * stage chat, an attached subagent chat (opened from `/tasks` and from the agent panel) and the `/tasks` list,
+ * View-latency benchmark: keystroke-to-paint and stream-chunk-to-paint latency of the main chat, an attached subagent chat (opened from `/tasks` and from the agent panel) and the `/tasks` list,
  * measured on the built CLI in a real pseudo-terminal under the same load.
  *
- * The load: a resumed session of `--entries` entries (10,000 by default) streaming in the main chat, `--stages`
- * workflow stages forked from it streaming in parallel, `--subagents` background subagents forked from it streaming,
+ * The load: a resumed session of `--entries` entries (10,000 by default) streaming in the main chat, `--subagents` background subagents forked from it streaming,
  * and `--shells` background shells printing a line every 50 ms. Every agent is an endless loop against a loopback
  * `openai-completions` endpoint (`model-server.ts`) that streams a marker in every delta and records when it sent it.
  *
@@ -29,21 +27,18 @@ import {
 	createDirectories,
 	SUBAGENT_NAME,
 	seedSession,
-	WORKFLOW_NAME,
 	writeAgentConfiguration,
-	writeLoadWorkflow,
 } from "./fixtures.js";
 import { ViewLatencyModelServer } from "./model-server.js";
 import { startPty } from "./pty.js";
 import { BenchScreen } from "./screen.js";
 
-type ViewName = "main" | "stage" | "subagent" | "panel" | "tasks";
+type ViewName = "main" | "subagent" | "panel" | "tasks";
 
 interface Options {
 	readonly label: string;
 	readonly repo: string;
 	readonly entries: number;
-	readonly stages: number;
 	readonly subagents: number;
 	readonly shells: number;
 	readonly keys: number;
@@ -115,12 +110,12 @@ function parseOptions(argv: readonly string[]): Options {
 		if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`--${name} needs a non-negative number`);
 		return parsed;
 	};
-	const views = (value("views") ?? "main,stage,subagent,panel,tasks").split(",") as ViewName[];
+	const views = (value("views") ?? "main,subagent,panel,tasks").split(",") as ViewName[];
 	return {
 		label: value("label") ?? "run",
 		repo: resolve(value("repo") ?? join(scriptDir, "..", "..", "..")),
 		entries: number("entries", 10_000),
-		stages: number("stages", 4),
+
 		subagents: number("subagents", 2),
 		shells: number("shells", 2),
 		keys: number("keys", 160),
@@ -373,13 +368,6 @@ async function enterView(bench: Bench, view: ViewName, screen: BenchScreen): Pro
 	switch (view) {
 		case "main":
 			return;
-		case "stage":
-			bench.writeKey(KEY.f2);
-			await screen.waitFor(includes("open stage chat"), 15_000, "the workflow graph");
-			await sleep(500);
-			bench.writeKey(KEY.enter);
-			await screen.waitFor(includes("← graph"), 15_000, "the attached stage chat");
-			return;
 		case "subagent":
 			await bench.submit("/tasks");
 			await screen.waitFor(includes(TASK_LIST_HINT), 15_000, "the task list");
@@ -408,13 +396,6 @@ async function enterView(bench: Bench, view: ViewName, screen: BenchScreen): Pro
 async function leaveView(bench: Bench, view: ViewName, screen: BenchScreen): Promise<void> {
 	switch (view) {
 		case "main":
-			return;
-		case "stage":
-			bench.writeKey(KEY.left);
-			await screen.waitFor(includes("open stage chat"), 15_000, "the workflow graph after the stage chat");
-			await sleep(300);
-			bench.writeKey(KEY.escape);
-			await screen.waitFor((lines) => !includes("open stage chat")(lines), 15_000, "the main chat");
 			return;
 		case "subagent":
 			bench.writeKey(KEY.left);
@@ -459,7 +440,7 @@ async function main(): Promise<void> {
 	const seedStarted = now();
 	const sessionId = seedSession(dirs, distIndex, options.entries, join(scriptDir, "seed-session.mjs"));
 	process.stderr.write(`seeded ${options.entries} entries in ${Math.round(now() - seedStarted)} ms\n`);
-	writeLoadWorkflow(dirs, options.stages, sessionId);
+
 	const windowFile = join(root, "window");
 	const loopFile = join(root, "loop.jsonl");
 	if (options.profileDir) mkdirSync(options.profileDir, { recursive: true });
@@ -486,9 +467,6 @@ async function main(): Promise<void> {
 	try {
 		await screen.waitFor(includes("viewlat-model"), 120_000, "the main chat");
 		await sleep(2_000);
-		await bench.submit(`/workflow ${WORKFLOW_NAME}`);
-		const stageStreams = Array.from({ length: options.stages }, (_, index) => `s${index}`);
-		await bench.waitForRequests(stageStreams, 120_000, "every stage to stream");
 		await bench.submit("VL-LAUNCH");
 		const subagentStreams = Array.from({ length: options.subagents }, (_, index) => `u${index}`);
 		await bench.waitForRequests(subagentStreams, 120_000, "every subagent to stream");
@@ -512,7 +490,7 @@ async function main(): Promise<void> {
 		label: options.label,
 		platform: process.platform,
 		entries: options.entries,
-		stages: options.stages,
+
 		subagents: options.subagents,
 		shells: options.shells,
 		keys: options.keys,

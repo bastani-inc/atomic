@@ -11,12 +11,10 @@ export interface SendMessageOptions {
 	deliverAs?: CustomMessageDelivery;
 	/** Render/persist the custom message without including it in LLM context. */
 	excludeFromContext?: boolean;
-	/** Stable producer identity used for exactly-once workflow-stage admission. */
+	/** Stable producer identity used for idempotent message admission. */
 	stageAdmissionKey?: string;
 	/**
-	 * Holds an already-admitted workflow-stage delivery behind producer-specific
-	 * coordination. The generation boundary tracks this promise so stage close
-	 * cannot overtake the eventual queue insertion.
+	 * Holds an incoming subagent delivery behind producer-specific coordination.
 	 *
 	 * @internal
 	 */
@@ -46,15 +44,6 @@ export interface SendMessageOptions {
 	 * @internal
 	 */
 	wakeIdleSession?: boolean;
-
-	/**
-	 * The message is for this session only: when the session's workflow stage or subagent execution has closed, the
-	 * delivery fails instead of taking the late-message route to the chat that launched the workflow. Task completion
-	 * notices use it, so a stage's notice never reaches another session.
-	 *
-	 * @internal
-	 */
-	stayInSession?: boolean;
 }
 
 export type SendMessagesOptions = Omit<
@@ -127,8 +116,7 @@ export type EntryRenderer<T = unknown> = (
  * - `Component`: mount this component (the renderer owns its styling).
  * - `null`: the renderer handled the message but wants to render nothing —
  *   the entry occupies zero rows (no leading spacer, no default box). Use this
- *   to suppress a rehydrated entry whose backing state is gone (e.g. the
- *   workflows input form on `/resume`).
+ *   to suppress a rehydrated entry whose backing state is gone.
  * - `undefined`: the renderer did not handle the message; fall back to the
  *   default boxed `[customType]` rendering.
  */

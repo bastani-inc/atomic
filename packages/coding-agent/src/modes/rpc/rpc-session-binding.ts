@@ -10,7 +10,6 @@ import type { EngineCustomUiService } from "../interactive-engine/engine-custom-
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
-import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { bindAgentPanel } from "./agent-panel-bridge.ts";
@@ -33,7 +32,7 @@ interface RpcSessionBindingOptions {
 	renderService?: EngineRenderService;
 	sessionPicker?: EngineSessionPickerService;
 	inputForm?: EngineInputFormService;
-	/** Present in the interactive engine child, which reports workflow activity to its host. */
+	/** Send terminal UI updates from the interactive engine child to its host. */
 	writeEngineLine?: (line: string) => void;
 	requestShutdown: () => void;
 	checkShutdownRequested?: () => void;
@@ -47,7 +46,6 @@ export class RpcSessionBinding {
 	private unsubscribe?: () => void;
 	private unsubscribeBackpressure?: () => void;
 	private unsubscribeTasks?: () => void;
-	private unsubscribeWorkflowActivity?: () => void;
 	private readonly runtimeHost: AgentSessionRuntime;
 	private readonly output: RpcOutput;
 	private readonly pendingExtensionRequests: RpcPendingExtensionRequests;
@@ -245,9 +243,6 @@ export class RpcSessionBinding {
 				}),
 			);
 		}
-		if (this.writeEngineLine) {
-			this.unsubscribeWorkflowActivity = forwardWorkflowActivity(session, this.writeEngineLine);
-		}
 		this.unsubscribe = session.subscribe((event) => {
 			// A finished message carries its save receipt, so a host can tell which saved entry its rows show.
 			const saved = event.type === "message_end" ? session.entryReceipt?.(event.message) : undefined;
@@ -285,8 +280,6 @@ export class RpcSessionBinding {
 		this.unsubscribeBackpressure?.();
 		this.unsubscribeTasks?.();
 		this.unsubscribeTasks = undefined;
-		this.unsubscribeWorkflowActivity?.();
-		this.unsubscribeWorkflowActivity = undefined;
 		this.writeEngineLine?.(
 			serializeInteractiveEngineMessage({
 				type: "engine_ui_prompt",

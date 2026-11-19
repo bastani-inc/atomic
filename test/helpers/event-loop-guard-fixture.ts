@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileExistsSync, moduleDir, readTextSync } from "./runtime.js";
+import { fileExistsSync, readTextSync } from "./runtime.js";
 import { type ChatRequest, messageText, type ScriptedReply } from "./scripted-chat-server.js";
 
 export const STREAM_MARKER = "GUARD-STREAM";
@@ -209,26 +209,6 @@ export function describeBlock(block: BlockRecord): string {
 	return [`${block.role} block at ${block.at}: ${block.durationMs} ms`, ...frames, ...outer].join("\n    ");
 }
 
-const SHIP_SHARD_PATH = "packages/workflows/src/workers/ship-shard";
-
-/**
- * The functions ship-shard.ts declares. The workflows bundle inlines the module, so a block in it is attributed to the
- * owned module by these names; read from the source, the list cannot fall behind it.
- */
-const SHIP_SHARD_FUNCTIONS: ReadonlySet<string> = new Set(
-	[
-		...readTextSync(join(moduleDir(import.meta.url), "../..", `${SHIP_SHARD_PATH}.ts`), "utf8").matchAll(
-			/\bfunction\*?\s*([A-Za-z_$][\w$]*)/g,
-		),
-	].map((match) => match[1]!),
-);
-
-const WORKFLOW_BUNDLE_TAILS = [
-	"builtin/workflows/src/extension/index.bundle",
-	"builtin/workflows/src/extension/local-worker-entry",
-	"builtin/workflows/src/index",
-] as const;
-
 function modulePathTails(path: string): string[] {
 	const normalized = path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "");
 	if (normalized.startsWith("packages/coding-agent/src/")) {
@@ -324,11 +304,6 @@ export function blockOwner(
 	}[],
 ): string | undefined {
 	const compiled = areas.map((area) => {
-		const rawPaths = area.paths ?? [];
-		const plainPaths = rawPaths;
-		const hasShipShard = rawPaths.some(
-			(path) => path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "") === SHIP_SHARD_PATH,
-		);
 		const functionSelectors = [...(area.functions ?? []), ...(area.sampledCallersOfOwnedCalls ?? [])];
 		const byFile = new Map<string, Set<string>>();
 		for (const selector of functionSelectors) {
@@ -341,8 +316,7 @@ export function blockOwner(
 		}
 		return {
 			owner: area.owner,
-			tails: plainPaths.flatMap(modulePathTails),
-			hasShipShard,
+			tails: (area.paths ?? []).flatMap(modulePathTails),
 			functions: [...byFile.entries()].map(([file, names]) => ({ tails: modulePathTails(file), names })),
 		};
 	});
@@ -351,13 +325,6 @@ export function blockOwner(
 		if (hot === undefined || hot.fns.length === 0) return undefined;
 		for (const area of compiled) {
 			if (area.tails.some((tail) => urlMatchesTail(hot.url, tail))) return area.owner;
-			if (
-				area.hasShipShard &&
-				WORKFLOW_BUNDLE_TAILS.some((tail) => urlMatchesTail(hot.url, tail)) &&
-				hot.fns.some((fn) => SHIP_SHARD_FUNCTIONS.has(fn))
-			) {
-				return area.owner;
-			}
 			for (const entry of area.functions) {
 				if (
 					entry.tails.some((tail) => urlMatchesTail(hot.url, tail)) &&

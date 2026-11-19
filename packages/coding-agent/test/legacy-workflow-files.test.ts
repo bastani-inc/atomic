@@ -54,48 +54,35 @@ test("a large recipe inventory stays bounded in the parent's prompt and is not p
 	}
 });
 
-test("conversion instructions reach the parent model request but not a legacy workflow stage", async () => {
-	const root = mkdtempSync(join(tmpdir(), "atomic-recipe-stage-"));
+test("conversion instructions reach the parent model request", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-recipe-parent-"));
 	roots.push(root);
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "project");
 	mkdirSync(cwd);
 	put(join(agentDir, "workflows", "old-triage.ts"), "export default {};");
 	const settingsManager = SettingsManager.create(cwd, agentDir);
-	for (const stage of [false, true]) {
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true });
-		await resourceLoader.reload();
-		const harness = await createHarness({
-			cwd,
-			resourceLoader,
-			settingsManager,
-			...(stage
-				? {
-						orchestrationContext: {
-							kind: "workflow-stage",
-							workflowRunId: "triage",
-							workflowStageId: "review",
-							workflowStageName: "Review",
-							constraints: { disableWorkflowTool: true },
-						},
-					}
-				: {}),
-		});
-		try {
-			let prompt: string | undefined;
-			harness.setResponses([
-				(context) => {
-					prompt = getCurrentSystemPrompt(context.messages);
-					return fauxAssistantMessage("Done");
-				},
-			]);
-			await harness.session.prompt("Report status");
-			assert.ok(prompt, "the provider received a system prompt");
-			assert.equal(prompt.includes("<legacy_workflow_files>"), !stage);
-			assert.equal(prompt.includes("old-triage.ts"), !stage);
-		} finally {
-			await harness.cleanup();
-		}
+	const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true });
+	await resourceLoader.reload();
+	const harness = await createHarness({
+		cwd,
+		resourceLoader,
+		settingsManager,
+	});
+	try {
+		let prompt: string | undefined;
+		harness.setResponses([
+			(context) => {
+				prompt = getCurrentSystemPrompt(context.messages);
+				return fauxAssistantMessage("Done");
+			},
+		]);
+		await harness.session.prompt("Report status");
+		assert.ok(prompt, "the provider received a system prompt");
+		assert.equal(prompt.includes("<legacy_workflow_files>"), true);
+		assert.equal(prompt.includes("old-triage.ts"), true);
+	} finally {
+		await harness.cleanup();
 	}
 });
 

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <b>The verifiable coding agent runtime. Build your engineering process as explicit, checkable execution graphs.</b>
+  <b>The verifiable coding agent runtime. Run checks and delegate work from the parent chat.</b>
 </p>
 
 <p align="center">
@@ -17,9 +17,9 @@
 
 ---
 
-Atomic is a verifiable coding agent runtime for the terminal. Run engineering work as explicit, checkable workflows with control, alignment, and evidence, and adapt Atomic to how you work without forking it. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Atomic Packages](#atomic-packages) and share them with others via npm or git.
+Atomic is a verifiable coding agent runtime for the terminal. Describe a repeatable procedure in a skill, use codemode to run checks, and use subagents for work that benefits from an independent context. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Atomic Packages](#atomic-packages) and share them with others via npm or git.
 
-Atomic ships with powerful defaults plus first-party bundled extensions for workflows, subagents, MCP, web access, and intercom. You can still adapt or replace any workflow by writing extensions, skills, prompt templates, themes, or Atomic packages that match how you work.
+Atomic includes bundled integrations for subagents, MCP, web access, and Intercom. See [Orchestration](docs/orchestration.md) for running multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) for converting an earlier definition to a skill.
 
 Atomic runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
 
@@ -470,13 +470,12 @@ Create a package by adding an app-name manifest key to `package.json` (`atomic` 
     "extensions": ["./extensions"],
     "skills": ["./skills"],
     "prompts": ["./prompts"],
-    "themes": ["./themes"],
-    "workflows": ["./workflows"]
+    "themes": ["./themes"]
   }
 }
 ```
 
-Without a manifest, Atomic auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`, `workflows/`). Workflow packages may also use a singular `workflow/` directory.
+Without a manifest, Atomic auto-discovers from conventional directories (`extensions/`, `skills/`, `prompts/`, `themes/`).
 
 See [docs/packages.md](docs/packages.md).
 
@@ -518,15 +517,15 @@ See [docs/rpc.md](docs/rpc.md) for the protocol.
 
 ## Philosophy
 
-Atomic is aggressively extensible so it does not have to dictate your workflow. The distribution bundles first-party extensions for workflows, subagents, MCP, web access, and intercom, while still letting you build or install alternative [extensions](#extensions), [skills](#skills), and [Atomic packages](#atomic-packages). This keeps Atomic adaptable without forcing every workflow into the core CLI.
+Atomic is aggressively extensible so it does not have to dictate your workflow. The distribution bundles first-party extensions for subagents, MCP, web access, and Intercom, while still letting you build or install alternative [extensions](#extensions), [skills](#skills), and [Atomic packages](#atomic-packages). This keeps Atomic adaptable without forcing every workflow into the core CLI.
 
-**Bundled subagents and workflows.** Atomic includes the first-party subagents and workflows packages. Use them as shipped, customize them, or replace them with your own extensions if your workflow needs a different orchestration model.
+**Bundled subagents.** Delegate work to a specialist from the parent chat or from a codemode script and pick up the result when its completion notice arrives.
 
 **Bundled MCP, web access, and intercom.** Atomic ships first-party integrations for MCP tools, web/repository/document/video extraction, and cross-session coordination. These are packaged extensions rather than hard-coded agent behavior, so they remain configurable and replaceable.
 
 **Security stays explicit.** Run in a container, use project trust controls, or build confirmation flows with [extensions](#extensions) inline with your environment and security requirements.
 
-**Composable planning and task tracking.** Use the bundled workflow/subagent/todo capabilities, write plans to files, or install a package that matches your team's process.
+**Composable planning and task tracking.** Use codemode, subagents, and todos, write plans to files, or install a package that matches your team's process.
 
 **Foreground bash only.** Use tmux or explicit extensions for background work. Full observability, direct interaction.
 

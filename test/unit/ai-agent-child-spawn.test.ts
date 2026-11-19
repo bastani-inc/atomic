@@ -8,18 +8,14 @@ import type {
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test, vi } from "vitest";
 import {
 	cleanupWorktrees as cleanupSubagentWorktrees,
 	createWorktrees as createSubagentWorktrees,
+	runGitChecked,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
-import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
-import {
-	cleanupWorktrees as cleanupWorkflowWorktrees,
-	createWorktrees as createWorkflowWorktrees,
-} from "../../packages/workflows/src/runs/shared/worktree-setup.js";
 
 type RecordedSpawnOptions = SpawnSyncOptionsWithStringEncoding | (SpawnOptions & { input?: string });
 
@@ -147,30 +143,6 @@ test("subagent worktree Git and setup-hook spawns receive Atomic attribution", a
 		});
 	} finally {
 		if (setup) await cleanupSubagentWorktrees(setup);
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("workflow worktree Git and setup-hook spawns receive Atomic attribution", async () => {
-	const { root, repo } = await createRepository("atomic-ai-agent-workflow-spawn-");
-	const hook = join(root, "setup-hook");
-	writeFileSync(hook, "placeholder\n");
-	let setup: Awaited<ReturnType<typeof createWorkflowWorktrees>> | undefined;
-	try {
-		observations.length = 0;
-		await withCallerEnvironment(async () => {
-			setup = await createWorkflowWorktrees(repo, "env/workflow", 1, {
-				baseBranch: "main",
-				symlinkDirectories: [],
-				setupHook: { hookPath: hook, timeoutMs: 1_234 },
-			});
-			assertAtomicGitSpawns();
-			for (const call of observations.filter((observed) => isGitCommand(observed.command)))
-				assert.ok(isAbsolute(call.command) && basename(call.command).startsWith("git"), call.command);
-			assertSetupHookSpawn(hook, 1_234);
-		});
-	} finally {
-		if (setup) await cleanupWorkflowWorktrees(setup);
 		rmSync(root, { recursive: true, force: true });
 	}
 });

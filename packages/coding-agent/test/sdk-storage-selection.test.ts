@@ -52,7 +52,7 @@ test("createAgentSession rejects a set but invalid storage variable even with an
 		{ sessionStore: new MemorySessionStore() },
 		{ sessionStore: { kind: "memory" } },
 	];
-	for (const variable of ["ATOMIC_STORAGE", "ATOMIC_WORKFLOWS_JOURNAL"]) {
+	for (const variable of ["ATOMIC_STORAGE"]) {
 		vi.unstubAllEnvs();
 		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 		vi.stubEnv(variable, selection);
@@ -76,6 +76,21 @@ test("createAgentSession rejects a set but invalid storage variable even with an
 				},
 			);
 		}
+	}
+	// The workflow journal variable of earlier releases selects nothing now, so its text is never read.
+	vi.unstubAllEnvs();
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+	vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", selection);
+	for (const host of hosts) {
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: NO_PACKAGES,
+			...host,
+		});
+		sessions.push(session);
 	}
 });
 

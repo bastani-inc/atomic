@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -8,7 +7,6 @@ import {
 	type AgentPanelAnswerOptions,
 	type AgentPanelItem,
 	AgentPanelSourceHub,
-	openAgentPanelItem,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
@@ -21,14 +19,8 @@ import {
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { taskDisplayText } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import {
-	agentPanelHasRows,
-	agentPanelRows,
-	bindAgentPanel,
-} from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { agentPanelRows, bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { answerPanelRun, panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
@@ -158,7 +150,7 @@ test("settling a background task freezes its elapsed clock at the store settleme
 test("agent panel rank cache refreshes extension row text at group-offset slots and respects the idle row cap (#5224)", () => {
 	const hub = new AgentPanelSourceHub();
 	let items: AgentPanelItem[] = [
-		{ id: "run:w", kind: "workflow", state: "input", name: "wf", task: "ask", question: "Go?" },
+		{ id: "run:w", kind: "agent", state: "input", name: "wf", task: "ask", question: "Go?" },
 		{ id: "ext:a", kind: "agent", state: "running", name: "helper", task: "stage build" },
 		{ id: "ext:b", kind: "agent", state: "running", name: "helper2", task: "work2" },
 	];
@@ -173,7 +165,7 @@ test("agent panel rank cache refreshes extension row text at group-offset slots 
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 	const firstIds = agentPanelRows(session).map((row) => row.id);
 	items = [
-		{ id: "run:w", kind: "workflow", state: "input", name: "wf", task: "ask", question: "Go?" },
+		{ id: "run:w", kind: "agent", state: "input", name: "wf", task: "ask", question: "Go?" },
 		{ id: "ext:a", kind: "agent", state: "running", name: "helper", task: "stage deploy" },
 		{ id: "ext:b", kind: "agent", state: "running", name: "helper2", task: "work2" },
 	];
@@ -188,8 +180,7 @@ test("agent panel rank cache refreshes extension row text at group-offset slots 
 	const cappedItems: AgentPanelItem[] = [
 		...Array.from(
 			{ length: AGENT_PANEL_IDLE_ROWS },
-			(_, i) =>
-				({ id: `run:w${i}`, kind: "workflow", state: "done", name: `wf${i}`, task: "done" }) as AgentPanelItem,
+			(_, i) => ({ id: `run:w${i}`, kind: "agent", state: "done", name: `wf${i}`, task: "done" }) as AgentPanelItem,
 		),
 		...Array.from(
 			{ length: AGENT_PANEL_IDLE_ROWS },
@@ -238,35 +229,6 @@ test("AgentPanelModel drops unkept finished rows at once, forgets absent native 
 	model.endPass(pass);
 	assert.equal(model.finishedSince("X", true), undefined);
 	assert.equal(model.finishedSince("ext:y"), 1_000);
-
-	const hub = new AgentPanelSourceHub();
-	const finished: AgentPanelItem = {
-		id: "run:helper",
-		kind: "workflow",
-		name: "helper",
-		task: "check",
-		state: "done",
-	};
-	let items: AgentPanelItem[] = [finished];
-	let changed = () => {};
-	hub.register({
-		items: () => items,
-		subscribe: (listener) => {
-			changed = listener;
-			return () => {};
-		},
-		open: () => true,
-	});
-	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
-	assert.equal(agentPanelHasRows(session), true, "an unopened finished run stays");
-	assert.equal(openAgentPanelItem(session, finished.id), true);
-	assert.equal(agentPanelHasRows(session), false, "an opened finished run leaves");
-	items = [];
-	changed();
-	agentPanelRows(session);
-	items = [finished];
-	changed();
-	assert.equal(agentPanelHasRows(session), true, "a new unopened run with the same id stays again");
 });
 
 test("taskDisplayText replaces Unicode line and paragraph separators with spaces (#5224)", () => {
@@ -277,7 +239,7 @@ test("/tasks keeps a started reply bound to its original prompt, ignores unbound
 	const fixture = taskFixture();
 	let item: AgentPanelItem = {
 		id: "run:deploy",
-		kind: "workflow",
+		kind: "agent",
 		state: "input",
 		name: "deploy?",
 		task: "stage ask",
@@ -344,42 +306,4 @@ test("/tasks keeps a started reply bound to its original prompt, ignores unbound
 		inspector.dispose();
 		await fixture.dispose();
 	}
-});
-
-test("answerPanelRun rejects an answer carrying a replaced promptId even when the question and choices are identical (#5224)", async () => {
-	const runId = randomUUID();
-	const wfStore = createStore();
-	wfStore.recordRunStart({
-		id: runId,
-		name: "deploy-wf",
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [{ id: "gate", name: "gate", status: "running", parentIds: [], toolEvents: [] }],
-		startedAt: 1_000,
-	} as never);
-	const makePrompt = (id: string) =>
-		({ id, kind: "select", message: "Continue?", choices: ["yes", "no"], createdAt: 1_000 }) as never;
-	wfStore.recordStagePendingPrompt(runId, "gate", makePrompt("prompt-1"));
-	const owner = {
-		store: wfStore,
-		stageUiBroker: { peekStagePrompt: () => undefined, wasStagePromptResolved: () => false },
-	} as unknown as Parameters<typeof answerPanelRun>[2];
-	const first = panelItemsFromSnapshot(wfStore.graphSnapshot().runs, 2_000, wfStore).find(
-		(candidate) => candidate.id === `run:${runId}`,
-	)!;
-	assert.ok(first.promptId);
-	wfStore.resolveStagePendingPrompt(runId, "gate", "prompt-1", "yes");
-	wfStore.recordStagePendingPrompt(runId, "gate", makePrompt("prompt-2"));
-	const second = panelItemsFromSnapshot(wfStore.graphSnapshot().runs, 2_000, wfStore).find(
-		(candidate) => candidate.id === `run:${runId}`,
-	)!;
-	assert.notEqual(second.promptId, first.promptId);
-	const stale = await answerPanelRun(`run:${runId}`, "yes", owner, {
-		promptId: first.promptId,
-		question: first.question,
-		choices: first.choices ? [...first.choices] : undefined,
-	});
-	assert.equal(stale.ok, false);
-	assert.equal(wfStore.graphSnapshot().runs.find((run) => run.id === runId)?.stages[0]?.pendingPrompt?.id, "prompt-2");
 });

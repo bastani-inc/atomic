@@ -297,7 +297,7 @@ function cleanPreview(value: string): string {
 /**
  * Finished-task notices in the transcript, each one notice line. A shell's line expands to the tail of its output; an
  * agent's line is followed by the first line of its result, and expands to the rest. Notices joined in one message
- * show one line each. The same component renders them in the main chat, a workflow stage's chat and a subagent's view.
+ * show one line each. The same component renders them in the main chat and a subagent's view.
  */
 const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	read: "Read",
@@ -311,7 +311,6 @@ const TOOL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 	web_search: "WebSearch",
 	fetch_content: "Fetch",
 	subagent: "Agent",
-	workflow: "Workflow",
 	intercom: "Intercom",
 	contact_supervisor: "Supervisor",
 };

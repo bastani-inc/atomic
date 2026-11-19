@@ -708,7 +708,7 @@ function reportStaleDetachedCall(
 	call: Pick<DetachedToolCall, "toolCallId" | "toolName">,
 	reason: StaleDetachedCallReason = "transcript-moved",
 ): void {
-	reportDebug("workflow", "stale-detached-call", {
+	reportDebug("engine", "stale-detached-call", {
 		sessionId: session.sessionManager.getSessionId(),
 		toolCallId: call.toolCallId,
 		toolName: call.toolName,
@@ -845,20 +845,6 @@ export function holdsTurnsForDetachedResults(session: AgentSession): boolean {
 /** Whether the transcript ends on a turn still waiting for the result of a call of a detachable tool. */
 export function isWaitingOnDetachedResults(this: AgentSession): boolean {
 	return waitsOnDetachedResults(this);
-}
-
-/**
- * Mark every call of a detachable tool that the transcript ends on without a result as in flight, not interrupted,
- * until its result is recorded. A workflow stage resumed after its process died starts those calls again, or records
- * the results that process saved, only once its turn resumes; a chat may show the stage's transcript before then, and
- * must not report them interrupted meanwhile (#4022). Says whether any call was pending.
- */
-export function holdPendingDetachedCalls(session: AgentSession): boolean {
-	const pending = pendingDetachableCalls(session).calls;
-	if (pending.length === 0) return false;
-	for (const { toolCall } of pending) session._reissuedToolCallIds.add(toolCall.id);
-	session._refreshFinalizedContext();
-	return true;
 }
 
 /**

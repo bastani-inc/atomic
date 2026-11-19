@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { SessionEntry } from "../../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/database.js";
 import type { SessionRecordHeader } from "../../../packages/coding-agent/src/core/storage/session/types.js";
-import type { DurableCheckpoint } from "../../../packages/workflows/src/durable/types.js";
 
 const WORDS = (
 	"refactor parser token stream session resume workflow journal sqlite cache invalidation lease expiry " +
@@ -94,18 +93,6 @@ export function sessionFixture(
 		} as SessionEntry);
 	}
 	return { header, entries };
-}
-
-export function toolCheckpoint(workflowId: string, index: number, outputWords: number): DurableCheckpoint {
-	return {
-		kind: "tool",
-		workflowId,
-		checkpointId: `cp-${index}`,
-		name: `tool-${index}`,
-		argsHash: `hash-${index}`,
-		output: words(index + workflowId.length, outputWords),
-		completedAt: Date.UTC(2026, 0, 1) + index,
-	};
 }
 
 /** Seeding only: skip per-commit fsync so a large fixture builds in seconds. */

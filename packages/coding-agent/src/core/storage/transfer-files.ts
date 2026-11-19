@@ -1,7 +1,7 @@
 /**
- * The files `atomic storage export` writes and `atomic storage import` reads (#4716, #4720): one JSONL file per session
- * or workflow run, in its own subdirectory of the export directory. Each file is written whole through a temporary
- * file, and one that already holds the same bytes is left untouched.
+ * The files `atomic storage export` writes and `atomic storage import` reads (#4716, #4720): one JSONL file per session,
+ * in the `sessions` subdirectory of the export directory. Each file is written whole through a temporary file, and one
+ * that already holds the same bytes is left untouched.
  */
 
 import { randomUUID } from "node:crypto";
@@ -10,19 +10,17 @@ import { join } from "node:path";
 import { withCleanup } from "./cleanup.js";
 import { StorageError, type StorageFailureCause } from "./errors.js";
 
-/** The file name extension of an exported session or run; import reads every file with it and ignores the rest. */
+/** The file name extension of an exported session; import reads every file with it and ignores the rest. */
 export const TRANSFER_FILE_EXTENSION = ".jsonl";
 /** The subdirectory of an export directory that holds sessions. */
 export const SESSIONS_TRANSFER_DIRECTORY = "sessions";
-/** The subdirectory of an export directory that holds workflow runs. */
-export const WORKFLOWS_TRANSFER_DIRECTORY = "workflows";
 
 export interface StorageTransferErrorInit {
 	/** The file or storage location the error is about. */
 	readonly path: string;
 	/** The 1-based line of `path`. */
 	readonly line?: number;
-	/** The session or run the error is about. */
+	/** The session the error is about. */
 	readonly id?: string;
 	readonly reason: string;
 	readonly cause?: StorageFailureCause;
@@ -45,15 +43,14 @@ export class StorageTransferError extends StorageError {
 	}
 }
 
-/** The sessions and workflow runs an import wrote, or did not write. */
+/** The sessions an import wrote, or did not write. */
 export interface TransferredIds {
 	readonly sessions: readonly string[];
-	readonly workflows: readonly string[];
 }
 
 /**
- * An import that failed after it wrote some sessions or runs: `written` names exactly what it wrote, and `notWritten`
- * what it did not. Importing the same files again writes only what is missing.
+ * An import that failed after it wrote some sessions: `written` names exactly what it wrote, and `notWritten` what it
+ * did not. Importing the same files again writes only what is missing.
  */
 export class StorageImportIncompleteError extends StorageError {
 	override readonly name = "StorageImportIncompleteError" as const;
@@ -81,7 +78,7 @@ export function isStorageTransferError(value: unknown): value is StorageTransfer
 	return typeof value === "object" && value !== null && (value as { name?: unknown }).name === "StorageTransferError";
 }
 
-/** The file a session or run with `id` is exported to in `directory`. */
+/** The file a session with `id` is exported to in `directory`. */
 export function transferFile(directory: string, id: string): string {
 	return join(directory, `${encodeURIComponent(id)}${TRANSFER_FILE_EXTENSION}`);
 }

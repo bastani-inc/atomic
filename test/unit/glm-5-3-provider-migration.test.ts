@@ -34,9 +34,7 @@ function recursivelyListFiles(directory: string): string[] {
 }
 
 function builtinSourceFiles(): string[] {
-	return ["packages/workflows/builtin", "packages/subagents/agents"].flatMap((relativePath) =>
-		recursivelyListFiles(join(root, relativePath)),
-	);
+	return ["packages/subagents/agents"].flatMap((relativePath) => recursivelyListFiles(join(root, relativePath)));
 }
 
 test("builtin workflow and subagent sources contain no stale GLM-5.2 references", () => {
