@@ -1089,7 +1089,29 @@ export async function restoreSubagentChild(
 		// outside any work, so neither is in scope here.
 		return withWorktreeRootMappings(
 			ctx.sessionManager.getWorktreeRootMappings(),
-			() => relaunchChild(deps, ctx, record, hold, release, onReopened, resume, refuseRelaunch),
+			async () => {
+				for (;;) {
+					let wait: Promise<void>;
+					try {
+						return await relaunchChild(deps, ctx, record, hold, release, onReopened, resume, refuseRelaunch);
+					} catch (error) {
+						// Only a wake refused before admission waits. Do not retain the failed launch for its retry.
+						const reloadKey = Symbol.for("atomic.tasks/wait-for-stage-reload@1");
+						const waitForReload = (error as { [reloadKey]?: (id: string) => Promise<void> } | undefined)?.[
+							reloadKey
+						];
+						if (!refuseRelaunch || !waitForReload) throw error;
+						wait = waitForReload(key);
+					}
+					if (resume?.outsideWakeSlot) await resume.outsideWakeSlot(wait);
+					else await wait;
+					const stopped = refuseRelaunch();
+					if (stopped) {
+						await hold?.release();
+						return { kind: "terminal" as const, record: stopped };
+					}
+				}
+			},
 			recordedWorktreeRootMappings(record),
 		);
 	})().then(

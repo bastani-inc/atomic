@@ -4,7 +4,7 @@ import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
-import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
+import { currentSessionReload, type SessionReload, sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import {
 	type ChildTaskCompletionRoute,
@@ -44,6 +44,18 @@ export function isSubagentChildSession(session: Pick<AgentSession, "_subagentPol
  */
 function stageTaskAdmission(session: AgentSession) {
 	return isSubagentChildSession(session) ? undefined : session._workflowStageAdmission;
+}
+
+// A caller may keep its refusal long after the stage closes. Its retry callback must not own the session or reload.
+function stageReloadWaiter(owner: WeakRef<AgentSession>, reload: WeakRef<SessionReload>) {
+	return async (wakeId: string): Promise<void> => {
+		// If this reload has already been collected, it has settled. Never join a later one.
+		await reload.deref()?.waitForWake(wakeId);
+		const session = owner.deref();
+		const stage = session?._workflowStageAdmission;
+		if (!session || session._disposed || !stage?.isOpen() || stage.isParked())
+			throw new Error("Task owner is closed");
+	};
 }
 
 /** Whether the session runs its tasks on a workflow stage's own task host, which outlives each of its sessions. */
@@ -254,8 +266,19 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		resourceAdmission: this._resourceAdmission,
 		heartbeat,
 		authorizeLaunch: () => {
-			if (this._disposed || sessionGenerationClosing.has(this) || !admission.isOpen())
-				throw new Error("Task owner is closed");
+			if (this._disposed || !admission.isOpen()) throw new Error("Task owner is closed");
+			if (sessionGenerationClosing.has(this)) {
+				const error = new Error("Task owner is closed");
+				const reload = stageAdmission && currentSessionReload(this);
+				if (!reload) throw error;
+				// Ordinary refusals do not wait. A wake can join this reload after its runner has unwound.
+				throw Object.assign(error, {
+					[Symbol.for("atomic.tasks/wait-for-stage-reload@1")]: stageReloadWaiter(
+						new WeakRef(this),
+						new WeakRef(reload),
+					),
+				});
+			}
 			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
 		},
 		onTaskSettled: (
