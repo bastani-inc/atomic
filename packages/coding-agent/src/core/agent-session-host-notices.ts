@@ -8,6 +8,7 @@ import {
 	hostNoticeMessage,
 } from "./host-notices.ts";
 import type { CustomMessage } from "./messages.ts";
+import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import type { SessionEntry } from "./session-manager-types.ts";
 
 /**
@@ -18,6 +19,8 @@ export function recordHostNotice(
 	session: AgentSession,
 	event: AgentSessionEvent,
 ): CustomMessage<HostNotice> | undefined {
+	// A closing session admits nothing more, and nothing follows it to show the line (#5649).
+	if (session._disposed || sessionGenerationClosing.has(session)) return undefined;
 	const found = hostNoticeForEvent(event, session._compactionReason);
 	if (found === undefined) return undefined;
 	const notice: HostNotice = { level: found.level, text: boundHostNoticeText(found.text) };

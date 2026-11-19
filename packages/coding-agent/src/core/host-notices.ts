@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
-import type { AgentSessionEvent } from "./agent-session-types.ts";
+import type { AgentSessionEvent } from "./agent-session-types.js";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionEntry } from "./session-manager-types.ts";
 

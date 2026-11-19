@@ -7,6 +7,7 @@ import {
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionResult,
 } from "../../../core/compaction/index.ts";
+import { type HostNotice, hostNoticeFromMessage } from "../../../core/host-notices.ts";
 import {
 	type CustomMessage,
 	createVerbatimCompactionMessage,
@@ -180,6 +181,12 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 	if (boundary) state.liveChat.appendMessages([boundary]);
 }
 
+function hostNoticeOf(message: unknown): HostNotice | undefined {
+	if (typeof message !== "object" || message === null || (message as { role?: unknown }).role !== "custom")
+		return undefined;
+	return hostNoticeFromMessage(message as CustomMessage);
+}
+
 export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	event: AgentSessionEvent,
@@ -208,6 +215,9 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 	}
 	if (isSharedLiveChatEvent(type)) {
+		// The line the session saves about how a turn ended takes over from the status line that said the same (#5649).
+		const notice = type === "message_start" ? hostNoticeOf((event as { message?: unknown }).message) : undefined;
+		if (notice !== undefined && state.statusMessage === notice.text) state.statusMessage = "";
 		const changed = state.liveChat.applyEvent(event);
 		if (type === "message_start" && state.firstUserEntry === undefined && state.seenFirstRawUser) {
 			syncFirstUserEntry(state);
@@ -342,8 +352,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 					Date.now())
 				: undefined;
 			state.sdkBusy = manualTakeoverPending || compaction.midTurn === true;
-			// The session shows a failure or a cancellation as a line in the transcript, which it saves (#5649).
-			if (!manualTakeoverPending) state.statusMessage = "";
+			if (!manualTakeoverPending) state.statusMessage = compaction.errorMessage ?? "";
 			if (compaction.midTurn !== true || compaction.aborted || compaction.errorMessage) {
 				state.workingMessage = undefined;
 				stopChatSessionWorkingLifecycle(state);
@@ -428,9 +437,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.sdkBusy = false;
 			state.compacting = false;
 			state.compactionStartedAt = undefined;
-			// The session shows the error as a line in the transcript, which it saves (#5649); a held message that
-			// could not be sent stays queued, and its error is only shown.
-			state.statusMessage = continueError.queuedMessage === true ? continueError.errorMessage : "";
+			state.statusMessage = continueError.errorMessage;
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
