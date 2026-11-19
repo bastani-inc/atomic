@@ -1284,17 +1284,8 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			message("e1", "user", `${"a".repeat(28)}!`, BASE),
 			message("e2", "assistant", "safe-tail", BASE + 1000),
 		]);
-		let longest = 0;
-		let last = performance.now();
-		let lastCpu = process.cpuUsage();
-		const gap = () => {
-			const now = performance.now();
-			const used = process.cpuUsage(lastCpu);
-			longest = Math.max(longest, Math.min(now - last, (used.user + used.system) / 1000));
-			last = now;
-			lastCpu = process.cpuUsage();
-		};
-		const ticker = setInterval(gap, 1);
+		const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
+		let turns: WatchedTurns;
 		try {
 			const controller = new AbortController();
 			const { router, request } = historyOver(store, { timeMs: 10_000 });
@@ -1309,9 +1300,9 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			assert.match(out, /time budget/);
 			assert.ok(continuation(out)?.includes("cursor=2"), out);
 		} finally {
-			clearInterval(ticker);
-			gap();
+			turns = await stopWatching();
 		}
+		const longest = Math.max(0, ...turns.blockedMs);
 		assert.ok(longest < EVENT_LOOP_CPU_LIMIT_MS, `the event loop was busy for ${Math.round(longest)} ms`);
 	});
 
