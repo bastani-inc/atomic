@@ -548,8 +548,8 @@ export type BrokerMessage =
 			invocationControl?: true;
 	  }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
+	/** The requested pending-stage registration change (publish or withdraw) was processed. */
 	| { type: "pending_stage_route_registered"; requestId: string }
-	| { type: "pending_stage_route_withdrawn"; requestId: string }
 	/** #3906: the registration `requestId` of run `runId` was refused; the connection and its other routes are kept. */
 	| {
 			type: "pending_stage_route_refused";

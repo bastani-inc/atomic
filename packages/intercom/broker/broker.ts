@@ -2788,7 +2788,7 @@ class IntercomBroker {
           this.dispatchHeldSends(this.releaseInvocationOrphans(owner.group));
         }
         // A stale request is also settled. Never disclose or remove the replacement owner.
-        writeMessageIfOpen(socket, { type: "pending_stage_route_withdrawn", requestId });
+        writeMessageIfOpen(socket, { type: "pending_stage_route_registered", requestId });
         break;
       }
 

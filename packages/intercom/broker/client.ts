@@ -1219,7 +1219,6 @@ export class IntercomClient extends EventEmitter {
         );
         break;
       }
-      case "pending_stage_route_withdrawn":
       case "pending_stage_route_registered": {
         const { requestId } = brokerMessage;
         if (typeof requestId !== "string") throw new Error("Invalid pending-stage route registration acknowledgement");
