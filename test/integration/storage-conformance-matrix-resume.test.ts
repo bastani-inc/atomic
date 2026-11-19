@@ -256,6 +256,30 @@ for (const backend of storageBackends) {
 		}
 	});
 	if (backend.name !== "Postgres") {
+		run(`a wide inline-only session needs no additional rebuild reads on ${backend.name} (#5590)`, async () => {
+			const scope = await backend.openScope();
+			try {
+				const db = await scope.connect();
+				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
+				// The database does contain chunks, but not for the session being rebuilt.
+				await store.create(header, transcript("x".repeat(2 * SESSION_ENTRY_CHUNK_BYTES)));
+				const id = "w".repeat(600);
+				await seedLegacyResumeSession(
+					db,
+					store,
+					{ ...header, id },
+					2 * SESSION_RESUME_REBUILD.pageEntries + 1,
+					scope.prefix,
+				);
+				const get = vi.spyOn(db, "get");
+				const all = vi.spyOn(db, "all");
+				assert.equal(await store.findLatestCompaction(id), undefined);
+				// One header, three pages, and the final revision check; no layout or chunk round trip.
+				assert.equal(get.mock.calls.length + all.mock.calls.length, 5);
+			} finally {
+				await scope.close();
+			}
+		});
 		for (const shadowed of [false, true]) {
 			run(
 				`a wide session key preserves logical chunk order on ${backend.name}${shadowed ? " with a declared rowid" : ""} (#5590)`,

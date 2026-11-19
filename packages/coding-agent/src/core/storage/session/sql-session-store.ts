@@ -1516,11 +1516,15 @@ export class SqlSessionStore implements SessionStore {
 				this.dialect.name === "sqlite"
 					? `(SELECT COALESCE(json_group_array(key),'[]') FROM json_each(entry_json,'$.data'))`
 					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(parsed.value->'data')='object' THEN parsed.value->'data' ELSE '{}'::jsonb END) AS key)`;
-			const embedded = this.database.descriptor.adapter === "node-sqlite";
-			// Walk only the content array. node:sqlite can pass it as JSONB without rendering large blocks back to text.
+			// Walk only the content array. SQLite 3.45+ can pass it without rendering large blocks back to text.
+			const binaryContent =
+				sqlite &&
+				Number(row.last_seq) > 0 &&
+				this.database.supportsJsonbExtract &&
+				(await this.database.supportsJsonbExtract());
 			const toolBlocks = sqlite
 				? this.dialect.jsonValues(
-						embedded ? "jsonb_extract(entry_json, '$.message.content')" : j("message", "content"),
+						binaryContent ? "jsonb_extract(entry_json, '$.message.content')" : j("message", "content"),
 					)
 				: "jsonb_array_elements_text(parsed.value #> '{message,content}') AS blocks(value)";
 			// A chunked legacy message may contain plain text where newer assistants store a block. Without
@@ -1599,23 +1603,16 @@ export class SqlSessionStore implements SessionStore {
 			const keysPerEntry = 64;
 			const through = `${lo} + ${SESSION_RESUME_REBUILD.pageEntries}`;
 			const wide = sqlite && Number(row.last_seq) > 0 && Buffer.byteLength(sessionId) >= 512;
-			if (wide && this.chunkRowids === undefined) {
-				// index_xinfo(table) has rows for a WITHOUT ROWID table's primary b-tree, not a rowid table.
-				// A declared column named rowid is not a physical row location either.
-				try {
-					this.chunkRowids =
-						(await this.database.get(
-							`SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM pragma_index_xinfo(?))
-						 AND NOT EXISTS (SELECT 1 FROM pragma_table_xinfo(?) WHERE name = 'rowid' COLLATE NOCASE)`,
-							this.tables.entryChunks,
-							this.tables.entryChunks,
-						)) !== undefined;
-				} catch {
-					// A transiently unreadable layout can use the direct plan without disabling rowids for later rebuilds.
-				}
-			}
-			const nativePage =
-				wide && this.chunkRowids
+			// For an unknown wide-key layout, return the actual inline page or a single marker at seq 0
+			// (entry seqs start at 1). Even preparing a schema pragma can require access to that pragma.
+			let inlinePage =
+				wide && this.chunkRowids === undefined
+					? `${page}, chunked AS MATERIALIZED (SELECT 1 FROM page WHERE chunks > 0 LIMIT 1),
+				payloads AS (SELECT seq,entry_id,chunks,entry_json FROM page WHERE NOT EXISTS (SELECT 1 FROM chunked)
+					UNION ALL SELECT 0,'',0,'{}' FROM chunked) ${projection}`
+					: undefined;
+			const rowidPage =
+				wide && this.chunkRowids !== false
 					? `${page},
 				keys AS MATERIALIZED (SELECT seq,idx,rowid AS rid FROM ${this.tables.entryChunks}
 					WHERE session_id = ${owner} AND seq > ${lo} AND seq <= ${hi} AND seq <= ${through} AND idx >= 0 AND idx < ${keysPerEntry}
@@ -1644,7 +1641,26 @@ export class SqlSessionStore implements SessionStore {
 					const args = [sessionId, after, row.last_seq] as const;
 					let rows: ProjectedRow[];
 					try {
-						rows = await this.database.all<ProjectedRow>(nativePage, ...args);
+						rows = await this.database.all<ProjectedRow>(
+							inlinePage ?? (this.chunkRowids ? rowidPage : directPage),
+							...args,
+						);
+						if (inlinePage && Number(rows[0]?.seq) === 0) {
+							inlinePage = undefined;
+							// index_xinfo(table) detects WITHOUT ROWID; a declared rowid isn't a physical location either.
+							try {
+								this.chunkRowids =
+									(await this.database.get(
+										`SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM pragma_index_xinfo(?))
+									AND NOT EXISTS (SELECT 1 FROM pragma_table_xinfo(?) WHERE name = 'rowid' COLLATE NOCASE)`,
+										this.tables.entryChunks,
+										this.tables.entryChunks,
+									)) !== undefined;
+							} catch {
+								// Use the direct plan for this rebuild without caching an unreadable layout.
+							}
+							continue;
+						}
 					} catch (error) {
 						if (!(error instanceof Error && "code" in error && error.code === "payload-too-large")) throw error;
 						// Only a size refusal, before any rows were delivered, can benefit from retrying with stubs.

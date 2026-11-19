@@ -133,6 +133,8 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 */
 	readonly readOnly?: boolean;
 	readonly descriptor: StorageDescriptor;
+	/** @internal Checks whether this embedded connection can prepare a JSONB extraction without issuing a read. */
+	supportsJsonbExtract?(): Promise<boolean>;
 	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */
 	readonly dialect?: StorageDialect;
 	/** Wake-ups through the database; present only on a database that delivers them (Postgres). */

@@ -12,7 +12,10 @@ import type {
 	SqliteRow,
 	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	openNodeSqliteDatabase,
+	wrapNodeSqliteDatabase,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	sessionTailOf as rawSessionTailOf,
 	sessionCompactionOf,
@@ -207,6 +210,54 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		} finally {
 			await indexed.close();
 			await database.close();
+		}
+	});
+
+	it("rebuilds tool counts with SQLite's original JSON functions (#5590)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(5);
+		// The first assistant records a model transition and the last is retained. The middle call is omitted.
+		for (const n of [1, 2, 5]) {
+			entries[n - 1] = entry(n, {
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: `c${n}`, name: "edit", arguments: {} }],
+					timestamp: n,
+					api: "openai-completions",
+					provider: "p",
+					model: "m",
+					stopReason: "toolUse",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			});
+		}
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		const connection = new DatabaseSync(path);
+		// Run unmodified on pre-3.45 SQLite. On newer engines make the optional function fail at prepare,
+		// as it does when Bun loads an older system SQLite on macOS.
+		if (connection.prepare("SELECT 1 FROM pragma_function_list WHERE name='jsonb_extract'").get()) {
+			const prepare = connection.prepare.bind(connection);
+			connection.prepare = (sql) => prepare(sql.replace(/\bjsonb_extract\b/gi, "missing_jsonb_extract"));
+		}
+		const db = wrapNodeSqliteDatabase(connection);
+		try {
+			const store = await SqlSessionStore.open(db);
+			try {
+				assert.equal((await store.readResume(header.id)).omitted.toolCalls, 1);
+			} finally {
+				await store.close();
+			}
+		} finally {
+			await db.close();
+			connection.close();
 		}
 	});
 
