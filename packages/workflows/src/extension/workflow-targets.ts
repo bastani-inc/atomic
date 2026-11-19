@@ -3,7 +3,6 @@ import {
 	type ExpandedWorkflowStage,
 	expandedStageLabel,
 	expandWorkflowGraph,
-	expandWorkflowGraphWithTerminalBoundaries,
 	stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
 import {
@@ -153,35 +152,42 @@ export function resolveStageTarget(runId: string, stageTarget?: string, activeSt
 	const target = stageTarget?.trim();
 	if (!target) return { ok: true, runId };
 	const snapshot = readGraphStoreSnapshot(activeStore);
-	const resolved = resolveStageTargetIn(snapshot, expandWorkflowGraph(snapshot, runId), runId, target);
-	if (resolved.ok || resolved.code !== "stage_not_found") return resolved;
-	// A failed or skipped boundary shows the child it started in its place; an id listed for it still names it (#5616).
-	return resolveStageTargetIn(snapshot, expandWorkflowGraphWithTerminalBoundaries(snapshot, runId), runId, target);
+	const graph = expandWorkflowGraph(snapshot, runId);
+	const replaced = graph.replacedBoundaries;
+	const resolved = resolveStageTargetIn(snapshot, graph.stages, replaced ?? [], runId, target);
+	if (replaced === undefined || resolved.ok || resolved.code !== "stage_not_found") return resolved;
+	return resolveStageTargetIn(snapshot, [...graph.stages, ...replaced], [], runId, target);
 }
 
+/**
+ * A failed or skipped boundary drawn as the child it started (`replaced`) keeps its ids; its name and other selectors
+ * match only when nothing drawn does, through the caller's second pass (#5616).
+ */
 function resolveStageTargetIn(
 	snapshot: StoreSnapshot,
-	graph: ReturnType<typeof expandWorkflowGraph>,
+	stages: readonly ExpandedWorkflowStage[],
+	replaced: readonly ExpandedWorkflowStage[],
 	runId: string,
 	target: string,
 ): ToolStageTarget {
-	const exactVirtualIds = graph.stages.filter((stage) => stage.id === target);
+	const ids = replaced.length === 0 ? stages : [...stages, ...replaced];
+	const exactVirtualIds = ids.filter((stage) => stage.id === target);
 	if (exactVirtualIds.length === 1) return resolvedStageTarget(exactVirtualIds[0]!);
 	if (exactVirtualIds.length > 1) return ambiguousStageTarget(target, exactVirtualIds);
-	const exactLocalIds = graph.stages.filter((stage) => stage.workflowGraphTarget.stageId === target);
+	const exactLocalIds = ids.filter((stage) => stage.workflowGraphTarget.stageId === target);
 	if (exactLocalIds.length === 1) return resolvedStageTarget(exactLocalIds[0]!);
 	if (exactLocalIds.length > 1) return ambiguousStageTarget(target, exactLocalIds);
-	const exactNames = graph.stages.filter((stage) => stage.name === target);
+	const exactNames = stages.filter((stage) => stage.name === target);
 	if (exactNames.length === 1) return resolvedStageTarget(exactNames[0]!);
 	if (exactNames.length > 1) return ambiguousStageTarget(target, exactNames);
-	const uuidMatches = matchingUuidStages(graph.stages, target);
+	const uuidMatches = matchingUuidStages(stages, target);
 	if (uuidMatches.length === 1) return resolvedStageTarget(uuidMatches[0]!);
 	if (uuidMatches.length > 1) return ambiguousUuidStageTarget(target, uuidMatches);
-	const matches = graph.stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
+	const matches = stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
 	if (matches.length === 0) {
 		// A failed child-workflow boundary collapses its child in the graph; a stage of that child
 		// that ran on a local worker is still reachable by its id or name, for its post-mortem (#3996).
-		const collapsed = collapsedPooledStages(snapshot, graph, target);
+		const collapsed = collapsedPooledStages(snapshot, stages, target);
 		if (collapsed.length === 1) return { ok: true, ...collapsed[0]! };
 		if (collapsed.length > 1)
 			return {
@@ -195,14 +201,14 @@ function resolveStageTargetIn(
 	return resolvedStageTarget(matches[0]!);
 }
 
-/** Stages on local workers, named `target`, of the child runs of failed boundaries in `graph`. */
+/** Stages on local workers, named `target`, of the child runs of failed boundaries in `stages`. */
 function collapsedPooledStages(
 	snapshot: StoreSnapshot,
-	graph: ReturnType<typeof expandWorkflowGraph>,
+	stages: readonly ExpandedWorkflowStage[],
 	target: string,
 ): { readonly runId: string; readonly stageId: string }[] {
 	const runs = snapshot.runs;
-	return graph.stages.flatMap((boundary) => {
+	return stages.flatMap((boundary) => {
 		if (boundary.status !== "failed") return [];
 		const { runId, stageId } = boundary.workflowGraphTarget;
 		return failedBoundaryChildRuns(runs, runId, stageId, boundary.startedChildRunId).flatMap((run) =>
@@ -276,22 +282,24 @@ export function resolveControlNodeTarget(
 ): ControlNodeTarget {
 	const target = stageTarget?.trim();
 	if (!target) return { ok: true, kind: "run" };
-	const snapshot = readGraphStoreSnapshot(activeStore);
-	const resolved = resolveControlNodeTargetIn(expandWorkflowGraph(snapshot, runId).renderStages, runId, target);
-	if (resolved.ok || resolved.code !== "stage_not_found") return resolved;
-	// As for stage lookups, an id listed for a failed or skipped boundary still names it (#5616).
-	const withBoundaries = expandWorkflowGraphWithTerminalBoundaries(snapshot, runId).renderStages;
-	return resolveControlNodeTargetIn(withBoundaries, runId, target);
+	const graph = expandWorkflowGraph(readGraphStoreSnapshot(activeStore), runId);
+	const replaced = graph.replacedBoundaries;
+	const resolved = resolveControlNodeTargetIn(graph.renderStages, replaced ?? [], runId, target);
+	if (replaced === undefined || resolved.ok || resolved.code !== "stage_not_found") return resolved;
+	return resolveControlNodeTargetIn([...graph.renderStages, ...replaced], [], runId, target);
 }
 
+/** As `resolveStageTargetIn`, across stages and tool nodes. */
 function resolveControlNodeTargetIn(
 	nodes: readonly ExpandedWorkflowStage[],
+	replaced: readonly ExpandedWorkflowStage[],
 	runId: string,
 	target: string,
 ): ControlNodeTarget {
+	const ids = replaced.length === 0 ? nodes : [...nodes, ...replaced];
 	const candidates: Array<readonly ExpandedWorkflowStage[]> = [
-		nodes.filter((node) => node.id === target),
-		nodes.filter((node) => node.workflowGraphTarget.stageId === target),
+		ids.filter((node) => node.id === target),
+		ids.filter((node) => node.workflowGraphTarget.stageId === target),
 		nodes.filter((node) => node.name === target),
 		matchingUuidStages(nodes, target),
 		nodes.filter((node) => stageMatchesExpandedIdentifier(node, target)),

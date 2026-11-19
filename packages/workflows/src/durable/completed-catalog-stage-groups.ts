@@ -177,10 +177,11 @@ export function validateRunGroups(
 					owners.set(childRunId, draft);
 					continue;
 				}
+				const exited = isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId);
 				if (
-					(!isSyntheticExitedChild(draft, parentRunId, childRunId, rootRunId) &&
-						startedChildStatus(draft) === undefined) ||
-					index.childScopedEvidenceExists(draft.replayKey, childRunId)
+					(!exited && startedChildStatus(draft) === undefined) ||
+					// A child that failed or was skipped before any stage or tool may still have answered prompts (#5616).
+					index.childScopedEvidenceExists(draft.replayKey, childRunId, exited)
 				)
 					return false;
 				syntheticChildIds.add(childRunId);

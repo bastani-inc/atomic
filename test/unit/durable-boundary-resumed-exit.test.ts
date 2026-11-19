@@ -18,6 +18,7 @@ import type { DurableStageCheckpoint } from "../../packages/workflows/src/durabl
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 import { resolveBoundaryLifecycle as previousResolveBoundaryLifecycle } from "../helpers/reference-nested-run-snapshots/boundary-lifecycle.js";
 import { testRunId } from "../helpers/run-id.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -195,65 +196,81 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 	assert.deepEqual(nestedRuns(forkNested, forkId), [["steady-child", "completed"]]);
 });
 
-test("resuming after a failed child runs that child again and replays only its completed sibling (#5616)", async () => {
-	const backend = await createMemoryTestBackend();
-	const calls = { steady: 0, flaky: 0 };
-	const flaky = workflow({
-		name: "flaky-child",
-		description: "",
-		inputs: {},
-		outputs: {},
-		async run(ctx) {
-			calls.flaky++;
-			await ctx.tool("flaky-step", { attempt: calls.flaky }, async () => "done");
-			if (calls.flaky === 1) throw new Error("child failed on its first attempt");
-			return {};
-		},
-	});
-	const steady = workflow({
-		name: "steady-child",
-		description: "",
-		inputs: {},
-		outputs: {},
-		async run(ctx) {
-			calls.steady++;
-			await ctx.tool("steady-step", {}, async () => "done");
-			return {};
-		},
-	});
-	const parent = workflow({
-		name: "resume-parent",
-		description: "",
-		inputs: {},
-		outputs: {},
-		async run(ctx) {
-			await ctx.workflow(steady);
-			await ctx.workflow(flaky);
-			return {};
-		},
-	});
-	const runId = testRunId("resume-failed-child");
-	const nestedRuns = (runs: readonly RunSnapshot[]) =>
-		runs.filter((snapshot) => snapshot.parentRunId === runId).map((snapshot) => [snapshot.name, snapshot.status]);
+test.each([
+	["ran a tool", false],
+	["only answered a prompt", true],
+])(
+	"resuming after a failed child that %s runs that child again and replays only its completed sibling (#5616)",
+	async (_shape, prompt) => {
+		const backend = await createMemoryTestBackend();
+		const calls = { steady: 0, flaky: 0 };
+		const ui: WorkflowUIAdapter = {
+			confirm: async () => true,
+			input: async () => "",
+			select: async <T extends string>(_message: string, options: readonly T[]) => options[0]!,
+			custom: async () => undefined as never,
+			editor: async () => "",
+		};
+		const flaky = workflow({
+			name: "flaky-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				calls.flaky++;
+				if (prompt) await ctx.ui.confirm("continue?");
+				else await ctx.tool("flaky-step", { attempt: calls.flaky }, async () => "done");
+				if (calls.flaky === 1) throw new Error("child failed on its first attempt");
+				// A finished child needs a tracked node; the prompt alone does not make one.
+				if (prompt) await ctx.tool("recovery-step", {}, async () => "done");
+				return {};
+			},
+		});
+		const steady = workflow({
+			name: "steady-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				calls.steady++;
+				await ctx.tool("steady-step", {}, async () => "done");
+				return {};
+			},
+		});
+		const parent = workflow({
+			name: "resume-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.workflow(steady);
+				await ctx.workflow(flaky);
+				return {};
+			},
+		});
+		const runId = testRunId(`resume-failed-child-${prompt}`);
+		const nestedRuns = (runs: readonly RunSnapshot[]) =>
+			runs.filter((snapshot) => snapshot.parentRunId === runId).map((snapshot) => [snapshot.name, snapshot.status]);
 
-	const failed = await run(parent, {}, { runId, store: createStore(), durableBackend: backend });
-	assert.equal(failed.status, "failed");
-	const inspected = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!);
-	assert.deepEqual(nestedRuns(inspected), [
-		["steady-child", "completed"],
-		["flaky-child", "failed"],
-	]);
-	assert.deepEqual(nestedRuns(durableNestedRunSnapshots(backend, runId)), [["steady-child", "completed"]]);
+		const failed = await run(parent, {}, { runId, store: createStore(), durableBackend: backend, ui });
+		assert.equal(failed.status, "failed");
+		const inspected = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!);
+		assert.deepEqual(nestedRuns(inspected), [
+			["steady-child", "completed"],
+			["flaky-child", "failed"],
+		]);
+		assert.deepEqual(nestedRuns(durableNestedRunSnapshots(backend, runId)), [["steady-child", "completed"]]);
 
-	const store = createStore();
-	const resumed = await run(parent, {}, { runId, store, durableBackend: backend });
-	assert.equal(resumed.status, "completed", resumed.error);
-	assert.deepEqual(calls, { steady: 1, flaky: 2 });
-	assert.deepEqual(nestedRuns(store.runs()), [
-		["steady-child", "completed"],
-		["flaky-child", "completed"],
-	]);
-});
+		const store = createStore();
+		const resumed = await run(parent, {}, { runId, store, durableBackend: backend, ui });
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.deepEqual(calls, { steady: 1, flaky: 2 });
+		assert.deepEqual(nestedRuns(store.runs()), [
+			["steady-child", "completed"],
+			["flaky-child", "completed"],
+		]);
+	},
+);
 
 test("replaying a completed child restores the failed grandchild it handled, without rerunning it (#5616)", async () => {
 	const backend = await createMemoryTestBackend();

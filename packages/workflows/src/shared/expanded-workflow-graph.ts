@@ -51,6 +51,11 @@ export interface ExpandedWorkflowGraph {
 	 * targets (see `graph-view-state._stageChatTarget`).
 	 */
 	readonly targets: ReadonlyMap<string, ExpandedWorkflowStageTarget>;
+	/**
+	 * Failed or skipped boundaries drawn as the child each started (outermost only), as the graph drew them before. They
+	 * are not rendered; stage lookups still match them, so an id listed for one keeps naming it (#5616). Absent: none.
+	 */
+	readonly replacedBoundaries?: readonly ExpandedWorkflowStage[];
 }
 
 interface ExpandedRunResult {
@@ -134,17 +139,6 @@ function isLeafRun(run: RunSnapshot): boolean {
 
 export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string): ExpandedWorkflowGraph {
 	return createWorkflowGraphExpander(snapshot)(rootRunId);
-}
-
-/**
- * The graph with each failed or skipped boundary as its own node instead of the child it started. Nothing renders
- * it; stage lookups fall back to it so an id listed for such a boundary still names the boundary (#5616).
- */
-export function expandWorkflowGraphWithTerminalBoundaries(
-	snapshot: StoreSnapshot,
-	rootRunId: string,
-): ExpandedWorkflowGraph {
-	return expandIndexedWorkflowGraph(new Map(snapshot.runs.map((run) => [run.id, run])), rootRunId, true);
 }
 
 /**
@@ -336,7 +330,6 @@ export function createWorkflowGraphExpander(snapshot: StoreSnapshot): (rootRunId
 function expandIndexedWorkflowGraph(
 	runById: ReadonlyMap<string, RunSnapshot>,
 	rootRunId: string,
-	keepTerminalBoundaries = false,
 ): ExpandedWorkflowGraph {
 	const root = runById.get(rootRunId);
 	if (!root) return { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
@@ -350,6 +343,9 @@ function expandIndexedWorkflowGraph(
 	};
 	const visiting = new Set<string>();
 	const expandedChildren = new Set<string>();
+	const replacedBoundaries: ExpandedWorkflowStage[] = [];
+	/** How many failed or skipped boundaries enclose the run being expanded. */
+	let replacedDepth = 0;
 
 	const expandRun = (run: RunSnapshot, depth: number, incomingParentIds: readonly string[]): ExpandedRunResult => {
 		if (visiting.has(run.id)) return { stages: [], tools: [], nodes: [], terminalIds: [] };
@@ -372,7 +368,6 @@ function expandIndexedWorkflowGraph(
 		const boundaryExpansions = new Map<string, ExpandedRunResult | null>();
 
 		const validChildRunFor = (stage: StageSnapshot): RunSnapshot | undefined => {
-			if (keepTerminalBoundaries && isTerminalNonCompletedBoundary(stage)) return undefined;
 			const childRunId = authoritativeWorkflowChildRunId(stage);
 			if (childRunId === undefined) return undefined;
 			const childRun = runById.get(childRunId);
@@ -411,7 +406,11 @@ function expandIndexedWorkflowGraph(
 			boundaryExpansions.set(stage.id, null);
 			expandedChildren.add(childRun.id);
 			const stageItem: LocalItem = { kind: "stage", stage, sourceIndex: 0 };
-			const childExpanded = expandRun(childRun, depth + 1, resolvedParentIdsFor(stageItem));
+			const childParentIds = resolvedParentIdsFor(stageItem);
+			const replaced = isTerminalNonCompletedBoundary(stage);
+			if (replaced) replacedDepth++;
+			const childExpanded = expandRun(childRun, depth + 1, childParentIds);
+			if (replaced) replacedDepth--;
 			if (childExpanded.stages.length === 0 || childExpanded.terminalIds.length === 0) return undefined;
 			boundaryExpansions.set(stage.id, childExpanded);
 			return childExpanded;
@@ -463,6 +462,13 @@ function expandIndexedWorkflowGraph(
 
 			const childExpanded = boundaryExpansionFor(item.stage);
 			if (childExpanded !== undefined) {
+				if (replacedDepth === 0 && isTerminalNonCompletedBoundary(item.stage))
+					replacedBoundaries.push({
+						...item.stage,
+						id,
+						parentIds: Object.freeze(resolvedParentIds),
+						workflowGraphTarget: { runId: run.id, stageId: item.stage.id, runName: run.name, depth },
+					});
 				stages.push(...childExpanded.stages);
 				tools.push(...childExpanded.tools);
 				nodes.push(...childExpanded.nodes);
@@ -510,6 +516,7 @@ function expandIndexedWorkflowGraph(
 		tools: expanded.tools,
 		nodes: expanded.nodes,
 		targets,
+		...(replacedBoundaries.length > 0 ? { replacedBoundaries } : {}),
 	};
 }
 
