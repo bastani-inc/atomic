@@ -82,14 +82,7 @@ test("a finished workflow run that stays until viewed stops the panel's tick onc
 			},
 		);
 		try {
-			assert.deepEqual(latestCounts, {
-				total: count,
-				agents: 0,
-				needsInput: 0,
-				shells: 0,
-				searches: 0,
-				subagents: 0,
-			});
+			assert.deepEqual(latestCounts, { total: count, agents: 0, needsInput: 0, shells: 0, subagents: 0 });
 			assert.ok(mountedWidget);
 			const initialLines = mountedWidget.render(80).map((line) => stripVTControlCharacters(line));
 			assert.equal(initialLines.length, count === 1 ? 1 : AGENT_PANEL_IDLE_ROWS + 1);
@@ -152,7 +145,7 @@ test("a finished workflow run that stays until viewed stops the panel's tick onc
 	try {
 		// The finished subagent left the moment it finished: it is neither listed nor counted.
 		assert.deepEqual(countsHistory, [
-			{ total: AGENT_PANEL_IDLE_ROWS, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 },
+			{ total: AGENT_PANEL_IDLE_ROWS, agents: 0, needsInput: 0, shells: 0, subagents: 0 },
 		]);
 		assert.ok(widget);
 		const lines = widget.render(80).map((line) => stripVTControlCharacters(line));
@@ -168,7 +161,6 @@ test("a finished workflow run that stays until viewed stops the panel's tick onc
 			agents: 0,
 			needsInput: 0,
 			shells: 0,
-			searches: 0,
 			subagents: 0,
 		});
 		assert.equal(vi.getTimerCount(), 0);
@@ -340,25 +332,11 @@ test("bindAgentPanel reports cap-independent total and needsInput counts, dedupl
 		},
 	);
 	try {
-		assert.deepEqual(recorded, [{ total: 10, agents: 10, needsInput: 3, shells: 0, searches: 0, subagents: 0 }]);
-		assert.deepEqual(agentPanelCounts(session), {
-			total: 10,
-			agents: 10,
-			needsInput: 3,
-			shells: 0,
-			searches: 0,
-			subagents: 0,
-		});
+		assert.deepEqual(recorded, [{ total: 10, agents: 10, needsInput: 3, shells: 0, subagents: 0 }]);
+		assert.deepEqual(agentPanelCounts(session), { total: 10, agents: 10, needsInput: 3, shells: 0, subagents: 0 });
 
 		openAgentPanelItem(session, "ext:item-0");
-		assert.deepEqual(agentPanelCounts(session), {
-			total: 10,
-			agents: 10,
-			needsInput: 3,
-			shells: 0,
-			searches: 0,
-			subagents: 0,
-		});
+		assert.deepEqual(agentPanelCounts(session), { total: 10, agents: 10, needsInput: 3, shells: 0, subagents: 0 });
 
 		notifySource();
 		assert.equal(recorded.length, 1, "unchanged counts are not re-emitted");
@@ -373,5 +351,5 @@ test("bindAgentPanel reports cap-independent total and needsInput counts, dedupl
 	} finally {
 		dispose();
 	}
-	assert.deepEqual(recorded.at(-1), { total: 0, agents: 0, needsInput: 0, shells: 0, searches: 0, subagents: 0 });
+	assert.deepEqual(recorded.at(-1), { total: 0, agents: 0, needsInput: 0, shells: 0, subagents: 0 });
 });

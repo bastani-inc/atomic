@@ -3,7 +3,6 @@ import { type Component, Text, truncateToWidth, wrapTextWithAnsi } from "@bastan
 import type { Attention, Execution, TaskRecord } from "../../../core/tasks/contracts.js";
 import { formatTaskHeartbeatDuration } from "../../../core/tasks/heartbeat-notice.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
-import { toolTaskNoun, unreachableTaskKind } from "../../../core/tasks/task-kind.js";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
 import { taskDisplayText, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
@@ -43,9 +42,8 @@ export type TaskDetailContent = {
 export function taskDetailSummary(task: TaskRecord): string {
 	const status = taskStatusAppearance(task);
 	const metrics = taskMetricsText(task);
-	// Only a process has an exit code to show; a tool call's background work completes without one.
 	const exit =
-		task.kind !== "tool" && task.execution.kind === "settled" && task.execution.result.kind !== "cancelled"
+		task.execution.kind === "settled" && task.execution.result.kind !== "cancelled"
 			? task.execution.result.exitCode
 			: undefined;
 	return (
@@ -151,22 +149,12 @@ export class TaskDetail implements Component {
 				),
 			);
 		}
-		switch (task.kind) {
-			case "command":
-				section("Command", this.content.prompt ?? task.title, 3);
-				section("Output", this.content.output || "No output available", 10, true);
-				break;
-			case "tool":
-				// A tool call's background work shows what it does and what it printed, as a shell does.
-				section(taskDisplayText(toolTaskNoun(task)), this.content.prompt ?? task.title, 3);
-				section("Output", this.content.output || "No output available", 10, true);
-				break;
-			case "agent":
-				if (this.content.prompt !== undefined) section("Prompt", this.content.prompt, 3);
-				if (this.content.output) section("Latest response", this.content.output, 5);
-				break;
-			default:
-				unreachableTaskKind(task.kind);
+		if (task.kind === "command") {
+			section("Command", this.content.prompt ?? task.title, 3);
+			section("Output", this.content.output || "No output available", 10, true);
+		} else {
+			if (this.content.prompt !== undefined) section("Prompt", this.content.prompt, 3);
+			if (this.content.output) section("Latest response", this.content.output, 5);
 		}
 		lines.push(
 			"",

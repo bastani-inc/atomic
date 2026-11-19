@@ -1,7 +1,6 @@
 import type { SessionManager } from "./session-manager.ts";
 import type { TaskCompletionEnvelope } from "./tasks/completion.js";
 import type { OwnerId, Sequence, TaskId } from "./tasks/contracts.js";
-import { isShellLikeTask } from "./tasks/task-kind.js";
 import type { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 
 /**
@@ -14,14 +13,7 @@ interface ParkedStageTasks {
 	/** The stage generation, in the process that released the stage. */
 	readonly attemptId: string;
 	/** `launchedBy` names the worker whose shell it is; absent for the stage's own. */
-	readonly tasks: readonly {
-		readonly ownerId: OwnerId;
-		readonly taskId: TaskId;
-		readonly launchedBy?: string;
-		/** A shell, or a tool call's background work (`search`); markers saved by earlier versions name shells only. */
-		readonly kind?: "command" | "tool";
-		readonly toolName?: string;
-	}[];
+	readonly tasks: readonly { readonly ownerId: OwnerId; readonly taskId: TaskId; readonly launchedBy?: string }[];
 }
 
 /** Save the stage's running shells as the stage is released, before its session lets go of the store. */
@@ -33,13 +25,11 @@ export async function recordParkedStageTasks(
 	const watched = boundary.isParked() ? boundary.agentTaskHost()!.watchOwnerTasks() : undefined;
 	if (!watched?.ok) return;
 	const tasks = watched.value.snapshot.tasks
-		.filter((task) => isShellLikeTask(task.kind) && task.execution.kind !== "settled")
+		.filter((task) => task.kind === "command" && task.execution.kind !== "settled")
 		.map((task) => ({
 			ownerId: task.ref.ownerId,
 			taskId: task.ref.taskId,
 			...(task.launchedBy === undefined ? {} : { launchedBy: task.launchedBy }),
-			...(task.kind === "tool" ? { kind: "tool" as const } : {}),
-			...(task.kind === "tool" && task.toolName !== undefined ? { toolName: task.toolName } : {}),
 		}));
 	watched.value.dispose();
 	if (tasks.length === 0) return;
@@ -73,7 +63,7 @@ export async function recordTasksInterruptedByRestart(
 						: [],
 				),
 		);
-		for (const { ownerId, taskId, launchedBy, kind, toolName } of marker.tasks) {
+		for (const { ownerId, taskId, launchedBy } of marker.tasks) {
 			if (notified.has(taskKey({ ownerId, taskId }))) continue;
 			interrupted.push({
 				completionId: `restart-interrupted:${marker.attemptId}:${ownerId}:${taskId}`,
@@ -82,8 +72,7 @@ export async function recordTasksInterruptedByRestart(
 				terminalSequence: "0" as Sequence,
 				result: { kind: "cancelled", cause: "shutdown" },
 				display: false,
-				taskKind: kind ?? "command",
-				...(kind === "tool" && toolName !== undefined ? { toolName } : {}),
+				taskKind: "command",
 				interruptedByRestart: true,
 				// A worker's shell is that worker's to hear of, never the stage's.
 				...(launchedBy === undefined ? {} : { launchedBy }),

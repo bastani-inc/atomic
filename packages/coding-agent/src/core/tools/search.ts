@@ -6,11 +6,9 @@ import { type Static, Type } from "typebox";
 import { isPathInside } from "../../utils/path-inside.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import type { SupervisedCommandOwner } from "./bash-pty-native.js";
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
-import { historySearchSchema, runSearchWithTasks, type SearchTaskDetails } from "./history-search-run.ts";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
@@ -69,19 +67,14 @@ const searchSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const taskSchema = historySearchSchema(searchSchema);
 export const searchToolSystemPromptContribution = Object.freeze({
 	snippet: "Search file contents with regex patterns.",
-	guidelines: Object.freeze([
-		'When a history:// search returns a task ID, use search({ action: "wait", id }) for its continuation pages or kill({ id }) to stop it. A skip hint is a separate search, not a background task.',
-	] as const),
+	guidelines: Object.freeze([] as const),
 } as const);
-/** Pattern-bearing search calls exposed to SDK hooks. A wait only observes an existing task. */
-export type SearchToolInput = Exclude<Static<typeof taskSchema>, { action: "wait" }>;
+export type SearchToolInput = Static<typeof searchSchema>;
 export type SearchToolOptions = GrepToolOptions & {
 	contextBefore?: number;
 	contextAfter?: number;
-	taskOwner?: SupervisedCommandOwner | (() => SupervisedCommandOwner | undefined);
 };
 /** An existing path is used exactly, so `app/[id]/page.tsx` is that file, not the pattern `app/[id]` (#5177). */
 async function splitSearchPath(value: string, cwd: string): Promise<ReturnType<typeof splitPathLikeGlob>> {
@@ -550,8 +543,7 @@ function formatSearchCall(
 	return text;
 }
 
-/** Execute one ordinary search, including its paging, output limits, and SDK details. */
-export function createSearchPageDefinition(
+export function createSearchToolDefinition(
 	cwd: string,
 	options?: SearchToolOptions,
 ): ToolDefinition<typeof searchSchema, SearchToolDetails | undefined> {
@@ -947,24 +939,6 @@ export function createSearchPageDefinition(
 	});
 }
 
-export function createSearchToolDefinition(
-	cwd: string,
-	options?: SearchToolOptions,
-): ToolDefinition<typeof taskSchema, SearchTaskDetails | undefined> {
-	const page = createSearchPageDefinition(cwd, options);
-	return withBuiltinToolBlockRenderers<ToolDefinition<typeof taskSchema, SearchTaskDetails | undefined>>({
-		name: page.name,
-		label: page.label,
-		description: page.description,
-		promptSnippet: page.promptSnippet,
-		promptGuidelines: [...searchToolSystemPromptContribution.guidelines],
-		...experimentalToolSamplingProperty(),
-		parameters: taskSchema,
-		execute: (id, input, signal, onUpdate, ctx) =>
-			runSearchWithTasks(page, options?.taskOwner, cwd, id, input, signal, onUpdate, ctx),
-	});
-}
-
-export function createSearchTool(cwd: string, options?: SearchToolOptions): AgentTool<typeof taskSchema> {
+export function createSearchTool(cwd: string, options?: SearchToolOptions): AgentTool<typeof searchSchema> {
 	return wrapToolDefinition(createSearchToolDefinition(cwd, options));
 }

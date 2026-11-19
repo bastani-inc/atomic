@@ -1218,9 +1218,7 @@ export function renderSubagentToolResult(
 			const state =
 				task.execution.kind === "settled" ? subagentTaskResultLabel(task.execution.result) : task.execution.kind;
 			return [
-				theme.bold(
-					`${displayText(task.agentName ?? (task.kind === "tool" ? (task.toolName ?? "tool") : "bash"))} · ${state}`,
-				),
+				theme.bold(`${displayText(task.agentName ?? "bash")} · ${state}`),
 				...(task.kind === "agent"
 					? [
 							theme.fg(

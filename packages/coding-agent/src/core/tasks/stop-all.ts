@@ -1,14 +1,11 @@
 import type { WorkflowRunControl } from "../extensions/workflow-run-control.js";
 import { getOwnerTaskStore } from "./owner-store.js";
-import { pluralNoun, toolTaskNoun, unreachableTaskKind } from "./task-kind.js";
 import { ownerTaskViewSource } from "./task-view-source.js";
 
 /** What Ctrl+X Ctrl+K stopped: background subagents, shells, workflow runs, and what could not be stopped. */
 export interface StopAllBackgroundOutcome {
 	readonly agents: number;
 	readonly shells: number;
-	/** Tool calls' background work stopped, by what the tool calls it: `{ search: 2 }`. */
-	readonly tools?: Readonly<Record<string, number>>;
 	readonly workflowRuns: number;
 	readonly failures: readonly string[];
 }
@@ -35,7 +32,7 @@ export async function stopAllBackgroundWork(session: StopAllBackgroundSession): 
 	const stopped = await Promise.all(
 		live.map(async (task) => {
 			const result = await source?.cancelTask(task.ref.taskId);
-			if (result?.ok) return task;
+			if (result?.ok) return task.kind;
 			failures.push(`${task.agentName ?? task.title}: ${result?.error.message ?? "task owner unavailable"}`);
 			return undefined;
 		}),
@@ -60,28 +57,12 @@ export async function stopAllBackgroundWork(session: StopAllBackgroundSession): 
 				failures.push(`workflows: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
-	const tools: Record<string, number> = {};
-	let agents = 0;
-	let shells = 0;
-	for (const task of stopped) {
-		if (task === undefined) continue;
-		switch (task.kind) {
-			case "agent":
-				agents++;
-				break;
-			case "command":
-				shells++;
-				break;
-			case "tool": {
-				const noun = toolTaskNoun(task);
-				tools[noun] = (tools[noun] ?? 0) + 1;
-				break;
-			}
-			default:
-				unreachableTaskKind(task.kind);
-		}
-	}
-	return { agents, shells, ...(Object.keys(tools).length > 0 ? { tools } : {}), workflowRuns, failures };
+	return {
+		agents: stopped.filter((kind) => kind === "agent").length,
+		shells: stopped.filter((kind) => kind === "command").length,
+		workflowRuns,
+		failures,
+	};
 }
 
 /** The one-line notice a stop-all leaves in the chat. */
@@ -89,8 +70,6 @@ export function stopAllBackgroundMessage(outcome: StopAllBackgroundOutcome): str
 	const parts: string[] = [];
 	if (outcome.agents > 0) parts.push(`${outcome.agents} ${outcome.agents === 1 ? "subagent" : "subagents"}`);
 	if (outcome.shells > 0) parts.push(`${outcome.shells} ${outcome.shells === 1 ? "shell" : "shells"}`);
-	for (const [noun, count] of Object.entries(outcome.tools ?? {}))
-		if (count > 0) parts.push(`${count} ${count === 1 ? noun : pluralNoun(noun)}`);
 	if (outcome.workflowRuns > 0)
 		parts.push(`${outcome.workflowRuns} workflow ${outcome.workflowRuns === 1 ? "run" : "runs"}`);
 	const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0];

@@ -5,7 +5,6 @@ import type { SessionManager } from "../session-manager.ts";
 import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
 import { type OmissionSpan, taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
-import { isShellLikeTask, taskKindNoun, unreachableTaskKind } from "./task-kind.js";
 import { taskStoppedForResume } from "./task-resumer.ts";
 
 export const TASK_COMPLETION_MESSAGE_TYPE = "task-completion";
@@ -21,8 +20,6 @@ export type TaskCompletionEnvelope = {
 	 * when the task record is gone, still words a pause correctly. Intents saved by earlier versions lack it.
 	 */
 	taskKind?: TaskRecord["kind"];
-	/** The tool a `tool` task ran (`search`), saved with its kind so a replayed notice still names it. */
-	toolName?: string;
 	/**
 	 * Set when Atomic restarted while the task's workflow stage was released: the task no longer runs, and what it did
 	 * was not kept (#5079).
@@ -42,7 +39,6 @@ export function taskCompletionEnvelope(
 	ownerId: OwnerId,
 	receipt: SettlementReceipt,
 	taskKind?: TaskRecord["kind"],
-	toolName?: string,
 ): TaskCompletionEnvelope {
 	return {
 		completionId: receipt.completionId,
@@ -52,7 +48,6 @@ export function taskCompletionEnvelope(
 		result: receipt.result,
 		display: false,
 		...(taskKind === undefined ? {} : { taskKind }),
-		...(taskKind === "tool" && toolName !== undefined ? { toolName } : {}),
 		...(receipt.launchedBy === undefined ? {} : { launchedBy: receipt.launchedBy }),
 		...(receipt.elapsedMs === undefined ? {} : { elapsedMs: receipt.elapsedMs }),
 	};
@@ -81,8 +76,6 @@ export type TaskCompletionNotice = {
 	taskId: string;
 	taskKind?: TaskRecord["kind"];
 	agentName?: string;
-	/** The tool a `tool` task ran (`search`). */
-	toolName?: string;
 	model?: string;
 	thinking?: string;
 	/** The model the launch asked for, when the task records one. */
@@ -92,28 +85,11 @@ export type TaskCompletionNotice = {
 };
 
 /** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
-/** What a finished task is called at the start of its notice line: `Agent`, `Background command`, `Background search`. */
-function noticeLabel(kind: TaskRecord["kind"] | undefined, toolName: string | undefined): string {
-	switch (kind) {
-		case "agent":
-			return "Agent";
-		case "command":
-			return "Background command";
-		case "tool":
-			return `Background ${taskKindNoun({ kind, ...(toolName === undefined ? {} : { toolName }) })}`;
-		case undefined:
-			return "Task";
-		default:
-			return unreachableTaskKind(kind);
-	}
-}
-
 export function taskNoticeLine(
 	envelope: TaskCompletionEnvelope,
-	task?: Partial<Pick<TaskRecord, "kind" | "title" | "metrics" | "toolName">>,
+	task?: Partial<Pick<TaskRecord, "kind" | "title" | "metrics">>,
 ): TaskNoticeLine {
 	const kind = task?.kind ?? envelope.taskKind;
-	const toolName = task?.toolName ?? envelope.toolName;
 	const result = envelope.result;
 	const subject = task?.title ? task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240) : undefined;
 	const facts = {
@@ -122,12 +98,9 @@ export function taskNoticeLine(
 			? {}
 			: { elapsedMs: task?.metrics?.elapsedMs ?? envelope.elapsedMs }),
 	};
-	const label = noticeLabel(kind, toolName);
-	// Only a process has an exit code; a tool's in-process work completes or fails without one.
+	const label = kind === "agent" ? "Agent" : kind === "command" ? "Background command" : "Task";
 	const exitCode =
-		kind !== "tool" && result.kind !== "cancelled" && result.exitCode !== undefined
-			? ` (exit code ${result.exitCode})`
-			: "";
+		result.kind !== "cancelled" && result.exitCode !== undefined ? ` (exit code ${result.exitCode})` : "";
 	// A command that exits non-zero completed, and failed.
 	if (result.kind !== "cancelled" && taskOutcomeStatus(result, kind) === "completed")
 		return { status: "success", label, outcome: kind === "agent" ? "finished" : `completed${exitCode}`, ...facts };
@@ -199,7 +172,7 @@ function shellExcerpt(
 export function taskCompletionNotice(
 	envelope: TaskCompletionEnvelope,
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking"> &
-		Partial<Pick<TaskRecord, "requestedModel" | "metrics" | "toolName">>,
+		Partial<Pick<TaskRecord, "requestedModel" | "metrics">>,
 	output?: string,
 	omissions?: readonly OmissionSpan[],
 ): TaskCompletionNotice {
@@ -208,7 +181,6 @@ export function taskCompletionNotice(
 	const preview = [envelope.result.kind === "failed" ? envelope.result.message : "", output ?? ""]
 		.filter(Boolean)
 		.join("\n");
-	// A command's last output says how it ended; a search's results read from the top.
 	return {
 		title:
 			formatTaskCompletion(envelope, task).split("\n")[0] + (exitCode === undefined ? "" : ` · exit ${exitCode}`),
@@ -220,9 +192,6 @@ export function taskCompletionNotice(
 		taskId: envelope.taskId,
 		...((task?.kind ?? envelope.taskKind) === undefined ? {} : { taskKind: task?.kind ?? envelope.taskKind }),
 		...(task?.kind === "agent" && task.agentName !== undefined ? { agentName: task.agentName } : {}),
-		...((task?.kind ?? envelope.taskKind) === "tool" && (task?.toolName ?? envelope.toolName) !== undefined
-			? { toolName: task?.toolName ?? envelope.toolName }
-			: {}),
 		...(task?.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
@@ -334,7 +303,7 @@ export function waitingReleasedShells(task: TaskRecord, ownerTasks: readonly Tas
 		.filter(
 			(candidate) =>
 				candidate.parentTaskId === task.ref.taskId &&
-				isShellLikeTask(candidate.kind) &&
+				candidate.kind === "command" &&
 				candidate.execution.kind !== "settled",
 		)
 		.sort((a, b) => a.launchOrdinal - b.launchOrdinal);
@@ -361,37 +330,24 @@ function resumeId(envelope: TaskCompletionEnvelope, task?: Partial<Pick<TaskReco
 export function formatTaskCompletion(
 	envelope: TaskCompletionEnvelope,
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName"> &
-		Partial<Pick<TaskRecord, "launchOperationId" | "model" | "requestedModel" | "toolName">>,
+		Partial<Pick<TaskRecord, "launchOperationId" | "model" | "requestedModel">>,
 	output?: string,
 	omissions?: readonly OmissionSpan[],
 ): string {
 	const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 	const kind = task?.kind ?? envelope.taskKind;
-	const toolName = task?.toolName ?? envelope.toolName;
-	let label: string;
-	switch (kind) {
-		case "agent":
-			label = `Subagent ${singleLine(task?.agentName ?? "agent")}`;
-			break;
-		case "command":
-			label = "Background shell";
-			break;
-		case "tool":
-			label = `Background ${singleLine(taskKindNoun({ kind, ...(toolName === undefined ? {} : { toolName }) }))}`;
-			break;
-		case undefined:
-			label = "Background task";
-			break;
-		default:
-			label = unreachableTaskKind(kind);
-	}
+	const label =
+		kind === "agent"
+			? `Subagent ${singleLine(task?.agentName ?? "agent")}`
+			: kind === "command"
+				? "Background shell"
+				: "Background task";
 	const result = envelope.result;
 	const outcome = taskOutcomeStatus(result, kind);
 	const waitingOn = releasedWaitingOn(result);
 	const pauseStop = result.kind === "cancelled" && result.cause === "pause";
-	// A shell or a tool's work cannot resume: a stage, run or session pause interrupts it, and the resumed stage redoes
-	// the step.
-	const interruptedByPause = pauseStop && isShellLikeTask(kind);
+	// A shell cannot resume: a stage, run or session pause interrupts it, and the resumed stage redoes the step.
+	const interruptedByPause = pauseStop && kind === "command";
 	// An intent saved without its kind cannot tell a shell from a subagent, so its notice names no resume call.
 	const pausedUnknownKind = pauseStop && kind === undefined;
 	const resumable = !interruptedByPause && !pausedUnknownKind && isResumableStop(result);
@@ -430,8 +386,7 @@ export function formatTaskCompletion(
 	const ranOn = ranOnModelLine(task);
 	if (ranOn) lines.push(ranOn);
 	if (result.kind === "failed") lines.push(`Error: ${result.message}`);
-	if (kind !== "tool" && result.kind !== "cancelled" && result.exitCode !== undefined)
-		lines.push(`Exit code: ${result.exitCode}`);
+	if (result.kind !== "cancelled" && result.exitCode !== undefined) lines.push(`Exit code: ${result.exitCode}`);
 	if (result.kind === "cancelled")
 		lines.push(
 			`Stop reason: ${waitingOn ? "released" : result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`,
@@ -446,22 +401,16 @@ export function formatTaskCompletion(
 		waitingOn
 			? `Nothing stopped it: it was released while waiting on ${waitingOn}, and it wakes by itself when that finishes and goes on with its task. Nothing needs to be done meanwhile; its next notice reports what it did.`
 			: interruptedByRestart
-				? kind === "tool"
-					? `Atomic restarted while this workflow stage was released, so this ${toolName || "tool call"} no longer runs and its result and output were not kept. If its result is still needed, run it again.`
-					: "Atomic restarted while this workflow stage was released, so this command no longer runs and its result and output were not kept. If its result is still needed, run the command again."
+				? "Atomic restarted while this workflow stage was released, so this command no longer runs and its result and output were not kept. If its result is still needed, run the command again."
 				: interruptedByPause
-					? kind === "tool"
-						? `A pause interrupted this ${toolName || "tool call"} before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, running it again if its result is still needed.`
-						: "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
+					? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
 					: pausedUnknownKind
 						? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
 						: resumable
 							? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
 							: timedOut
 								? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
-								: kind === "tool"
-									? `This execution has ended. Do not run it again merely to retrieve its result: read all of its output with ${toolName || "search"}({ action: "wait", id: "${envelope.taskId}" }). The user can inspect it with /tasks.`
-									: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+								: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }
@@ -544,15 +493,9 @@ export class TaskCompletionOutbox {
 	 * Record a settled task's completion. A `restored` one settled while no session held this owner, like one from an
 	 * earlier process: it waits for `flushRestored()` and reaches the transcript without starting a turn.
 	 */
-	record(
-		ownerId: OwnerId,
-		receipt: SettlementReceipt,
-		taskKind?: TaskRecord["kind"],
-		restored = false,
-		toolName?: string,
-	): void {
+	record(ownerId: OwnerId, receipt: SettlementReceipt, taskKind?: TaskRecord["kind"], restored = false): void {
 		if (this.entries.has(receipt.completionId)) return;
-		const envelope = taskCompletionEnvelope(ownerId, receipt, taskKind, toolName);
+		const envelope = taskCompletionEnvelope(ownerId, receipt, taskKind);
 		this.entries.set(envelope.completionId, envelope);
 		if (restored) this.restored.add(envelope.completionId);
 	}

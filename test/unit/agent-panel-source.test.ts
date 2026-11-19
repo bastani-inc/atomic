@@ -1591,14 +1591,7 @@ test("dismissed native task ids are pruned when the task is seen in a non-finish
 			rowsOf().map((row) => [row.id, row.state]),
 			[[`task:${id}`, "running"]],
 		);
-		assert.deepEqual(agentPanelCounts(session), {
-			total: 2,
-			agents: 2,
-			needsInput: 0,
-			shells: 0,
-			searches: 0,
-			subagents: 2,
-		});
+		assert.deepEqual(agentPanelCounts(session), { total: 2, agents: 2, needsInput: 0, shells: 0, subagents: 2 });
 		assert.equal(dismissedAgentPanelItems(session).has(`task:${id}`), false);
 		assert.equal(dismissedTasks(ownerTaskViewSource(fixture.store)).has(id), false);
 		assert.deepEqual(

@@ -33,7 +33,6 @@ import {
 	taskElapsedMs,
 } from "../../../core/tasks/live-elapsed.js";
 import { isTaskTurnInterrupted, OwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { toolTaskNoun } from "../../../core/tasks/task-kind.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { parseWheelReport } from "./chat-transcript.js";
@@ -738,16 +737,6 @@ export class TaskInspector implements Component {
 			const byteCount = () =>
 				BigInt(this.store.tasks.find((candidate) => candidate.ref.taskId === taskId)?.output.byteCount ?? "0");
 			this.transcript = new TaskCommandOutputPage(this.store, taskId, byteCount, environment, this.requestRender);
-		} else if (task.kind === "tool") {
-			// A tool call's background work has no transcript: its output, from the start, is what it did.
-			this.transcript = new TaskCommandOutputPage(
-				this.store,
-				task.ref.taskId,
-				() => 0n,
-				environment,
-				this.requestRender,
-				toolTaskNoun(task),
-			);
 		} else if (environment === undefined) {
 			this.failureNotice = "Transcript inspection is unavailable in this host.";
 			this.requestRender();
@@ -876,19 +865,6 @@ export class TaskInspector implements Component {
 			} catch {
 				if (!current()) return;
 				this.status = "Command output unavailable";
-			}
-		} else if (task.kind === "tool") {
-			// What a tool call's background work printed, from its start: a search's first results.
-			try {
-				const output = await this.store.readTaskOutput(task.ref.taskId, { start: "0", maximumBytes: 8192 });
-				if (!current()) return;
-				if (output.ok) {
-					this.detailContent.output = output.value.text;
-					this.detailContent.outputOmitted = output.value.more === true || output.value.omitted;
-				} else this.status = taskDisplayText(output.error.message);
-			} catch {
-				if (!current()) return;
-				this.status = "Output unavailable";
 			}
 		}
 		if (current()) this.requestRender();
@@ -1478,7 +1454,7 @@ export class TaskInspector implements Component {
 			return { lines };
 		}
 		const task = row.task;
-		if (task.kind === "command" || task.kind === "tool") {
+		if (task.kind === "command") {
 			return {
 				lines: [
 					rowTask(row),
@@ -1814,9 +1790,7 @@ export class TaskInspector implements Component {
 		let selectedLine = -1;
 		let selectedEnd = -1;
 		if (!all.length)
-			body.push(
-				theme.fg("muted", "   No background work. Subagents, shells, searches and workflow runs appear here."),
-			);
+			body.push(theme.fg("muted", "   No background work. Subagents, shells and workflow runs appear here."));
 		else if (!rows.length) body.push(theme.fg("muted", `   Nothing matches "${taskDisplayText(this.filter)}".`));
 		for (const group of groups) {
 			body.push(theme.fg("muted", theme.bold(`   ${group.title}`)));
