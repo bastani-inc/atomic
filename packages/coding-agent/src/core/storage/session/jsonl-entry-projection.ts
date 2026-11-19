@@ -58,6 +58,7 @@ const ENTRY = object({
 	usage: exact,
 	summary: leaf,
 	firstKeptEntryId: exact,
+	firstKeptEntryIndex: leaf,
 	coveredThroughEntryId: exact,
 	tokensBefore: exact,
 	systemMessage: object({ timestamp: exact }),

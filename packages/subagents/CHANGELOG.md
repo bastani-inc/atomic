@@ -13,9 +13,8 @@
 
 ### Fixed
 
+- A forked child that waits for a slot starts at the original launch entry. A retry reopens the same child without keeping its completed session in memory ([#5594](https://github.com/bastani-inc/atomic/issues/5594)).
 - A delayed wake refusal no longer shows `hold-failed` when Intercom confirms that reconnect restored the same released subagent. A child whose hold was dropped still reports the failure, as do older brokers that cannot verify the hold ([#5641](https://github.com/bastani-inc/atomic/issues/5641)).
-
-### Fixed
 
 - Temporary worktree children now report completion, pause, or quit after cleanup rather than while Atomic still has the directory open. The reply explains when a sibling keeps the batch open or cleanup continues in the background; Esc still ends the wait immediately ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).
 - When an SDK session without a task host batches several subagent calls, each caller now receives only its own children’s answers, even if a child used a fallback model or its parent cancelled it. Previously each caller could receive the whole batch’s text ([#5600](https://github.com/bastani-inc/atomic/issues/5600)).

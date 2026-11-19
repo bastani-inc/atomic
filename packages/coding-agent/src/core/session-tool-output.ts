@@ -205,6 +205,63 @@ export function withoutCarriedToolOutput(entry: SessionEntry): SessionEntry {
 	return { ...entry, data: kept } as SessionEntry;
 }
 
+/** The bytes of the output `reference` carries inline, decoded once and checked against its hash. */
+function checkedInlineOutput(reference: ToolOutputReference, base64: string, sessionId: string): Uint8Array {
+	const data = new Uint8Array(Buffer.from(base64, "base64"));
+	const actualHash = createHash("sha256").update(data).digest("hex");
+	if (actualHash !== reference.hash) {
+		throw new SessionBlobError("blob-corrupt", { sessionId, hash: reference.hash, actualHash });
+	}
+	return data;
+}
+
+/**
+ * Compatibility read of one receipt of an exported file whose tool output it carries inline, as `base64`. A fork of
+ * such a file reads each receipt by its position as it reaches it, never the whole file: this decodes only that
+ * receipt's output, checks it against its hash and drops it before the next, so a fork holds at most one inline output.
+ * Resolves with the receipt without its inline bytes and their hash, or `undefined` for any other entry. Throws
+ * `blob-corrupt` when the bytes do not match, before the copy publishes anything.
+ */
+export function takeInlineToolOutputEntry(
+	entry: SessionEntry,
+	sessionId: string,
+): { readonly entry: SessionEntry; readonly hash: string } | undefined {
+	const reference = referenceOf(entry);
+	if (typeof reference?.base64 !== "string") return undefined;
+	const { base64, ...kept } = reference;
+	checkedInlineOutput(reference, base64, sessionId);
+	return { entry: { ...entry, data: kept } as SessionEntry, hash: reference.hash };
+}
+
+/**
+ * Stores the outputs an exported file carried inline for a session just created from it, one at a time: `read` returns
+ * the receipt again, by its position in the file, and only its output is decoded, checked and stored before the next
+ * is read. When the store cannot hold them or one cannot be stored, the session is deleted again and the failure
+ * thrown, with a failure to delete attached as its `cleanupCause`.
+ */
+export function storeInlineToolOutputs(
+	store: SessionStore,
+	sessionId: string,
+	sourceSessionId: string,
+	receipts: ReadonlyMap<string, () => Promise<SessionEntry>>,
+): Promise<void> {
+	return writeOrDelete(store, sessionId, async () => {
+		assertSessionBlobStore(store, sessionId, receipts.size);
+		for (const [hash, read] of receipts) {
+			const reference = referenceOf(await read());
+			const base64 = reference?.hash === hash ? reference.base64 : undefined;
+			if (typeof base64 !== "string") {
+				throw new SessionBlobError("blob-corrupt", {
+					sessionId: sourceSessionId,
+					hash,
+					actualHash: reference?.hash ?? "",
+				});
+			}
+			await store.putBlob!(sessionId, checkedInlineOutput(reference!, base64, sourceSessionId));
+		}
+	});
+}
+
 /**
  * Takes the tool outputs an exported session carries inline out of its entries, after checking each against its
  * hash. Throws `blob-corrupt` for the first that does not match, before anything is written. Each output is decoded

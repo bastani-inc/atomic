@@ -552,7 +552,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `readEntry(id)` - Read one entry by ID, including one outside the window, or return `undefined` if it is missing
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
 - `getLastSeq()` - The session's last stored sequence, including entries not in memory
-- `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held. Subagent launch and restoration tolerate a `SessionManager` without `getEntrySeq` or `findEntrySeq`, falling back to `findEntrySeq`, full-history `getEntries()`, or `getBranch()`
+- `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held. A subagent launch on an older manager can look up the exact sequence through the manager, its store or its paged archive. If a partial manager provides none of these, the launch keeps the entry ID and omits the optional sequence rather than treating a window offset as an archive position or loading the parent. A complete legacy manager can still locate its entry in `getEntries()`.
 - `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
 - `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones a `{ history: "tail" }` manager does not hold in pages and keeping none of them. Resolves with the last sequence visited
 - `getAdmissionKeys().has(key)` - Test a persisted admission key synchronously. A resume keeps packed 128-bit digests, not original admission-key strings. The decision to admit or reject a duplicate is unchanged

@@ -6,11 +6,13 @@ import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 import type { SqliteDatabase } from "../database.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
+import { inheritForkScope } from "./fork-store-scope.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
 import { findSessionCompaction, readSessionTail, sessionRangeOf } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionBranchPageCut,
@@ -61,10 +63,11 @@ export class LegacySessionStore implements SessionStore {
 	readonly getBlob?: (sessionId: string, hash: string) => Promise<Uint8Array | undefined>;
 	readonly readEntryRange?: (sessionId: string, query: SessionEntriesQuery) => Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
+	readonly readForkWindow?: SessionStore["readForkWindow"];
 	readonly readTreeOutline?: SessionStore["readTreeOutline"];
+	readonly readChildDisplayCut?: SessionStore["readChildDisplayCut"];
 	readonly readChildCatalogCut?: SessionStore["readChildCatalogCut"];
 	readonly readSelectedPage?: SessionStore["readSelectedPage"];
-	readonly readForkWindow?: SessionStore["readForkWindow"];
 	readonly readSnapshotCut?: SessionStore["readSnapshotCut"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
@@ -73,9 +76,9 @@ export class LegacySessionStore implements SessionStore {
 		this.databasePath = options.databasePath;
 		const { putBlob, getBlob, readForkWindow } = inner;
 		if (readForkWindow)
-			this.readForkWindow = async (id, entryId) => {
+			this.readForkWindow = async (id, entryId, options) => {
 				await this.convert(id);
-				return readForkWindow.call(inner, id, entryId);
+				return readForkWindow.call(inner, id, entryId, options);
 			};
 		if (putBlob !== undefined && getBlob !== undefined) {
 			this.putBlob = async (sessionId, data) => {
@@ -84,6 +87,11 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		if (inner.readChildDisplayCut)
+			this.readChildDisplayCut = async (id, launch) => {
+				await this.convert(id);
+				return inner.readChildDisplayCut!(id, launch);
+			};
 		if (inner.readChildCatalogCut)
 			this.readChildCatalogCut = async (id) => {
 				await this.convert(id);
@@ -126,6 +134,16 @@ export class LegacySessionStore implements SessionStore {
 				return readEntryRange.call(inner, sessionId, query);
 			};
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;
+		const forwardedBlob = this.getBlob;
+		inheritForkScope(this, inner, (field) =>
+			(
+				field === "blob"
+					? this.getBlob === forwardedBlob && inner.getBlob === getBlob
+					: this.readEntryChunk === LegacySessionStore.prototype.readEntryChunk
+			)
+				? inner
+				: undefined,
+		);
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -139,6 +157,21 @@ export class LegacySessionStore implements SessionStore {
 
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		return this.inner.create(header, entries);
+	}
+
+	async createFork(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		source: ForkArchiveSource,
+		location?: string,
+	) {
+		if (!this.inner.createFork) return undefined;
+		return this.inner.createFork(
+			header,
+			entries,
+			source.store === this ? { ...source, store: this.inner } : source,
+			location,
+		);
 	}
 
 	async append(

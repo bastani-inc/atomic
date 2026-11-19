@@ -12,6 +12,8 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { registerForkScope } from "./fork-store-scope.js";
+import { readSessionHistoryChunks } from "./history-pages.js";
 import {
 	childCatalogCut,
 	foldSessionResume,
@@ -38,6 +40,8 @@ import {
 } from "./session-summary.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import type {
+	ChildDisplayLaunch,
+	ForkArchiveSource,
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionBranchPageCut,
@@ -48,6 +52,7 @@ import type {
 	SessionEntryAt,
 	SessionEntryRange,
 	SessionEntrySizes,
+	SessionForkSeed,
 	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
@@ -285,6 +290,7 @@ export class MemorySessionStore implements SessionStore {
 
 	constructor(cwdMatcher?: SessionCwdMatcher, historyFiles?: SessionHistoryFiles) {
 		this.cwdMatcher = cwdMatcher;
+		registerForkScope(this, () => ({ kind: "memory", backing: this.records }));
 		if (historyFiles !== undefined) this.spill = new SpillDirectory(historyFiles);
 	}
 
@@ -300,6 +306,116 @@ export class MemorySessionStore implements SessionStore {
 		const record = this.encodeSession(header, entries);
 		this.records.set(header.id, record);
 		return { lastSeq: entries.length, epoch: record.index.epoch };
+	}
+
+	async createFork(
+		header: SessionRecordHeader,
+		entries: SessionForkSeed,
+		source: ForkArchiveSource,
+	): Promise<(SessionWriteResult & { remainingBlobs?: readonly string[] }) | undefined> {
+		if (this.create !== MemorySessionStore.prototype.create) return undefined;
+		if ("read" in entries) {
+			this.assertOpen();
+			validateSessionHeader(header);
+			if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+			const record = this.encodeSession(header, []);
+			const { encodedForkRow } = await import("./fork-row-bytes.js");
+			const { foldForkRow, findForkRow, forkIdHash } = await import("./fork-row-index.js");
+			const ids: number[] = [];
+			const lookup = (id: string) =>
+				findForkRow(id, ids, async function* (seq) {
+					const data = record.entries[seq - 1]!;
+					for (let i = 0; i < data.length; i += SESSION_HISTORY_CHUNK_BYTES)
+						yield data.subarray(i, i + SESSION_HISTORY_CHUNK_BYTES);
+				});
+			const blobs = new Map<string, Uint8Array>();
+			const remainingBlobs = new Set<string>();
+			for await (const row of entries.read(source.store, async (id) => (await lookup(id)) !== undefined)) {
+				const encoded = await encodedForkRow(source.store, row);
+				const bytes = new Uint8Array(encoded.size);
+				let at = 0;
+				for await (const part of encoded.chunks()) {
+					bytes.set(part, at);
+					at += part.length;
+				}
+				record.index = await foldForkRow(record.index, row, lookup);
+				record.summaryState = applySessionSummaryEntries(record.summaryState, [row.entry]).state;
+				record.starts.push(record.totalBytes + (record.lastSeq ? 1 : 0));
+				record.lastSeq++;
+				record.totalBytes = record.starts.at(-1)! + encoded.size;
+				record.entries.push(bytes);
+				ids.push(forkIdHash(row.entry.id));
+				if (row.entry.type === "custom" && row.entry.customType === "atomic.tool-output" && source.store.getBlob) {
+					const hash = (row.entry.data as { hash?: string })?.hash;
+					if (typeof hash === "string" && !blobs.has(hash)) {
+						const data =
+							source.store instanceof MemorySessionStore &&
+							source.store.getBlob === MemorySessionStore.prototype.getBlob &&
+							this.putBlob === MemorySessionStore.prototype.putBlob
+								? source.store.blobs.get(source.sessionId)?.get(hash)
+								: undefined;
+						if (data) blobs.set(hash, data);
+						else remainingBlobs.add(hash);
+					}
+				}
+			}
+			this.assertOpen();
+			if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+			if (blobs.size) this.blobs.set(header.id, blobs);
+			this.records.set(header.id, record);
+			return { lastSeq: record.lastSeq, epoch: record.index.epoch, remainingBlobs: [...remainingBlobs] };
+		}
+		this.assertOpen();
+		validateSessionHeader(header);
+		validateSessionEntries(entries);
+		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+		const record = this.encodeSession(header, entries);
+		const projected = record.entries[0]!;
+		const chunks: Uint8Array[] = [];
+		let size = 0;
+		for (const [i, entry] of entries.entries()) {
+			const ref = source.receipts.get(entry.id);
+			const start = record.starts[i]!;
+			const end = record.starts[i + 1] === undefined ? record.totalBytes : record.starts[i + 1]! - 1;
+			let bytes: Uint8Array;
+			if (ref) {
+				// This is the memory store's final owned backing, not a decoded or concatenated second copy.
+				bytes = new Uint8Array(ref.bytes);
+				let offset = 0;
+				for await (const part of readSessionHistoryChunks(source.store, ref)) {
+					bytes.set(part, offset);
+					offset += part.length;
+				}
+			} else bytes = projected.subarray(start, end);
+			chunks.push(bytes);
+			record.starts[i] = size;
+			size += bytes.length + 1;
+		}
+		record.entries = chunks;
+		record.totalBytes = Math.max(0, size - 1);
+		this.assertOpen();
+		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
+		let remainingBlobs: string[] | undefined;
+		if (
+			source.store instanceof MemorySessionStore &&
+			source.store.getBlob === MemorySessionStore.prototype.getBlob &&
+			this.putBlob === MemorySessionStore.prototype.putBlob
+		) {
+			const donor = source.store.stored(source.sessionId);
+			if (!donor || (source.epoch !== undefined && donor.index.epoch !== source.epoch))
+				throw new SessionConflictError(source.sessionId, 0, donor?.lastSeq ?? 0);
+			remainingBlobs = [];
+			const owned = new Map<string, Uint8Array>();
+			for (const hash of source.hashes) {
+				// Store-owned bytes are immutable; public reads always return copies.
+				const data = source.store.blobs.get(source.sessionId)?.get(hash);
+				if (data) owned.set(hash, data);
+				else remainingBlobs.push(hash);
+			}
+			if (owned.size) this.blobs.set(header.id, owned);
+		}
+		this.records.set(header.id, record);
+		return { lastSeq: entries.length, epoch: record.index.epoch, remainingBlobs };
 	}
 
 	async append(
@@ -684,6 +800,21 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
+	async readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
+		const { childDisplayCut } = await import("./card-view.js");
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (!index) continue;
+			const found =
+				typeof launch.launchLeafId === "string"
+					? await this.seqOfEntry(sessionId, record, launch.launchLeafId)
+					: undefined;
+			if (this.records.get(sessionId) === record && record.lastSeq === index.seq)
+				return childDisplayCut(index, launch, found);
+		}
+	}
+
 	async readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
 		const record = await this.settledRecord(sessionId);
 		const index = await this.resumeIndex(sessionId, record);
@@ -779,27 +910,7 @@ export class MemorySessionStore implements SessionStore {
 		}
 	}
 
-	private resumeFields(sessionId: string, held: HeldBytes): Parameters<typeof branchStatePages>[1] {
-		return {
-			bytes: (seq) => {
-				const [start, end] = this.spanOf(held, seq, seq);
-				return end - start;
-			},
-			read: async (seqs) => {
-				const [start, end] = this.spanOf(held, seqs[0]!, seqs.at(-1)!);
-				return this.parseRun(sessionId, held, await this.bytesOf(sessionId, held, start, end)).map((entry, i) => ({
-					seq: seqs[i]!,
-					entry,
-				}));
-			},
-			chunk: (seq, offset, length) => {
-				const start = this.spanOf(held, seq, seq)[0] + offset;
-				return this.bytesOf(sessionId, held, start, start + length);
-			},
-		};
-	}
-
-	async readForkWindow(sessionId: string, entryId: string) {
+	async readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
 		const { indexedForkWindow, rangedForkMetadata, scanForkRecords, locateFork, fullForkWindow } = await import(
 			"./fork-window.js"
 		);
@@ -832,12 +943,33 @@ export class MemorySessionStore implements SessionStore {
 					many,
 					metadata,
 					scanForkRecords(metadata),
+					options,
 				);
 				if (!invalid && this.records.get(sessionId) === record) return window;
 			} catch (error) {
 				if (this.records.get(sessionId) === record && record.file === held.file) throw error;
 			}
 		}
+	}
+
+	private resumeFields(sessionId: string, held: HeldBytes): Parameters<typeof branchStatePages>[1] {
+		return {
+			bytes: (seq) => {
+				const [start, end] = this.spanOf(held, seq, seq);
+				return end - start;
+			},
+			read: async (seqs) => {
+				const [start, end] = this.spanOf(held, seqs[0]!, seqs.at(-1)!);
+				return this.parseRun(sessionId, held, await this.bytesOf(sessionId, held, start, end)).map((entry, i) => ({
+					seq: seqs[i]!,
+					entry,
+				}));
+			},
+			chunk: (seq, offset, length) => {
+				const start = this.spanOf(held, seq, seq)[0] + offset;
+				return this.bytesOf(sessionId, held, start, start + length);
+			},
+		};
 	}
 
 	async readChildCatalogCut(sessionId: string) {
@@ -1187,6 +1319,18 @@ export class MemorySessionStore implements SessionStore {
 		let last = held.lastSeq;
 		let window = SPILL_BLOCK_BYTES;
 		while (last >= 1) {
+			const [low, high] = this.spanOf(held, last, last);
+			if (high - low > SCAN_WINDOW_BYTES && (!held.directory || held.directory.readRange)) {
+				const { chunkedEntryHasId } = await import("./chunked-resume-projection.js");
+				const read = (start: number, end: number) => this.bytesOf(sessionId, held, start, end);
+				async function* parts() {
+					for (let start = low; start < high; start += SESSION_HISTORY_CHUNK_BYTES)
+						yield await read(start, Math.min(high, start + SESSION_HISTORY_CHUNK_BYTES));
+				}
+				if (await chunkedEntryHasId(parts(), entryId)) return last;
+				last--;
+				continue;
+			}
 			let first = last;
 			while (first > 1) {
 				const [start] = this.spanOf(held, first - 1, last);

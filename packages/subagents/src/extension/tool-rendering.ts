@@ -28,6 +28,7 @@ import type { TaskResult, WaitOutcome } from "../../../coding-agent/src/core/tas
 import { currentChildWorktreeNote } from "../runs/foreground/run-worktrees.js";
 import {
 	clearSubagentChildTranscriptCache,
+	onSubagentCardDiscard,
 	type SubagentChildToolCallEntry,
 	subagentChildCardRecord,
 	subagentChildCardTask,
@@ -100,6 +101,9 @@ interface CachedExpandedSections {
 
 const taskElapsedBaselines = new WeakMap<object, Map<string, TaskElapsedBaseline>>();
 const expandedSectionCaches = new WeakMap<object, Map<string, CachedExpandedSections>>();
+function discardExpandedSections(card: object) {
+	expandedSectionCaches.delete(card);
+}
 
 function resolveLiveTaskElapsedMs(
 	state: object,
@@ -135,7 +139,13 @@ function resolveLiveTaskElapsedMs(
 
 class DynamicToolBlock implements Component {
 	readonly toolBlockKind = "block" as const;
-	constructor(private readonly evaluate: () => { readonly block: ToolBlock; readonly working: boolean }) {}
+	constructor(
+		private readonly evaluate: () => { readonly block: ToolBlock; readonly working: boolean },
+		private readonly release?: () => void,
+	) {}
+	dispose(): void {
+		this.release?.();
+	}
 	isWorking(): boolean {
 		return this.evaluate().working;
 	}
@@ -148,6 +158,9 @@ class DynamicToolBlock implements Component {
 class DynamicToolBlockGroup implements Component {
 	readonly toolBlockKind = "group" as const;
 	constructor(private readonly blocks: readonly (ToolBlock | DynamicToolBlock)[]) {}
+	dispose(): void {
+		for (const block of this.blocks) if (block instanceof DynamicToolBlock) block.dispose();
+	}
 	isWorking(): boolean {
 		return this.blocks.some((block) => block.isWorking());
 	}
@@ -1002,7 +1015,8 @@ function buildOutcomeToolBlock(input: {
 		};
 	};
 
-	return new DynamicToolBlock(evaluate);
+	if (expanded) onSubagentCardDiscard(context.state, discardExpandedSections);
+	return new DynamicToolBlock(evaluate, expanded ? () => clearSubagentChildTranscriptCache(context.state) : undefined);
 }
 
 function buildForegroundChildToolBlock(input: {

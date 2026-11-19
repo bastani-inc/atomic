@@ -1,9 +1,10 @@
-import { type CustomEntry, type ExtensionContext, type SessionEntry, sliceHead } from "@bastani/atomic";
+import type { CustomEntry, ExtensionContext, SessionEntry } from "@bastani/atomic";
 import { type ArchivedChildCatalogEntry, readSessionChildCatalog } from "@bastani/atomic/storage";
+import { pathExists } from "../../shared/path-exists.js";
 import { ReleasedChildError } from "./released-child-errors.js";
 import { visibleWorktreeRecord } from "./run-worktrees.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
-import { reopenChildSession, type SessionStoreSource } from "./subagent-child-session.js";
+import type { SessionStoreSource } from "./subagent-child-session.js";
 
 /** Session entry type that durably records each background child a session launched (#3760). */
 export const SUBAGENT_CHILD_RECORD_TYPE = "subagent-child";
@@ -70,8 +71,6 @@ export interface SubagentChildRecordLocation {
 type RecordReader = Pick<ExtensionContext["sessionManager"], "getSessionId" | "getEntry" | "getLeafEntry"> &
 	Partial<Pick<ExtensionContext["sessionManager"], "getArchivedChildCatalog" | "readArchivedChildRecord">>;
 
-const TRANSCRIPT_LINES = 12;
-const TRANSCRIPT_LINE_CHARS = 200;
 /** How often an expanded card of a running child, which keeps saving messages, reads its transcript again. */
 const RUNNING_TRANSCRIPT_REFRESH_MS = 1_000;
 /** How far up from a session's leaf an entry this process just appended is looked for. */
@@ -203,6 +202,7 @@ export interface SubagentChildTranscriptDetails {
 
 interface TranscriptCache {
 	readonly key: string;
+	readonly cancel: AbortController;
 	lines?: readonly string[];
 	details?: SubagentChildTranscriptDetails;
 }
@@ -214,7 +214,16 @@ const loadedOwners = new Set<string>();
  * The session store cards read owners' records and children's transcripts from: the latest bound session's, never that
  * session itself, which ends while the process and its cards go on.
  */
-let source: SessionStoreSource | undefined;
+type CardSource = SessionStoreSource & { readonly expanded: Set<WeakRef<object>> };
+let source: CardSource | undefined;
+const boundCards = new WeakMap<object, { owner: CardSource; ref: WeakRef<object> }>();
+const removedCards = new FinalizationRegistry<{ owner: WeakRef<CardSource>; ref: WeakRef<object> }>(({ owner, ref }) =>
+	owner.deref()?.expanded.delete(ref),
+);
+const releaseSections = new WeakMap<object, (card: object) => void>();
+export function onSubagentCardDiscard(card: object, release: (card: object) => void) {
+	releaseSections.set(card, release);
+}
 
 interface WatchedCard {
 	readonly key: string;
@@ -688,12 +697,21 @@ function observeSession(sessionManager: RecordReader & { getEntries(): SessionEn
 }
 
 /** Read the child records of the session a card is shown in, and keep its store for records and transcripts. */
-export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManager">): void {
+export function bindSubagentChildCards(ctx: Pick<ExtensionContext, "sessionManager">): () => void {
 	const store = ctx.sessionManager.getSessionStore();
-	source = { sessionManager: { getSessionStore: () => store } };
+	const bound: CardSource = { sessionManager: { getSessionStore: () => store }, expanded: new Set() };
+	source = bound;
 	registerSubagentChildRecordReader(ctx.sessionManager, true);
 	loadedOwners.add(ctx.sessionManager.getSessionId());
 	observeSession(ctx.sessionManager);
+	return () => {
+		for (const weak of bound.expanded) {
+			const card = weak.deref();
+			if (card) clearSubagentChildTranscriptCache(card);
+		}
+		bound.expanded.clear();
+		if (source === bound) source = undefined;
+	};
 }
 
 /**
@@ -1010,25 +1028,6 @@ export function watchSubagentChildCard(
 	})().catch(() => undefined);
 }
 
-type TranscriptPart = {
-	readonly type: string;
-	readonly text?: string;
-	readonly data?: string;
-	readonly mimeType?: string;
-	readonly id?: string;
-	readonly name?: string;
-	readonly arguments?: unknown;
-};
-type TranscriptMessage = {
-	readonly role: string;
-	readonly content?: string | readonly TranscriptPart[];
-	readonly details?: unknown;
-	readonly toolCallId?: string;
-	readonly toolName?: string;
-	readonly isError?: boolean;
-	readonly durationMs?: number;
-};
-
 function unwrapPrompt(task: string): string {
 	let text = task;
 	const forkMarker = "\n\nTask:\n";
@@ -1044,166 +1043,48 @@ function unwrapPrompt(task: string): string {
 	return text.trim();
 }
 
-function messageText(content: string | readonly TranscriptPart[] | undefined): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter(
-			(part): part is TranscriptPart & { text: string } => part.type === "text" && typeof part.text === "string",
-		)
-		.map((part) => part.text)
-		.join("\n");
-}
-
-function transcriptLines(messages: readonly TranscriptMessage[]): string[] {
-	const lines: string[] = [];
-	for (const message of messages) {
-		const parts =
-			typeof message.content === "string" ? [{ type: "text", text: message.content }] : (message.content ?? []);
-		for (const part of parts) {
-			const text =
-				part.type === "text" && part.text?.trim()
-					? `${message.role === "user" ? "› " : ""}${part.text.trim().replace(/\s+/g, " ")}`
-					: part.type === "toolCall" && part.name
-						? `→ ${part.name}`
-						: undefined;
-			if (text && (message.role === "user" || message.role === "assistant"))
-				lines.push(text.length > TRANSCRIPT_LINE_CHARS ? `${sliceHead(text, TRANSCRIPT_LINE_CHARS - 1)}…` : text);
-		}
-	}
-	return lines.slice(-TRANSCRIPT_LINES);
-}
-
-function extractTranscriptDetails(messages: readonly TranscriptMessage[]): SubagentChildTranscriptDetails {
-	let prompt: string | undefined;
-	let result: string | undefined;
-	const resultsById = new Map<
-		string,
-		{
-			readonly content: readonly TranscriptPart[];
-			readonly details?: unknown;
-			readonly text: string;
-			readonly isError: boolean;
-			readonly durationMs?: number;
-		}
-	>();
-	for (const message of messages) {
-		if (message.role === "user" && prompt === undefined) {
-			const raw = messageText(message.content);
-			if (raw.trim()) prompt = unwrapPrompt(raw);
-		} else if (message.role === "toolResult" && typeof message.toolCallId === "string") {
-			const content = Array.isArray(message.content) ? message.content : [];
-			resultsById.set(message.toolCallId, {
-				content,
-				...(message.details !== undefined ? { details: message.details } : {}),
-				text: messageText(message.content),
-				isError: message.isError === true,
-				...(typeof message.durationMs === "number" ? { durationMs: message.durationMs } : {}),
-			});
-		} else if (message.role === "assistant") {
-			const text = messageText(message.content).trim();
-			if (text) result = text;
-		}
-	}
-	const toolCalls: SubagentChildToolCallEntry[] = [];
-	for (const message of messages) {
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const part of message.content) {
-			if (part.type !== "toolCall" || !part.name) continue;
-			const id = typeof part.id === "string" ? part.id : "";
-			const args =
-				typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
-					? (part.arguments as Record<string, unknown>)
-					: {};
-			const matched = id ? resultsById.get(id) : undefined;
-			toolCalls.push({
-				id,
-				name: part.name,
-				args,
-				...(matched
-					? {
-							resultContent: matched.content,
-							...(matched.details !== undefined ? { resultDetails: matched.details } : {}),
-							resultText: matched.text,
-							isError: matched.isError,
-							...(matched.durationMs !== undefined ? { durationMs: matched.durationMs } : {}),
-							completed: true,
-						}
-					: { completed: false }),
-			});
-		}
-	}
-	return {
-		...(prompt !== undefined ? { prompt } : {}),
-		toolCalls,
-		...(result !== undefined ? { result } : {}),
-		lines: transcriptLines(messages),
-	};
-}
-
-async function resolveSavedRecord(
+async function readCard(
 	from: SessionStoreSource,
 	entry: SubagentChildIndexEntry,
-): Promise<SubagentChildRecord | undefined> {
-	const memory = readableRecordOf(entry);
-	if (memory !== undefined) return memory;
-	const sessionId = entry.recordedIn ?? entry.ownerSessionId;
-	if (!sessionId || !entry.entryId) return undefined;
+	signal: AbortSignal,
+): Promise<SubagentChildTranscriptDetails> {
+	const { readExpandedChildDetails, readSavedChildLaunch } = await import("@bastani/atomic/storage");
+	const { JsonlSessionStore } = await import("@bastani/atomic");
+	const owner = from.sessionManager.getSessionStore();
+	const parentId = entry.recordedIn ?? entry.ownerSessionId;
+	const launch = async () =>
+		readableRecordOf(entry) ??
+		(parentId !== undefined && entry.entryId
+			? await readSavedChildLaunch(owner, parentId, entry.entryId, entry.childId, signal).catch(() => {
+					signal.throwIfAborted();
+					return undefined;
+				})
+			: undefined);
+	const unavailable = (reason: string) => ({
+		toolCalls: [],
+		lines: [],
+		unavailable: `Transcript unavailable · ${reason}`,
+	});
 	try {
-		const snapshot = await from.sessionManager.getSessionStore().load(sessionId);
-		const found = snapshot.entries.find((item) => item.id === entry.entryId);
-		return found && isSubagentChildRecord(found) ? found.data : undefined;
-	} catch {
-		return undefined;
+		const file = entry.childSessionFile;
+		if (file && !(await pathExists(file))) return unavailable(`its session file is missing: ${file}`);
+		const details = file
+			? await JsonlSessionStore.withFileReader(file, async (store, id) =>
+					entry.childSessionId !== undefined && entry.childSessionId !== id
+						? unavailable("its session file now belongs to a different session")
+						: readExpandedChildDetails(store, id, await launch(), { signal }),
+				)
+			: entry.childSessionId === undefined
+				? unavailable("no session was recorded for it")
+				: await readExpandedChildDetails(owner, entry.childSessionId, await launch(), { signal });
+		if ("prompt" in details && details.prompt !== undefined)
+			return { ...details, prompt: unwrapPrompt(details.prompt) };
+		return details;
+	} catch (error) {
+		if (error instanceof Error && error.name === "SessionNotFoundError")
+			return unavailable("its session no longer exists in the session store");
+		throw error;
 	}
-}
-
-async function postLaunchMessages(
-	from: SessionStoreSource,
-	entry: SubagentChildIndexEntry,
-	sessionManager: NonNullable<
-		Extract<Awaited<ReturnType<typeof reopenChildSession>>, { sessionManager: unknown }>["sessionManager"]
-	>,
-): Promise<readonly TranscriptMessage[]> {
-	const full = await resolveSavedRecord(from, entry);
-	const launchLeafId = full?.launchLeafId;
-	const launchLeafSeq = full?.launchLeafSeq;
-	let branch = sessionManager.getBranch();
-	if (typeof launchLeafId === "string") {
-		let idx = branch.findIndex((item) => item.id === launchLeafId);
-		if (idx === -1 && typeof sessionManager.loadFullHistory === "function") {
-			await sessionManager.loadFullHistory();
-			branch = sessionManager.getBranch();
-			idx = branch.findIndex((item) => item.id === launchLeafId);
-		}
-		if (idx !== -1) {
-			return branch
-				.slice(idx + 1)
-				.flatMap((item) => (item.type === "message" ? [item.message as unknown as TranscriptMessage] : []));
-		}
-		if (launchLeafSeq !== undefined && typeof sessionManager.getEntrySeq === "function") {
-			const seqs = branch.map((item) => sessionManager.getEntrySeq(item.id));
-			if (seqs.some((seq) => seq !== undefined && seq <= launchLeafSeq)) {
-				return branch
-					.filter((_, index) => (seqs[index] ?? 0) > launchLeafSeq)
-					.flatMap((item) => (item.type === "message" ? [item.message as unknown as TranscriptMessage] : []));
-			}
-		}
-		return [];
-	}
-	if (launchLeafSeq !== undefined && typeof sessionManager.getEntrySeq === "function") {
-		return branch
-			.filter((item) => (sessionManager.getEntrySeq(item.id) ?? 0) > launchLeafSeq)
-			.flatMap((item) => (item.type === "message" ? [item.message as unknown as TranscriptMessage] : []));
-	}
-	const messages = (sessionManager.buildSessionContext().messages ?? []) as readonly TranscriptMessage[];
-	if (full?.forked === true) {
-		const forkIdx = messages.findIndex(
-			(msg) => msg.role === "user" && messageText(msg.content).includes("\n\nTask:\n"),
-		);
-		return forkIdx >= 0 ? messages.slice(forkIdx) : [];
-	}
-	return messages;
 }
 
 function sameLines(left: readonly string[] | undefined, right: readonly string[]): boolean {
@@ -1247,6 +1128,18 @@ export function subagentChildCardTask(record: SubagentChildIndexEntry): string |
 }
 
 export function clearSubagentChildTranscriptCache(card: object): void {
+	for (const entry of transcripts.get(card)?.values() ?? []) {
+		entry.cancel.abort();
+		entry.details = undefined;
+		entry.lines = undefined;
+	}
+	const binding = boundCards.get(card);
+	if (binding) {
+		binding.owner.expanded.delete(binding.ref);
+		removedCards.unregister(binding.ref);
+		boundCards.delete(card);
+	}
+	releaseSections.get(card)?.(card);
 	transcripts.delete(card);
 	transcriptGenerations.set(card, (transcriptGenerations.get(card) ?? 0) + 1);
 }
@@ -1266,44 +1159,41 @@ export function subagentChildTranscriptDetails(
 	const from = source;
 	if (!from) return cached?.details;
 	const gen = transcriptGenerations.get(card) ?? 0;
+	if (!boundCards.has(card)) {
+		const ref = new WeakRef(card);
+		from.expanded.add(ref);
+		boundCards.set(card, { owner: from, ref });
+		removedCards.register(card, { owner: new WeakRef(from), ref }, ref);
+	}
+	cached?.cancel.abort();
 	const entry: TranscriptCache = {
 		key,
+		cancel: new AbortController(),
 		...(cached?.lines ? { lines: cached.lines } : {}),
 		...(cached?.details ? { details: cached.details } : {}),
 	};
 	cache.set(record.childId, entry);
-	void (async () => {
-		const reopened = await reopenChildSession(from, record);
-		if ("reason" in reopened) {
-			if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
+	const weak = new WeakRef(card);
+	void readCard(from, record, entry.cancel.signal)
+		.then((details) => {
+			const live = weak.deref();
+			if (
+				!live ||
+				entry.cancel.signal.aborted ||
+				(transcriptGenerations.get(live) ?? 0) !== gen ||
+				transcripts.get(live)?.get(record.childId) !== entry
+			)
 				return;
-			}
-			const details: SubagentChildTranscriptDetails = {
-				toolCalls: [],
-				lines: [],
-				unavailable: `Transcript unavailable · ${reopened.reason}`,
-			};
 			const changed = !sameDetails(entry.details, details);
 			entry.lines = details.lines;
 			entry.details = details;
 			if (changed) notify(record.childId);
-			return;
-		}
-		const messages = await postLaunchMessages(from, record, reopened.sessionManager);
-		if ((transcriptGenerations.get(card) ?? 0) !== gen || transcripts.get(card)?.get(record.childId) !== entry) {
-			return;
-		}
-		const details = extractTranscriptDetails(messages);
-		const changed = !sameDetails(entry.details, details);
-		entry.lines = details.lines;
-		entry.details = details;
-		if (changed) notify(record.childId);
-		if (running) {
-			setTimeout(() => {
-				if ((transcriptGenerations.get(card) ?? 0) === gen) notify(record.childId);
-			}, RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
-		}
-	})().catch(() => undefined);
+			if (running)
+				setTimeout(() => {
+					if (!entry.cancel.signal.aborted && weak.deref()) notify(record.childId);
+				}, RUNNING_TRANSCRIPT_REFRESH_MS).unref?.();
+		})
+		.catch(() => undefined);
 	return entry.details;
 }
 

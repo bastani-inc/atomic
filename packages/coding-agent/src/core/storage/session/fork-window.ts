@@ -264,6 +264,50 @@ async function earlierStopEvidence(
 	});
 }
 
+// Source proof for a new child's projection only. Neither a custom entry's name nor an unpaired
+// intent is authority to copy a parent operation. Holding a saved window does not pin the store.
+const settledDisplayRows = new WeakMap<readonly SessionEntry[], ReadonlySet<string>>();
+export function forkDisplayEvidence(entries: readonly SessionEntry[]): ReadonlySet<string> | undefined {
+	return settledDisplayRows.get(entries);
+}
+function keepSettledDisplayEvidence(
+	index: SessionResumeIndex,
+	rows: readonly SessionStoredEntry[],
+	entries: SessionEntry[],
+) {
+	if (!index.acks.length) return;
+	const cards = new Map<string, Array<{ entry: SessionEntry; target: LegacyCompletionTarget; seq: number }>>();
+	for (const row of rows) {
+		const target = legacyCompletionTarget(row.entry);
+		if (!target) continue;
+		const group = cards.get(target.id) ?? [];
+		group.push({ ...row, target });
+		cards.set(target.id, group);
+	}
+	if (!cards.size) return;
+	const bySeq = new Map(rows.map((row) => [row.seq, row.entry]));
+	const ids = new Set<string>();
+	for (const { entry: ack, seq } of rows) {
+		if (ack.type !== "custom" || ack.customType !== "task-completion-ack") continue;
+		const id = completionIdOf(ack);
+		const yes = id && cards.get(id);
+		if (!yes) continue;
+		const at = intentForAcknowledgement(index, seq);
+		const intent = at === undefined ? undefined : bySeq.get(at);
+		if (
+			at !== undefined &&
+			intent?.type === "custom" &&
+			intent.customType === "task-completion-intent" &&
+			completionIdOf(intent) === id &&
+			yes.some((c) => c.seq > at && resolvesCompletionHeader(c.entry, c.target, intent.data))
+		) {
+			ids.add(intent.id);
+			ids.add(ack.id);
+		}
+	}
+	if (ids.size) settledDisplayRows.set(entries, ids);
+}
+
 /** Read from a single store snapshot. The index supplies ancestry even when an older branch was selected. */
 export async function indexedForkWindow(
 	header: SessionRecordHeader,
@@ -273,7 +317,12 @@ export async function indexedForkWindow(
 	readMany: (seqs: readonly number[]) => Promise<readonly SessionStoredEntry[]>,
 	metadata: ReadMetadata,
 	scan: ScanForkRecords,
-	extras?: { labels: boolean; bindings: boolean; branchCatalog?: boolean },
+	options?: {
+		readonly archivedReceipts?: true;
+		readonly labels?: boolean;
+		readonly bindings?: boolean;
+		readonly branchCatalog?: boolean;
+	},
 	orderedLabels?: () => Promise<readonly number[]>,
 ): Promise<SessionForkWindow | undefined> {
 	if (leafSeq <= 0) return undefined;
@@ -314,20 +363,20 @@ export async function indexedForkWindow(
 				: undefined;
 		if (anchor) rows.unshift(anchor);
 		const onEarlierBranch = (seq: number) => before.some(([lo, hi]) => seq >= lo && seq <= hi);
-		const wanted = namedOutputs(rows, header.id);
+		const wanted = options?.archivedReceipts ? new Set<string>() : namedOutputs(rows, header.id);
 		const bindings =
-			extras?.bindings || Object.keys(index.latest).some((key) => key.startsWith("workspace_binding:"));
+			options?.bindings || Object.keys(index.latest).some((key) => key.startsWith("workspace_binding:"));
 		const keep = new Set<number>();
 		// These catalog values are usually already indexed. A later name, summary or retirement on a
 		// different branch is not authoritative for this child: resolve the last record on its path.
 		const catalogTypes: string[] = [];
 		if (index.nameSeq && !rows.some(({ entry }) => entry.type === "session_info")) {
 			if (onEarlierBranch(index.nameSeq)) keep.add(index.nameSeq);
-			else if (!extras?.branchCatalog) catalogTypes.push("session_info");
+			else if (!options?.branchCatalog) catalogTypes.push("session_info");
 		}
 		if (!rows.some(({ entry }) => entry.type === "session_summary" || entry.type === "branch_summary")) {
 			if (index.summarySeq && onEarlierBranch(index.summarySeq)) keep.add(index.summarySeq);
-			else if (!extras?.branchCatalog && (index.summarySeq || index.jumps.length || leafSeq !== index.leafSeq))
+			else if (!options?.branchCatalog && (index.summarySeq || index.jumps.length || leafSeq !== index.leafSeq))
 				catalogTypes.push("session_summary", "branch_summary");
 		}
 		let nameSeq: number | undefined, summarySeq: number | undefined;
@@ -356,11 +405,10 @@ export async function indexedForkWindow(
 			const transition = await modelPosition(index, before, metadata);
 			const earlier = new Set<number>();
 			if (transition !== undefined) earlier.add(transition);
-			// The resume index tracks older settings and plain snapshots separately from protocol state.
-			for (const positions of [index.state, index.settingsHistory, index.snapshotRefs]) {
-				if (!positions) continue;
+			for (const series of [index.state, index.settingsHistory, index.snapshotRefs]) {
 				let at = 0;
-				for (const d of positions.split(".")) {
+				if (!series) continue;
+				for (const d of series.split(".")) {
 					at += Number.parseInt(d, 36);
 					if (at >= start) break;
 					if (onEarlierBranch(at)) earlier.add(at);
@@ -394,7 +442,7 @@ export async function indexedForkWindow(
 	let parentId: string | null = null;
 	const entries = rows.map(({ entry, seq }) => {
 		if (!compact || archived) return entry;
-		let linked = entry.parentId === parentId ? entry : { ...entry, parentId };
+		let linked = options?.archivedReceipts || entry.parentId === parentId ? entry : { ...entry, parentId };
 		parentId = entry.id;
 		// Older clients also understand a complete boundary message. Freeze its original history URL before copying it.
 		if (linked.type === "compaction" && seq === compact.seq) {
@@ -409,7 +457,7 @@ export async function indexedForkWindow(
 		return linked;
 	});
 	const labels = new Map<string, LabelEntry>();
-	const targets = new Set(entries.filter((e) => extras?.labels || index.latest[`label:${e.id}`]).map((e) => e.id));
+	const targets = new Set(entries.filter((e) => options?.labels || index.latest[`label:${e.id}`]).map((e) => e.id));
 	if (targets.size && orderedLabels && rows.length < index.seq) {
 		const wanted = new Set([...targets].map((id) => index.latest[`label:${id}`]?.[0]));
 		const seqs = (await orderedLabels()).filter((seq) => wanted.has(seq));
@@ -441,6 +489,7 @@ export async function indexedForkWindow(
 			if (entry?.type === "label") labels.set(target, entry);
 		}
 	}
+	if (options?.archivedReceipts) keepSettledDisplayEvidence(index, rows, entries);
 	return { header, entries, labels: [...labels.values()], lastSeq: index.seq, epoch: index.epoch };
 }
 

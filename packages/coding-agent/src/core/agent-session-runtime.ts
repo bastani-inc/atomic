@@ -26,6 +26,7 @@ import { RESUME_CATALOG_TIMEOUT_MS, resumeLookupError, withResumeLookupDeadline 
 import {
 	continueSessionWhereItWorked,
 	type PrepareSessionResumeOptions,
+	parentHistoryNotices,
 	prepareSessionResume,
 	type ResumeNotice,
 	savedProjectTrustAsync,
@@ -665,7 +666,10 @@ export class AgentSessionRuntime {
 		this.resumeNoticeQueue.push(...prepared.blueprintNotices);
 		return {
 			sessionManager: prepared.sessionManager,
-			unrecorded: this.resumeBlueprints === "build" ? (prepared.missingRecordNotices ?? []) : [],
+			unrecorded:
+				this.resumeBlueprints === "build"
+					? [...(prepared.missingRecordNotices ?? []), ...parentHistoryNotices(prepared.sessionManager)]
+					: [],
 		};
 	}
 

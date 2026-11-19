@@ -401,7 +401,7 @@ for (const setup of ["current", "rebranched", "no-acknowledgement", "nonmatching
 		}
 	});
 
-test("a mentioned pre-clear tool output keeps the original branch and opaque receipt bytes (#5500)", async () => {
+test("a mentioned pre-clear tool output keeps its original opaque receipt bytes without copying unrelated messages (#5500, #5594)", async () => {
 	const store = new MemorySessionStore();
 	const parent = await SessionManager.create(store, process.cwd());
 	const bytes = Buffer.from("saved tool output");
@@ -418,7 +418,14 @@ test("a mentioned pre-clear tool output keeps the original branch and opaque rec
 	const original = (await store.load(parent.getSessionId())).entries;
 	const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
 	assert.ok(child);
-	assert.equal(JSON.stringify((await store.load(child.getSessionId())).entries), JSON.stringify(original));
+	const copied = (await store.load(child.getSessionId())).entries;
+	const receipt = original.find((e) => e.type === "custom" && e.customType === "atomic.tool-output")!;
+	assert.deepEqual(
+		copied.find((e) => e.id === receipt.id),
+		receipt,
+	);
+	assert.ok(!copied.some((e) => e.type === "message" && e.message.role === "user" && e.message.content === "retired"));
+	assert.deepEqual(child.buildSessionContext(), parent.buildSessionContext());
 	await store.delete(parent.getSessionId());
 	assert.deepEqual(Buffer.from((await store.getBlob(child.getSessionId(), hash))!), bytes);
 });
