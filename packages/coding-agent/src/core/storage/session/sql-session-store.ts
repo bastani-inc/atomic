@@ -1870,6 +1870,94 @@ export class SqlSessionStore implements SessionStore {
 		if (!(await this.readHeader(sessionId))) throw new SessionNotFoundError(sessionId);
 		return this.seqOfEntry(this.database, sessionId, entryId);
 	}
+	async readForkWindow(sessionId: string, entryId: string) {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const { indexedForkWindow, forkMetadata, byteMetadata } = await import("./fork-window.js");
+		await this.prepareResume(sessionId);
+		return this.transaction(async (tx) => {
+			const { header, index } = await this.resumeSource(tx, sessionId);
+			const leaf = (await this.seqOfEntry(tx, sessionId, entryId)) ?? 0;
+			const metadata = async (seqs: readonly number[]) => {
+				const result: import("./fork-window.js").ForkMetadata[] = [];
+				if (!seqs.length) return result;
+				const raw = this.dialect.name === "sqlite" ? "CAST(entry_json AS BLOB)" : "convert_to(entry_json,'UTF8')";
+				const size = this.dialect.textByteLength("entry_json");
+				const rows = await tx.all<SqliteRow & { seq: number; chunks: number; bytes: number; body: string | null }>(
+					`SELECT seq,chunks,${size} AS bytes,CASE WHEN chunks=0 AND ${size}<=512 THEN entry_json END AS body FROM ${this.tables.entries} WHERE session_id=? AND seq IN (${seqs.map(() => "?").join(",")}) ORDER BY seq`,
+					sessionId,
+					...seqs,
+				);
+				for (const row of rows) {
+					const seq = Number(row.seq);
+					if (row.body !== null) result.push(forkMetadata(seq, JSON.parse(row.body) as SessionEntry));
+					else if (Number(row.chunks) > 0) {
+						const { projectForkMetadata } = await import("./chunked-resume-projection.js");
+						result.push(
+							await projectForkMetadata(seq, this.forkEntryChunks(tx, sessionId, seq, Number(row.chunks))),
+						);
+					} else
+						result.push(
+							await byteMetadata(seq, Number(row.bytes), async (offset, n) => {
+								const piece = await tx.get<SqliteRow & { part: Uint8Array }>(
+									`SELECT substr(${raw},?,?) AS part FROM ${this.tables.entries} WHERE session_id=? AND seq=?`,
+									offset + 1,
+									n,
+									sessionId,
+									seq,
+								);
+								if (!piece) throw new SessionConflictError(sessionId, index.seq, index.seq);
+								return piece.part;
+							}),
+						);
+				}
+				return result;
+			};
+			const entries = this.tables.entries,
+				j = (field: string) => this.dialect.jsonText("entry_json", field);
+			return indexedForkWindow(
+				header,
+				index,
+				leaf,
+				(lo, hi) => this.readRows(tx, sessionId, "seq BETWEEN ? AND ?", [lo, hi]),
+				(seqs) => this.readSeqs(tx, sessionId, seqs),
+				metadata,
+				async function* (ranges, kinds, labels) {
+					const filter = labels
+						? `${j("type")}='label'`
+						: `${j("type")}='custom' AND (chunks>0 OR ${j("customType")} IN (${kinds.map(() => "?").join(",")}))`;
+					for (const [lo, hi] of ranges)
+						for (let seq = lo; seq <= hi; ) {
+							const rows = await tx.all<SqliteRow & { seq: number }>(
+								`SELECT seq FROM ${entries} WHERE session_id=? AND seq BETWEEN ? AND ? AND ${filter} ORDER BY seq LIMIT 128`,
+								sessionId,
+								seq,
+								hi,
+								...kinds,
+							);
+							if (labels) for (const row of rows) yield { type: "label", seq: Number(row.seq) };
+							else for (const m of await metadata(rows.map((r) => Number(r.seq)))) yield m;
+							if (rows.length < 128) break;
+							seq = Number(rows.at(-1)!.seq) + 1;
+						}
+				},
+			);
+		}, SESSION_TRANSACTION);
+	}
+
+	private async *forkEntryChunks(tx: SqliteExecutor, id: string, seq: number, count: number) {
+		for (let i = 0; i < count; i++) {
+			const row = await tx.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id=? AND seq=? AND idx=?`,
+				id,
+				seq,
+				i,
+			);
+			if (!row) throw new StorageError(`Session ${id} entry ${seq} is missing chunk ${i} of ${count}`);
+			yield row.data;
+		}
+	}
+
 	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);

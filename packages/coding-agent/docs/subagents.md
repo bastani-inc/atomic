@@ -370,7 +370,7 @@ Each workflow invocation automatically receives one stable, non-`"default"` Inte
 Subagents can run with fresh or forked context:
 
 - `context: "fresh"` starts a separate in-process child session with only the task and selected agent context.
-- `context: "fork"` creates a real branched child session from the parent session leaf. It fails fast if the parent session cannot be forked; it does not silently downgrade to fresh context.
+- `context: "fork"` creates a branched child session at the parent's last settled entry. After a clear or compaction, the child normally copies only its retained context and settings. To read earlier turns, follow the boundary's history link or open the parent session. A store without a fork-window reader, or a child whose context refers to a saved tool output from before the boundary, keeps the full branch as before. If the parent session cannot be forked, the launch fails; it does not silently downgrade to fresh context.
 
 For adversarial review or research, prefer fresh context so the specialist inspects the repository directly. Use forked context when a writer needs the parent conversation history in a separate branch.
 

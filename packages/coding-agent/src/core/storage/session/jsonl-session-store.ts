@@ -959,6 +959,42 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
+	readForkWindow(sessionId: string, entryId: string) {
+		return this.run(async () => {
+			const { indexedForkWindow, rangedForkMetadata, scanForkRecords } = await import("./fork-window.js");
+			for (;;) {
+				const { path, header, jsonl } = await this.indexed(sessionId);
+				const file = await open(path, "r");
+				try {
+					const stat = await file.stat({ bigint: true });
+					if (
+						`${stat.dev}:${stat.ino}` !== jsonl.identity ||
+						String(stat.birthtimeNs) !== jsonl.birthtimeNs ||
+						String(stat.mtimeNs) !== jsonl.mtimeNs
+					)
+						continue;
+					const leaf = (await this.seqInFile(path, jsonl, entryId, file)) ?? 0;
+					const many = (seqs: readonly number[]) => this.entriesAt(path, jsonl, seqs, file);
+					const metadata = rangedForkMetadata(
+						(seq) => [spanStart(jsonl, seq), spanEnd(jsonl, seq)],
+						(start, n) => readFrom(file, start, n),
+					);
+					return await indexedForkWindow(
+						header,
+						jsonl.index,
+						leaf,
+						(lo, hi) => many(seqRange(lo, hi)),
+						many,
+						metadata,
+						scanForkRecords(metadata),
+					);
+				} finally {
+					await file.close();
+				}
+			}
+		});
+	}
+
 	readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
 		return this.run(async () => {
 			if (leafId !== undefined) validateSessionText("entry.id", leafId);
@@ -1275,11 +1311,16 @@ export class JsonlSessionStore implements SessionStore {
 		else this.indexes.set(path, next);
 	}
 
-	private async entriesAt(path: string, jsonl: JsonlIndex, seqs: readonly number[]): Promise<SessionStoredEntry[]> {
+	private async entriesAt(
+		path: string,
+		jsonl: JsonlIndex,
+		seqs: readonly number[],
+		pinned?: FileHandle,
+	): Promise<SessionStoredEntry[]> {
 		const wanted = [...new Set(seqs.filter((seq) => seq >= 1 && seq <= jsonl.index.seq))].sort((a, b) => a - b);
 		const entries: SessionStoredEntry[] = [];
 		if (wanted.length === 0) return entries;
-		const file = await open(path, "r");
+		const file = pinned ?? (await open(path, "r"));
 		try {
 			let index = 0;
 			while (index < wanted.length) {
@@ -1304,18 +1345,23 @@ export class JsonlSessionStore implements SessionStore {
 				index = next;
 			}
 		} finally {
-			await file.close();
+			if (!pinned) await file.close();
 		}
 		return entries;
 	}
 
-	private async seqInFile(path: string, jsonl: JsonlIndex, entryId: string): Promise<number | undefined> {
+	private async seqInFile(
+		path: string,
+		jsonl: JsonlIndex,
+		entryId: string,
+		pinned?: FileHandle,
+	): Promise<number | undefined> {
 		const total = jsonl.spans.length / 2;
 		if (jsonl.index.lastId === entryId && jsonl.index.seq === total) return total;
 		const hash = idHash(entryId);
 		const candidates: number[] = [];
 		for (let seq = 1; seq <= total; seq++) if (jsonl.ids[seq - 1] === hash) candidates.push(seq);
-		return (await this.entriesAt(path, jsonl, candidates)).findLast((held) => held.entry.id === entryId)?.seq;
+		return (await this.entriesAt(path, jsonl, candidates, pinned)).findLast((held) => held.entry.id === entryId)?.seq;
 	}
 
 	private async readPersisted(path: string, stored?: StoredSessionHeader): Promise<SessionSnapshot> {
