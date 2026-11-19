@@ -1121,10 +1121,10 @@ export function readSubagentChildRecords(
 }
 
 /** Resolve a child by its child id (`<runId>:<index>`), launch task id, or original intercom name. */
-export function findSubagentChildRecord(
-	records: ReadonlyMap<string, SubagentChildRecord>,
+export function findSubagentChildRecord<T extends Pick<SubagentChildRecord, "taskId" | "intercomTarget">>(
+	records: ReadonlyMap<string, T>,
 	id: string,
-): SubagentChildRecord | undefined {
+): T | undefined {
 	const target = id.trim();
 	const direct = records.get(target);
 	if (direct) return direct;
