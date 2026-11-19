@@ -144,6 +144,7 @@ test(
 			assert.deepEqual(
 				watch.watch.snapshot,
 				{
+					canPause: false,
 					sessionId: "session-stage",
 					status: "running",
 					publishedActivity: "retrying",

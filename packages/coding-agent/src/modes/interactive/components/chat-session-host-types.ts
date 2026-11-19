@@ -15,7 +15,7 @@ import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import type { sessionPromptsFromEntries } from "./prompt-history-selector.ts";
-import type { WorkingRunSnapshot } from "./working-run-meter.ts";
+import type { AgentTokenMeterSnapshot, WorkingRunSnapshot } from "./working-run-meter.ts";
 
 export interface ChatSessionInterruptedTurnSnapshot {
 	readonly startedAt: number | undefined;
@@ -104,6 +104,8 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	 * stage on a local worker: a compaction redraws the transcript from them.
 	 */
 	getSessionMessages?: () => AgentSession["messages"] | undefined;
+	/** Metering baseline when compaction replaces the displayed history with a new session snapshot. */
+	getSessionContextMeter?: (displayed: readonly AgentSnapshotMessage[]) => AgentTokenMeterSnapshot | undefined;
 	getPromptEntries?: () => Parameters<typeof sessionPromptsFromEntries>[0] | undefined;
 	/**
 	 * Tasks to show when `getAgentSession` has no task store in this process: the tasks of a session

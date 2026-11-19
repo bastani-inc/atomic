@@ -6,6 +6,7 @@ import {
 	type AgentSessionEventListener,
 	type StageControlHandle,
 	type StageRetryWait,
+	stageContextMeter,
 	stageRetryWaitAfter,
 } from "./stage-control-registry.js";
 import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
@@ -127,7 +128,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			return retryWait === "backoff" ? undefined : retryWait;
 		},
 		get isWaitingToRetry() {
-			return retryWait === "backoff";
+			return retryWait === "backoff" || runtime.innerCtx.__waitsToRetry?.() === true;
 		},
 		get isTurnLoopBusy() {
 			return runtime.innerCtx.__turnLoopBusy?.() === true;
@@ -138,6 +139,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		get messages() {
 			// The chat and transcript surfaces read this at any time: a released stage shows none here, never throws.
 			return runtime.innerCtx.__residentMessages();
+		},
+		contextMeter(displayed) {
+			return stageContextMeter(runtime.innerCtx.__agentSession(), displayed);
 		},
 		get turnStartedAt() {
 			return turnStart.turnStartedAt();

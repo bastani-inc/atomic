@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFindToolDefinition } from "../src/core/tools/find.js";
 import { createGrepToolDefinition } from "../src/core/tools/grep.js";
 import { createToolDefinition } from "../src/core/tools/index.js";
-import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { createSearchPageDefinition, createSearchToolDefinition } from "../src/core/tools/search.js";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
@@ -143,12 +143,15 @@ describe("find/search edge parity", () => {
 		const reads = vi.spyOn(fsPromises, "readFile");
 		syncBuiltinESMExports();
 		try {
-			const result = await createSearchToolDefinition(testDir).execute("member-search", {
-				pattern: "needle",
-				paths: "sample.tar:inner.txt",
-			});
+			const params = { pattern: "needle", paths: "sample.tar:inner.txt" };
+			const reference = await createSearchPageDefinition(testDir).execute("member-search", params);
+			const ordinaryReads = reads.mock.calls.filter(([file]) => file === archive).length;
+			reads.mockClear();
+			const result = await createSearchToolDefinition(testDir).execute("member-search", params);
+			expect(result).toEqual(reference);
 			expect(textOutput(result)).toContain("needle");
 			const count = reads.mock.calls.filter(([file]) => file === archive).length;
+			expect(count).toBe(ordinaryReads);
 			expect(count).toBeGreaterThan(0);
 			expect(count).toBeLessThanOrEqual(3);
 		} finally {
@@ -182,7 +185,7 @@ describe("find/search edge parity", () => {
 		expect(output).toContain("needle b");
 	});
 
-	it("an SDK file search does not open a task owner or read session history (#5479)", async () => {
+	it("complete SDK file and history searches do not open a task owner or read the transcript (#5479)", async () => {
 		const { createAgentSession } = await import("../src/core/sdk.js");
 		const { SessionManager } = await import("../src/core/session-manager.js");
 		const { SettingsManager } = await import("../src/core/settings-manager.js");
@@ -204,6 +207,14 @@ describe("find/search edge parity", () => {
 					cwd: testDir,
 				} as never);
 			expect(textOutput(result)).toBe("entry.txt:1: needle");
+			const path = `history://sessions/${manager.getSessionId()}`;
+			const ctx = { cwd: testDir, internalResourceRouter: { search: async () => `${path}:1: needle` } } as never;
+			const params = { paths: `${path}:1-1`, pattern: "needle" };
+			const direct = await createSearchPageDefinition(testDir).execute("history", params, undefined, undefined, ctx);
+			const registered = await session
+				.getToolDefinition("search")!
+				.execute("history", params, undefined, undefined, ctx);
+			expect(registered).toEqual(direct);
 			expect(transcript).not.toHaveBeenCalled();
 			expect(getOwnerTaskStore(session)).toBeUndefined();
 		} finally {

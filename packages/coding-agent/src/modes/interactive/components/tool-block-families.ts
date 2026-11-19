@@ -578,23 +578,6 @@ function presentSearch(input: BuiltinToolBlockInput): BuiltinToolBlockPresentati
 			details: new ToolBlockLines([theme.fg("muted", "No matches")]),
 		};
 	}
-	// A finished history:// search counts its own matches: the notes it shows with them are not matches.
-	if (observation !== undefined && matchCount === 0) {
-		const noteRows = parsed.rows.map((row) => theme.fg("toolOutput", replaceTabs(row)));
-		return {
-			title: "Search",
-			args: display,
-			status: "success",
-			meta: elapsed ? [elapsed] : undefined,
-			details: new ToolBlockLines(
-				[
-					theme.fg("muted", "No matches"),
-					...collapseToolBlockLines(noteRows, TOOL_BLOCK_LIMITS.search, input.expanded),
-				],
-				input.expanded,
-			),
-		};
-	}
 
 	const effectiveMatches = matchCount > 0 ? matchCount : parsed.rows.length;
 	const effectiveFiles = fileCount > 0 ? fileCount : 1;
