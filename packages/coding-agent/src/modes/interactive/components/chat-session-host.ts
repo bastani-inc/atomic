@@ -762,8 +762,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	dispose(): void {
 		this.taskInspector?.dispose();
+		this.taskInspector = undefined;
 		this.unsubscribeTasks?.();
+		this.unsubscribeTasks = undefined;
 		this.unsubscribeTaskBinding?.();
+		this.unsubscribeTaskBinding = undefined;
+		this.taskStore = undefined;
+		this.taskSource = undefined;
+		this.taskSession = undefined;
 		disposeChatSession(this.state);
 	}
 

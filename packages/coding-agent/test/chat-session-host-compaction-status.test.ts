@@ -126,6 +126,20 @@ test("a hidden chat drops the previous rendered page when its messages are repla
 	}
 });
 
+test("a disposed chat releases its last window even if the host object remains reachable (#5593)", async () => {
+	initTheme("dark");
+	const host = makeHost({ isStreaming: () => false });
+	const previous = (() => {
+		host.appendMessages([{ role: "user", content: "final prompt", timestamp: 1 }]);
+		assert.match(host.renderBody(80, 10).join("\n"), /final prompt/);
+		return new WeakRef(host.entries()[0]!);
+	})();
+	host.dispose();
+	await collectGarbage();
+	assert.equal(previous.deref() === undefined, true, "a disposed chat still holds its painted conversation");
+	assert.deepEqual(host.entries(), []);
+});
+
 test("rehydrates reason-specific labels for every compaction reason", () => {
 	for (const [reason, label] of Object.entries(labels) as Array<[CompactionReason, string]>) {
 		const host = makeHost();

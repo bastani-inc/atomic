@@ -856,8 +856,12 @@ export class ScrollableComponentViewport implements Component {
 		return this.lastPaint?.start;
 	}
 
-	/** Stops the timer that hides an `"auto"` scrollbar. */
+	/** Stop the scrollbar timer and release the last frame's hit-test and anchor state. */
 	dispose(): void {
+		this.lastPaint = undefined;
+		this.lastComponentSegments = [];
+		this.lastComponentRowCounts = [];
+		this.components = [];
 		clearTimeout(this.scrollbarHideTimer);
 		this.scrollbarHideTimer = undefined;
 	}
