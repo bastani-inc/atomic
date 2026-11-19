@@ -33,13 +33,13 @@ afterEach(async () => {
 });
 
 /**
- * The only scans a collection may make: the schema and source rows its index check reads, and the structures it builds
- * once per statement from the open leaves of session trees (the covering index of leaves with a snapshot behind them,
- * the distinct anchors they give, the snapshot entries on their branches and the restores among them), none of which
- * grows with messages.
+ * The only scans a collection may make: the schema and source rows its index check reads, the one table's entry its
+ * chunk-layout check reads (#5541), and the structures it builds once per statement from the open leaves of session
+ * trees (the covering index of leaves with a snapshot behind them, the distinct anchors they give, the snapshot entries
+ * on their branches and the restores among them), none of which grows with messages.
  */
 const SCANS_OF_INDEX_STRUCTURES =
-	/^SCAN (?!json_each|sqlite_schema|snapshot_index_sources|snapshot_session_links USING COVERING INDEX snapshot_session_links_leaves$|anchor$|branch$|walk$|checkout$|session_heads$)/u;
+	/^SCAN (?!json_each|sqlite_schema|pragma_table_list VIRTUAL TABLE|snapshot_index_sources|snapshot_session_links USING COVERING INDEX snapshot_session_links_leaves$|anchor$|branch$|walk$|checkout$|session_heads$)/u;
 
 /** Tables a collection must never read: the journal's and the sessions'. */
 const HISTORY_TABLES = /\b(wf_events|wf_runs|wf_leases|session_entries|session_sessions|session_search_texts)\b/u;
@@ -118,8 +118,11 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
  * triggers are this build's (#5065). A collection makes one before it sweeps and one inside each batch's own transaction.
  */
 const INDEX_CHECK = { statements: 2, rows: 16 } as const;
-/** The chunk-delete trigger and two maintenance-index rows, then an indexed legacy-row probe, once per collection. */
-const AGE_CHECK = { statements: 2, rows: 3 } as const;
+/**
+ * The chunk-delete trigger and two maintenance-index rows, then an indexed legacy-row probe, then whether the chunk
+ * table still has to move to the row layout (#5541), which it has not, once per collection.
+ */
+const AGE_CHECK = { statements: 3, rows: 3 } as const;
 
 const summary = (measured: { statements: readonly CountedStatement[]; rows: number; transactions: number }) => ({
 	statements: measured.statements.length,
