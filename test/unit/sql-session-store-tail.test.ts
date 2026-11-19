@@ -315,6 +315,52 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		});
 	});
 
+	it("preserves overflowing usage totals across an interrupted page fold (#5590)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(513);
+		for (const seq of [1, 2, 513]) {
+			const input = seq === 513 ? 1 : Number.MAX_VALUE;
+			entries[seq - 1] = entry(seq, {
+				type: "usage",
+				kind: "auxiliary",
+				provider: "p",
+				model: "m",
+				usage: {
+					input,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: input,
+					cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+			});
+		}
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			const all = db.all.bind(db);
+			db.all = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				const rows = await all<T>(sql, ...args);
+				if (rows.some((row) => row.entry_id === "e513")) throw new Error("lost page reader");
+				return rows;
+			};
+			await assert.rejects(() => store.readResume(header.id), /lost page reader/);
+			await store.close();
+		});
+		await onDatabase(path, async (db) => {
+			const store = await SqlSessionStore.open(db);
+			await store.readResume(header.id);
+			const row = await db.get<{ summary_state: string }>(
+				"SELECT summary_state FROM session_sessions WHERE id = ?",
+				header.id,
+			);
+			// An uninterrupted fold overflows to Infinity, which the published JSON index represents as null.
+			assert.equal(JSON.parse(row!.summary_state).resume.totals.auxiliary.input, null);
+			await store.close();
+		});
+	});
+
 	it("rebuilds the index after an earlier build appends without it (#5249)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(40);

@@ -7,7 +7,6 @@ import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
-import { chunkedResumeProjection } from "./chunked-resume-projection.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -1535,6 +1534,7 @@ export class SqlSessionStore implements SessionStore {
 						let projected: SqliteRow = entry;
 						if (Number(entry.chunks) > 0) {
 							try {
+								const { chunkedResumeProjection } = await import("./chunked-resume-projection.js");
 								projected = await chunkedResumeProjection(entry, this.dialect.name === "postgres", () =>
 									this.entryChunks(this.database, sessionId, Number(entry.seq), Number(entry.chunks), {
 										revision: row.revision,
@@ -1625,10 +1625,16 @@ export class SqlSessionStore implements SessionStore {
 						index = { ...index, totals: { ...index.totals, toolCalls: index.totals.toolCalls + toolCalls } };
 					after = Number(rows.at(-1)!.seq);
 					if (expectedSummary !== undefined && after < Number(row.last_seq) && index.seq === after) {
-						const next = JSON.stringify({
-							...state,
-							resumeCheckpoint: { revision: row.revision, index, topology },
-						});
+						// Checkpoints feed another fold, unlike the final index. JSON null would silently turn an
+						// overflowing sum back into zero on the next addition. JSON.parse("1e999") preserves Infinity.
+						const next = JSON.stringify(
+							{ ...state, resumeCheckpoint: { revision: row.revision, index, topology } },
+							(_key, value: unknown) =>
+								value === Infinity || value === -Infinity
+									? (JSON as JSON & { rawJSON(text: string): object }).rawJSON(value > 0 ? "1e999" : "-1e999")
+									: value,
+						);
+
 						// A second reader may have finished at the same revision. Never replace its completed index with a prefix.
 						const saved = await this.database
 							.run(

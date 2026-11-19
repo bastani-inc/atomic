@@ -1,14 +1,34 @@
-import type { Token } from "stream-json/core/parser.js";
+import { jsonParser, type Token } from "stream-json/core/parser.js";
 import type { SqliteRow, SqliteValue } from "../database.js";
 
 // A projection only constructs values consumed by the resume fold. The stream parser must not pack
 // strings or keys: even a single unselected JSON string (or property name) can span many chunks.
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Fields = { readonly [key: string]: Shape };
-type Shape = true | Fields | "child" | "tools" | "groups" | "tasks" | "array" | "truth" | "short" | "owner" | "op";
+type Shape =
+	| true
+	| Fields
+	| "child"
+	| "tools"
+	| "groups"
+	| "tasks"
+	| "array"
+	| "truth"
+	| "short"
+	| "owner"
+	| "op"
+	| "usage"
+	| "number";
 type Reader<T> = Generator<void, T, Token>;
 
 const protocolMessage = { id: true, replyTo: true, expectsReply: true } as const;
+const usageTotals = {
+	input: "number",
+	output: "number",
+	cacheRead: "number",
+	cacheWrite: "number",
+	cost: { total: "number" },
+} as const;
 const childFields = {
 	version: true,
 	index: true,
@@ -66,8 +86,50 @@ function* stringValue(limit = Infinity): Reader<string> {
 	return value;
 }
 
+// Feed a suspended selector without ever packing all of a token's text. The same reader can consume JSON
+// embedded in a string: legacy SQL decodes those strings in tool blocks and in owner/tasks/groups fields.
+function feed<T>(reader: Reader<T>) {
+	const parse = jsonParser({ packValues: false, packNumbers: true, streamNumbers: false, maxDepth: Infinity });
+	reader.next();
+	return (text: string) => {
+		const tokens = parse(text);
+		if (typeof tokens !== "symbol")
+			for (const token of tokens.values) {
+				const next = reader.next(token);
+				if (next.done) return next;
+			}
+		return undefined;
+	};
+}
+
+function* embedded(shape: Shape, tool = false): Reader<Json> {
+	const consume = feed(
+		(function* (): Reader<Json> {
+			return yield* readValue(yield, shape);
+		})(),
+	);
+	let started = false;
+	let result: Json | undefined;
+	for (let token = yield; token.name === "stringChunk"; token = yield) {
+		if (result !== undefined) continue;
+		const text = !started && tool ? token.value.trimStart() : token.value;
+		if (!text.length) continue;
+		if (!started && text[0] !== "{" && text[0] !== "[") result = "not JSON";
+		else {
+			started = true;
+			result = consume(text)?.value;
+		}
+	}
+	return result ?? "not JSON";
+}
+
 function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
-	if (shape === undefined || (shape === "op" && first.name !== "startString")) {
+	if (
+		shape === undefined ||
+		(shape === "op" && first.name !== "startString") ||
+		(shape === "number" && first.name !== "numberValue") ||
+		(shape === "tools" && first.name !== "startArray")
+	) {
 		yield* skip(first);
 		return null;
 	}
@@ -80,11 +142,13 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			const fields =
 				shape === "child"
 					? childFields
-					: shape === "owner"
-						? { sessionId: true as const }
-						: typeof shape === "object"
-							? shape
-							: {};
+					: shape === "usage"
+						? usageTotals
+						: shape === "owner"
+							? { sessionId: true as const }
+							: typeof shape === "object"
+								? shape
+								: {};
 			const allKeys = shape === "child" || shape === true;
 			const limit = allKeys ? Infinity : Math.max(0, ...Object.keys(fields).map((key) => key.length)) + 1;
 			const out: { [key: string]: Json } = Object.create(null);
@@ -104,7 +168,10 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 					if (token.name !== "startString" && out.length === 0) out.push(null);
 					yield* skip(token);
 				} else if (shape === "tools") {
-					const item = yield* readValue(token, { type: "short" });
+					const item =
+						token.name === "startString"
+							? yield* embedded({ type: "short" }, true)
+							: yield* readValue(token, { type: "short" });
 					if (typeof item === "object" && item !== null && "type" in item && item.type === "toolCall") tools++;
 				} else if (shape === "tasks" || shape === true) {
 					out.push(yield* readValue(token, shape === true ? true : { ownerId: true, taskId: true }));
@@ -114,10 +181,12 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 		}
 		case "startString":
 			// Object selectors cannot enter a string. Some legacy fields, however, accept JSON encoded as text.
-			if (typeof shape === "object" || shape === "child" || shape === "tools" || shape === "array") {
+			if (typeof shape === "object" || shape === "child" || shape === "array") {
 				yield* skip(first);
 				return null;
 			}
+			if (shape === "owner" || shape === "tasks" || shape === "groups" || shape === "usage")
+				return JSON.stringify(yield* embedded(shape));
 			if (shape === "truth") return (yield* stringValue(1)) === "" ? "" : "x";
 			return yield* stringValue(shape === "short" ? 64 : Infinity);
 		case "numberValue":
@@ -131,18 +200,27 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 	}
 }
 
-function* customTypeOf(): Reader<string> {
+function* discriminator(key: string, parent?: string): Reader<string> {
 	if ((yield).name !== "startObject") throw new SyntaxError("Expected a session entry");
 	while ((yield).name !== "endObject") {
-		const key = yield* stringValue("customType".length + 1);
+		const name = yield* stringValue((parent ?? key).length + 1);
 		const value = yield;
-		if (key === "customType" && value.name === "startString") return yield* stringValue(64);
+		if (parent !== undefined && name === parent && value.name === "startObject") {
+			while ((yield).name !== "endObject") {
+				const name = yield* stringValue(key.length + 1);
+				const child = yield;
+				if (name === key && child.name === "startString") return yield* stringValue(64);
+				yield* skip(child);
+			}
+			return "";
+		}
+		if (parent === undefined && name === key && value.name === "startString") return yield* stringValue(64);
 		yield* skip(value);
 	}
 	return "";
 }
 
-function* project(type: string, customType: string): Reader<Json> {
+function* project(type: string, customType: string, role: string): Reader<Json> {
 	const fields: Record<string, Shape> = { type: true, parentId: true, timestamp: true };
 	switch (type) {
 		case "custom": {
@@ -170,18 +248,23 @@ function* project(type: string, customType: string): Reader<Json> {
 			fields.targetId = true;
 			break;
 		case "message":
-			fields.message = { role: true, provider: true, model: true, usage: true, toolCallId: true, content: "tools" };
+			fields.message =
+				role === "assistant"
+					? { role: true, provider: true, model: true, usage: true, content: "tools" }
+					: role === "toolResult"
+						? { role: true, toolCallId: true, usage: "usage" }
+						: { role: "short" };
 			break;
 		case "compaction":
 			fields.firstKeptEntryId = true;
 			fields.coveredThroughEntryId = true;
-			fields.details = { strategy: true };
-			fields.usage = true;
+			fields.details = { strategy: "short" };
+			fields.usage = "usage";
 			break;
 		case "session_summary":
 		case "branch_summary":
 		case "usage":
-			fields.usage = true;
+			fields.usage = "usage";
 			break;
 	}
 	return yield* readValue(yield, fields);
@@ -190,18 +273,12 @@ function* project(type: string, customType: string): Reader<Json> {
 // Limit the number of short tokens a single tokenizer call can return as well as the bytes read from storage.
 const TOKEN_PAGE_BYTES = 16 * 1024;
 async function read<T>(chunks: AsyncIterable<Uint8Array>, reader: Reader<T>): Promise<T> {
-	const { jsonParser } = await import("stream-json/core/parser.js");
 	const decoder = new TextDecoder("utf-8", { fatal: true });
-	const parse = jsonParser({ packValues: false, packNumbers: true, streamNumbers: false, maxDepth: Infinity });
-	reader.next();
+	const consume = feed(reader);
 	for await (const chunk of chunks) {
 		for (let offset = 0; offset < chunk.length; offset += TOKEN_PAGE_BYTES) {
-			const tokens = parse(decoder.decode(chunk.subarray(offset, offset + TOKEN_PAGE_BYTES), { stream: true }));
-			if (typeof tokens === "symbol") continue;
-			for (const token of tokens.values) {
-				const next = reader.next(token);
-				if (next.done) return next.value;
-			}
+			const next = consume(decoder.decode(chunk.subarray(offset, offset + TOKEN_PAGE_BYTES), { stream: true }));
+			if (next !== undefined) return next.value;
 		}
 	}
 	throw new SyntaxError("Incomplete chunked session entry");
@@ -220,7 +297,13 @@ function orderedKeys(value: Record<string, Json>, postgres: boolean): string[] {
 				.map((key) => ({ key, bytes: Buffer.from(key) }))
 				.sort((a, b) => a.bytes.length - b.bytes.length || Buffer.compare(a.bytes, b.bytes))
 				.map(({ key }) => key)
-		: keys;
+		: keys.map(sqliteText);
+}
+
+function sqliteText(text: string): string {
+	// SQLite's json_extract encodes an unpaired surrogate with three invalid UTF-8 bytes. Its text reader
+	// replaces each byte; JSON embedded in an object or array, in contrast, keeps the original escape.
+	return text.replace(/\p{Surrogate}/gu, "\ufffd\ufffd\ufffd");
 }
 
 function postgresText(text: string): string {
@@ -250,9 +333,7 @@ function jsonbText(value: Json): string {
 function extracted(value: Json | undefined, postgres: boolean): Json {
 	if (value === undefined || value === null) return null;
 	if (postgres) return typeof value === "string" ? postgresText(value) : jsonbText(value);
-	// SQLite's json_extract encodes an unpaired surrogate with three invalid UTF-8 bytes. Its text reader
-	// replaces each byte; JSON embedded in an object or array, in contrast, keeps the original escape.
-	if (typeof value === "string") return value.replace(/\p{Surrogate}/gu, "\ufffd\ufffd\ufffd");
+	if (typeof value === "string") return sqliteText(value);
 	return typeof value === "boolean" ? Number(value) : value;
 }
 
@@ -264,8 +345,9 @@ export async function chunkedResumeProjection(
 ): Promise<SqliteRow> {
 	const type = String(stub.resume_type);
 	const custom = type === "custom" || type === "custom_message";
-	const customType = custom ? await read(chunks(), customTypeOf()) : "";
-	const entry = object(await read(chunks(), project(type, customType)));
+	const customType = custom ? await read(chunks(), discriminator("customType")) : "";
+	const role = type === "message" ? await read(chunks(), discriminator("role", "message")) : "";
+	const entry = object(await read(chunks(), project(type, customType, role)));
 	if (custom) entry.customType = customType;
 	const result: Record<string, SqliteValue> = { ...stub };
 	for (const [key, value] of Object.entries(entry)) {

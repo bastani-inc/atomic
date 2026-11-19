@@ -62,6 +62,7 @@ for (const backend of storageBackends) {
 						{
 							z: 1,
 							longField: false,
+							[backend.name === "SQLite file" ? "field\ud800" : "field日"]: null,
 							childId: "child",
 							version: 1,
 							state: "running",
@@ -127,6 +128,17 @@ for (const backend of storageBackends) {
 				});
 				await store.create(header, entries);
 				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
+				const stored = entries.map((entry) => JSON.stringify(entry));
+				// The SQL array iterator also accepts a content block encoded as JSON text.
+				const assistant = JSON.parse(stored.at(-1)!);
+				assistant.message.content.push(JSON.stringify({ type: "toolCall", arguments: { escaped: '"' } }));
+				stored[stored.length - 1] = JSON.stringify(assistant);
+				await db.run(
+					`UPDATE ${tables.entries} SET entry_json = ? WHERE session_id = ? AND seq = ?`,
+					stored.at(-1)!,
+					header.id,
+					stored.length,
+				);
 				const state = async () =>
 					JSON.parse(
 						(await db.get<{ summary_state: string }>(
@@ -149,7 +161,7 @@ for (const backend of storageBackends) {
 				// Change only the physical representation. The old SQL projection still serves as an independent oracle.
 				await db.transaction(async (tx) => {
 					for (const [i, entry] of entries.entries()) {
-						const bytes = Buffer.from(JSON.stringify(entry));
+						const bytes = Buffer.from(stored[i]!);
 						const part = 53;
 						await tx.run(
 							`UPDATE ${tables.entries} SET entry_json = ?, chunks = ? WHERE session_id = ? AND seq = ?`,
