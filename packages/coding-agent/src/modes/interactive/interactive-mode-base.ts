@@ -482,6 +482,7 @@ export class InteractiveModeBase {
 	// Deferred extension load state (first paint happens before extensions load)
 	deferredStartupPending = false;
 	initialStartupBinding = false;
+	initialStartupCancelled = false;
 	/**
 	 * Extension error rows shown since a reload or session switch reset the extension UI. Finishing the switch or reload
 	 * redraws the transcript, so the errors its extensions reported while starting are shown again after it.

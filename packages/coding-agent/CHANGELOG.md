@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-### Fixed
+### Breaking Changes
 
-- Closing a session while an interactive event is waiting for extension startup no longer leaves an unhandled `SessionClosed` rejection. Callers awaiting startup still receive its original error ([#5697](https://github.com/bastani-inc/atomic/issues/5697)).
+- `InteractiveMode.init()` and `run()` now resolve instead of rejecting with `SessionClosed` when the session closes during its initial extension bind. An event that was starting the UI, including a replayed provider retry, no longer leaves an unhandled rejection. If your host used that rejection to detect closure, track the session you close instead. A direct `session.bindExtensions()` call still rejects ([#5697](https://github.com/bastani-inc/atomic/issues/5697), [#5804](https://github.com/bastani-inc/atomic/issues/5804)).
 
 ## [0.9.90] - 2026-11-19
 

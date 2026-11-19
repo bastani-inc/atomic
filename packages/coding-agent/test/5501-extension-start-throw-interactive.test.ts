@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promiseHooks } from "node:v8";
 import { Agent } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, registerFauxProvider, streamSimple } from "@bastani/atomic-ai/compat";
 import type { Terminal } from "@bastani/atomic-tui";
@@ -198,7 +199,7 @@ test("a failed SDK startup releases resources owned by the session's dispose ove
 });
 
 test.each(["bindExtensions", "run"] as const)(
-	"%s rejects with SessionClosed when disposal revokes the SDK session's runner before discovery (#5697)",
+	"%s keeps its close outcome when disposal revokes the SDK session's runner before discovery (#5697)",
 	async (entry) => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-sdk-discovery-"));
 		cleanup.push(async () => rmSync(cwd, { recursive: true, force: true }));
@@ -241,14 +242,25 @@ test.each(["bindExtensions", "run"] as const)(
 			cleanup.push(() => runtime.dispose());
 			mode = new InteractiveMode(runtime, { terminal: new FakeTerminal() });
 		}
+		const lease = mode && vi.spyOn(mode, "session", "get");
+		if (mode && lease) {
+			const bound = mode.session;
+			lease.mockImplementation(() => {
+				signal?.throwIfAborted();
+				return bound;
+			});
+		}
 		try {
 			const startup = mode ? mode.run() : session.bindExtensions({});
 			await Promise.race([entered.promise, startup]);
 			await Promise.all([
-				assert.rejects(startup, { name: "Error", code: "SessionClosed", message: "SessionClosed" }),
+				entry === "run"
+					? startup
+					: assert.rejects(startup, { name: "Error", code: "SessionClosed", message: "SessionClosed" }),
 				session.dispose(),
 			]);
 		} finally {
+			lease?.mockRestore();
 			mode?.stop();
 		}
 	},
@@ -338,7 +350,7 @@ test(
 );
 
 test.each(["before run", "during session_start", "before a later runtime quit"] as const)(
-	"disposing the SDK session %s rejects interactive startup with the original error (#5697)",
+	"disposing the SDK session %s stops interactive startup without prompting (#5697)",
 	async (timing) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -388,11 +400,16 @@ test.each(["before run", "during session_start", "before a later runtime quit"] 
 		try {
 			const run = mode.run();
 			await Promise.all([
-				assert.rejects(run, (error) => {
-					assert.ok(error instanceof Error && "code" in error && error.code === "SessionClosed", String(error));
-					assert.equal(error, bind.mock.settledResults[0]?.value);
-					return true;
-				}),
+				timing === "during session_start"
+					? run
+					: assert.rejects(run, (error) => {
+							assert.ok(
+								error instanceof Error && "code" in error && error.code === "SessionClosed",
+								String(error),
+							);
+							assert.equal(error, bind.mock.settledResults[0]?.value);
+							return true;
+						}),
 				timing === "during session_start" &&
 					Promise.race([entered.promise, run]).then(() => {
 						const disposed = runtime.session.dispose();
@@ -470,7 +487,7 @@ test(
 );
 
 test.each([false, true])(
-	"run preserves its bind rejection when the host quits during session_start (resource discovery: %s) (#5697)",
+	"run returns without prompting when the host quits during session_start (resource discovery: %s) (#5697)",
 	async (discoversResources) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -486,17 +503,15 @@ test.each([false, true])(
 		});
 		try {
 			const bind = vi.spyOn(mode.session, "bindExtensions");
+			const input = vi.spyOn(mode, "getUserInput").mockRejectedValue(new Error("prompt after close"));
 			const run = mode.run();
 			await Promise.race([entered.promise, run]);
 			const quit = assert.rejects(mode.shutdown({ fromSignal: true }), /process\.exit\(0\)/);
 			release.resolve();
-			await Promise.all([
-				assert.rejects(run, (error) => {
-					assert.ok(error instanceof Error && "code" in error && error.code === "SessionClosed");
-					return error === bind.mock.settledResults[0]?.value;
-				}),
-				quit,
-			]);
+			await Promise.all([run, quit]);
+			// The underlying SDK bind is still strict; only the interactive startup was cancelled.
+			assert.equal(bind.mock.settledResults[0]?.type, "rejected");
+			assert.equal(input.mock.calls.length, 0);
 		} finally {
 			release.resolve();
 			exit.mockRestore();
@@ -590,6 +605,71 @@ test.each(["mirror", "catalog"] as const)(
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
+// Bun does not implement node:v8's promise hooks. Node embedders can pair operations by observing them.
+test.skipIf(Boolean(process.versions.bun))(
+	"an app tracking interactive delivery still sees another session's reload rejection (#5697)",
+	async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode } = await createMode((pi) =>
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			}),
+		);
+		const reloadEntered = Promise.withResolvers<void>();
+		const releaseReload = Promise.withResolvers<void>();
+		const { mode: catalog } = await createMode((pi) =>
+			pi.on("resources_discover", async ({ reason }) => {
+				if (reason === "reload") {
+					reloadEntered.resolve();
+					await releaseReload.promise;
+				}
+				return {};
+			}),
+		);
+		await catalog.session.bindExtensions({});
+		const reload = catalog.session.extendResourcesFromExtensions("reload");
+		await reloadEntered.promise;
+		const closingCatalog = catalog.runtimeHost.dispose();
+		const subscribe = vi.spyOn(mode.session, "subscribe");
+		mode.subscribeToAgent();
+		const listener = subscribe.mock.calls[0][0];
+		assert.ok(typeof listener === "function");
+		const handle = vi.spyOn(mode, "handleEvent");
+		const delivery = listener({ type: "agent_start" });
+		const reported: Promise<unknown>[] = [];
+		const record = (_error: unknown, promise: Promise<unknown>) => reported.push(promise);
+		process.on("unhandledRejection", record);
+		const stop = promiseHooks.onInit((_promise, parent) => {
+			// Observing delivery opts the companion operation into the same report.
+			if (parent && Object.is(parent, delivery)) void reload.catch(() => {});
+		});
+		try {
+			await entered.promise;
+			const closing = mode.runtimeHost.dispose();
+			release.resolve();
+			await closing;
+			// Startup rollback can outlast disposal. Wait for the inner handler, not the outward
+			// delivery promise tracked by the app, before letting the other request fail.
+			await Promise.allSettled([handle.mock.results[0].value]);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			releaseReload.resolve();
+			await closingCatalog;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(reported.length, 1);
+			assert.equal(reported[0], reload);
+			assert.equal(mode.workingRunMeter.snapshot(), undefined);
+		} finally {
+			stop();
+			release.resolve();
+			releaseReload.resolve();
+			process.off("unhandledRejection", record);
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
 test(
 	"an independent UI rebind during startup discovery still reports its own closed-session error (#5697)",
 	async () => {
@@ -643,6 +723,43 @@ test(
 );
 
 test(
+	"an SDK event handler can recover from startup close and report its separate catalog failure (#5697)",
+	async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode } = await createMode((pi) =>
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			}),
+		);
+		const { mode: catalog } = await createMode(() => {});
+		await catalog.runtimeHost.dispose();
+		let catalogError: unknown;
+		const handle = mode.handleEvent({ type: "agent_start" }).catch(async () => {
+			try {
+				await catalog.session.extendResourcesFromExtensions("reload");
+			} catch (error) {
+				catalogError = error;
+				throw error;
+			}
+		});
+		try {
+			await entered.promise;
+			const closing = mode.runtimeHost.dispose();
+			release.resolve();
+			await Promise.all([
+				assert.rejects(handle, (error) => catalogError !== undefined && error === catalogError),
+				closing,
+			]);
+		} finally {
+			release.resolve();
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
 	"an SDK host awaiting event startup can read the original catalog response (#5697)",
 	async () => {
 		const { mode } = await createMode((pi) => pi.on("resources_discover", () => ({})));
@@ -679,22 +796,34 @@ test(
 		assert.ok(typeof listener === "function");
 		const revoked = Proxy.revocable(new Error("discovery failed"), {});
 		revoked.revoke();
-		for (const reason of [Object.assign(new Error("closed"), { code: "SessionClosed" }), revoked.proxy]) {
-			mode.handleEvent = () => {
-				throw reason;
-			};
-			const same = await Promise.resolve(listener({ type: "agent_start" })).then(
-				() => false,
-				(error: unknown) => error === reason,
-			);
-			assert.ok(same);
+		// An SDK handler that never calls super does not need the interactive UI state.
+		const initialized = Object.getOwnPropertyDescriptor(mode, "isInitialized")!;
+		Object.defineProperty(mode, "isInitialized", {
+			configurable: true,
+			get() {
+				throw new Error("UI unavailable");
+			},
+		});
+		try {
+			for (const reason of [Object.assign(new Error("closed"), { code: "SessionClosed" }), revoked.proxy]) {
+				mode.handleEvent = () => {
+					throw reason;
+				};
+				const same = await Promise.resolve(listener({ type: "agent_start" })).then(
+					() => false,
+					(error: unknown) => error === reason,
+				);
+				assert.ok(same);
+			}
+		} finally {
+			Object.defineProperty(mode, "isInitialized", initialized);
 		}
 	},
 	INTERACTIVE_HOST_TIMEOUT_MS,
 );
 
 test.each([false, true])(
-	"closing during an event's startup rejects the event without an unhandled subscriber rejection (resource discovery: %s) (#5697)",
+	"closing during an event's startup fulfills its delivery without reporting a rejection (resource discovery: %s) (#5697)",
 	async (discoversResources) => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -716,11 +845,58 @@ test.each([false, true])(
 			await Promise.race([entered.promise, event]);
 			const closed = mode.runtimeHost.dispose();
 			release.resolve();
-			await Promise.all([assert.rejects(event, { code: "SessionClosed" }), closed]);
+			await Promise.all([event, closed]);
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.deepEqual(unhandled, []);
 		} finally {
 			release.resolve();
+			process.off("unhandledRejection", record);
+		}
+	},
+	INTERACTIVE_HOST_TIMEOUT_MS,
+);
+
+test(
+	"closing during startup of a replayed retry leaves no detached rejection (#5804)",
+	async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { mode, faux } = await createMode((pi) =>
+			pi.on("session_start", async () => {
+				entered.resolve();
+				await release.promise;
+			}),
+		);
+		mode.settingsManager.applyOverrides({ retry: { enabled: true, baseDelayMs: 30_000 } });
+		faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })]);
+		const retrying = Promise.withResolvers<void>();
+		const off = mode.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") retrying.resolve();
+		});
+		const unhandled: unknown[] = [];
+		const record = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", record);
+		try {
+			const prompt = mode.session.prompt("hello");
+			await Promise.race([retrying.promise, prompt]);
+			assert.equal(mode.session.retryStatus?.type, "auto_retry_start");
+			const handle = vi.spyOn(mode, "handleEvent");
+			const init = vi.spyOn(mode, "init");
+			mode.subscribeToAgent();
+			await entered.promise;
+			assert.equal(handle.mock.calls[0][0].type, "auto_retry_start");
+			const closing = mode.runtimeHost.dispose();
+			release.resolve();
+			await Promise.all([closing, prompt]);
+			// Disposal can publish the end of the pending turn. Wait for startup, not the
+			// detached deliveries themselves (that would hide the very rejection under test).
+			await Promise.allSettled(init.mock.results.map((result) => result.value));
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(unhandled, []);
+			assert.equal(mode.retryLoader, undefined);
+		} finally {
+			release.resolve();
+			off();
 			process.off("unhandledRejection", record);
 		}
 	},

@@ -3,6 +3,7 @@ import type { Provider } from "@bastani/atomic-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat";
 import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import { sessionCloseReason } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
@@ -16,7 +17,7 @@ import { replaceSessionTaskOwner } from "./agent-session-tasks.js";
 import type { AgentSessionReloadOptions, ExtensionBindings } from "./agent-session-types.js";
 import { migrateCompactionModelSettings } from "./compaction/model-resolver.js";
 import { generateWorkflowSummary } from "./compaction/session-summarization.ts";
-import { bindClosed, claimInteractiveBind } from "./extension-startup-close.ts";
+import { claimInteractiveBind, type InitialBind, recordClosedStart } from "./extension-startup-close.ts";
 import {
 	ExtensionStartupError,
 	type ExtensionStartupFailure,
@@ -29,7 +30,7 @@ import {
 	factoryRollbackError,
 	rollbackFactoryAcquisitions,
 } from "./extensions/loader-rollback.ts";
-import { emitSessionShutdownEvent, refusedStartupDiscovery } from "./extensions/runner.ts";
+import { emitSessionShutdownEvent, stockResourceDiscovery } from "./extensions/runner.ts";
 import { bindExtensionContextPublication, runSynchronousExtensionContextEffect } from "./extensions/runner-context.ts";
 import { startupErrorHandlerTokens } from "./extensions/runner-events.ts";
 import type { ExtensionRuntime, ProviderConfig, RegisteredTool } from "./extensions/types.ts";
@@ -195,22 +196,28 @@ function buildExtensionResourcePathsForLoader(
 	});
 }
 
+function bindClosed(session: AgentSession, bind?: InitialBind): Error {
+	const error = hostInputError("SessionClosed");
+	// A runtime replacement owns a successor. Only quitting this session cancels its interactive start.
+	if (bind && sessionCloseReason(session) === "quit") bind.closed = error;
+	return error;
+}
+
 async function extendRunnerResources(
 	session: AgentSession,
 	runner: ExtensionRunner,
 	loader: ResourceLoader,
 	reason: "startup" | "reload",
 	reportError?: (error: ExtensionError) => void,
-	initialBind = false,
+	initialBind?: InitialBind,
 ): Promise<void> {
 	if (!runner.hasHandlers("resources_discover")) return;
 	const discover = runner.emitResourcesDiscover;
-	const discovery = Reflect.apply(discover, runner, [session._cwd, reason, reportError]);
-	if (initialBind) {
-		const closed = refusedStartupDiscovery(runner, discover, discovery);
-		if (closed) bindClosed(session, true, closed);
-	}
-	const { skillPaths, promptPaths, themePaths } = await discovery;
+	const result =
+		initialBind && discover === stockResourceDiscovery && sessionCloseReason(session) === "quit"
+			? stockResourceDiscovery.call(runner, session._cwd, reason, reportError, initialBind)
+			: Reflect.apply(discover, runner, [session._cwd, reason, reportError]);
+	const { skillPaths, promptPaths, themePaths } = await result;
 	if (session._disposed) throw bindClosed(session, initialBind);
 	if (skillPaths.length === 0 && promptPaths.length === 0 && themePaths.length === 0) return;
 	const extensionPaths: ResourceExtensionPaths = {
@@ -253,10 +260,13 @@ function startExtensions(
 	loader: ResourceLoader,
 	event: AgentSession["_sessionStartEvent"],
 	finalize?: () => Promise<void>,
-	initialBind = false,
+	initialBind?: InitialBind,
 ): Promise<void> {
 	const existing = extensionStarts.get(runner);
-	if (existing) return finalize ? existing.then(finalize) : existing;
+	if (existing) {
+		if (initialBind) initialBind.joinedStart = runner;
+		return finalize ? existing.then(finalize) : existing;
+	}
 	const start = trackSessionWork(session, () =>
 		Promise.resolve().then(async () => {
 			const failures: ExtensionStartupFailure[] = [];
@@ -300,6 +310,7 @@ function startExtensions(
 		}),
 	).catch(async (error: unknown) => {
 		failedExtensionStarts.add(runner);
+		recordClosedStart(runner, initialBind, error);
 		return rollbackStartup(runner, error instanceof Error ? error : new Error(String(error)), async (cause) => {
 			try {
 				if (!hasSessionReload(session)) await session.dispose();
@@ -319,12 +330,26 @@ function startExtensions(
 
 const uiPromptBindings = new WeakMap<AgentSession, NonNullable<ExtensionBindings["onUIPrompt"]>>();
 
-export async function bindExtensions(this: AgentSession, bindings: ExtensionBindings): Promise<void> {
+export function bindExtensions(this: AgentSession, bindings: ExtensionBindings): Promise<void> {
 	const initialBind = claimInteractiveBind(this, bindings);
+	const binding = bindSessionExtensions.call(this, bindings, initialBind);
+	if (initialBind) initialBind.binding = binding;
+	return binding;
+}
+
+async function bindSessionExtensions(
+	this: AgentSession,
+	bindings: ExtensionBindings,
+	initialBind?: InitialBind,
+): Promise<void> {
 	if (this._disposed) {
 		// Failed creation retains its original rejection; it never admits another startup.
-		if (failedExtensionStarts.has(this._extensionRunner)) return extensionStarts.get(this._extensionRunner)!;
-		throw bindClosed(this, initialBind);
+		const wasDelivered = initialBind?.deliveredWhileOpen === this;
+		if (failedExtensionStarts.has(this._extensionRunner)) {
+			if (wasDelivered) initialBind.joinedStart = this._extensionRunner;
+			return extensionStarts.get(this._extensionRunner)!;
+		}
+		throw bindClosed(this, wasDelivered ? initialBind : undefined);
 	}
 	if (bindings.onUIPrompt !== undefined) uiPromptBindings.set(this, bindings.onUIPrompt);
 	if (bindings.humanInput !== undefined) {

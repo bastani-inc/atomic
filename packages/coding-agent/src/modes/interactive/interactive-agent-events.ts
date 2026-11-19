@@ -1,7 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
+import { sessionCloseReason } from "../../core/agent-session-events.ts";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
-import { closingSessions, isOwnBindClose } from "../../core/extension-startup-close.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
@@ -17,6 +16,7 @@ import { mountIdleStatus } from "./components/idle-status.ts";
 import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import { type EventStartup, eventStartupScope } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentSessionEvent,
@@ -151,39 +151,48 @@ function createToolComponent(
 			);
 }
 
-interface EventDelivery {
+type StartupEvent = AgentSessionEvent | JsonAgentSessionEvent;
+interface EventForwarding {
 	mode: InteractiveModeBase;
 	session: object;
-	event: object;
-	startupClose?: Error;
+	event?: StartupEvent;
+	startup?: EventStartup;
+	stock?: Promise<void>;
 }
-const currentDelivery = new AsyncLocalStorage<WeakRef<EventDelivery>>();
+// The subscriber owns one synchronous dispatch frame, not a receipt per streamed event.
+// Only a handler that actually starts the UI needs to distinguish fire-and-forget delivery
+// from an SDK handler that catches startup failure and runs its own recovery operation.
+let forwarding: EventForwarding | undefined;
+function deliverAgentEvent(frame: EventForwarding, event: StartupEvent): Promise<void> {
+	const call: EventForwarding = frame.event === undefined ? frame : { mode: frame.mode, session: frame.session };
+	const previous = forwarding;
+	try {
+		forwarding = call;
+		call.event = event;
+		const delivery = call.mode.handleEvent(event);
+		if (call.startup) call.startup.strict = call.stock !== delivery;
+		return delivery; // Do not observe this promise; the runtime owns unhandled-rejection reporting.
+	} finally {
+		call.event = undefined;
+		call.startup = undefined;
+		call.stock = undefined;
+		forwarding = previous;
+	}
+}
 
 InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveModeBase): void {
 	refreshInteractiveTasks(this);
 	const session = this.session;
-	const unsubscribe = session.subscribe((event) => {
-		const receipt: EventDelivery = { mode: this, session, event };
-		const delivery: Promise<void> = currentDelivery.run(new WeakRef(receipt), async () => {
-			try {
-				await this.handleEvent(event);
-			} catch (error) {
-				if (receipt.startupClose !== undefined && receipt.startupClose === error) {
-					// The session doesn't await its listeners. Observe this delivery without changing its rejection.
-					// An SDK override can throw synchronously, before delivery is assigned.
-					queueMicrotask(() => void delivery.catch(() => {}));
-				}
-				throw error;
-			}
-		});
-		return delivery;
+	const frame: EventForwarding = { mode: this, session };
+	const unsubscribe = session.subscribe(async (event) => {
+		await deliverAgentEvent(frame, event);
 	});
 	// A rebind can miss the start of a wait. Subscribe and read it in one turn; don't restart its countdown.
 	const wait = session.retryStatus;
 	if (wait) {
 		if (session.turnStartedAt !== undefined)
 			this.workingRunMeter.awaitRetry(session.turnStartedAt, runInProgress(session.messages).settledTokens);
-		void this.handleEvent(wait);
+		void deliverAgentEvent(frame, wait);
 	}
 	// Workflow runs execute outside the main agent loop, so their activity feeds the status separately.
 	const disposeWorkflowActivity = observeLocalWorkflowActivity(this.runtimeHost, session, (frame) => {
@@ -225,20 +234,24 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 	};
 };
 
-InteractiveModeBase.prototype.handleEvent = async function (
-	this: InteractiveModeBase,
-	event: AgentSessionEvent | JsonAgentSessionEvent,
-): Promise<void> {
+InteractiveModeBase.prototype.handleEvent = function (this: InteractiveModeBase, event: StartupEvent): Promise<void> {
+	const call = forwarding?.mode === this && forwarding.event === event ? forwarding : undefined;
+	const result = handleAgentEvent.call(this, event, call);
+	if (call?.startup) call.stock = result;
+	return result;
+};
+
+async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, call?: EventForwarding): Promise<void> {
 	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) return;
 	if (!this.isInitialized) {
-		const delivery = currentDelivery.getStore()?.deref();
-		const starting = delivery?.mode === this && delivery.event === event && !closingSessions.has(delivery.session);
-		try {
-			await this.init();
-		} catch (error) {
-			if (starting && isOwnBindClose(delivery.session, error)) delivery.startupClose = error as Error;
-			throw error;
+		// A caller awaiting handleEvent itself owns its error and may use it for recovery.
+		const startup: EventStartup = { mode: new WeakRef(this), strict: true };
+		if (call) {
+			call.startup = startup;
+			if (sessionCloseReason(call.session) === undefined) startup.open = new WeakRef(call.session);
 		}
+		await eventStartupScope.run(startup, () => this.init());
+		if (this.initialStartupCancelled) return;
 	}
 
 	this.footer.invalidate();
@@ -796,7 +809,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 	}
-};
+}
 
 InteractiveModeBase.prototype.getUserMessageText = function (this: InteractiveModeBase, message: Message): string {
 	if (message.role !== "user") return "";

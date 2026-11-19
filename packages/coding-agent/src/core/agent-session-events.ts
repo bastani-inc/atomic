@@ -42,7 +42,6 @@ import {
 	subscribeSession,
 } from "./event-subscriptions/session-subscription.js";
 import type { EventSource, Subscription } from "./event-subscriptions/types.js";
-import { closingSessions } from "./extension-startup-close.ts";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
@@ -754,8 +753,16 @@ export function _disconnectFromAgent(this: AgentSession): void {
  */
 
 const shutdownEventFailures = new WeakMap<AgentSession, Error[]>();
-const sessionClosures = new WeakMap<object, { promise: Promise<void>; quitting: boolean }>();
+const sessionClosures = new WeakMap<
+	object,
+	{ promise: Promise<void>; reason: SessionShutdownEvent["reason"]; quitting: boolean }
+>();
 const sessionRetirements = new WeakMap<AgentSession, Promise<void>>();
+
+/** The original close request, independent of how far its asynchronous cleanup has progressed. */
+export function sessionCloseReason(session: object): SessionShutdownEvent["reason"] | undefined {
+	return sessionClosures.get(session)?.reason;
+}
 
 export function isSessionQuitting(session: object): boolean {
 	return sessionClosures.get(session)?.quitting === true;
@@ -767,7 +774,8 @@ export function closeAgentSession(
 	event: SessionShutdownEvent = { type: "session_shutdown", reason: "quit" },
 	beforeInvalidate?: () => void,
 ): Promise<void> {
-	const handoff = event.reason !== "quit" && hasCallingSessionWork(session);
+	const reason = event.reason;
+	const handoff = reason !== "quit" && hasCallingSessionWork(session);
 	const existing = sessionClosures.get(session);
 	if (existing) return (handoff && sessionRetirements.get(session)) || existing.promise;
 	let resolveRetired!: () => void;
@@ -777,7 +785,6 @@ export function closeAgentSession(
 		rejectRetired = reject;
 	});
 	session._disposed = true;
-	closingSessions.add(session);
 	session._cacheWarmer?.cancel();
 	sessionClosing(session);
 	const closing = Promise.resolve().then(async () => {
@@ -869,7 +876,7 @@ export function closeAgentSession(
 		if (errors.length)
 			throw Object.assign(new AggregateError(errors, "Session shutdown failed"), { code: "ShutdownFailed" });
 	});
-	const closure = { promise: closing, quitting: false };
+	const closure = { promise: closing, reason, quitting: false };
 	sessionClosures.set(session, closure);
 	if (handoff) {
 		sessionRetirements.set(session, retirement);
