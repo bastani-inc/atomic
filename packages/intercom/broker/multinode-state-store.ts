@@ -226,7 +226,15 @@ export interface OutboxClaimRequest {
 }
 
 export type OutboxEnqueueResult =
-	| { readonly status: "inserted"; readonly row: OutboxRow }
+	| {
+			readonly status: "inserted";
+			readonly row: OutboxRow;
+			/**
+			 * #5607: where the row stands in its recipient's undelivered rows as it is written (`undeliveredPosition`), when
+			 * the store counted them to write it; absent otherwise.
+			 */
+			readonly position?: number;
+	  }
 	/** Same id and digest: no second row is written and the existing row reports its current state. */
 	| { readonly status: "duplicate"; readonly row: OutboxRow }
 	| { readonly status: "conflict"; readonly messageId: string }
