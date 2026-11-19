@@ -1870,6 +1870,165 @@ export class SqlSessionStore implements SessionStore {
 		if (!(await this.readHeader(sessionId))) throw new SessionNotFoundError(sessionId);
 		return this.seqOfEntry(this.database, sessionId, entryId);
 	}
+	async readForkWindow(sessionId: string, entryId: string) {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const { indexedForkWindow, forkMetadata, byteMetadata, locateFork } = await import("./fork-window.js");
+		return this.transaction(async (tx) => {
+			// Check the index in the same snapshot as the entries. A peer can legitimately invalidate or
+			// remove it when appending to a side branch; that must not make a committed fork point disappear.
+			const row = await tx.get<ResumeRow>(
+				`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id=?${this.dialect.lockClause("share")}`,
+				sessionId,
+			);
+			if (!row) throw new SessionNotFoundError(sessionId);
+			const header = JSON.parse(row.header_json) as SessionRecordHeader;
+			const state = JSON.parse(row.summary_state) as StoredSummaryState;
+			const count = Number(row.last_seq);
+			const cached = this.resumeIndexes.get(sessionId);
+			const ready = isSessionResumeIndex(state.resume, count)
+				? state.resume
+				: cached?.revision === row.revision
+					? cached.index
+					: undefined;
+			const leaf = (await this.seqOfEntry(tx, sessionId, entryId)) ?? 0;
+			if (!leaf) return undefined;
+			const metadata = async (seqs: readonly number[]) => {
+				const result: import("./fork-window.js").ForkMetadata[] = [];
+				if (!seqs.length) return result;
+				const raw = this.dialect.name === "sqlite" ? "CAST(entry_json AS BLOB)" : "convert_to(entry_json,'UTF8')";
+				const size = this.dialect.textByteLength("entry_json");
+				const rows = await tx.all<SqliteRow & { seq: number; chunks: number; bytes: number; body: string | null }>(
+					`SELECT seq,chunks,${size} AS bytes,CASE WHEN chunks=0 AND ${size}<=512 THEN entry_json END AS body FROM ${this.tables.entries} WHERE session_id=? AND seq IN (${seqs.map(() => "?").join(",")}) ORDER BY seq`,
+					sessionId,
+					...seqs,
+				);
+				for (const row of rows) {
+					const seq = Number(row.seq);
+					if (row.body !== null) result.push(forkMetadata(seq, JSON.parse(row.body) as SessionEntry));
+					else if (Number(row.chunks) > 0) {
+						const { projectForkMetadata } = await import("./chunked-resume-projection.js");
+						result.push(
+							await projectForkMetadata(seq, this.forkEntryChunks(tx, sessionId, seq, Number(row.chunks))),
+						);
+					} else
+						result.push(
+							await byteMetadata(seq, Number(row.bytes), async (offset, n) => {
+								const piece = await tx.get<SqliteRow & { part: Uint8Array }>(
+									`SELECT substr(${raw},?,?) AS part FROM ${this.tables.entries} WHERE session_id=? AND seq=?`,
+									offset + 1,
+									n,
+									sessionId,
+									seq,
+								);
+								if (!piece)
+									throw new StorageError(`Session ${sessionId} entry ${seq} disappeared during its fork`);
+								return piece.part;
+							}),
+						);
+				}
+				return result;
+			};
+			const entries = this.tables.entries,
+				j = (field: string) => this.dialect.jsonText("entry_json", field);
+			const selected = ready
+				? { index: ready, leaf, extras: undefined }
+				: await locateFork(
+						{
+							...foldSessionResume(undefined, []),
+							seq: count,
+							epoch: state.epoch ?? row.revision,
+							needsBranchRebuild: true,
+						},
+						entryId,
+						async (seqs) => {
+							// Chunked rows store their ID, parent and type inline. A chunked compaction or custom
+							// record needs the bounded projection; other rows need only their links for this walk.
+							const projection = this.dialect.jsonObject([
+								...["id", "parentId", "type", "customType", "firstKeptEntryId", "coveredThroughEntryId"].map(
+									(key) => [key, j(key)] as const,
+								),
+								["strategy", this.dialect.jsonText("entry_json", "details", "strategy")],
+							]);
+							const links = await tx.all<SqliteRow & { seq: number; chunks: number; link: string | null }>(
+								`SELECT seq,chunks,CASE WHEN ${this.dialect.textByteLength(`CAST(${projection} AS TEXT)`)}<=512 THEN CAST(${projection} AS TEXT) END AS link FROM ${entries} WHERE session_id=? AND seq BETWEEN ? AND ? ORDER BY seq`,
+								sessionId,
+								seqs[0]!,
+								seqs.at(-1)!,
+							);
+							const page: import("./fork-window.js").ForkMetadata[] = [];
+							for (const r of links) {
+								const link =
+									r.link === null
+										? undefined
+										: (JSON.parse(r.link) as {
+												id: string;
+												parentId: string | null;
+												type: string;
+												customType?: string;
+												firstKeptEntryId: string | null;
+												coveredThroughEntryId?: string;
+												strategy?: string;
+											});
+								if (!link || (Number(r.chunks) > 0 && (link.type === "custom" || link.type === "compaction")))
+									page.push(...(await metadata([Number(r.seq)])));
+								else
+									page.push({
+										seq: Number(r.seq),
+										...link,
+										...(link.type === "compaction" && link.strategy === "verbatim-lines"
+											? { boundary: { first: link.firstKeptEntryId, covered: link.coveredThroughEntryId } }
+											: {}),
+									});
+							}
+							return page;
+						},
+						true,
+					);
+			return indexedForkWindow(
+				header,
+				selected.index,
+				selected.leaf,
+				(lo, hi) => this.readRows(tx, sessionId, "seq BETWEEN ? AND ?", [lo, hi]),
+				(seqs) => this.readSeqs(tx, sessionId, seqs),
+				metadata,
+				async function* (ranges, kinds, labels) {
+					const filter = labels
+						? `${j("type")}='label'`
+						: `${j("type")}='custom' AND (chunks>0 OR ${j("customType")} IN (${kinds.map(() => "?").join(",")}))`;
+					for (const [lo, hi] of ranges)
+						for (let seq = lo; seq <= hi; ) {
+							const rows = await tx.all<SqliteRow & { seq: number }>(
+								`SELECT seq FROM ${entries} WHERE session_id=? AND seq BETWEEN ? AND ? AND ${filter} ORDER BY seq LIMIT 128`,
+								sessionId,
+								seq,
+								hi,
+								...kinds,
+							);
+							if (labels) for (const row of rows) yield { type: "label", seq: Number(row.seq) };
+							else for (const m of await metadata(rows.map((r) => Number(r.seq)))) yield m;
+							if (rows.length < 128) break;
+							seq = Number(rows.at(-1)!.seq) + 1;
+						}
+				},
+				selected.extras,
+			);
+		}, SESSION_TRANSACTION);
+	}
+
+	private async *forkEntryChunks(tx: SqliteExecutor, id: string, seq: number, count: number) {
+		for (let i = 0; i < count; i++) {
+			const row = await tx.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id=? AND seq=? AND idx=?`,
+				id,
+				seq,
+				i,
+			);
+			if (!row) throw new StorageError(`Session ${id} entry ${seq} is missing chunk ${i} of ${count}`);
+			yield row.data;
+		}
+	}
+
 	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);

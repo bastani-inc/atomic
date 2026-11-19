@@ -97,6 +97,7 @@ export type {
 	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionEntryRange,
+	SessionForkWindow,
 	SessionHistoryTotals,
 	SessionRecoveryState,
 	SessionResume,

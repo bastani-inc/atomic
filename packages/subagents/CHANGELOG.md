@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A subagent launched with `context: "fork"` starts faster and copies less data after a clear or compaction. Its saved session keeps the conversation through its original fork point, without duplicating retired turns. Earlier history remains in the parent session ([#5500](https://github.com/bastani-inc/atomic/issues/5500)).
+
 ## [0.9.90] - 2026-11-19
 
 ### Breaking Changes
