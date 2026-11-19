@@ -78,12 +78,15 @@ import {
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
 import {
+	holdCompactionWidgets,
 	installSavedChatHistory,
 	noteShownContext,
 	type ParkedViewport,
 	parkViewport,
 	releaseSavedChatHistory,
 	type SavedRendererInstances,
+	storedWidget,
+	widgetKey,
 } from "./interactive-saved-chat-history.js";
 import { followChosenExpansion, SavedPageCallsBuilder } from "./interactive-saved-tool-calls.ts";
 import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
@@ -946,7 +949,12 @@ function adoptStep(mode: InteractiveModeBase, step: TranscriptStep): Component |
 function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, latest = true, saved = false): void {
 	const adopted = saved ? undefined : adoptStep(mode, step);
 	if (step.kind === "custom") {
-		if (!adopted) mode.addCustomEntryToChat(step.entry);
+		if (!adopted) {
+			const seq = savedSeqOf(step.entry);
+			const kept = saved || seq === undefined ? undefined : storedWidget(mode, `${seq}:entry`);
+			if (kept) mode.chatContainer.addChild(kept);
+			else mode.addCustomEntryToChat(step.entry);
+		}
 		return;
 	}
 	if (step.kind === "cost") {
@@ -954,7 +962,9 @@ function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, late
 		return;
 	}
 	const { entry } = step;
-	const component = adopted ?? mode.addRenderedChatEntry(entry);
+	const kept = saved || adopted ? undefined : storedWidget(mode, widgetKey(entry));
+	if (kept) addChatTranscriptEntry(mode.chatContainer, kept, entry.role);
+	const component = adopted ?? kept ?? mode.addRenderedChatEntry(entry);
 	if (!saved && entry.kind === "tool" && isGroupedToolComponent(component)) {
 		const grouping = mainToolGrouping(mode);
 		grouping.tracker.bind(entry.toolCallId, (role) => {
@@ -1353,6 +1363,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	}
 	// A compaction while the reader is above the end keeps what they see, their selection and their place.
 	const parked = parkViewport(this, entries);
+	holdCompactionWidgets(this, entries, parked);
 	clearChatForRerender(this);
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();

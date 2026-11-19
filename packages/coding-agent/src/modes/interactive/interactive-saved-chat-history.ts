@@ -1,11 +1,12 @@
-import { type Component, type ScrollView, Text } from "@bastani/atomic-tui";
+import { type Component, type ScrollView, Text, TuiAltScreen } from "@bastani/atomic-tui";
 import type { SessionEntry, SessionManager } from "../../core/session-manager.ts";
 import type {
 	SessionHistoryItem,
 	SessionHistoryPage,
 	SessionHistoryReadOptions,
 } from "../../core/storage/session/types.js";
-import { savedRowKey } from "../../core/tasks/transcript-origin.js";
+import { rowSource, savedRowKey, savedSeqOf } from "../../core/tasks/transcript-origin.js";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { parkedRun } from "./components/parked-rows.ts";
 import { SavedRendererInstances } from "./components/saved-renderer-instances.js";
 
@@ -27,8 +28,40 @@ type Draw = (
 
 const exceptionsByHost = new WeakMap<
 	InteractiveModeBase,
-	{ manager: SessionManager; id: string; exceptions: SavedRendererInstances }
+	{ owner: object; id: string; exceptions: SavedRendererInstances }
 >();
+
+// A compaction refresh may replace the engine's local SessionManager, but not the engine that owns its widgets.
+function widgetOwner(mode: InteractiveModeBase): object {
+	return mode.runtimeHost instanceof IsolatedInteractiveRuntime ? mode.runtimeHost : mode.sessionManager;
+}
+function sessionRenderers(mode: InteractiveModeBase): SavedRendererInstances {
+	const owner = widgetOwner(mode),
+		id = mode.sessionManager.getSessionId();
+	let kept = exceptionsByHost.get(mode);
+	if (!kept || kept.owner !== owner || kept.id !== id) {
+		kept?.exceptions.dispose();
+		kept = { owner, id, exceptions: new SavedRendererInstances() };
+		exceptionsByHost.set(mode, kept);
+	}
+	return kept.exceptions;
+}
+
+/** A tool's saved card belongs to its result even when a page ends between the call and result. */
+export function widgetKey(row: object): string | undefined {
+	const source = rowSource(row);
+	const result = savedSeqOf(source?.result);
+	if (result !== undefined) return `${result}:0`;
+	if (source && "type" in source.message && source.message.type === "custom") {
+		const seq = savedSeqOf(source.message);
+		return seq === undefined ? undefined : `${seq}:entry`;
+	}
+	return savedRowKey(row);
+}
+
+export function storedWidget(mode: InteractiveModeBase, key: string | undefined): Component | undefined {
+	return key === undefined ? undefined : exceptionsByHost.get(mode)?.exceptions.get(key)?.find(isChatMessageComponent);
+}
 interface MountedPage {
 	readonly children: Component[];
 	readonly older?: string;
@@ -74,7 +107,7 @@ export function installSavedChatHistory(
 ): void {
 	const old = exceptionsByHost.get(mode);
 	const changed =
-		old !== undefined && (old.manager !== mode.sessionManager || old.id !== mode.sessionManager.getSessionId());
+		old !== undefined && (old.owner !== widgetOwner(mode) || old.id !== mode.sessionManager.getSessionId());
 	releaseSavedChatHistory(mode, changed);
 	const chat = mode.chatContainer;
 	const view = mode.transcriptScrollView;
@@ -92,20 +125,16 @@ export function installSavedChatHistory(
 	let first = leaf;
 	for (const entry of context) first = Math.min(first, manager.getEntrySeq(entry.id) ?? first);
 	if (first <= 1) return;
-	const id = manager.getSessionId();
-	let kept = exceptionsByHost.get(mode);
-	if (!kept || kept.manager !== manager || kept.id !== id) {
-		kept?.exceptions.dispose();
-		kept = { manager, id, exceptions: new SavedRendererInstances() };
-		exceptionsByHost.set(mode, kept);
-	}
-	const history = new SavedChatHistory(mode, manager, chat, view, draw, leaf, first - 1, kept.exceptions);
+	const history = new SavedChatHistory(mode, manager, chat, view, draw, leaf, first - 1, sessionRenderers(mode));
 	if (parked && parked.last < first) history.park(parked);
 	mounts.set(mode, history);
 }
 
 /** The context the chat last drew: its boundary and the last saved sequence in it. */
-const shownContexts = new WeakMap<InteractiveModeBase, { id: string; boundary: string | undefined; through: number }>();
+const shownContexts = new WeakMap<
+	InteractiveModeBase,
+	{ owner: WeakRef<object>; id: string; boundary: string | undefined; through: number }
+>();
 export function noteShownContext(mode: InteractiveModeBase, context: readonly SessionEntry[]): void {
 	const manager: SessionManager | undefined = mode.sessionManager;
 	const id = manager?.getSessionId?.();
@@ -117,7 +146,42 @@ export function noteShownContext(mode: InteractiveModeBase, context: readonly Se
 	const last = context.at(-1);
 	const through = (last && manager.getEntrySeq?.(last.id)) ?? 0;
 	const boundary = context[0]?.type === "compaction" ? context[0].id : undefined;
-	shownContexts.set(mode, { id, boundary, through });
+	shownContexts.set(mode, { owner: new WeakRef(widgetOwner(mode)), id, boundary, through });
+}
+
+function changedBoundary(mode: InteractiveModeBase, context: readonly SessionEntry[]): number | undefined {
+	const shown = shownContexts.get(mode),
+		boundary = context[0],
+		manager = mode.sessionManager;
+	if (
+		!shown ||
+		shown.owner.deref() !== widgetOwner(mode) ||
+		shown.id !== manager.getSessionId() ||
+		boundary?.type !== "compaction" ||
+		shown.boundary === boundary.id
+	)
+		return undefined;
+	const seq = manager.getEntrySeq?.(boundary.id);
+	return seq !== undefined && seq > shown.through ? seq : undefined;
+}
+
+/** Only stateful widgets survive a live clear outside the parked screen. Record the ones on screen as well, so they
+ * can leave and reenter their saved page without losing local state later. The session itself never stores a widget. */
+export function holdCompactionWidgets(
+	mode: InteractiveModeBase,
+	context: readonly SessionEntry[],
+	parked?: ParkedViewport,
+): void {
+	if (mode.ui.mode !== "fullscreen" || changedBoundary(mode, context) === undefined) return;
+	const store = sessionRenderers(mode);
+	const remember = (row: Component) => {
+		const key = widgetKey(row);
+		return key !== undefined && store.rememberLive(key, row);
+	};
+	for (const row of parked?.parked?.rows ?? []) remember(row);
+	for (const row of parked?.adopted ?? []) remember(row);
+	// clear() disposes mounted engine renderers. Detach the widgets whose saved occurrence still owns them first.
+	mode.chatContainer.children = mode.chatContainer.children.filter((row) => !(remember(row) && store.protect(row)));
 }
 
 /** What the next drawing of a context does with the rows a parked reader sees. */
@@ -141,22 +205,10 @@ export function parkViewport(mode: InteractiveModeBase, context: readonly Sessio
 	const view = mode.transcriptScrollView;
 	const chat = mode.chatContainer;
 	const manager = mode.sessionManager;
-	const boundary = context[0];
-	const shown = shownContexts.get(mode);
-	if (
-		mode.ui.mode !== "fullscreen" ||
-		!view ||
-		view.isFollowingEnd ||
-		!(chat instanceof StartupChatContainer) ||
-		boundary?.type !== "compaction" ||
-		!shown ||
-		// An engine's host reopens its view of the same session: the conversation, not the object, must match.
-		shown.id !== manager.getSessionId() ||
-		shown.boundary === boundary.id
-	)
+	if (mode.ui.mode !== "fullscreen" || !view || view.isFollowingEnd || !(chat instanceof StartupChatContainer))
 		return undefined;
-	const boundarySeq = manager.getEntrySeq?.(boundary.id);
-	if (boundarySeq === undefined || boundarySeq <= shown.through) return undefined;
+	const boundarySeq = changedBoundary(mode, context);
+	if (boundarySeq === undefined) return undefined;
 	let current = boundarySeq;
 	for (const entry of context) current = Math.min(current, manager.getEntrySeq(entry.id) ?? current);
 	const fixed = new Set<Component>([mode.resourceDisclosureContainer, mode.startupNoticesContainer]);
@@ -187,6 +239,10 @@ export function parkViewport(mode: InteractiveModeBase, context: readonly Sessio
 		if (key !== undefined && !adopted.has(key)) adopted.set(key, child);
 	}
 	const moving = new Set([...retired, ...kept]);
+	if (mode.ui instanceof TuiAltScreen) {
+		const start = chat.windowRowSpan(children[first]!)?.top;
+		if (start !== undefined) mode.ui.keepScrollPinnedPrompt(start, bottom);
+	}
 	mounts.get(mode)?.keep(moving);
 	for (const child of moving) chat.removeChild(child);
 	return {

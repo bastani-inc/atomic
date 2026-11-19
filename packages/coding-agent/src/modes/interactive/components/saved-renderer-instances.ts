@@ -24,6 +24,13 @@ export class SavedRendererInstances {
 	private needed(c: Component): boolean {
 		return this.stateful(c) && !remoteHistoryRow(c)?.unrendered;
 	}
+	/** Register a widget already drawn in the live transcript, before compaction gives its occurrence to a saved page. */
+	rememberLive(key: string, component: Component): boolean {
+		if (!this.needed(component)) return false;
+		if (this.owner.get(component) !== key) this.remember(key, [component]);
+		return true;
+	}
+
 	private settle(key: string): void {
 		const group = this.kept.get(key);
 		if (!group || !this.retired.has(group) || group.some((c) => this.needed(c))) return;

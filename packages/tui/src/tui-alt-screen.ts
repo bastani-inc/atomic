@@ -440,6 +440,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
 	private readonly scrollToEndIndicator?: () => string;
 	private readonly scrollPinnedPrompt?: TuiAltScreenOptions["scrollPinnedPrompt"];
+	private parkedPrompt?: {
+		view: WeakRef<ScrollView>;
+		row: string;
+		first: () => number | undefined;
+		last: () => number | undefined;
+	};
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
 	private copyOnSelect: boolean;
@@ -2457,6 +2463,38 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return this.compositeScrollPinnedPrompt(screen, layout, width);
 	}
 
+	/** Keep a turn's pinned prompt while the rows [first, end) stay mounted but their preceding prompt leaves the
+	 * transcript. The painted line and two weak row positions do not retain the prompt component or its page. */
+	keepScrollPinnedPrompt(first: number, end: number): void {
+		const pin = this.scrollPinnedPrompt;
+		const view = this.getPrimaryScrollView();
+		const lines = this.currentLayout && getScrollContentRows(getScrollViewBox(this.currentLayout, view));
+		if (!pin || !lines?.trackRow || view.isFollowingEnd || first >= end) return;
+		const row = this.pinnedPromptAt(lines, first, pin.isPrompt);
+		this.parkedPrompt = undefined;
+		if (!row) return;
+		// A later turn in the same kept page has its own prompt; never show this one over it.
+		let next = first;
+		while (next < end && !pin.isPrompt(lines.at(next) ?? "")) next++;
+		const start = lines.trackRow(first);
+		const last = next > first && lines.trackRow(next - 1);
+		if (start && last) this.parkedPrompt = { view: new WeakRef(view), row, first: start, last };
+	}
+
+	private pinnedPromptAt(lines: WindowRows, top: number, isPrompt: (line: string) => boolean): string | undefined {
+		const prompt = turnPromptAbove(lines, top, isPrompt);
+		if (prompt !== undefined || isPrompt(lines.at(top) ?? "")) return prompt;
+		const parked = this.parkedPrompt;
+		if (!parked || parked.view.deref() !== this.getPrimaryScrollView()) return undefined;
+		const first = parked.first(),
+			last = parked.last();
+		if (first === undefined || last === undefined) {
+			this.parkedPrompt = undefined;
+			return undefined;
+		}
+		return top >= first && top <= last ? parked.row : undefined;
+	}
+
 	private compositeScrollPinnedPrompt(screen: string[], layout: LayoutFrame, width: number): string[] {
 		if (!this.scrollPinnedPrompt) return screen;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
@@ -2467,7 +2505,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const lines = getScrollContentRows(box);
 		if (!clip || !lines || clip.width <= 0 || clip.height < 2) return screen;
 		const pin = this.scrollPinnedPrompt;
-		const promptRow = turnPromptAbove(lines, scrollView.scrollTop, pin.isPrompt);
+		const promptRow = this.pinnedPromptAt(lines, scrollView.scrollTop, pin.isPrompt);
 		if (promptRow === undefined) return screen;
 		const row = clip.y;
 		if (row >= screen.length || isImageLine(screen[row] ?? "")) return screen;

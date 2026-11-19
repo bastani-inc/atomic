@@ -492,11 +492,12 @@ test("a compaction while the reader is above the end keeps their rows on screen 
 	const { mode, tui, transcript } = await parkAboveTheEnd(100);
 	terminalSelect(tui);
 	assert.equal(tui.hasActiveSelection(), true);
-	const parked = plainScreen(tui).slice(1);
+	const parked = plainScreen(tui);
+	assert.match(parked[0]!, /↑ .*Turn/);
 	assert.match(parked.join("\n"), /Turn 95: check/);
 	await compactLive(mode, null);
 	tui.renderNow();
-	assert.deepEqual(plainScreen(tui).slice(1), parked, "the reader keeps the rows they were reading");
+	assert.deepEqual(plainScreen(tui), parked, "the reader keeps their pinned prompt and the rows they were reading");
 	assert.equal(transcript.isFollowingEnd, false);
 	assert.equal(tui.hasActiveSelection(), true, "the reader keeps their selection");
 	assertHoldsOnlyWhatIsShown(mode, tui);
@@ -528,6 +529,39 @@ test("a compaction while the reader is above the end keeps their rows on screen 
 		`saved rows stay in order, none repeated or skipped: ${below}`,
 	);
 });
+
+test.each([false, true])(
+	"the main chat keeps a stateful card from the live window when a clear keeps it: %s (#5593)",
+	async (keep) => {
+		const { mode, tui, transcript } = await openResumedSession(0);
+		let built = 0;
+		Object.assign(mode.session.extensionRunner, {
+			getMessageRenderer: (type: string) =>
+				type === "local-counter"
+					? () => {
+							const incarnation = ++built;
+							return { render: () => [`counter incarnation ${incarnation}`], invalidate() {} };
+						}
+					: undefined,
+		});
+		const id = await mode.sessionManager.appendCustomMessageEntry("local-counter", "Counter", true);
+		mode.renderInitialMessages();
+		tui.renderNow();
+		const counter = () => plainScreen(tui).find((line) => line.includes("counter incarnation"));
+		const before = counter();
+		assert.ok(before);
+		await compactLive(mode, keep ? id : null);
+		tui.renderNow();
+		if (!keep) {
+			transcript.scrollToStart();
+			for (let i = 0; i < 30 && !counter(); i++) {
+				await nextTurn();
+				tui.renderNow();
+			}
+		}
+		assert.equal(counter(), before, "the displayed widget keeps its original state");
+	},
+);
 
 test("a compaction that keeps the rows the reader sees draws them once, where they were (#5593)", async () => {
 	const { mode, tui, transcript } = await parkAboveTheEnd(100);
