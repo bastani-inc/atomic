@@ -223,7 +223,11 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			frameJson,
 			frameBytes,
 		);
-		return { status: "inserted", row: toRow((await select(executor, messageId))!) } as const;
+		const row = toRow((await select(executor, messageId))!);
+		// #5607: the rows counted for the recipient's cap are all ahead of this one, so its place costs no read of its own.
+		return queued === undefined
+			? ({ status: "inserted", row } as const)
+			: ({ status: "inserted", row, position: queued.rows + 1 } as const);
 	};
 
 	return {

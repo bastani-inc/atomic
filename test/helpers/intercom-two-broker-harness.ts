@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -56,6 +56,7 @@ const STORAGE_OPEN_GATE = "storage-open-gate";
 const REGISTRATION_GATE = "registration-gate";
 const PRESENCE_READ_GATE = "presence-read-gate";
 const RESERVATION_GATE = "reservation-gate";
+const ID_CLAIM_STALL_GATE = "id-claim-stall-gate";
 
 export interface ReceivedFrame {
 	readonly from: SessionInfo;
@@ -127,6 +128,8 @@ export interface TwoBrokerHarnessOptions {
 	readonly parkableReservations?: true;
 	/** This node's broker can park one read of an identity's presence lease (`holdPresenceRead`). */
 	readonly parkablePresenceRead?: BrokerNode;
+	/** Every broker can stall while it claims an id back (`stallIdClaim`). */
+	readonly stallableIdClaims?: true;
 	/** The nodes to run, each with its own broker over the one shared storage; default `BROKER_NODES`. */
 	readonly nodes?: readonly BrokerNode[];
 	/** Added to every broker's environment, as a shortened bound (`ATOMIC_INTERCOM_LOST_RECIPIENT_AFTER_MS`). */
@@ -156,6 +159,7 @@ function nodeSettings(
 	registrationGate?: string,
 	presenceReadGate?: string,
 	reservationGate?: string,
+	idClaimStallGate?: string,
 ): string {
 	return JSON.stringify({
 		storage: {
@@ -167,6 +171,7 @@ function nodeSettings(
 				...(registrationGate === undefined ? {} : { registrationGate }),
 				...(presenceReadGate === undefined ? {} : { presenceReadGate }),
 				...(reservationGate === undefined ? {} : { reservationGate }),
+				...(idClaimStallGate === undefined ? {} : { idClaimStallGate }),
 			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
@@ -235,9 +240,18 @@ export class TwoBrokerHarness {
 			const registrationGate = options.parkableRegistrations === true ? join(root, REGISTRATION_GATE) : undefined;
 			const presenceReadGate = options.parkablePresenceRead === node ? join(root, PRESENCE_READ_GATE) : undefined;
 			const reservationGate = options.parkableReservations === true ? join(root, RESERVATION_GATE) : undefined;
+			const idClaimStallGate = options.stallableIdClaims === true ? join(root, ID_CLAIM_STALL_GATE) : undefined;
 			writeFileSync(
 				join(agentDir, "settings.json"),
-				nodeSettings(sharedDatabasePath, options, openGate, registrationGate, presenceReadGate, reservationGate),
+				nodeSettings(
+					sharedDatabasePath,
+					options,
+					openGate,
+					registrationGate,
+					presenceReadGate,
+					reservationGate,
+					idClaimStallGate,
+				),
 			);
 			nodes[node] = {
 				fixture: new IntercomBrokerFixture(agentDir),
@@ -360,6 +374,20 @@ export class TwoBrokerHarness {
 	/** Let every parked reservation write go. */
 	releaseReservation(): void {
 		rmSync(join(this.root, RESERVATION_GATE), { force: true });
+	}
+
+	/**
+	 * #5607: the next claim of an id back for `returnAddress` (`stallableIdClaims`) gets no answer from the shared database,
+	 * and the broker making it does not run for `stallMs` right after it asked.
+	 */
+	stallIdClaim(returnAddress: string, stallMs: number): void {
+		writeFileSync(join(this.root, ID_CLAIM_STALL_GATE), JSON.stringify({ returnAddress, stallMs }));
+	}
+
+	/** Whether a broker has stalled on the claim `stallIdClaim` set up for `returnAddress`. */
+	idClaimStalled(returnAddress: string): boolean {
+		const stalled = join(this.root, `${ID_CLAIM_STALL_GATE}.stalled`);
+		return existsSync(stalled) && readFileSync(stalled, "utf8").split("\n").includes(returnAddress);
 	}
 
 	agentDir(node: BrokerNode): string {

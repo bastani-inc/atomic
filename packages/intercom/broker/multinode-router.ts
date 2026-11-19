@@ -145,9 +145,19 @@ export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
  * The longest a registration that asks for its id back waits for the shared database to bind it, before the presence
  * wait: both together stay within the client's 10 s. Past it the session gets a fresh id, never an unchecked one.
  * #5607: counted in this broker's running time (`runningTimeBound`), so a stall of its own is not taken for the
- * database not answering.
+ * database not answering, within `SESSION_ID_CLAIM_WALL_LIMIT_MS`.
  */
 export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
+/**
+ * #5607: however long this broker stalls, the claim ends once this much time has passed: with the presence wait after
+ * it, registration still answers within the client's 10 s.
+ */
+const SESSION_ID_CLAIM_WALL_LIMIT_MS = 4_500;
+/**
+ * #5607: the most a stall of this broker may add to the other `runningTimeBound`s over the plain wall-clock bound each
+ * replaced, so a sender waiting on one still has its answer in time.
+ */
+const RUNNING_TIME_STALL_ALLOWANCE_MS = 2_500;
 /** #5607: how often a `runningTimeBound` counts this broker's running time. */
 const RUNNING_TIME_TICK_MS = 100;
 /** #5607: a tick that comes this much later than the one before ran after a delay of this broker's event loop. */
@@ -159,11 +169,14 @@ const RUNNING_TIME_LATE_MS = 2 * RUNNING_TIME_TICK_MS;
  * answer that arrived meanwhile is read only after the timers that came due, so a wall-clock bound would expire on it
  * first. Here a delay counts as one tick, and the first tick after a delay never ends the bound: the answers that
  * arrived meanwhile are read before the next tick. A database that does not answer still ends the bound after `ms` of
- * the broker running, and a broker that keeps running late ends it on its second late tick in a row.
+ * the broker running, and a broker that keeps running late ends it on its second late tick in a row. Whatever the
+ * stalls, the first tick once `wallMs` have passed ends it, as a wall-clock bound of `wallMs` would, so what waits on
+ * the bound is never answered later than that.
  */
-function runningTimeBound(ms: number, expire: () => void): () => void {
+function runningTimeBound(ms: number, wallMs: number, expire: () => void): () => void {
 	let remaining = Math.ceil(ms / RUNNING_TIME_TICK_MS);
-	let previous = performance.now();
+	const started = performance.now();
+	let previous = started;
 	let previousLate = false;
 	const ticks = setInterval(() => {
 		const now = performance.now();
@@ -172,7 +185,7 @@ function runningTimeBound(ms: number, expire: () => void): () => void {
 		previous = now;
 		previousLate = late;
 		remaining--;
-		if (remaining > 0 || afterDelay) return;
+		if (now - started < wallMs && (remaining > 0 || afterDelay)) return;
 		clearInterval(ticks);
 		expire();
 	}, RUNNING_TIME_TICK_MS);
@@ -643,7 +656,9 @@ export class MultiNodeRouter {
 					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
 					.then((result) => result.status === "bound"),
 				new Promise<boolean>((resolve) => {
-					cancelBound = runningTimeBound(SESSION_ID_CLAIM_BOUND_MS, () => resolve(false));
+					cancelBound = runningTimeBound(SESSION_ID_CLAIM_BOUND_MS, SESSION_ID_CLAIM_WALL_LIMIT_MS, () =>
+						resolve(false),
+					);
 				}),
 			]);
 		} catch (error) {
@@ -976,7 +991,7 @@ export class MultiNodeRouter {
 			if (enqueued.status === "inserted") {
 				if (owner.hostBrokerId !== undefined) {
 					await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
-				} else await this.wakeHolderOf(owner.identity, enqueued.row.sequence);
+				} else void this.wakeHolderOf(owner.identity, enqueued.row.sequence);
 			}
 			await this.state.releasedAsks.claim({
 				questionId: ask.questionId,
@@ -1095,7 +1110,7 @@ export class MultiNodeRouter {
 			if (enqueued.status === "inserted") {
 				if (hosted !== undefined) {
 					await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
-				} else await this.wakeHolderOf(asker.targetIdentity, enqueued.row.sequence);
+				} else void this.wakeHolderOf(asker.targetIdentity, enqueued.row.sequence);
 			}
 		}
 	}
@@ -1306,7 +1321,11 @@ export class MultiNodeRouter {
 		if (this.closed) return Promise.resolve(false);
 		const earlier = this.serials.get(targetIdentity) ?? Promise.resolve();
 		return new Promise((resolve) => {
-			const cancelBound = runningTimeBound(REMOTE_SESSIONS_BOUND_MS, () => resolve(false));
+			const cancelBound = runningTimeBound(
+				REMOTE_SESSIONS_BOUND_MS,
+				REMOTE_SESSIONS_BOUND_MS + RUNNING_TIME_STALL_ALLOWANCE_MS,
+				() => resolve(false),
+			);
 			void earlier
 				.then(() => this.state.leases.read({ kind: "presence", targetIdentity }))
 				.then(
@@ -1821,7 +1840,7 @@ export class MultiNodeRouter {
 		const boundMs = request.requirePendingReply ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
 		let cancelBound: (() => void) | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			cancelBound = runningTimeBound(boundMs, () => resolve("expired"));
+			cancelBound = runningTimeBound(boundMs, boundMs + RUNNING_TIME_STALL_ALLOWANCE_MS, () => resolve("expired"));
 		});
 		try {
 			if ((await Promise.race([adopted, expired])) === "expired") {
@@ -2017,7 +2036,13 @@ export class MultiNodeRouter {
 			this.fail(request, outboxFullReason(enqueued));
 			return;
 		}
-		await this.answerExistingRow(request, { ...owner, groups: new Set(), gates: {} }, digest, enqueued.row);
+		await this.answerExistingRow(
+			request,
+			{ ...owner, groups: new Set(), gates: {} },
+			digest,
+			enqueued.row,
+			enqueued.status === "inserted" ? enqueued : undefined,
+		);
 	}
 
 	/** #4386: a reply that claimed its question but left no row to hand over gives the question back to other replies. */
@@ -2081,7 +2106,11 @@ export class MultiNodeRouter {
 		});
 		let cancelBound: (() => void) | undefined;
 		const expired = new Promise<"expired">((resolve) => {
-			cancelBound = runningTimeBound(LOCAL_RETRY_LOOKUP_BOUND_MS, () => resolve("expired"));
+			cancelBound = runningTimeBound(
+				LOCAL_RETRY_LOOKUP_BOUND_MS,
+				LOCAL_RETRY_LOOKUP_BOUND_MS + RUNNING_TIME_STALL_ALLOWANCE_MS,
+				() => resolve("expired"),
+			);
 		});
 		try {
 			const existing = await Promise.race([lookup, expired]);
@@ -2300,7 +2329,7 @@ export class MultiNodeRouter {
 				replyTo: message.replyTo!,
 			});
 		}
-		await this.answerExistingRow(request, target, digest, enqueued.row);
+		await this.answerExistingRow(request, target, digest, enqueued.row, enqueued.status === "inserted" ? enqueued : undefined);
 	}
 
 	/**
@@ -2368,12 +2397,16 @@ export class MultiNodeRouter {
 		return true;
 	}
 
-	/** Report a row's current state to its sender, and keep waiting on it until it settles. */
+	/**
+	 * Report a row's current state to its sender, and keep waiting on it until it settles. `inserted`: this send just
+	 * wrote the row.
+	 */
 	private async answerExistingRow(
 		request: RemoteSendRequest,
 		target: RemoteTarget,
 		digest: string,
 		row: OutboxRow,
+		inserted?: { readonly position?: number },
 	): Promise<void> {
 		const { message } = request;
 		if (row.digest !== digest || row.targetIdentity !== target.identity) {
@@ -2412,8 +2445,12 @@ export class MultiNodeRouter {
 		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
 		this.waiters.set(message.id, waiter);
 		if (offline) {
-			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
-			await this.wakeHolderOf(target.identity, row.sequence);
+			if (inserted?.position === undefined) {
+				await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
+			} else this.host.write(request.socket, queuedFrame(message.id, request.attemptId, inserted.position));
+			// #5607: only the send that wrote the row looks again; its place came with the write, so the look costs no
+			// statement more than queuing did before.
+			if (inserted !== undefined) await this.wakeHolderOf(target.identity, row.sequence);
 			return;
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
@@ -2428,15 +2465,16 @@ export class MultiNodeRouter {
 	 * #5607: a row was written for a target that had no live presence when this broker looked. The target may have
 	 * registered since, and its broker's catch-up scan may have run before the row was written, so that broker would not
 	 * find it until a backup poll. Looked up again now the row exists, the broker that holds its presence is told. Only a
-	 * hint: a lookup or hint that fails leaves the row to that backup poll, as before, and fails nothing else.
+	 * hint: one lookup and at most one hint, which nothing waits for (a departure goes on without it), and a lookup or
+	 * hint that fails leaves the row to that backup poll, as before, and fails nothing else.
 	 */
 	private async wakeHolderOf(targetIdentity: string, version: number): Promise<void> {
 		try {
 			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
-			if (read.status !== "found" || read.lease.ageMs >= BROKER_LEASE_STALE_AFTER_MS) return;
+			if (this.closed || read.status !== "found" || read.lease.ageMs >= BROKER_LEASE_STALE_AFTER_MS) return;
 			await this.bus.publish({ brokerId: read.lease.holderId, reason: "outbox", version });
 		} catch (error) {
-			this.report(error);
+			if (!this.closed) this.report(error);
 		}
 	}
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
@@ -141,6 +142,60 @@ function withPresenceReadGate(database: SqliteDatabase, gate: string): SqliteDat
 }
 
 /**
+ * #5607: the broker stalls while it claims an id back for the return address named in the file at `gate` (JSON
+ * `{ returnAddress, stallMs }`). The shared database binds the id but its answer never reaches the broker, and right
+ * after it asked, the broker's event loop does not run for `stallMs`, as on a host that stops scheduling it. Once: the
+ * file is removed as it fires, and `<gate>.stalled` names the address.
+ */
+function withIdClaimStall(database: SqliteDatabase, gate: string): SqliteDatabase {
+	const stallIfNamed = async <T>(returnAddress: SqliteValue | undefined, answer: T): Promise<T> => {
+		let named: { readonly returnAddress?: unknown; readonly stallMs?: unknown } = {};
+		try {
+			named = JSON.parse(readFileSync(gate, "utf8")) as typeof named;
+		} catch {
+			return answer;
+		}
+		if (returnAddress === undefined || named.returnAddress !== returnAddress || typeof named.stallMs !== "number") {
+			return answer;
+		}
+		rmSync(gate, { force: true });
+		writeFileSync(`${gate}.stalled`, `${returnAddress}\n`);
+		const until = performance.now() + named.stallMs;
+		while (performance.now() < until) {
+			// Busy: nothing else in the broker runs.
+		}
+		return new Promise<T>(() => {});
+	};
+	return {
+		descriptor: database.descriptor,
+		exec: (sql) => database.exec(sql),
+		run: (sql, ...params) => database.run(sql, ...params),
+		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.get<T>(sql, ...params),
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.all<T>(sql, ...params),
+		transaction: async (callback, options) => {
+			let returnAddress: SqliteValue | undefined;
+			const answer = await database.transaction(
+				(tx) =>
+					callback({
+						exec: (sql) => tx.exec(sql),
+						run: (sql, ...params) => {
+							if (/^\s*INSERT INTO \w*intercom_session_bindings\(.*\)\s*VALUES \(\?, \?,/su.test(sql)) {
+								returnAddress = params[1];
+							}
+							return tx.run(sql, ...params);
+						},
+						get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => tx.get<T>(sql, ...params),
+						all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => tx.all<T>(sql, ...params),
+					}),
+				options,
+			);
+			return stallIfNamed(returnAddress, answer);
+		},
+		close: () => database.close(),
+	};
+}
+
+/**
  * Holds the Intercom broker's opening (domain "intercom") on the file at `gate`: missing, it waits; `fail`, the
  * opening fails; `open`, it proceeds.
  */
@@ -182,10 +237,14 @@ export default {
 			typeof options.presenceReadGate === "string"
 				? withPresenceReadGate(registrationGated, options.presenceReadGate)
 				: registrationGated;
-		const gated =
+		const reservationGated =
 			typeof options.reservationGate === "string"
 				? withReservationGate(presenceGated, options.reservationGate)
 				: presenceGated;
+		const gated =
+			typeof options.idClaimStallGate === "string"
+				? withIdClaimStall(reservationGated, options.idClaimStallGate)
+				: reservationGated;
 		if (typeof options.callDelayMs === "number") return withCallDelay(gated, options.callDelayMs);
 		return gated;
 	},
