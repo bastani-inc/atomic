@@ -676,10 +676,12 @@ test("a second failed host in the same command provisioner slot holds growth for
 });
 
 test("joinHosts matches provider hosts to registered hosts by provider id or host id, with their leases and drains (#4768)", () => {
+	// A custom provider can expose the reported fields through its host object's prototype.
+	const vm2: ProvisionedHost = Object.create({ id: "vm-2", hostId: "h2", state: "running", since: 2 });
 	const joined = joinHosts(
 		[
 			{ id: "vm-1", state: "running", since: 1 },
-			{ id: "vm-2", hostId: "h2", state: "running", since: 2 },
+			vm2,
 			{ id: "vm-3", state: "pending", since: 3 },
 			{ id: "vm-4", hostId: "h4", state: "running", since: 4 },
 		],

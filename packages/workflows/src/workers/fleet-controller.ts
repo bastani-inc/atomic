@@ -604,7 +604,10 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 		const leased = [...holders].reduce((total, host) => total + (snapshot.leased.get(host) ?? 0), orphaned);
 		return {
 			view: {
-				...provided,
+				id: provided.id,
+				...(provided.hostId === undefined ? {} : { hostId: provided.hostId }),
+				state: provided.state,
+				since: provided.since,
 				registered: registered?.live === true,
 				leased,
 				draining: drainHosts.length > 0,
