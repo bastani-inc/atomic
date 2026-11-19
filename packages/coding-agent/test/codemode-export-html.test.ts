@@ -184,7 +184,7 @@ async function exportSavedMessages(dir: string, messages: unknown[]): Promise<Do
 	const output = join(dir, "out.html");
 	await promisify(execFile)(
 		"bun",
-		[fileURLToPath(new URL("../dist/cli.js", import.meta.url)), "--offline", "--export", input, output],
+		[fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "--offline", "--export", input, output],
 		{
 			cwd: dir,
 			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: join(dir, "profile") },
