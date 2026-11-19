@@ -68,17 +68,19 @@ These belong to the `IntercomBrokerError` family and are exported from `@bastani
 
 Atomic 0.10.0 removed workflows, and with them Intercom's workflow stage targets, stage routes and workflow invocation groups. The protocol range is unchanged, so a broker of either version keeps serving sessions of the other, and neither replaces the other: whichever broker is running stays. Sends, asks, replies, groups, subagent targets and multi-node routing work across versions as before.
 
-A 0.9.x session can still run a workflow while a 0.10.0 broker is running. The broker never closes the connection over a workflow request, so the session keeps messaging. It answers each request with a frame 0.9.x already handles:
+0.9.x workflows keep running while a 0.10.0 broker is running. The broker never closes a connection over a workflow request, so the session keeps messaging. It answers each request with a frame 0.9.x already handles:
 
 | 0.9.x request | 0.10.0 broker's answer |
 | --- | --- |
-| Registering a run's pending-stage route | Refused in place (`not_authorized`, with a reason naming Atomic 0.10.0). A client from before 0.9.44 that registered without a protocol range is acknowledged instead, since it cannot read that refusal. |
+| Registering a run's pending-stage route | Acknowledged without creating a route. A 0.9.x run waits for this answer before it starts each stage, and would fail the stage on a refusal. |
 | Registering a running stage's live route | Acknowledged without creating a route. 0.9.x closes its connection and reconnects over every refusal it knows for this request, so a refusal would cost the stage its Intercom connection. |
 | Withdrawing a route, or claiming the run it launched | Acknowledged with nothing to withdraw; the claim is answered `claimed: false`. A 0.10.0 broker no longer advertises claims, so 0.9.x does not send one. |
-| A run's notice to a session | Refused with `delivery_failed`. |
+| A run's notice that a message queued for one of its stages will not be delivered | Sent on as an ordinary send from the run's connection to the message's sender, found again after a reconnect as a 0.9.x broker finds it. It is delivered when the sender is in the run's group, and answered as any send otherwise. Only a message that an earlier broker queued has such a notice. |
 | A released stage hosted with a live route | The session is hosted; its live route is refused (`owner_missing`). |
 
-A 0.10.0 broker refuses a send or ask to a `workflow:<rootRunId>/...` target with `delivery_failed` (`reasonCode` `session_not_found`, reason `Workflow stage targets (workflow:<rootRunId>/...) were removed in Atomic 0.10.0; ...`), and a 0.10.0 session refuses such a target itself, whatever broker is running. A `workflow:<rootRunId>` group is an ordinary group on a 0.10.0 broker: its sessions are listed and reached like any other group's. A 0.10.0 session on a 0.9.x broker never sends a workflow request and ignores the workflow rows that broker lists; it declines a workflow notice that broker hands it.
+A stage that has started registers as an ordinary session in its run's `workflow:<runId>` group. A session in that group, or one that joins it, reaches the stage by its ID or name, and the stage asks and answers its parent like any other session when they share a group. Messages sent to a stage that has not started are not queued for it: a send, ask or reply to a `workflow:<rootRunId>/...` target gets the answer any unknown name gets, `Session not found`. A 0.10.0 broker answers a 0.9.x session that way, and a 0.10.0 session answers its own such send that way without sending it, whatever broker is running.
+
+When a 0.10.0 broker takes over from an earlier one, a message that broker queued for a stage stays with the 0.9.x run. If the stage never starts, the run notifies the message's sender. A sender outside the run's group is not reached, and the 0.9.x run tries again at each later check of its queued messages, until the session ends. A `workflow:<rootRunId>` group is an ordinary group on a 0.10.0 broker: its sessions are listed and reached like any other group's. A 0.10.0 session on a 0.9.x broker never sends a workflow request and ignores the workflow rows that broker lists; it declines a workflow notice that broker hands it.
 
 ## How It Works
 
