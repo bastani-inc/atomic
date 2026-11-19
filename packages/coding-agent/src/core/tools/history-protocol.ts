@@ -170,10 +170,6 @@ function closeDiscovery(discovery: ParkedDiscovery): void {
 
 const parkedDiscoveries = new WeakMap<SessionStore, Map<string, ParkedDiscovery>>();
 
-const REMOVED_WORKFLOW_URL = /^history:\/\/workflows(?:[/?#:]|$)/;
-const WORKFLOW_HISTORY_REMOVED =
-	"Workflow history is no longer available. Atomic has not changed your old workflow store (by default, ~/.atomic/workflows/journal/). Use history://sessions for session transcripts.";
-
 const HISTORY_URL = /^history:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?$/;
 
 export const HISTORY_HELP = [
@@ -1176,7 +1172,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function readSelected(rawUrl: string, rawSelection: InternalReadSelection): Promise<string | undefined> {
 		if (!rawUrl.startsWith("history://")) return undefined;
-		if (REMOVED_WORKFLOW_URL.test(rawUrl)) return bounded(WORKFLOW_HISTORY_REMOVED);
 		const { url: input, selection } = normalizeInlineReadSelection(rawUrl, rawSelection);
 		const expanded = expandSearchUrl(input);
 		const target = parseTarget(expanded?.url ?? input);
@@ -1214,7 +1209,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		readSelected,
 		search: async (rawUrl, rawRequest) => {
 			if (!rawUrl.startsWith("history://")) return undefined;
-			if (REMOVED_WORKFLOW_URL.test(rawUrl)) return bounded(`history://workflows:0: [${WORKFLOW_HISTORY_REMOVED}]`);
 			const { url: input, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			// Don't expand a search position on a cancelled call. Plain URLs retain their original validation order.
 			if (/^history:\/\/sessions\/?\?(?:[^&]*&)*(?:o|order)=/.test(input)) request.signal?.throwIfAborted();

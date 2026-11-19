@@ -184,20 +184,12 @@ export interface NamedStorage {
 
 export class StorageCommandError extends Error {}
 
-/** The `storage` subcommands and the export and import options that went with workflows, removed in 0.10.0. */
-const REMOVED_COMMANDS: ReadonlySet<string> = new Set(["adopt", "consolidate"]);
-const REMOVED_TRANSFER_OPTIONS: ReadonlySet<string> = new Set(["--workflows", "--run", "--unfinished"]);
-
 /** Parse the arguments after `storage`. */
 export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	const [command, ...rest] = args;
 	if (command === undefined || command === "help" || args.includes("--help") || args.includes("-h")) {
 		return { kind: "help" };
 	}
-	if (command !== undefined && REMOVED_COMMANDS.has(command))
-		throw new StorageCommandError(
-			`"${APP_NAME} storage ${command}" was removed in 0.10.0 with workflows. Workflow journals and their runs are left where they are, unchanged.`,
-		);
 	if (command === "search-session") {
 		const [file, sessionId, pattern, cursor] = rest;
 		if (!file || !sessionId || !pattern || rest.length > 4)
@@ -216,10 +208,6 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			continue;
 		}
 		if ((command === "export" || command === "import") && arg === "--sessions") continue;
-		if ((command === "export" || command === "import") && REMOVED_TRANSFER_OPTIONS.has(arg))
-			throw new StorageCommandError(
-				`${arg} was removed in 0.10.0 with workflows: "${APP_NAME} storage ${command}" moves sessions only.`,
-			);
 		if (
 			((command === "join" || command === "migrate") &&
 				(arg === "--token-file" || arg === "--password-file" || arg === "--auth" || arg === "--prefix")) ||
