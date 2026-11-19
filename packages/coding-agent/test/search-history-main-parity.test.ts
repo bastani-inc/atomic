@@ -94,6 +94,17 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 		assert.deepEqual(result.details?.fileMatches, { [path]: 1 });
 	});
 
+	it("overlapping targets do not exhaust the output budget before their first page is shown (#5479)", async () => {
+		const path = "history://workflows/repeat";
+		const row = `${path}:1: needle ${"x".repeat(35_000)}`;
+		const router = { search: async () => row };
+		const page = (count: number) =>
+			search(router, { paths: Array.from({ length: count }, () => path), pattern: "needle" });
+		const first = textOf(await page(21));
+		assert.ok(first.endsWith("[20 matching files shown. Use skip=20 to view more.]"));
+		assert.equal(textOf(await page(470)), first);
+	});
+
 	it("removes repeated rows across partially overlapping target blocks (#5479)", async () => {
 		const path = "history://sessions/c";
 		const router = sessionsRouter(await storeWith([{ id: "c", day: 1, texts: ["needle 0", "needle 1"] }]));

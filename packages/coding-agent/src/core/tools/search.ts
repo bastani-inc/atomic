@@ -13,6 +13,7 @@ import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { runHistorySearch, waitForHistorySearch } from "./history-search-run.ts";
+import type { HistoryTargetSpan } from "./history-search-task.ts";
 import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
@@ -586,14 +587,11 @@ function historySkipPage(
 	const limit = DEFAULT_LIMIT;
 	const details: SearchToolDetails = {};
 	const renderedPages: string[] = [];
-	let remainingMatches = limit;
-	for (const group of groups.slice(skip)) {
-		if (remainingMatches <= 0) break;
+	for (const group of groups.slice(0, limit)) {
 		const raw = formatSearchGroups([group], 1);
-		remainingMatches--;
 		if (raw) renderedPages.push(raw);
 	}
-	const hasMorePages = groups.slice(skip + limit).length > 0;
+	const hasMorePages = groups.length > limit;
 	const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}`;
 	if (hasMorePages) markFileLimit(details, limit);
 	const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
@@ -608,7 +606,7 @@ function historySkipPage(
 /** Page a completed, one-step-per-target history search at the same boundaries as other virtual targets. */
 function historyTargetPage(
 	text: string,
-	ends: readonly number[],
+	spans: readonly HistoryTargetSpan[],
 	paths: string[],
 	skip: number,
 	cwd: string,
@@ -618,13 +616,15 @@ function historyTargetPage(
 	const blocks: string[] = [];
 	let remaining = DEFAULT_LIMIT,
 		more = false,
-		start = 0;
-	for (const end of ends) {
+		leftToSkip = skip;
+	for (const [start, end] of spans) {
 		const answer = text.slice(start, end);
-		start = end === 0 ? 0 : end + 1; // The task separates nonempty answers with one newline.
 		const outputGroups = groupSearchOutput(answer);
 		if (skip > 0) {
-			groups.push(...outputGroups);
+			const drop = Math.min(leftToSkip, outputGroups.length);
+			leftToSkip -= drop;
+			groups.push(...outputGroups.slice(drop, drop + DEFAULT_LIMIT + 1 - groups.length));
+			if (groups.length > DEFAULT_LIMIT) break;
 		} else if (remaining > 0) {
 			const page = firstTargetPage(answer, outputGroups, remaining, DEFAULT_LIMIT);
 			blocks.push(page.text);
@@ -755,7 +755,7 @@ export function createSearchToolDefinition(
 				validateBashWait(params.wait, owner?.startToolTask !== undefined);
 				const paths = historyTargets.map((target) => target.path);
 				const scopePath = paths.join(", ");
-				let targetEnds: readonly number[] | undefined;
+				let targetSpans: readonly HistoryTargetSpan[] | undefined;
 				return runHistorySearch({
 					urls: rawPaths,
 					pattern: params.pattern,
@@ -769,18 +769,23 @@ export function createSearchToolDefinition(
 					...(signal === undefined ? {} : { signal }),
 					owner,
 					tempDir,
-					onTargetsComplete: (ends) => {
-						targetEnds = ends;
+					onTargetsComplete: (spans) => {
+						targetSpans = spans;
 					},
 					shape: {
 						cwd: executionCwd,
 						scopePath,
 						skip,
 						page: (text) =>
-							targetEnds
-								? historyTargetPage(text, targetEnds, paths, skip, executionCwd, scopePath)
+							targetSpans
+								? historyTargetPage(text, targetSpans, paths, skip, executionCwd, scopePath)
 								: skip > 0
-									? historySkipPage(groupSearchOutput(text), skip, executionCwd, scopePath)
+									? historySkipPage(
+											groupSearchOutput(text).slice(skip, skip + DEFAULT_LIMIT + 1),
+											skip,
+											executionCwd,
+											scopePath,
+										)
 									: undefined,
 					},
 					...(onUpdate === undefined

@@ -56,6 +56,8 @@ export function historyContinuation(line: string): string | undefined {
 	return CONTINUATION.exec(`[${note[2]}]`)?.[1];
 }
 
+export type HistoryTargetSpan = readonly [start: number, end: number];
+
 export interface HistorySearchRun {
 	/** The `history://` URLs to search, each with its `:N-M` selection if it has one. */
 	readonly urls: readonly string[];
@@ -67,8 +69,8 @@ export interface HistorySearchRun {
 	readonly resources: InternalResourceContext | undefined;
 	/** Step budget override, for tests; omitted, {@link HISTORY_SEARCH_STEP_MS}. */
 	readonly stepMs?: number;
-	/** End offsets in the decoded output, one per requested target, if no target failed or needed a continuation. */
-	readonly onTargetsComplete?: (ends: readonly number[]) => void;
+	/** One range in the decoded output per requested target, if none failed or needed a continuation. */
+	readonly onTargetsComplete?: (spans: readonly HistoryTargetSpan[]) => void;
 }
 
 /**
@@ -102,24 +104,26 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 		let printedAny = false;
 		let printedBytes = 0;
 		let printedChars = 0;
-		let targetEnds: number[] | undefined = run.onTargetsComplete ? [] : undefined;
+		let targetSpans: HistoryTargetSpan[] | undefined = run.onTargetsComplete ? [] : undefined;
 		let full = false;
 		let failure: Error | undefined;
 		let succeeded = false;
-		const print = (text: string) => {
-			if (text.length === 0) return;
+		const print = (text: string): HistoryTargetSpan => {
+			if (text.length === 0) return [printedChars, printedChars];
+			const start = printedChars + (printedAny ? 1 : 0);
 			const chunk = `${printedAny ? "\n" : ""}${text}`;
 			write(chunk);
 			printedChars += chunk.length;
 			printedBytes += Buffer.byteLength(chunk, "utf8");
 			printedAny = true;
+			return [start, printedChars];
 		};
 		// What the latest steps answered, by digest: an answer the search already had prints nothing again. Its stops at
 		// the byte or row budget made no progress, so the chain does not follow them again (a source that hands back the
 		// page it was asked for must not loop forever). Its stops at the time budget are still waiting, for a store that
 		// has not answered yet: the chain follows them again, at most once a step, until the store answers or the
 		// search's timeout or a stop ends it.
-		const answered = new Set<string>();
+		const answered = new Map<string, HistoryTargetSpan>();
 		while (pending.length > 0) {
 			// A turn of the event loop before each step: a source that answers without waiting on anything would
 			// otherwise keep the loop in microtasks, where no timeout, stop or abort can ever run.
@@ -155,7 +159,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 					pending.unshift(url);
 					break;
 				}
-				targetEnds = undefined;
+				targetSpans = undefined;
 				// One source failing does not lose the others: say which, and where it could continue, and go on.
 				failure ??= error instanceof Error ? error : new Error(String(error));
 				const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
@@ -164,16 +168,11 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 			}
 			succeeded = true;
 			const lines = text.split("\n");
-			if (targetEnds && !lines.some((line) => historyContinuation(line) !== undefined)) {
-				// Independently requested targets may have identical answers. They are separate groups for skip,
-				// not a repeated continuation. Record boundaries without keeping a second copy of their text.
-				if (text && text !== "No matches found") print(text);
-				targetEnds.push(printedChars);
-				continue;
-			}
-			targetEnds = undefined;
 			const digest = createHash("sha256").update(text).digest("hex");
-			if (answered.has(digest)) {
+			const previous = answered.get(digest);
+			if (previous) {
+				// Identical answers need only one copy in task output, but each requested target counts for skip.
+				targetSpans?.push(previous);
 				const stuck: string[] = [];
 				const waiting: string[] = [];
 				for (const line of lines) {
@@ -192,8 +191,6 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				}
 				continue;
 			}
-			answered.add(digest);
-			if (answered.size > REMEMBERED_ANSWERS) answered.delete(answered.values().next().value!);
 			const next: string[] = [];
 			const kept = lines.flatMap((line) => {
 				const continuation = historyContinuation(line);
@@ -202,9 +199,13 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 				const note = followedStopNote(line);
 				return note === undefined ? [] : [note];
 			});
-			// Only the blank lines around what is left go: a line keeps its own text, trailing spaces included.
-			const shown = kept.join("\n").replace(/^\n+|\n+$/g, "");
-			if (shown.trim().length > 0 && shown !== "No matches found") print(shown);
+			if (next.length > 0) targetSpans = undefined;
+			// Keep direct answers intact. For a continuation remove only the blank lines around what is left.
+			const shown = targetSpans ? text : kept.join("\n").replace(/^\n+|\n+$/g, "");
+			const span = print(shown !== "No matches found" && (targetSpans || shown.trim()) ? shown : "");
+			targetSpans?.push(span);
+			answered.set(digest, span);
+			if (answered.size > REMEMBERED_ANSWERS) answered.delete(answered.keys().next().value!);
 			// What this step stopped at is searched before anything queued after it, so results stay in order.
 			pending.unshift(...next);
 		}
@@ -220,7 +221,7 @@ export function historySearchWork(run: HistorySearchRun): ToolTaskWork {
 		}
 		// Nothing could be searched at all: the search failed, as a single call would.
 		if (failure !== undefined && !succeeded) throw failure;
-		if (targetEnds && printedBytes <= TOOL_TASK_OUTPUT_MAX_BYTES) run.onTargetsComplete?.(targetEnds);
+		if (targetSpans && printedBytes <= TOOL_TASK_OUTPUT_MAX_BYTES) run.onTargetsComplete?.(targetSpans);
 		if (!printedAny) print("No matches found");
 		return "finished";
 	};
