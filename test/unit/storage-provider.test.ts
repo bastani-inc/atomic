@@ -239,7 +239,7 @@ test("a schema failure closes its owned database and evicts the failed selection
 		await repair.run("UPDATE session_meta SET schema_version = ?", 1);
 		await repair.close();
 		const journal = await provider.openSessionStore(selection, { agentDir: root, domain: "sessions" });
-		assert.deepEqual(await Array.fromAsync(journal.list()), []);
+		assert.deepEqual(await Array.fromAsync(journal.list({})), []);
 		await journal.close();
 		assert.equal(await readText(lifecycle), "open\nclose\nopen\nclose\n");
 	} finally {

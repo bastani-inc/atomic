@@ -47,6 +47,7 @@ const session = {
 	group: "workflow:run",
 };
 
+/** A 0.9.x host's live workflow-stage route, which this version refuses while hosting the session. */
 const liveRoute = { runId: "run", stageKeys: ["stage-1", "reviewer"], capability: "secret" };
 
 const refused = (code: string, key?: string) => ({
@@ -55,7 +56,7 @@ const refused = (code: string, key?: string) => ({
 });
 
 describe("host_sessions frames (#4642)", () => {
-	test("parses valid items, keeping return addresses and live routes", () => {
+	test("parses valid items, keeping return addresses and marking a 0.9.x host's live route", () => {
 		const frame: JsonWireValue = [
 			{ key: "a", session, returnAddress: "s1:released-stage", liveRoute },
 			{ key: "b", session: { ...session, name: "subagent-chat-2" } },
@@ -63,7 +64,7 @@ describe("host_sessions frames (#4642)", () => {
 		assert.deepEqual(validateHostSessionsFrame(frame), {
 			ok: true,
 			sessions: [
-				{ key: "a", session, returnAddress: "s1:released-stage", liveRoute },
+				{ key: "a", session, returnAddress: "s1:released-stage", liveRoute: true },
 				{ key: "b", session: { ...session, name: "subagent-chat-2" } },
 			],
 		});
@@ -113,32 +114,10 @@ describe("host_sessions frames (#4642)", () => {
 		);
 	});
 
-	test("refuses a blank return address and a malformed live route, naming the item's key", () => {
-		const invalidRoutes: JsonWireValue[] = [
-			"route",
-			{ ...liveRoute, runId: "" },
-			{ ...liveRoute, capability: " " },
-			{ ...liveRoute, stageKeys: [] },
-			{ ...liveRoute, stageKeys: ["a", "b", "c"] },
-			{ ...liveRoute, stageKeys: ["a", ""] },
-			{ ...liveRoute, stageKeys: "a" },
-		];
-		for (const route of invalidRoutes) {
-			assert.deepEqual(
-				validateHostSessionsFrame([{ key: "a", session, liveRoute: route }]),
-				refused("invalid_hosted_session", "a"),
-			);
-		}
+	test("refuses a blank return address, naming the item's key", () => {
 		assert.deepEqual(
 			validateHostSessionsFrame([{ key: "a", session, returnAddress: "" }]),
 			refused("invalid_hosted_session", "a"),
-		);
-		assert.deepEqual(
-			validateHostSessionsFrame([{ key: "a", session, liveRoute: { ...liveRoute, stageKeys: ["a"] } }]),
-			{
-				ok: true,
-				sessions: [{ key: "a", session, liveRoute: { ...liveRoute, stageKeys: ["a"] } }],
-			},
 		);
 	});
 
@@ -152,6 +131,7 @@ describe("host_sessions frames (#4642)", () => {
 	});
 
 	test("reads the broker's assignments and refuses a malformed answer", () => {
+		// A 0.9.x broker's `liveRouteRefusal`, for a route this version never asks for, is not read.
 		assert.deepEqual(
 			readHostedSessionAssignments([
 				{ key: "a", sessionId: "s1" },
@@ -159,7 +139,7 @@ describe("host_sessions frames (#4642)", () => {
 			]),
 			[
 				{ key: "a", sessionId: "s1" },
-				{ key: "b", sessionId: "s2", liveRouteRefusal: "owner_missing" },
+				{ key: "b", sessionId: "s2" },
 			],
 		);
 		assert.deepEqual(readHostedSessionAssignments([]), []);
@@ -169,7 +149,6 @@ describe("host_sessions frames (#4642)", () => {
 			[null],
 			[{ key: 1, sessionId: "s1" }],
 			[{ key: "a", sessionId: "" }],
-			[{ key: "a", sessionId: "s1", liveRouteRefusal: "nope" }],
 		]) {
 			assert.equal(readHostedSessionAssignments(invalid as JsonWireValue), undefined, JSON.stringify(invalid));
 		}
@@ -412,11 +391,11 @@ describe("hosted-session errors on the wire (#4642)", () => {
 		assert.deepEqual(readHostedSessionRefusal({ code: "invalid_hosted_frame" }), { code: "invalid_hosted_frame" });
 	});
 
-	test("a live route that is not an object refuses its item", () => {
-		for (const liveRoute of [null, "route", ["run", ["stage"], "cap"]]) {
+	test("a 0.9.x host's live route of any shape keeps its item hosted and is marked to be refused", () => {
+		for (const liveRoute of [null, "route", ["run", ["stage"], "cap"], { runId: "" }]) {
 			assert.deepEqual(
 				validateHostSessionsFrame([{ key: "a", session, liveRoute }] as JsonWireValue),
-				refused("invalid_hosted_session", "a"),
+				{ ok: true, sessions: [{ key: "a", session, liveRoute: true }] },
 				JSON.stringify(liveRoute),
 			);
 		}

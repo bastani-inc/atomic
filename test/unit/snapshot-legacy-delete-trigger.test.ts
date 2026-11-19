@@ -16,7 +16,6 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
-import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 
 interface Release0987BlobStore {
 	collectGarbage(options: { readonly graceSeconds: number }): Promise<readonly string[]>;
@@ -100,19 +99,13 @@ async function installLegacyConditionalTrigger(database: SqliteDatabase, prefix 
 	);
 }
 
-test.each(
-	["", "custom_"].flatMap((prefix) =>
-		[true, undefined].flatMap((readOnly) => ["session", "journal"].map((kind) => ({ prefix, readOnly, kind }))),
-	),
-)(
-	"opens a $kind store read-only with readOnly=$readOnly and the previous conditional delete trigger under prefix '$prefix' (#5327)",
-	async ({ prefix, readOnly, kind }) => {
+test.each(["", "custom_"].flatMap((prefix) => [true, undefined].map((readOnly) => ({ prefix, readOnly }))))(
+	"opens a session store read-only with readOnly=$readOnly and the previous conditional delete trigger under prefix '$prefix' (#5327)",
+	async ({ prefix, readOnly }) => {
 		const path = join(directory, "readonly.sqlite");
 		const writable = await openNodeSqliteDatabase(path);
 		closers.push(() => writable.close());
 		const original = await SqlSessionStore.open(writable, { prefix });
-		const journal = await SqlRunJournal.open(writable, { prefix });
-		closers.push(() => journal.close());
 		const blob = legacyBlob(17);
 		await original.snapshotBlobs.putBlobs([blob]);
 		await installLegacyConditionalTrigger(writable, prefix);
@@ -132,10 +125,7 @@ test.each(
 			...(readOnly === true ? { readOnly } : {}),
 		};
 		assert.equal(Object.hasOwn(facade, "readOnly"), readOnly === true);
-		const store =
-			kind === "session"
-				? await SqlSessionStore.open(facade, { prefix })
-				: await SqlRunJournal.open(facade, { prefix });
+		const store = await SqlSessionStore.open(facade, { prefix });
 		closers.push(() => store.close());
 		assert.ok(blob.data.equals((await store.snapshotBlobs.getBlob(blob.hash))!));
 		assert.ok(

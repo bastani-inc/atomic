@@ -93,7 +93,6 @@ beforeEach(() => {
 		connectCount += 1;
 	});
 	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
-	vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
 	vi.spyOn(IntercomClient.prototype, "isConnected").mockImplementation(() => state.connected);
 	vi.spyOn(IntercomClient.prototype, "sessionId", "get").mockImplementation(() => state.sessionId);
 	vi.spyOn(IntercomClient.prototype, "reserveReleasedChildren").mockImplementation(async (...args) => {

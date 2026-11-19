@@ -24,7 +24,6 @@ brokerFixture.overrideAgentDir();
 
 // The broker paths are read at module load, so every Intercom import follows the agent-dir override.
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
-const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 type ReleasedChildReply = import("../../packages/intercom/broker/client.js").ReleasedChildReply;
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");

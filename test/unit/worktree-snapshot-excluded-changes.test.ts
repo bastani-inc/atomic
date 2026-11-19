@@ -13,7 +13,6 @@ import {
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
 
-import { closeSnapshotJournals } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -21,7 +20,6 @@ beforeEach(() => {
 	sandbox = new GitSandbox();
 });
 afterEach(async () => {
-	await closeSnapshotJournals();
 	sandbox.dispose();
 });
 

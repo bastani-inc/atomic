@@ -1,13 +1,7 @@
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import type net from "node:net";
 import type { BrokerMessage, Message, SessionInfo } from "../types.js";
-import {
-	legacyWorkflowStageTargetMigrationHint,
-	parseLegacyWorkflowStageTarget,
-	parseWorkflowStageTarget,
-	workflowStageTargetSizeError,
-} from "../workflow-stage-target.js";
-import { normalizeGroup, workflowInvocationRefusalFor } from "../group.js";
+import { normalizeGroup } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
 import { intercomMessageSizeError } from "../message-size.js";
 import {
@@ -28,6 +22,7 @@ import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { type ReturnPathParty, type ReturnPaths, returnPathClosedReason } from "./return-paths.js";
 import { returnAddressOf } from "./multinode-state-store.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
+import { isWorkflowTarget, WORKFLOW_TARGET_REMOVED_REASON } from "./legacy-workflow-frames.js";
 
 export interface BrokerConnectedSession {
   socket: net.Socket;
@@ -86,34 +81,11 @@ export function deliveryTargetIdentity(session: BrokerConnectedSession): string 
 		? JSON.stringify(["session", session.info.id])
 		: JSON.stringify(["return", session.registrationReturnAddress, normalizeGroup(session.registrationGroup)]);
 }
-export interface PendingStageRoute {
-  readonly socket: net.Socket;
-  readonly from: BrokerConnectedSession;
-	readonly target: string;
-  readonly message: Message;
-  readonly attemptId?: string;
-	readonly liveTargetId?: string;
-	readonly signature?: string;
-	readonly resolveReplyTarget?: true;
-}
-
-export type PendingStageRouter = (route: PendingStageRoute) => boolean;
 export type ConfirmedMessageWriter = (
 	target: net.Socket,
 	message: BrokerMessage,
 	onSettled: (written: boolean) => void,
 ) => void;
-
-export type LiveWorkflowStageResolver = (target: string) => BrokerConnectedSession | undefined;
-export type LiveWorkflowStageController = (
-	sender: BrokerConnectedSession,
-	target: BrokerConnectedSession,
-	logicalTarget: string,
-) => boolean;
-
-export type LegacyWorkflowStageTargetResolver = (runId: string, stageKey: string) => string | undefined;
-export const PENDING_STAGE_ASK_REFUSAL =
-  "Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 
 /**
  * #3760: offered every send or ask that found no live recipient, before it fails with `Session not found`.
@@ -232,7 +204,7 @@ export function mayUseReturnPath(
 }
 
 /**
- * Multi-node S5: a validated send whose target no local session, local hold or workflow route resolved. The
+ * Multi-node S5: a validated send whose target no local session or local hold resolved. The
  * router answers it through the shared state (another broker's recipient, a shared hold or an offline session),
  * or calls `notFound`, which answers exactly as a single-node broker would.
  */
@@ -294,24 +266,13 @@ export function handleBrokerSend(
 	write: (target: net.Socket, message: BrokerMessage) => boolean,
 	supervisorCache: SupervisorChannelCache = new SupervisorChannelCache(),
 	pendingQuestions: PendingQuestionIndex = new PendingQuestionIndex(),
-	routePendingStage?: PendingStageRouter,
-	resolveLiveWorkflowStage?: LiveWorkflowStageResolver,
-	canControlLiveWorkflowStage?: LiveWorkflowStageController,
-	resolveLegacyWorkflowStageTarget?: LegacyWorkflowStageTargetResolver,
 	writeConfirmed?: ConfirmedMessageWriter,
-	isNonAgentWorkflowTarget?: (target: string) => boolean,
 	holdForRestoringRecipient?: RestoringRecipientHold,
 	receipts?: RecipientReceipts<BrokerConnectedSession>,
 	routeRemote?: RemoteSendRouter,
 	/** #4079: whether the sender's read-only `list` peek may inspect a group; names a hidden target's group. */
 	canPeekGroup?: (sender: BrokerConnectedSession, group: string) => boolean,
 	routeReleasedAskerReply?: ReleasedAskerReplyRouter,
-	/**
-	 * #4639: the `workflow:` target a workflow-stage session's name or id stands for, when this sender may reach that
-	 * stage; consulted only for a target nothing else resolved, so the stage is reached through its current session or
-	 * its run's queue even after the session that held the name was replaced or released.
-	 */
-	resolveWorkflowStageAlias?: (sender: BrokerConnectedSession, alias: string) => string | undefined,
 	returnPaths?: ReturnPathAuthority,
 ): void {
   const message = clientMessage.message;
@@ -401,13 +362,15 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor target does not match the authorized relationship" });
     return;
   }
-	const targetSizeError = workflowStageTargetSizeError(trimmedTo);
-	if (targetSizeError !== undefined) {
+	// Atomic 0.10.0 removed workflows: a 0.9.x session's send to a workflow stage target is refused, typed, never
+	// resolved as a session name.
+	if (isWorkflowTarget(trimmedTo)) {
 		write(socket, {
 			type: "delivery_failed",
 			messageId: message.id,
 			...(attemptId ? { attemptId } : {}),
-			reason: targetSizeError,
+			reason: WORKFLOW_TARGET_REMOVED_REASON,
+			reasonCode: "session_not_found",
 		});
 		return;
 	}
@@ -427,41 +390,11 @@ export function handleBrokerSend(
 	) {
 		return;
 	}
-	const workflowTarget = parseWorkflowStageTarget(trimmedTo);
-	if (isNonAgentWorkflowTarget?.(trimmedTo)) {
-		write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: NON_AGENT_RECIPIENT_REFUSAL });
-		return;
-	}
-	// Slice 3 (D3): asks to pattern/future stage targets stay refused; `send` is queued
-	// sticky by the workflow host, so the refusal must happen before any live delivery.
-	if (workflowTarget !== undefined && workflowTarget.kind !== "path" && message.expectsReply === true) {
-		write(socket, {
-			type: "delivery_failed",
-			messageId: message.id,
-			...(attemptId ? { attemptId } : {}),
-			reason: PENDING_STAGE_ASK_REFUSAL,
-		});
-		return;
-	}
-	const legacyTarget = parseLegacyWorkflowStageTarget(trimmedTo);
-	if (legacyTarget !== undefined) {
-		write(socket, {
-			type: "delivery_failed",
-			messageId: message.id,
-			...(attemptId ? { attemptId } : {}),
-			reason: legacyWorkflowStageTargetMigrationHint(
-				resolveLegacyWorkflowStageTarget?.(legacyTarget.runId, legacyTarget.stageKey),
-			),
-		});
-		return;
-	}
-
 
   // Exact-id targeting always resolves against the full pool so a cross-group id
   // is caught by the defense-in-depth group check below. Only a broker-authorized
   // supervisor frame or an exact recorded reply may resolve across groups.
-	const liveWorkflowTarget = sessions.has(trimmedTo) ? undefined : resolveLiveWorkflowStage?.(trimmedTo);
-	const exactIdTarget = sessions.get(trimmedTo) ?? liveWorkflowTarget;
+	const exactIdTarget = sessions.get(trimmedTo);
   const visibleCandidates = Array.from(sessions.values(), (session) => session.info).filter(
 	(info) => reachesSession(fromSession, info) ||
       (supervisorSend && info.id === fromSession.supervisorId) ||
@@ -552,54 +485,11 @@ export function handleBrokerSend(
         (info) => sessions.get(info.id)?.registrationReturnAddress,
       )
     : nameOrIdResolution;
-  // #4639: a supervisor that is a workflow stage whose session was released or replaced is reached through its stage,
-  // as a plain send: the stage's next session is not the session the supervisor channel was authorized for.
-  // #4751: a reply to an ask whose asker is a workflow stage released between turns reaches the stage like any other
-  // send to it, through its run's queue, which reopens it. The ask's route stays kept while the stage is away, so a
-  // reply whose delivery failed can be sent again; the stage's inbox shows a reply once however often it arrives.
-  const awayStageAsker =
-    resolution.kind === "not_found" && workflowTarget === undefined && requirePendingReply &&
-    message.replyTo !== undefined && pendingQuestions.hasDormantReply(message.replyTo, fromSession.info.id, fromSession.registrationReturnAddress) &&
-    resolveWorkflowStageAlias?.(fromSession, trimmedTo) !== undefined;
-  const stageTarget =
-    resolution.kind === "not_found" && workflowTarget === undefined &&
-    ((!requirePendingReply && expectedRecipientId === undefined) || awayStageAsker)
-      ? resolveWorkflowStageAlias?.(fromSession, trimmedTo)
-      : undefined;
-  if (stageTarget !== undefined) {
-    const { requirePendingReply: _pending, expectedRecipientId: _expected, ...plainSend } = clientMessage;
-    const stageSend = { ...(awayStageAsker ? plainSend : clientMessage), type: "send", to: stageTarget, logicalTarget: stageTarget };
-    sendersAtReceipt.set(stageSend, fromSession);
-    handleBrokerSend(
-      socket,
-      stageSend,
-      currentId,
-      sessions,
-      deliveredMessages,
-      write,
-      supervisorCache,
-      pendingQuestions,
-      routePendingStage,
-      resolveLiveWorkflowStage,
-      canControlLiveWorkflowStage,
-      resolveLegacyWorkflowStageTarget,
-      writeConfirmed,
-      isNonAgentWorkflowTarget,
-      holdForRestoringRecipient,
-      receipts,
-      routeRemote,
-      canPeekGroup,
-      routeReleasedAskerReply,
-      resolveWorkflowStageAlias,
-      returnPaths,
-    );
-    return;
-  }
   // #4751: a reply to an ask whose asker is closed (a top-level session that may resume) is held for it, once, and
   // delivered when it registers again; the replier learns that it is held. With multi-node routing, the shared outbox
   // queues it for the offline asker instead.
   const awayAsker =
-    routeRemote === undefined && resolution.kind === "not_found" && workflowTarget === undefined &&
+    routeRemote === undefined && resolution.kind === "not_found" &&
     requirePendingReply && message.replyTo !== undefined
       ? pendingQuestions.dormantReply(message.replyTo, fromSession.info.id, fromSession.registrationReturnAddress)
       : undefined;
@@ -630,7 +520,6 @@ export function handleBrokerSend(
   if (
     routeRemote !== undefined &&
     resolution.kind === "not_found" &&
-    workflowTarget === undefined &&
     !visibleCandidates.some((info) => !isAgentRecipient(info) && info.name?.toLowerCase() === trimmedTo.toLowerCase())
   ) {
     const send = clientMessage as SendClientMessage & { readonly to: string };
@@ -673,18 +562,12 @@ export function handleBrokerSend(
           write,
           supervisorCache,
           pendingQuestions,
-          routePendingStage,
-          resolveLiveWorkflowStage,
-          canControlLiveWorkflowStage,
-          resolveLegacyWorkflowStageTarget,
           writeConfirmed,
-          isNonAgentWorkflowTarget,
           holdForRestoringRecipient,
           receipts,
           undefined,
           canPeekGroup,
           routeReleasedAskerReply,
-          resolveWorkflowStageAlias,
           returnPaths,
         ),
     });
@@ -744,18 +627,12 @@ export function handleBrokerSend(
 					write,
 					supervisorCache,
 					pendingQuestions,
-					routePendingStage,
-					resolveLiveWorkflowStage,
-					canControlLiveWorkflowStage,
-					resolveLegacyWorkflowStageTarget,
 					writeConfirmed,
-					isNonAgentWorkflowTarget,
 					holdForRestoringRecipient,
 					receipts,
 					routeRemote,
 					canPeekGroup,
 					routeReleasedAskerReply,
-					resolveWorkflowStageAlias,
 					returnPaths,
 				);
 			},
@@ -819,18 +696,12 @@ export function handleBrokerSend(
 				write,
 				supervisorCache,
 				pendingQuestions,
-				routePendingStage,
-				resolveLiveWorkflowStage,
-				canControlLiveWorkflowStage,
-				resolveLegacyWorkflowStageTarget,
 				writeConfirmed,
-				isNonAgentWorkflowTarget,
 				holdForRestoringRecipient,
 				receipts,
 				routeRemote,
 				canPeekGroup,
 				routeReleasedAskerReply,
-				resolveWorkflowStageAlias,
 				returnPaths,
 			);
 		};
@@ -873,8 +744,7 @@ export function handleBrokerSend(
 			target: target.info,
 			supervisorCache,
 		}) ||
-		correlatedReply ||
-		(liveWorkflowTarget !== undefined && canControlLiveWorkflowStage?.(fromSession, target, trimmedTo) === true);
+		correlatedReply;
 	const crossesGroups = !bypass && !reachesSession(fromSession, target.info);
 	// A recipient answers a sender outside its reach that wrote to it, within the return path's bounds.
 	const returnPath = crossesGroups && mayUseReturnPath(message, supervisorSend, fromSession) ? returnPathParty(target) : undefined;
@@ -883,11 +753,7 @@ export function handleBrokerSend(
         type: "delivery_failed",
         messageId: message.id,
         attemptId,
-        // #4006: a live workflow stage is reached through its invocation; name the group to join,
-        // unless the sender is a workflow stage that joining could never authorize.
-        reason: liveWorkflowTarget !== undefined && workflowTarget !== undefined
-          ? workflowInvocationRefusalFor(fromSession.registrationGroup, `workflow:${workflowTarget.rootRunId}`)
-          : returnPath !== undefined && returnPaths?.closed(fromSession, returnPath) === true
+        reason: returnPath !== undefined && returnPaths?.closed(fromSession, returnPath) === true
             ? returnPathClosedReason(target.info.name ?? target.info.id)
             : fromSession.reach !== undefined
               ? outsideReachReason(fromSession.reach)
@@ -951,22 +817,6 @@ export function handleBrokerSend(
 		});
 		return;
 	}
-		if (
-			liveWorkflowTarget !== undefined &&
-			workflowTarget !== undefined &&
-			routePendingStage?.({
-				socket,
-				from: fromSession,
-				target: trimmedTo,
-				message,
-				...(attemptId ? { attemptId } : {}),
-				liveTargetId: target.info.id,
-				signature,
-				...(clientMessage.resolveReplyTarget === true ? { resolveReplyTarget: true } : {}),
-			})
-		) {
-			return;
-		}
     const outbound = messageFrameFor(target, fromSession.info, message, supervisorSend ? "supervisor" : undefined);
     const failDelivery = (): void => {
 	  if (reservation === "recorded") deliveredMessages.forget(message.id, signature);
@@ -1152,7 +1002,6 @@ export function handleBrokerSend(
 		resolution.kind === "not_found" &&
 		!supervisorSend &&
 		!requirePendingReply &&
-		workflowTarget === undefined &&
 		holdForRestoringRecipient?.({
 			socket,
 			from: fromSession,
@@ -1164,26 +1013,9 @@ export function handleBrokerSend(
 	) {
 		return;
 	}
-	if (
-		resolution.kind === "not_found" &&
-		!supervisorSend &&
-		routePendingStage !== undefined &&
-		workflowTarget !== undefined &&
-		routePendingStage({
-			socket,
-			from: fromSession,
-			target: trimmedTo,
-			message,
-			...(attemptId ? { attemptId } : {}),
-			signature,
-			...(clientMessage.resolveReplyTarget === true ? { resolveReplyTarget: true } : {}),
-		})
-	) {
-		return;
-	}
   const peekHint =
     resolution.kind === "not_found" && !supervisorSend && !requirePendingReply && expectedRecipientId === undefined &&
-    message.replyTo === undefined && workflowTarget === undefined && canPeekGroup !== undefined
+    message.replyTo === undefined && canPeekGroup !== undefined
       ? liveInPeekableGroupReason(sessions, fromSession, trimmedTo, canPeekGroup)
       : undefined;
   const targetFailure = sessionTargetFailureReason(clientMessage.to, resolution);
@@ -1204,8 +1036,6 @@ export function handleBrokerSend(
  * #4079: a target outside every group the sender shares that is live in a group the sender's read-only `list`
  * peek already shows. Names one such group so the sender knows to join it. A target visible only in groups the
  * peek refuses, or matching more than one peekable session, gets no hint, so this reveals nothing `list` hides.
- * Workflow groups keep their own ownership rules: a workflow stage is never told to join a group outside its run,
- * and no sender is told to join a `workflow:` group, since joining one is how a host takes control of a run.
  */
 function liveInPeekableGroupReason(
   sessions: Map<string, BrokerConnectedSession>,
@@ -1213,13 +1043,10 @@ function liveInPeekableGroupReason(
   target: string,
   canPeekGroup: (sender: BrokerConnectedSession, group: string) => boolean,
 ): string | undefined {
-  if (normalizeGroup(sender.registrationGroup ?? sender.info.group).startsWith("workflow:")) return undefined;
   const peekable = new Map<string, string>();
   for (const { info } of sessions.values()) {
     if (info.id === sender.info.id || !isAgentRecipient(info) || reachesSession(sender, info)) continue;
-    const group = [...sessionGroups(info)].find(
-      (candidate) => !candidate.startsWith("workflow:") && canPeekGroup(sender, candidate),
-    );
+    const group = [...sessionGroups(info)].find((candidate) => canPeekGroup(sender, candidate));
     if (group !== undefined) peekable.set(info.id, group);
   }
   const candidates = Array.from(peekable.keys(), (id) => sessions.get(id)!.info);

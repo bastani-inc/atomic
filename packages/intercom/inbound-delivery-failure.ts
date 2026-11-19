@@ -3,8 +3,8 @@ import type { InboundMessageAdmission, InboundMessageReservation } from "./inbou
 import type { InboundMessageEntry } from "./intercom-utils.js";
 import type { IntercomContext, ReplyTracker } from "./reply-tracker.js";
 
-/** Sends an exact-thread tool error when destination-side stage admission fails. */
-export async function sendWorkflowStageDeliveryFailure(
+/** Sends an exact-thread tool error when destination-side admission fails. */
+export async function sendInboundDeliveryFailure(
   entry: InboundMessageEntry,
   failure: Error,
   tracker: ReplyTracker,
@@ -29,8 +29,8 @@ export async function sendWorkflowStageDeliveryFailure(
   }
 }
 
-/** Builds the target-side rejection path for an open workflow-stage delivery. */
-export function createWorkflowStageDeliveryFailureHandler(input: {
+/** Builds the target-side rejection path for an arriving message the session could not admit. */
+export function createInboundDeliveryFailureHandler(input: {
   entry: InboundMessageEntry;
   admission: InboundMessageAdmission;
   reservation: InboundMessageReservation;
@@ -42,12 +42,12 @@ export function createWorkflowStageDeliveryFailureHandler(input: {
 }): (error: unknown) => Promise<void> {
   let settlement: Promise<void> | undefined;
   return (error) => {
-    settlement ??= settleOpenStageDeliveryFailure(input, error);
+    settlement ??= settleInboundDeliveryFailure(input, error);
     return settlement;
   };
 }
 
-async function settleOpenStageDeliveryFailure(
+async function settleInboundDeliveryFailure(
   input: {
     entry: InboundMessageEntry;
     admission: InboundMessageAdmission;
@@ -66,13 +66,13 @@ async function settleOpenStageDeliveryFailure(
     input.admission.release(input.reservation, failure);
     return;
   }
-  const delivered = await sendWorkflowStageDeliveryFailure(
+  const delivered = await sendInboundDeliveryFailure(
     input.entry,
     failure,
     input.tracker,
     input.currentClient,
     () => input.currentClient()?.isConnected() === true,
-    input.failurePrefix ?? "Running workflow stage could not admit intercom ask",
+    input.failurePrefix ?? "Recipient could not admit intercom ask",
   );
   if (delivered) input.commit();
   else input.admission.release(input.reservation, failure);

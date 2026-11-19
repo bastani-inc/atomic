@@ -19,7 +19,6 @@ const { isSubagentRecipientEndedError, isSubagentRecipientDisconnectedError, isI
 
 type Client = InstanceType<typeof IntercomClient>;
 type SendResult = Awaited<ReturnType<Client["send"]>>;
-type PendingStageMessageRequest = import("../../packages/intercom/broker/client.js").PendingStageMessageRequest;
 
 /** A real broker process: these tests cross its socket, its disconnect handling and its registration. */
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
@@ -36,7 +35,7 @@ async function connect(
 		ownerToken?: string;
 		supervisor?: { capability: string; supervisorSessionId: string };
 		returnAddress?: string;
-		/** The Intercom id a reopened session asks to keep, as a workflow stage's does. */
+		/** The Intercom id a reopened session asks to keep. */
 		preferredSessionId?: string | null;
 		group?: string;
 	} = {},
@@ -262,7 +261,7 @@ test(
 );
 
 test(
-	"what a launching session reported about its subagents outlives its connection, as a suspended stage's does (#4639)",
+	"what a launching session reported about its subagents outlives its connection (#4639)",
 	async () => {
 		const hostSession = randomUUID();
 		const owner = await connect("away-owner", { ownerToken: randomUUID(), returnAddress: hostSession });
@@ -334,7 +333,7 @@ test(
 );
 
 test(
-	"a released subagent of a launching session whose connection closed, as a suspended stage's does, keeps its sends held until that session is back and wakes it (#4639)",
+	"a released subagent of a launching session whose connection closed keeps its sends held until that session is back and wakes it (#4639)",
 	async () => {
 		const ownerSessionId = randomUUID();
 		const childName = "subagent-worker-suspended-1";
@@ -407,122 +406,13 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-const STAGE_RUN_ID = "46390000-3528-413e-84c4-87a43e5037a2";
-const STAGE_GROUP = `workflow:${STAGE_RUN_ID}`;
-const ROUTE_CAPABILITY = "issue-4639-route-capability";
-const LAUNCHER_CAPABILITY = "issue-4639-launcher-capability";
-const STAGE_TARGET = `workflow:${STAGE_RUN_ID}/orchestrator-id`;
-
-interface StageRoute {
-	readonly owner: Client;
-	readonly launcher: Client;
-	readonly requests: PendingStageMessageRequest[];
-}
-
-async function stageRoute(): Promise<StageRoute> {
-	const owner = await connect("issue-4639-route-owner", { group: STAGE_GROUP });
-	const requests: PendingStageMessageRequest[] = [];
-	owner.on("pending_stage_message", (request: PendingStageMessageRequest) => {
-		requests.push(request);
-		owner.respondPendingStageMessage(
-			request.requestId,
-			request.live === true ? { outcome: "forward", target: STAGE_TARGET } : { outcome: "queued", position: 1 },
-		);
-	});
-	await owner.registerPendingStageRouteAcknowledged(
-		STAGE_RUN_ID,
-		STAGE_GROUP,
-		ROUTE_CAPABILITY,
-		[
-			{
-				stageId: "orchestrator-id",
-				stageName: "orchestrator",
-				target: STAGE_TARGET,
-				lifecycle: "running",
-				routeEligible: true,
-				group: STAGE_GROUP,
-			},
-		],
-		undefined,
-		undefined,
-		undefined,
-		LAUNCHER_CAPABILITY,
-	);
-	const launcher = await connect("issue-4639-launcher");
-	assert.equal(await launcher.claimWorkflowInvocation(STAGE_RUN_ID, LAUNCHER_CAPABILITY), true);
-	return { owner, launcher, requests };
-}
-
-async function stageSession(
-	atomicSessionId: string,
-): Promise<{ readonly client: Client; readonly received: string[] }> {
-	const client = await connect(`subagent-chat-${atomicSessionId}`, {
-		group: STAGE_GROUP,
-		returnAddress: atomicSessionId,
-	});
-	const received: string[] = [];
-	client.on("message", (_from: object, message: { content: { text: string } }) => received.push(message.content.text));
-	client.registerPendingStageRoute(STAGE_RUN_ID, STAGE_GROUP, ROUTE_CAPABILITY);
-	await client.registerLiveWorkflowStageRoute(STAGE_RUN_ID, ["orchestrator-id", "orchestrator"], ROUTE_CAPABILITY);
-	return { client, received };
-}
-
 test(
-	"the session that launched a run reaches its live stage at the stage session's name, and at that name again after the stage's session is replaced or suspended (#4639)",
-	async () => {
-		const { owner, launcher, requests } = await stageRoute();
-		const firstSessionId = randomUUID();
-		const first = await stageSession(firstSessionId);
-		const firstName = `subagent-chat-${firstSessionId}`;
-
-		const live = await launcher.send(firstName, { text: "status?" });
-		assert.equal(live.delivered, true, live.reason);
-		await vi.waitFor(() => assert.deepEqual(first.received, ["status?"]), { timeout: 10_000, interval: 20 });
-
-		const firstIntercomId = first.client.sessionId;
-		await first.client.disconnect();
-		await untilGone(owner, firstIntercomId);
-		const suspended = await launcher.send(firstName, { text: "while you wait" });
-		assert.equal(suspended.delivered, false);
-		assert.equal(suspended.queued, true, suspended.reason);
-		assert.equal(suspended.target, STAGE_TARGET);
-		assert.equal(requests.at(-1)?.live, undefined, "queued for the stage, not forwarded to a live session");
-		assert.equal(requests.at(-1)?.message.content.text, "while you wait");
-
-		const replacementSessionId = randomUUID();
-		const replacement = await stageSession(replacementSessionId);
-		for (const alias of [firstName, firstSessionId, `subagent-chat-${replacementSessionId}`]) {
-			const sent = await launcher.send(alias, { text: `via ${alias}` });
-			assert.equal(sent.delivered, true, `${alias}: ${sent.reason}`);
-		}
-		await vi.waitFor(
-			() =>
-				assert.deepEqual(replacement.received, [
-					`via ${firstName}`,
-					`via ${firstSessionId}`,
-					`via subagent-chat-${replacementSessionId}`,
-				]),
-			{ timeout: 10_000, interval: 20 },
-		);
-		assert.deepEqual(first.received, ["status?"]);
-
-		const outsider = await connect("issue-4639-outsider", { group: "elsewhere" });
-		const hidden = await outsider.send(firstName, { text: "who is this?" });
-		assert.equal(hidden.reason, "Session not found", "a sender that cannot control the run learns nothing");
-	},
-	REAL_BROKER_TEST_TIMEOUT_MS,
-);
-
-test(
-	"a held send for a suspended launching session's released subagent ends with the typed owner-suspended error, and the run's end forgets the subagent (#4639)",
+	"a held send for a suspended launching session's released subagent ends with the typed owner-suspended error (#4639)",
 	async () => {
 		const { isSubagentRecipientOwnerSuspendedError } = await import(
 			"../../packages/intercom/broker/recipient-gone-errors.js"
 		);
-		const runId = "46390001-3528-413e-84c4-87a43e5037a2";
-		const group = `workflow:${runId}`;
-		const routeOwner = await connect("issue-4639-suspended-route", { group });
-		await routeOwner.registerPendingStageRouteAcknowledged(runId, group, "issue-4639-suspended-capability");
+		const group = "issue-4639-suspended-group";
 		const stageSessionId = randomUUID();
 		const childName = "subagent-worker-suspended-timeout-1";
 		const stage = await connect(`subagent-chat-${stageSessionId}`, {
@@ -542,14 +432,6 @@ test(
 		assert.equal(refused.reasonCode, "recipient_owner_suspended");
 		assert.equal(refused.error.retryable, true);
 		assert.deepEqual(refused.error.fields, { target: childName, childName });
-
-		const before = (await member.brokerStatus())?.reservations ?? 0;
-		const routeOwnerId = routeOwner.sessionId;
-		await routeOwner.disconnect();
-		await untilGone(member, routeOwnerId);
-		const forgotten = await member.send(childName, { text: "and now?" });
-		assert.equal(forgotten.reason, "Session not found", "the run ended: nobody keeps its stage's subagent any more");
-		assert.equal((await member.brokerStatus())?.reservations, before - 1);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

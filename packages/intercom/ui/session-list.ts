@@ -1,7 +1,7 @@
 import type { Component } from "@bastani/atomic-tui";
 import { clickableKeysHint, type KeyId, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
-import type { SessionInfo, WorkflowStageRosterEntry } from "../types.js";
+import type { SessionInfo } from "../types.js";
 import { terminalSafeLabel } from "./terminal-text.js";
 
 function formatKeyLabel(key: string): string {
@@ -77,7 +77,6 @@ export class SessionListOverlay implements Component {
   private done: (result: SessionInfo | undefined) => void;
   private sessions: SessionInfo[];
   private selectedIndex = 0;
-  private workflowStages: WorkflowStageRosterEntry[];
   private maxVisible = 8;
 
   constructor(
@@ -86,14 +85,12 @@ export class SessionListOverlay implements Component {
 	currentSession: SessionInfo,
 	sessions: SessionInfo[],
 	done: (result: SessionInfo | undefined) => void,
-	workflowStages: WorkflowStageRosterEntry[] = [],
   ) {
 	this.theme = theme;
 	this.keybindings = keybindings;
 	this.currentSession = currentSession;
 	this.sessions = sessions;
 	this.done = done;
-	this.workflowStages = workflowStages;
   }
 
   private onSessionSelect(sessionId: string): void {
@@ -191,21 +188,6 @@ export class SessionListOverlay implements Component {
       if (startIndex > 0 || endIndex < this.sessions.length) {
         lines.push(row());
         lines.push(row(this.theme.fg("dim", ` ${this.selectedIndex + 1}/${this.sessions.length}`)));
-      }
-    }
-
-    if (this.workflowStages.length > 0) {
-      // #2784: bound the stage block the same way the session region above is bounded, so a run
-      // with many materialized stages cannot push the footer and border off-screen.
-      const visibleStages = this.workflowStages.slice(0, this.maxVisible);
-      lines.push(row());
-      lines.push(row(this.theme.bold(" Workflow Stages")));
-      for (const stage of visibleStages) {
-        lines.push(row(`  ${terminalSafeLabel(stage.stageName)} [${stage.lifecycle.toUpperCase()}]`));
-        lines.push(row(`  ${this.theme.fg("dim", terminalSafeLabel(stage.target))}`));
-      }
-      if (visibleStages.length < this.workflowStages.length) {
-        lines.push(row(this.theme.fg("dim", ` ${visibleStages.length}/${this.workflowStages.length}`)));
       }
     }
 
