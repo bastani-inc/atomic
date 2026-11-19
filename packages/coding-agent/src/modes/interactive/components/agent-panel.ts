@@ -8,10 +8,11 @@ import {
 	isInterruptedPanelTask,
 	markInterruptedPanelTask,
 } from "../../../core/tasks/agent-panel-source.ts";
-import { spanElapsedMs, type TaskId } from "../../../core/tasks/contracts.js";
+import type { TaskId } from "../../../core/tasks/contracts.js";
 import {
 	bindTaskClock,
 	liveElapsedFromRead,
+	shownSpanMs,
 	TaskElapsedClocks,
 	taskClockOf,
 	taskClockRunning,
@@ -245,7 +246,10 @@ export class AgentPanelModel {
 		row = this.baseOf(row);
 		if (state === "queued") return row;
 		if (row.elapsedSpan) {
-			const elapsedMs = spanElapsedMs(row.elapsedSpan, now);
+			const sourceClocks = taskClockOf(row);
+			if (sourceClocks === undefined) this.hasLocalClocks = true;
+			const taskId = agentPanelTaskId(row.id) ?? row.id;
+			const elapsedMs = shownSpanMs(taskId, row.elapsedSpan, sourceClocks ?? this.elapsedClocks, now);
 			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
 		}
 		const running = taskClockRunning(state);

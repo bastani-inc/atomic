@@ -229,7 +229,7 @@ type OwnerState = {
 	tasks: Map<C.TaskId, TaskLease>;
 	watches: Set<TaskSubscription>;
 	/** The owner's records as {@link TaskSupervisor.taskRecords} last drained them; created on first use. */
-	recordIndex?: { readonly lease: native.SubscriptionLease; snapshot: C.OwnerSnapshot };
+	recordIndex?: { readonly lease: native.SubscriptionLease; snapshot: C.OwnerSnapshot; timed?: TimedRecords };
 	settledTasks: Set<C.TaskId>;
 	quarantinedTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
@@ -554,6 +554,57 @@ function timedRecord(task: C.TaskRecord, launches: LaunchMetadata, sample = fals
 					elapsedMs: sample || span.endedAt !== undefined ? C.spanElapsedMs(span) : (task.metrics?.elapsedMs ?? 0),
 				},
 			};
+}
+/** An owner's records as its last read returned them: a record whose span may still run is read again at each read. */
+type TimedRecords = {
+	readonly snapshot: C.OwnerSnapshot;
+	/** The positions of the records whose span may still be running. */
+	readonly live: readonly number[];
+	tasks: readonly C.TaskRecord[];
+	at: number;
+	/** Each live record's span as that read saw it: the span, its dispatch and its end. */
+	spans: readonly (C.TaskElapsedSpan | number | undefined)[];
+};
+/**
+ * The records with every running span read now. While no span runs and nothing changed, a read returns the same array
+ * as the last one, and the same records.
+ */
+function timedRecords(
+	snapshot: C.OwnerSnapshot,
+	launches: LaunchMetadata,
+	last: TimedRecords | undefined,
+): TimedRecords {
+	if (last?.snapshot !== snapshot) {
+		const live: number[] = [];
+		snapshot.tasks.forEach((task, at) => {
+			if (task.kind === "agent" && task.execution.kind !== "queued" && task.elapsedSpan?.endedAt === undefined)
+				live.push(at);
+		});
+		last = { snapshot, live, tasks: snapshot.tasks, at: Number.NaN, spans: [] };
+	}
+	if (last.live.length === 0) return last;
+	const now = Date.now();
+	let changed = false;
+	let running = false;
+	for (let k = 0; k < last.live.length; k++) {
+		const span = launches.agentSpans.get(snapshot.tasks[last.live[k]!]!.ref.taskId);
+		if (span !== undefined && span.endedAt === undefined) running = true;
+		if (
+			last.spans[3 * k] !== span ||
+			last.spans[3 * k + 1] !== span?.dispatchedAt ||
+			last.spans[3 * k + 2] !== span?.endedAt
+		)
+			changed = true;
+	}
+	if (!changed && (!running || last.at === now)) return last;
+	const tasks = [...snapshot.tasks];
+	const spans: (C.TaskElapsedSpan | number | undefined)[] = [];
+	for (const at of last.live) {
+		const span = launches.agentSpans.get(snapshot.tasks[at]!.ref.taskId);
+		spans.push(span, span?.dispatchedAt, span?.endedAt);
+		tasks[at] = timedRecord(snapshot.tasks[at]!, launches, true);
+	}
+	return { snapshot, live: last.live, tasks, at: now, spans };
 }
 function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
@@ -1771,13 +1822,10 @@ export class TaskSupervisor {
 	taskRecords(owner: OwnerLease, ids?: ReadonlySet<C.TaskId>): readonly C.TaskRecord[] {
 		const state = this.#owner(owner);
 		const current = this.#recordIndex(state);
-		if (!current) return [];
-		const tasks = ids === undefined ? current.tasks : current.tasks.filter((task) => ids.has(task.ref.taskId));
-		return state.launches.agentSpans.size === 0
-			? tasks
-			: tasks.map((task) =>
-					task.elapsedSpan?.endedAt !== undefined ? task : timedRecord(task, state.launches, true),
-				);
+		if (!current || !state.recordIndex) return [];
+		const timed = timedRecords(current, state.launches, state.recordIndex.timed);
+		state.recordIndex.timed = timed;
+		return ids === undefined ? timed.tasks : timed.tasks.filter((task) => ids.has(task.ref.taskId));
 	}
 	#recordIndex(state: OwnerState): C.OwnerSnapshot | undefined {
 		if (!state.recordIndex) {

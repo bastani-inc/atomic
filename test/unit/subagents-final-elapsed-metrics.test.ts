@@ -10,7 +10,15 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { taskPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { taskCompletionNotice } from "../../packages/coding-agent/src/core/tasks/completion.js";
-import type { ActivityReport, Sequence, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type {
+	ActivityReport,
+	Cleanup,
+	OperationId,
+	Sequence,
+	TaskElapsedSpan,
+	TaskId,
+	TaskResult,
+} from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
 	MIN_TASK_HEARTBEAT_MS,
 	type TaskHeartbeatMessage,
@@ -19,7 +27,10 @@ import {
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { taskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { rowMeta } from "../../packages/coding-agent/src/modes/interactive/components/task-board.js";
+import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { taskMetricsText } from "../../packages/coding-agent/src/modes/interactive/components/task-row.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import {
@@ -722,3 +733,257 @@ test(
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
+
+test(
+	"a running child's time in the panel, task details, board and footer never goes back when the wall clock steps back (#5570)",
+	async () => {
+		initTheme("dark", false);
+		const env = await liveChildEnvironment(cleanups);
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: "clock-step-back" },
+			authorizeLaunch() {},
+		});
+		const store = new OwnerTaskStore(host.ownerBinding.supervisor, host.ownerBinding.owner);
+		assert.ok(store.connect().ok);
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		let now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const panel = new AgentPanelModel(() => now);
+		let id: TaskId | undefined;
+		try {
+			const response = await runAgentTask({
+				host,
+				cwd: env.root,
+				agents: [agent],
+				agent: agent.name,
+				task: "stand by",
+				options: env.options("clock-step-back", {
+					testSession: { output: "done", promptGate: finish.promise, onSession: () => started.resolve() },
+				}),
+				runtime: { runSync },
+			});
+			assert.ok(response.kind === "admitted");
+			id = response.observation.taskId as TaskId;
+			await started.promise;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			store.drain();
+			const shown = () => {
+				const task = store.taskRecord(id!)!;
+				const footer = stripVTControlCharacters(renderTaskFooter(store, 120).join("\n"));
+				return {
+					panel: panel.withElapsed(taskPanelItem(task)).elapsedMs,
+					details: taskMetricsText(task).split(" · ")[0],
+					board: rowMeta({ id: task.ref.taskId, kind: "task", task }).split(" · ")[0],
+					footer: /\b\d+s\b/.exec(footer)?.[0],
+				};
+			};
+			now += 8000;
+			const before = shown();
+			assert.deepEqual(before, { panel: 8000, details: "8s", board: "8s", footer: "8s" });
+			now -= 3000;
+			assert.deepEqual(shown(), before, "a wall-clock step back must not lower the time already shown");
+			store.setTurnInterrupted(id, true);
+			store.setTurnInterrupted(id, false);
+			assert.deepEqual(shown(), before, "marking the same turn stopped and running again keeps its time");
+			now += 4000;
+			assert.deepEqual(shown(), { panel: 9000, details: "9s", board: "9s", footer: "9s" });
+		} finally {
+			finish.resolve();
+			if (id) await host.waitForTask(id);
+			store.dispose();
+			await host.close("session-close");
+			clock.mockRestore();
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test("an owner's task reads copy records only for a running child, once per moment (#5570)", async () => {
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "repeated-reads" }, authorizeLaunch() {} });
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	const gate = Promise.withResolvers<void>();
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const launch = (index: number, wait?: Promise<void>) =>
+		runAgentTask({
+			host,
+			cwd: process.cwd(),
+			agents: [agent],
+			agent: agent.name,
+			task: "answer",
+			options: { runId: `repeated-reads-${index}` },
+			runtime: {
+				runSync: async () => {
+					await wait;
+					return { agent: agent.name, task: "answer", status: "ok", output: "done", messages: [], usage };
+				},
+			},
+		});
+	try {
+		for (let index = 0; index < 3; index++) {
+			const response = await launch(index);
+			assert.ok(response.kind === "admitted");
+			assert.ok((await host.waitForTask(response.observation.taskId)).ok);
+		}
+		const idle = Array.from({ length: 64 }, () => host.taskRecords());
+		assert.equal(idle[0]!.length, 3);
+		assert.ok(idle[0]!.every((task) => task.elapsedSpan?.endedAt !== undefined));
+		assert.equal(new Set(idle).size, 1, "an idle owner's reads return one array");
+
+		const response = await launch(3, gate.promise);
+		assert.ok(response.kind === "admitted");
+		const id = response.observation.taskId;
+		const elapsed = (tasks: readonly { ref: { taskId: string }; metrics?: { elapsedMs?: number } }[]) =>
+			tasks.find((task) => task.ref.taskId === id)?.metrics?.elapsedMs;
+		await until(() => host.taskRecords().find((task) => task.ref.taskId === id)?.elapsedSpan !== undefined);
+		const moment = host.taskRecords();
+		assert.equal(host.taskRecords(), moment, "reads in the same moment return one array");
+		now += 1500;
+		const later = host.taskRecords();
+		assert.equal(elapsed(later)! - elapsed(moment)!, 1500);
+		const finished = later.filter((task) => task.ref.taskId !== id);
+		assert.ok(
+			finished.every((task, index) => task === idle[0]![index]),
+			"finished records are not copied again",
+		);
+	} finally {
+		gate.resolve();
+		await host.close("session-close");
+		clock.mockRestore();
+	}
+});
+
+test(
+	"after a wall-clock step back, an interrupted turn keeps the time shown and the next turn starts its own (#5570)",
+	async () => {
+		initTheme("dark", false);
+		const env = await liveChildEnvironment(cleanups);
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: "clock-next-turn" },
+			authorizeLaunch() {},
+		});
+		const store = new OwnerTaskStore(host.ownerBinding.supervisor, host.ownerBinding.owner);
+		assert.ok(store.connect().ok);
+		const gate = Promise.withResolvers<void>();
+		let prompt: ((message: string) => Promise<void>) | undefined;
+		let now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const panel = new AgentPanelModel(() => now);
+		try {
+			const response = await runAgentTask({
+				host,
+				cwd: env.root,
+				agents: [agent],
+				agent: agent.name,
+				task: "stand by",
+				options: env.options("clock-next-turn", {
+					testSession: {
+						output: "done",
+						promptGate: gate.promise,
+						abortResolvesPrompt: true,
+						abortEndsTurnOnly: true,
+						onSession: (session) => {
+							prompt = (message) => session.prompt(message);
+						},
+					},
+				}),
+				runtime: { runSync },
+			});
+			assert.ok(response.kind === "admitted");
+			const id = response.observation.taskId as TaskId;
+			const lease = host.resolveTask(id);
+			assert.ok(lease.ok);
+			const source = () => {
+				const bound = taskTranscriptSource(lease.value);
+				return bound.ok ? bound.value.session : undefined;
+			};
+			await until(() => source()?.isRunning?.() === true);
+			const record = () => {
+				store.drain();
+				return store.taskRecord(id)!;
+			};
+			const shown = () => {
+				const task = record();
+				return {
+					panel: panel.withElapsed(taskPanelItem(task)).elapsedMs,
+					details: taskMetricsText(task).split(" · ")[0],
+					board: /\b\d+s\b/.exec(rowMeta({ id, kind: "task", task }))?.[0],
+				};
+			};
+			const firstDispatch = record().elapsedSpan?.dispatchedAt;
+			assert.ok(firstDispatch !== undefined);
+			now += 8000;
+			assert.deepEqual(shown(), { panel: 8000, details: "8s", board: "8s" });
+			now -= 3000;
+			await source()!.interruptTurn!();
+			await until(() => record().elapsedSpan?.endedAt !== undefined);
+			now += 60_000;
+			assert.deepEqual(shown(), { panel: 8000, details: "8s", board: "8s" }, "the stopped turn keeps its time");
+			assert.ok(prompt);
+			const resumed = prompt("continue");
+			await until(() => {
+				const span = record().elapsedSpan;
+				return span?.endedAt === undefined && span?.dispatchedAt !== firstDispatch;
+			});
+			now += 2000;
+			assert.deepEqual(
+				shown(),
+				{ panel: 2000, details: "2s", board: "2s" },
+				"the next turn counts from its dispatch",
+			);
+			gate.resolve();
+			await resumed;
+		} finally {
+			gate.resolve();
+			store.dispose();
+			await host.close("session-close");
+			clock.mockRestore();
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test("an owner's task read follows a span that ends or restarts before its record changes (#5570)", async () => {
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: "span-without-report" },
+		authorizeLaunch() {},
+	});
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const span: TaskElapsedSpan = { dispatchedAt: now };
+	try {
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "stand by" },
+			"span-without-report" as OperationId,
+			() => ({
+				result: new Promise<TaskResult>(() => {}),
+				cleanup: Promise.resolve<Cleanup>({ kind: "reaped" }),
+				elapsedSpan: span,
+			}),
+		);
+		assert.ok(started.ok);
+		const id = started.value.taskId;
+		const read = () => host.taskRecords().find((task) => task.ref.taskId === id);
+		await until(() => read()?.execution.kind === "running");
+		now += 4000;
+		assert.deepEqual(read()?.elapsedSpan, { dispatchedAt: span.dispatchedAt });
+		assert.equal(read()?.metrics?.elapsedMs, 4000);
+		span.endedAt = now;
+		assert.deepEqual(
+			read()?.elapsedSpan,
+			{ dispatchedAt: span.dispatchedAt, endedAt: now },
+			"ended in the same moment",
+		);
+		now += 9000;
+		assert.equal(read()?.metrics?.elapsedMs, 4000);
+		span.dispatchedAt = now;
+		delete span.endedAt;
+		now += 1000;
+		assert.deepEqual(read()?.elapsedSpan, { dispatchedAt: span.dispatchedAt });
+		assert.equal(read()?.metrics?.elapsedMs, 1000);
+	} finally {
+		await host.close("session-close");
+		clock.mockRestore();
+	}
+});
