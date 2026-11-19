@@ -82,6 +82,53 @@ describe("lazy provider module loading", () => {
 		expect(result.loadedSpecifiers).toEqual([]);
 	});
 
+	it("keeps the first chat request from loading the whole client in one event-loop turn (#5544)", () => {
+		const result = runProbe(`
+			const compat = await import(${JSON.stringify(compatEntryUrl)});
+			let files = 0;
+			let busiest = 0;
+			let tick;
+			function nextTurn() { files = 0; tick = setImmediate(nextTurn); }
+			nextTurn();
+			registerHooks({ load(url, context, next) {
+				if (url.includes("/node_modules/openai/")) busiest = Math.max(busiest, ++files);
+				return next(url, context);
+			} });
+			try {
+				const model = { ...compat.getModel("openai", "gpt-4o"), api: "openai-completions" };
+				await compat.openAICompletionsApi().streamSimple(model, { messages: [] }, {
+					apiKey: "fixture", maxRetries: 0,
+					fetch: async () => new Response(null, { status: 401 }),
+				}).result();
+				// With a 3 ms file load, 84 files alone exceed the engine's 250 ms maximum.
+				if (busiest * 3 >= 250) throw new Error(busiest + " client modules loaded in one turn");
+			} finally { clearImmediate(tick); }
+		`);
+		expect(result.loadedSpecifiers).toEqual(["openai"]);
+	});
+
+	it("preserves concurrent first-request results when the loader exposes only the client entry point (#5544)", () => {
+		runProbe(`
+			registerHooks({ resolve(specifier, context, next) {
+				if (specifier.startsWith("openai/resources/")) throw new Error("subpath not exposed");
+				return next(specifier, context);
+			} });
+			const compat = await import(${JSON.stringify(compatEntryUrl)});
+			const model = { ...compat.getModel("openai", "gpt-4o"), api: "openai-completions" };
+			const results = await Promise.all(["first", "second"].map(label =>
+				compat.openAICompletionsApi().streamSimple(model, { messages: [] }, {
+					apiKey: "fixture", maxRetries: 0,
+					fetch: async () => Response.json({ error: { message: label } }, { status: 401 }),
+				}).result()
+			));
+			for (const [i, label] of ["first", "second"].entries()) {
+				if (results[i].errorMessage !== "401: " + JSON.stringify({ message: label })) {
+					throw new Error(String(results[i].errorMessage));
+				}
+			}
+		`);
+	});
+
 	it("loads only the Anthropic SDK when streaming through the lazy API wrapper", () => {
 		const result = runProbe(`
 			const compat = await import(${JSON.stringify(compatEntryUrl)});
