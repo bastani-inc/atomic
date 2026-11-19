@@ -107,6 +107,7 @@ class RemoteComponentTui extends TuiMainScreen {
 }
 
 class RemoteTerminal implements Terminal {
+	colorDepth?: number;
 	columns = 80;
 	rows = 24;
 	kittyProtocolActive = false;
@@ -438,6 +439,7 @@ export class EngineCustomUiService {
 					// A component that caches its lines by width alone would keep the old mode's layout.
 					if (laidOutFor !== command.hostMode) record.tui.invalidate();
 				}
+				if (command.colorDepth !== undefined) record.terminal.colorDepth = command.colorDepth;
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				const { componentId, requestId } = command;

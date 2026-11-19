@@ -246,6 +246,21 @@ function basicForeground(hex: string): string {
 	return `\x1b[${(hi >= 192 ? 90 : 30) + slot}m`;
 }
 
+function stagePeak(
+	ansi: string | undefined,
+	hex: string,
+	level: number,
+	depth: number | undefined,
+): string | undefined {
+	const indexed = /^\x1b\[38;5;(\d{1,3})m$/.exec(ansi ?? "");
+	const index = indexed ? Number(indexed[1]) : undefined;
+	if (index !== undefined && index < 16) return `\x1b[${index < 8 ? 30 + index : 90 + index - 8}m`;
+	if (level === 1 || depth === 4) return basicForeground(hex);
+	if (index !== undefined && index < 256) return ansi;
+	if (depth === 8) return foregroundAnsi(parseColor(hex), "256color");
+	return undefined;
+}
+
 function fgHex(theme: PiRuntimeTheme, color: string): string | undefined {
 	return parsePiAnsiToHex(tryPiAccessor(theme, theme.getFgAnsi, color));
 }
@@ -278,7 +293,7 @@ function bgHex(theme: PiRuntimeTheme, color: string): string | undefined {
  * Mocha defaults — the overlay must always render with a stable
  * palette even if the host theme is mid-load or absent.
  */
-export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
+export function deriveGraphThemeFromPiTheme(theme: unknown, terminal?: { readonly colorDepth?: number }): GraphTheme {
 	if (!theme || typeof theme !== "object") return deriveGraphTheme({});
 	const t = theme as PiRuntimeTheme;
 	const defaultText = t.name === "light" || t.name === "catppuccin-latte" ? LATTE.text : undefined;
@@ -316,18 +331,20 @@ export function deriveGraphThemeFromPiTheme(theme: unknown): GraphTheme {
 	const graph = deriveGraphTheme(cleaned);
 	if (typeof t.getStyleLevel === "function" && typeof t.getFgAnsi === "function") {
 		const styleLevel = t.getStyleLevel.bind(t);
-		const depth = process.stdout.getColorDepth?.();
+		const localDepth = terminal?.colorDepth ?? process.stdout.getColorDepth?.();
+		type Peak = { level: number; depth?: number; ansi?: string; fg?: string };
+		const peaks: Partial<Record<"warning" | "info", Peak>> = {};
 		graph.stagePaletteFg = (role) => {
+			// An isolated component learns its display depth after mounting, before its first host paint.
+			const depth = terminal?.colorDepth ?? localDepth;
 			const level = styleLevel();
 			if (level === 0) return "";
 			const ansi = tryPiAccessor(t, t.getFgAnsi, role === "info" ? "accent" : role);
-			const indexed = /^\x1b\[38;5;(\d{1,3})m$/.exec(ansi ?? "");
-			const index = indexed ? Number(indexed[1]) : undefined;
-			if (index !== undefined && index < 16) return `\x1b[${index < 8 ? 30 + index : 90 + index - 8}m`;
-			if (level === 1 || depth === 4) return basicForeground(graph[role]);
-			if (index !== undefined && index < 256) return ansi;
-			if (depth === 8) return foregroundAnsi(parseColor(graph[role]), "256color");
-			return undefined;
+			const cached = peaks[role];
+			if (cached && cached.level === level && cached.depth === depth && cached.ansi === ansi) return cached.fg;
+			const fg = stagePeak(ansi, graph[role], level, depth);
+			peaks[role] = { level, depth, ansi, fg };
+			return fg;
 		};
 	}
 	return graph;
