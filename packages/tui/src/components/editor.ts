@@ -387,6 +387,7 @@ export class Editor implements Component, Focusable {
 	private autocompleteAbort?: AbortController;
 	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
 	private autocompleteRequestTask: Promise<void> = Promise.resolve();
+	private pendingAutocomplete?: AutocompleteRequestOptions;
 	private autocompleteStartToken: number = 0;
 	private autocompleteRequestId: number = 0;
 
@@ -472,13 +473,18 @@ export class Editor implements Component, Focusable {
 	}
 
 	setAutocompleteProvider(provider: AutocompleteProvider, options?: { preserveSelection?: boolean }): void {
-		const openMenu = options?.preserveSelection ? this.autocompleteState : null;
-		if (!openMenu) this.cancelAutocomplete();
+		const refresh =
+			options?.preserveSelection &&
+			(this.pendingAutocomplete ??
+				(this.autocompleteState && {
+					force: this.autocompleteState === "force",
+					explicitTab: false,
+				}));
+		if (refresh) this.cancelAutocompleteRequest();
+		else this.cancelAutocomplete();
 		this.autocompleteProvider = provider;
 		this.setAutocompleteTriggerCharacters(provider.triggerCharacters ?? []);
-		if (openMenu) {
-			this.requestAutocomplete({ force: openMenu === "force", explicitTab: false, preserveSelection: true });
-		}
+		if (refresh) this.requestAutocomplete({ ...refresh, preserveSelection: true });
 	}
 
 	private renderAutocompleteHint(width: number): string | undefined {
@@ -2413,6 +2419,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		this.cancelAutocompleteRequest();
+		this.pendingAutocomplete = options;
 		const startToken = ++this.autocompleteStartToken;
 
 		const debounceMs = this.getAutocompleteDebounceMs(options);
@@ -2442,7 +2449,11 @@ export class Editor implements Component, Focusable {
 			const snapshotLine = this.state.cursorLine;
 			const snapshotCol = this.state.cursorCol;
 
-			await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			try {
+				await this.runAutocompleteRequest(requestId, controller, snapshotText, snapshotLine, snapshotCol, options);
+			} finally {
+				if (startToken === this.autocompleteStartToken) this.pendingAutocomplete = undefined;
+			}
 		})();
 		await this.autocompleteRequestTask;
 	}
@@ -2560,6 +2571,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	private cancelAutocompleteRequest(): void {
+		this.pendingAutocomplete = undefined;
 		this.autocompleteStartToken += 1;
 		if (this.autocompleteDebounceTimer) {
 			clearTimeout(this.autocompleteDebounceTimer);

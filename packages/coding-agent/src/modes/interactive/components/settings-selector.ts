@@ -3,6 +3,7 @@ import { DynamicBorder } from "./dynamic-border.ts";
 import { SettingsPicker } from "./settings-picker.ts";
 import { createSettingsChangeHandler } from "./settings-selector-handlers.ts";
 import { buildSettingsItems } from "./settings-selector-items.ts";
+import { ThemeSubmenu } from "./settings-selector-submenus.ts";
 import type { SettingsCallbacks, SettingsConfig } from "./settings-selector-types.ts";
 
 export { decisionSettingScopes } from "./settings-selector-items.ts";
@@ -14,8 +15,11 @@ export type { SettingsCallbacks, SettingsConfig } from "./settings-selector-type
 export class SettingsSelectorComponent extends Container {
 	private settingsList: SettingsPicker;
 
+	private readonly callbacks: SettingsCallbacks;
+
 	constructor(config: SettingsConfig, callbacks: SettingsCallbacks) {
 		super();
+		this.callbacks = callbacks;
 
 		this.addChild(new DynamicBorder());
 
@@ -28,6 +32,12 @@ export class SettingsSelectorComponent extends Container {
 
 		this.addChild(this.settingsList);
 		this.addChild(new DynamicBorder());
+	}
+
+	refreshSettings(config: SettingsConfig): void {
+		this.settingsList.setItems(buildSettingsItems(config, this.callbacks));
+		const active = this.settingsList.activeSubmenu;
+		if (active instanceof ThemeSubmenu) active.refreshThemes(config.availableThemes, config.currentTheme);
 	}
 
 	getSettingsList(): SettingsPicker {

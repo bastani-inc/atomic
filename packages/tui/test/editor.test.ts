@@ -2819,6 +2819,32 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.isShowingAutocomplete(), false);
 		});
 
+		it("finishes an outstanding file completion against the refreshed catalog (#5693)", async () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+			const started = Promise.withResolvers<void>();
+			const original = Promise.withResolvers<null>();
+			editor.setAutocompleteProvider({
+				getSuggestions: () => {
+					started.resolve();
+					return original.promise;
+				},
+				applyCompletion,
+			});
+			editor.setText("@demo");
+			editor.handleInput("\t");
+			await started.promise;
+			editor.setAutocompleteProvider(
+				{
+					getSuggestions: async () => ({ prefix: "@demo", items: [{ value: "@demo.txt", label: "demo.txt" }] }),
+					applyCompletion,
+				},
+				{ preserveSelection: true },
+			);
+			original.resolve(null);
+			await flushAutocomplete();
+			assert.strictEqual(editor.getText(), "@demo.txt", "the original Tab still completes a unique file");
+		});
+
 		it("aborts active @ autocomplete when typing continues", async () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			let aborts = 0;

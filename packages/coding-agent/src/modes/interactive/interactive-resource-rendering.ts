@@ -15,6 +15,8 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 
+import type { ResourceDetails } from "./interactive-resource-disclosure.ts";
+
 function formatList(values: string[]): string {
 	if (values.length <= 1) return values[0] ?? "";
 	if (values.length === 2) return `${values[0]} and ${values[1]}`;
@@ -196,16 +198,12 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			...this.session.resourceLoader.getAgentsFiles().agentsFiles,
 		];
 
-		const expandedSections: {
-			context?: string;
-			skills?: string;
-			prompts?: string;
-			extensions?: string;
-		} = {};
+		const expandedSections: ResourceDetails = {};
 		if (contextFiles.length > 0) {
-			expandedSections.context = contextFiles
-				.map((contextFile) => theme.fg("dim", `  ${this.formatDisplayPath(contextFile.path)}`))
-				.join("\n");
+			expandedSections.context = contextFiles.map(({ path }) => ({
+				key: path,
+				text: theme.fg("dim", `  ${this.formatDisplayPath(path)}`),
+			}));
 		}
 
 		const skills = skillsResult.skills;

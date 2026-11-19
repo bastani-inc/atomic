@@ -180,7 +180,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private engineProjectTrustReported = false;
 	/** The engine's trust decisions in this host session, handed to an engine started to replace it. */
 	private knownTrust: SessionTrustDecisions = { projects: {}, extensionSources: {} };
-	private readonly projectTrustListeners = new Set<() => void>();
+	private readonly projectTrustListeners = new Set<(resourcesChanged: boolean) => void>();
 	private remoteSessionName: string | undefined;
 	private remoteSessionId: string | undefined;
 	private remoteSessionFile: string | undefined;
@@ -428,7 +428,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await session.settingsManager.setProjectTrustedAsync(trusted);
 			await session.settingsManager.reload();
 			await session.resourceLoader.reload();
-			for (const listener of [...this.projectTrustListeners]) listener();
+			if (
+				this.disposed ||
+				session !== super.session ||
+				(generation !== undefined && !this.isCurrentResourceGeneration(generation))
+			)
+				return;
+			for (const listener of [...this.projectTrustListeners]) listener(true);
 		};
 		// After any synchronization in flight, so an earlier report cannot undo the decision.
 		const run = (this.initializationTail ?? Promise.resolve()).then(apply);
@@ -492,11 +498,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			}
 			// A pending report keeps the project's resources out until the engine decides; it is no decision to warn about.
 			this.engineProjectTrustReported = state.projectTrusted !== undefined && state.projectTrustPending !== true;
-			if (
-				trustBefore[0] !== session.settingsManager.isProjectTrusted() ||
-				trustBefore[1] !== this.engineProjectTrustReported
-			) {
-				for (const listener of [...this.projectTrustListeners]) listener();
+			const resourcesChanged = trustBefore[0] !== session.settingsManager.isProjectTrusted();
+			if (resourcesChanged || trustBefore[1] !== this.engineProjectTrustReported) {
+				for (const listener of [...this.projectTrustListeners]) listener(resourcesChanged);
 			}
 			this.remoteModelCatalog.apply(catalog, scope);
 			this.remoteModelCatalog.patch(session);
@@ -646,7 +650,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		return this.knownTrust;
 	}
 	/** Called when this host's trust for its session, or whether the engine has decided it, changes. */
-	onProjectTrustChanged(listener: () => void): () => void {
+	onProjectTrustChanged(listener: (resourcesChanged: boolean) => void): () => void {
 		this.projectTrustListeners.add(listener);
 		return () => this.projectTrustListeners.delete(listener);
 	}

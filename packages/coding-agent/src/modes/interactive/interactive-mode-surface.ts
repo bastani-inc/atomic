@@ -51,6 +51,7 @@ import type {
 	TUI,
 	VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import type { ResourceDetails, ResourceRow } from "./interactive-resource-disclosure.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import type { BlockedStatus } from "./program-status-reporter.ts";
 
@@ -131,7 +132,7 @@ declare module "./interactive-mode-base.ts" {
 				formatPath: (item: { path: string; sourceInfo?: SourceInfo }) => string;
 				formatPackagePath: (item: { path: string; sourceInfo?: SourceInfo }, source: string) => string;
 			},
-		): string;
+		): ResourceRow[];
 		findSourceInfoForPath(p: string, sourceInfos: Map<string, SourceInfo>): SourceInfo | undefined;
 		formatPathWithSource(p: string, sourceInfo?: SourceInfo): string;
 		formatDiagnostics(diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string;
@@ -140,12 +141,7 @@ declare module "./interactive-mode-base.ts" {
 			skills: ReadonlyArray<{ filePath: string; name: string }>;
 			prompts: ReadonlyArray<{ filePath: string; name: string }>;
 			extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
-			expandedSections: {
-				context?: string;
-				skills?: string;
-				prompts?: string;
-				extensions?: string;
-			};
+			expandedSections: ResourceDetails;
 			previousSections?: readonly Component[];
 			targetContainer?: Container;
 		}): void;

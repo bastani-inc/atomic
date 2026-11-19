@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { Container } from "@bastani/atomic-tui";
+import { Container, WindowedContainer } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../src/core/builtin-install-layout.js";
@@ -186,6 +186,38 @@ describe("InteractiveMode.showLoadedResources", () => {
 		InteractiveMode.prototype.setToolsExpanded.call(fakeThis, false);
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).toContain("commit");
 		expect(normalizeRenderedOutput(fakeThis.chatContainer)).not.toContain("/tmp/skill/SKILL.md");
+	});
+
+	test("the first visible prompt stays anchored when project approval inserts earlier rows (#5693)", () => {
+		const prompts = Array.from({ length: 60 }, (_, i) => ({ filePath: `/user/marker${i}.md`, name: `marker${i}` }));
+		const mode = createShowLoadedResourcesThis({
+			quietStartup: false,
+			toolOutputExpanded: true,
+			prompts,
+			useRealScopeGroups: true,
+		});
+		const disclosure = new WindowedContainer();
+		mode.resourceDisclosureContainer = disclosure;
+		const paint = (preserveExpansion: boolean) =>
+			InteractiveMode.prototype.showLoadedResources.call(mode, {
+				force: true,
+				targetContainer: disclosure,
+				preserveExpansion,
+			});
+		const layout = (top: number, height: number) =>
+			disclosure.layoutWindow({ top, height, width: 80, followEnd: false, requestRender: () => {} });
+		paint(false);
+		const all = layout(0, 100);
+		const marker = Array.from({ length: all.length }, (_, i) => all.at(i)).findIndex((line) =>
+			line?.includes("/marker30"),
+		);
+		expect(marker).toBeGreaterThan(0);
+		const held = layout(marker, 5);
+		expect(held.at(held.top)).toContain("/marker30");
+		prompts.push({ filePath: "/project/earlier.md", name: "earlier" });
+		paint(true);
+		const after = layout(held.top, 5);
+		expect(after.at(after.top)).toContain("/marker30");
 	});
 
 	test("shows full resource listing when expanded", () => {

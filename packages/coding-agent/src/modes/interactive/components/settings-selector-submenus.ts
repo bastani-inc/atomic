@@ -76,18 +76,7 @@ export class SelectSubmenu implements Component, Focusable {
 		onSelectionChange?: (value: string) => void,
 		searchable = false,
 	) {
-		const items: SelectorItem<string>[] = options.map((option) => {
-			const marked = option.label.startsWith("✓ ");
-			const unmarked = !marked && option.label.startsWith("  ");
-			const label = marked || unmarked ? option.label.slice(2) : option.label;
-			return {
-				id: option.value,
-				value: option.value,
-				label,
-				...(option.description ? { description: option.description } : {}),
-				...(marked ? { mark: "on" as const } : unmarked ? { mark: "off" as const } : {}),
-			};
-		});
+		const items = this.selectorItems(options);
 		const current = items.some((item) => item.id === currentValue) ? currentValue : undefined;
 		this.selector = new Selector<string>({
 			title,
@@ -101,6 +90,28 @@ export class SelectSubmenu implements Component, Focusable {
 			onCancel,
 			...(onSelectionChange ? { onSelectionChange: (item) => item && onSelectionChange(item.value) } : {}),
 		});
+	}
+
+	private selectorItems(options: SelectItem[]): SelectorItem<string>[] {
+		return options.map((option) => {
+			const marked = option.label.startsWith("✓ ");
+			const unmarked = !marked && option.label.startsWith("  ");
+			return {
+				id: option.value,
+				value: option.value,
+				label: marked || unmarked ? option.label.slice(2) : option.label,
+				...(option.description ? { description: option.description } : {}),
+				...(marked ? { mark: "on" as const } : unmarked ? { mark: "off" as const } : {}),
+			};
+		});
+	}
+
+	setOptions(options: SelectItem[]): void {
+		this.selector.setItems(this.selectorItems(options));
+	}
+
+	get selectedValue(): string | undefined {
+		return this.selector.getSelected()?.value;
 	}
 
 	get focused(): boolean {
@@ -175,10 +186,11 @@ function defaultAutomaticThemes(
 export class ThemeSubmenu extends Container {
 	private inputComponent: Component | undefined;
 	private readonly callbacks: SettingsCallbacks;
-	private readonly availableThemes: string[];
+	private availableThemes: string[];
+	private refreshThemeOptions?: () => void;
 	private readonly terminalTheme: TerminalTheme;
 	private readonly onDone: (selectedValue?: string) => void;
-	private readonly originalThemeSetting: string;
+	private originalThemeSetting: string;
 	private mode: "single" | "automatic";
 	private singleTheme: string;
 	private lightTheme: string;
@@ -222,6 +234,13 @@ export class ThemeSubmenu extends Container {
 		return true;
 	}
 
+	refreshThemes(names: string[], setting: string): void {
+		if (this.singleTheme === this.originalThemeSetting && !parseAutoThemeSetting(setting)) this.singleTheme = setting;
+		this.originalThemeSetting = setting;
+		this.availableThemes = names;
+		this.refreshThemeOptions?.();
+	}
+
 	private setContent(renderComponent: Component, inputComponent: Component = renderComponent): void {
 		this.clear();
 		this.addChild(renderComponent);
@@ -251,10 +270,19 @@ export class ThemeSubmenu extends Container {
 				this.callbacks.onThemePreview?.(value === AUTOMATIC_THEME_VALUE ? this.getAutomaticThemeSetting() : value);
 			},
 		);
+		this.refreshThemeOptions = () => {
+			menu.setOptions(singleModeThemeItems(this.availableThemes, this.singleTheme));
+			const selected = menu.selectedValue;
+			if (selected)
+				this.callbacks.onThemePreview?.(
+					selected === AUTOMATIC_THEME_VALUE ? this.getAutomaticThemeSetting() : selected,
+				);
+		};
 		this.setContent(menu);
 	}
 
 	private showAutomaticMenu(): void {
+		this.refreshThemeOptions = undefined;
 		this.mode = "automatic";
 
 		const items: SettingItem[] = [
@@ -342,7 +370,7 @@ export class ThemeSubmenu extends Container {
 		done: (selectedValue?: string) => void,
 		onSelect: (value: string) => void,
 	): SelectSubmenu {
-		return new SelectSubmenu(
+		const menu = new SelectSubmenu(
 			title,
 			description,
 			themeItems(this.availableThemes, currentValue),
@@ -354,6 +382,12 @@ export class ThemeSubmenu extends Container {
 			},
 			(value) => this.callbacks.onThemePreview?.(value),
 		);
+		this.refreshThemeOptions = () => {
+			if (!(this.inputComponent instanceof SettingsPicker) || this.inputComponent.activeSubmenu !== menu) return;
+			menu.setOptions(themeItems(this.availableThemes, currentValue));
+			if (menu.selectedValue) this.callbacks.onThemePreview?.(menu.selectedValue);
+		};
+		return menu;
 	}
 
 	private getThemeSetting(): string {

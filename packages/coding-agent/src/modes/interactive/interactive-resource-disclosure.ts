@@ -1,3 +1,5 @@
+import { WindowedContainer } from "@bastani/atomic-tui";
+import { ThemedText } from "./components/themed-text.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
@@ -5,9 +7,9 @@ import {
 	type ResourceDiagnostic,
 	type SourceInfo,
 	Spacer,
+	Text,
 	theme,
 } from "./interactive-mode-deps.ts";
-import { ExpandableText } from "./interactive-mode-helpers.ts";
 
 InteractiveModeBase.prototype.formatDiagnostics = function (
 	this: InteractiveModeBase,
@@ -70,20 +72,62 @@ InteractiveModeBase.prototype.formatDiagnostics = function (
 	return lines.join("\n");
 };
 
-class ResourceSection extends ExpandableText {
-	readonly name: string;
-	readonly collapsedBody: string;
-	readonly expandedBody: string;
+export interface ResourceRow {
+	key: string;
+	text: string;
+}
 
-	constructor(name: string, collapsedBody: string, expandedBody: string, expanded: boolean) {
-		super(
-			() => `${theme.fg("mdHeading", `[${name}]`)}\n${collapsedBody}`,
-			() => `${theme.fg("mdHeading", `[${name}]`)}\n${expandedBody}`,
-			expanded,
-		);
+export type ResourceDetails = Partial<Record<"context" | "skills" | "prompts" | "extensions", ResourceRow[]>>;
+
+// The click belongs to the section; the viewport anchor belongs to the resource (and its wrapped line).
+class ResourceSection extends WindowedContainer {
+	readonly expandsOnClick = true;
+	readonly spacer = new Spacer(1);
+	private readonly heading: ThemedText;
+	private readonly compact = new Text("", 0, 0);
+	private details: ResourceRow[] = [];
+	private rows = new Map<string, Text>();
+
+	readonly name: string;
+	private expanded: boolean;
+
+	constructor(name: string, expanded: boolean) {
+		super();
 		this.name = name;
-		this.collapsedBody = collapsedBody;
-		this.expandedBody = expandedBody;
+		this.expanded = expanded;
+		this.heading = new ThemedText(() => theme.fg("mdHeading", `[${name}]`));
+	}
+
+	update(compact: string, details: ResourceRow[]): void {
+		this.compact.setText(compact);
+		this.details = details;
+		this.setExpanded(this.expanded);
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+
+	clickArea(width: number) {
+		return { start: 0, end: this.render(width).length };
+	}
+
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+		if (!expanded) {
+			this.rows.clear();
+			this.children = [this.heading, this.compact];
+			return;
+		}
+		const previous = this.rows;
+		this.rows = new Map();
+		this.children = [this.heading];
+		for (const { key, text } of this.details) {
+			const row = previous.get(key) ?? new Text("", 0, 0);
+			row.setText(text);
+			this.rows.set(key, row);
+			this.addChild(row);
+		}
 	}
 }
 
@@ -94,12 +138,7 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 		skills: ReadonlyArray<{ filePath: string; name: string }>;
 		prompts: ReadonlyArray<{ filePath: string; name: string }>;
 		extensions: ReadonlyArray<{ path: string; sourceInfo?: SourceInfo }>;
-		expandedSections: {
-			context?: string;
-			skills?: string;
-			prompts?: string;
-			extensions?: string;
-		};
+		expandedSections: ResourceDetails;
 		previousSections?: readonly Component[];
 		targetContainer?: Container;
 	},
@@ -110,19 +149,16 @@ InteractiveModeBase.prototype.addResourceDisclosure = function (
 		if (sort) labels.sort((left, right) => left.localeCompare(right));
 		return theme.fg("dim", `  ${labels.join(", ")}`);
 	};
-	const addSection = (name: string, labels: string[], expandedBody?: string, sort = true): void => {
+	const addSection = (name: string, labels: string[], details?: ResourceRow[], sort = true): void => {
 		if (labels.length === 0) return;
 		const collapsedBody = compactList(labels, sort);
-		const body = expandedBody ?? collapsedBody;
-		const previous = options.previousSections?.find(
-			(child): child is ResourceSection => child instanceof ResourceSection && child.name === name,
-		);
-		targetContainer.addChild(
-			previous && previous.collapsedBody === collapsedBody && previous.expandedBody === body
-				? previous
-				: new ResourceSection(name, collapsedBody, body, previous?.isExpanded() ?? this.getStartupExpansionState()),
-		);
-		targetContainer.addChild(new Spacer(1));
+		const section =
+			options.previousSections?.find(
+				(child): child is ResourceSection => child instanceof ResourceSection && child.name === name,
+			) ?? new ResourceSection(name, this.getStartupExpansionState());
+		section.update(collapsedBody, details ?? [{ key: name, text: collapsedBody }]);
+		targetContainer.addChild(section);
+		targetContainer.addChild(section.spacer);
 	};
 
 	addSection(

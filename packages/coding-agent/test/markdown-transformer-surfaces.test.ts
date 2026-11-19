@@ -225,6 +225,18 @@ describe("Markdown transformers on the changelog", () => {
 		expect(rendered.match(/What's New/g)).toHaveLength(1);
 	});
 
+	test("a visible startup changelog uses the approved project's collapsed setting without repeating the notice (#5693)", () => {
+		const host = mode([]);
+		const show = Reflect.get(InteractiveMode.prototype, "showStartupNoticesIfNeeded") as (this: typeof host) => void;
+		show.call(host);
+		expect(stripAnsi(host.chatContainer.render(100).join("\n"))).toContain("What's New");
+		host.settingsManager.setCollapseChangelog(true);
+		show.call(host);
+		const rendered = stripAnsi(host.chatContainer.render(100).join("\n"));
+		expect(rendered).not.toContain("What's New");
+		expect(rendered.match(/Updated to v2\.0\.0/g)).toHaveLength(1);
+	});
+
 	test("a changelog transformer runs on /changelog", async () => {
 		const rendered = await renderChangelogCommand([extensionWith(replaceShortcodes, ["changelog"])]);
 

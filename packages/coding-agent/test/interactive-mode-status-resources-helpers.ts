@@ -66,7 +66,7 @@ export function createShowLoadedResourcesThis(options: {
 		getStartupExpansionState: () => (InteractiveMode as any).prototype.getStartupExpansionState.call(fakeThis),
 		shouldShowStartupDetails: () => (InteractiveMode as any).prototype.shouldShowStartupDetails.call(fakeThis),
 		buildScopeGroups: () => [],
-		formatScopeGroups: () => "resource-list",
+		formatScopeGroups: () => [{ key: "resource", text: "resource-list" }],
 		isPackageSource: (sourceInfo?: SourceInfo) =>
 			(InteractiveMode as any).prototype.isPackageSource.call(fakeThis, sourceInfo),
 		getShortPath: (p: string, sourceInfo?: SourceInfo) =>

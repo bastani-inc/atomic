@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "vitest";
 import { removeTempRootReleasingBroker } from "../../../test/helpers/detached-broker.js";
 import { type PtyProgram, startPtyProgram } from "../../../test/helpers/pty-program.js";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { resolveSessionStore } from "../src/core/session-storage.ts";
 import { cliPath } from "./cli-test-helpers.js";
 import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
@@ -17,7 +19,10 @@ function write(path: string, text: string): void {
 	writeFileSync(path, text);
 }
 
-async function withPendingProject(run: (cli: PtyProgram, approveProject: () => Promise<void>) => Promise<void>) {
+async function withPendingProject(
+	run: (cli: PtyProgram, approveProject: () => Promise<void>) => Promise<void>,
+	setup?: ((project: string, agentDir: string) => void) | ((project: string, agentDir: string) => Promise<string[]>),
+) {
 	const root = mkdtempSync(join(tmpdir(), "atomic-trust-disclosure-"));
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "project");
@@ -54,10 +59,11 @@ async function withPendingProject(run: (cli: PtyProgram, approveProject: () => P
 		}
 	`,
 	);
+	const sessionArgs = (await setup?.(cwd, agentDir)) ?? ["--no-session"];
 	linkSharedTranspileCache(agentDir);
 	const cli = startPtyProgram({
 		executable: bunExecutable(),
-		args: [cliPath, "--offline", "--no-session", "-e", source],
+		args: [cliPath, "--offline", ...sessionArgs, "-e", source],
 		cwd,
 		env: { ATOMIC_CODING_AGENT_DIR: agentDir, HOME: root, USERPROFILE: root, TERM: "xterm-256color", CI: "0" },
 		cols: 160,
@@ -101,6 +107,193 @@ test(
 				(screen) => /❯\s*\/projectapproved\s*$/m.test(screen),
 				STARTUP_TIMEOUT_MS,
 				"Tab completion",
+			);
+		}),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
+test(
+	"offers approved project themes in Settings without a reload (#5693)",
+	() =>
+		withPendingProject(
+			async (cli, approveProject) => {
+				await approveProject();
+				cli.write("/settings\r");
+				await cli.waitForScreen((screen) => screen.includes("Search settings"), STARTUP_TIMEOUT_MS, "Settings");
+				cli.write("theme");
+				await cli.waitForScreen(
+					(screen) => screen.includes("⌕ theme"),
+					STARTUP_TIMEOUT_MS,
+					"the filtered settings",
+				);
+				cli.write("\r");
+				await cli.waitForScreen(
+					(screen) => screen.includes("Select a theme"),
+					STARTUP_TIMEOUT_MS,
+					"the theme picker",
+				);
+				assert.match(cli.screen(), /○ approved-theme/);
+			},
+			(project) => {
+				const theme = JSON.parse(
+					readFileSync(new URL("../src/modes/interactive/theme/dark.json", import.meta.url), "utf8"),
+				);
+				write(
+					join(project, ".atomic/themes/approved-theme.json"),
+					JSON.stringify({ ...theme, name: "approved-theme" }),
+				);
+			},
+		),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
+test(
+	"an open theme picker gains the approved project theme without losing its selection (#5693)",
+	() =>
+		withPendingProject(
+			async (cli, approveProject) => {
+				cli.write("/settings\r");
+				await cli.waitForScreen((screen) => screen.includes("Search settings"), STARTUP_TIMEOUT_MS, "Settings");
+				cli.write("theme");
+				await cli.waitForScreen(
+					(screen) => screen.includes("⌕ theme"),
+					STARTUP_TIMEOUT_MS,
+					"the filtered settings",
+				);
+				cli.write("\r");
+				await cli.waitForScreen(
+					(screen) => screen.includes("Select a theme"),
+					STARTUP_TIMEOUT_MS,
+					"the theme picker",
+				);
+				cli.write("\x1b[A");
+				await cli.waitForScreen(
+					(screen) => /❯ ○ catppuccin-mocha/.test(screen),
+					STARTUP_TIMEOUT_MS,
+					"the highlighted theme",
+				);
+				await approveProject();
+				assert.match(cli.screen(), /○ approved-theme/);
+				assert.match(cli.screen(), /❯ ○ catppuccin-mocha/);
+			},
+			(project) => {
+				const theme = JSON.parse(
+					readFileSync(new URL("../src/modes/interactive/theme/dark.json", import.meta.url), "utf8"),
+				);
+				write(
+					join(project, ".atomic/themes/approved-theme.json"),
+					JSON.stringify({ ...theme, name: "approved-theme" }),
+				);
+			},
+		),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
+test(
+	"applies the project's editor padding and visible completion count at approval (#5693)",
+	() =>
+		withPendingProject(
+			async (cli, approveProject) => {
+				await approveProject();
+				cli.write("/global");
+				await cli.waitForScreen(
+					(screen) => screen.includes("Project exact match"),
+					STARTUP_TIMEOUT_MS,
+					"the approved prompt in the menu",
+				);
+				assert.match(cli.screen(), /❯ {4}\/global\s*$/m);
+				assert.match(cli.screen(), /↓ 4 more/);
+			},
+			(project, agentDir) => {
+				write(
+					join(project, ".atomic/settings.json"),
+					JSON.stringify({ editorPaddingX: 3, autocompleteMaxVisible: 3 }),
+				);
+				for (let i = 0; i < 4; i++) write(join(agentDir, `prompts/globalextra${i}.md`), "Hello\n");
+			},
+		),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
+test(
+	"applies project rendering settings to resumed messages already on screen (#5693)",
+	() =>
+		withPendingProject(
+			async (cli, approveProject) => {
+				await cli.waitForScreen(
+					(screen) => screen.includes("saved reply text"),
+					STARTUP_TIMEOUT_MS,
+					"the restored messages",
+				);
+				assert.match(cli.screen(), /saved thinking text/);
+				await approveProject();
+				assert.doesNotMatch(cli.screen(), /saved thinking text/);
+				assert.match(cli.screen(), /^ {6}indent-mark\s*$/m);
+				assert.match(cli.screen(), /^LaTeX \$\\alpha\$/m);
+			},
+			async (project, agentDir) => {
+				write(
+					join(project, ".atomic/settings.json"),
+					JSON.stringify({
+						outputPad: 0,
+						hideThinkingBlock: true,
+						markdown: { latex: false, codeBlockIndent: "      " },
+					}),
+				);
+				const storePath = join(agentDir, "saved.sqlite");
+				const store = await resolveSessionStore(project, { agentDir, sessionStorePath: storePath });
+				try {
+					const manager = await SessionManager.create(store, project);
+					await manager.appendMessage({
+						role: "user",
+						content: "```\nindent-mark\n```\n\nLaTeX $\\alpha$",
+						timestamp: 1,
+					});
+					await manager.appendMessage({
+						role: "assistant",
+						content: [
+							{ type: "thinking", thinking: "saved thinking text" },
+							{ type: "text", text: "saved reply text" },
+						],
+						api: "openai-completions",
+						provider: "example",
+						model: "example",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: 2,
+					});
+					return ["--session-store", storePath, "--session", manager.getSessionId()];
+				} finally {
+					await store.close();
+				}
+			},
+		),
+	3 * STARTUP_TIMEOUT_MS,
+);
+
+test(
+	"delivers a click on Prompts even when approval adds prompts before the click settles (#5693)",
+	() =>
+		withPendingProject(async (cli, approveProject) => {
+			const row =
+				cli
+					.screen()
+					.split("\n")
+					.findIndex((line) => line.trim() === "[Prompts]") + 1;
+			assert.ok(row > 0);
+			cli.write(`\x1b[<0;5;${row}M\x1b[<0;5;${row}m`);
+			await approveProject();
+			await cli.waitForScreen(
+				(screen) => /\[Prompts\]\s+project\s/.test(screen),
+				5000,
+				"the expanded approved prompts",
 			);
 		}),
 	3 * STARTUP_TIMEOUT_MS,
