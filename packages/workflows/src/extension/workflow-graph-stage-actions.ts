@@ -1,6 +1,6 @@
 import { durableForkTarget } from "../durable/fork-run.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
-import { hasActiveLiveRun } from "../durable/run-claims.js";
+import { hasActiveLiveRun, resumeAdmissionMark } from "../durable/run-claims.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
 import { pauseRun, resumeRun } from "../runs/background/status.js";
@@ -158,6 +158,8 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 			}
 		},
 		async resumeRun(runId) {
+			// What `r` resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
+			const admissionMark = resumeAdmissionMark(runId);
 			try {
 				const run = owner.store.run(runId);
 				if (run === undefined) return { ok: false, message: "That run is gone." };
@@ -177,7 +179,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 					const runtime = deps.runtime();
 					if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 					const policy = workflowPolicyFromContext(deps.context());
-					const resumed = await runtime.resumeDurableWorkflow(runId, { policy, actor: "user" });
+					const resumed = await runtime.resumeDurableWorkflow(runId, { policy, actor: "user", admissionMark });
 					return resumed.ok
 						? { ok: true, message: resumed.message, runId: resumed.runId }
 						: { ok: false, message: resumed.message };
@@ -187,7 +189,11 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 					const runtime = deps.runtime();
 					if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 					const policy = workflowPolicyFromContext(deps.context());
-					const continuation = await runtime.resumeFailedRun(runId, undefined, { policy, actor: "user" });
+					const continuation = await runtime.resumeFailedRun(runId, undefined, {
+						policy,
+						actor: "user",
+						admissionMark,
+					});
 					return continuation.ok
 						? { ok: true, message: continuation.message, runId: continuation.runId }
 						: { ok: false, message: continuation.message };
@@ -199,7 +205,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 					const runtime = deps.runtime();
 					if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 					const policy = workflowPolicyFromContext(deps.context());
-					const resumed = await runtime.resumeDurableWorkflow(runId, { policy, actor: "user" });
+					const resumed = await runtime.resumeDurableWorkflow(runId, { policy, actor: "user", admissionMark });
 					return resumed.ok
 						? { ok: true, message: resumed.message, runId: resumed.runId }
 						: { ok: false, message: resumed.message };

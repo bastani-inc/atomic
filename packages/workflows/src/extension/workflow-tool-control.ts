@@ -1,5 +1,6 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { resumeAdmissionMark } from "../durable/run-claims.js";
 import { runNotFoundResumeResult } from "../durable/run-not-found.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
@@ -57,6 +58,11 @@ export interface WorkflowControlActionDeps {
 	owner?: WorkflowOwnerResources;
 	/** Model-tool boundary only; slash/internal callers retain their explicit exception. */
 	authorize?: (runId: string) => void | Promise<void>;
+	/**
+	 * A resume only: the mark (`resumeAdmissionMark`) the request took when it resolved its run, before its own awaits
+	 * (#5534). Taken on entry when absent.
+	 */
+	admissionMark?: number;
 }
 
 export type WorkflowForeignRunGuard = Pick<WorkflowControlActionDeps, "getRuntime" | "authorize">;
@@ -463,6 +469,7 @@ async function resumeDurableShadow(
 		| "onRunAccepted"
 		| "owner"
 		| "authorize"
+		| "admissionMark"
 	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
@@ -485,6 +492,7 @@ async function resumeDurableShadow(
 		signal: deps.signal,
 		onRunAccepted: deps.onRunAccepted,
 		...(budget === undefined ? {} : { budget }),
+		...(deps.admissionMark === undefined ? {} : { admissionMark: deps.admissionMark }),
 	});
 	const message = warning === undefined ? resumed.message : `${warning}\n\n${resumed.message}`;
 	return {
@@ -500,7 +508,7 @@ async function resumePreparedDurableTarget(
 	runId: string,
 	deps: Pick<
 		WorkflowControlActionDeps,
-		"getRuntime" | "policy" | "signal" | "beforeResume" | "onRunAccepted" | "authorize"
+		"getRuntime" | "policy" | "signal" | "beforeResume" | "onRunAccepted" | "authorize" | "admissionMark"
 	>,
 	budget?: WorkflowToolArgs["budget"],
 ): Promise<WorkflowToolResult> {
@@ -513,6 +521,7 @@ async function resumePreparedDurableTarget(
 			signal: deps.signal,
 			onRunAccepted: deps.onRunAccepted,
 			...(budget === undefined ? {} : { budget }),
+			...(deps.admissionMark === undefined ? {} : { admissionMark: deps.admissionMark }),
 		});
 		return {
 			action: "resume",
@@ -648,6 +657,7 @@ export async function workflowResumeAction(
 		| "onRunAccepted"
 		| "owner"
 		| "authorize"
+		| "admissionMark"
 	>,
 ): Promise<WorkflowToolResult> {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
@@ -655,6 +665,9 @@ export async function workflowResumeAction(
 	const { store, toolControlRegistry } = owner;
 	deps.signal?.throwIfAborted();
 	const explicitTarget = args.runId?.trim();
+	// What this request resumes is the run as it reads now: a resume admitted from here on already resumed it (#5534).
+	if (deps.admissionMark === undefined && explicitTarget !== undefined && explicitTarget.length > 0)
+		deps = { ...deps, admissionMark: resumeAdmissionMark(explicitTarget) };
 	if (explicitTarget !== undefined && isRunIdPrefix(explicitTarget)) {
 		// #2603: resume prefixes must see both live and durable candidates before
 		// local precedence can select a run.
@@ -672,6 +685,7 @@ export async function workflowResumeAction(
 		}
 		return { action: "resume", runId: target.target, status: "noop", message: target.message, code: "run_not_found" };
 	}
+	if (deps.admissionMark === undefined) deps = { ...deps, admissionMark: resumeAdmissionMark(target.runId) };
 	await deps.authorize?.(target.runId);
 	// Any exact id or unique prefix has been normalized to the canonical full id,
 	// so it cannot disagree with the resolved run; the old re-resolution branch
@@ -765,6 +779,7 @@ export async function workflowResumeAction(
 			signal: deps.signal,
 			onRunAccepted: deps.onRunAccepted,
 			...(args.budget === undefined ? {} : { budget: args.budget }),
+			...(deps.admissionMark === undefined ? {} : { admissionMark: deps.admissionMark }),
 		});
 		const message = warning === undefined ? continuation.message : `${warning}\n\n${continuation.message}`;
 		return {
