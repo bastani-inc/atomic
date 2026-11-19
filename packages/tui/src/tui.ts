@@ -70,6 +70,8 @@ export interface TuiMouseEventResult {
 	 * second press there makes the click part of a double- or triple-click, which selects text, and cancels it.
 	 */
 	whenSingleClick?: () => void;
+	/** Release anything reserved for `whenSingleClick` if the renderer cancels it instead. */
+	onSingleClickCancel?: () => void;
 }
 
 /** Internal target metadata used by containers and alternate-screen dispatch. */
