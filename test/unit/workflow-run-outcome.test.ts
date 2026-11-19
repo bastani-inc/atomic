@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters as stripAnsi } from "node:util";
+import { stripTerminalSequences as stripAnsi } from "@bastani/atomic-tui";
 import { describe, it, vi } from "vitest";
 import { refreshColorEnvironment } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";

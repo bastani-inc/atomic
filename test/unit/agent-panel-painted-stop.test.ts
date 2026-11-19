@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -10,6 +9,7 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { showAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.ts";
+import { stripVTControlCharacters } from "../helpers/visible-text.ts";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
 beforeEach(() => {

@@ -1,5 +1,5 @@
 import { getAgentDir, hasTrustRequiringProjectResourcesAsync, ProjectTrustStore } from "@bastani/atomic";
-import type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
+import type { CatalogReadOptions, DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
 	type OpenCompletedDurableResult,
@@ -29,6 +29,7 @@ import type { StageControlRegistry } from "../runs/foreground/stage-control-regi
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { WorkflowBudget } from "../shared/budget.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import type { RunSnapshot, WorkflowActor } from "../shared/store-types.js";
@@ -100,7 +101,8 @@ export interface DurableResumeRuntime {
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
 	listDurableResumable(): readonly ResumableWorkflowEntry[];
 	prepareDurableResumable(workflowId?: string): Promise<readonly ResumableWorkflowEntry[]>;
-	prepareDurableCatalog?(): Promise<DurableWorkflowCatalogEntries>;
+	/** The stored resumable and completed runs; a caller whose `signal` aborts stops the read once nobody else waits. */
+	prepareDurableCatalog?(options?: CatalogReadOptions): Promise<DurableWorkflowCatalogEntries>;
 	/** Refresh a bounded set of known workflow ids. */
 	prepareDurableResumableForIds?(workflowIds: readonly string[]): Promise<readonly ResumableWorkflowEntry[]>;
 	prepareCompletedDurable?(): Promise<readonly ResumableWorkflowEntry[]>;
@@ -114,6 +116,7 @@ export interface DurableResumeRuntimeDeps {
 	readonly registry: WorkflowRegistry;
 	readonly store: Store;
 	readonly stageControlRegistry?: StageControlRegistry;
+	readonly stageUiBroker?: StageUiBroker;
 	readonly toolControlRegistry?: ToolControlRegistry;
 	readonly adapters?: StageAdapters;
 	readonly runtimeCwd: string;
@@ -328,11 +331,11 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				}
 			});
 		},
-		async prepareDurableCatalog() {
+		async prepareDurableCatalog(options) {
 			return withRecovery(async () => {
 				const backend = await ensureReady();
 				try {
-					const catalog = await backend.prepareWorkflowCatalog();
+					const catalog = await backend.prepareWorkflowCatalog(options);
 					for (const unavailable of catalog.unavailableShards ?? [])
 						deps.reportWarning?.(`${unavailable.message} ${unavailable.hint}`);
 					const known = new Set(
@@ -393,6 +396,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						durableBackend: backend,
 						store: deps.store,
 						stageControlRegistry: deps.stageControlRegistry,
+						stageUiBroker: deps.stageUiBroker,
 						adapters: deps.adapters,
 						sessionStore: deps.adapters?.sessionStore,
 						cwd: handle?.workflowCwd ?? handle?.invocationCwd ?? deps.runtimeCwd,

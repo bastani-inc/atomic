@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { setKeybindings, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
+import { setKeybindings, stripHintMarkers, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { AgentPanelRow } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
@@ -24,7 +24,8 @@ import { moduleDir, readText } from "../helpers/runtime.js";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const plainStyle: NavKeyStyle = {
-	dim: (text) => text,
+	// Hint lines are compared as the terminal shows them, without their zero-width click markers.
+	dim: (text) => stripHintMarkers(text),
 	text: (text) => text,
 	muted: (text) => text,
 	border: (text) => text,

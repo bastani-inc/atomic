@@ -14,6 +14,7 @@ import type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedF
 import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type {
 	PendingStageMessage,
+	RunStatus,
 	WorkflowActor,
 	WorkflowFailureCode,
 	WorkflowFailureDisposition,
@@ -249,6 +250,8 @@ export type DurableWorkflowBoundaryTopology = DurableWorkflowBoundaryIdentity &
 		| { readonly event: "start"; readonly status: "running" }
 		| {
 				readonly event: "terminal";
+				/** A failed or skipped boundary's child actually ran, though there is no replayable child result. */
+				readonly startedChildStatus?: RunStatus;
 				readonly status: Extract<DurableStageLifecycleStatus, "completed" | "failed" | "skipped">;
 		  }
 	);
