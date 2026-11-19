@@ -35,6 +35,8 @@ interface ProviderLimitState {
 	observers?: Set<(observation: ProviderRateLimitObservation) => void>;
 	/** Waits for a fleet-wide token before each request; absent on state created by an older copy, or when none is set. */
 	gate?: ProviderRequestGate;
+	/** Pending slot-opening turns, shared by every caller of the same provider budget. */
+	openingTurns?: Map<string, { wake: ReturnType<typeof setImmediate>; waiters: Set<() => void> }>;
 }
 
 /**
@@ -155,6 +157,52 @@ export function tryAdmitProviderRequest(provider: string, model?: string): numbe
 		if (limit?.budget) limit.requests.push(Date.now());
 	}
 	return delay;
+}
+
+/**
+ * A queued caller with a signal gives due aborts the rest of the timer pass. Reserve its place before yielding:
+ * later arrivals join the same turn, whose waiters try the slot in order. If a caller aborts, the next one gets
+ * its chance on that turn without a spent token or an extra budget window.
+ */
+export function providerAdmissionTurn(
+	provider: string,
+	model: string,
+	queued: boolean,
+	signal?: AbortSignal,
+): Promise<void> | undefined {
+	if (!queued && !state.openingTurns?.size) return undefined;
+	// Only a provider budget has slots shared across models. A model's own cooldown must not hold its siblings.
+	const key = state.providers.get(provider)?.budget ? provider : modelLimitKey(provider, model);
+	let turn = state.openingTurns?.get(key);
+	if (!turn) {
+		if (!queued || !signal) return undefined;
+		state.openingTurns ??= new Map();
+		const turns = state.openingTurns;
+		const waiters = new Set<() => void>();
+		const wake = setImmediate(() => {
+			turns.delete(key);
+			for (const ready of waiters) ready();
+		});
+		turn = { wake, waiters };
+		turns.set(key, turn);
+	}
+	const { wake, waiters } = turn;
+	return new Promise((resolve, reject) => {
+		const ready = () => {
+			signal?.removeEventListener("abort", abort);
+			resolve();
+		};
+		const abort = () => {
+			waiters.delete(ready);
+			if (waiters.size === 0) {
+				clearImmediate(wake);
+				state.openingTurns?.delete(key);
+			}
+			reject(signal?.reason ?? new Error("Provider request aborted"));
+		};
+		waiters.add(ready);
+		signal?.addEventListener("abort", abort, { once: true });
+	});
 }
 
 /** Sets the gate every request of this process waits on after its own limits, or removes it. */

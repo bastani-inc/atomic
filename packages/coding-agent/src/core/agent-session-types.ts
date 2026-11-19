@@ -299,6 +299,12 @@ export interface ExtensionBindings {
 	commandContextActions?: ExtensionCommandContextActions;
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
+	/**
+	 * Report a `session_start` or `resources_discover` handler that throws through `onError` and keep the session, as
+	 * for any other handler. Without it a failed start rolls the session back and rejects with `ExtensionStartupError`.
+	 * The interactive terminal sets it, so an extension that fails to start never closes the session a user works in.
+	 */
+	reportStartupErrors?: boolean;
 }
 
 export interface AgentSessionReloadOptions {
