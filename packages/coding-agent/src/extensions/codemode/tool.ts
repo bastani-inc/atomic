@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { AgentTool } from "@bastani/atomic-agent-core";
+import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
 import type { CodemodeJsonSchema, CodemodeTool } from "@bastani/atomic-codemode";
 import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@bastani/atomic-codemode/declarations";
 import { CODEMODE_SOURCE_GRAMMAR } from "@bastani/atomic-codemode/source";
@@ -46,6 +46,16 @@ export type CodemodeToolInput = Static<typeof codemodeSchema>;
 export function isCodemodeTool(tool: Pick<ToolInfo, "name" | "parameters">): boolean {
 	return tool.name === CODEMODE_TOOL_NAME && tool.parameters === codemodeSchema;
 }
+/**
+ * What a nested tool call's own block shows: the call's arguments and its result as the tool returned it. Kept in the
+ * codemode result, within {@link CODEMODE_NESTED_BLOCK_LIMITS}, so a reopened session draws the same block.
+ */
+export interface CodemodeNestedBlock {
+	args: unknown;
+	content: AgentToolResult<unknown>["content"];
+	details?: unknown;
+	isError: boolean;
+}
 export interface CodemodeNestedCall {
 	id: string;
 	name: string;
@@ -54,10 +64,22 @@ export interface CodemodeNestedCall {
 	durationMs?: number;
 	error?: string;
 	cost?: number;
+	/** Only in the final result, and only while the call's block fits the limits. */
+	block?: CodemodeNestedBlock;
 }
 export interface CodemodeToolDetails {
 	calls: CodemodeNestedCall[];
 	fullOutputPath?: string;
+}
+/** UTF-8 JSON bytes of the nested blocks one script keeps: per call, and for all its calls together. */
+export const CODEMODE_NESTED_BLOCK_LIMITS = {
+	maxBytesPerCall: 16 * 1024,
+	maxBytesTotal: 128 * 1024,
+} as const;
+/** Calls a script makes through `models`, which are not tool calls and stay in the codemode block. */
+const CODEMODE_MODEL_CALLS: ReadonlySet<string> = new Set(["models.classify", "models.generateImages"]);
+export function isCodemodeToolCall(call: Pick<CodemodeNestedCall, "name">): boolean {
+	return !CODEMODE_MODEL_CALLS.has(call.name);
 }
 export function toCodemodeDeclaration(
 	tool: AgentTool,

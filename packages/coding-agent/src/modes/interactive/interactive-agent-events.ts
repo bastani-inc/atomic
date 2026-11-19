@@ -16,6 +16,14 @@ import { mountIdleStatus } from "./components/idle-status.ts";
 import { toolResultGroupState } from "./components/tool-group-tracker.ts";
 import { compactionMeta, runInProgress, type WorkingRunSnapshot } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import {
+	chatBlockResult,
+	endCodemodeCall,
+	endCodemodeRun,
+	followCodemodeCall,
+	isCodemodeCall,
+	showNestedToolEvent,
+} from "./interactive-codemode-calls.ts";
 import { type EventStartup, eventStartupScope } from "./interactive-initial-session-binding.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -242,7 +250,14 @@ InteractiveModeBase.prototype.handleEvent = function (this: InteractiveModeBase,
 };
 
 async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, call?: EventForwarding): Promise<void> {
-	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) return;
+	if ("parentToolCallId" in event && event.parentToolCallId && event.type.startsWith("tool_execution_")) {
+		// A codemode script's tool calls draw as blocks of their own; other nested calls stay out of the chat.
+		if (this.isInitialized)
+			showNestedToolEvent(this, event as Parameters<typeof showNestedToolEvent>[1], (toolName, toolCallId, args) =>
+				createToolComponent(this, toolName, toolCallId, args),
+			);
+		return;
+	}
 	if (!this.isInitialized) {
 		// A caller awaiting handleEvent itself owns its error and may use it for recovery.
 		const startup: EventStartup = { mode: new WeakRef(this), strict: true };
@@ -526,6 +541,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 				this.pendingTools.set(event.toolCallId, component);
 				trackMainToolComponent(this, event.toolCallId, event.toolName, component);
 			}
+			if (isCodemodeCall(event.toolName)) followCodemodeCall(this, event.toolCallId, component);
 			component.markExecutionStarted(observeMainToolStart(this, event.toolCallId));
 			this.ui.requestRender();
 			break;
@@ -534,7 +550,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 		case "tool_execution_update": {
 			const component = this.pendingTools.get(event.toolCallId);
 			if (component) {
-				component.updateResult({ ...event.partialResult, isError: false }, true);
+				component.updateResult(chatBlockResult(event.toolName, { ...event.partialResult, isError: false }), true);
 				this.ui.requestRender();
 			}
 			break;
@@ -545,11 +561,18 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			if (event.isError) void this.maybeShowInstallChangeWarning();
 			const component = this.pendingTools.get(event.toolCallId);
 			if (component) {
-				component.updateResult({ ...event.result, isError: event.isError, durationMs: event.durationMs });
+				component.updateResult(
+					chatBlockResult(event.toolName, {
+						...event.result,
+						isError: event.isError,
+						durationMs: event.durationMs,
+					}),
+				);
 				this.pendingTools.delete(event.toolCallId);
 				settleMainTool(this, event.toolCallId, toolResultGroupState(event.result, event.isError));
 				this.ui.requestRender();
 			}
+			if (isCodemodeCall(event.toolName)) endCodemodeCall(this, event.toolCallId, event.result);
 			break;
 		}
 
@@ -582,6 +605,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 				this.streamingMessage = undefined;
 			}
 			this.pendingTools.clear();
+			endCodemodeRun(this);
 			mainTurnToolBatches.delete(this);
 			endMainToolTurn(this);
 			if (this.compactionQueuedMessages.length > 0 && !compactionInProgress) {

@@ -27,6 +27,12 @@ import { ThemedText } from "./components/themed-text.js";
 import type { ToolGroupRole } from "./components/tool-block.ts";
 import { assistantCallBreaks, type ToolGroupMemberState, ToolGroupTracker } from "./components/tool-group-tracker.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import {
+	addSavedCodemodeCalls,
+	chatBlockResult,
+	forgetCodemodeCalls,
+	isCodemodeCall,
+} from "./interactive-codemode-calls.ts";
 import { countChatMessages, InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
@@ -532,11 +538,18 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	this: InteractiveModeBase,
 	entry: ChatMessageEntry,
 ): Component {
-	const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
+	const options = this.chatMessageRenderOptions();
+	// A codemode block leaves the tool calls of its script to the blocks addSavedCodemodeCalls draws after it.
+	const shown =
+		entry.kind === "tool" && entry.result && isCodemodeCall(entry.toolName)
+			? { ...entry, result: chatBlockResult(entry.toolName, entry.result) }
+			: entry;
+	const component = renderChatMessageEntry(shown, options);
 	if (entry.kind !== "system" && !(entry.kind === "custom" && isVerbatimCompactionMessage(entry.message))) {
 		messageComponents.add(component);
 	}
 	addChatTranscriptEntry(this.chatContainer, component, entry.role);
+	addSavedCodemodeCalls(this, entry, component, options);
 	return component;
 };
 
@@ -745,6 +758,7 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 ): void {
 	this.pendingTools.clear();
+	forgetCodemodeCalls(this);
 	const pendingEchoes = takeDeferredEchoes(this);
 
 	if (options.updateFooter) {
@@ -931,6 +945,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 ): void {
 	if (!options.preserveViewportInput) this.resetTranscriptSelection();
 	this.pendingTools.clear();
+	forgetCodemodeCalls(this);
 	const pendingEchoes = takeDeferredEchoes(this);
 	if (options.updateFooter) {
 		this.footer.invalidate();

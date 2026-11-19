@@ -37,8 +37,10 @@ import {
 } from "../tool-search/tool.js";
 import {
 	CODEMODE_DOCS_PATH,
+	CODEMODE_NESTED_BLOCK_LIMITS,
 	CODEMODE_STORE_ENTRY_TYPE,
 	CODEMODE_TOOL_NAME,
+	type CodemodeNestedBlock,
 	type CodemodeNestedCall,
 	type CodemodeToolDetails,
 	type CodemodeToolInput,
@@ -387,6 +389,46 @@ function provider(value: unknown): string | undefined {
 	if (typeof value === "string") return value;
 	throw new Error("provider must be a string");
 }
+/**
+ * Keeps the block of each nested call while it fits {@link CODEMODE_NESTED_BLOCK_LIMITS}, as a JSON copy: what a
+ * reopened session reads back. A call over the limits, or after them, keeps none and draws as a generic row.
+ */
+function nestedBlockKeeper(): (
+	args: unknown,
+	result: AgentToolResult<unknown>,
+	isError: boolean,
+) => CodemodeNestedBlock | undefined {
+	let total = 0;
+	return (args, result, isError) => {
+		// Text and image data alone can be far over the limit; such a result is not serialized to find out.
+		let json: string | undefined;
+		try {
+			let size = 0;
+			for (const block of result.content) {
+				const part = (block as { text?: unknown; data?: unknown }).text ?? (block as { data?: unknown }).data;
+				if (typeof part === "string") size += part.length;
+			}
+			if (size > CODEMODE_NESTED_BLOCK_LIMITS.maxBytesPerCall) return undefined;
+			json = JSON.stringify({
+				args: args ?? {},
+				content: result.content,
+				...(result.details === undefined ? {} : { details: result.details }),
+				isError,
+			});
+		} catch {
+			return undefined;
+		}
+		if (json === undefined) return undefined;
+		const bytes = Buffer.byteLength(json);
+		if (
+			bytes > CODEMODE_NESTED_BLOCK_LIMITS.maxBytesPerCall ||
+			total + bytes > CODEMODE_NESTED_BLOCK_LIMITS.maxBytesTotal
+		)
+			return undefined;
+		total += bytes;
+		return JSON.parse(json) as CodemodeNestedBlock;
+	};
+}
 function preview(args: unknown): string {
 	try {
 		return (JSON.stringify(args) ?? "").slice(0, 200);
@@ -647,8 +689,12 @@ export async function executeCodemode(
 	let usage: Usage | undefined;
 	let generatedImages = 0;
 	const generatedSvgs: ImageContent[] = [];
-	const snapshot = (): CodemodeToolDetails => ({ calls: calls.map((call) => ({ ...call })) });
+	// Blocks are for a reopened session: progress updates leave them out.
+	const snapshot = (final = false): CodemodeToolDetails => ({
+		calls: calls.map(({ block, ...call }) => (final && block ? { ...call, block } : call)),
+	});
 	const publish = () => update?.({ content: [], details: snapshot() });
+	const keepBlock = nestedBlockKeeper();
 	// Show the script as running before its first nested call, so the row's timer starts.
 	publish();
 	const callable = ctx ? getCodemodeCallableTools(ctx.tools) : [];
@@ -708,6 +754,8 @@ export async function executeCodemode(
 					record.status = outcome.isError ? (callSignal.aborted ? "cancelled" : "error") : "ok";
 					const text = textOf(outcome.result);
 					if (outcome.isError) record.error = (text || `Tool ${tool.name} failed`).slice(0, 500);
+					const block = keepBlock(outcome.toolCall.arguments, outcome.result, outcome.isError);
+					if (block) record.block = block;
 					publish();
 					if (tool.outputSchema && outcome.result.structuredContent !== undefined)
 						return outcome.result.structuredContent;
@@ -786,7 +834,7 @@ export async function executeCodemode(
 		.map((block) => block.text)
 		.join("\n");
 	const budget = (source.maxOutputTokens ?? 10_000) * 4;
-	const details = snapshot();
+	const details = snapshot(true);
 	if (text.length > budget) {
 		let path: string;
 		let notice: string;

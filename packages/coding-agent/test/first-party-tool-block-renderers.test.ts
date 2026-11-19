@@ -77,7 +77,7 @@ test("the runtime notebook edit wrapper preserves canonical tool blocks (#5350)"
 	}
 });
 
-test("codemode keeps its header on one row without flattening the full script (#5350)", () => {
+test("codemode bounds its collapsed script without flattening it and shows all of it expanded (#5350)", () => {
 	const code = [
 		"const template = ```` value`;",
 		...Array.from({ length: 18 }, (_, i) => `console.log("line ${i}");`),
@@ -86,9 +86,11 @@ test("codemode keeps its header on one row without flattening the full script (#
 		const ctx = context({ code });
 		const call = codemodeRenderers.renderCall!({ code }, theme, ctx);
 		const rows = plain(call, width);
-		assert.equal(rows.length, 1);
-		assert.match(rows[0], /^codemode\(.*\)$/u);
-		assert.doesNotMatch(rows[0], /line 17/u);
+		// The header row and 11 script rows under it, then the hint naming the 7 lines left.
+		assert.equal(rows.length, 13);
+		assert.match(rows[0], /^ ● codemode\(/u);
+		assert.match(rows[12], /… \+7 lines \(ctrl\+e to expand\)|…$/u);
+		assert.doesNotMatch(rows.join("\n"), /line 17/u);
 		const expanded = codemodeRenderers.renderResult!(
 			{ content: [], details: { calls: [] } },
 			{ expanded: true, isPartial: false },

@@ -12,9 +12,9 @@ import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
 beforeAll(() => initTheme("dark"));
 afterEach(() => vi.useRealTimers());
-function context(expanded: boolean): ToolRenderContext {
+function context(expanded: boolean, code = ""): ToolRenderContext {
 	return {
-		args: { code: "" },
+		args: { code },
 		toolCallId: "call",
 		invalidate: () => {},
 		lastComponent: undefined,
@@ -32,12 +32,17 @@ function context(expanded: boolean): ToolRenderContext {
 		keyHint,
 	};
 }
-function render(result: AgentToolResult<CodemodeToolDetails | undefined>, expanded = true, width = 200): string {
+function render(
+	result: AgentToolResult<CodemodeToolDetails | undefined>,
+	expanded = true,
+	width = 200,
+	code = "",
+): string {
 	const component = codemodeRenderers.renderResult?.(
 		result,
 		{ expanded, isPartial: false },
 		theme,
-		context(expanded),
+		context(expanded, code),
 	) as Component;
 	return stripVTControlCharacters(component.render(width).join("\n"))
 		.split("\n")
@@ -55,7 +60,7 @@ test("codemode renderer hides the script header and shows the output", () => {
 			],
 			details: { calls: [{ id: "call/1", name: "read", args: '{"path":"a"}', status: "ok", durationMs: 5 }] },
 		}),
-		'⎿  ● Read(a)\n       ⎿  {"path":"a"}\n  ⎿  hello',
+		["● codemode()", "   ⎿  ● Read(a)", '        ⎿  {"path":"a"}', "   ⎿  hello"].join("\n"),
 	);
 });
 
@@ -73,15 +78,16 @@ test("codemode renderer shows model call costs and their total", () => {
 			},
 		}),
 		[
-			"⎿  ● models.classify(scorer/judge) · $0.000013",
-			"       ⎿  scorer/judge",
+			"● codemode()",
+			"   ⎿  ● models.classify(scorer/judge) · $0.000013",
+			"        ⎿  scorer/judge",
 			"",
-			"     ● models.classify(scorer/judge) · $0.02",
-			"       ⎿  scorer/judge",
+			"      ● models.classify(scorer/judge) · $0.02",
+			"        ⎿  scorer/judge",
 			"",
-			"     ● models.classify(scorer/judge)",
-			"       ⎿  scorer/judge",
-			"  ⎿  Model calls: $0.02",
+			"      ● models.classify(scorer/judge)",
+			"        ⎿  scorer/judge",
+			"   ⎿  Model calls: $0.02",
 		].join("\n"),
 	);
 });
@@ -92,7 +98,7 @@ test("codemode renderer shows rejected options without a script header", () => {
 			content: [{ type: "text", text: "The @options line must be followed by JavaScript source" }],
 			details: undefined,
 		}),
-		"⎿  The @options line must be followed by JavaScript source",
+		"● codemode()\n   ⎿  The @options line must be followed by JavaScript source",
 	);
 });
 
@@ -105,18 +111,69 @@ test("codemode collapsed output is limited by wrapped lines and keeps the full o
 		details: { calls: [], fullOutputPath: "/tmp/out.txt" },
 	};
 	const lines = render(result, false, 50).split("\n");
-	assert.equal(lines.length, 7);
-	assert.deepEqual(lines.slice(0, 5), [`⎿  ${"x".repeat(45)}`, ...Array(4).fill(`     ${"x".repeat(45)}`)]);
-	assert.match(lines[5], /^ {5}… \+18 lines/);
-	assert.equal(lines[6], "  ⎿  Full output: /tmp/out.txt");
-	assert.equal(render(result, true, 50).split("\n").length, 24);
-	assert.equal(render(result, true, 50).split("\n").slice(0, -1).join("").match(/x/g)?.length, 1000);
+	assert.equal(lines.length, 8);
+	assert.equal(lines[0], "● codemode()");
+	assert.deepEqual(lines.slice(1, 6), [`   ⎿  ${"x".repeat(44)}`, ...Array(4).fill(`      ${"x".repeat(44)}`)]);
+	assert.match(lines[6], /^ {6}… \+18 lines/);
+	assert.equal(lines[7], "   ⎿  Full output: /tmp/out.txt");
+	assert.equal(render(result, true, 50).split("\n").length, 25);
+	assert.equal(render(result, true, 50).split("\n").slice(1, -1).join("").match(/x/g)?.length, 1000);
 });
 
-test("codemode collapsed script call stays on one bounded header row (#5350)", () => {
+test("a collapsed one-line script stays on one bounded header row (#5350)", () => {
 	const component = codemodeRenderers.renderCall?.({ code: "x".repeat(1000) }, theme, context(false)) as Component;
 	const lines = component.render(50).map(stripVTControlCharacters);
-	assert.deepEqual(lines, [`codemode(${"x".repeat(39)}…)`]);
+	assert.deepEqual(lines, [` ● codemode(${"x".repeat(36)}…)`]);
+});
+
+const SCRIPT = Array.from(
+	{ length: 15 },
+	(_, index) => `  const line${index + 1} = await tools.read({ path: "${index + 1}" });`,
+);
+
+test("a collapsed codemode block shows the first 12 script lines under its header and the rest on expand", () => {
+	const code = ["// first", ...SCRIPT].join("\n");
+	const result = { content: [{ type: "text" as const, text: "done" }], details: { calls: [] } };
+	const collapsed = render(result, false, 120, code).split("\n");
+	// The header row is drawn after the output pad and the status mark, so the script starts on column 12.
+	assert.deepEqual(collapsed.slice(0, 12), [
+		"● codemode(// first",
+		...SCRIPT.slice(0, 11).map((line) => `            ${line}`),
+	]);
+	assert.match(collapsed[12], /^ {12}… \+4 lines/);
+	assert.equal(collapsed[13], "   ⎿  done");
+	const expanded = render(result, true, 120, code).split("\n");
+	assert.deepEqual(expanded.slice(0, 16), [
+		"● codemode(// first",
+		...SCRIPT.slice(0, 14).map((line) => `            ${line}`),
+		`            ${SCRIPT[14]})`,
+	]);
+	assert.equal(expanded[16], "   ⎿  done");
+});
+
+test("a short codemode script closes its call on its last line and wraps long lines when expanded", () => {
+	const code = `const value = 1;\nreturn "${"y".repeat(60)}";`;
+	const result = { content: [], details: { calls: [] } };
+	assert.deepEqual(render(result, false, 50, code).split("\n"), [
+		"● codemode(const value = 1;",
+		`            return "${"y".repeat(28)}…)`,
+	]);
+	const expanded = render(result, true, 50, code).split("\n");
+	assert.equal(expanded[0], "● codemode(const value = 1;");
+	assert.equal(expanded.slice(1).join("").replace(/\s/g, ""), `return"${"y".repeat(60)}";)`);
+	assert.ok(expanded.every((line) => line.length <= 50));
+});
+
+test("the codemode script is syntax-highlighted", () => {
+	const component = codemodeRenderers.renderCall?.(
+		{ code: 'const a = "b";\nreturn a;' },
+		theme,
+		context(false, 'const a = "b";\nreturn a;'),
+	) as Component;
+	const lines = component.render(80);
+	assert.notEqual(lines[0], stripVTControlCharacters(lines[0]));
+	assert.match(lines[1], /\x1b\[/);
+	assert.equal(stripVTControlCharacters(lines[1]), "            return a;)");
 });
 
 test("codemode shares the header elapsed time during execution and after completion (#5350)", () => {

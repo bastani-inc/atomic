@@ -3,6 +3,7 @@ import { isProxy } from "node:util/types";
 import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
 import { reopenedCompletionName } from "../../core/tasks/reopened-completion.js";
+import { CodemodeNestedCalls } from "../interactive/components/codemode-nested-calls.ts";
 import type { ToolGroupRole } from "../interactive/components/tool-block.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import { sameToolGroupRole, toolGroupRoleKey } from "../interactive/components/tool-group-tracker.ts";
@@ -270,7 +271,11 @@ abstract class RemoteRenderer implements Component {
  * otherwise keeps its renderer alive in the engine for the rest of the session.
  */
 export function disposeRemoteRenderers(components: readonly Component[]): void {
-	for (const component of components) if (component instanceof RemoteRenderer) component.dispose();
+	for (const component of components) {
+		if (component instanceof RemoteRenderer) component.dispose();
+		// The blocks of a codemode script's tool calls follow its block in the chat.
+		else if (component instanceof CodemodeNestedCalls) component.dispose();
+	}
 }
 
 export class RemoteToolExecutionComponent extends RemoteRenderer {

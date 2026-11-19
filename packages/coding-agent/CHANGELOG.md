@@ -11,6 +11,10 @@
 - The SDK guide shows [how to copy an extension's handler map](docs/sdk/reference.md#copying-extension-handlers-in-extensionsoverride) without reporting the same discovery error twice during interactive startup ([#5657](https://github.com/bastani-inc/atomic/issues/5657)).
 - Extension tools can distinguish nested calls from model-issued calls with `ctx.parentToolCallId`.
 
+### Changed
+
+- The interactive chat shows a `codemode` script with syntax highlighting, its first 12 lines while collapsed. Each tool call the script makes follows as that tool's own block, in start order, so `subagent` launches and `intercom` sends look and expand as direct calls do. Past 8 calls the earlier ones fold into one line. A reopened session draws the same blocks; calls over the kept size and calls in older sessions show as one summary row. What the model sees is unchanged ([docs](docs/tools.md#codemode)).
+
 ### Fixed
 
 - `generateStructuredOutput()` and the `structured_output` tool no longer send a provider backoff retry after their timeout when the process is busy ([#5627](https://github.com/bastani-inc/atomic/issues/5627)).

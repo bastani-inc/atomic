@@ -8,6 +8,7 @@ import { test, vi } from "vitest";
 import { createCodemodeExtension } from "../src/extensions/codemode/index.js";
 import {
 	CODEMODE_DOCS_PATH,
+	CODEMODE_NESTED_BLOCK_LIMITS,
 	type CodemodeToolDetails,
 	createCodemodeDescription,
 } from "../src/extensions/codemode/tool.js";
@@ -141,6 +142,96 @@ test("codemode executes nested tools in a worker and persists successful branch-
 				.getBranch()
 				.some((entry) => entry.type === "custom" && entry.customType === "codemode-store"),
 		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+function echoHarness() {
+	return createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool({
+					name: "echo",
+					label: "Echo",
+					description: "Echo",
+					exposure: "codemode",
+					parameters: Type.Object({ value: Type.String(), size: Type.Optional(Type.Number()) }),
+					execute: async (_id, args) => ({
+						content: [{ type: "text", text: args.size ? "x".repeat(args.size) : args.value }],
+						details: { echoed: args.value },
+					}),
+				});
+			},
+		],
+		initialActiveToolNames: ["codemode"],
+	});
+}
+
+test("a codemode result keeps each nested call's block for a reopened chat, and its progress updates do not", async () => {
+	const harness = await echoHarness();
+	try {
+		const updates: CodemodeToolDetails[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "tool_execution_update" && event.toolName === "codemode")
+				updates.push(event.partialResult.details as CodemodeToolDetails);
+		});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code: 'return await tools.echo({ value: "hi" });' })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("run script");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult");
+		const [call] = (result.details as CodemodeToolDetails).calls;
+		assert.equal(call?.id, result.nestedCalls?.calls[0]?.id);
+		assert.deepEqual(call?.block, {
+			args: { value: "hi" },
+			content: [{ type: "text", text: "hi" }],
+			details: { echoed: "hi" },
+			isError: false,
+		});
+		assert.ok(updates.length > 0);
+		assert.ok(updates.every((details) => details.calls.every((update) => update.block === undefined)));
+		// What the model reads of the script is its content, which names no block.
+		assert.deepEqual(result.content.slice(1), [{ type: "text", text: "hi" }]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("a codemode result keeps no block for a call over the per-call limit, nor for calls past the script's total", async () => {
+	const harness = await echoHarness();
+	try {
+		const big = CODEMODE_NESTED_BLOCK_LIMITS.maxBytesPerCall + 1;
+		const share = Math.floor(CODEMODE_NESTED_BLOCK_LIMITS.maxBytesPerCall * 0.9);
+		const fit = Math.floor(CODEMODE_NESTED_BLOCK_LIMITS.maxBytesTotal / share);
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: `await tools.echo({ value: "big", size: ${big} });
+for (let i = 0; i < ${fit + 2}; i++) await tools.echo({ value: String(i), size: ${share} });
+return "ok";`,
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("run script");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult");
+		const calls = (result.details as CodemodeToolDetails).calls;
+		assert.equal(calls.length, fit + 3);
+		assert.equal(calls[0]?.block, undefined);
+		const kept = calls.slice(1).map((call) => call.block !== undefined);
+		assert.deepEqual(kept, [...Array(fit).fill(true), false, false]);
+		const bytes = calls.reduce((total, call) => total + Buffer.byteLength(JSON.stringify(call.block ?? "")), 0);
+		assert.ok(bytes <= CODEMODE_NESTED_BLOCK_LIMITS.maxBytesTotal + calls.length * 2, String(bytes));
 	} finally {
 		await harness.cleanup();
 	}
