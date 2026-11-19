@@ -395,6 +395,46 @@ test("preparation adapter treats an absent local prerelease branch as preparatio
 	});
 });
 
+test("preparation sends slash-named base and release branches to GitHub as one encoded path segment or query value", async () => {
+	// GitHub documents {branch} as a single path parameter, so its '/' is sent as %2F, as Octokit does.
+	const baseRef = "rmwf/x";
+	const prerelease = validateReleaseRequest("prerelease", "0.9.16-alpha.1");
+	const github = new Map([
+		[
+			"repos/bastani-inc/atomic/branches/rmwf%2Fx/protection/required_status_checks",
+			JSON.stringify({ checks: [{ context: "test (linux)", app_id: 15368 }] }),
+		],
+		["repos/bastani-inc/atomic/rules/branches/rmwf%2Fx?per_page=100&page=1", "[]"],
+		["repos/bastani-inc/atomic/pulls?state=open&head=bastani-inc%3Aprerelease%2F0.9.16-alpha.1&per_page=100", "[]"],
+	]);
+	const transport = fakeTransport((argv) => {
+		const command = argv.join(" ");
+		if (command === "git status --porcelain=v1 --untracked-files=all") return commandResult();
+		if (command === "git ls-remote --heads origin refs/heads/prerelease/0.9.16-alpha.1") return commandResult();
+		if (command === "git ls-remote --heads origin refs/heads/rmwf/x")
+			return commandResult(`${baseSha}\trefs/heads/rmwf/x`);
+		if (command === "git rev-parse --verify --quiet --end-of-options refs/heads/prerelease/0.9.16-alpha.1") {
+			return commandResult("", 1);
+		}
+		const response = argv[0] === "gh" && argv[1] === "api" ? github.get(argv[2] ?? "") : undefined;
+		if (response !== undefined) return commandResult(response);
+		throw new Error(`unexpected fake command: ${command}`);
+	});
+
+	const result = await createReleaseBoundary("/safe/fake/repository", { transport }).inspectPreparation({
+		cwd: "/safe/fake/repository",
+		release: prerelease,
+		baseRef,
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.mode, "prepare");
+	assert.deepEqual(
+		transport.calls.filter((argv) => argv[0] === "gh").map((argv) => argv.join(" ")),
+		[...github.keys()].map((endpoint) => `gh api ${endpoint}`),
+	);
+});
+
 test("release-0.9.15 retry regression reuses the exact changelog-only branch, commit, and PR", () => {
 	const result = evaluatePreparationReuse(release, "main", validReuseState());
 	assert.deepEqual(result, {
