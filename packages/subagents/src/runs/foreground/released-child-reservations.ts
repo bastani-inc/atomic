@@ -1,6 +1,6 @@
 import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { IntercomEventBus, RunSyncOptions } from "../../shared/types.js";
-import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import { reservationRecordLookup, subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -55,6 +55,8 @@ export interface ReleasedChildHoldFailure {
 	readonly childNames: readonly string[];
 	/** The task each child's request was made for, by child name, when the request knew it (#5551). */
 	readonly taskIds?: ReadonlyMap<string, string>;
+	/** Shared by all frames of this request, not retained after it settles. */
+	readonly recordOf?: ReturnType<typeof reservationRecordLookup>;
 	readonly error: Error;
 	handled?: boolean;
 }
@@ -83,11 +85,13 @@ function recordHoldFailure(
 	childNames: readonly string[],
 	error: Error,
 	taskIds?: ReadonlyMap<string, string>,
+	recordOf?: ReleasedChildHoldFailure["recordOf"],
 ): void {
 	if (closedOwnerSession(error)) return;
 	const failure: ReleasedChildHoldFailure = {
 		childNames,
 		...(taskIds === undefined || taskIds.size === 0 ? {} : { taskIds }),
+		...(recordOf === undefined ? {} : { recordOf }),
 		error,
 	};
 	if (!emitToOwner(events, SUBAGENT_HOLD_FAILURE_EVENT, failure)) return;
@@ -178,6 +182,16 @@ const RESERVATION_FRAME_MAX = 500;
  * one for the same child overtook leaves that child to the later one (#5551). Holds only children with a request in flight.
  */
 const latestReservations = new WeakMap<IntercomEventBus, Map<string, object>>();
+const reservationOwners = new WeakMap<IntercomEventBus, { sessionId: string }>();
+
+/** An in-flight retry must not use a release, or an owner session, that ended while the broker answered. */
+export function bindReleasedChildReservationOwner(events: IntercomEventBus, sessionId: string): () => void {
+	const owner = { sessionId };
+	reservationOwners.set(events, owner);
+	return () => {
+		if (reservationOwners.get(events) === owner) reservationOwners.delete(events);
+	};
+}
 
 /** The child of `frame` the broker refused the whole frame for, when the refusal names one of them. */
 function refusedChildOf(
@@ -199,6 +213,7 @@ async function reserveFrame(
 	events: IntercomEventBus,
 	frame: readonly ReleasedChildReservation[],
 	current: (child: ReleasedChildReservation) => boolean,
+	recordOf: ReleasedChildHoldFailure["recordOf"],
 ): Promise<void> {
 	let asked = frame;
 	while (asked.length > 0) {
@@ -228,10 +243,21 @@ async function reserveFrame(
 				failed.map((child) => child.childName),
 				error,
 				taskIds,
+				recordOf,
 			);
 		}
 		if (refused === undefined) return;
-		asked = asked.filter((child) => child !== refused && current(child));
+		asked = asked.filter((child) => {
+			if (child === refused || !current(child)) return false;
+			if (recordOf === undefined) return true;
+			const latest = recordOf(child.childName);
+			return (
+				latest !== undefined &&
+				latest.taskId === child.taskId &&
+				isHeldChildRecord(latest) &&
+				(latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS) === child.wake
+			);
+		});
 	}
 }
 
@@ -249,16 +275,19 @@ export async function reserveReleasedChildren(
 	latestReservations.set(events, inFlight);
 	const request = {};
 	for (const child of children) inFlight.set(child.childName, request);
-	const current = (child: ReleasedChildReservation) => inFlight.get(child.childName) === request;
+	const owner = reservationOwners.get(events);
+	const current = (child: ReleasedChildReservation) =>
+		inFlight.get(child.childName) === request && reservationOwners.get(events) === owner;
+	const recordOf = owner === undefined ? undefined : reservationRecordLookup(owner.sessionId);
 	try {
 		const frames: Promise<void>[] = [];
 		for (let start = 0; start < children.length; start += RESERVATION_FRAME_MAX)
-			frames.push(reserveFrame(events, children.slice(start, start + RESERVATION_FRAME_MAX), current));
+			frames.push(reserveFrame(events, children.slice(start, start + RESERVATION_FRAME_MAX), current, recordOf));
 		// Every frame settles before this call stops answering for its children.
 		const rejected = (await Promise.allSettled(frames)).find((outcome) => outcome.status === "rejected");
 		if (rejected !== undefined) throw rejected.reason;
 	} finally {
-		for (const child of children) if (current(child)) inFlight.delete(child.childName);
+		for (const child of children) if (inFlight.get(child.childName) === request) inFlight.delete(child.childName);
 	}
 }
 

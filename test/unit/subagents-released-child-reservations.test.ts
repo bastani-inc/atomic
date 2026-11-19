@@ -21,7 +21,10 @@ import {
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
-import { observeSubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
+import {
+	observeSubagentChildRecord,
+	subagentChildIndexEntry,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -386,46 +389,64 @@ test("a reservation that fails after its child runs again or has ended notifies 
 	}
 });
 
-test("a failed reservation of thousands of children finds them by name in one pass over the owner's records (#4326)", async () => {
-	const { ctx, ownerSessionId } = await ownerWith([]);
-	const { events, emitted } = bus();
-	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
-		(data as { completion?: Promise<void> }).completion = Promise.resolve();
-	});
-	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
-	try {
-		const children = 2_000;
-		let targetReads = 0;
-		const names: string[] = [];
-		for (let index = 0; index < children; index++) {
-			const name = `subagent-bulk-${index}`;
-			const bulk = record({
-				childId: `bulk:${index}`,
-				runId: "bulk",
-				index,
-				owner: { kind: "session", sessionId: ownerSessionId },
-			});
-			Object.defineProperty(bulk, "intercomTarget", {
-				enumerable: true,
-				get: () => {
-					targetReads++;
-					return name;
-				},
-			});
-			observeSubagentChildRecord(bulk);
-			names.push(name);
+test.each(["one failure event", "a multi-frame reservation"] as const)(
+	"%s for thousands of children finds them in one pass over the owner's records (#4326, #5551)",
+	async (source) => {
+		const { ctx, ownerSessionId } = await ownerWith([]);
+		const { events, emitted } = bus();
+		events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+			(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("broker gone"));
+		});
+		const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+		try {
+			const children = 2_000;
+			let targetReads = 0;
+			const names: string[] = [];
+			for (let index = 0; index < children; index++) {
+				const name = `subagent-bulk-${index}`;
+				const bulk = record({
+					childId: `bulk:${index}`,
+					runId: "bulk",
+					index,
+					owner: { kind: "session", sessionId: ownerSessionId },
+				});
+				const countedTarget = {
+					enumerable: true,
+					get: () => {
+						targetReads++;
+						return name;
+					},
+				};
+				Object.defineProperty(bulk, "intercomTarget", countedTarget);
+				observeSubagentChildRecord(bulk);
+				// Count reads from either the index or the full record, including repeated passes for later frames.
+				const indexed = subagentChildIndexEntry(bulk.childId);
+				assert.ok(indexed);
+				Object.defineProperty(indexed, "intercomTarget", countedTarget);
+				names.push(name);
+			}
+			targetReads = 0;
+			if (source === "one failure event") {
+				events.emit(SUBAGENT_HOLD_FAILURE_EVENT, { childNames: names, error: new Error("broker gone") });
+			} else {
+				await reserveReleasedChildren(
+					events,
+					names.map((childName) => ({ childName, aliases: [], wake: true })),
+				);
+			}
+			assert.ok(targetReads <= 2 * children, `${targetReads} target reads for ${children} failed reservations`);
+			await vi.waitFor(() =>
+				assert.equal(
+					emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length,
+					source === "one failure event" ? 1 : 4,
+				),
+			);
+			assert.equal(subagentChildRecordFailures.last?.code, "hold-failed");
+		} finally {
+			stop();
 		}
-		targetReads = 0;
-		events.emit(SUBAGENT_HOLD_FAILURE_EVENT, { childNames: names, error: new Error("broker gone") });
-		assert.ok(targetReads <= 2 * children, `${targetReads} target reads for ${children} failed reservations`);
-		await vi.waitFor(() =>
-			assert.equal(emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length, 1),
-		);
-		assert.equal(subagentChildRecordFailures.last?.code, "hold-failed");
-	} finally {
-		stop();
-	}
-});
+	},
+);
 
 for (const operation of ["drop", "acknowledge"] as const) {
 	test(`a failed ${operation} reports hold-failed to the owner (#4326)`, async () => {

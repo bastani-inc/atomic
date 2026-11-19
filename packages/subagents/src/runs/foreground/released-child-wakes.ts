@@ -15,6 +15,7 @@ import { isReleasedChildError, ReleasedChildError } from "./released-child-error
 import { releasedReplyTimeoutId, releasedReplyToolResult } from "./released-child-replies.js";
 import {
 	acknowledgeReleasedChildWake,
+	bindReleasedChildReservationOwner,
 	INTERCOM_CONNECTED_EVENT,
 	isHeldChildRecord,
 	markEndedChildrenOf,
@@ -46,6 +47,7 @@ import {
 import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest } from "./released-reply-protocol.js";
 import {
 	indexSubagentChildOwner,
+	reservationRecordLookup,
 	subagentChildRecordForTarget,
 	subagentChildRecordOf,
 	subagentChildRecordsOf,
@@ -108,26 +110,29 @@ export function bindReleasedChildWakes(
 ): () => void {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const namespace = subagentWakeNamespace(ownerSessionId);
+	const unbindReservationOwner = bindReleasedChildReservationOwner(events, ownerSessionId);
 	/**
 	 * #5551: the children whose reservation failure the owner was told of and whose reservation has not succeeded since,
 	 * each with the task of the release it failed for: told once per child and release. Only children that failed.
 	 */
 	const holdFailuresTold = new Map<string, string | undefined>();
+	const pruned = new WeakSet<ReturnType<typeof reservationRecordLookup>>();
 	const unsubscribeHoldFailure = events.on(SUBAGENT_HOLD_FAILURE_EVENT, (payload) => {
 		const failure = payload as ReleasedChildHoldFailure;
 		indexSubagentChildOwner(ctx);
-		const recordsByName = new Map<string, SubagentChildRecord>();
-		for (const record of subagentChildRecordsOf(ownerSessionId))
-			if (record.intercomTarget !== undefined) recordsByName.set(record.intercomTarget, record);
-		// A child told of that runs again, has ended or was released by another run since has nothing left to tell.
-		for (const [childName, taskId] of holdFailuresTold) {
-			const record = recordsByName.get(childName);
-			if (record === undefined || !isHeldChildRecord(record) || record.taskId !== taskId)
-				holdFailuresTold.delete(childName);
+		const recordOf = failure.recordOf ?? reservationRecordLookup(ownerSessionId);
+		// Prune notices for obsolete releases once per batch, not once for every failed frame.
+		if (!pruned.has(recordOf)) {
+			pruned.add(recordOf);
+			for (const [childName, taskId] of holdFailuresTold) {
+				const record = recordOf(childName);
+				if (record === undefined || !isHeldChildRecord(record) || record.taskId !== taskId)
+					holdFailuresTold.delete(childName);
+			}
 		}
 		const untold: Array<{ readonly childName: string; readonly record: SubagentChildRecord }> = [];
 		for (const childName of failure.childNames) {
-			const record = recordsByName.get(childName);
+			const record = recordOf(childName);
 			if (record === undefined) continue;
 			failure.handled = true;
 			// #5551: a child that runs again or has ended is not released any more: there is nothing to hold for it.
@@ -143,7 +148,7 @@ export function bindReleasedChildWakes(
 					{ cause: failure.error },
 				),
 			);
-			if (holdFailuresTold.has(childName)) continue;
+			if (holdFailuresTold.has(childName) && holdFailuresTold.get(childName) === record.taskId) continue;
 			holdFailuresTold.set(childName, record.taskId);
 			untold.push({ childName, record });
 		}
@@ -359,6 +364,7 @@ export function bindReleasedChildWakes(
 		disposeHandler();
 		unbindResume();
 		stopReporting();
+		unbindReservationOwner();
 		unsubscribeHoldFailure();
 		unsubscribeHoldRecovered();
 		unsubscribe();

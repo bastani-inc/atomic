@@ -661,6 +661,38 @@ test(
 );
 
 test(
+	"a reservation retry preserves the end report of a subagent that ran again and completed (#5551)",
+	async () => {
+		const owner = await reservingOwner("retry-owner");
+		const rival = await ownerClient("retry-rival");
+		const refused = "subagent-retry-refused";
+		const finished = "subagent-retry-finished";
+		owner.record(refused);
+		owner.record(finished);
+		await rival.reserveReleasedChildren([{ childName: refused, aliases: [], wake: true }]);
+		await reserveReleasedChildren(owner.events, [owner.reservationOf(finished)]);
+		const held = holdNextReservationOutcome(owner.events);
+		const renewal = reserveReleasedChildrenOf(owner.events, owner.ownerSessionId);
+		assert.equal(await held.refusedWith, "not_owner");
+		const authorization = await owner.client.authorizeSupervisorChild(finished);
+		const child = await peer(finished, authorization);
+		owner.record(finished, "task-2", "running");
+		await child.disconnect();
+		owner.record(finished, "task-2", "terminal", "ok");
+		await owner.client.markEndedChildren([
+			{ childName: finished, aliases: [], childId: `${finished}:0`, outcome: "completed" },
+		]);
+		const sender = await peer("retry-sender");
+		assert.equal((await sender.send(finished, { text: "before retry" })).reasonCode, "recipient_completed");
+		held.release();
+		await renewal;
+		await assert.rejects(owner.client.acknowledgeReleasedChildWake(finished), { code: "unknown_released_child" });
+		assert.equal((await sender.send(finished, { text: "after retry" })).reasonCode, "recipient_completed");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
 	"a refusal that answers a subagent's earlier release is not reported once its next release is reserved (#5551)",
 	async () => {
 		const owner = await reservingOwner("release-owner");
