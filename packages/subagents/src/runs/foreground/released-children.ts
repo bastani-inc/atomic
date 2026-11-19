@@ -29,8 +29,7 @@ import {
 import { isReleasedReplyHandoffResult } from "./released-reply-protocol.js";
 import {
 	indexSubagentChildOwner,
-	loadSubagentChildRecord,
-	subagentChildRecordNeedsRead,
+	keepSubagentChildRecord,
 	subagentChildRecordOf,
 } from "./subagent-child-card-state.js";
 import {
@@ -476,9 +475,10 @@ export function handleReleasedChildWakes(
 	const latest = async (childId: string): Promise<SubagentChildRecord> => {
 		await subagentChildRecordsAppended(ownerSessionId);
 		indexSubagentChildOwner(ctx);
-		// A child whose records left the owner's window is read from it first, and kept for the wake's later reads.
-		if (subagentChildRecordNeedsRead(ownerSessionId, childId))
-			await loadSubagentChildRecord(ownerSessionId, childId, { keep: true });
+		// A child whose records left the owner's window is read from it first, and kept for the wake's later reads: also
+		// one an action read and holds, which lets it go when it is done.
+		const reading = keepSubagentChildRecord(ownerSessionId, childId);
+		if (reading !== undefined) await reading;
 		const record = subagentChildRecordOf(ownerSessionId, childId);
 		if (record === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
 		return record;

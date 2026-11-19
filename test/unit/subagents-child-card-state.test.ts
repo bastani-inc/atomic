@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@bastani/atomic";
 import { describe, test } from "vitest";
+import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
+	holdSubagentChildRecord,
 	indexSubagentChildOwner,
+	keepSubagentChildRecord,
 	loadSubagentChildRecord,
 	observeSubagentChildRecord,
 	SUBAGENT_CHILD_RECORD_TYPE,
@@ -112,6 +115,23 @@ describe("indexing an owner session", () => {
 	});
 });
 
+/** A `/clear`: nothing before it stays in its session's window. */
+const CLEARED: VerbatimCompactionDetails = {
+	strategy: "verbatim-lines",
+	promptVersion: 7,
+	parameters: { query: "clear" },
+	form: "cleared",
+	stats: {
+		linesBefore: 1,
+		linesDeleted: 1,
+		linesKept: 0,
+		rangeCount: 1,
+		tokensBefore: 10,
+		tokensAfter: 5,
+		percentReduction: 50,
+	},
+};
+
 describe("a child whose records a clear moved out of its owner's window (#5554)", () => {
 	test("is read from the owner's session on demand, and an action on it acts as on the record it read", async () => {
 		const sessionManager = SessionManager.inMemory("/repo");
@@ -170,5 +190,40 @@ describe("a child whose records a clear moved out of its owner's window (#5554)"
 		assert.deepEqual(await loadSubagentChildRecord(sessionId, "cs-cleared:0"), finished);
 		assert.equal(await holdSubagentChildMessages(pi, sessionId, "cs-cleared:0", ["late"]), "not-held");
 		assert.deepEqual(appends, [], "a finished child holds nothing");
+	});
+
+	test("an action lets go of the record it held without taking it from another action or a wake that keeps it", async () => {
+		const sessionManager = SessionManager.inMemory("/repo");
+		const sessionId = sessionManager.getSessionId();
+		const childId = "cs-held:0";
+		const finished = record({
+			childId,
+			runId: "cs-held",
+			owner: { kind: "session", sessionId },
+			state: "terminal",
+			terminalStatus: "ok",
+			task: "the task only its record keeps",
+		});
+		await sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, finished);
+		indexSubagentChildOwner({ sessionManager });
+		await sessionManager.appendCompaction("clear", null, 10, CLEARED);
+		assert.equal(subagentChildRecordNeedsRead(sessionId, childId), true);
+
+		// Two actions at once, as two resumes: the record stays until the last of them lets it go.
+		const first = await holdSubagentChildRecord(sessionId, childId);
+		const second = await holdSubagentChildRecord(sessionId, childId);
+		assert.deepEqual(first?.record, finished);
+		assert.equal(second?.record, first?.record, "the second action finds the record the first read");
+		first?.release();
+		first?.release();
+		assert.deepEqual(subagentChildRecordOf(sessionId, childId), finished, "a release counts once");
+		second?.release();
+		assert.equal(subagentChildRecordNeedsRead(sessionId, childId), true, "let go once no action holds it");
+
+		// A wake keeps the record an action read until the child's next observation, after the action lets it go.
+		const action = await holdSubagentChildRecord(sessionId, childId);
+		assert.equal(keepSubagentChildRecord(sessionId, childId), undefined, "nothing to read: the action read it");
+		action?.release();
+		assert.deepEqual(subagentChildRecordOf(sessionId, childId), finished);
 	});
 });

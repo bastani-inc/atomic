@@ -32,9 +32,10 @@ import {
 import { subagentWakeKey } from "./released-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
+	holdSubagentChildRecord,
 	indexSubagentChildOwner,
-	loadSubagentChildRecord,
 	observedSubagentRunIds,
+	type SubagentChildRecordHold,
 	type SubagentChildStanding,
 } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
@@ -153,7 +154,7 @@ function liveTaskIds(host: AgentTaskHost | undefined): Set<string> {
 /**
  * A child of this session whose records left its context window, as the session's catalog names it: where it stands,
  * without its task, held messages or results. Such a child settled and holds nothing for a later run; an action on it
- * reads its full record first (see {@link fullRecordOf}).
+ * reads its full record first (see {@link holdFullRecordOf}).
  */
 interface ArchivedChild extends SubagentChildStanding {
 	readonly owner: SubagentChildOwner;
@@ -285,16 +286,19 @@ function standingOfRecord(record: SubagentChildRecord): Partial<SubagentChildSta
 	return Object.fromEntries(keys.filter((key) => Object.hasOwn(record, key)).map((key) => [key, record[key]]));
 }
 
+/** A record no index entry keeps for the action that read it: there is nothing to let go. */
+function notHeld(record: SubagentChildRecord): SubagentChildRecordHold {
+	return { record, release: () => {} };
+}
+
 /**
  * The full record of a child whose records left the session's window, which an action on it reads first: through the
- * child index, which keeps it until the child is recorded again, or else from the session, merged with any newer
- * records the window holds.
+ * child index, which holds it until the action lets it go or the child is recorded again, or else from the session,
+ * merged with any newer records the window holds.
  */
-async function fullRecordOf(ctx: ExtensionContext, child: ArchivedChild): Promise<SubagentChildRecord> {
-	const kept = await loadSubagentChildRecord(child.owner.sessionId, child.childId, { keep: true }).catch(
-		() => undefined,
-	);
-	if (kept !== undefined) return kept;
+async function holdFullRecordOf(ctx: ExtensionContext, child: ArchivedChild): Promise<SubagentChildRecordHold> {
+	const held = await holdSubagentChildRecord(child.owner.sessionId, child.childId).catch(() => undefined);
+	if (held !== undefined) return held;
 	const saved = await ctx.sessionManager.readArchivedChildRecord?.(child.archivedEntryId);
 	const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
 	if (data === undefined || data.childId !== child.childId)
@@ -303,7 +307,7 @@ async function fullRecordOf(ctx: ExtensionContext, child: ArchivedChild): Promis
 			ownerSessionId: child.owner.sessionId,
 			entryId: child.archivedEntryId,
 		});
-	return child.overlay === undefined ? data : { ...data, ...child.overlay };
+	return notHeld(child.overlay === undefined ? data : { ...data, ...child.overlay });
 }
 
 /**
@@ -556,47 +560,53 @@ async function stopChildren(
 			`${label(record)} is not running (${record.state === "terminal" ? (record.terminalStatus ?? "settled") : "not live in this process"}); there is nothing to ${action}.`,
 		);
 	for (const target of targets) {
-		// One whose records left the session's window is read in full first, as this action needs all of it.
-		const record = isArchivedChild(target) ? await fullRecordOf(ctx, target) : target;
-		const key = childHoldKey(subagentChildOwner(ctx).sessionId, record.childId);
-		if (isLive(record)) {
-			reportLive(record, await stopLiveChild(deps, ctx, host, record, status));
-			continue;
-		}
-		const stopped = stoppedAs(record);
-		if (stopped && !(action === "quit" && stopped === "paused")) {
-			children.push(childDetails(record, stopped));
-			lines.push(`${label(record)} is already ${stopped}.`);
-			continue;
-		}
-		if (!isReleased(record) && !stopped) {
-			notRunning(record);
-			continue;
-		}
-		// Nothing of it runs: stopping it only stops what would wake it. Results that arrive are kept for resume.
-		const latest = await stopIdleChild(deps, ctx, record, status);
-		if (latest.state !== "terminal" || latest.terminalStatus !== status) {
-			// A wake or resume ran it again, or it ended first; a run of it live here is stopped like any running child.
-			const running =
-				latest.taskId !== undefined &&
-				(liveTaskIds(host).has(latest.taskId) || isLiveOwnerlessChild(latest.taskId));
-			if (running) reportLive(latest, await stopLiveChild(deps, ctx, host, latest, status));
-			else notRunning(latest);
-			continue;
-		}
-		children.push(childDetails(latest, status));
-		if (stopped) {
-			releasePausedChildHold(key);
+		// One whose records left the session's window is read in full first, as this action needs all of it, and let go
+		// once the action is done with it.
+		const held = isArchivedChild(target) ? await holdFullRecordOf(ctx, target) : notHeld(target);
+		try {
+			const record = held.record;
+			const key = childHoldKey(subagentChildOwner(ctx).sessionId, record.childId);
+			if (isLive(record)) {
+				reportLive(record, await stopLiveChild(deps, ctx, host, record, status));
+				continue;
+			}
+			const stopped = stoppedAs(record);
+			if (stopped && !(action === "quit" && stopped === "paused")) {
+				children.push(childDetails(record, stopped));
+				lines.push(`${label(record)} is already ${stopped}.`);
+				continue;
+			}
+			if (!isReleased(record) && !stopped) {
+				notRunning(record);
+				continue;
+			}
+			// Nothing of it runs: stopping it only stops what would wake it. Results that arrive are kept for resume.
+			const latest = await stopIdleChild(deps, ctx, record, status);
+			if (latest.state !== "terminal" || latest.terminalStatus !== status) {
+				// A wake or resume ran it again, or it ended first; a run of it live here is stopped like any running child.
+				const running =
+					latest.taskId !== undefined &&
+					(liveTaskIds(host).has(latest.taskId) || isLiveOwnerlessChild(latest.taskId));
+				if (running) reportLive(latest, await stopLiveChild(deps, ctx, host, latest, status));
+				else notRunning(latest);
+				continue;
+			}
+			children.push(childDetails(latest, status));
+			if (stopped) {
+				releasePausedChildHold(key);
+				lines.push(
+					`Quit paused ${label(latest)}: paused · awaiting resume. It stays resumable with { action: "resume", id: "${latest.childId}", message? }.`,
+				);
+				continue;
+			}
+			const parked = releasedChildReservation(latest);
+			if (parked !== undefined) await reserveReleasedChildren(deps.pi.events, [parked]);
 			lines.push(
-				`Quit paused ${label(latest)}: paused · awaiting resume. It stays resumable with { action: "resume", id: "${latest.childId}", message? }.`,
+				`${action === "pause" ? "Paused" : "Quit"} released ${label(latest)}: it is not woken any more, and results of the calls it waited on are kept for its resume. Resume it with { action: "resume", id: "${latest.childId}", message? }.`,
 			);
-			continue;
+		} finally {
+			held.release();
 		}
-		const parked = releasedChildReservation(latest);
-		if (parked !== undefined) await reserveReleasedChildren(deps.pi.events, [parked]);
-		lines.push(
-			`${action === "pause" ? "Paused" : "Quit"} released ${label(latest)}: it is not woken any more, and results of the calls it waited on are kept for its resume. Resume it with { action: "resume", id: "${latest.childId}", message? }.`,
-		);
 	}
 	const text = [...lines, ...failures].join("\n");
 	return controlResult(text, { action, children }, failures.length > 0 && children.length === 0);
@@ -707,22 +717,29 @@ async function resumeChild(
 			action,
 			`${label(child)} is terminal and cannot be resumed: ${terminalReason}. Launch a fresh subagent if its work is still needed.`,
 		);
-	let record: SubagentChildRecord;
+	let read: SubagentChildRecordHold;
 	if (isArchivedChild(child)) {
-		// One whose records left the session's window is read in full first, as resuming it needs all of it.
-		record = await fullRecordOf(ctx, child);
+		// One whose records left the session's window is read in full first, as resuming it needs all of it, and let go
+		// once this resume is done with it.
+		read = await holdFullRecordOf(ctx, child);
 		// A wake or another resume may have begun reopening it meanwhile: this resume decides again, as it would then.
 		if (
 			isReleasedChildWakeActive(wakeKey) ||
-			subagentChildRestoring(ownerSessionId, record.childId) !== undefined ||
-			liveResumeAdmissions(ctx, ownerSessionId).has(record.childId)
-		)
+			subagentChildRestoring(ownerSessionId, read.record.childId) !== undefined ||
+			liveResumeAdmissions(ctx, ownerSessionId).has(read.record.childId)
+		) {
+			read.release();
 			return resumeChild(deps, ctx, request, signal);
-	} else record = child;
+		}
+	} else read = notHeld(child);
+	const record = read.record;
 	// A wake that did not reopen the child may still be finishing: the resume is queued behind it, not dropped.
 	const waking = isReleasedChildWakeActive(wakeKey);
 	const message = request.message?.trim() ? request.message : undefined;
-	if (signal?.aborted) return interruptedResume(record, true, message);
+	if (signal?.aborted) {
+		read.release();
+		return interruptedResume(record, true, message);
+	}
 	const interrupted = record.state === "running" || INTERRUPTED_STATUSES.has(record.terminalStatus ?? "");
 	const resumeRequest =
 		message && interrupted
@@ -732,11 +749,15 @@ async function resumeChild(
 		waking || isReleased(record) || ((record.waitingOn?.length ?? 0) > 0 && stoppedAs(record))
 			? resumeReleasedChild(ownerSessionId, record.childId, resumeRequest, signal)
 			: undefined;
+	const resuming = queued ?? restoreSubagentChild(deps, ctx, record.childId, resumeRequest);
+	// The resume is done with the child once it settles, also when an interrupted turn answered first and left it going
+	// on: a child it ran again was recorded over the record read for it by then. A queued resume's wake keeps the record
+	// it reads itself.
+	void resuming.then(read.release, read.release);
 	let outcome: SubagentChildRestoreOutcome | typeof INTERRUPTED;
 	try {
 		// A queued resume answers an interruption itself; a direct one cannot be withdrawn, and goes on.
-		outcome = await (queued ??
-			unlessInterrupted(restoreSubagentChild(deps, ctx, record.childId, resumeRequest), signal));
+		outcome = await (queued ?? unlessInterrupted(resuming, signal));
 	} catch (error) {
 		if (error instanceof ReleasedChildResumeInterruptedError)
 			return interruptedResume(record, error.withdrawn, message);

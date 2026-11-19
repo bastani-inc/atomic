@@ -94,8 +94,13 @@ function newChildIndex() {
 			if (cards.size === 0) watchers.delete(key);
 		}),
 		// Full records read on demand for children whose records left their session's window, by the index entry they
-		// were read for: a later observation of the child replaces that entry, and the record goes with it.
+		// were read for: a later observation of the child replaces that entry, and the record goes with it. A record only
+		// actions held (`holds`) goes as soon as the last of them lets it go; one a reader keeps (`kept`) stays until then.
 		hydrated: new WeakMap<SubagentChildIndexEntry, SubagentChildRecord>(),
+		// How many actions on the child hold the record read for an index entry until they are done with it.
+		holds: new WeakMap<SubagentChildIndexEntry, number>(),
+		// Index entries whose read record stays until the child's next observation, as wakes and record steps keep it.
+		kept: new WeakSet<SubagentChildIndexEntry>(),
 		// Tasks of such children their cards show, read once per index entry.
 		archivedTasks: new WeakMap<SubagentChildIndexEntry, { task?: string }>(),
 	};
@@ -105,6 +110,8 @@ const processIndex = globalThis as { [INDEX]?: ReturnType<typeof newChildIndex> 
 processIndex[INDEX] ??= newChildIndex();
 // An index an earlier generation of this extension made may not keep these yet.
 processIndex[INDEX].hydrated ??= new WeakMap();
+processIndex[INDEX].holds ??= new WeakMap();
+processIndex[INDEX].kept ??= new WeakSet();
 processIndex[INDEX].archivedTasks ??= new WeakMap();
 const {
 	entries,
@@ -116,6 +123,8 @@ const {
 	invalidators,
 	collectedCards,
 	hydrated,
+	holds,
+	kept,
 	archivedTasks,
 } = processIndex[INDEX];
 
@@ -335,15 +344,43 @@ function archiveReadersOf(
 }
 
 /**
- * The child's full latest record, read from its session when it left that session's window. With `keep` it stays in
- * memory until the child's next observation replaces its index entry, which then merges over it: a resumed child's
- * records name only what changed. Throws a {@link ReleasedChildError} `child-record-unreadable` when no open session
- * holds it.
+ * How a record read for a child whose records left its session's window stays in memory: until the child's next
+ * observation replaces its index entry, which then merges over it, or held by an action until that action lets it go.
  */
-async function loadRecordOf(entry: SubagentChildIndexEntry, keep: boolean): Promise<SubagentChildRecord> {
+type KeepRead = "until-observed" | "held";
+
+/** Keep the record read for `entry` as `keep` says; false when `entry`'s record was not read so. */
+function keepRead(entry: SubagentChildIndexEntry, keep: KeepRead | undefined): boolean {
+	if (keep === undefined || unsavedRecords.has(entry.childId) || !hydrated.has(entry)) return false;
+	if (keep === "until-observed") kept.add(entry);
+	else holds.set(entry, (holds.get(entry) ?? 0) + 1);
+	return true;
+}
+
+/** An action is done with the record it held for `entry`: the record goes once no action holds it and none keeps it. */
+function releaseRead(entry: SubagentChildIndexEntry): void {
+	const count = (holds.get(entry) ?? 0) - 1;
+	if (count > 0) {
+		holds.set(entry, count);
+		return;
+	}
+	holds.delete(entry);
+	if (!kept.has(entry)) hydrated.delete(entry);
+}
+
+/**
+ * The child's full latest record, read from its session when it left that session's window, and the index entry it is
+ * the record of. With `keep` it stays in memory as {@link KeepRead} says; `kept` tells whether it was kept so. A
+ * resumed child's records name only what changed, so they merge over it. Throws a {@link ReleasedChildError}
+ * `child-record-unreadable` when no open session holds it.
+ */
+async function loadRecordOf(
+	entry: SubagentChildIndexEntry,
+	keep: KeepRead | undefined,
+): Promise<{ readonly record: SubagentChildRecord; readonly entry: SubagentChildIndexEntry; readonly kept: boolean }> {
 	for (;;) {
 		const ready = readableRecordOf(entry);
-		if (ready !== undefined) return ready;
+		if (ready !== undefined) return { record: ready, entry, kept: keepRead(entry, keep) };
 		const merge = mergingEntries.get(entry);
 		const read = merge === undefined ? await readArchivedRecordOf(entry) : await merge.then(() => undefined);
 		// A newer observation of the child arrived meanwhile: it is the latest record.
@@ -353,8 +390,8 @@ async function loadRecordOf(entry: SubagentChildIndexEntry, keep: boolean): Prom
 			continue;
 		}
 		if (read === undefined) throw unreadableRecordError(entry);
-		if (keep && latest === entry) hydrated.set(entry, read);
-		return read;
+		if (keep !== undefined && latest === entry) hydrated.set(entry, read);
+		return { record: read, entry, kept: keepRead(entry, keep) };
 	}
 }
 
@@ -680,7 +717,7 @@ export function subagentChildIdForTarget(ownerSessionId: string, intercomTarget:
 /**
  * The latest record of one of `ownerSessionId`'s children, as {@link subagentChildRecordOf} gives it, read from its
  * session when it left that session's window. With `keep`, a record read so stays in memory until the child's next
- * observation, which merges over it: for an action that records the child again, as a resume does.
+ * observation, which merges over it: for work that records the child again, as a wake does.
  */
 export async function loadSubagentChildRecord(
 	ownerSessionId: string,
@@ -688,7 +725,51 @@ export async function loadSubagentChildRecord(
 	options: { readonly keep?: boolean } = {},
 ): Promise<SubagentChildRecord | undefined> {
 	const entry = ownEntry(ownerSessionId, childId);
-	return entry === undefined ? undefined : loadRecordOf(entry, options.keep === true);
+	if (entry === undefined) return undefined;
+	return (await loadRecordOf(entry, options.keep === true ? "until-observed" : undefined)).record;
+}
+
+/**
+ * Keep this child's latest record in memory until its next observation, as {@link loadSubagentChildRecord} keeps it,
+ * also when an action read it first and holds it: that action letting it go does not take it from the caller. Returns
+ * the read to wait for when the record left its session's window and is not in memory; undefined when nothing needs
+ * reading, so the caller goes on at once.
+ */
+export function keepSubagentChildRecord(ownerSessionId: string, childId: string): Promise<unknown> | undefined {
+	const entry = ownEntry(ownerSessionId, childId);
+	if (entry === undefined || keepRead(entry, "until-observed") || !isArchivedEntry(entry)) return undefined;
+	return loadRecordOf(entry, "until-observed");
+}
+
+/** A child's latest record an action on it holds, and how the action lets it go. */
+export interface SubagentChildRecordHold {
+	readonly record: SubagentChildRecord;
+	/** The action is done with the child: a record read from its session is no longer kept for it. Called once. */
+	release(): void;
+}
+
+/**
+ * The latest record of one of `ownerSessionId`'s children for an explicit action on it, read as
+ * {@link loadSubagentChildRecord} reads it. A record read from its session stays in memory while the action holds it:
+ * the action lets it go once it is done with the child, or the child's next observation, when the action records the
+ * child again, merges over it and replaces it. Undefined for a child this owner did not launch.
+ */
+export async function holdSubagentChildRecord(
+	ownerSessionId: string,
+	childId: string,
+): Promise<SubagentChildRecordHold | undefined> {
+	const entry = ownEntry(ownerSessionId, childId);
+	if (entry === undefined) return undefined;
+	const read = await loadRecordOf(entry, "held");
+	let held = read.kept;
+	return {
+		record: read.record,
+		release: () => {
+			if (!held) return;
+			held = false;
+			releaseRead(read.entry);
+		},
+	};
 }
 
 /**
@@ -702,12 +783,6 @@ export function subagentChildRecordNeedsRead(ownerSessionId: string, childId: st
 		readableRecordOf(entry) === undefined &&
 		(mergingEntries.has(entry) || archiveReadersOf(entry).length > 0)
 	);
-}
-
-/** Let go of a record {@link loadSubagentChildRecord} kept, once the action that kept it is done with the child. */
-export function releaseSubagentChildRecord(ownerSessionId: string, childId: string): void {
-	const entry = ownEntry(ownerSessionId, childId);
-	if (entry !== undefined) hydrated.delete(entry);
 }
 
 /** Whether `entry`'s record left its session's window, which an open copy of that session reads on demand. */
