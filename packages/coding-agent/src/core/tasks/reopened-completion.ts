@@ -104,8 +104,7 @@ function stopWitness(intent: unknown, isProxy?: CompletionProxyCheck): StopWitne
 			const ownerClose = storedClose === "stage-close" ? "session-close" : storedClose;
 			if (ownerClose !== undefined && ownerClose !== "session-close" && ownerClose !== "app-shutdown")
 				return undefined;
-			// Results stored by earlier releases may name a workflow stage's close, which reads as the session's.
-			wording = `stopped (${cancelReasonText({ kind: "cancelled", cause, ownerClose: ownerClose === "stage-close" ? "session-close" : ownerClose })})`;
+			wording = `stopped (${cancelReasonText({ kind: "cancelled", cause, ownerClose })})`;
 			break;
 		}
 		case "shutdown":
