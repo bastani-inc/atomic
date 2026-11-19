@@ -131,10 +131,13 @@ export async function runLoggedProcess(
 	const startedAt = Date.now();
 	const copiesOutput = copiesOutputToLog(process.platform);
 	let started: ChildProcess;
+	// How long the step waited to try again before its process started: that time counts toward its timeout.
+	let waitedMs = 0;
 	for (let tries = 1; ; tries++) {
 		buildProcessStarting();
 		// Also cancelled while it waited to try again, or by what ran in between: then nothing may start.
 		options.signal?.throwIfAborted();
+		if (tries > 1) waitedMs = Date.now() - startedAt;
 		try {
 			started = spawn(run.command, [...run.args], {
 				cwd: run.cwd,
@@ -176,7 +179,7 @@ export async function runLoggedProcess(
 				timedOut = true;
 				stop();
 			},
-			Math.max(0, options.timeoutMs - (Date.now() - startedAt)),
+			Math.max(0, options.timeoutMs - waitedMs),
 		);
 		const onAbort = () => stop();
 		if (copiesOutput) {
