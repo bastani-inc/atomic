@@ -208,9 +208,9 @@ function factory(pi: ExtensionAPI): void {
 			context: () => sessionContext,
 			store: owner.store,
 			jobs: runState.jobs,
-			catalog: async () => {
+			catalog: async (options) => {
 				const runtime = runtimeState.runtimeForContext(sessionContext);
-				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
+				return (await runtime.prepareDurableCatalog?.(options)) ?? { resumable: [], completed: [] };
 			},
 		}),
 		...resumeProvider,
