@@ -129,11 +129,12 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 						.join("\n")
 				: undefined;
 		if (task?.kind === "command" && lease?.ok && host) output = await commandOutputExcerpt(host, lease.value, task);
+		const completionSource = source?.ok ? source.value.session.completionSource : undefined;
 		return {
 			envelope,
-			message: taskCompletionMessage(envelope, task, output),
+			message: taskCompletionMessage(envelope, task, output, completionSource?.intercomTarget),
 			hasTask: task !== undefined,
-			completionSource: source?.ok ? source.value.session.completionSource : undefined,
+			completionSource,
 		};
 	};
 	/**
