@@ -10,7 +10,7 @@ export interface RowRange {
 	readonly start: number;
 	readonly end: number;
 	/** A local renderer may take a click before this block toggles. */
-	readonly clickRenderer?: (event: TuiMouseEvent) => ContainerMouseResult;
+	readonly clickRenderer?: (event: TuiMouseEvent, windowRows: readonly string[]) => ContainerMouseResult;
 }
 
 /**
@@ -183,7 +183,8 @@ function clickUnitAt(
 	if (isClickExpandableBlock(hit.component)) {
 		const area = hit.component.clickArea(width);
 		if (!area || hit.row < area.start || hit.row >= area.end) return undefined;
-		const handled = event && area.clickRenderer?.({ ...event, y: hit.row, height: hit.height });
+		const handled =
+			event && hit.windowRows && area.clickRenderer?.({ ...event, y: hit.row, height: hit.height }, hit.windowRows);
 		return handled ?? (() => clickUnit(container.children, container.children.indexOf(hit.component)));
 	}
 	const nested = hit.component as Container;

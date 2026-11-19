@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { type AssistantMessage, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import {
 	Box,
@@ -19,6 +22,7 @@ import {
 	VStack,
 	WindowedContainer,
 } from "@bastani/atomic-tui";
+import { build } from "esbuild";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { renderIntercomCustomMessage } from "../../intercom/ui/inline-message.js";
 import type { ToolRenderers } from "../src/core/extensions/tool-types.js";
@@ -1263,6 +1267,43 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		}
 	});
 
+	test("read-only text beside a button in a bundled layout does not click the button (#5696)", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "atomic-bundled-layout-"));
+		const outfile = join(dir, "layout.mjs");
+		let BundledStack: typeof HStack;
+		try {
+			await build({
+				stdin: { contents: 'export { HStack } from "@bastani/atomic-tui"', resolveDir: import.meta.dirname },
+				bundle: true,
+				minify: true,
+				platform: "node",
+				format: "esm",
+				outfile,
+			});
+			({ HStack: BundledStack } = await import(pathToFileURL(outfile).href));
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+		const cancel = extensionButton(["[ Cancel order ]"]);
+		const stack = new BundledStack([{ component: cancel, basis: 26 }, new Text("Read-only reference", 0, 0)]);
+		const chat = await mountChat(100, 60, { messageRenderers: { order: () => stack } });
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "order",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/Read-only reference/);
+			chat.click(chat.columnOf(row, "reference"), row);
+			assert.equal(cancel.clicks, 0);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
 	test("a text renderer can refer to itself in its own row data (#5696)", async () => {
 		class Badge extends Text {
 			children = [];
@@ -1317,6 +1358,39 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 			assert.equal(button.clicks, 0);
 			chat.click(chat.columnOf(row, "Save"), row);
 			assert.equal(button.clicks, 1);
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("zero-width direction marks leave a button's blank margin available to open its card (#5696)", async () => {
+		const label = "\u200e        [ Cancel ]   \u200e";
+		const cancel = extensionButton([label]);
+		const chat = await mountChat(100, 60, {
+			messageRenderers: {
+				order: (_message, { expanded }) => ({
+					...cancel,
+					render: () => (expanded ? [label, "Order details"] : [label]),
+				}),
+			},
+		});
+		try {
+			mode(chat).addMessageToChat({
+				role: "custom",
+				customType: "order",
+				content: "review",
+				display: true,
+				timestamp: 1,
+			});
+			chat.tui.renderNow();
+			const row = chat.rowOf(/\[ Cancel \]/);
+			chat.click(3, row);
+			assert.equal(cancel.clicks, 0);
+			assert.equal(chat.rowOf(/Order details/), row + 1);
+			chat.click(18, row);
+			assert.equal(cancel.clicks, 0);
+			chat.click(8, row);
+			assert.equal(cancel.clicks, 1);
 		} finally {
 			chat.tui.stop();
 		}
@@ -1502,6 +1576,50 @@ describe("controls an extension draws inside a block of the main chat (#5696)", 
 		assert.ok(chat.handleMouse({ ...cell, type: "click" })?.whenSingleClick);
 		assert.equal(draws, 1);
 	});
+
+	for (const keepHeight of [false, true]) {
+		test(`a tool summary that still appears above Cancel cannot invoke it before repaint (same height: ${keepHeight}) (#5696)`, async () => {
+			let short = false;
+			const cancel = extensionButton(["[ Cancel order ]"]);
+			const chat = await mountChat(100, 60, {
+				toolRenderers: {
+					order: {
+						renderShell: "self",
+						renderCall: () => ({
+							render: () => (short ? ["Order"] : ["Order", "Read-only summary"]),
+							invalidate() {},
+						}),
+						renderResult: () => ({
+							...cancel,
+							render: () => (short && keepHeight ? ["[ Cancel order ]", "Notes"] : ["[ Cancel order ]"]),
+						}),
+					},
+				},
+			});
+			try {
+				await toolTurn(
+					chat.mode,
+					fauxAssistantMessage([fauxToolCall("order", {}, { id: "order-1" })], { stopReason: "toolUse" }),
+					() => "ok",
+				);
+				chat.tui.renderNow();
+				const row = chat.rowOf(/Read-only summary/);
+				setTimeout(() => {
+					short = true;
+				}, 1);
+				vi.advanceTimersByTime(1);
+				assert.ok(!chat.transcriptText().includes("Read-only summary"));
+				assert.match(chat.screen()[row]!, /Read-only summary/);
+				chat.click(4, row);
+				assert.equal(cancel.clicks, 0);
+				const painted = chat.rowOf(/Cancel order/);
+				chat.click(chat.columnOf(painted, "Cancel"), painted);
+				assert.equal(cancel.clicks, 1);
+			} finally {
+				chat.tui.stop();
+			}
+		});
+	}
 
 	test("dispatching a click on passive tool output renders that output only once (#5696)", async () => {
 		const output = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`);

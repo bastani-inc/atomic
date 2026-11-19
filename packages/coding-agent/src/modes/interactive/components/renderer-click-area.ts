@@ -10,27 +10,39 @@ import {
 	stripTerminalSequences,
 	visibleWidth,
 } from "@bastani/atomic-tui";
-import { type RowRange, rowsFrom } from "./transcript-block-clicks.ts";
+import { type RowRange, rowsFrom, sameRows } from "./transcript-block-clicks.ts";
 
-// The public TUI classes that supply a mouse handler. Extensions can load another copy of the package,
-// so comparing a handler only to this copy's prototype would mistake a stock dispatcher for an override.
-const tuiMouseClasses = { Box, Container, Editor, Input, MouseRegion, SelectList, SettingsList };
-const tuiMouseMethods = new Set(Object.values(tuiMouseClasses).map((type) => type.prototype.handleMouse));
+const tuiMouseMethods = new Set(
+	[Box, Container, Editor, Input, MouseRegion, SelectList, SettingsList].map((type) => type.prototype.handleMouse),
+);
 
 /** A direct control handles its own click. Do not enter a wrapper's default dispatcher to look for one. */
 function isRendererControl(component: Component): boolean {
 	const handler = component.handleMouse;
 	if (typeof handler !== "function" || tuiMouseMethods.has(handler)) return false;
 	if (Object.hasOwn(component, "handleMouse")) return true;
-	// Find the declaration, not just the immediate subclass: HStack inherits Container's row-only dispatcher.
-	for (
-		let owner = Object.getPrototypeOf(component), depth = 0;
-		owner && depth < 32;
-		owner = Object.getPrototypeOf(owner), depth++
-	) {
-		if (Object.hasOwn(owner, "handleMouse")) return !Object.hasOwn(tuiMouseClasses, owner.constructor?.name);
+	// A layout container (or a region that delegates to a child) is not a leaf, including in bundled TUI copies.
+	if ("children" in component || ("child" in component && "onMouse" in component)) return false;
+	const prototype = Object.getPrototypeOf(component);
+	return prototype !== null && Object.hasOwn(prototype, "handleMouse");
+}
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** A label includes spaces between its printed cells, but not the blank cells on either side. */
+function onLabel(row: string, x: number): boolean {
+	let column = 0;
+	let first = Number.POSITIVE_INFINITY;
+	let end = 0;
+	for (const { segment } of graphemes.segment(stripTerminalSequences(row))) {
+		const width = visibleWidth(segment);
+		if (width > 0 && visibleWidth(segment.trim()) > 0) {
+			first = Math.min(first, column);
+			end = column + width;
+		}
+		column += width;
 	}
-	return false;
+	return x >= first && x < end;
 }
 
 /** Use the rows the block already measured for clickArea, and only its directly mounted renderer(s). */
@@ -45,14 +57,13 @@ export function rendererRows(
 	if (!area || !renderers.some((renderer) => renderer !== undefined)) return area;
 	return {
 		...area,
-		clickRenderer(event) {
+		clickRenderer(event, windowRows) {
 			if (event.y === title) return undefined;
 			const y = event.y - top;
 			const hit = host.childAtRow(event.width, y);
 			if (!hit || !renderers.includes(hit.component) || !isRendererControl(hit.component)) return undefined;
-			const line = stripTerminalSequences(rows[event.y] ?? "");
-			const leftPadding = line.slice(0, line.length - line.trimStart().length);
-			if (event.x < visibleWidth(leftPadding) || event.x >= visibleWidth(line.trimEnd())) return undefined;
+			if (!sameRows(windowRows, rows)) return undefined;
+			if (!onLabel(rows[event.y] ?? "", event.x)) return undefined;
 			return host.handleMouse({ ...event, y, height: event.height - top });
 		},
 	};
