@@ -25,6 +25,8 @@ export interface ClickExpandableBlock extends Component {
 	 * that only separate it from the block above. Undefined while it draws nothing.
 	 */
 	clickArea(width: number): RowRange | undefined;
+	/** The row within the painted block where a click toggles it before a control drawn there gets the click. */
+	readonly titleRow?: number;
 	/** The block's place in a group of finished calls; blocks that never group omit it. */
 	getGroupRole?(): ToolGroupRole;
 	/**
@@ -186,6 +188,16 @@ function clickUnitAt(
 	if (!nested.children || !nested.childAtRow) return undefined;
 	const unit = clickUnitAt(nested, width, hit.row);
 	return unit && (() => (container.children.includes(nested) ? unit() : undefined));
+}
+
+/** Only decides who gets the click first. `clickUnitAt` checks that the painted block is still present before claiming it. */
+export function isBlockTitleRow(container: Container, width: number, row: number): boolean {
+	const hit = container.childAtRow(width, row);
+	if (!hit) return false;
+	if (isClickExpandableBlock(hit.component)) return hit.row === hit.component.titleRow;
+	const nested = hit.component as Container;
+	if (!nested.children || !nested.childAtRow) return false;
+	return isBlockTitleRow(nested, width, hit.row);
 }
 
 // A global expansion supersedes only transcript toggles, not other controls' single-click actions.

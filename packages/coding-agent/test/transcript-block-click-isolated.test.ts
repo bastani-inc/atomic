@@ -33,7 +33,7 @@ import {
 	RemoteCustomMessageComponent,
 	RemoteToolExecutionComponent,
 } from "../src/modes/interactive-engine/remote-renderer.js";
-import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.js";
+import { RecordingTerminal, transcriptSiblingReads } from "./helpers/interactive-fullscreen-layout.js";
 
 beforeAll(() => initTheme("dark", false));
 
@@ -224,6 +224,9 @@ async function mountIsolatedChat() {
 		await settle();
 	};
 	return {
+		chat,
+		terminal,
+		rowOf,
 		transcript,
 		frames,
 		bash,
@@ -239,6 +242,22 @@ async function mountIsolatedChat() {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("Shift-clicking the last isolated message reads no transcript siblings (#5696)", async () => {
+	const { chat, terminal, message, waitFor, rowOf } = await mountIsolatedChat();
+	for (let i = 0; i < 32; i++) chat.addChild(new Text(`message ${i}`, 0, 0));
+	const target = message(intercomMessage("last remote message"));
+	await waitFor(/last remote message/);
+	const row = rowOf(/last remote message/) + 1;
+	assert.equal(
+		transcriptSiblingReads(chat, () => {
+			terminal.input(`\x1b[<4;2;${row}M`);
+			terminal.input(`\x1b[<4;2;${row}m`);
+		}),
+		0,
+	);
+	assert.equal(target.isExpanded(), false);
+});
 
 test("an isolated row not redrawn since a resize compares at the transcript's settlement width (#5562)", async () => {
 	const { runtime } = isolatedEngine();

@@ -77,6 +77,8 @@ function blockStatusMarkPrefix(): RegExp {
 
 export class ToolExecutionComponent extends Container {
 	readonly expandsOnClick = true;
+	/** The title follows the tool block's leading blank row. */
+	readonly titleRow = 1;
 	private contentContainer: Container;
 	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
