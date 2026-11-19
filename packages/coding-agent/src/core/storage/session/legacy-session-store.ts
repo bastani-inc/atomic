@@ -7,7 +7,7 @@ import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
-import { findSessionCompaction, readSessionTail } from "./session-resume.js";
+import { findSessionCompaction, readSessionTail, sessionRangeOf } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	OversizedSessionEntry,
@@ -29,7 +29,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { matchesSessionIdPrefix } from "./types.js";
+import { matchesSessionIdPrefix, SESSION_HISTORY_PAGE_ENTRIES } from "./types.js";
 
 const DELETED_TABLE = "session_legacy_deleted";
 
@@ -150,23 +150,32 @@ export class LegacySessionStore implements SessionStore {
 		expectedEpoch?: string,
 	): Promise<SessionEntryRange> {
 		await this.convert(sessionId);
-		if (!this.inner.readRange)
-			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readRange`);
-		return this.inner.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+		if (this.inner.readRange) return this.inner.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+		const snapshot = await this.inner.load(sessionId);
+		const { assertSnapshotCut, snapshotStamp } = await import("./snapshot-history.js");
+		assertSnapshotCut(snapshot, expectedEpoch, Math.min(endSeq, snapshot.lastSeq));
+		return { ...sessionRangeOf(snapshot.entries, startSeq, endSeq), epoch: expectedEpoch ?? snapshotStamp(snapshot) };
 	}
 
 	async readEntrySizes(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntrySizes> {
-		if (!this.inner.readEntrySizes)
-			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readEntrySizes`);
 		await this.convert(sessionId);
-		return this.inner.readEntrySizes(sessionId, startSeq, endSeq);
+		if (this.inner.readEntrySizes) return this.inner.readEntrySizes(sessionId, startSeq, endSeq);
+		const snapshot = await this.inner.load(sessionId);
+		const { snapshotStamp } = await import("./snapshot-history.js");
+		const start = Math.max(startSeq, 1);
+		return {
+			epoch: snapshotStamp(snapshot),
+			lastSeq: snapshot.lastSeq,
+			sizes: snapshot.entries
+				.slice(start - 1, Math.min(endSeq, start - 1 + SESSION_HISTORY_PAGE_ENTRIES))
+				.map((entry, i) => ({ seq: start + i, bytes: Buffer.byteLength(JSON.stringify(entry)) })),
+		};
 	}
 
 	async readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
-		if (!this.inner.readEntryChunk)
-			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readEntryChunk`);
 		await this.convert(reference.sessionId);
-		return this.inner.readEntryChunk(reference, offset);
+		if (this.inner.readEntryChunk) return this.inner.readEntryChunk(reference, offset);
+		return (await import("./snapshot-history.js")).snapshotChunk(this.inner, reference, offset);
 	}
 
 	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
@@ -175,16 +184,15 @@ export class LegacySessionStore implements SessionStore {
 	}
 
 	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
-		if (!this.inner.readResume)
-			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement readResume`);
 		await this.convert(sessionId);
-		return this.inner.readResume(sessionId, leafId);
+		if (this.inner.readResume) return this.inner.readResume(sessionId, leafId);
+		return (await import("./snapshot-history.js")).snapshotWindow(this.inner, sessionId, leafId);
 	}
 	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
-		if (!this.inner.findEntrySeq)
-			throw new TypeError(`Session store ${this.inner.descriptor.adapter} must implement findEntrySeq`);
 		await this.convert(sessionId);
-		return this.inner.findEntrySeq(sessionId, entryId);
+		if (this.inner.findEntrySeq) return this.inner.findEntrySeq(sessionId, entryId);
+		const index = (await this.inner.load(sessionId)).entries.findLastIndex((entry) => entry.id === entryId);
+		return index < 0 ? undefined : index + 1;
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {

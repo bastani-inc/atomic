@@ -184,6 +184,28 @@ for (const tier of ["native", "paged", "legacy"] as const) {
 	});
 }
 
+test("a snapshot-only SDK store opens a window and pages the archive without keeping earlier turns (#5554)", async () => {
+	const { store } = await fixture([user("old", null), boundary("clear", "old", null), user("current", "clear")]);
+	const adapter = Object.assign(
+		Object.create(store) as import("../../src/core/storage/session/types.ts").SessionStore,
+		{
+			readResume: undefined,
+			readResumeAt: undefined,
+			readRange: undefined,
+			readEntrySizes: undefined,
+			readEntryChunk: undefined,
+			findEntrySeq: undefined,
+		},
+	);
+	const load = vi.spyOn(adapter, "load");
+	const view = await SessionManager.open(adapter, "session");
+	assert.equal(load.mock.calls.length, 1);
+	assert.equal(view.getEntry("old"), undefined);
+	assert.equal((await view.readEntry("old"))?.id, "old");
+	assert.equal(view.getEntry("old"), undefined);
+	assert.equal(view.getLeafId(), "current");
+});
+
 test("hydration rejects a same-length replacement instead of merging session generations (#5249)", async () => {
 	const entries = [user("u", null), user("kept", "u"), boundary("c", "kept", "kept")];
 	const { open, store, header } = await fixture(entries);

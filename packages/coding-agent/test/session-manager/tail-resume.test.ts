@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
-import { getSessionStats } from "../../src/core/agent-session-export.ts";
+import { getLastAssistantText, getSessionStats } from "../../src/core/agent-session-export.ts";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
 import {
 	buildSessionProjection,
@@ -214,6 +214,28 @@ it("moving to an older branch restores that window but does not hydrate abandone
 	expect(session.getEntryCount()).toBeLessThan(30);
 	expect(session.getBranch().at(-2)?.id).toBe(firstPreTail);
 	expect(await session.findEntrySeq(otherLeaf!)).toBeDefined();
+});
+
+it("copy uses the last visible edited answer across a clear and reopen, not an omitted or tool-only reply (#5554)", async () => {
+	const store = await sqlStore();
+	const live = await SessionManager.create(store, "/project");
+	const older = await live.appendMessage(assistant("original", 1));
+	await live.appendContextEdit(older, { content: "replaced" });
+	const omitted = await live.appendMessage(assistant("not visible", 2));
+	await live.appendContextEdit(omitted, null);
+	await live.appendMessage({
+		...assistant("tool", 3),
+		content: [{ type: "toolCall", id: "last", name: "ls", arguments: {} }],
+	});
+	await live.appendCompaction("cleared", null, 100, details);
+	for (const manager of [live, await SessionManager.open(store, live.getSessionId())]) {
+		expect(
+			getLastAssistantText.call({
+				messages: manager.buildSessionContext().messages,
+				sessionManager: manager,
+			} as AgentSession),
+		).toBe("replaced");
+	}
 });
 
 it("a default open reads the same window as a tail open without reading the whole store (#5554)", async () => {

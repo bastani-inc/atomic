@@ -3,7 +3,6 @@ import { realpath } from "node:fs";
 import { type FileHandle, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
-import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
@@ -13,10 +12,10 @@ import { calculateContextTokens, estimateProjectedContextTokens } from "./compac
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
-import { applyContextEdit, collectContextEdits } from "./session-manager-history.ts";
 import { inlineToolOutput, withoutInlineToolOutput } from "./session-tool-output.ts";
 import { inlineSnapshotBlobs, sessionSnapshotBlobs } from "./session-worktree-snapshots.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
+import { lastAssistantAnswer } from "./storage/session/window-answer.js";
 import { addHistoryUsageToTotals, addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 export function getSessionStats(this: AgentSession): SessionStats {
@@ -277,33 +276,8 @@ async function writeLine(file: FileHandle, text: string): Promise<void> {
  */
 
 export function getLastAssistantText(this: AgentSession): string | undefined {
-	const inContext = lastAssistantText(this.messages);
-	if (inContext.found) return inContext.text;
-	// A compaction boundary leaves no earlier answer in context; the session's branch still holds it, as the model saw it.
-	const branch = this.sessionManager.getBranch();
-	const edits = collectContextEdits(branch);
-	const messages = branch.flatMap((entry) => {
-		if (entry.type !== "message") return [];
-		const edit = edits.get(entry.id);
-		return edit ? applyContextEdit([entry.message], edit) : [entry.message];
-	});
-	return lastAssistantText(messages).text;
-}
-
-/** The text of the last assistant reply in `messages`, and whether one was found. */
-function lastAssistantText(messages: readonly AgentMessage[]): { found: boolean; text?: string } {
-	for (const message of messages.slice().reverse()) {
-		if (message.role !== "assistant") continue;
-		const assistant = message as AssistantMessage;
-		let text = "";
-		for (const content of assistant.content) {
-			if (content.type === "text") text += content.text;
-		}
-		const trimmed = text.trim();
-		if (trimmed) return { found: true, text: trimmed };
-		if (assistant.stopReason === "stop") return { found: true };
-	}
-	return { found: false };
+	const inContext = lastAssistantAnswer(this.messages);
+	return inContext ? inContext.text : this.sessionManager.getLastBranchAnswer();
 }
 
 // =========================================================================

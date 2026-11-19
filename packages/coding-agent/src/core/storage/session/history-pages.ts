@@ -31,20 +31,20 @@ export async function* historyPages(
 	watermark: number,
 	options: SessionHistoryReadOptions,
 ): AsyncGenerator<SessionHistoryPage, void> {
-	if (!store.readEntrySizes || !store.readRange)
-		throw new TypeError(
-			`Session store ${store.descriptor.adapter} must implement bounded history reads (readEntrySizes and readRange)`,
-		);
+	const snapshotOnly = !store.readEntrySizes || !store.readRange;
+	let cut = watermark;
+	let cursorStamp: string | undefined;
 	let start = Math.max(1, options.fromSeq ?? 1);
 	let end = Math.min(watermark, options.toSeq ?? watermark);
 	let reverse = options.direction === "backward";
 	let stamp = epoch;
 	let scope = epoch === undefined ? undefined : cursorScope(sessionId, epoch);
 	if (options.cursor !== undefined) {
-		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)(\.b)?$/.exec(options.cursor);
+		const match = /^([A-Za-z0-9_-]+)\.(\d+)\.(\d+)(\.b)?(?:\.s(\d+))?$/.exec(options.cursor);
 		if (
 			!match ||
-			match[1] !== scope ||
+			(!snapshotOnly && match[1] !== scope) ||
+			(!snapshotOnly && match[5] !== undefined) ||
 			options.fromSeq !== undefined ||
 			options.toSeq !== undefined ||
 			(options.direction !== undefined && reverse !== Boolean(match[4]))
@@ -53,7 +53,10 @@ export async function* historyPages(
 		start = Number(match[2]);
 		end = Number(match[3]);
 		reverse = Boolean(match[4]);
-		if (end > watermark || start > end) throw new TypeError("Invalid history cursor range");
+		cursorStamp = match[1];
+		if (match[5] !== undefined) cut = Number(match[5]);
+		if (!Number.isSafeInteger(cut) || cut > watermark || end > cut || start > end)
+			throw new TypeError("Invalid history cursor range");
 	}
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1)
 		throw new RangeError("History sequence must be a safe integer");
@@ -61,7 +64,25 @@ export async function* historyPages(
 		options.signal?.throwIfAborted();
 		const from = reverse ? Math.max(start, end - SESSION_HISTORY_PAGE_ENTRIES + 1) : start;
 		const through = reverse ? end : Math.min(end, start + SESSION_HISTORY_PAGE_ENTRIES - 1);
-		const sized = await store.readEntrySizes(sessionId, from, through);
+		if (snapshotOnly) {
+			// load() is the adapter's contract. The helper drops its full snapshot before this iterator yields.
+			const { snapshotPage } = await import("./snapshot-history.js");
+			const page = await snapshotPage(store, sessionId, from, through, reverse, cut, stamp);
+			options.signal?.throwIfAborted();
+			stamp = page.epoch;
+			scope = cursorScope(sessionId, stamp);
+			if (cursorStamp && scope !== cursorStamp)
+				throw new TypeError("History cursor does not match this session generation");
+			if (reverse) end = page.items[0]!.seq - 1;
+			else start = page.items[page.items.length - 1]!.seq + 1;
+			yield {
+				items: page.items,
+				...(start <= end ? { nextCursor: `${scope}.${start}.${end}${reverse ? ".b" : ""}.s${cut}` } : {}),
+			};
+			if (start <= end) await yieldToEventLoop();
+			continue;
+		}
+		const sized = await store.readEntrySizes!(sessionId, from, through);
 		options.signal?.throwIfAborted();
 		stamp ??= sized.epoch;
 		scope ??= cursorScope(sessionId, stamp);
@@ -84,7 +105,7 @@ export async function* historyPages(
 				if (reverse) low = size.seq;
 				else high = size.seq;
 			}
-			const range = await store.readRange(sessionId, low, high, stamp);
+			const range = await store.readRange!(sessionId, low, high, stamp);
 			options.signal?.throwIfAborted();
 			if (range.epoch !== stamp || range.lastSeq < end)
 				throw new SessionConflictError(sessionId, watermark, range.lastSeq);
@@ -103,12 +124,11 @@ export async function* readSessionHistory(
 	sessionId: string,
 	options: SessionHistoryReadOptions = {},
 ): AsyncGenerator<SessionHistoryPage, void> {
-	if (!store.readEntrySizes)
-		throw new TypeError(
-			`Session store ${store.descriptor.adapter} must implement readEntrySizes for a history reader`,
-		);
 	options.signal?.throwIfAborted();
-	const head = await store.readEntrySizes(sessionId, 1, 0);
+	const head =
+		store.readEntrySizes && store.readRange
+			? await store.readEntrySizes(sessionId, 1, 0)
+			: await (await import("./snapshot-history.js")).snapshotHead(store, sessionId);
 	options.signal?.throwIfAborted();
 	yield* historyPages(store, sessionId, head.epoch, head.lastSeq, options);
 }
@@ -128,9 +148,10 @@ export async function* historyChunks(
 	reference: OversizedSessionEntry,
 	options: { readonly offset?: number; readonly signal?: AbortSignal },
 ): AsyncGenerator<Uint8Array, void> {
-	if (!store.readEntryChunk)
-		throw new TypeError(`Session store ${store.descriptor.adapter} must implement readEntryChunk`);
-	if (reference.sessionId !== sessionId || (epoch !== undefined && reference.epoch !== epoch))
+	if (
+		reference.sessionId !== sessionId ||
+		(store.readEntrySizes && store.readRange && epoch !== undefined && reference.epoch !== epoch)
+	)
 		throw new TypeError("Historical entry reference does not match this session generation");
 	let offset = options.offset ?? 0;
 	if (
@@ -144,7 +165,10 @@ export async function* historyChunks(
 		throw new RangeError("Invalid historical entry byte range");
 	while (offset < reference.bytes) {
 		options.signal?.throwIfAborted();
-		const data = await store.readEntryChunk(reference, offset);
+		const data =
+			store.readEntryChunk && store.readEntrySizes && store.readRange
+				? await store.readEntryChunk(reference, offset)
+				: await (await import("./snapshot-history.js")).snapshotChunk(store, reference, offset);
 		options.signal?.throwIfAborted();
 		if (!data.length || data.length > SESSION_HISTORY_CHUNK_BYTES || offset + data.length > reference.bytes)
 			throw new Error(`Incomplete or invalid historical entry ${reference.seq}`);

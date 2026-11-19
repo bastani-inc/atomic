@@ -16,6 +16,7 @@ type Shape =
 	| "array"
 	| "truth"
 	| "short"
+	| "answerText"
 	| "string"
 	| "stringPresent"
 	| "objectPresent"
@@ -171,6 +172,14 @@ function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 			return out;
 		}
 		case "startArray": {
+			if (shape === "answerText") {
+				let text = "";
+				for (let token = yield; token.name !== "endArray"; token = yield) {
+					const block = object(yield* readValue(token, { type: "short", text: "string" }));
+					if (block.type === "text" && typeof block.text === "string") text += block.text;
+				}
+				return text;
+			}
 			const out: Json[] = [];
 			let tools = 0;
 			for (let token = yield; token.name !== "endArray"; token = yield) {
@@ -429,6 +438,51 @@ export async function chunkedPrefixFields(
 	if (type === "worktree_snapshot" && !value.snapshot) delete value.snapshot;
 	const count = object(value.message).content;
 	return { entry: value as unknown as SessionEntry, toolCalls: typeof count === "number" ? count : 0 };
+}
+
+export async function chunkedAnswerHeader(chunks: AsyncIterable<Uint8Array>) {
+	const entry = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, {
+					id: "string",
+					parentId: "string",
+					type: "short",
+					targetId: "string",
+					message: { role: "short", stopReason: "short" },
+				});
+			})(),
+		),
+	);
+	const msg = object(entry.message);
+	return {
+		id: String(entry.id),
+		parentId: typeof entry.parentId === "string" ? entry.parentId : null,
+		type: String(entry.type),
+		targetId: entry.type === "context_edit" && typeof entry.targetId === "string" ? entry.targetId : undefined,
+		role: typeof msg.role === "string" ? msg.role : undefined,
+		stop: msg.stopReason === "stop",
+	};
+}
+
+/** Once a candidate is selected, keep only the text that /copy may actually return, not tool arguments or images. */
+export async function chunkedAnswerContent(
+	chunks: AsyncIterable<Uint8Array>,
+	edit: boolean,
+): Promise<string | null | undefined> {
+	const field = edit ? "replacement" : "message";
+	const entry = object(
+		await read(
+			chunks,
+			(function* (): Reader<Json> {
+				return yield* readValue(yield, { [field]: { content: "answerText" } });
+			})(),
+		),
+	);
+	if (edit && entry.replacement === null) return null;
+	const text = object(entry[field]).content;
+	return typeof text === "string" ? text.trim() || undefined : undefined;
 }
 
 /** Fill the inline projection of the stub with the streamed fields. No reconstructed value is sent back to SQL. */

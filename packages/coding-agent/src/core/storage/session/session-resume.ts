@@ -869,8 +869,9 @@ export function sessionCompactionOf(
 }
 
 export async function readSessionTail(store: SessionStore, sessionId: string, fromSeq: number): Promise<SessionTail> {
-	if (!store.readTail) throw new TypeError(`Session store ${store.descriptor.adapter} must implement readTail`);
-	return store.readTail(sessionId, fromSeq);
+	if (store.readTail) return store.readTail(sessionId, fromSeq);
+	const { header, entries, epoch } = await store.load(sessionId);
+	return { ...sessionTailOf(header, entries, fromSeq), epoch };
 }
 
 export async function readSessionRange(
@@ -878,9 +879,13 @@ export async function readSessionRange(
 	sessionId: string,
 	startSeq: number,
 	endSeq: number,
+	expectedEpoch?: string,
 ): Promise<SessionEntryRange> {
-	if (!store.readRange) throw new TypeError(`Session store ${store.descriptor.adapter} must implement readRange`);
-	return store.readRange(sessionId, startSeq, endSeq);
+	if (store.readRange) return store.readRange(sessionId, startSeq, endSeq, expectedEpoch);
+	const snapshot = await store.load(sessionId);
+	const { assertSnapshotCut } = await import("./snapshot-history.js");
+	assertSnapshotCut(snapshot, expectedEpoch, Math.min(endSeq, snapshot.lastSeq));
+	return { ...sessionRangeOf(snapshot.entries, startSeq, endSeq), epoch: expectedEpoch ?? snapshot.epoch };
 }
 
 export async function findSessionCompaction(
@@ -888,9 +893,9 @@ export async function findSessionCompaction(
 	sessionId: string,
 	leafId?: string,
 ): Promise<SessionCompactionPoint | undefined> {
-	if (!store.findLatestCompaction)
-		throw new TypeError(`Session store ${store.descriptor.adapter} must implement findLatestCompaction`);
-	return store.findLatestCompaction(sessionId, leafId);
+	if (store.findLatestCompaction) return store.findLatestCompaction(sessionId, leafId);
+	const snapshot = await store.load(sessionId);
+	return sessionCompactionOf(snapshot.entries, leafId);
 }
 
 export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq) {
