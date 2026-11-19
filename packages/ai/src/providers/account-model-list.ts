@@ -1,3 +1,4 @@
+import type { Credential } from "../auth/types.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
 
 interface AccountListResponse {
@@ -23,13 +24,20 @@ const refreshing = new Map<string, Set<AccountListRequests>>();
 export class AccountListRequests {
 	private readonly reads = new Map<string, Read>();
 	private readonly peers: Set<AccountListRequests>;
-	private readonly provider: string;
+	private readonly account: string;
 
-	constructor(provider: string) {
-		this.provider = provider;
-		this.peers = refreshing.get(provider) ?? new Set();
+	constructor(provider: string, baseUrl: string | undefined, credential: Credential) {
+		// Register only after resolving auth. A slow restore must not own another account's completed GETs.
+		this.account = JSON.stringify([
+			provider,
+			baseUrl,
+			credential.type,
+			credential.type === "oauth" ? credential.access : credential.key,
+			credential.type === "oauth" && typeof credential.enterpriseUrl === "string" ? credential.enterpriseUrl : undefined,
+		]);
+		this.peers = refreshing.get(this.account) ?? new Set();
 		this.peers.add(this);
-		refreshing.set(provider, this.peers);
+		refreshing.set(this.account, this.peers);
 	}
 
 	readonly get = async (
@@ -66,6 +74,6 @@ export class AccountListRequests {
 	close(): void {
 		this.reads.clear();
 		this.peers.delete(this);
-		if (this.peers.size === 0) refreshing.delete(this.provider);
+		if (this.peers.size === 0) refreshing.delete(this.account);
 	}
 }

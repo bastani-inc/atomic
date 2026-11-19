@@ -639,7 +639,7 @@ class ModelsImpl implements MutableModels {
 		requests?: AccountListRequests,
 	): Promise<boolean> {
 		const stored = await this.modelsStore.read(provider.id, { signal });
-		if (!signal.aborted && provider.refreshModelsAuth === "credential") {
+		if (!signal.aborted && provider.refreshModelsAuth !== "configured") {
 			this.onModelListPresence?.(provider.id, stored !== undefined);
 		}
 		if (requests && stored !== undefined) allowNetwork = false;
@@ -695,7 +695,7 @@ class ModelsImpl implements MutableModels {
 			refreshable.map(async (provider) => {
 				const { generation, controller } = this.beginProviderRefresh(provider.id);
 				const signal = AbortSignal.any([callerSignal, controller.signal]);
-				const requests = policy?.missingOnly ? new AccountListRequests(provider.id) : undefined;
+				let requests: AccountListRequests | undefined;
 				const operation = (async () => {
 					let storedCredential: Credential | undefined;
 					let credentialError: unknown;
@@ -710,12 +710,19 @@ class ModelsImpl implements MutableModels {
 						provider, storedCredential, false, undefined, generation, signal,
 					);
 					if (credentialError !== undefined) throw credentialError;
-					if (!allowNetwork || signal.aborted || policy?.cacheOnlyProvider === provider.id || (policy?.missingOnly && !missing)) {
+					if (
+						!allowNetwork ||
+						signal.aborted ||
+						(!missing && (policy?.cacheOnlyProvider === provider.id || policy?.missingOnly))
+					) {
 						return;
 					}
 
 					const network = await this.resolveNetworkRefresh(provider, storedCredential, signal);
-					if (!network) return;
+					if (!network || signal.aborted) return;
+					if (policy?.missingOnly && network.credential) {
+						requests = new AccountListRequests(provider.id, provider.baseUrl, network.credential);
+					}
 					await this.runProviderRefreshPhase(
 						provider,
 						network.credential,

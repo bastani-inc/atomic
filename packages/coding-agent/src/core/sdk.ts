@@ -51,6 +51,7 @@ import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
 import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
+import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
@@ -439,7 +440,8 @@ async function constructAgentSession(
 	const provider =
 		options.model?.provider ??
 		(hasExistingSession ? existingSession.model?.provider : undefined) ??
-		settingsManager.getDefaultProvider();
+		settingsManager.getDefaultProvider() ??
+		(!deferStart ? findPreferredAvailableModel(modelRuntime.getAvailableSnapshot())?.provider : undefined);
 	// The CLI has already resolved its provider (including errors and --api-key) before creating an unstarted session.
 	if (
 		!deferStart &&
@@ -453,18 +455,18 @@ async function constructAgentSession(
 		// SDK discovery returns registrations for the session to bind. Apply these before fetching from a provider it replaces.
 		const extensions = resourceLoader.getExtensions().runtime;
 		extensions.pendingProviderRegistrations = extensions.pendingProviderRegistrations.filter((registration) => {
+			const registeredId = "provider" in registration ? registration.provider.id : registration.name;
+			if (registeredId !== provider) return true;
 			try {
 				if ("provider" in registration) modelRuntime.registerNativeProvider(registration.provider);
 				else modelRuntime.registerProvider(registration.name, registration.config);
-				extensions.extensionProviderIds.add(
-					"provider" in registration ? registration.provider.id : registration.name,
-				);
+				extensions.extensionProviderIds.add(registeredId);
 				return false;
 			} catch {
 				return true;
 			} // Leave invalid registrations for normal extension error reporting.
 		});
-		await modelRuntime.whenRegistrationRefreshesSettled();
+		// The scoped refresh restores its own provider before fetching. Other registration restores stay in the background.
 		await modelRuntime.refreshMissingModelList(provider, options.signal);
 	}
 

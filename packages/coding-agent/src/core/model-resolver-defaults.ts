@@ -47,7 +47,7 @@ export const defaultModelPerProvider: Record<string, string> = {
 	"xiaomi-token-plan-sgp": "mimo-v2.6-pro",
 };
 
-export function findPreferredAvailableModel(availableModels: Model<Api>[]): Model<Api> | undefined {
+export function findPreferredAvailableModel(availableModels: readonly Model<Api>[]): Model<Api> | undefined {
 	for (const [provider, defaultId] of Object.entries(defaultModelPerProvider)) {
 		const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
 		if (match) {

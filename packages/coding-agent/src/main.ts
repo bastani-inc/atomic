@@ -62,6 +62,7 @@ import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.t
 import { formatModelLabel } from "./core/model-label.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { findInitialModel, resolveModelScopeWithDiagnostics, uncachedCopilotModelHint } from "./core/model-resolver.ts";
+import { findPreferredAvailableModel } from "./core/model-resolver-defaults.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
@@ -1026,13 +1027,28 @@ export async function main(argv: string[], options?: MainOptions) {
 					? ((parsed.model ? parsed.provider : undefined) ??
 						(qualified ? providerOfModelReference(qualified) : undefined))
 					: ((continuingConversation ? sessionContext.model?.provider : undefined) ??
-						settingsManager.getDefaultProvider()));
-			let keyApplied = false;
+						settingsManager.getDefaultProvider() ??
+						(!parsed.apiKey && (appMode === "print" || appMode === "json")
+							? findPreferredAvailableModel(modelRuntime.getAvailableSnapshot())?.provider
+							: undefined)));
+			const selectedId =
+				selection.options.model?.id ??
+				(!hasSelector
+					? ((continuingConversation ? sessionContext.model?.modelId : undefined) ??
+						settingsManager.getDefaultModel())
+					: undefined);
+			// RPC can serve state immediately for a known model. Its ordinary background refresh owns the GET.
+			const rpcCanStart = appMode === "rpc" && provider && selectedId && modelRuntime.getModel(provider, selectedId);
+			let keyProvider: string | undefined;
+			// An unresolved single qualified CLI scope still identifies the provider for its own list.
+			const qualifiedScope =
+				!parsed.model && parsed.models?.length === 1 && providerOfModelReference(parsed.models[0]!);
 			if (
 				provider &&
+				!rpcCanStart &&
 				!deferStartupTrust &&
 				!deferExtensions &&
-				(!parsed.apiKey || selection.options.model) &&
+				(!parsed.apiKey || selection.options.model || qualifiedScope === provider) &&
 				modelRuntime.needsModelList(provider, !!parsed.apiKey)
 			) {
 				if (parsed.apiKey) {
@@ -1042,7 +1058,7 @@ export async function main(argv: string[], options?: MainOptions) {
 						parsed.apiKey,
 						AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS),
 					);
-					keyApplied = true;
+					keyProvider = provider;
 				}
 				if (await modelRuntime.refreshMissingModelList(provider)) {
 					if (appMode === "rpc") rpcSelectionRefresh = normalizeProviderId(provider);
@@ -1066,13 +1082,19 @@ export async function main(argv: string[], options?: MainOptions) {
 				deferredSavedThinkingLevel = savedThinkingLevel;
 			}
 
-			if (parsed.apiKey && !keyApplied && !isolateInteractiveHost && !deferStartupTrust) {
+			if (parsed.apiKey && !isolateInteractiveHost && !deferStartupTrust) {
+				if (keyProvider && keyProvider !== sessionOptions.model?.provider) {
+					await modelRuntime.removeRuntimeApiKey(keyProvider, {
+						refreshCatalog: false,
+						signal: AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS),
+					});
+				}
 				if (!sessionOptions.model) {
 					diagnostics.push({
 						type: "error",
 						message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 					});
-				} else {
+				} else if (sessionOptions.model.provider !== keyProvider) {
 					// Bound the complete CLI key operation—from credential mutation through
 					// provider-scoped catalog refresh—with the established model-refresh budget.
 					const apiKeySignal = AbortSignal.timeout(INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS);

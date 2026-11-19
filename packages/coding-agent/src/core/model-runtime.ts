@@ -1101,13 +1101,17 @@ export class ModelRuntime implements Models {
 		});
 	}
 
-	async removeRuntimeApiKey(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
+	async removeRuntimeApiKey(
+		providerId: string,
+		options: AuthOperationOptions & SaveCredentialOptions = {},
+	): Promise<void> {
 		providerId = normalizeProviderId(providerId);
 		const signal = operationSignal(options.signal);
 		await this.enqueueCredentialOperation(providerId, signal, async () => {
 			this.credentials.removeRuntimeApiKey(providerId);
 			this.markCatalogInputsChanged();
 			await this.synchronizeCredentialState(providerId, "removeRuntimeApiKey", undefined, async () => {
+				if (options.refreshCatalog === false) return this.refreshProviderAvailability(providerId, signal);
 				const result = await this.refresh({ allowNetwork: this.modelNetworkEnabled, signal });
 				this.assertCredentialRefreshSucceeded(providerId, result, signal);
 			});
@@ -1295,9 +1299,11 @@ export class ModelRuntime implements Models {
 	}
 	needsModelList(provider: string, inlineKey = false): boolean {
 		const id = normalizeProviderId(provider);
+		const source = this.models.getProvider(id);
 		return (
 			this.missingListTimeout !== undefined &&
-			this.models.getProvider(id)?.refreshModelsAuth === "credential" &&
+			!!source?.refreshModels &&
+			source.refreshModelsAuth !== "configured" &&
 			(this.autoReads.has(id) ||
 				(this.missingLists.has(id) &&
 					!this.attemptedLists.has(id) &&
@@ -1306,13 +1312,17 @@ export class ModelRuntime implements Models {
 	}
 
 	/** The existing restore must have observed a miss. Never probe an uninitialized store. */
-	async refreshMissingModelList(provider: string, signal?: AbortSignal): Promise<boolean> {
+	async refreshMissingModelList(provider: string, signal?: AbortSignal, checkCurrentAuth = false): Promise<boolean> {
 		const id = normalizeProviderId(provider);
-		if (!this.needsModelList(id) || signal?.aborted) return false;
+		if (!this.needsModelList(id, checkCurrentAuth) || signal?.aborted) return false;
 		const deadline = new AbortController();
 		const timer = setTimeout(() => deadline.abort(), this.missingListTimeout);
 		const stop = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
 		try {
+			// A scoped listing checks today's auth even if the earlier restore saw no credential.
+			if (!this.needsModelList(id) && !(await raceWithAbortSignal(this.checkAuth(id, { signal: stop }), stop)))
+				return false;
+			if (!this.needsModelList(id, true) || stop.aborted) return false;
 			const explicit = this.explicitReads.get(id);
 			if (explicit) {
 				await raceWithAbortSignal(explicit, stop);
@@ -1349,7 +1359,8 @@ export class ModelRuntime implements Models {
 
 	private refreshMissingListsForListing(provider?: string, signal?: AbortSignal): Promise<unknown> | undefined {
 		if (this.missingListTimeout === undefined) return;
-		if (provider) return this.needsModelList(provider) ? this.refreshMissingModelList(provider, signal) : undefined;
+		if (provider)
+			return this.needsModelList(provider, true) ? this.refreshMissingModelList(provider, signal, true) : undefined;
 		const missing = this.models.getProviders().filter((p) => this.needsModelList(p.id));
 		return missing.length ? Promise.all(missing.map((p) => this.refreshMissingModelList(p.id, signal))) : undefined;
 	}
@@ -1361,7 +1372,8 @@ export class ModelRuntime implements Models {
 		const pending = new Map<string, () => void>();
 		for (const provider of this.models.getProviders()) {
 			if (
-				provider.refreshModelsAuth !== "credential" ||
+				!provider.refreshModels ||
+				provider.refreshModelsAuth === "configured" ||
 				(options.providers && !options.providers.some((id) => normalizeProviderId(id) === provider.id))
 			)
 				continue;

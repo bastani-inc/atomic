@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { findInitialModel } from "../src/core/model-resolver.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -196,6 +197,18 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		const { session } = await startSession(ACCOUNT_MODEL_ID, restarted);
 		session.dispose();
 		assert.equal(fetchSpy.mock.calls.length, 0);
+	});
+
+	it("uses a credential added after restore when listing its provider (#5685)", async () => {
+		serveAccountList();
+		vi.stubEnv("COPILOT_GITHUB_TOKEN", "");
+		const credentials = AuthStorage.inMemory();
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null });
+		assert.deepEqual(await runtime.getAvailable(PROVIDER), []);
+		assert.equal(modelListRequests, 0);
+		await credentials.modify(PROVIDER, async () => API_KEY);
+		assert.ok((await runtime.getAvailable(PROVIDER)).some((model) => model.id === ACCOUNT_MODEL_ID));
+		assert.equal(modelListRequests, 1);
 	});
 
 	it("does no extra store or credential lookups when the original refresh found a cached list (#5685)", async () => {
@@ -627,6 +640,59 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assertMentions(modelFallbackMessage, "update --models");
 	});
 
+	it("returns the selected SDK model while an unrelated provider's restore is held (#5685)", async () => {
+		serveAccountList();
+		const held = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		const modelRuntime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory({ [PROVIDER]: API_KEY }),
+			modelsPath: null,
+			modelRefreshTimeoutMs: 1_000,
+		});
+		const settingsManager = SettingsManager.inMemory({ defaultProvider: PROVIDER, defaultModel: ACCOUNT_MODEL_ID });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: agentDir,
+			agentDir,
+			settingsManager,
+			noExtensions: true,
+			extensionFactories: [
+				(pi) =>
+					pi.registerProvider("fixture-held", {
+						apiKey: "fixture",
+						baseUrl: "http://127.0.0.1",
+						api: "openai-completions",
+						models: [{ ...modelRuntime.getModels(PROVIDER)[0]!, id: "fixture-static" }],
+						refreshModels: async () => {
+							entered.resolve();
+							await held.promise;
+							return [];
+						},
+					}),
+			],
+		});
+		await resourceLoader.reload();
+		const work = createAgentSession({
+			cwd: agentDir,
+			agentDir,
+			modelRuntime,
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(agentDir),
+			builtins: NO_BUILTINS,
+		});
+		try {
+			await entered.promise;
+			const id = await Promise.race([
+				work.then(({ session }) => session.model?.id),
+				new Promise((resolve) => setTimeout(() => resolve("still waiting"), PROMPT_FALLBACK_MS)),
+			]);
+			assert.equal(id, ACCOUNT_MODEL_ID);
+		} finally {
+			held.resolve();
+			(await work).session.dispose();
+		}
+	});
+
 	it("starts a session on its cached provider without waiting for another account's missing list (#5685)", async () => {
 		const credentials = AuthStorage.inMemory({
 			[PROVIDER]: API_KEY,
@@ -741,6 +807,14 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		assertMentions(result.fallbackMessage, "update --models");
 	});
 
+	it("a stalled restore does not retain completed responses from other accounts (#5685)", async () => {
+		const fixture = fileURLToPath(new URL("./fixtures/model-list-account-retention.ts", import.meta.url));
+		const { stdout } = await promisify(execFile)(bunExecutable(), ["--no-env-file", fixture], {
+			env: { ...process.env, HOME: agentDir, ATOMIC_CODING_AGENT_DIR: agentDir },
+		});
+		assert.deepEqual(JSON.parse(stdout), { decoded: 8, retained: 0 });
+	});
+
 	it("releases file-store bookkeeping when the last runtime is collected (#5685)", async () => {
 		const fixture = fileURLToPath(new URL("./fixtures/model-list-path-retention.ts", import.meta.url));
 		const { stdout } = await promisify(execFile)(bunExecutable(), ["--no-env-file", fixture, agentDir], {
@@ -748,6 +822,64 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 		});
 		assert.equal(stdout.trim(), "0");
 	});
+
+	it.each(["reselected", "qualified"])(
+		"uses the inline key with the %s account model in --models (#5685)",
+		async (scope) => {
+			const posted: Array<[string | undefined, string | undefined]> = [];
+			await withEndpoint(
+				async (url) => {
+					const reselect = scope === "reselected";
+					if (reselect)
+						writeFileSync(
+							join(agentDir, "models-store.json"),
+							JSON.stringify({ [PROVIDER]: { models: [], checkedAt: 1 } }),
+						);
+					writeFileSync(
+						runtimePaths().modelsPath,
+						JSON.stringify({ providers: { openrouter: { baseUrl: url } } }),
+					);
+					const selected = reselect ? "gpt-6.1-sol" : ACCOUNT_MODEL_ID;
+					const models = `${reselect ? "openrouter/openai/gpt-4o-mini," : ""}${PROVIDER}/${selected}`;
+					await runCliProcess(
+						[
+							"--no-session",
+							"--no-extensions",
+							"--print",
+							"--models",
+							models,
+							"--api-key",
+							"github_pat_inline_fixture",
+							"hello",
+						],
+						{
+							cwd: agentDir,
+							env: {
+								...process.env,
+								HOME: agentDir,
+								ATOMIC_CODING_AGENT_DIR: agentDir,
+								ATOMIC_MODEL_CATALOG_URL: url,
+								OPENROUTER_API_KEY: "fixture",
+								GITHUB_COPILOT_BASE_URL: `${url}/copilot`,
+								COPILOT_GITHUB_TOKEN: "github_pat_stored_fixture",
+							},
+						},
+					);
+					assert.deepEqual(posted, [[selected, "Bearer github_pat_inline_fixture"]]);
+				},
+				async (req, res) => {
+					if (req.method === "POST") {
+						const chunks = [];
+						for await (const chunk of req) chunks.push(chunk);
+						posted.push([JSON.parse(Buffer.concat(chunks).toString()).model, req.headers.authorization]);
+						res.writeHead(400).end(JSON.stringify({ error: { message: "fixture received request" } }));
+					} else if (req.url === "/models/user") res.end(JSON.stringify({ data: [{ id: "openai/gpt-4o" }] }));
+					else if (req.url === "/copilot/models") res.end(JSON.stringify(ACCOUNT_LIST));
+					else res.writeHead(404).end();
+				},
+			);
+		},
+	);
 
 	it("an unresolved --model never applies --api-key to the saved default provider (#5685)", async () => {
 		const paths: string[] = [];
@@ -847,6 +979,70 @@ describe("an SDK runtime without a cached account model list (#5685)", () => {
 			);
 		},
 	);
+
+	it("RPC serves the selected native model while its refresh runs and exposes its live result (#5685)", async () => {
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		await withEndpoint(
+			async (url) => {
+				const extension = join(agentDir, "native-list.ts");
+				writeFileSync(
+					extension,
+					`export default pi => {
+				const model = id => ({ id, name: id, api: "openai-completions", provider: "fixture-native", baseUrl: ${JSON.stringify(url)}, reasoning: false, input: ["text"], contextWindow: 8192, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+				let rows = [model("static")];
+				pi.registerProvider({ id: "fixture-native", name: "Fixture", getModels: () => rows, refreshModelsAuth: "credential",
+					auth: { apiKey: { name: "fixture", check: async () => ({ source: "fixture", type: "api_key" }), resolve: async () => ({ auth: { apiKey: "fixture" } }) } },
+					async refreshModels({allowNetwork, signal, publish}) {
+						if (allowNetwork) await fetch(${JSON.stringify(`${url}/native`)}, { signal });
+						await publish({update: () => { rows = allowNetwork ? [model("static"), model("live")] : [model("static")] }});
+					}, stream() { throw Error("unused"); }, streamSimple() { throw Error("unused"); }
+				});
+			}`,
+				);
+				const client = new RpcClient({
+					cliPath,
+					runtimeExecutable: bunExecutable(),
+					cwd: agentDir,
+					args: ["--no-session", "--no-extensions", "--extension", extension, "--model", "fixture-native/static"],
+					env: {
+						HOME: agentDir,
+						ATOMIC_CODING_AGENT_DIR: agentDir,
+						ATOMIC_MODEL_CATALOG_URL: url,
+						ATOMIC_OFFLINE: "0",
+					},
+				});
+				try {
+					await client.start();
+					await started.promise;
+					const state = await Promise.race([
+						client.getState(),
+						new Promise<undefined>((done) => setTimeout(() => done(undefined), PROMPT_FALLBACK_MS)),
+					]);
+					assert.equal(state?.model?.id, "static");
+					release.resolve();
+					await vi.waitFor(async () =>
+						assert.deepEqual(
+							(await client.getAvailableModels())
+								.filter((m) => m.provider === "fixture-native")
+								.map((m) => m.id)
+								.sort(),
+							["live", "static"],
+						),
+					);
+				} finally {
+					release.resolve();
+					await client.stop();
+				}
+			},
+			(req, res) => {
+				if (req.url === "/native") {
+					started.resolve();
+					void release.promise.then(() => res.end());
+				} else res.writeHead(404).end();
+			},
+		);
+	});
 
 	it("leaves interactive startup to its background refresh and reads missing lists in every other CLI mode (#5685)", () => {
 		const session = { help: false, listModels: undefined };
