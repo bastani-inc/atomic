@@ -339,7 +339,7 @@ export function createPostMortemStageHandle(
 			return disposed;
 		},
 		get messages() {
-			return context.messages;
+			return context.__residentMessages();
 		},
 		get agentSession() {
 			return context.__agentSession();

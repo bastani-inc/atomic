@@ -284,7 +284,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		let messages: readonly AgentSnapshotMessage[];
 		try {
 			const manager = await SessionManager.open(store, sessionId, undefined, { history: "tail" });
-			messages = repairOrphanToolResults(manager.buildSessionContext().messages, {
+			messages = repairOrphanToolResults(manager.buildSessionProjection("transcript").messages, {
 				repairTrailing: true,
 				...(inFlightToolCallIds === undefined ? {} : { inFlightToolCallIds }),
 			}) as readonly AgentSnapshotMessage[];

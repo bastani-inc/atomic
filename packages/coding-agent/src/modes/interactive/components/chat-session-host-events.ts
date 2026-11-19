@@ -145,7 +145,15 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 	state: ChatSessionHostState<TExtraEntry>,
 	result: VerbatimCompactionResult,
 ): void {
-	const compactedMessages = state.getAgentSession?.()?.messages;
+	const session = state.getAgentSession?.();
+	const manager = session?.sessionManager;
+	// The session's transcript keeps rows a context edit left out of the next request. A session or session manager
+	// that cannot give one shows its messages.
+	const compactedMessages =
+		session?.transcriptMessages ??
+		(typeof manager?.buildSessionProjection === "function"
+			? manager.buildSessionProjection("transcript").messages
+			: session?.messages);
 	if (compactedMessages && hasVerbatimCompactionMessage(compactedMessages)) {
 		if (state.bodyViewport.getScrollFromBottom() > 0) {
 			state.newMessages.observe(false, countableTranscriptLength(state));

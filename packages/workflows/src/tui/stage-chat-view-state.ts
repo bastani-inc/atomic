@@ -441,10 +441,11 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
 	if (!handle) return;
-	ctx.chatHost.appendMessages(handle.messages);
+	const messages = handle.messages;
+	ctx.chatHost.appendMessages(messages);
 	const streaming = handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.();
 	ctx.chatHost.hydrateStreamingAssistantMessage(streaming);
-	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(handle.messages, streaming);
+	if (isLiveHandleStreaming(ctx)) ctx.chatHost.hydrateRunningTurn(messages, streaming);
 	else if (isLiveHandleWaitingToRetry(ctx)) ctx.chatHost.hydrateRetryWait();
 }
 

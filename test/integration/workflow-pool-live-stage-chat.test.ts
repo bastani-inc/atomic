@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SessionManager } from "@bastani/atomic";
+import { SessionManager, sessionEntryToContextMessages } from "@bastani/atomic";
 import { beforeAll, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -57,7 +57,7 @@ function textOf(message: object): string {
 }
 
 test.skipIf(process.platform === "win32")(
-	"a running pooled stage opens as a live watch whose stream continues right after its snapshot (#3996)",
+	"a reopened pooled stage keeps the failed attempt and continues the live stream after its snapshot (#3996, #5613)",
 	async () => {
 		const directory = makeTempDirectory("pool-live-stage-");
 		const path = join(directory, "journal.sqlite");
@@ -77,6 +77,7 @@ test.skipIf(process.platform === "win32")(
 		});
 		const store = createStore();
 		const root = testRunId("pool-live-stage");
+		const failFirstAt = join(directory, "fail-first-attempt");
 		try {
 			const execution = run(
 				workflow({
@@ -85,7 +86,7 @@ test.skipIf(process.platform === "win32")(
 					inputs: {},
 					outputs: {},
 					async run(ctx) {
-						await ctx.workflow(child, { inputs: { gatePath } });
+						await ctx.workflow(child, { inputs: { gatePath, failFirstAt } });
 						return {};
 					},
 				}),
@@ -100,7 +101,40 @@ test.skipIf(process.platform === "win32")(
 				return undefined;
 			};
 
-			// Watch once the stage is held mid-turn with its first delta streamed.
+			// Stay open for the failed request, then reopen while its retry is held after the first delta.
+			const firstEvents: SeqEvent[] = [];
+			let firstWatch: PooledStageWatch | undefined;
+			await untilOrRunEnds(
+				async () => {
+					const target = pooledStage();
+					if (target?.stage.sessionId === undefined) return false;
+					const result = await pool.watchPooledStage(
+						{ runId: target.runId, stageId: target.stage.id },
+						(message) => {
+							if (message.kind === "events") firstEvents.push(...message.events);
+						},
+					);
+					if (!result.ok) return false;
+					firstWatch = result.watch;
+					return true;
+				},
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(firstWatch);
+			writeTextSync(failFirstAt, "");
+			await untilOrRunEnds(
+				async () => firstEvents.some(({ event }) => event.type === "auto_retry_start"),
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			const failures = firstEvents.flatMap(({ event }) =>
+				event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error"
+					? [event.message]
+					: [],
+			);
+			assert.equal(failures.length, 1);
+			await pool.unwatchPooledStage(firstWatch.id);
 			const received: PooledStageWatchMessage[] = [];
 			let watch: PooledStageWatch | undefined;
 			await untilOrRunEnds(
@@ -128,17 +162,22 @@ test.skipIf(process.platform === "win32")(
 			assert.ok(watch !== undefined);
 			const target = pooledStage()!;
 
-			// The snapshot's settled messages are the session's: the prompt, and nothing of the turn in flight.
+			assert.deepEqual(
+				watch.snapshot.messages.filter((message) => message.role === "assistant"),
+				failures,
+			);
+			// The snapshot's settled messages are the transcript, with nothing of the turn in flight.
 			assert.equal(watch.snapshot.sessionId, target.stage.sessionId);
 			const sessions = await poolSessionStore(backend, rootOf(backend, target.runId));
 			assert.ok(sessions !== undefined);
-			const persisted = (await SessionManager.open(sessions, target.stage.sessionId!)).buildSessionContext()
-				.messages;
+			const persisted = (await SessionManager.open(sessions, target.stage.sessionId!))
+				.buildContextEntries()
+				.flatMap(sessionEntryToContextMessages);
 			assert.deepEqual(
 				watch.snapshot.messages.map((message) => [message.role, textOf(message)]),
 				persisted.map((message) => [message.role, textOf(message)]),
 			);
-			assert.equal(watch.snapshot.messages.at(-1)?.role, "user");
+			assert.equal(watch.snapshot.messages.at(-2)?.role, "user");
 			await sessions.close();
 			assert.equal(watch.snapshot.isStreaming, true);
 			assert.equal(watch.attempt.generation, target.stage.workerExecution!.generation);
