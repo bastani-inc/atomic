@@ -787,7 +787,7 @@ export class InteractiveModeBase {
 			undefined,
 			() => this.navigationInlineCustomUiDepth > 0,
 			undefined,
-			() => mainComposerHints(this.keybindings),
+			(availableWidth) => mainComposerHints(this.keybindings, undefined, availableWidth),
 		);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);

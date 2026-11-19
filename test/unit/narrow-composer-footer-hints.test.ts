@@ -65,7 +65,7 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		}
 	});
 
-	test("main footer at narrow widths drops lower-priority hint segments whole and preserves ↓ N agents and ? keys (#5239)", () => {
+	test("main footer at narrow widths keeps existing hints ahead of the retired workflow pointer (#5239, #5710)", () => {
 		const keybindings = new KeybindingsManager();
 		setKeybindings(keybindings);
 		for (const working of [true, false]) {
@@ -92,13 +92,14 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 				getAvailableProviderCount: () => 1,
 				onBranchChange: () => () => {},
 			};
+			let hiddenWorkflow = false;
 			const footer = new FooterComponent(
 				session as never,
 				footerData as never,
 				undefined,
 				() => false,
 				undefined,
-				() => mainComposerHintSegments(keybindings, { agentRows: 3, needsInput: 1 }),
+				(width) => mainComposerHintSegments(keybindings, { agentRows: 3, needsInput: 1, hiddenWorkflow }, width),
 			);
 			for (const width of [30, 40, 50, 60, 80, 160]) {
 				const line = stripTerminalSequences(footer.render(width)[0] ?? "");
@@ -112,6 +113,12 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 				working ? "esc to interrupt · ↓ 3 agents · ? keys" : "claude-sonnet-4... · ↓ 3 agents · ? keys",
 			);
 			assert.equal(stripTerminalSequences(footer.render(30)[0] ?? ""), "↓ 3 agents · ? keys");
+			hiddenWorkflow = true;
+			assert.match(stripTerminalSequences(footer.render(60)[0] ?? ""), /↓ 3 agents · 1 needs input · \? keys$/u);
+			assert.match(
+				stripTerminalSequences(footer.render(100)[0] ?? ""),
+				/1 needs input · \/workflows to see runs · \? keys$/u,
+			);
 		}
 	});
 

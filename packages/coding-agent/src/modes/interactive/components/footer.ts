@@ -28,6 +28,8 @@ export interface FooterRenderStyle {
 	warning(text: string): string;
 }
 
+const MIN_STATUS_WIDTH = 12;
+
 const defaultFooterRenderStyle: FooterRenderStyle = {
 	dim: (text) => theme.fg("dim", text),
 	muted: (text) => theme.fg("muted", text),
@@ -278,7 +280,7 @@ export class FooterComponent implements Component {
 	private declare readonly renderStyle: FooterRenderStyle;
 	private readonly navigationActive: () => boolean;
 	private readonly backgroundTasks: (() => Parameters<typeof renderTaskFooter>[0] | undefined) | undefined;
-	private readonly hintSegments: (() => readonly string[]) | undefined;
+	private readonly hintSegments: ((availableWidth: number) => readonly string[]) | undefined;
 	private readonly backgroundTaskClocks: (() => TaskElapsedClocks | undefined) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
@@ -291,7 +293,7 @@ export class FooterComponent implements Component {
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
 		navigationActive: () => boolean = () => false,
 		backgroundTasks?: () => Parameters<typeof renderTaskFooter>[0] | undefined,
-		hintSegments?: () => readonly string[],
+		hintSegments?: (availableWidth: number) => readonly string[],
 		backgroundTaskClocks?: () => TaskElapsedClocks | undefined,
 	) {
 		this.session = session;
@@ -381,10 +383,13 @@ export class FooterComponent implements Component {
 			if (isDebugEnabled()) {
 				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("debug")}`;
 			}
-			const hintItems = (this.navigationActive() ? [] : (this.hintSegments?.() ?? [])).map((segment) =>
-				this.renderStyle.muted(segment),
-			);
 			const hintSeparator = this.renderStyle.dim(" · ");
+			const reserved = statusText
+				? visibleWidth(hintSeparator) + (working ? visibleWidth(statusText) : MIN_STATUS_WIDTH)
+				: 0;
+			const hintItems = (this.navigationActive() ? [] : (this.hintSegments?.(width - reserved) ?? [])).map(
+				(segment) => this.renderStyle.muted(segment),
+			);
 			if (statusText && hintItems.length > 0) {
 				const keptHints = [...hintItems];
 				const joinHints = (withLead: boolean) =>
@@ -404,12 +409,12 @@ export class FooterComponent implements Component {
 						lines.push(truncateToWidth(joinHints(false), width, this.renderStyle.dim("...")));
 					}
 				} else {
-					while (keptHints.length > 2 && width - visibleWidth(joinHints(true)) < 12) {
+					while (keptHints.length > 2 && width - visibleWidth(joinHints(true)) < MIN_STATUS_WIDTH) {
 						keptHints.splice(dropHintIndex(), 1);
 					}
 					const hintsWithLead = joinHints(true);
 					const room = width - visibleWidth(hintsWithLead);
-					if (room >= 12) {
+					if (room >= MIN_STATUS_WIDTH) {
 						lines.push(`${truncateToWidth(statusText, room, this.renderStyle.dim("..."))}${hintsWithLead}`);
 					} else {
 						while (keptHints.length > 1 && visibleWidth(joinHints(false)) > width) {
