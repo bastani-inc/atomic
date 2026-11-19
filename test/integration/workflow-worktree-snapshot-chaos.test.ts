@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
-
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, SqlSnapshotBlobStore } from "@bastani/atomic/storage";
-
 import { describe, test } from "vitest";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import { SNAPSHOT_INDEX_BACKFILL_BATCH } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage, snapshotBlob } from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { run } from "../../packages/workflows/src/engine/run.js";
 import { LegacySnapshotRows } from "../helpers/legacy-snapshot-rows.js";
-
 import { bunExecutable, spawnProcess } from "../helpers/runtime.js";
 import {
 	ageBlobs,
@@ -39,10 +34,6 @@ const REAL_PROCESS_TIMEOUT_MS = 120_000;
  * its reference is recorded, so collection still keeps every recorded blob by its references alone.
  */
 const RACE_GRACE_SECONDS = REAL_PROCESS_TIMEOUT_MS / 1000;
-
-/** The stall that loaded runner had between storing a blob and recording its checkpoint, rounded up. */
-
-/** The grace window the race used before, shorter than {@link OBSERVED_STALL_SECONDS}. */
 
 test(
 	"sixteen concurrent journal connections deduplicate overlapping snapshot blobs (#4245)",
@@ -287,7 +278,6 @@ describe.each([
 					child.kill("SIGKILL");
 					await child.exited;
 				}
-
 				await writerDatabase.close();
 				await shared.close();
 				await rm(directory, { recursive: true, force: true });
@@ -378,7 +368,6 @@ describe.each([
 				await written.journal.append(lease, statusEvent("big", { status: "failed" }));
 				await written.journal.snapshotBlobs.putBlobs([textBlob("unreferenced a"), textBlob("unreferenced b")]);
 				await database.run("UPDATE snapshot_blobs SET created_at = 1");
-
 				await written.sessions.close();
 				await dropSnapshotIndex(database);
 
@@ -428,7 +417,6 @@ describe.each([
 					child.kill("SIGKILL");
 					await child.exited;
 				}
-
 				await stores?.sessions.close();
 				await database.close();
 				await rm(directory, { recursive: true, force: true });

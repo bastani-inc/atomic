@@ -21,7 +21,6 @@ import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-rele
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import { seedLegacyWorkflowTables } from "../helpers/legacy-store-0990.js";
-
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { moduleDir } from "../helpers/runtime.js";
 
@@ -83,10 +82,12 @@ const INTERCOM_STORES = [
 	openSqlKnownSessionStore,
 ] as const;
 
-/** Opens every store Atomic keeps on a PostgreSQL database: sessions, the run journal, the worker pool and the Intercom broker state, as a broker does. */
+/**
+ * Opens every store Atomic keeps on a PostgreSQL database, sessions and the Intercom broker state, as a broker does,
+ * over an earlier release's workflow tables whose snapshot index triggers this build still names and upgrades.
+ */
 async function openEveryStore(scope: PostgresScope, prefix: string): Promise<void> {
 	const database = await scope.open();
-	// Exercise current identifiers alongside a real pre-0.10 schema, including the snapshot trigger upgrade.
 	await seedLegacyWorkflowTables(database, { prefix });
 	await (await SqlSessionStore.open(database, { prefix })).close();
 	const intercom = await openIntercomBrokerState({ prefix, openDatabase: () => scope.open() });
@@ -129,7 +130,6 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 					tooLong(prefix),
 				);
 				await assert.rejects(SqlSessionStore.open(database, { prefix }), tooLong(prefix));
-
 				await assert.rejects(
 					openIntercomBrokerState({ prefix, openDatabase: () => scope.open() }),
 					tooLong(prefix),
@@ -152,7 +152,6 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 				return true;
 			};
 			await assert.rejects(SqlSessionStore.open(database, { prefix }), uppercase);
-
 			await assert.rejects(openIntercomBrokerState({ prefix, openDatabase: () => scope.open() }), uppercase);
 			for (const open of INTERCOM_STORES) await assert.rejects(open({ database, prefix }), uppercase);
 			assert.deepEqual(await createdIdentifiers(database), []);

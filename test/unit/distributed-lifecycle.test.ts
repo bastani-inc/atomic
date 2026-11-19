@@ -349,6 +349,7 @@ const capabilities = (extra: { workflows?: string[]; atomic?: string[]; members?
 
 test("feature suites skip with a typed reason when the ref lacks their interface (#4331)", () => {
 	assert.deepEqual(Object.keys(FEATURE_PROBES), [
+		"smoke",
 		"multi-node-resume",
 		"cross-host-pools",
 		"shard-contention",
@@ -392,8 +393,9 @@ test("feature suites skip with a typed reason when the ref lacks their interface
 		),
 	);
 	assert.equal(featureSkip("smoke", capabilities()), undefined);
+	assert.ok(isDistributedFeatureUnavailableError(featureSkip("smoke", { ...capabilities(), workflows: [] })));
 	for (const [suite, probe] of Object.entries(FEATURE_PROBES))
-		assert.equal(probe.implemented, suite === "idle-density" || suite === "multi-node-resume", suite);
+		assert.equal(probe.implemented, ["smoke", "idle-density", "multi-node-resume"].includes(suite), suite);
 });
 
 test("a malformed capabilities document is a broken deployment, not a missing feature (#4331)", () => {
@@ -962,6 +964,7 @@ test("each feature probe names its issue, its capability and the exact interface
 			Object.entries(FEATURE_PROBES).map(([suite, probe]) => [suite, [probe.issue, probe.capability]]),
 		),
 		{
+			smoke: ["#4331", "workflow journal export resolveRunJournal"],
 			"multi-node-resume": ["#4329", "export ResumeError"],
 			"cross-host-pools": ["#4310", "export WorkerPlacementError"],
 			"shard-contention": ["#4325", "export JournalShardUnavailableError"],
