@@ -492,9 +492,10 @@ export class SessionManager {
 		});
 	}
 
-	private async initialize(): Promise<void> {
+	private async initialize(boundaryPreview = false): Promise<void> {
 		const entries = this.getEntries();
-		const complete = entries.some(isResidentNotice) ? await storedNotices(entries) : entries;
+		// A disposable draft uses the entries handlers already see, not another archive of their full bodies.
+		const complete = !boundaryPreview && entries.some(isResidentNotice) ? await storedNotices(entries) : entries;
 		const created = await (this.store instanceof JsonlSessionStore
 			? this.store.create(this.recordHeader(), complete, this.sessionFile)
 			: this.store.create(this.recordHeader(), complete));
@@ -502,7 +503,7 @@ export class SessionManager {
 		this.historyEpoch = created.epoch;
 		this.entrySeqs = new Map(this.getEntries().map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
-		if (complete.some(isHostNoticeEntry)) {
+		if (!boundaryPreview && complete.some(isHostNoticeEntry)) {
 			this.fileEntries = [this.fileEntries[0]!, ...complete];
 			this._buildIndex();
 		}
@@ -1641,18 +1642,26 @@ export class SessionManager {
 	inMemoryBranch(cwd: string, purpose?: "boundary-preview"): SessionManager {
 		const header = this.getHeader();
 		if (!header) throw new Error("Session header is missing");
-		const branch = this.getBranch();
-		// A model preview needs the entry IDs and parent links, not display-only diagnostics from storage.
-		const entries =
-			purpose === "boundary-preview" && this.hostNotices > 0
-				? branch.map((entry) => (isHostNoticeEntry(entry) ? { ...entry, data: undefined } : entry))
-				: branch;
-		const manager = SessionManager.inMemory(cwd, undefined, [header, ...entries]);
+		const manager = SessionManager.createMemory(
+			cwd,
+			undefined,
+			[header, ...this.getBranch()],
+			purpose === "boundary-preview",
+		);
 		manager.branchLinks = this.branchLinks;
 		return manager;
 	}
 
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
+		return SessionManager.createMemory(cwd, options, entries, false);
+	}
+
+	private static createMemory(
+		cwd: string,
+		options: NewSessionOptions | undefined,
+		entries: FileEntry[] | undefined,
+		boundaryPreview: boolean,
+	): SessionManager {
 		const manager = new SessionManager(
 			markPrivateMemorySessionStore(new MemorySessionStore(createSessionCwdMatcherAsync)),
 			cwd,
@@ -1664,7 +1673,7 @@ export class SessionManager {
 			manager.sessionId = manager.getHeader()!.id;
 			manager._buildIndex();
 		}
-		manager.mutation = manager.initialize();
+		manager.mutation = manager.initialize(boundaryPreview);
 		return manager;
 	}
 

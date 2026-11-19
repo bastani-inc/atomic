@@ -168,6 +168,12 @@ test("a healthy turn with boundary drafts never reads archived outcome bodies (#
 			text: `Compaction ${i}: ${"x".repeat(2500)}`,
 		});
 	}
+	const visibleNotices = (entries: ReturnType<SessionManager["getEntries"]>) =>
+		entries.flatMap((entry) =>
+			entry.type === "custom" && entry.customType === HOST_NOTICE_TYPE ? [entry.data] : [],
+		);
+	const before = visibleNotices(manager.getEntries());
+	let after: unknown[] = [];
 	const harness = await createHarness({
 		sessionManager: manager,
 		extensionFactories: [
@@ -175,7 +181,9 @@ test("a healthy turn with boundary drafts never reads archived outcome bodies (#
 				pi.on("turn_end", () => ({ entries: [{ type: "custom", customType: "marker", data: { marked: true } }] }));
 			},
 			(pi) => {
-				pi.on("turn_end", () => {});
+				pi.on("turn_end", ({ context }) => {
+					after = visibleNotices(context.contextEntries.map((e) => e.sourceEntry));
+				});
 			},
 		],
 	});
@@ -192,6 +200,7 @@ test("a healthy turn with boundary drafts never reads archived outcome bodies (#
 	await harness.session.prompt("healthy follow-up");
 	assert.ok(manager.getEntries().some((e) => e.type === "custom" && e.customType === "marker"));
 	assert.equal(bodies, 0);
+	assert.deepEqual(after, before, "drafts preserve the diagnostic previews already visible to handlers");
 });
 
 test("a provider error longer than the notice bound is saved cut at a whole character (#5649)", async () => {
