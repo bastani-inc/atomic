@@ -146,16 +146,16 @@ function hiddenNotes(rest: string): string[] {
 	return [...kept, ...more, ...[...ending].sort((a, b) => a - b).map((index) => lines[index]!)];
 }
 
-/** A match row of a search (`<url>:<line>: …`, line 1 or later): not a note at line 0, nor a context row. */
-const MATCH_ROW = /^(history:\/\/\S+?):([1-9]\d*): /;
+/** The first row delimiter ends the decoded URL, which can contain spaces. Context and line zero aren't hits. */
+const HISTORY_ROW = /^(history:\/\/.+?)(?::(\d+): |-\d+- )/;
 
 /** How many matches `text`, all a search printed, holds, and in how many sessions, runs or entries. */
 function matchCounts(text: string): { readonly matchCount: number; readonly fileCount: number } {
 	const files = new Set<string>();
 	let matchCount = 0;
 	for (const line of text.split("\n")) {
-		const row = MATCH_ROW.exec(line);
-		if (row === null) continue;
+		const row = HISTORY_ROW.exec(line);
+		if (!row?.[2] || Number(row[2]) === 0) continue;
 		matchCount++;
 		files.add(row[1]!);
 	}
@@ -327,7 +327,7 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 			firstPage = await call.firstPage(signal, first);
 			signal.throwIfAborted();
 		} catch (error) {
-			if (call.signal?.aborted) throw new Error("aborted");
+			call.signal?.throwIfAborted();
 			if (!timeout.signal.aborted) throw error;
 			const pending = call.urls.slice(first.length);
 			const text = [
@@ -404,7 +404,7 @@ export async function runHistorySearch(call: HistorySearchCall): Promise<AgentTo
 		clearTimeout(timer);
 		call.signal?.removeEventListener("abort", forward);
 	}
-	if (call.signal?.aborted && ended === "stopped") throw new Error("aborted");
+	if (ended === "stopped") call.signal?.throwIfAborted();
 	const cause =
 		ended === "finished" ? undefined : stop.signal.reason === "execution-timeout" ? "execution-timeout" : "user";
 	return historyResult(foregroundObservation(cause), outputText(output), call.timeoutSeconds, call.tempDir, shape);
@@ -432,7 +432,7 @@ export async function waitForHistorySearch(
 	tempDir: string | undefined,
 ): Promise<AgentToolResult<HistorySearchDetails>> {
 	if (!owner) throw new Error("Search task wait requires a supported task owner");
-	if (signal?.aborted) throw new Error("aborted");
+	signal?.throwIfAborted();
 	const task = lookupOwnedTask(owner, id);
 	const record = owner.supervisor.taskRecords(owner.owner, new Set([id as TaskId]))[0];
 	if (record !== undefined && record.kind !== "tool")
@@ -459,7 +459,7 @@ export async function waitForHistorySearch(
 					lease = wait;
 					if (signal?.aborted) abort();
 				}));
-		if (signal?.aborted) throw new Error("aborted");
+		signal?.throwIfAborted();
 		if (!observed.ok) throw new TaskToolError(observed.error, id);
 		// A wait that yields shows what followed the last one; the wait that sees it settle shows all of it.
 		let offset = observed.value.kind === "yielded" ? (shownThrough.get(id) ?? "0") : "0";

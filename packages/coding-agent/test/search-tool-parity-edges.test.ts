@@ -182,6 +182,35 @@ describe("find/search edge parity", () => {
 		expect(output).toContain("needle b");
 	});
 
+	it("an SDK file search does not open a task owner or read session history (#5479)", async () => {
+		const { createAgentSession } = await import("../src/core/sdk.js");
+		const { SessionManager } = await import("../src/core/session-manager.js");
+		const { SettingsManager } = await import("../src/core/settings-manager.js");
+		const { getOwnerTaskStore } = await import("../src/core/tasks/owner-store.js");
+		writeFileSync(join(testDir, "entry.txt"), "needle");
+		const manager = SessionManager.inMemory(testDir);
+		const { session } = await createAgentSession({
+			cwd: testDir,
+			agentDir: join(testDir, "agent"),
+			sessionManager: manager,
+			settingsManager: SettingsManager.inMemory(),
+			builtins: { subagents: false, workflows: false, intercom: false, "web-access": false, mcp: false },
+		});
+		try {
+			const transcript = vi.spyOn(manager, "getEntries");
+			const result = await session
+				.getToolDefinition("search")!
+				.execute("file", { paths: "entry.txt:1-1", pattern: "needle" }, undefined, undefined, {
+					cwd: testDir,
+				} as never);
+			expect(textOutput(result)).toBe("entry.txt:1: needle");
+			expect(transcript).not.toHaveBeenCalled();
+			expect(getOwnerTaskStore(session)).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	it("keeps verbose-regex comments in native-unavailable ranged search", () => {
 		const script = `import { mkdtempSync, writeFileSync, rmSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path"; const modPath = process.cwd().replace(/\\\\/g, "/").endsWith("packages/coding-agent") ? "./src/core/tools/search.ts" : "./packages/coding-agent/src/core/tools/search.ts"; const { createSearchToolDefinition } = await import(modPath); const dir = mkdtempSync(join(tmpdir(), "atomic-no-native-search-")); try { writeFileSync(join(dir, "f.txt"), "foobar\\n"); const result = await createSearchToolDefinition(dir).execute("no-native-ranged-x", { pattern: "(?x)foo # comment\\n bar", paths: "f.txt:1-1" }); const text = result.content.map((item) => item.text ?? "").join("\\n"); if (!text.includes("foobar")) throw new Error(text); } finally { rmSync(dir, { recursive: true, force: true }); }`;
 		const result = spawnSync("bun", ["-e", script], {

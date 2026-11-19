@@ -583,6 +583,7 @@ function historySkipPage(
 	skip: number,
 	cwd: string,
 	scopePath: string,
+	moreTargets: boolean,
 ): { text: string; details: SearchToolDetails } {
 	const limit = DEFAULT_LIMIT;
 	const details: SearchToolDetails = {};
@@ -591,7 +592,7 @@ function historySkipPage(
 		const raw = formatSearchGroups([group], 1);
 		if (raw) renderedPages.push(raw);
 	}
-	const hasMorePages = groups.length > limit;
+	const hasMorePages = groups.length > limit || moreTargets;
 	const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}`;
 	if (hasMorePages) markFileLimit(details, limit);
 	const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
@@ -613,15 +614,17 @@ function filterTargetLineRanges(
 	return filterSearchOutputByLineRange(text, target?.lineRanges, contextBefore, contextAfter);
 }
 
-function dedupeRenderedSearchOutput(content: string): string {
-	const out: string[] = [],
-		seen = new Set<string>();
-	let blockCounts = new Map<string, number>();
+function dedupeRenderedSearchOutput(
+	content: string,
+	seen = new Set<string>(),
+	blockCounts = new Map<string, number>(),
+): string {
+	const out: string[] = [];
 	let sawContinuationHint = false,
 		sawCapHint = false;
 	for (const line of content.split("\n")) {
 		if (line === "") {
-			blockCounts = new Map<string, number>();
+			blockCounts.clear();
 			out.push(line);
 			continue;
 		}
@@ -653,6 +656,19 @@ function dedupeRenderedSearchOutput(content: string): string {
 	}
 	return out.join("\n");
 }
+/** With skip, group each target separately; without skip, suppress only rows already shown by another block. */
+function historyTargetBlocks(skip: number, starts: number[]) {
+	const seen = new Set<string>();
+	return (offset: number) => {
+		if (skip > 0) {
+			starts.push(offset);
+			return undefined;
+		}
+		const counts = new Map<string, number>();
+		return (text: string) => dedupeRenderedSearchOutput(text, seen, counts);
+	};
+}
+
 function formatSearchCall(
 	args: { pattern: string; path?: string; paths?: string | string[]; glob?: string; limit?: number } | undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
@@ -679,6 +695,9 @@ export function createSearchToolDefinition(
 	options?: SearchToolOptions,
 ): ToolDefinition<typeof searchSchema, SearchToolDetails | undefined> {
 	const grepDefinition = createGrepToolDefinition(cwd, { ...options, nativeCache: false });
+	const taskOwner = () => (typeof options?.taskOwner === "function" ? options.taskOwner() : options?.taskOwner);
+	const sessionTempDir = () =>
+		typeof options?.sessionTempDir === "function" ? options.sessionTempDir() : options?.sessionTempDir;
 	return withBuiltinToolBlockRenderers<ToolDefinition<typeof searchSchema, SearchToolDetails | undefined>>({
 		...grepDefinition,
 		name: "search",
@@ -693,11 +712,8 @@ export function createSearchToolDefinition(
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
 			validateSearchInput(input);
-			const owner = typeof options?.taskOwner === "function" ? options.taskOwner() : options?.taskOwner;
-			const tempDir =
-				typeof options?.sessionTempDir === "function" ? options.sessionTempDir() : options?.sessionTempDir;
 			if (input.action === "wait")
-				return waitForHistorySearch(owner, input.id, input.budgetMs, signal, tempDir) as never;
+				return waitForHistorySearch(taskOwner(), input.id, input.budgetMs, signal, sessionTempDir()) as never;
 			const params = input as Static<typeof searchBaseSchema>;
 			if (params.pattern.trim() === "") throw new Error("Pattern must not be empty");
 			const ignoreCase = params.i === true || params.case === false;
@@ -708,6 +724,7 @@ export function createSearchToolDefinition(
 			const targets: SearchTarget[] = [];
 			for (const path of rawPaths) targets.push(await normalizeSearchTarget(path, executionCwd));
 			const scopePath = targets.map((target) => target.path).join(", ") || ".";
+			let moreHistoryTargets = false;
 			const searchPage = async (
 				signal: AbortSignal | undefined,
 				first?: HistorySearchStep[],
@@ -868,10 +885,10 @@ export function createSearchToolDefinition(
 										);
 						let text: string;
 						if (first) {
-							const scope = {},
-								url = rawPaths[index]!;
+							const scope = contributesToHistoryPage(skip, groups.length, limit) ? {} : undefined;
+							const url = rawPaths[index]!;
 							try {
-								text = await historySearchScope.run(scope, read);
+								text = scope ? await historySearchScope.run(scope, read) : await read();
 								successes++;
 							} catch (error) {
 								signal?.throwIfAborted();
@@ -881,7 +898,7 @@ export function createSearchToolDefinition(
 									.trim();
 								text = `${url}:0: [not searched: ${message}; continue with ${url}]`;
 							}
-							if (contributesToHistoryPage(skip, groups.length, limit)) first.push({ url, scope, answer: text });
+							if (scope) first.push({ url, scope, answer: text });
 						} else text = await read();
 						if (archive && target.archive)
 							text = text.split(archive.archivePath).join(target.archive.archivePath);
@@ -892,6 +909,8 @@ export function createSearchToolDefinition(
 						text = text || "No matches found";
 						text = filterTargetLineRanges(text, target, contextBefore, contextAfter);
 						const outputGroups = groupSearchOutput(text);
+						if (first && outputGroups.length && !contributesToHistoryPage(skip, groups.length, limit))
+							moreHistoryTargets = true;
 						if (skip > 0)
 							groups.push(
 								...outputGroups.map((group) => ({
@@ -1121,9 +1140,12 @@ export function createSearchToolDefinition(
 			};
 			if (!targets.every((target) => target.internal?.startsWith("history://"))) return searchPage(signal);
 			const skip = normalizeSkip(params.skip);
+			const starts: number[] = [];
+			const owner = taskOwner();
 			validateBashWait(params.wait, owner?.startToolTask !== undefined);
 			return runHistorySearch({
 				urls: rawPaths,
+				...(targets.length > 1 ? { startTarget: historyTargetBlocks(skip, starts) } : {}),
 				pattern: params.pattern,
 				ignoreCase,
 				contextBefore,
@@ -1132,7 +1154,7 @@ export function createSearchToolDefinition(
 				resources: resourceCtx,
 				timeoutSeconds: historySearchTimeoutSeconds(params.timeout),
 				owner,
-				tempDir,
+				tempDir: sessionTempDir(),
 				...(params.wait === undefined ? {} : { wait: params.wait }),
 				...(signal === undefined ? {} : { signal }),
 				firstPage: async (signal, first) => {
@@ -1148,10 +1170,14 @@ export function createSearchToolDefinition(
 					page: (text) =>
 						skip > 0
 							? historySkipPage(
-									groupSearchOutput(text).slice(skip, skip + DEFAULT_LIMIT + 1),
+									(starts.length
+										? starts.flatMap((start, i) => groupSearchOutput(text.slice(start, starts[i + 1])))
+										: groupSearchOutput(text)
+									).slice(skip, skip + DEFAULT_LIMIT + 1),
 									skip,
 									executionCwd,
 									scopePath,
+									moreHistoryTargets,
 								)
 							: undefined,
 				},

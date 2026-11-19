@@ -73,6 +73,8 @@ export interface HistorySearchRun {
 	readonly contextAfter: number;
 	readonly cwd: string;
 	readonly resources: InternalResourceContext | undefined;
+	/** Start a requested target's block in the output, returning its row filter if this page deduplicates blocks. */
+	readonly startTarget?: (offset: number) => ((text: string) => string) | undefined;
 	/** Step budget override, for tests; omitted, {@link HISTORY_SEARCH_STEP_MS}. */
 	readonly stepMs?: number;
 }
@@ -107,6 +109,9 @@ export function historySearchWork(run: HistorySearchRun, first?: readonly Histor
 		const pending: HistorySearchStep[] = first ? [...first] : run.urls.map((url) => ({ url, scope: {} }));
 		let printedAny = false;
 		let printedBytes = 0;
+		let printedChars = 0;
+		let activeScope: object | undefined;
+		let filter: ((text: string) => string) | undefined;
 		let full = false;
 		let failure: Error | undefined;
 		let succeeded = false;
@@ -114,6 +119,7 @@ export function historySearchWork(run: HistorySearchRun, first?: readonly Histor
 			if (text.length === 0) return;
 			const chunk = `${printedAny ? "\n" : ""}${text}`;
 			write(chunk);
+			printedChars += chunk.length;
 			printedBytes += Buffer.byteLength(chunk, "utf8");
 			printedAny = true;
 		};
@@ -136,6 +142,12 @@ export function historySearchWork(run: HistorySearchRun, first?: readonly Histor
 			if (signal.aborted) {
 				pending.unshift(step);
 				break;
+			}
+			if (scope !== activeScope) {
+				activeScope = scope;
+				// A repeated answer is a stuck cursor only within the same requested target.
+				answered.clear();
+				filter = run.startTarget?.(printedChars);
 			}
 			const stepMs = run.stepMs ?? HISTORY_SEARCH_STEP_MS;
 			const startedAt = performance.now();
@@ -200,7 +212,7 @@ export function historySearchWork(run: HistorySearchRun, first?: readonly Histor
 				return note === undefined ? [] : [note];
 			});
 			const shown = kept.join("\n").replace(/^\n+|\n+$/g, "");
-			if (shown !== "No matches found" && shown.trim()) print(shown);
+			if (shown !== "No matches found" && shown.trim()) print(filter ? filter(shown) : shown);
 			answered.add(digest);
 			if (answered.size > REMEMBERED_ANSWERS) answered.delete(answered.keys().next().value!);
 			// What this step stopped at is searched before anything queued after it, so results stay in order.

@@ -131,7 +131,7 @@ export async function executeSupervisedToolTask(
 	launch: ToolTaskLaunch,
 ): Promise<ToolTaskResult> {
 	validateBashWait(launch.wait, !!context.startToolTask);
-	if (launch.signal?.aborted) throw new Error("aborted");
+	launch.signal?.throwIfAborted();
 	if (!context.startToolTask) throw new Error("This tool's background task requires a supported task owner");
 	const timedOut = { value: false };
 	const started = await context.startToolTask(
@@ -186,8 +186,8 @@ export async function executeSupervisedToolTask(
 		if (!observed.ok) throw new Error(`${observed.error.code}: ${observed.error.message}`);
 		// What the work wrote before the observation ended, including all of it once it settled.
 		while (await drain()) {}
-		if (observed.value.kind === "settled" && observed.value.result.kind === "cancelled" && launch.signal?.aborted)
-			throw new Error("aborted");
+		if (observed.value.kind === "settled" && observed.value.result.kind === "cancelled")
+			launch.signal?.throwIfAborted();
 		return {
 			taskId,
 			timedOut: timedOut.value,

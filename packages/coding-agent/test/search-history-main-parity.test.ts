@@ -86,6 +86,84 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 		);
 	});
 
+	it("rejects with the caller's abort reason during a foreground provider call (#5479)", async () => {
+		const path = "history://sessions/s";
+		for (const phase of ["first", "continuation"]) {
+			for (const reason of [undefined, new Error("workspace changed")]) {
+				const controller = new AbortController();
+				const router: InternalResourceRouter = {
+					search: async (url) => {
+						if (phase === "continuation" && url === path)
+							return `${path}:0: [the row budget ran out; continue with ${path}?cursor=2]`;
+						controller.abort(reason);
+						controller.signal.throwIfAborted();
+						return "No matches found";
+					},
+				};
+				await assert.rejects(
+					createSearchToolDefinition(PROJECT).execute(
+						"abort",
+						{ paths: path, pattern: "needle" },
+						controller.signal,
+						undefined,
+						{ cwd: PROJECT, internalResourceRouter: router } as never,
+					),
+					(error) => error === controller.signal.reason,
+				);
+			}
+		}
+	});
+
+	it("pages overlapping workflow targets separately after a real budget stop (#5479)", async () => {
+		const path = "history://workflows/dupe";
+		const run: WorkflowRunSummary = {
+			runId: "dupe",
+			name: "dupe",
+			status: "completed",
+			startedAt: 1,
+			elapsedMs: 1,
+			activeStages: [],
+			awaitingInput: [],
+			awaitingInputCount: 0,
+		};
+		const rows = Array.from({ length: 85 }, (_, i) => `needle ${i} ${"a".repeat(490)}`);
+		const router = sessionsRouter(await storeWith([]), {
+			listRuns: async () => [run],
+			listProjectRuns: async () => [run],
+			getRun: async () => ({ ...run, inputs: {}, stages: [], summary: rows.join("\n") }),
+		});
+		for (const second of [path, `${path}:5-89`]) {
+			const result = await search(router, { paths: [path, second], pattern: "needle", skip: 1 });
+			assert.deepEqual(
+				textOf(result).split("\n"),
+				rows.slice(0, 20).map((text, i) => `${path}:${i + 5}: ${i === 0 ? "summary: " : ""}${text}`),
+			);
+			assert.deepEqual(result.details?.fileMatches, { [path]: 20 });
+		}
+	});
+
+	it("continued overlapping session ranges deduplicate only when no groups were skipped (#5479)", async () => {
+		const path = "history://sessions/s";
+		const texts = Array.from({ length: 6 }, (_, i) => `needle ${i}`);
+		const store = await storeWith([{ id: "s", day: 1, texts }]);
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { rows: 2 },
+		});
+		for (const skip of [0, 1]) {
+			const result = await search(router, { paths: [path, `${path}:1-3`], pattern: "needle", skip });
+			const hits = textOf(result)
+				.split("\n")
+				.filter((line) => /:\d+: needle/.test(line));
+			assert.deepEqual(
+				hits,
+				texts.slice(0, skip ? 3 : 6).map((text, i) => `${path}:${i + 1}: ${text}`),
+			);
+		}
+	});
+
 	it("counts overlapping target groups separately before applying skip (#5479)", async () => {
 		const path = "history://sessions/s";
 		const router = sessionsRouter(await storeWith([{ id: "s", day: 1, texts: ["needle   "] }]));
@@ -181,6 +259,36 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 		assert.deepEqual(result.details?.files, paths.slice(1, 21));
 	});
 
+	it("off-page listings share the public cursor and close superseded iterators (#5479)", async () => {
+		const ids = Array.from({ length: 21 }, (_, i) => `it${i}`);
+		const store = await storeWith(ids.map((id) => ({ id, day: 1, texts: ["needle"] })));
+		const list = store.list.bind(store);
+		let live = 0;
+		store.list = async function* (query) {
+			live++;
+			try {
+				yield* list(query);
+			} finally {
+				live--;
+			}
+		};
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { rows: 1 },
+		});
+		const listing = "history://sessions";
+		const result = await search(router, {
+			paths: [...ids.map((id) => `${listing}/${id}`), ...Array(470).fill(listing)],
+			pattern: "needle",
+			skip: 1,
+		});
+		assert.equal(result.details?.fileCount, 20);
+		assert.equal(live, 1);
+		assert.match(await router.read!(`${listing}?cursor=0.1`), /continue with history:\/\/sessions\?cursor=0\.2/);
+	});
+
 	it("a repeated target needs only the first matching lookahead (#5479)", async () => {
 		const path = "history://sessions/s";
 		const router = sessionsRouter(await storeWith([{ id: "s", day: 1, texts: ["needle"] }]));
@@ -258,6 +366,25 @@ describe("a history:// search gives what the single call it replaces gave (#5479
 		const rows = Array.from({ length: 21 }, (_, i) => `${path}:${i + 1}: needle ${i}`);
 		const result = await search({ search: async () => rows.join("\n") }, { paths: path, pattern: "needle" });
 		assert.equal(textOf(result), rows.slice(0, 20).join("\n"));
+	});
+
+	it("counts matches, not context, under each decoded session ID (#5479)", async () => {
+		const ids = ["space A", "space B"];
+		const store = await storeWith(ids.map((id) => ({ id, day: 1, texts: ["before\nneedle\nafter"] })));
+		const paths = ids.map((id) => `history://sessions/${encodeURIComponent(id)}`);
+		const result = await createSearchToolDefinition(PROJECT, { contextBefore: 1, contextAfter: 1 }).execute(
+			"spaces",
+			{ paths, pattern: "needle" },
+			undefined,
+			undefined,
+			{ cwd: PROJECT, internalResourceRouter: sessionsRouter(store) } as never,
+		);
+		assert.equal(result.details?.matchCount, 2);
+		assert.equal(result.details?.fileCount, 2);
+		assert.deepEqual(result.details?.fileMatches, {
+			"history://sessions/space A": 1,
+			"history://sessions/space B": 1,
+		});
 	});
 
 	it("carries the result details an SDK caller reads (#5479)", async () => {
