@@ -470,7 +470,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const { session, taskId } = bound.value;
 			const file = fileArchives.get(session);
 			if (file && archiveReader(session) && !session.subscribe)
-				return import("./task-file-history.js").then(({ taskFilePages }) =>
+				return import("./task-file-history.js").then(({ taskFilePages, taskFileUnavailable }) =>
 					savedTranscriptView(
 						session,
 						taskId,
@@ -482,7 +482,11 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 						cursor,
 						file,
 						signal,
-					),
+					).catch(async (error): Promise<TaskViewResult<TaskTranscriptView>> => {
+						// As a whole read of the file says: a history that is gone is a result, not a failed read.
+						if (signal?.aborted) throw error;
+						return { ok: false, error: { message: await taskFileUnavailable(file.path, error) } };
+					}),
 				);
 			if (session.readHistory && ((session.loadHistory && !session.subscribe) || cursor?.includes(":")))
 				return savedTranscriptView(session, taskId, session.readHistory.bind(session), cursor, undefined, signal);
