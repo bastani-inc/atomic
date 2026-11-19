@@ -9,8 +9,8 @@ import type {
 export function observeSqlReads(
 	database: SqliteDatabase,
 	observer: {
-		readonly before?: () => void;
-		readonly after?: (rows: readonly SqliteRow[]) => void | Promise<void>;
+		readonly before?: (sql: string, params: readonly SqliteValue[]) => void | Promise<void>;
+		readonly after?: (rows: readonly SqliteRow[], sql: string) => void | Promise<void>;
 	},
 ): () => void {
 	const all = database.all.bind(database);
@@ -20,15 +20,15 @@ export function observeSqlReads(
 		exec: source.exec.bind(source),
 		run: source.run.bind(source),
 		all: async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-			observer.before?.();
+			await observer.before?.(sql, params);
 			const rows = await source.all<Row>(sql, ...params);
-			await observer.after?.(rows);
+			await observer.after?.(rows, sql);
 			return rows;
 		},
 		get: async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-			observer.before?.();
+			await observer.before?.(sql, params);
 			const row = await source.get<Row>(sql, ...params);
-			await observer.after?.(row === undefined ? [] : [row]);
+			await observer.after?.(row === undefined ? [] : [row], sql);
 			return row;
 		},
 	});

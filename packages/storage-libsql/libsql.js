@@ -1174,6 +1174,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		throw new StorageAdapterLoadError("@libsql/client", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 	}
 	const local = /^file:/i.test(url);
+	const memory = /^file::memory:(?:\?|$)/i.test(url);
 	/** @type {[typeof import("@libsql/hrana-client"), typeof import("@libsql/core/config"), typeof import("@libsql/core/uri"), typeof import("@libsql/core/api")] | undefined} */
 	let protocol;
 	if (!local) {
@@ -1342,6 +1343,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		redact,
 		transientFailure,
 		payloadLimits: local ? LOCAL_PAYLOAD_LIMITS : SERVER_PAYLOAD_LIMITS,
+		concurrentReads: !memory,
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
 		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
@@ -1375,6 +1377,18 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			);
 		},
 		async beginTransaction(options) {
+			if (local && !memory && options?.readOnly === true) {
+				// A failed file statement can retire its client. Do not share that lifetime with the writer.
+				const reader = create();
+				try {
+					const tx = await reader.transaction("read");
+					return {
+						...statements(async () => tx, (run) => run()),
+						commit: () => tx.commit(), rollback: () => tx.rollback(),
+						close() {try { tx.close(); } finally { reader.close(); }},
+					};
+				} catch (error) {reader.close(); throw error;}
+			}
 			const begin = async () => (await connection()).transaction(options?.readOnly === true ? "read" : "write");
 			let transaction = await waitForLock(begin);
 			// A server's transaction sends its `BEGIN IMMEDIATE` with its first statement. A server that answers that busy
@@ -1430,6 +1444,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			if (local) await releaseClosedConnections();
 		},
 	});
+	if (memory) Object.defineProperty(database,"privateSqliteMemory",{value:true});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
 		// Readers and the one writer of a file share it through the write-ahead log, as in Atomic's own SQLite stores;

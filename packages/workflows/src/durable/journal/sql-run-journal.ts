@@ -8,7 +8,7 @@ import {
 	olderBuildLive,
 	openNodeSqliteDatabase,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
-	readSqlCatalogPages,
+	reduceSqlCatalog,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
@@ -606,38 +606,34 @@ export class SqlRunJournal implements RunJournal {
 		options?.signal?.throwIfAborted();
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
-			let pages = 0;
-			const pageRows = this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096;
-			const listed = await this.database.transaction(
-				async (executor) => {
-					const listed: RunSummary[] = [];
-					for await (const page of readSqlCatalogPages<HeaderRow>(executor, {
-						sql: `SELECT runs.${c.runId}, runs.${c.headerJson}, runs.${c.status}, meta.${c.schemaVersion} AS ${META_VERSION}
-						FROM ${this.tables.meta} AS meta LEFT JOIN (${this.runHeaderSource}) AS runs
-						ON ${filter?.cwd === undefined ? "1 = 1" : `runs.${c.cwd} = ?`}`,
-						params: filter?.cwd === undefined ? [] : [filter.cwd],
-						key: c.runId,
-						size: `coalesce(length(${c.headerJson}) + length(${c.runId}) + length(${c.status}), 0)`,
-						signal: options?.signal,
-						pageRows,
-					})) {
-						pages++;
-						for (const row of page) {
-							assertRowVersion(row);
-							if (row[c.headerJson] === null) continue;
-							listed.push({
-								...(JSON.parse(row[c.headerJson]) as RunHeader),
-								status: runStatusFromRecord(row[c.status]),
-							});
-						}
-					}
-					options?.signal?.throwIfAborted();
-					return listed;
-				},
-				{ readOnly: true },
+			const catalog = {
+				sql: `SELECT runs.${c.runId}, runs.${c.headerJson}, runs.${c.status}, meta.${META_VERSION}
+					FROM (SELECT ${this.metaVersion}) AS meta LEFT JOIN (${this.runHeaderSource}) AS runs
+					ON ${filter?.cwd === undefined ? "1 = 1" : `runs.${c.cwd} = ?`}`,
+				params: filter?.cwd === undefined ? [] : [filter.cwd],
+				key: c.runId,
+				size: `coalesce(length(${c.headerJson}) + length(${c.runId}) + length(${c.status}), 0)`,
+				signal: options?.signal,
+				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
+			};
+			const append = (listed: RunSummary[], page: HeaderRow[]) => {
+				for (const row of page) {
+					assertRowVersion(row);
+					if (row[c.headerJson] !== null)
+						listed.push({
+							...(JSON.parse(row[c.headerJson]) as RunHeader),
+							status: runStatusFromRecord(row[c.status]),
+						});
+				}
+			};
+			const { value: listed, paged } = await reduceSqlCatalog<HeaderRow, RunSummary[]>(
+				this.database,
+				catalog,
+				() => [],
+				append,
 			);
 			options?.signal?.throwIfAborted();
-			if (pages > 1 || listed.length >= pageRows) await this.assertVersion(this.database);
+			if (paged) await this.assertVersion(this.database);
 			options?.signal?.throwIfAborted();
 			return listed.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
@@ -668,23 +664,26 @@ export class SqlRunJournal implements RunJournal {
 	async runVersions(stop?: AbortSignal): Promise<ReadonlyMap<string, RunVersion>> {
 		this.assertOpen();
 		return this.operation(async () => {
-			const versions = new Map<string, RunVersion>();
-			const add = (row: RunVersionRow) =>
-				versions.set(row[c.runId], {
-					seq: journalCounter(row[c.runId], "seq", row[c.seq]),
-					at: Number(row[c.at]),
-				});
 			const current = `SELECT runs.${c.runId}, ${latestEventColumns(this.tables.events, "runs")} FROM ${this.tables.runs} AS runs`;
-			for await (const page of readSqlCatalogPages<RunVersionRow>(this.database, {
-				sql: this.legacy === undefined ? current : `${current} UNION ALL ${this.legacy.versionSource}`,
-				key: c.runId,
-				size: `length(${c.runId})`,
-				signal: stop,
-				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
-			})) {
-				for (const row of page) add(row);
-			}
-			return versions;
+			const { value } = await reduceSqlCatalog<RunVersionRow, Map<string, RunVersion>>(
+				this.database,
+				{
+					sql: this.legacy === undefined ? current : `${current} UNION ALL ${this.legacy.versionSource}`,
+					key: c.runId,
+					size: `length(${c.runId})`,
+					signal: stop,
+					pageRows: this.database.descriptor.adapter === "node-sqlite" ? 128 : 4_096,
+				},
+				() => new Map(),
+				(versions, page) => {
+					for (const row of page)
+						versions.set(row[c.runId], {
+							seq: journalCounter(row[c.runId], "seq", row[c.seq]),
+							at: Number(row[c.at]),
+						});
+				},
+			);
+			return value;
 		});
 	}
 

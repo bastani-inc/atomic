@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { DatabaseSync, StatementSync } from "node:sqlite";
+import { describe, expect, it, vi } from "vitest";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { JournalCatalog } from "../../packages/coding-agent/src/core/storage/journal-catalog.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
@@ -8,6 +9,7 @@ import {
 	JOURNAL_SCHEMA_VERSION,
 	JournalSchemaVersionError,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 describe("journal catalog paging", () => {
@@ -26,22 +28,75 @@ describe("journal catalog paging", () => {
 					status: "running",
 				});
 			}
-			let upgraded: Promise<unknown> = Promise.resolve();
-			const timer = setImmediate(() => {
-				upgraded = database.run(
-					`UPDATE ${runJournalTables().meta} SET schema_version = ?`,
-					JOURNAL_SCHEMA_VERSION + 1,
-				);
+			const writer = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+			const order: string[] = [];
+			const restore = observeSqlReads(database, {
+				after: async (rows) => {
+					if (rows.length === 0) order.push("empty page");
+					if (order.length === 0 && rows.some((row) => typeof row.header_json === "string")) {
+						await writer.run(
+							`UPDATE ${runJournalTables().meta} SET schema_version = ?`,
+							JOURNAL_SCHEMA_VERSION + 1,
+						);
+						order.push("upgrade committed");
+					}
+				},
 			});
 			try {
 				await expect(journal.listRuns()).rejects.toBeInstanceOf(JournalSchemaVersionError);
+				expect(order).toEqual(["upgrade committed", "empty page"]);
 			} finally {
-				clearImmediate(timer);
-				await upgraded;
+				restore();
+				await writer.close();
 			}
 		} finally {
 			await journal.close();
 			await database.close();
+			removeTempDirectory(directory);
+		}
+	});
+
+	it("returns one ownership map while another connection commits on either side of the cursor (#5537)", async () => {
+		const directory = makeTempDirectory("atomic-owners-snapshot-");
+		const catalog = await JournalCatalog.open(directory);
+		try {
+			const { shard } = await catalog.place({ runId: "m-0", status: "completed" });
+			const writer = new DatabaseSync(catalog.path);
+			try {
+				writer
+					.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<500)
+				INSERT INTO catalog_runs(run_id,shard,root_run_id,updated_at) SELECT 'm-'||i,?,'m-'||i,1 FROM n`)
+					.run(shard.id);
+				const all = StatementSync.prototype.all;
+				let wrote = false;
+				const observed = vi.spyOn(StatementSync.prototype, "all").mockImplementation(function (
+					this: StatementSync,
+					...args: Parameters<typeof all>
+				) {
+					const rows = all.apply(this, args);
+					if (!wrote && rows.some((row) => typeof row.run_id === "string" && "shard" in row)) {
+						wrote = true;
+						const insert = writer.prepare(
+							"INSERT INTO catalog_runs(run_id,shard,root_run_id,updated_at) VALUES (?,?,?,1)",
+						);
+						for (const id of ["a-first", "z-second"]) insert.run(id, shard.id, id);
+					}
+					return rows;
+				});
+				try {
+					const owners = await catalog.owners();
+					expect(wrote).toBe(true);
+					expect(owners.size).toBe(501);
+					expect(owners.has("a-first")).toBe(false);
+					expect(owners.has("z-second")).toBe(false);
+				} finally {
+					observed.mockRestore();
+				}
+			} finally {
+				writer.close();
+			}
+		} finally {
+			await catalog.close();
 			removeTempDirectory(directory);
 		}
 	});

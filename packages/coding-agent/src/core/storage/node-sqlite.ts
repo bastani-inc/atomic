@@ -18,6 +18,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type * as native from "@bastani/atomic-natives";
+import { withCleanup } from "./cleanup.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -1167,8 +1168,11 @@ function normalizeRow(row: Record<string, SqliteValue>): SqliteRow {
 }
 
 class NodeSqliteDatabase implements SqliteDatabase {
+	declare readonly readOnly?: boolean;
+	readonly privateSqliteMemory: boolean;
 	readonly descriptor: StorageDescriptor;
 	private readonly connection: DatabaseSync;
+	private readonly readers = new Set<Promise<unknown>>();
 	private tail: Promise<void> = Promise.resolve();
 	/** Operations queued on this connection so far; a batch's `position` is the one that commits it. */
 	private enqueued = 0;
@@ -1207,6 +1211,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.transactionIdentity = transactionIdentity;
 		this.ownsConnection = ownsConnection;
 		this.connection = connection;
+		this.privateSqliteMemory = !connection.location();
 		this.descriptor = descriptor;
 		this.openLock = openLock;
 		this.executor = this.createExecutor(() => true);
@@ -1555,7 +1560,25 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,
 	): Promise<T> {
+		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
 		if (options?.readOnly === true) {
+			const file = this.connection.location();
+			if (file && !this.readOnly) {
+				// Let previously queued writes finish, then pin a WAL view without occupying their connection.
+				const result = this.tail.then(async () => {
+					const reader = await openNodeSqliteDatabase(file, { readOnly: true });
+					return withCleanup(
+						() => reader.transaction(callback, options),
+						() => reader.close(),
+					);
+				});
+				this.readers.add(result);
+				void result.then(
+					() => this.readers.delete(result),
+					() => this.readers.delete(result),
+				);
+				return result;
+			}
 			return this.enqueueStatement(async () => {
 				await this.executor.exec("BEGIN");
 				let active = true;
@@ -1575,7 +1598,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				}
 			});
 		}
-		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
 		return new Promise<T>((resolve, reject) => {
 			const queued: QueuedTransaction = {
 				callback,
@@ -1747,6 +1769,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		if (!this.closePromise) {
 			this.closing = true;
 			this.closePromise = this.tail.then(async () => {
+				await Promise.allSettled(this.readers);
 				try {
 					await this.holderRecord?.close();
 					this.driver(() => {

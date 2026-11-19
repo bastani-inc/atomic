@@ -94,6 +94,8 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * facade then starts them without waiting for queued calls. Otherwise every transaction waits its turn.
 	 */
 	readonly concurrentTransactions?: boolean;
+	/** Read transactions get an independent connection or stream, even when writes must stay serialized. */
+	readonly concurrentReads?: boolean;
 	/**
 	 * Optional. A transaction's connection takes a statement before the one before it is answered, and runs them in the
 	 * order it took them (a pipelined connection): the facade then sends each call of a transaction as it is made, so a
@@ -785,8 +787,13 @@ class DriverDatabase implements SqliteDatabase {
 			...(options?.readOnly === true ? { readOnly: true } : {}),
 		};
 		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
-		if (concurrency.kind === "serial" || this.driver.concurrentTransactions !== true) return this.queue.push(run);
-		const result = run();
+		const independent =
+			begin.readOnly === true
+				? this.driver.concurrentReads === true
+				: concurrency.kind === "fenced" && this.driver.concurrentTransactions === true;
+		if (!independent) return this.queue.push(run);
+		// Admit the read after previously queued calls, but do not put its lifetime on the write queue.
+		const result = begin.readOnly ? this.queue.push(async () => {}).then(run) : run();
 		const settled = result.then(
 			() => {},
 			() => {},
@@ -818,7 +825,8 @@ class DriverDatabase implements SqliteDatabase {
 		// callback met before it. A committed transaction never runs again either.
 		const commit = () => {
 			attempt.transient = undefined;
-			return this.call(() => connection.commit(), attempt, true);
+			// A lost acknowledgment of a read-only commit cannot have applied a write.
+			return this.call(() => connection.commit(), attempt, begin.readOnly !== true);
 		};
 		try {
 			let committing: Promise<void> | undefined;

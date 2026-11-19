@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import {
@@ -7,6 +6,7 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 for (const backend of storageBackends) {
@@ -41,28 +41,30 @@ for (const backend of storageBackends) {
 					let directoryReads = 0;
 					let yielded = false;
 					let turn: NodeJS.Immediate | undefined;
-					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						const directory = sql.includes("catalog_chars") && sql.includes(table);
-						if (directory) {
-							if (directoryReads > 0) expect(yielded, "directory pages yield before another read").toBe(true);
-							directoryReads++;
-							const postgres = dialectOf(database).name === "postgres";
-							const plan = await all(`${postgres ? "EXPLAIN" : "EXPLAIN QUERY PLAN"} ${sql}`, ...params);
-							fullScans += plan.filter((row) => {
-								const text = String(postgres ? row["QUERY PLAN"] : row.detail);
-								return (
-									text.includes(table) &&
-									(postgres ? text.includes("Seq Scan") : text.includes("SCAN ") && !text.includes("USING"))
-								);
-							}).length;
-						}
-						const rows = await all<Row>(sql, ...params);
-						if (directory && directoryReads === 1)
-							turn = setImmediate(() => {
-								yielded = true;
-							});
-						return rows;
-					};
+					const restore = observeSqlReads(database, {
+						before: async (sql, params) => {
+							const directory = sql.includes("catalog_chars") && sql.includes(table);
+							if (directory) {
+								if (directoryReads > 0) expect(yielded, "directory pages yield before another read").toBe(true);
+								directoryReads++;
+								const postgres = dialectOf(database).name === "postgres";
+								const plan = await all(`${postgres ? "EXPLAIN" : "EXPLAIN QUERY PLAN"} ${sql}`, ...params);
+								fullScans += plan.filter((row) => {
+									const text = String(postgres ? row["QUERY PLAN"] : row.detail);
+									return (
+										text.includes(table) &&
+										(postgres ? text.includes("Seq Scan") : text.includes("SCAN ") && !text.includes("USING"))
+									);
+								}).length;
+							}
+						},
+						after: (_rows, sql) => {
+							if (sql.includes("catalog_chars") && sql.includes(table) && directoryReads === 1)
+								turn = setImmediate(() => {
+									yielded = true;
+								});
+						},
+					});
 					try {
 						const listed = [];
 						for await (const session of store.list({ cwd: "/missing" })) listed.push(session);
@@ -71,7 +73,7 @@ for (const backend of storageBackends) {
 						expect(fullScans).toBeLessThanOrEqual(1);
 					} finally {
 						if (turn !== undefined) clearImmediate(turn);
-						database.all = all;
+						restore();
 					}
 				} finally {
 					await store.close();

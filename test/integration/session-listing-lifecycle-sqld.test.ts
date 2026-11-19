@@ -10,6 +10,7 @@ import {
 	SESSION_FORMAT_VERSION,
 	type SessionListQuery,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 const variants: readonly { name: string; query: SessionListQuery; cached?: boolean }[] = [
@@ -86,16 +87,15 @@ for (const backend of storageBackends) {
 					for (let index = 0; index < 6; index++)
 						await store.openMarkers.put("selected", { token: `token-${index}`, pid: index + 1, host });
 					await store.openMarkers.put("other", { token: "outside", pid: 99, host: "outside" });
-					const all = database.all.bind(database);
-					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						const rows = await all<Row>(sql, ...params);
-						const bytes = rows.reduce(
-							(total, row) => total + (typeof row.host === "string" ? Buffer.byteLength(row.host) : 0),
-							0,
-						);
-						expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024 + Buffer.byteLength(host));
-						return rows;
-					};
+					const restore = observeSqlReads(database, {
+						after: (rows) => {
+							const bytes = rows.reduce(
+								(total, row) => total + (typeof row.host === "string" ? Buffer.byteLength(row.host) : 0),
+								0,
+							);
+							expect(bytes).toBeLessThanOrEqual(4 * 1024 * 1024 + Buffer.byteLength(host));
+						},
+					});
 					try {
 						const markers = await store.openMarkers.list("selected");
 						expect(markers.map(({ token, pid }) => [token, pid])).toEqual(
@@ -103,7 +103,7 @@ for (const backend of storageBackends) {
 						);
 						expect(markers.every((marker) => marker.host === host && Number.isFinite(marker.ageMs))).toBe(true);
 					} finally {
-						database.all = all;
+						restore();
 					}
 				} finally {
 					await store.close();

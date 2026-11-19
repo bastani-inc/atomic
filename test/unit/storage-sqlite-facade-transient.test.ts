@@ -203,6 +203,29 @@ test("a driver names the hop on the way to the server where a call failed, in th
 	}
 });
 
+test("a lost read-only commit response replays the safe snapshot, not an individual page (#5537)", async () => {
+	const { driver, calls, fail } = plannedDriver();
+	fail("commit", transient("connection-lost", "unknown"));
+	const db = createSqliteDatabase(driver);
+	try {
+		const read = db.transaction(async (tx) => [await tx.get("first page"), await tx.get("last page")], {
+			readOnly: true,
+			retryTransientFailures: true,
+		});
+		const result = assert.doesNotReject(
+			read.then((rows) => assert.deepEqual(rows, [{ sql: "first page" }, { sql: "last page" }])),
+		);
+		const joined = Promise.all([result, vi.advanceTimersByTimeAsync(4000)]);
+		await joined;
+		assert.deepEqual(
+			calls.filter((call) => call.startsWith("tx ") && call !== "tx close"),
+			["tx first page", "tx last page", "tx first page", "tx last page"],
+		);
+	} finally {
+		await db.close();
+	}
+});
+
 test("a statement whose outcome is unknown fails typed at once and never runs again (#4383)", async () => {
 	const { driver, calls, fail } = plannedDriver();
 	fail("execute", transient("connection-lost", "unknown"));

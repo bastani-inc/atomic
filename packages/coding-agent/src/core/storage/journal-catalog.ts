@@ -21,7 +21,37 @@ export async function* readSqlCatalogPages<Row extends SqliteRow>(
 	options: SqlCatalogReadOptions,
 ): AsyncIterable<Row[]> {
 	const catalog = await import("./sql-catalog.js");
-	yield* catalog.readSqlCatalogPages<Row>(executor, options);
+	if (!("transaction" in executor) || options.inSnapshot) {
+		yield* catalog.readSqlCatalogPages<Row>(executor, options);
+		return;
+	}
+	// Never keep a database transaction open across its caller's yield. Only publish a completed read attempt.
+	const { value: pages } = await catalog.reduceSqlCatalog<Row, Row[][]>(
+		executor,
+		options,
+		() => [],
+		(pages, page) => {
+			if (page.length) pages.push(page);
+		},
+	);
+	for (const page of pages) {
+		options.assertOpen?.();
+		options.signal?.throwIfAborted();
+		yield page;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	options.assertOpen?.();
+	options.signal?.throwIfAborted();
+}
+
+/** Processes catalog pages inside the storage-owned snapshot, without eagerly loading the reader. */
+export async function reduceSqlCatalog<Row extends SqliteRow, Result>(
+	executor: SqliteExecutor,
+	options: SqlCatalogReadOptions,
+	initial: () => Result,
+	append: (value: Result, page: Row[]) => void,
+): Promise<{ value: Result; paged: boolean }> {
+	return (await import("./sql-catalog.js")).reduceSqlCatalog(executor, options, initial, append);
 }
 
 /** Collects a catalog without loading its reader during storage setup. */

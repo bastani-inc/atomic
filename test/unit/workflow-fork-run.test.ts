@@ -576,9 +576,10 @@ test.each([
 		const journal = await SqlRunJournal.open(database);
 		const backend = await JournalDurableBackend.open(journal, { runs: [], ownsJournal: false });
 		try {
-			for (const suffix of ["1", "2"]) {
+			// Two ambiguous matches and enough unrelated runs to require a second catalog page.
+			for (let index = 1; index <= 129; index++) {
 				await journal.createRun({
-					runId: `aaaaaaaa-0000-4000-8000-00000000000${suffix}`,
+					runId: index <= 2 ? `aaaaaaaa-0000-4000-8000-00000000000${index}` : `other-${index}`,
 					name: "run",
 					cwd: "/project",
 					createdAt: 1,
@@ -601,7 +602,7 @@ test.each([
 			} finally {
 				clearImmediate(timer);
 			}
-			assert.equal((await journal.listRuns()).length, 2);
+			assert.equal((await journal.listRuns()).length, 129);
 		} finally {
 			await backend.close();
 			await journal.close();

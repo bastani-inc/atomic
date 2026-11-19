@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
-import type { SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { StoreClosedError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
@@ -10,6 +9,7 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { observeSqlReads } from "../helpers/observe-sql-reads.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 
 const MESSAGES = 700_000;
@@ -66,26 +66,27 @@ for (const backend of storageBackends) {
 					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
 					const controller = new AbortController();
 					const reason = new Error("search-text listing cancelled");
-					const all = database.all.bind(database);
 					let closed = false;
 					let stopped = false;
 					let readsAfterStop = 0;
-					database.all = async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-						if (stopped) readsAfterStop++;
-						const rows = await all<Row>(sql, ...params);
-						const metadata = rows.some((row) => "seq" in row && "size" in row);
-						if (metadata) expect(rows.length).toBeLessThanOrEqual(SESSION_READ_FETCH.max);
-						const text = rows.some((row) => typeof row.text_json === "string");
-						if (!stopped && stop !== undefined && (stop.phase === "metadata" ? metadata : text)) {
-							stopped = true;
-							if (stop.action === "abort") controller.abort(reason);
-							else {
-								closed = true;
-								await store.close();
+					const restore = observeSqlReads(database, {
+						before: () => {
+							if (stopped) readsAfterStop++;
+						},
+						after: async (rows) => {
+							const metadata = rows.some((row) => row.seq != null && "size" in row);
+							if (metadata) expect(rows.length).toBeLessThanOrEqual(SESSION_READ_FETCH.max);
+							const text = rows.some((row) => typeof row.text_json === "string");
+							if (!stopped && stop !== undefined && (stop.phase === "metadata" ? metadata : text)) {
+								stopped = true;
+								if (stop.action === "abort") controller.abort(reason);
+								else {
+									closed = true;
+									await store.close();
+								}
 							}
-						}
-						return rows;
-					};
+						},
+					});
 					try {
 						const listing = (async () => {
 							const rows = [];
@@ -106,7 +107,7 @@ for (const backend of storageBackends) {
 							expect(readsAfterStop).toBe(0);
 						}
 					} finally {
-						database.all = all;
+						restore();
 						if (!closed) await store.close();
 					}
 				};

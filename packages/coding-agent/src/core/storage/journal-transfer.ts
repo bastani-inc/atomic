@@ -275,6 +275,8 @@ async function openExportSource(
 		}
 		const runs = await readSqlCatalog<JournalRunTableRow>(database, {
 			sql: `SELECT * FROM ${t.runs}`,
+			inSnapshot: open === undefined,
+			pageRows: 4096,
 			key: "run_id",
 			size: "length(run_id) + length(name) + length(cwd) + length(status) + length(header_json)",
 		});
@@ -518,6 +520,7 @@ export async function exportWorkflowRuns(
 						t.eventChunks,
 						await readSqlCatalog<JournalEventTableRow>(executor, {
 							sql: `SELECT * FROM ${t.events} WHERE run_id = ?`,
+							inSnapshot: true,
 							params: [listedRun.run_id],
 							key: "seq",
 							size: "length(run_id) + length(type) + length(payload) + coalesce(length(key), 0)",
@@ -527,14 +530,17 @@ export async function exportWorkflowRuns(
 				// run that finishes meanwhile is exported with the status its events reach.
 				const { run, events } = source.snapshot
 					? { run: listedRun, events: await readEvents(source.database) }
-					: await source.database.transaction(async (tx) => ({
-							run:
-								(await tx.get<JournalRunTableRow>(
-									`SELECT * FROM ${t.runs} WHERE run_id = ?`,
-									listedRun.run_id,
-								)) ?? listedRun,
-							events: await readEvents(tx),
-						}));
+					: await source.database.transaction(
+							async (tx) => ({
+								run:
+									(await tx.get<JournalRunTableRow>(
+										`SELECT * FROM ${t.runs} WHERE run_id = ?`,
+										listedRun.run_id,
+									)) ?? listedRun,
+								events: await readEvents(tx),
+							}),
+							{ readOnly: true, retryTransientFailures: true },
+						);
 				const outcome = await writeLinesAtomically(
 					transferFile(directory, run.run_id),
 					exportLines(run, events, source.path),

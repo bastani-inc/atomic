@@ -6,7 +6,7 @@ import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaV
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
-import { readSqlCatalog, readSqlCatalogPages } from "../sql-catalog.js";
+import { readSqlCatalog, readSqlCatalogPages, reduceSqlCatalog } from "../sql-catalog.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
 	SessionConflictError,
@@ -178,25 +178,6 @@ function nextFetch(limit: number, rows: readonly FetchRow[]): { readonly more: b
 				? limit
 				: Math.max(SESSION_READ_FETCH.min, kept * 2);
 	return { more, limit: Math.min(SESSION_READ_FETCH.max, next) };
-}
-
-/** `rows` split into runs, in order, of at most {@link SESSION_READ_PAGE_CHARS}; a longer row is a run of its own. */
-function pagesOf<Row extends { readonly size: number | bigint | null }>(rows: readonly Row[]): Row[][] {
-	const pages: Row[][] = [];
-	let page: Row[] = [];
-	let chars = 0;
-	for (const row of rows) {
-		const size = Number(row.size ?? 0);
-		if (page.length > 0 && chars + size > SESSION_READ_PAGE_CHARS) {
-			pages.push(page);
-			page = [];
-			chars = 0;
-		}
-		page.push(row);
-		chars += size;
-	}
-	if (page.length > 0) pages.push(page);
-	return pages;
 }
 
 /** An entry's JSON as its entries row stores it, and the UTF-8 chunks of a long one. */
@@ -1095,16 +1076,24 @@ export class SqlSessionStore implements SessionStore {
 		}
 		if (!complete) {
 			await yieldTurn();
-			for await (const page of readSqlCatalogPages<SqliteRow & { id: string; cwd: string }>(this.database, {
-				sql: `SELECT id, cwd FROM ${this.tables.sessions}`,
-				key: "id",
-				size: "length(id) + length(cwd)",
-				signal: query.signal,
-				assertOpen: () => this.assertOpen(),
-				pageRows: this.database.descriptor.adapter === "node-sqlite" ? 1024 : 4_096,
-			})) {
-				for (const row of page) directories.add(row.cwd);
-			}
+			const { value: found } = await reduceSqlCatalog<SqliteRow & { id: string; cwd: string }, Set<string>>(
+				this.database,
+				{
+					sql: `SELECT id, cwd FROM ${this.tables.sessions}`,
+					key: "id",
+					size: "length(id) + length(cwd)",
+					skipProbe: true,
+					signal: query.signal,
+					assertOpen: () => this.assertOpen(),
+					pageRows: this.database.descriptor.adapter === "node-sqlite" ? 1024 : 4_096,
+				},
+				() => new Set(),
+				(found, page) => {
+					for (const row of page) found.add(row.cwd);
+				},
+			);
+			this.assertListing(query);
+			return [...found];
 		}
 		this.assertListing(query);
 		return [...directories];
@@ -1305,27 +1294,32 @@ export class SqlSessionStore implements SessionStore {
 	private async readSearchTexts(sessionId: string, query: SessionListQuery): Promise<string> {
 		this.assertListing(query);
 		const texts: string[] = [];
-		for await (const sizes of readSqlCatalogPages<SizedRow & { seq: number }>(this.database, {
-			sql: `SELECT seq, length(text_json) AS size FROM ${this.tables.searchTexts} WHERE session_id = ?`,
+		// One manifest row per sequence block, not one per message. Text that doesn't fit is paged within its block.
+		const ranges = await readSqlCatalog<SizedRow & { seq: number; last_seq: number }>(this.database, {
+			sql: `SELECT min(seq) AS seq, max(seq) AS last_seq, sum(length(text_json)) AS size
+				FROM ${this.tables.searchTexts} WHERE session_id = ? GROUP BY seq / ${SESSION_READ_FETCH.max}`,
 			params: [sessionId],
 			key: "seq",
 			size: "1",
 			pageRows: SESSION_READ_FETCH.max,
 			signal: query.signal,
 			assertOpen: () => this.assertOpen(),
-		})) {
-			for (const page of pagesOf(sizes)) {
-				this.assertListing(query);
-				const rows = await this.database.all<SqliteRow & { text_json: string }>(
-					`SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
-					sessionId,
-					page[0]!.seq,
-					page.at(-1)!.seq,
-				);
-				this.assertListing(query);
-				for (const row of rows) texts.push(row.text_json);
-				await yieldTurn();
-			}
+		});
+		for (const { seq: first, last_seq: last, size } of ranges) {
+			this.assertListing(query);
+			const rows = await readSqlCatalog<SqliteRow & { text_json: string }>(this.database, {
+				sql: `SELECT seq, text_json FROM ${this.tables.searchTexts} WHERE session_id = ? AND seq BETWEEN ? AND ?`,
+				params: [sessionId, first, last],
+				key: "seq",
+				size: "length(text_json)",
+				pageRows: SESSION_READ_FETCH.max + 1,
+				skipProbe: Number(size) > SESSION_READ_PAGE_CHARS,
+				signal: query.signal,
+				assertOpen: () => this.assertOpen(),
+			});
+			this.assertListing(query);
+			for (const row of rows) texts.push(row.text_json);
+			await yieldTurn();
 		}
 		this.assertListing(query);
 		return `[${texts.join(",")}]`;
