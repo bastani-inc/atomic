@@ -94,6 +94,7 @@ export type InteractiveEngineMessage =
 			needsInput: number;
 			shells?: number;
 			subagents?: number;
+			hiddenWorkflow?: boolean;
 	  }
 	/**
 	 * A deprecation warning the engine raised, for the host to show as it shows its own: once per message, and with
@@ -639,6 +640,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 					(typeof value.subagents === "number" &&
 						Number.isSafeInteger(value.subagents) &&
 						value.subagents >= 0)) &&
+				(value.hiddenWorkflow === undefined || typeof value.hiddenWorkflow === "boolean") &&
 				(value.agents === undefined ||
 					(typeof value.agents === "number" &&
 						Number.isSafeInteger(value.agents) &&
@@ -651,6 +653,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						needsInput: value.needsInput,
 						...(value.shells === undefined ? {} : { shells: value.shells }),
 						...(value.subagents === undefined ? {} : { subagents: value.subagents }),
+						...(value.hiddenWorkflow === undefined ? {} : { hiddenWorkflow: value.hiddenWorkflow }),
 					}
 				: undefined;
 		case "engine_workflow_activity": {
