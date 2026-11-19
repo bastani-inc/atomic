@@ -9,6 +9,7 @@ import type { CodemodeToolDetails } from "../src/extensions/codemode/tool.js";
 import { keyHint, keyText } from "../src/modes/interactive/components/keybinding-hints.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
 import { CodeHighlighter, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { TerminalTextSanitizer } from "../src/utils/terminal-text.ts";
 
 beforeAll(() => initTheme("dark"));
 afterEach(() => vi.useRealTimers());
@@ -219,6 +220,181 @@ test("a folded codemode call highlights only the ten lines it displays (#5525)",
 	} finally {
 		highlight.mockRestore();
 	}
+});
+
+test("a custom call title still reveals the source in the default expanded result (#5525)", () => {
+	const component = new ToolExecutionComponent(
+		"codemode",
+		"call",
+		{ code: "return 1 + 1;" },
+		{},
+		{
+			...codemodeRenderers,
+			renderCall: () => ({ invalidate() {}, render: () => ["My script call"] }),
+		},
+		tui,
+		"/",
+	);
+	try {
+		component.updateResult({ content: [{ type: "text", text: "2" }], isError: false });
+		component.setExpanded(true);
+		assert.deepEqual(
+			component.render(98).map((row) => stripVTControlCharacters(row).trimEnd()),
+			["", " ● My script call", "   ⎿  return 1 + 1;", "   ⎿  2"],
+		);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("a folded codemode title prepares only its displayed rows and columns (#5525)", () => {
+	const hidden = "invisible\t".repeat(10_000);
+	const wide = `return [${Array.from({ length: 5_000 }, (_, i) => i).join(",")}];`;
+	const sanitize = vi.spyOn(TerminalTextSanitizer.prototype, "write");
+	const highlight = vi.spyOn(CodeHighlighter.prototype, "highlight");
+	try {
+		const single = codemodeBlock({ code: wide }, { width: 98 });
+		const multi = codemodeBlock({ code: `${wide}\n${"const value = 1;\n".repeat(9)}//${hidden}` }, { width: 98 });
+		assert.match(single.plain[1], /return \[0,1,2,.*…\) · 1s$/);
+		assert.match(multi.plain.join("\n"), /… \+1 line/);
+		assert.ok(
+			sanitize.mock.calls.every(([text]) => text.length < 1_000),
+			"normalized offscreen source",
+		);
+		assert.ok(
+			highlight.mock.calls.every(([text]) => text.length < 1_000),
+			"highlighted offscreen source",
+		);
+	} finally {
+		sanitize.mockRestore();
+		highlight.mockRestore();
+	}
+});
+
+test("elapsed time keeps its place on a narrow folded codemode title (#5525)", () => {
+	const narrowBlock = codemodeBlock({ code: "a\nb" }, { width: 15 }).plain.join("\n");
+	assert.doesNotMatch(narrowBlock, / · 1s/);
+	for (const code of ["return 2;", null, 42]) {
+		assert.match(codemodeBlock({ code }, { width: 17 }).plain[1], /● codemode… · 1s$/);
+		assert.doesNotMatch(codemodeBlock({ code }, { width: 15 }).plain[1], / · 1s/);
+	}
+});
+
+test("an elapsed tick leaves an expanded inline script under the same mouse cells (#5525)", () => {
+	vi.useFakeTimers();
+	vi.setSystemTime(0);
+	const code = 'await tools.bash({command:"sleep 3"})';
+	const component = new ToolExecutionComponent("codemode", "call", { code }, {}, codemodeRenderers, tui, "/");
+	try {
+		component.markExecutionStarted();
+		component.setExpanded(true);
+		const first = stripVTControlCharacters(component.render(50)[1]);
+		assert.ok(first.includes(code));
+		vi.advanceTimersByTime(1_001);
+		const rows = component.render(50).map(stripVTControlCharacters);
+		assert.equal(rows[1].slice(12, 17), "await");
+		assert.match(rows.join("\n"), / · 1s/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("unchanged codemode layouts survive redraws and toggles, not argument or width changes (#5525)", () => {
+	const component = new ToolExecutionComponent(
+		"codemode",
+		"call",
+		{ code: LONG_SCRIPT },
+		{},
+		codemodeRenderers,
+		tui,
+		"/",
+	);
+	const highlight = vi.spyOn(CodeHighlighter.prototype, "highlight");
+	try {
+		component.updateResult({ content: [], isError: false });
+		const folded = component.render(98);
+		component.setExpanded(true);
+		const open = component.render(98);
+		highlight.mockClear();
+		assert.deepEqual(component.render(98), open);
+		component.setExpanded(false);
+		assert.deepEqual(component.render(98), folded);
+		component.setExpanded(true);
+		assert.deepEqual(component.render(98), open);
+		assert.equal(highlight.mock.calls.length, 0, "repainted an unchanged script");
+		assert.notDeepEqual(component.render(12), open);
+		component.updateArgs({ code: "return 2;" });
+		assert.match(stripVTControlCharacters(component.render(98).join("\n")), /codemode\(return 2;\)/);
+	} finally {
+		highlight.mockRestore();
+		component.dispose();
+	}
+});
+
+test("a stock codemode title leaves a custom result's renderer state alone (#5525)", () => {
+	const component = new ToolExecutionComponent(
+		"codemode",
+		"call",
+		{ code: "return 2;" },
+		{},
+		{
+			...codemodeRenderers,
+			renderResult: (_r, _o, _t, ctx) => {
+				const state = ctx.state as { scriptHighlighter?: (value: string) => string };
+				state.scriptHighlighter ??= (value) => `Custom: ${value}`;
+				const text = state.scriptHighlighter("2");
+				return { invalidate() {}, render: () => [text] };
+			},
+		},
+		tui,
+		"/",
+	);
+	try {
+		component.updateResult({ content: [], isError: false });
+		assert.match(stripVTControlCharacters(component.render(98).join("\n")), /⎿ {2}Custom: 2/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("plain codemode titles do not request discarded syntax colors (#5525)", () => {
+	vi.stubEnv("NO_COLOR", "1");
+	const highlight = vi.spyOn(CodeHighlighter.prototype, "highlight");
+	try {
+		assert.equal(codemodeBlock({ code: "return 2;" }).plain[1], " ● codemode(return 2;) · 1s");
+		assert.equal(highlight.mock.calls.length, 0);
+	} finally {
+		highlight.mockRestore();
+		vi.unstubAllEnvs();
+	}
+});
+
+test("an older renderer context needs no new members to show the script and result (#5525)", () => {
+	const args = { code: 'return "kept"' };
+	const ctx = new Proxy(
+		{ ...context(true), args },
+		{
+			get(target, field, receiver) {
+				if (!Object.hasOwn(target, field)) throw new Error("unsupported renderer context member");
+				return Reflect.get(target, field, receiver);
+			},
+			has() {
+				throw new Error("opaque context");
+			},
+		},
+	);
+	const call = codemodeRenderers.renderCall!(args, theme, ctx);
+	const result = codemodeRenderers.renderResult!(
+		{ content: [{ type: "text", text: "SCRIPT RESULT" }], details: { calls: [] } },
+		{ expanded: true, isPartial: false },
+		theme,
+		ctx,
+	);
+	assert.deepEqual(call.render(98).map(stripVTControlCharacters), ['codemode(return "kept")']);
+	assert.deepEqual(
+		result.render(98).map((row) => stripVTControlCharacters(row).trimEnd()),
+		['  ⎿  return "kept"', "  ⎿  SCRIPT RESULT"],
+	);
 });
 
 test("codemode expanded result does not repeat the script the call shows", () => {

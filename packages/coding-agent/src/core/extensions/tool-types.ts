@@ -40,8 +40,6 @@ export interface ToolRenderContext<TState = unknown, TArgs = unknown> extends Ke
 	argsComplete: boolean;
 	/** Whether the tool result is partial/streaming. */
 	isPartial: boolean;
-	/** Whether this row is drawn in an interactive chat or task transcript. */
-	isTranscript?: boolean;
 	/** Whether the result view is expanded. */
 	expanded: boolean;
 	/** Whether inline images are currently shown in the TUI. */

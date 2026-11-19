@@ -12,22 +12,34 @@ import { getTextOutput, replaceTabs, str } from "../../core/tools/render-utils.t
 import { keyHintIfBound } from "../../modes/interactive/components/keybinding-hints.js";
 import {
 	collapseToolBlockLines,
+	isTranscriptRenderContext,
 	TOOL_BLOCK_LIMITS,
 	ToolBlock,
 	ToolBlockGroup,
 	ToolBlockRecords,
 	type ToolBlockTitleRows,
+	TRANSCRIPT_TITLE_ROWS,
 } from "../../modes/interactive/components/tool-block.ts";
 import {
 	builtinToolBlockPresentation,
 	formatToolBlockElapsed,
 } from "../../modes/interactive/components/tool-block-families.ts";
+import { getGlobalTheme } from "../../modes/interactive/theme/global-theme.ts";
 import { CodeHighlighter, type Theme } from "../../modes/interactive/theme/theme.js";
-import { singleLineDisplayText, terminalDisplayText } from "../../utils/terminal-text.ts";
+import { getHighlightLanguageCount } from "../../utils/syntax-highlight.ts";
+import {
+	escapeBidiControls,
+	singleLineDisplayText,
+	TerminalTextSanitizer,
+	terminalDisplayText,
+} from "../../utils/terminal-text.ts";
 import type { CodemodeNestedCall, CodemodeToolDetails, codemodeSchema } from "./tool.js";
 
+const SCRIPT_LAYOUT = Symbol("codemode layout");
 interface CodemodeRenderState {
 	scriptHighlighter?: CodeHighlighter;
+	[SCRIPT_LAYOUT]?: { source: ScriptSource; folded?: CodemodeScriptTitle; open?: CodemodeScriptTitle };
+	[TRANSCRIPT_TITLE_ROWS]?: CodemodeScriptTitle;
 }
 
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
@@ -71,7 +83,7 @@ function wrapScriptLine(line: string, width: number): string[] {
 		for (const token of word.split(/(\x1b\[[\d;]*m)/u)) {
 			if (token.startsWith("\x1b")) parts.push(token);
 			else
-				for (const { segment } of graphemes.segment(token)) {
+				for (const { segment } of graphemes(token)) {
 					const cells = visibleWidth(segment);
 					if (used + cells > room) {
 						parts.push("\n");
@@ -85,7 +97,11 @@ function wrapScriptLine(line: string, width: number): string[] {
 	return wrapTextWithAnsi(parts.join(""), room).map((row, index) => (index === 0 ? row : `${" ".repeat(hang)}${row}`));
 }
 
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+let segmenter: Intl.Segmenter | undefined;
+function graphemes(text: string): Intl.Segments {
+	segmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+	return segmenter.segment(text);
+}
 
 /** Stands for a character two columns wide on rows one column wide, where it cannot be drawn. */
 export const WIDE_CHARACTER_PLACEHOLDER = "\uFFFD";
@@ -93,9 +109,56 @@ export const WIDE_CHARACTER_PLACEHOLDER = "\uFFFD";
 /** `text` with each character wider than one column replaced by {@link WIDE_CHARACTER_PLACEHOLDER}. */
 function placeholdWideCharacters(text: string): string {
 	let narrowed = "";
-	for (const { segment } of graphemes.segment(text))
+	for (const { segment } of graphemes(text))
 		narrowed += visibleWidth(segment) > 1 ? WIDE_CHARACTER_PLACEHOLDER : segment;
 	return narrowed;
+}
+
+/** Index line boundaries once per argument snapshot. Keep only the ten spans needed for a folded paint. */
+class ScriptSource {
+	readonly code: string | null;
+	readonly preview: [number, number][] = [];
+	readonly omitted: number;
+	constructor(code: string | null) {
+		this.code = code;
+		const text = code ?? "";
+		let start = 0;
+		const breaks = /\r\n?|\n/g;
+		while (this.preview.length < SCRIPT_PREVIEW_LINES) {
+			const next = breaks.exec(text);
+			this.preview.push([start, next?.index ?? text.length]);
+			if (!next) {
+				this.omitted = 0;
+				return;
+			}
+			start = breaks.lastIndex;
+		}
+		// An exact omission count needs the delimiters, not the contents or a string/array per hidden line.
+		let omitted = 1;
+		while (breaks.test(text)) omitted++;
+		this.omitted = omitted;
+	}
+}
+
+/** Read only enough source to fill the row. Invisible controls and combining marks may take several chunks. */
+function foldedLine(code: string, start: number, end: number, width: number, narrow: boolean): string {
+	if (width < 1) return "";
+	const sanitizer = new TerminalTextSanitizer();
+	let text = "";
+	const chunk = width + 1;
+	while (start < end) {
+		let stop = Math.min(end, start + chunk);
+		if (stop < end && code.charCodeAt(stop - 1) >= 0xd800 && code.charCodeAt(stop - 1) <= 0xdbff) stop++;
+		text += escapeBidiControls(sanitizer.write(replaceTabs(code.slice(start, stop))));
+		start = stop;
+		if (start === end) text += sanitizer.end();
+		const display = narrow ? placeholdWideCharacters(text) : text;
+		if (start === end || visibleWidth(display) > width) {
+			// truncateToWidth closes ANSI styles; the JavaScript lexer needs plain source, not those resets.
+			return visibleWidth(display) <= width ? display : stripTerminalSequences(truncateToWidth(display, width, "…"));
+		}
+	}
+	return text;
 }
 
 /**
@@ -105,45 +168,84 @@ function placeholdWideCharacters(text: string): string {
  * width, and expanded shows every line, wrapped under itself.
  */
 class CodemodeScriptTitle implements ToolBlockTitleRows {
-	readonly toolBlockTitleRows = true;
-	private readonly code: string | null;
+	private readonly source: ScriptSource;
 	private readonly theme: Theme;
 	private readonly expanded: boolean;
-	private readonly highlighter: CodeHighlighter;
-	constructor(code: string | null, theme: Theme, expanded: boolean, highlighter: CodeHighlighter) {
-		this.code = code;
+	private readonly highlighter = new CodeHighlighter();
+	private last?: {
+		width: number;
+		metadataWidth: number;
+		colors: boolean;
+		theme?: Theme;
+		languages: number;
+		hint: string;
+		rows: string[];
+	};
+	constructor(source: ScriptSource, theme: Theme, expanded: boolean) {
+		this.source = source;
 		this.theme = theme;
 		this.expanded = expanded;
-		this.highlighter = highlighter;
 	}
-	invalidate(): void {}
+	invalidate(): void {
+		this.last = undefined;
+	}
 	render(width: number, metadataWidth = 0): string[] {
 		if (width < 1) return [];
+		const colors = process.env.NO_COLOR === undefined;
+		const theme = getGlobalTheme();
+		const languages = colors ? getHighlightLanguageCount() : 0;
+		const hint = !this.expanded && this.source.omitted ? keyHintIfBound("app.tools.expand", "to expand") : "";
+		const last = this.last;
+		if (
+			last &&
+			last.width === width &&
+			last.metadataWidth === metadataWidth &&
+			last.colors === colors &&
+			last.theme === theme &&
+			last.languages === languages &&
+			last.hint === hint
+		)
+			return last.rows;
+		const rows = this.layout(width, metadataWidth, colors, hint);
+		this.last = { width, metadataWidth, colors, theme, languages, hint, rows };
+		return rows;
+	}
+	private layout(width: number, metadataWidth: number, colors: boolean, hint: string): string[] {
 		const name = this.theme.fg("toolTitle", this.theme.bold("codemode"));
 		const open = `${name}${this.theme.fg("text", "(")}`;
 		const close = this.theme.fg("text", ")");
-		const argumentRoom = Math.max(0, width - visibleWidth("codemode()"));
-		const inlineWidth = metadataWidth <= argumentRoom ? argumentRoom - metadataWidth : argumentRoom;
-		if (this.code === null) return [truncateToWidth(`${open}[invalid arg]${close}`, width, "…")];
+		const titleWidth = Math.max(0, width - metadataWidth);
+		const inlineWidth = Math.max(0, titleWidth - 10);
+		const code = this.source.code;
+		if (code === null) return [truncateToWidth(`${open}[invalid arg]${close}`, titleWidth, "…")];
 		// Under `codemode(`, the script is indented two columns unless that leaves it narrower than a wide character.
 		const indent = indentWithin(width, 2);
 		const codeWidth = Math.max(1, width - indent);
 		// Rows one column wide cannot hold a wide character: it shows as a placeholder rather than not at all.
-		const source = scriptSource(this.code).split("\n");
-		const shown = this.expanded ? source : source.slice(0, SCRIPT_PREVIEW_LINES);
-		const omitted = source.length - shown.length;
-		const preview = shown.join("\n");
-		const lines = this.highlighter.highlight(
-			codeWidth === 1 ? placeholdWideCharacters(preview) : preview,
-			"javascript",
-		);
-		if (lines.length <= 1 && (!this.expanded || visibleWidth(lines[0] ?? "") <= inlineWidth))
-			return [truncateToWidth(`${open}${truncateToWidth(lines[0] ?? "", inlineWidth, "…")}${close}`, width, "…")];
+		const omitted = this.expanded ? 0 : this.source.omitted;
+		let preview: string;
+		if (this.expanded) {
+			preview = scriptSource(code);
+			if (codeWidth === 1) preview = placeholdWideCharacters(preview);
+		} else {
+			const room = this.source.preview.length === 1 ? inlineWidth : codeWidth;
+			preview = this.source.preview
+				.map(([start, end]) => foldedLine(code, start, end, room, codeWidth === 1))
+				.join("\n");
+		}
+		const lines = colors ? this.highlighter.highlight(preview, "javascript") : preview.split("\n");
+		if (lines.length === 1) {
+			const inline = `${open}${lines[0]}${close}`;
+			if (!this.expanded) return [truncateToWidth(inline, titleWidth, "…")];
+			if (visibleWidth(inline) <= width) {
+				// A clock tick must not move code out from under a mouse selection. Put the time on its own row if needed.
+				return visibleWidth(inline) + metadataWidth > width && metadataWidth <= width ? [inline, ""] : [inline];
+			}
+		}
 		const rows = this.expanded
 			? lines.flatMap((line) => wrapScriptLine(line, codeWidth))
 			: lines.map((line) => truncateToWidth(line, codeWidth, "…"));
 		if (omitted) {
-			const hint = keyHintIfBound("app.tools.expand", "to expand");
 			rows.push(
 				this.theme.fg("dim", `… +${omitted} ${omitted === 1 ? "line" : "lines"}${hint ? ` (${hint})` : ""}`),
 			);
@@ -232,24 +334,34 @@ export const codemodeRenderers: Pick<
 > = {
 	renderCall(args, theme, context) {
 		const code = str(args?.code);
-		if (!context.isTranscript) return new CodemodeCall(code, theme);
+		if (!isTranscriptRenderContext(context)) return new CodemodeCall(code, theme);
 		const state = context.state as CodemodeRenderState;
-		state.scriptHighlighter ??= new CodeHighlighter();
-		return new CodemodeScriptTitle(code, theme, context.expanded, state.scriptHighlighter);
+		if (!state[SCRIPT_LAYOUT] || state[SCRIPT_LAYOUT].source.code !== code)
+			state[SCRIPT_LAYOUT] = { source: new ScriptSource(code) };
+		const layout = state[SCRIPT_LAYOUT];
+		const slot = context.expanded ? "open" : "folded";
+		layout[slot] ??= new CodemodeScriptTitle(layout.source, theme, context.expanded);
+		const title = layout[slot];
+		state[TRANSCRIPT_TITLE_ROWS] = title;
+		return title;
 	},
 	renderResult(result, options, theme, context) {
 		const records: Component[] = [];
 		const code = str(context.args?.code);
-		if (!context.isTranscript && options.expanded && code) {
+		if (options.expanded && code) {
 			const state = context.state as CodemodeRenderState;
-			state.scriptHighlighter ??= new CodeHighlighter();
-			records.push(
-				new Text(
-					state.scriptHighlighter.highlight(terminalDisplayText(replaceTabs(code)), "javascript").join("\n"),
-					0,
-					0,
-				),
-			);
+			const layout = isTranscriptRenderContext(context) ? state[SCRIPT_LAYOUT] : undefined;
+			// Only the returned expanded title for these actual arguments replaces the standard source record.
+			if (!layout?.open || layout.source.code !== code || layout.open !== state[TRANSCRIPT_TITLE_ROWS]) {
+				state.scriptHighlighter ??= new CodeHighlighter();
+				records.push(
+					new Text(
+						state.scriptHighlighter.highlight(terminalDisplayText(replaceTabs(code)), "javascript").join("\n"),
+						0,
+						0,
+					),
+				);
+			}
 		}
 		const calls = result.details?.calls ?? [];
 		if (calls.length) {
