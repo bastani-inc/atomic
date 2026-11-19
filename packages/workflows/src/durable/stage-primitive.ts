@@ -516,13 +516,15 @@ export function createDurableTaskPrimitive(input: {
 	name: string,
 	options: WorkflowTaskOptions,
 	stageFailFastScope?: ParallelFailFastScope,
+	reservedReplayKey?: string,
 ) => Promise<WorkflowTaskResult> {
 	return async (
 		name: string,
 		options: WorkflowTaskOptions,
 		stageFailFastScope?: ParallelFailFastScope,
+		reservedReplayKey?: string,
 	): Promise<WorkflowTaskResult> => {
-		const replayKey = input.nextReplayKey(`task:${name}`);
+		const replayKey = reservedReplayKey ?? input.nextReplayKey(`task:${name}`);
 		const restartFromPrompt = options.durableRestartFromPrompt === true;
 		const replayed = restartFromPrompt
 			? undefined

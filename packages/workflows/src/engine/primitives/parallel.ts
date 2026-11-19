@@ -15,14 +15,20 @@ import type { WorkflowParallelOptions, WorkflowTaskResult, WorkflowTaskStep } fr
 import { WorkflowBudgetExceededError } from "../run-budget.js";
 import type { EngineRuntime } from "../runtime.js";
 import type { WorkflowTaskPrimitive } from "./task.js";
+import type { TaskStepKey } from "./task-step-keys.js";
 
 export function createParallelPrimitive(input: {
 	readonly runtime: EngineRuntime;
 	readonly task: WorkflowTaskPrimitive;
-}): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
+}): (
+	steps: readonly WorkflowTaskStep[],
+	options?: WorkflowParallelOptions,
+	stepKey?: TaskStepKey,
+) => Promise<WorkflowTaskResult[]> {
 	return async (
 		steps: readonly WorkflowTaskStep[],
 		options: WorkflowParallelOptions = {},
+		stepKey?: TaskStepKey,
 	): Promise<WorkflowTaskResult[]> => {
 		input.runtime.exit.throwIfWorkflowExitSelected();
 		validateStepsReleaseWhenWaiting(steps, options.releaseWhenWaiting);
@@ -71,16 +77,18 @@ export function createParallelPrimitive(input: {
 			resolvedSteps,
 			resolvedOptions.concurrency,
 			resolvedOptions.failFast,
-			async (step) => {
+			async (step, index) => {
 				input.runtime.exit.throwIfWorkflowExitSelected();
 				const prompt = replaceTaskPlaceholder(
 					step.prompt ?? step.task ?? fallback,
 					resolvedOptions.task ?? fallback,
 				);
+				const name = step.name;
 				return await input.task(
-					step.name,
+					name,
 					taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), resolvedOptions),
 					parallelScope,
+					stepKey?.(index, name),
 				);
 			},
 			async (error) => {

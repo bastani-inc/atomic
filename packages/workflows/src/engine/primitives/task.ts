@@ -39,6 +39,7 @@ export type WorkflowTaskPrimitive = (
 	name: string,
 	options: WorkflowTaskOptions,
 	stageFailFastScope?: ParallelFailFastScope,
+	reservedReplayKey?: string,
 ) => Promise<WorkflowTaskResult>;
 
 export interface WorkflowTaskRunners {
