@@ -17,19 +17,30 @@ export type HostNoticeLevel = "error" | "warning" | "status";
 export interface HostNotice {
 	readonly level: HostNoticeLevel;
 	readonly text: string;
+	readonly label?: string;
+	readonly location?: string;
 }
 
 /** The most UTF-8 bytes a notice keeps; a longer one, such as a provider's error page, is cut and ends with `…`. */
 export const MAX_HOST_NOTICE_BYTES = 4096;
+
+// A live line needs its stable history coordinate before the queued store write gets its sequence number.
+const reserved = new WeakMap<object, string>();
+export function reserveNoticeId(notice: HostNotice, id: string): void {
+	reserved.set(notice, id);
+}
+export function reservedNoticeId(data: unknown): string | undefined {
+	return typeof data === "object" && data !== null ? reserved.get(data) : undefined;
+}
 
 const ELLIPSIS = "…";
 const encoder = new TextEncoder();
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /** `text` cut at a whole character so it fits {@link MAX_HOST_NOTICE_BYTES} with its trailing `…`. */
-export function boundHostNoticeText(text: string): string {
-	if (text.length <= MAX_HOST_NOTICE_BYTES / 3 || encoder.encode(text).length <= MAX_HOST_NOTICE_BYTES) return text;
-	const budget = MAX_HOST_NOTICE_BYTES - encoder.encode(ELLIPSIS).length;
+export function boundHostNoticeText(text: string, limit = MAX_HOST_NOTICE_BYTES): string {
+	if (text.length <= limit / 3 || encoder.encode(text).length <= limit) return text;
+	const budget = limit - encoder.encode(ELLIPSIS).length;
 	let bytes = 0;
 	let end = 0;
 	for (const { segment, index } of graphemes.segment(text)) {
@@ -37,7 +48,8 @@ export function boundHostNoticeText(text: string): string {
 		if (bytes > budget) break;
 		end = index + segment.length;
 	}
-	return `${text.slice(0, end)}${ELLIPSIS}`;
+	// Copy the prefix: a sliced string can otherwise retain the original provider response as its backing store.
+	return `${Buffer.from(text.slice(0, end), "utf16le").toString("utf16le")}${ELLIPSIS}`;
 }
 
 /** Event reasons that mean nothing was there to snapshot; the session then behaves as it does without snapshots. */
@@ -93,9 +105,14 @@ export function isHostNoticeEntry(entry: SessionEntry): boolean {
 /** The notice a stored entry records, if it is one. */
 export function hostNoticeFromEntry(entry: SessionEntry): HostNotice | undefined {
 	if (!isHostNoticeEntry(entry) || entry.type !== "custom") return undefined;
-	const data = entry.data as { level?: unknown; text?: unknown } | undefined;
+	const data = entry.data as Partial<HostNotice> | undefined;
 	if (!isHostNoticeLevel(data?.level) || typeof data.text !== "string") return undefined;
-	return { level: data.level, text: boundHostNoticeText(data.text) };
+	return {
+		level: data.level,
+		text: boundHostNoticeText(data.text),
+		...(typeof data.label === "string" && { label: data.label }),
+		...(typeof data.location === "string" && { location: data.location }),
+	};
 }
 
 /** The display-only message a chat shows for `notice`; it is never sent to the model. */
@@ -105,7 +122,7 @@ export function hostNoticeMessage(notice: HostNotice, timestamp: number): Custom
 		customType: HOST_NOTICE_TYPE,
 		content: notice.text,
 		display: true,
-		details: { level: notice.level, text: notice.text },
+		details: notice,
 		timestamp,
 		excludeFromContext: true,
 	};
@@ -113,15 +130,21 @@ export function hostNoticeMessage(notice: HostNotice, timestamp: number): Custom
 }
 
 /** The message a chat transcript shows for a stored notice entry, if `entry` is one. */
-export function hostNoticeMessageFromEntry(entry: SessionEntry): CustomMessage<HostNotice> | undefined {
+export function hostNoticeMessageFromEntry(
+	entry: SessionEntry,
+	sessionId?: string,
+): CustomMessage<HostNotice> | undefined {
 	const notice = hostNoticeFromEntry(entry);
-	return notice === undefined ? undefined : hostNoticeMessage(notice, new Date(entry.timestamp).getTime());
+	if (!notice) return undefined;
+	return hostNoticeMessage(
+		sessionId ? { ...notice, location: `history://sessions/${sessionId}?notice=${entry.id}` } : notice,
+		new Date(entry.timestamp).getTime(),
+	);
 }
 
 /** The notice a chat message shows, if it is one. */
 export function hostNoticeFromMessage(message: AgentMessage | CustomMessage): HostNotice | undefined {
 	if (message.role !== "custom" || message.customType !== HOST_NOTICE_TYPE) return undefined;
-	const details = message.details as { level?: unknown; text?: unknown } | undefined;
-	if (!isHostNoticeLevel(details?.level) || typeof details.text !== "string") return undefined;
-	return { level: details.level, text: details.text };
+	const details = message.details as HostNotice | undefined;
+	return isHostNoticeLevel(details?.level) && typeof details.text === "string" ? details : undefined;
 }

@@ -3,9 +3,10 @@ import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { unsavedHostNotices } from "../../core/agent-session-host-notices.ts";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import { retainTurnOutcome } from "../../core/host-notice-window.ts";
 import { hostNoticeFromMessage, hostNoticeMessageFromEntry } from "../../core/host-notices.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
-import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
+import { type CustomMessage, isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
@@ -522,17 +523,29 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	this: InteractiveModeBase,
 	entry: ChatMessageEntry,
 ): Component {
+	if (entry.kind === "custom" && hostNoticeFromMessage(entry.message)) {
+		const notice = mainNoticeComponent(this, entry.message);
+		this.chatContainer.addChild(notice);
+		return notice;
+	}
 	const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
-	// A line Atomic writes about how a turn ended is not a new message, as an error or a status is not (#5649).
-	const notCounted =
-		entry.kind === "custom" &&
-		(isVerbatimCompactionMessage(entry.message) || hostNoticeFromMessage(entry.message) !== undefined);
+	const notCounted = entry.kind === "custom" && isVerbatimCompactionMessage(entry.message);
 	if (entry.kind !== "system" && !notCounted) {
 		messageComponents.add(component);
 	}
 	addChatTranscriptEntry(this.chatContainer, component, entry.role);
 	return component;
 };
+
+function mainNoticeComponent(mode: InteractiveModeBase, message: CustomMessage): CustomMessageComponent {
+	const copy = retainTurnOutcome(mode, message, () => {
+		component.invalidate();
+		mode.ui.requestRender();
+	});
+	const component = new CustomMessageComponent(copy, undefined, mode.getMarkdownThemeWithSettings(), mode.outputPad);
+	component.setExpanded(mode.toolOutputExpanded);
+	return component;
+}
 
 InteractiveModeBase.prototype.addCompactionBoundaryToChat = function (
 	this: InteractiveModeBase,
@@ -609,6 +622,10 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 			break;
 		}
 		case "custom": {
+			if (message.display && hostNoticeFromMessage(message)) {
+				this.chatContainer.addChild(mainNoticeComponent(this, message));
+				break;
+			}
 			if (message.display) {
 				const component =
 					this.runtimeHost instanceof IsolatedInteractiveRuntime
@@ -642,7 +659,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								},
 							);
 				component.setExpanded(this.toolOutputExpanded);
-				if (hostNoticeFromMessage(message) === undefined) messageComponents.add(component);
+				messageComponents.add(component);
 				this.chatContainer.addChild(component);
 			}
 			break;

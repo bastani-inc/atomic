@@ -6,6 +6,7 @@ import type {
 	SessionCommandCatalog,
 	TaskViewSource,
 } from "@bastani/atomic";
+import { retainTurnOutcome } from "@bastani/atomic";
 import type {
 	AgentSessionEventListener,
 	StageControlHandle,
@@ -792,7 +793,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.commands = snapshot.commands;
 		if (!this.taskView.empty) this.taskView.apply(NO_TASKS);
 		this.markSessionStarted(snapshot.sessionStarted !== false);
-		this.settled = [...snapshot.messages];
+		this.settled = snapshot.messages.map((message) => retainTurnOutcome(this, message));
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
 		this.streamingNow = snapshot.isStreaming;
@@ -827,7 +828,9 @@ export class PooledStageHandle implements StageControlHandle {
 			return false;
 		}
 		if ((event.type as string) === STAGE_MESSAGES_EVENT) {
-			this.settled = [...(event as never as { readonly messages: AgentSession["messages"] }).messages];
+			this.settled = (event as never as { readonly messages: AgentSession["messages"] }).messages.map((message) =>
+				retainTurnOutcome(this, message),
+			);
 			return false;
 		}
 		if (event.type === "bash_execution_update" && event.id !== undefined) this.bashRuns.get(event.id)?.(event.delta);
@@ -868,7 +871,7 @@ export class PooledStageHandle implements StageControlHandle {
 				if (event.message.role === "assistant") this.streaming = event.message as StreamingMessage;
 				return;
 			case "message_end":
-				this.settled.push(event.message);
+				this.settled.push(retainTurnOutcome(this, event.message));
 				if (event.message.role === "assistant") this.streaming = undefined;
 				return;
 		}

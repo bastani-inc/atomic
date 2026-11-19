@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { HOST_NOTICE_TYPE } from "../../../core/host-notices.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskSession, getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import {
@@ -430,6 +431,8 @@ export function transcriptCacheKey<TExtraEntry extends ChatTranscriptEntryLike>(
 	entry: ChatSessionHostEntry<TExtraEntry>,
 ): readonly unknown[] {
 	const revision = state.entryRevisions.get(entry) ?? 0;
+	if (isChatMessageEntry(entry) && entry.kind === "custom" && entry.message.customType === HOST_NOTICE_TYPE)
+		return [state.transcriptRenderSettingsKey, revision, entry.message.content];
 	const message = isChatMessageEntry(entry) ? entry : undefined;
 	const streaming =
 		message !== undefined && state.liveChat.isStreamingAssistantEntry(message) && isChatSessionStreaming(state);

@@ -253,6 +253,33 @@ test("the worker names the task when messages are unsupported or the failure is 
 	assert.deepEqual(untyped.error?.cause, { name: "Error", message: "relay crashed" });
 });
 
+test("a task page from storage returns a bounded preview window and a location for every outcome (#5649)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 5; i++)
+		await session.appendCustomEntry("atomic.turn-outcome.v1", {
+			label: "Retry failed",
+			level: "error",
+			text: `failure ${i}: ${"x".repeat(4000)}`,
+		});
+	const { entries } = await session.getSessionStore().load(session.getSessionId());
+	await withTaskView(
+		{ getSessionId: () => session.getSessionId(), getEntries: () => [...entries] },
+		async (view, taskId) => {
+			const page = await view.readTaskTranscript(taskId);
+			assert.ok(page.ok);
+			const notices = page.value.messages.flatMap((m) => (m.role === "custom" ? [m] : []));
+			assert.equal(notices.length, 5);
+			assert.ok(notices.every((m) => (m.details as { location?: string })?.location));
+			assert.ok(
+				notices.reduce(
+					(n, m) => n + (m.content === "Retry failed" ? 0 : Buffer.byteLength(String(m.content))),
+					0,
+				) <= 384,
+			);
+		},
+	);
+});
+
 test("a reopened task shows the lines Atomic wrote about how its turns ended, in place (#5649)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "hello", timestamp: 1 });

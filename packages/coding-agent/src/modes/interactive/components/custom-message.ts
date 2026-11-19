@@ -176,7 +176,11 @@ export class CustomMessageComponent extends Container {
 			const notice = hostNoticeFromMessage(this.message);
 			if (notice) {
 				this.spacer = new Spacer(1);
-				this.customComponent = new Text(hostNoticeLine(notice), this.outputPad, 0);
+				this.customComponent = new Text(
+					hostNoticeLine(notice) + (this._expanded && notice.location ? `\n${notice.location}` : ""),
+					this.outputPad,
+					0,
+				);
 				this.addChild(this.spacer);
 				this.addChild(this.customComponent);
 				return;

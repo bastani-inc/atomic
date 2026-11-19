@@ -5,7 +5,8 @@ import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-
 import { getAgentDir } from "../config.js";
 import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
-import { isHostNoticeEntry } from "./host-notices.ts";
+import { HostNoticeWindow, isResidentNotice, residentNotice, storedNotices } from "./host-notice-window.ts";
+import { isHostNoticeEntry, reservedNoticeId } from "./host-notices.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
@@ -168,6 +169,7 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private contextEdits = 0;
 	private hostNotices = 0;
+	private noticeWindow = new HostNoticeWindow();
 	private noticeBranch?: { leaf: string | null; present: boolean };
 	/** Whether a retained row at this leaf differs between the transcript and model projections. */
 	private projectedEdits: { leafId: string | null; visible: boolean } | undefined;
@@ -245,8 +247,9 @@ export class SessionManager {
 			held.map(({ entry }) => entry),
 			resume.lastSeq,
 			location,
+			undefined,
+			new Map(held.map(({ seq, entry }) => [entry.id, seq])),
 		);
-		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
 		this.historyEpoch = resume.epoch;
 		this.lastEntryId = resume.lastEntryId;
 		this.compactionSeq = resume.compaction?.seq ?? 0;
@@ -271,6 +274,7 @@ export class SessionManager {
 			readonly omitted: SessionHistoryTotals;
 			readonly links: ReadonlyMap<string, string>;
 		},
+		seqs?: Map<string, number>,
 	): void {
 		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
@@ -278,7 +282,7 @@ export class SessionManager {
 		this.deletedFromStore = false;
 		this.appendHalt = undefined;
 		this.historyStartSeq = partial?.fromSeq ?? 1;
-		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
+		this.entrySeqs = seqs ?? new Map(entries.map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = entries.at(-1)?.id ?? null;
 		this.historyEpoch = undefined;
 		this.compactionSeq = 0;
@@ -313,7 +317,7 @@ export class SessionManager {
 		const held = new Map<number, SessionEntry>();
 		for (const entry of this.getEntries()) {
 			const seq = this.entrySeqs.get(entry.id);
-			if (seq !== undefined) held.set(seq, entry);
+			if (seq !== undefined && !isResidentNotice(entry)) held.set(seq, entry);
 		}
 		for (let start = Math.max(1, fromSeq); start <= watermark; ) {
 			const entry = held.get(start);
@@ -465,7 +469,7 @@ export class SessionManager {
 			this.restore(
 				{
 					header: opened.recordHeader(),
-					entries: opened.getEntries(),
+					entries: await storedNotices(opened.getEntries()),
 					lastSeq: opened.lastSeq,
 					epoch: opened.historyEpoch,
 				},
@@ -475,13 +479,19 @@ export class SessionManager {
 	}
 
 	private async initialize(): Promise<void> {
+		const entries = this.getEntries();
+		const complete = entries.some(isResidentNotice) ? await storedNotices(entries) : entries;
 		const created = await (this.store instanceof JsonlSessionStore
-			? this.store.create(this.recordHeader(), this.getEntries(), this.sessionFile)
-			: this.store.create(this.recordHeader(), this.getEntries()));
+			? this.store.create(this.recordHeader(), complete, this.sessionFile)
+			: this.store.create(this.recordHeader(), complete));
 		this.lastSeq = created.lastSeq;
 		this.historyEpoch = created.epoch;
 		this.entrySeqs = new Map(this.getEntries().map((entry, i) => [entry.id, i + 1]));
-		this.lastEntryId = this.getEntries().at(-1)?.id ?? null;
+		this.lastEntryId = entries.at(-1)?.id ?? null;
+		if (complete.some(isHostNoticeEntry)) {
+			this.fileEntries = [this.fileEntries[0]!, ...complete];
+			this._buildIndex();
+		}
 	}
 
 	private async storeForNewSession(): Promise<SessionStore> {
@@ -534,10 +544,15 @@ export class SessionManager {
 			if (!validWorkflow) return;
 			await this.loadFullHistory();
 			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
-			const result = await this.store.replace(this.sessionId, this.recordHeader(header), this.getEntries(), {
-				expectSeq: this.lastSeq,
-				...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-			});
+			const result = await this.store.replace(
+				this.sessionId,
+				this.recordHeader(header),
+				await storedNotices(this.getEntries()),
+				{
+					expectSeq: this.lastSeq,
+					...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+				},
+			);
 			this.lastSeq = result.lastSeq;
 			this.historyEpoch = result.epoch;
 			this.fileEntries[0] = header;
@@ -547,6 +562,17 @@ export class SessionManager {
 	private _buildIndex(): void {
 		validateSessionFileEntries(this.fileEntries, this.sessionFile ?? "in-memory session");
 		const index = buildSessionIndex(this.fileEntries);
+		this.noticeWindow = new HostNoticeWindow();
+		if (index.hostNotices) {
+			for (const [i, entry] of this.fileEntries.entries()) {
+				if (entry.type === "session" || !isHostNoticeEntry(entry)) continue;
+				const seq = this.entrySeqs.get(entry.id);
+				if (seq === undefined) continue;
+				const held = this.holdNotice(entry, seq);
+				this.fileEntries[i] = held;
+				index.byId.set(held.id, held);
+			}
+		}
 		this.byId = index.byId;
 		this.labelsById = index.labelsById;
 		this.labelTimestampsById = index.labelTimestampsById;
@@ -605,7 +631,7 @@ export class SessionManager {
 			if (store === this.store) return;
 			await this.loadFullHistory();
 			const header = this.recordHeader();
-			const entries = this.getEntries();
+			const entries = await storedNotices(this.getEntries());
 			const hashes = sessionBlobHashes(this.store, entries);
 			assertSessionBlobStore(store, this.sessionId, hashes.length);
 			const result = await store.create(header, entries);
@@ -708,9 +734,15 @@ export class SessionManager {
 		}
 	}
 
+	private holdNotice(entry: SessionEntry, seq: number): SessionEntry {
+		return residentNotice(entry, { store: this.store, sessionId: this.sessionId, seq }, this.noticeWindow);
+	}
+
 	private applyAppended(entries: readonly SessionEntry[]): void {
-		for (const [position, entry] of entries.entries()) {
-			this.entrySeqs.set(entry.id, this.lastSeq - entries.length + position + 1);
+		for (const [position, stored] of entries.entries()) {
+			const seq = this.lastSeq - entries.length + position + 1;
+			const entry = isHostNoticeEntry(stored) ? this.holdNotice(stored, seq) : stored;
+			this.entrySeqs.set(entry.id, seq);
 			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
@@ -925,7 +957,7 @@ export class SessionManager {
 			try {
 				await writeFile(
 					path,
-					`${[JSON.stringify({ type: "session", ...this.recordHeader() }), ...this.getEntries().map((entry) => JSON.stringify(entry))].join("\n")}\n`,
+					`${[JSON.stringify({ type: "session", ...this.recordHeader() }), ...(await storedNotices(this.getEntries())).map((entry) => JSON.stringify(entry))].join("\n")}\n`,
 				);
 			} catch (cause) {
 				throw new StorageUnavailableError(this.store.descriptor, cause as Error);
@@ -973,6 +1005,11 @@ export class SessionManager {
 	appendCustomEntry<T = SessionJsonValue>(customType: string, data?: T): Promise<string> {
 		return this.runMutation(async () => {
 			const entry = createCustomEntry(customType, data, this.byId, this.leafId);
+			const reservedId = isHostNoticeEntry(entry) ? reservedNoticeId(data) : undefined;
+			if (reservedId !== undefined) {
+				if (this.byId.has(reservedId)) throw new Error("Custom entry ID already in use");
+				entry.id = reservedId;
+			}
 			await this._appendEntry(entry);
 			return entry.id;
 		});
@@ -1353,7 +1390,7 @@ export class SessionManager {
 				cwd: this.cwd,
 				parentSessionId: this.sessionId,
 				workflow: classifiedWorkflowMetadata(this.getHeader()),
-				path: this.getBranch(leafId),
+				path: await storedNotices(this.getBranch(leafId)),
 				labelsById: this.labelsById,
 				labelTimestampsById: this.labelTimestampsById,
 			});
@@ -1386,7 +1423,11 @@ export class SessionManager {
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
 			await this.loadFullHistory();
-			const source = { store: this.store, sessionId: this.sessionId, entries: this.getEntries() };
+			const source = {
+				store: this.store,
+				sessionId: this.sessionId,
+				entries: await storedNotices(this.getEntries()),
+			};
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
 			const hashes = sessionBlobHashes(source.store, source.entries);
 			assertSessionBlobStore(store, manager.sessionId, hashes.length);

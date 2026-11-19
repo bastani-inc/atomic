@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactionReason } from "../agent-session.js";
+import { retainTurnOutcome } from "../host-notice-window.ts";
 import { sessionEntryToTranscriptMessages } from "../session-manager-history.ts";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { activeToolExecutionStarts, type ToolExecutionStart } from "../tool-execution-timing.ts";
@@ -440,14 +441,16 @@ function transcriptView(
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	cursor: string | undefined,
 ): TaskViewResult<TaskTranscriptView> {
-	const page = taskTranscriptPage(taskId, session.getSessionId(), entries, cursor);
+	const sessionId = session.getSessionId();
+	const page = taskTranscriptPage(taskId, sessionId, entries, cursor);
 	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
 	const items = page.ok ? page.value.items : [];
 	const entryIds = new Set(items.map((item) => item.source.entryId));
 	const itemIds = new Set(items.map((item) => item.id));
 	const messages = entries.flatMap<AgentMessage>((entry) => {
 		if (!entryIds.has(entry.id)) return [];
-		if (entry.type !== "message") return sessionEntryToTranscriptMessages(entry);
+		if (entry.type !== "message")
+			return sessionEntryToTranscriptMessages(entry, sessionId).map((message) => retainTurnOutcome(page, message));
 		const message = entry.message;
 		if (message.role === "assistant")
 			return [

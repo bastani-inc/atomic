@@ -1,11 +1,14 @@
+import { randomUUID } from "node:crypto";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { AgentSessionEvent } from "./agent-session-types.js";
+import { noticePreview } from "./host-notice-window.ts";
 import {
 	boundHostNoticeText,
 	HOST_NOTICE_TYPE,
 	type HostNotice,
 	hostNoticeForEvent,
 	hostNoticeMessage,
+	reserveNoticeId,
 } from "./host-notices.ts";
 import type { CustomMessage } from "./messages.ts";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
@@ -20,28 +23,45 @@ export function recordHostNotice(session: AgentSession, event: AgentSessionEvent
 	if (session._disposed || sessionGenerationClosing.has(session)) return undefined;
 	const found = hostNoticeForEvent(event, session._compactionReason);
 	if (found === undefined) return undefined;
-	const notice: HostNotice = { level: found.level, text: boundHostNoticeText(found.text) };
-	const message = hostNoticeMessage(notice, Date.now());
 	const manager = session.sessionManager;
+	const key = randomUUID();
+	const label =
+		event.type === "compaction_end"
+			? event.aborted
+				? "Compaction cancelled"
+				: "Compaction failed"
+			: event.type === "auto_retry_end"
+				? event.finalError === "Retry cancelled"
+					? "Retry cancelled"
+					: "Retry failed"
+				: event.type === "worktree_snapshot_unavailable"
+					? "Checkout snapshot unavailable"
+					: "Continuation failed";
+	const notice: HostNotice = { level: found.level, text: boundHostNoticeText(found.text), label };
+	const message = hostNoticeMessage(
+		{ ...noticePreview(notice), location: `history://sessions/${manager.getSessionId()}?notice=${key}` },
+		Date.now(),
+	);
 	let saved: Promise<string> | undefined;
 	try {
+		reserveNoticeId(notice, key);
 		saved = manager.appendCustomEntry(HOST_NOTICE_TYPE, notice);
 	} catch {
 		// A session that can no longer be written still shows the line; it is lost with the session's other unsaved work.
 	}
-	const pending = unsaved.get(session) ?? new Map<HostNotice, CustomMessage<HostNotice>>();
+	const pending = unsaved.get(session) ?? new Map<string, CustomMessage<HostNotice>>();
 	if (saved !== undefined) {
 		unsaved.set(session, pending);
 		const announced = saved.then(
 			(id) => {
-				pending.delete(notice);
+				pending.delete(key);
 				const entry = manager.getEntry(id);
 				// A host that reads the session from its store learns the entry exists.
 				if (entry !== undefined && session.sessionManager === manager)
 					session._emit({ type: "entry_appended", entry });
 			},
 			() => {
-				pending.delete(notice);
+				pending.delete(key);
 			},
 		);
 		// Whatever waits for the session's events to settle, such as the prompt that ended this way or the next model
@@ -56,14 +76,14 @@ export function recordHostNotice(session: AgentSession, event: AgentSessionEvent
 	}
 	return () => {
 		// A redraw inside the outcome's listener precedes the line, just as it precedes its live message.
-		if (saved !== undefined) pending.set(notice, message);
+		if (saved !== undefined) pending.set(key, message);
 		session._emit({ type: "message_start", message });
 		session._emit({ type: "message_end", message });
 	};
 }
 
 /** Lines a session has shown and is still saving, keyed by the data of the entry that saves each. */
-const unsaved = new WeakMap<object, Map<HostNotice, CustomMessage<HostNotice>>>();
+const unsaved = new WeakMap<object, Map<string, CustomMessage<HostNotice>>>();
 
 /** Whether `session` has shown a line it is still saving. */
 export function hasUnsavedHostNotices(session: object): boolean {
@@ -77,6 +97,8 @@ export function hasUnsavedHostNotices(session: object): boolean {
 export function unsavedHostNotices(session: object, entries: readonly SessionEntry[]): CustomMessage<HostNotice>[] {
 	const pending = unsaved.get(session);
 	if (pending === undefined || pending.size === 0) return [];
-	const saved = new Set(entries.flatMap((entry) => (entry.type === "custom" ? [entry.data] : [])));
-	return [...pending].flatMap(([notice, message]) => (saved.has(notice) ? [] : [message]));
+	const saved = new Set(
+		entries.flatMap((entry) => (entry.type === "custom" && entry.customType === HOST_NOTICE_TYPE ? [entry.id] : [])),
+	);
+	return [...pending].flatMap(([key, message]) => (saved.has(key) ? [] : [message]));
 }

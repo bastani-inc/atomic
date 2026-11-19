@@ -3,6 +3,7 @@ import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/com
 import { type Component, Container, type MarkdownTheme, Text, type TUI } from "@bastani/atomic-tui";
 import { parseSkillBlock } from "../../../core/agent-session.js";
 import type { MarkdownTransformer, MessageRenderer, ToolRenderers } from "../../../core/extensions/types.ts";
+import { retainTurnOutcome } from "../../../core/host-notice-window.ts";
 import {
 	type BashExecutionMessage,
 	type BranchSummaryMessage,
@@ -398,6 +399,8 @@ export class LiveChatEntriesController {
 	}
 	appendMessages(messages: readonly AgentMessage[]): void {
 		const grouped = groupedChatEntries(messages, this.tracker, this.carriedToolBreak);
+		for (const entry of grouped.entries)
+			if (entry.kind === "custom") entry.message = retainTurnOutcome(this, entry.message);
 		this.carriedToolBreak = grouped.carried;
 		this.entries.push(...grouped.entries);
 		this.reindexPendingTools();
@@ -406,6 +409,10 @@ export class LiveChatEntriesController {
 	prependMessages(messages: readonly AgentMessage[]): void {
 		const entries = chatEntriesFromAgentMessages(messages, undefined, { groupBash: this.groupBash });
 		if (entries.length === 0) return;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i]!;
+			if (entry.kind === "custom") entry.message = retainTurnOutcome(this, entry.message, undefined, true);
+		}
 		this.entries.unshift(...entries);
 		if (this.streamingAssistantIndex !== undefined) this.streamingAssistantIndex += entries.length;
 		this.reindexPendingTools();
@@ -415,6 +422,7 @@ export class LiveChatEntriesController {
 		this.tracker.reset();
 		const grouped = groupedChatEntries(messages, this.tracker, false);
 		const entries = grouped.entries;
+		for (const entry of entries) if (entry.kind === "custom") entry.message = retainTurnOutcome(this, entry.message);
 		this.carriedToolBreak = grouped.carried;
 		if (started.size > 0) {
 			for (const entry of entries) {
@@ -527,6 +535,7 @@ export class LiveChatEntriesController {
 		this.carriedToolBreak = grouped.carried;
 		const entries = grouped.entries;
 		if (entries.length === 0) return false;
+		for (const entry of entries) if (entry.kind === "custom") entry.message = retainTurnOutcome(this, entry.message);
 		this.entries.push(...entries);
 		this.reindexPendingTools();
 		return true;

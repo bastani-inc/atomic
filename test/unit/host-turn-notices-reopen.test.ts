@@ -14,6 +14,7 @@ import { convertToLlm } from "../../packages/coding-agent/src/core/messages.ts";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
+import { createHistoryRouter } from "../../packages/coding-agent/src/core/tools/history-protocol.ts";
 import { ChatSessionHost } from "../../packages/coding-agent/src/index.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { releaseStartupChatOutput } from "../../packages/coding-agent/src/modes/interactive/interactive-startup-chat-container.ts";
@@ -341,8 +342,23 @@ test("repeated storage failures keep only a window of notice bodies without losi
 		);
 	const reopened = stageOrSubagentChat();
 	assert.equal(await reopened.loadSession(manager.getSessionStore(), manager.getSessionId()), true);
+	const router = createHistoryRouter({
+		cwd: root,
+		sessionStore: () => manager.getSessionStore(),
+		workflows: () => undefined,
+	});
 	for (const host of [chat, reopened]) {
 		host.renderBody(160, 2);
+		const outcomes = host
+			.entries()
+			.flatMap((entry) =>
+				entry.kind === "custom" && entry.message.customType === HOST_NOTICE_TYPE ? [entry.message] : [],
+			);
+		assert.equal(outcomes.length, 40, "each outcome still has its own row");
+		const location = (outcomes[0]!.details as { location: string }).location;
+		const stored = await router.read!(location);
+		assert.ok(typeof stored === "string");
+		assert.match(stored, /Storage failure 1: x{500}/, "the oldest outcome reads back in full on demand");
 		const bodies = visibleRows(host.renderBody(160, 100)).filter((s) => s.includes("Storage failure"));
 		assert.ok(
 			bodies.some((s) => s.includes("Storage failure 40:")),
@@ -358,9 +374,11 @@ test("repeated storage failures keep only a window of notice bodies without losi
 			);
 		assert.ok(retained.length <= 2, `${retained.length} full notice bodies in the chat`);
 	}
+	assert.equal(resident.length, 40);
 	assert.ok(
-		resident.reduce((total, s) => total + Buffer.byteLength(s), 0) <= 8192,
-		`${resident.length} full notice bodies in the manager`,
+		resident.filter((text) => text !== "Compaction failed").reduce((total, s) => total + Buffer.byteLength(s), 0) <=
+			384,
+		"all variable manager previews share one byte budget",
 	);
 	const history: string[] = [];
 	await manager.forEachStoredEntry(1, (entry) => {
