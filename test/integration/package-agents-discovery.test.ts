@@ -148,9 +148,12 @@ test(
 		);
 		await session.reload();
 
-		const listed = packageAgentOf(await p.listAgents(session));
-		assert.equal(listed.scope, "user");
-		assert.equal(listed.description, "My own reviewer");
+		// `list` shows every definition, as it does for a user agent shadowing a builtin; the user's is among them.
+		const user = named(await p.listAgents(session), PACKAGE_AGENT).filter((agent) => agent.scope === "user");
+		assert.deepEqual(
+			user.map((agent) => agent.description),
+			["My own reviewer"],
+		);
 		p.respondAsChild = () => ({ text: "user reviewer done" });
 		const outcome = await p.launch(session, PACKAGE_AGENT);
 		assert.equal(outcome.status, "completed", JSON.stringify(outcome));
@@ -185,6 +188,18 @@ test(
 		assert.equal(packageAgentOf(untrustedAgents, globalAgent).scope, "package", "a global package's agent is not");
 		const outcome = await p.launch(untrusted, PACKAGE_AGENT);
 		assert.match(outcome.refused ?? "", new RegExp(PACKAGE_AGENT.replaceAll(".", "\\.")), JSON.stringify(outcome));
+
+		// Trust withdrawn from a session that loaded the project's packages withholds their agents before any reload.
+		trusted.settingsManager.setProjectTrusted(false);
+		const withdrawnAgents = await p.listAgents(trusted);
+		assert.deepEqual(named(withdrawnAgents, PACKAGE_AGENT), [], "withheld once the project is no longer trusted");
+		assert.equal(packageAgentOf(withdrawnAgents, globalAgent).scope, "package");
+		const withdrawn = await p.launch(trusted, PACKAGE_AGENT);
+		assert.match(
+			withdrawn.refused ?? "",
+			new RegExp(PACKAGE_AGENT.replaceAll(".", "\\.")),
+			JSON.stringify(withdrawn),
+		);
 		assert.deepEqual(p.childRequests(), [], "no child ran");
 	},
 	PACKAGE_AGENT_SESSION_TIMEOUT_MS,
