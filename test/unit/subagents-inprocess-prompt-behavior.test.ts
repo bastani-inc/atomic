@@ -588,58 +588,87 @@ describe("child context refresh (#5481)", () => {
 });
 
 describe("forked child's first request replays the parent's thinking (#5481)", () => {
-	test("a frozen request preserves an unrelated row refreshed by the transport (#5481)", async () => {
-		const parent = forkParent();
-		await parent.appendMessage({ role: "user", content: "Original prefix.", timestamp: 0 });
-		await parent.appendMessage(parentTurn([{ type: "thinking", thinking: "First", thinkingSignature: "sig-first" }]));
-		await parent.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
-		await parent.appendMessage(
-			parentTurn([{ type: "thinking", thinking: "Second", thinkingSignature: "sig-second" }]),
-		);
-		const runtime = createExtensionRuntime();
-		const extension = await loadExtensionFromFactory(
-			(api) => {
-				api.on("before_provider_request", ({ payload }) => {
-					const body = payload as { messages: PayloadMessage[]; max_tokens: number };
-					const rows = body.messages;
-					const prefix = rows[0];
-					const limit = body.max_tokens;
-					let transport = false;
-					let reads = 0;
-					Object.defineProperty(body, "max_tokens", {
-						get() {
-							transport = true;
-							return limit;
-						},
+	test.each(["ordinary mapping", "deferred numeric fields"])(
+		"a frozen request preserves an unrelated row refreshed by the transport (%s, #5481)",
+		async (mapping) => {
+			const parent = forkParent();
+			await parent.appendMessage({ role: "user", content: "Original prefix.", timestamp: 0 });
+			await parent.appendMessage(
+				parentTurn([{ type: "thinking", thinking: "First", thinkingSignature: "sig-first" }]),
+			);
+			await parent.appendCustomMessageEntry("subagent-notify", "Worker finished.", true);
+			await parent.appendMessage(
+				parentTurn([{ type: "thinking", thinking: "Second", thinkingSignature: "sig-second" }]),
+			);
+			const runtime = createExtensionRuntime();
+			const extension = await loadExtensionFromFactory(
+				(api) => {
+					api.on("before_provider_request", ({ payload }) => {
+						const body = payload as { messages: PayloadMessage[]; max_tokens: number };
+						const rows = body.messages;
+						const prefix = rows[0];
+						const limit = body.max_tokens;
+						let transport = false;
+						let reads = 0;
+						Object.defineProperty(body, "max_tokens", {
+							get() {
+								transport = true;
+								return limit;
+							},
+						});
+						Object.defineProperty(rows, 0, {
+							get() {
+								assert.equal(this, rows);
+								reads++;
+								if (reads > 1 && !transport) throw new Error("Prefix read before transport");
+								return transport ? { ...prefix, content: `Refreshed prefix ${reads}.` } : prefix;
+							},
+						});
+						if (mapping === "deferred numeric fields") {
+							// This projection has numeric fields that are unavailable until the transport starts.
+							Object.defineProperty(rows, "map", {
+								value(fn: (row: PayloadMessage, i: number, rows: PayloadMessage[]) => unknown, self?: unknown) {
+									return Array.prototype.map.call(rows, (row: PayloadMessage, index: number) => {
+										const mapped = fn.call(self, row, index, rows);
+										if (mapped && typeof mapped === "object") {
+											for (const [key, value] of Object.entries(mapped)) {
+												if (typeof value === "number")
+													Object.defineProperty(mapped, key, {
+														get() {
+															if (!transport) throw new Error("Numeric field read before transport");
+															return value;
+														},
+													});
+											}
+										}
+										return mapped;
+									});
+								},
+							});
+						}
+						Object.freeze(rows);
+						Object.freeze(body);
 					});
-					Object.defineProperty(rows, 0, {
-						get() {
-							assert.equal(this, rows);
-							reads++;
-							if (reads > 1 && !transport) throw new Error("Prefix read before transport");
-							return transport ? { ...prefix, content: `Refreshed prefix ${reads}.` } : prefix;
-						},
-					});
-					Object.freeze(rows);
-					Object.freeze(body);
-				});
-			},
-			parent.getCwd(),
-			createEventBus(),
-			runtime,
-		);
-		const loader = resourceLoader();
-		loader.getExtensions = () => ({ extensions: [extension], errors: [], runtime });
-		const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
-		const session = await createChildSession({}, child, { resourceLoader: loader });
-		try {
-			const rows = await childFirstRequest(session);
-			assert.equal(rows[0].content, "Refreshed prefix 3.");
-			assert.deepEqual(assistantTurns(rows), [[{ type: "thinking", thinking: "Second", signature: "sig-second" }]]);
-		} finally {
-			await session.dispose();
-		}
-	});
+				},
+				parent.getCwd(),
+				createEventBus(),
+				runtime,
+			);
+			const loader = resourceLoader();
+			loader.getExtensions = () => ({ extensions: [extension], errors: [], runtime });
+			const child = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+			const session = await createChildSession({}, child, { resourceLoader: loader });
+			try {
+				const rows = await childFirstRequest(session);
+				assert.equal(rows[0].content, "Refreshed prefix 3.");
+				assert.deepEqual(assistantTurns(rows), [
+					[{ type: "thinking", thinking: "Second", signature: "sig-second" }],
+				]);
+			} finally {
+				await session.dispose();
+			}
+		},
+	);
 
 	test.each(["model", "earlier row", "later row", "later assistant"] as const)(
 		"keeps both signed rows when serialization changes the %s (#5481)",

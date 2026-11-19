@@ -232,6 +232,36 @@ interface WirePair {
 	laterContent: string;
 }
 
+type WireLocation = Pick<WirePair, "index" | "earlier" | "later">;
+
+function ownData(object: unknown, key: PropertyKey): unknown {
+	return object !== null && typeof object === "object" && !isProxy(object)
+		? Object.getOwnPropertyDescriptor(object, key)?.value
+		: undefined;
+}
+
+/** A hook can decorate even the values its messages.map returns. Never read a mapped getter
+ * to rediscover an ordinal: after a hook we already know exactly which two slots to validate. */
+function locateWirePair(
+	rows: unknown[],
+	earlier: object,
+	later: object,
+	original?: WirePair,
+): WireLocation | undefined {
+	const left = ownData(earlier, "message");
+	const right = ownData(later, "message");
+	if (!left || typeof left !== "object" || !right || typeof right !== "object") return undefined;
+	if (original && (left !== original.earlier || right !== original.later)) return undefined;
+	const index = original?.index ?? ownData(earlier, "index");
+	if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0) return undefined;
+	function at(slot: number, entry: object, message: object): boolean {
+		const descriptor = !isProxy(rows) && Object.getOwnPropertyDescriptor(rows, slot);
+		// With a getter-backed slot, use the index of the row main already observed, if it is data.
+		return descriptor && "value" in descriptor ? descriptor.value === message : ownData(entry, "index") === slot;
+	}
+	return at(index, earlier, left) && at(index + 1, later, right) ? { index, earlier: left, later: right } : undefined;
+}
+
 /** Temporary receipt shared only by the two ordinary restoration passes around a provider hook. */
 export interface ForkReplayHook {
 	original?: WirePair;
@@ -310,7 +340,6 @@ export function restoreAnthropicReplayThinkingBlocks(
 		earlier &&
 		source &&
 		latest &&
-		earlier.index + 1 === latest.index &&
 		forkBoundaries.earlier.deref() === source &&
 		laterSource &&
 		forkBoundaries.later.deref() === laterSource &&
@@ -318,12 +347,8 @@ export function restoreAnthropicReplayThinkingBlocks(
 		sourceLength > 0 &&
 		typeof wireModel === "string" &&
 		wireModel === (model.fastRoute?.upstreamModelId ?? model.id) &&
-		(!original ||
-			(original.model === wireModel &&
-				original.index === earlier.index &&
-				original.earlier === earlier.message &&
-				original.later === latest.message))
-			? earlier
+		(!original || original.model === wireModel)
+			? locateWirePair(payloadMessages, earlier, latest, original)
 			: undefined;
 	let earlierContent: string | undefined;
 	let laterContent: string | undefined;
@@ -378,14 +403,18 @@ export function restoreAnthropicReplayThinkingBlocks(
 		earlierContent !== undefined &&
 		laterContent !== undefined
 	) {
-		hook.matched = {
-			model: wireModel,
-			index: candidate.index,
-			earlier: (nextPayloadMessages?.[candidate.index] ?? candidate.message) as object,
-			later: (nextPayloadMessages?.[latest.index] ?? latest.message) as object,
-			earlierContent,
-			laterContent,
-		};
+		const earlierRow = (nextPayloadMessages?.[candidate.index] ?? candidate.earlier) as object;
+		const laterRow = (nextPayloadMessages?.[candidate.index + 1] ?? candidate.later) as object;
+		if (!original || (earlierRow === original.earlier && laterRow === original.later)) {
+			hook.matched = {
+				model: wireModel,
+				index: candidate.index,
+				earlier: earlierRow,
+				later: laterRow,
+				earlierContent,
+				laterContent,
+			};
+		}
 	}
 
 	if (!nextPayloadMessages || !isObject(payload)) return payload;
