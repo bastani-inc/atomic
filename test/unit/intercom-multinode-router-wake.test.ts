@@ -2059,29 +2059,15 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		assert.equal(await claim, true);
 	});
 
-	test("a broker that stalls while it reads whether a session is connected through another broker still reads the answer (#5607)", async () => {
+	test("an ended session's unanswered presence check expires on the first turn after its wall-clock deadline (#5607)", async () => {
 		const node = await startNode(await cluster());
-		const elsewhere = session("elsewhere");
-		const identity = deliveryTargetIdentity(elsewhere);
-		const taken = await node.state.leases.acquire(
-			{ kind: "presence", targetIdentity: identity, session: elsewhere.info },
-			"another-broker",
-			BROKER_LEASE_STALE_AFTER_MS,
-		);
-		assert.equal(taken.status, "acquired");
-		const leases = node.state.leases;
-		const read = leases.read.bind(leases);
-		vi.spyOn(leases, "read").mockImplementationOnce(async (...args) => {
-			// The database answers at once, but this broker then does not run for longer than any of its lookups waits.
-			setTimeout(() => stallEventLoop(SESSION_ID_CLAIM_BOUND_MS + STALL_PAST_BOUND_MS), 0);
-			await databaseAnswer();
-			return read(...args);
-		});
-
+		vi.spyOn(node.state.leases, "read").mockReturnValueOnce(new Promise(() => {}));
+		const present = node.router.identityPresentElsewhere(deliveryTargetIdentity(session("ended")));
+		// The broker can't dispatch the two-second remote-session deadline during the stall.
+		stallEventLoop(2_200);
 		assert.equal(
-			await node.router.identityPresentElsewhere(identity),
-			true,
-			"the broker's own stall is not the database's time",
+			await Promise.race([present, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 30))]),
+			false,
 		);
 	});
 

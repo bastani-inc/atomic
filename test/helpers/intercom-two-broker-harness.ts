@@ -117,6 +117,8 @@ interface NodeState {
 }
 
 export interface TwoBrokerHarnessOptions {
+	/** Storage adapter to use in the broker processes; defaults to the shared SQLite test adapter. */
+	readonly storageAdapter?: string;
 	/** Delay every shared database call by this many ms on a timer, as a remote database would. */
 	readonly databaseCallDelayMs?: number;
 	/**
@@ -165,7 +167,7 @@ function nodeSettings(
 ): string {
 	return JSON.stringify({
 		storage: {
-			adapter: storageAdapterModule,
+			adapter: options.storageAdapter ?? storageAdapterModule,
 			options: {
 				path: sharedDatabasePath,
 				...(options.databaseCallDelayMs === undefined ? {} : { callDelayMs: options.databaseCallDelayMs }),

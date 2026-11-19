@@ -129,6 +129,7 @@ test(
 				requirePendingReply: true,
 			});
 			assert.equal(first.queued, true, first.reason);
+			await harness.presenceReadParked(away.returnAddress);
 
 			const replyId = randomUUID();
 			const second = await replier.client.send(live.sessionId, {
