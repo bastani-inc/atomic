@@ -1,5 +1,5 @@
 import { clickableHintText } from "@bastani/atomic";
-import { Box, Text } from "@bastani/atomic-tui";
+import { Box, clickableKeyTextHint, Text } from "@bastani/atomic-tui";
 import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
@@ -194,7 +194,7 @@ export function renderPausedBody(
 			"warning",
 			"❚❚",
 			"PAUSED",
-			clickableHintText(`enter resumes · ${backToGraphKey(ctx)} return to graph`),
+			`${clickableHintText("enter resumes")} · ${clickableKeyTextHint(backToGraphKey(ctx), " return to graph")}`,
 		),
 	);
 	callout.push(

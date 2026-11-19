@@ -2,6 +2,7 @@ import { hintKeyParts, keyHint, keyText, rawKeyHint } from "@bastani/atomic";
 import {
 	clickableHintText,
 	clickableKeysHint,
+	clickableKeyTextHint,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -293,7 +294,7 @@ function renderReducedPromptBlock(
 function compactSurfaceHint(kind: PendingPrompt["kind"]): string {
 	switch (kind) {
 		case "confirm":
-			return clickableHintText("y Yes");
+			return clickableKeyTextHint("y", " Yes");
 		case "select":
 			return clickableHintText("↑↓ Choose");
 		case "custom":

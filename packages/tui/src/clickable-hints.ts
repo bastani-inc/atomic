@@ -4,6 +4,7 @@
  * renderer strips the markers before writing a frame and remembers where each hint was painted.
  */
 
+import { BUNDLED_COMMAND_NAMES, CORE_COMMAND_NAMES } from "./builtin-command-names.ts";
 import { type KeyId, keyInputData } from "./keys.ts";
 import { extractAnsiCode, HINT_CLOSE, HINT_OPEN, visibleWidth } from "./utils.ts";
 
@@ -74,6 +75,7 @@ export function clickableKeysHint(parts: readonly HintKeyPart[], label = ""): st
 }
 
 const ARROW_GLYPHS = new Set(["↑", "↓", "←", "→"]);
+const BUILTIN_COMMANDS = new Set<string>([...CORE_COMMAND_NAMES, ...BUNDLED_COMMAND_NAMES]);
 
 /** Key names a hint shows, by the key id they stand for. */
 const HINT_KEY_IDS: Record<string, string> = {
@@ -107,7 +109,7 @@ export function hintKeyId(name: string): KeyId | undefined {
  * after it, so the parts read as the text did, and names the key a click on it presses.
  */
 export function hintKeyParts(text: string): HintKeyPart[] {
-	return parseHintKeys(text, false).parts;
+	return parseHintKeys(text).parts;
 }
 
 function hintTokenAt(text: string, start: number): string {
@@ -125,12 +127,19 @@ function hintTokenAt(text: string, start: number): string {
 
 const DIGIT_RANGE = /^[1-9]-[1-9]$/;
 
-function parseHintKeys(text: string, hasLabel: boolean): { parts: HintKeyPart[]; label: string } {
+function parseHintKeys(text: string, bindings?: readonly KeyId[]): { parts: HintKeyPart[]; label: string } {
 	const parts: HintKeyPart[] = [];
-	let index = 0;
+	// Whole-line parsing is speculative: an invalid member invalidates its entire compact shortcut, not just its tail.
+	let groupStart = 0;
+	let groupPart = 0;
 	let afterSlash = false;
+	let index = 0;
 	while (index < text.length) {
 		const start = index;
+		if (!afterSlash && text[start - 1] === " ") {
+			groupStart = start;
+			groupPart = parts.length;
+		}
 		let token = hintTokenAt(text, index);
 		index += token.length;
 		const end = index;
@@ -153,25 +162,20 @@ function parseHintKeys(text: string, hasLabel: boolean): { parts: HintKeyPart[];
 			continue;
 		}
 		// In a numbered picker, `1-4` shows two keys: the dash belongs to the first, the label to the last.
-		if (DIGIT_RANGE.test(token)) {
+		if (DIGIT_RANGE.test(token) && (!bindings || bindings.includes(token[0] as KeyId))) {
 			parts.push({ text: token.slice(0, 2), key: token[0] as KeyId });
 			token = token[2]!;
-		} else if (
-			hasLabel &&
-			/^\d+$/.test(token) &&
-			!afterSlash &&
-			!separator.includes("/") &&
-			(start === 0 || text[start - 1] === " ")
-		) {
-			// A standalone number, such as the count in `2 shells`, is not a shortcut.
-			return { parts, label: text.slice(start) };
 		}
 		const key = hintKeyId(token);
-		if (hasLabel && key === undefined) return { parts, label: text.slice(start) };
+		if (bindings && !(key && (key.length > 1 || bindings.includes(key) || (key === "/" && parts.length > 0)))) {
+			return { parts: parts.slice(0, groupPart), label: text.slice(groupStart) };
+		}
 		afterSlash = separator.includes("/");
 		parts.push(key === undefined ? { text: token + separator } : { text: token + separator, key });
 	}
-	return { parts, label: "" };
+	return bindings && afterSlash
+		? { parts: parts.slice(0, groupPart), label: text.slice(groupStart) }
+		: { parts, label: "" };
 }
 
 /** A hint for `keyText`, such as `pgup/pgdn`, and `label`, each key running when its text is clicked. */
@@ -181,17 +185,25 @@ export function clickableKeyTextHint(keyText: string, label: string): string {
 
 /**
  * A hint line written as text, such as `↑↓ select · ↵ open · esc close`: each ` · `-separated segment that starts with
- * keys runs them as {@link clickableKeyTextHint} does, and one that starts with a slash command runs the command. Other
- * segments, such as a count, are drawn as they are. Style the result as a whole; the hint markers take no columns.
+ * a complete named key (or a modified key) runs it. Bare letters, digits and punctuation must be listed in `bindings`,
+ * except a literal slash following a recognized key. Every member of a compact shortcut must be recognized. Numeric
+ * ratios stay plain even with digit bindings. Use {@link clickableKeyTextHint} when the key text is known separately.
+ * Built-in slash commands such as `/tasks to manage` run the command. Use {@link slashCommandHint} for custom commands.
  */
-export function clickableHintText(text: string): string {
+export function clickableHintText(text: string): string;
+export function clickableHintText(text: string, bindings: readonly KeyId[]): string;
+export function clickableHintText(text: string, bindings?: readonly KeyId[]): string {
+	// Passing the one-argument builder to Array.map supplies a numeric index, not a binding list.
+	const configured = Array.isArray(bindings) ? bindings : [];
 	return text
 		.split(" · ")
 		.map((segment) => {
 			const lead = /^\s*/.exec(segment)?.[0] ?? "";
 			const body = segment.slice(lead.length);
-			if (/^\/[\w:-]+(?:\s|$)/.test(body)) return lead + slashCommandHint(body);
-			const { parts, label } = parseHintKeys(body, true);
+			const command = /^\/([\w:-]+)(?:\s|$)/.exec(body)?.[1];
+			if (command && BUILTIN_COMMANDS.has(command)) return lead + slashCommandHint(body);
+			if (/^\d+(?:\s*\/\s*\d+)+(?:\s|$)/.test(body)) return segment;
+			const { parts, label } = parseHintKeys(body, configured);
 			return lead + clickableKeysHint(parts, label);
 		})
 		.join(" · ");

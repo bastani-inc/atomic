@@ -147,10 +147,10 @@ describe("the shared hint builders mark every key they name", () => {
 	});
 
 	test("a slash shortcut in text is distinct from a slash command and from separators (#5528)", () => {
-		const single = clicksOf(clickableHintText("/ choose · /tasks to manage"));
+		const single = clicksOf(clickableHintText("/ choose · /tasks to manage", ["/"]));
 		assert.equal(single.at(single.text.indexOf("choose")), "/");
 		assert.equal(single.at(single.text.indexOf("manage")), "/tasks");
-		const alternatives = clicksOf(clickableHintText("esc///+/-/,/space choose"));
+		const alternatives = clicksOf(clickableHintText("esc///+/-/,/space choose", ["/", "+", "-", ","]));
 		for (const [atColumn, key] of [
 			[0, "escape"],
 			[4, "/"],
@@ -316,7 +316,7 @@ const NOT_HINTS: ReadonlyArray<{ readonly file: string; readonly text: RegExp; r
 	{
 		file: "packages/workflows/src/tui/stage-chat-view-footer-status.ts",
 		text: /^ ?(?:· )?\$\{backKey\} graph$/,
-		why: "the plain text of the return-to-graph hint, used to find and measure it; it is drawn through clickableHintText",
+		why: "the plain text of the return-to-graph hint, used to find and measure it; it is drawn through clickableKeysHint",
 	},
 	{
 		file: "packages/workflows/src/tui/node-card.ts",

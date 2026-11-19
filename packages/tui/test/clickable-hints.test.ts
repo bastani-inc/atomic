@@ -8,6 +8,7 @@ import {
 	commandHintAction,
 	keyHintAction,
 	readHintSpans,
+	slashCommandHint,
 } from "../src/clickable-hints.ts";
 import { Text } from "../src/components/text.ts";
 import { keyInputData, matchesKey } from "../src/keys.ts";
@@ -190,6 +191,87 @@ describe("a click on a key hint runs its key", () => {
 		} finally {
 			tui.stop();
 		}
+	});
+
+	it("keeps counts, paths, ratios, URLs and punctuation in prose inert, even beside a real hint (#5528)", () => {
+		for (const plain of [
+			"1/10 tasks",
+			"3/5",
+			"3/5 tasks",
+			"3 / 5 complete",
+			"1/2/10 tasks",
+			"3 tasks",
+			"1.2/3 versions",
+			"a/file.txt",
+			"src/x.ts",
+			"a/b pick",
+			"enter/file.txt",
+			"/usr/bin/env",
+			"https://a/b",
+			"ftp://x/y",
+			"a note about +",
+			"+ in prose",
+			"x + y",
+			"a+b",
+			"C++ examples",
+			"f13 choose",
+			"/ choose",
+			"+ choose",
+			"y Yes",
+		]) {
+			const line = `${plain} · esc close`;
+			assert.strictEqual(clickableHintText(line), `${plain} · ${clickableKeyTextHint("esc", " close")}`, plain);
+		}
+		assert.deepStrictEqual(["a/file.txt", "b/file.txt"].map(clickableHintText), ["a/file.txt", "b/file.txt"]);
+		for (const ratio of ["1/10 tasks", "3/5 tasks", "3 / 5 complete"]) {
+			assert.strictEqual(clickableHintText(ratio, ["1", "3", "5", "/"]), ratio);
+		}
+	});
+
+	it("marks only complete named keys, explicit bindings and real slash-command hints (#5528)", () => {
+		for (const [keys, label] of [
+			["esc", " close"],
+			["return", " choose"],
+			["tab", " next"],
+			["space", " toggle"],
+			["home/end", " jump"],
+			["pgup/pgdn", " scroll"],
+			["↑↓", " select"],
+			["↵", " open"],
+			["shift+←/alt+f12", " move"],
+			["ctrl+/", " pick"],
+			["ctrl++", " pick"],
+			["esc / /", " pick"],
+			["esc /enter", " pick"],
+			["enter/space", ""],
+		] as const)
+			assert.deepStrictEqual(
+				readHintSpans(clickableHintText(keys + label)),
+				readHintSpans(clickableKeyTextHint(keys, label)),
+				keys,
+			);
+		for (const k of ["/", "+", "-", ",", "y", "n", "?"] as const) {
+			assert.strictEqual(clickableHintText(`${k} choose`, [k]), clickableKeyTextHint(k, " choose"));
+		}
+		assert.strictEqual(clickableHintText("a/b pick", ["a", "b"]), clickableKeyTextHint("a/b", " pick"));
+		assert.strictEqual(clickableHintText("a/file.txt", ["a"]), "a/file.txt");
+		assert.strictEqual(
+			clickableHintText("/tasks to manage"),
+			clickableHint("/tasks to manage", commandHintAction("/tasks")),
+		);
+	});
+
+	it("recognizes built-in slash commands but does not guess paths or extension commands (#5528)", () => {
+		for (const name of ["/tasks", "/workflows", "/resume", "/settings", "/reload"]) {
+			assert.strictEqual(clickableHintText(`${name} to open`), slashCommandHint(`${name} to open`));
+		}
+		for (const text of ["/tmp", "/README", "/usr/bin", "/tasks/output", "/ext-command to open"]) {
+			assert.strictEqual(clickableHintText(text), text);
+		}
+		assert.deepStrictEqual(
+			readHintSpans(slashCommandHint("/ext-command to open")).spans[0]?.action,
+			commandHintAction("/ext-command"),
+		);
 	});
 
 	it("takes a press on a hint ahead of the view that drew it, and leaves every other cell to the view", async () => {

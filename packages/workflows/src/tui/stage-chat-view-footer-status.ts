@@ -1,7 +1,6 @@
 import {
 	type AgentSession,
 	applyAttachedComposer,
-	clickableHintText,
 	hintKeyParts,
 	type NavKeybindings,
 	type NavKeyStyle,
@@ -324,9 +323,8 @@ export function embedCustomUiBackHint(
 	if (hintPlain.length === 0 || hintPlain.includes(`${backKey} graph`)) return [...widgetLines];
 	const suffixPlain = ` · ${backKey} graph`;
 	const hostTheme = hostThemeOf(ctx.piTheme);
-	const suffixStyled = hostTheme
-		? hostTheme.fg("dim", clickableHintText(suffixPlain))
-		: paint(clickableHintText(suffixPlain), ctx.theme.dim);
+	const suffixHint = ` · ${clickableKeysHint(hintKeyParts(backKey), " graph")}`;
+	const suffixStyled = hostTheme ? hostTheme.fg("dim", suffixHint) : paint(suffixHint, ctx.theme.dim);
 	const suffixWidth = visibleWidth(suffixPlain);
 	const trimmedLine = hintLine.trimEnd();
 	const nextHint =

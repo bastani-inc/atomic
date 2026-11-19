@@ -208,7 +208,7 @@ export class DialogView implements StatefulView<DialogProps> {
 		}
 		lines.push(chrome.bottom);
 		const hint = fitHintText(strategy.hintText(state), Math.max(1, width - 2));
-		const hintLine = `  ${theme.fg("dim", clickableHintText(hint))}`;
+		const hintLine = `  ${theme.fg("dim", clickableHintText(hint, ["n"]))}`;
 		lines.push(visibleWidth(hintLine) > width ? truncateToWidth(hintLine, width, "") : hintLine);
 
 		const maxHeight =
