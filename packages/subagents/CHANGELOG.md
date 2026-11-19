@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Codemode scripts can launch single or parallel subagents, get task IDs immediately, observe or control their session's children, and resume a child from its saved session. Scripts can inspect agent definitions and the configured model catalog; creating or changing definitions still requires a direct call.
+
 ## [0.9.90] - 2026-11-19
 
 ### Breaking Changes

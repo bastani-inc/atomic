@@ -280,9 +280,9 @@ describe("package metadata", () => {
 
 	test("ships workflow, skill, and bundled agent assets through package metadata", () => {
 		assert.ok(workflowsPackageJson.files.includes("builtin/**/*.ts"));
-		assert.ok(workflowsPackageJson.files.includes("skills/**/*"));
-		assert.deepEqual(workflowsPackageJson.pi.skills, ["./skills"]);
 		assert.deepEqual(workflowsPackageJson.pi.builtin, ["./builtin"]);
+		assert.ok(subagentsPackageJson.files.includes("skills/**/*"));
+		assert.deepEqual(subagentsPackageJson.pi.skills, ["./skills"]);
 	});
 
 	test("Intercom ships all top-level runtime TypeScript modules through a bounded pattern", () => {

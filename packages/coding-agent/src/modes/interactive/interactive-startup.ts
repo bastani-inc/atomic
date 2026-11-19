@@ -388,7 +388,9 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.updateTerminalTitle();
 	} else {
 		await preloadChangelog(getChangelogPath());
+		const startup = this.sessionStartup;
 		await bindInitialEagerSession(this);
+		if (startup?.cancelled) return;
 		void reportUnavailableTools(this);
 	}
 
@@ -444,8 +446,9 @@ export function showResumeNotices(
 }
 
 InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): Promise<void> {
+	const startup = this.sessionStartup;
 	await this.init();
-	if (this.isShuttingDown) return;
+	if (this.isShuttingDown || startup?.cancelled || this.sessionStartup?.cancelled) return;
 
 	if (shouldRefreshCatalogsOnStartup()) void refreshCatalogsAfterTuiStartup(this);
 

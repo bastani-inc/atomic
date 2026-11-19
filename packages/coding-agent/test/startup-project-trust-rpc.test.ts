@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import * as jsonl from "../src/modes/rpc/jsonl.js";
 import { RpcClient } from "../src/modes/rpc/rpc-client.js";
@@ -433,8 +435,79 @@ for (const scenario of ["saved trust approved by a hook", "no trust inputs"] as 
 	);
 }
 
+test(
+	"a handler registered after the first trust report withdraws a saved grant before it answers (#5693)",
+	async () => {
+		const { root, cwd, agentDir, client } = decliningHookFixture(
+			"atomic-startup-late-policy-",
+			`export default function(pi) {
+				pi.on('session_start', async (_, ctx) => {
+					await ctx.ui.confirm('Install policy', 'Register now?');
+					pi.on('project_trust', async () => ({ trusted: 'no' }));
+					await ctx.ui.confirm('Policy registered', 'Finish startup?');
+				});
+			}`,
+		);
+		const install = holdTrustQuestion(client, (r) => r.method === "confirm" && r.title === "Install policy");
+		const installed = holdTrustQuestion(client, (r) => r.method === "confirm" && r.title === "Policy registered");
+		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true });
+		await resourceLoader.reload();
+		const harness = await createHarness({
+			cwd,
+			sessionManager: SessionManager.inMemory(cwd),
+			settingsManager,
+			resourceLoader,
+		});
+		const { modelRuntime } = harness.session;
+		const listed = () => resourceLoader.getPrompts().prompts.some((prompt) => prompt.name === "projprompt");
+		const unused = async () => {
+			throw new Error("unexpected session switch");
+		};
+		const local = new AgentSessionRuntime(
+			harness.session,
+			{ cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] },
+			unused,
+		);
+		const runtime = new IsolatedInteractiveRuntime(local, unused, client);
+		try {
+			await client.start();
+			const start = await install;
+			await runtime.initializeFromEngine();
+			assert.equal(listed(), true, "saved trust with no registered handler lists the project prompt");
+			await client.respondExtensionUI({ type: "extension_ui_response", id: start.id, confirmed: true });
+			const registered = await installed;
+			try {
+				await vi.waitFor(() => assert.equal(listed(), false), { timeout: 10_000 });
+				assert.equal(settingsManager.isProjectTrusted(), false);
+				assert.equal(runtime.isProjectTrustPending(), true);
+				assert.deepEqual(runtime.trustDecisions().projects, {});
+			} finally {
+				await client.respondExtensionUI({ type: "extension_ui_response", id: registered.id, confirmed: true });
+			}
+			await client.waitForInteractiveEngineResources();
+			assert.equal((await client.getState()).projectTrusted, false);
+		} finally {
+			await runtime.dispose();
+			await harness.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
 /** A saved "Trust" with a project_trust hook that holds its answer until the test releases it, then declines. */
-function decliningHookFixture(prefix: string) {
+function decliningHookFixture(
+	prefix: string,
+	policy = `
+	export default function(pi) {
+		pi.on('project_trust', async (_event, ctx) => {
+			await ctx.ui.confirm('Policy check', 'Continue?');
+			return { trusted: 'no' };
+		});
+	}
+`,
+) {
 	const root = mkdtempSync(join(tmpdir(), prefix));
 	const cwd = join(root, "project");
 	const agentDir = join(root, "agent");
@@ -443,17 +516,7 @@ function decliningHookFixture(prefix: string) {
 	writeFileSync(join(cwd, ".atomic", "prompts", "projprompt.md"), "---\ndescription: project prompt\n---\nbody\n");
 	mkdirSync(join(agentDir, "extensions"), { recursive: true });
 	writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [realpathSync(cwd)]: true }));
-	writeFileSync(
-		join(agentDir, "extensions", "policy.ts"),
-		`
-			export default function(pi) {
-				pi.on('project_trust', async (_event, ctx) => {
-					await ctx.ui.confirm('Policy check', 'Continue?');
-					return { trusted: 'no' };
-				});
-			}
-		`,
-	);
+	writeFileSync(join(agentDir, "extensions", "policy.ts"), policy);
 	const client = new RpcClient({
 		cliPath,
 		cwd,
@@ -483,6 +546,39 @@ test(
 			const decided = await client.getState();
 			assert.equal(decided.projectTrusted, false);
 			assert.equal(decided.pendingProjectResourcesTrusted, undefined);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+test(
+	"removing a startup trust handler does not release the resources it is already deciding about (#5693)",
+	async () => {
+		const { root, client, holding } = decliningHookFixture(
+			"atomic-startup-in-flight-policy-",
+			`export default function(pi) {
+			const off = pi.on('project_trust', async (_, ctx) => {
+				off();
+				await ctx.ui.confirm('Finish check', 'Continue?');
+				return { trusted: 'no' };
+			});
+		}`,
+		);
+		try {
+			await client.start();
+			const question = await holding;
+			try {
+				const pending = await client.getState();
+				assert.equal(pending.pendingProjectResourcesTrusted, false);
+				assert.equal(pending.projectTrusted, undefined);
+			} finally {
+				await client.respondExtensionUI({ type: "extension_ui_response", id: question.id, confirmed: true });
+			}
+			await client.waitForInteractiveEngineResources();
+			assert.equal((await client.getState()).projectTrusted, false);
 		} finally {
 			await client.stop();
 			rmSync(root, { recursive: true, force: true });
